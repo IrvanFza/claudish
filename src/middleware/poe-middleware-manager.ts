@@ -30,8 +30,8 @@ export class PoeMiddlewareManager {
    * Initialize middlewares relevant to Poe models
    */
   private initializeMiddlewares(): void {
-    // Strip "poe/" prefix for middleware detection
-    const cleanModelId = this.modelId.replace(/^poe\//, "");
+    // Strip "poe:" prefix for middleware detection
+    const cleanModelId = this.modelId.replace(/^poe:/, "");
 
     // Register Gemini thought signature middleware for Gemini models
     const geminiMiddleware = new GeminiThoughtSignatureMiddleware();

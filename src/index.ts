@@ -96,7 +96,7 @@ async function runCli() {
     // Prompt for API keys if not set (interactive mode only, not monitor mode)
     // Check which API key is needed based on model selection
     if (cliConfig.interactive && !cliConfig.monitor) {
-      const isPoeModel = cliConfig.model?.startsWith("poe/");
+      const isPoeModel = cliConfig.model?.startsWith("poe:");
       const isOpenRouterModel = cliConfig.model?.includes("/") && !isPoeModel;
 
       // Prompt for appropriate API key

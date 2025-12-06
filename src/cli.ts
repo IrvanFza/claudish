@@ -280,7 +280,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     }
   } else {
     // Check which provider is needed based on the model
-    const isPoeModel = config.model?.startsWith("poe/");
+    const isPoeModel = config.model?.startsWith("poe:");
     const isOpenRouterModel = config.model?.includes("/") && !isPoeModel;
 
     // Handle OpenRouter API key
@@ -417,53 +417,39 @@ const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
  * Search all available models and print results
  */
 async function searchAndPrintModels(query: string, forceUpdate: boolean, providerFilter?: string): Promise<void> {
-  let models: any[] = [];
+  const { PoeProvider, OpenRouterProvider } = await import("./providers/index.js");
+  const providers = [];
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-      }
-    } catch (e) {
-      // Ignore cache error
+  if (providerFilter) {
+    if (providerFilter === 'poe') {
+      providers.push(new PoeProvider());
+    } else if (providerFilter === 'openrouter') {
+      providers.push(new OpenRouterProvider());
+    } else {
+      console.error(`Invalid provider filter: ${providerFilter}. Use: poe, openrouter, or omit for all`);
+      process.exit(1);
     }
+  } else {
+    providers.push(new OpenRouterProvider(), new PoeProvider());
   }
 
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter (this may take a moment)...");
+  let allModels: any[] = [];
+
+  for (const provider of providers) {
+    if (!forceUpdate) {
+      console.error(`🔄 Fetching ${provider.name} models...`);
+    }
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = await response.json();
-      models = data.data;
-
-      // Cache result
-      writeFileSync(
-        ALL_MODELS_JSON_PATH,
-        JSON.stringify({
-          lastUpdated: new Date().toISOString(),
-          models,
-        }),
-        "utf-8"
-      );
-
-      console.error(`✅ Cached ${models.length} models`);
+      const models = await provider.fetchModels();
+      allModels = allModels.concat(models);
     } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
+      console.error(`❌ Failed to fetch from ${provider.name}: ${error}`);
+      // Continue with other providers
     }
   }
 
   // Perform fuzzy search
-  const results = models
+  const results = allModels
     .map((model) => {
       const nameScore = fuzzyScore(model.name || "", query);
       const idScore = fuzzyScore(model.id || "", query);
@@ -488,13 +474,27 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean, provide
   console.log(`  ${"─".repeat(80)}`);
 
   for (const { model, score } of results) {
-    // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? `${model.id.substring(0, 27)}...` : model.id;
+    // Format model ID for display based on provider
+    let displayId: string;
+    if (model.provider === 'openrouter') {
+      // Keep full provider/model format for OpenRouter
+      displayId = model.id;
+    } else {
+      // For non-OpenRouter, check if model already has provider:format
+      if (model.id.includes(":")) {
+        // Model already has provider:format (e.g., poe:grok-4)
+        displayId = model.id;
+      } else {
+        // Convert old provider/ format to provider:format
+        const cleanId = model.id.includes("/") ? model.id.split("/").slice(1).join("/") : model.id;
+        displayId = `${model.provider}:${cleanId}`;
+      }
+    }
+    const modelId = displayId.length > 30 ? `${displayId.substring(0, 27)}...` : displayId;
     const modelIdPadded = modelId.padEnd(30);
 
-    // Determine provider from ID
-    const providerName = model.id.split("/")[0];
-    const provider = providerName.length > 10 ? `${providerName.substring(0, 7)}...` : providerName;
+    // Use provider from model object
+    const provider = model.provider.length > 10 ? `${model.provider.substring(0, 7)}...` : model.provider;
     const providerPadded = provider.padEnd(10);
 
     // Format pricing (handle special cases: negative = varies, 0 = free)
@@ -601,9 +601,23 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean, provide
     console.log(`  ${"─".repeat(70)}`);
 
     for (const model of providerModels) {
-      // Format model ID (remove provider prefix, truncate if too long)
-      const shortId = model.id.includes("/") ? model.id.split("/").slice(1).join("/") : model.id;
-      const modelId = shortId.length > 40 ? `${shortId.substring(0, 37)}...` : shortId;
+      // Format model ID based on provider
+      let displayId: string;
+      if (model.provider === 'openrouter') {
+        // Keep full provider/model format for OpenRouter
+        displayId = model.id;
+      } else {
+        // For non-OpenRouter, check if model already has provider:format
+        if (model.id.includes(":")) {
+          // Model already has provider:format (e.g., poe:grok-4)
+          displayId = model.id;
+        } else {
+          // Convert old provider/ format to provider:format
+          const cleanId = model.id.includes("/") ? model.id.split("/").slice(1).join("/") : model.id;
+          displayId = `${model.provider}:${cleanId}`;
+        }
+      }
+      const modelId = displayId.length > 40 ? `${displayId.substring(0, 37)}...` : displayId;
       const modelIdPadded = modelId.padEnd(42);
 
       // Format pricing (handle special cases: negative = varies, 0 = free)

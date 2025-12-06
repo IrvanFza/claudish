@@ -31,7 +31,7 @@ export class PoeProvider implements ModelProvider {
       const models = data.data
         .filter((m: any) => m.is_available !== false)
         .map((m: any, index: number) => ({
-          id: `poe/${m.id}`,
+          id: `poe:${m.id}`,
           name: m.metadata?.display_name || m.id,
           description: m.description || `${m.owned_by} model`,
           provider: 'poe' as const,

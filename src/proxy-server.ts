@@ -9,10 +9,10 @@ import { isLoggingEnabled, log } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 
 /**
- * Check if model is a Poe model (has poe/ prefix).
+ * Check if model is a Poe model (has poe: prefix).
  */
 function isPoeModel(model: string): boolean {
-  return model.startsWith("poe/");
+  return model.startsWith("poe:");
 }
 
 export async function createProxyServer(

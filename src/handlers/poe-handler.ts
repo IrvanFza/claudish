@@ -320,11 +320,11 @@ export class PoeHandler implements ModelHandler {
   }
 
   /**
-   * Transform model ID: poe/grok-4 → grok-4
+   * Transform model ID: poe:grok-4 → grok-4
    */
   private transformModelId(model: string): string {
-    // Remove poe/ prefix only
-    return model.replace(/^poe\//, "");
+    // Remove poe: prefix only
+    return model.replace(/^poe:/, "");
   }
 
   /**
