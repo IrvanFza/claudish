@@ -1,11 +1,13 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import chalk from "chalk";
 import { ENV } from "./config.js";
-import { getAvailableModels, loadModelInfo } from "./model-loader.js";
+import { getAvailableModels, loadModelInfo, getMultiProviderModels } from "./model-loader.js";
 import { getDefaultProfile, getModelMapping, getProfile } from "./profile-config.js";
 import type { ClaudishConfig } from "./types.js";
 import { fuzzyScore } from "./utils.js";
+import { printHybridRecommendations, printProviderSections } from "./utils/model-display.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -93,7 +95,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const modelArg = args[++i];
       if (!modelArg) {
         console.error("--model requires a value");
-        printAvailableModels();
+        await printAvailableModels();
         process.exit(1);
       }
       config.model = modelArg; // Accept any model ID
@@ -387,7 +389,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       if (hasJsonFlag) {
         printAvailableModelsJSON();
       } else {
-        printAvailableModels();
+        await printAvailableModels();
       }
       process.exit(0);
     } else if (action.startsWith("models-list:")) {
@@ -1154,33 +1156,54 @@ async function initializeClaudishSkill(): Promise<void> {
 }
 
 /**
- * Print available models in enhanced table format
+ * Print available models in enhanced multi-provider format
  */
-function printAvailableModels(): void {
-  // Try to read enhanced model data from JSON file
-  let lastUpdated = "unknown";
-  let models: any[] = [];
-
+async function printAvailableModels(): Promise<void> {
   try {
-    if (existsSync(MODELS_JSON_PATH)) {
-      const data = JSON.parse(readFileSync(MODELS_JSON_PATH, "utf-8"));
-      lastUpdated = data.lastUpdated || "unknown";
-      models = data.models || [];
+    // Get models from multiple providers
+    const { openrouter, poe } = await getMultiProviderModels();
+
+    console.log(chalk.bold('\n🏆 Best Overall Models\n'));
+
+    // Show best overall (top 3 from each provider)
+    const bestOverall = [...openrouter.slice(0, 3), ...poe.slice(0, 3)]
+      .sort((a, b) => (a.globalPriority || 999) - (b.globalPriority || 999))
+      .slice(0, 6);
+
+    // Print best overall in table format
+    if (bestOverall.length > 0) {
+      printModelTableSimple(bestOverall);
     }
-  } catch {
-    // Fallback to basic model list
+
+    // Always show provider sections
+    console.log(chalk.bold('\n📋 Top Models by Provider\n'));
+    printProviderSections({ openrouter, poe });
+
+    console.log(chalk.gray('\n💡 Tip: Use claudish --model <model-id> to select a model'));
+    console.log(chalk.gray('Set default with: export CLAUDISH_MODEL=<model>\n'));
+
+  } catch (error) {
+    console.error(chalk.red('❌ Error loading multi-provider models:'), error);
+
+    // Fallback to basic OpenRouter models
+    console.log(chalk.yellow('\n⚠️  Falling back to OpenRouter models only...\n'));
+
     const basicModels = getAvailableModels();
     const modelInfo = loadModelInfo();
-    for (const model of basicModels) {
+    for (const model of basicModels.slice(0, 10)) {
       const info = modelInfo[model];
       console.log(`  ${model}`);
       console.log(`    ${info.name} - ${info.description}`);
       console.log("");
     }
-    return;
   }
+}
 
-  console.log(`\nAvailable OpenRouter Models (last updated: ${lastUpdated}):\n`);
+/**
+ * Simple table printing for best overall models
+ */
+function printModelTableSimple(models: any[]): void {
+  if (models.length === 0) return;
 
   // Table header
   console.log("  Model                          Provider    Pricing     Context  Capabilities");
@@ -1193,24 +1216,22 @@ function printAvailableModels(): void {
     const modelIdPadded = modelId.padEnd(30);
 
     // Format provider (max 10 chars)
-    const provider =
-      model.provider.length > 10 ? `${model.provider.substring(0, 7)}...` : model.provider;
+    const provider = model.provider === 'openrouter' ? 'OpenRouter' : 'Poe';
     const providerPadded = provider.padEnd(10);
 
-    // Format pricing (average) - handle special cases
-    let pricing = model.pricing?.average || "N/A";
-
-    // Handle special pricing cases
-    if (pricing.includes("-1000000")) {
-      pricing = "varies"; // Auto-router pricing varies by routed model
-    } else if (pricing === "$0.00/1M" || pricing === "FREE") {
+    // Format pricing
+    let pricing = model.pricing?.prompt || "N/A";
+    if (pricing === "$0.00" || pricing === "0") {
       pricing = "FREE";
+    } else if (pricing.includes("/")) {
+      pricing = pricing;
+    } else {
+      pricing = `$${pricing}/1M`;
     }
-
     const pricingPadded = pricing.padEnd(10);
 
     // Format context
-    const context = model.context || "N/A";
+    const context = formatContext(model.context_length);
     const contextPadded = context.padEnd(7);
 
     // Capabilities emojis
@@ -1226,11 +1247,18 @@ function printAvailableModels(): void {
 
   console.log("");
   console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
-  console.log("");
-  console.log("Set default with: export CLAUDISH_MODEL=<model>");
-  console.log("               or: export ANTHROPIC_MODEL=<model>");
-  console.log("Or use: claudish --model <model> ...");
-  console.log("\nForce update: claudish --models --force-update\n");
+}
+
+/**
+ * Format context window for display
+ */
+function formatContext(contextLength: number): string {
+  if (contextLength >= 1000000) {
+    return `${(contextLength / 1000000).toFixed(1)}M`;
+  } else if (contextLength >= 1000) {
+    return `${(contextLength / 1000).toFixed(0)}K`;
+  }
+  return contextLength.toString();
 }
 
 /**

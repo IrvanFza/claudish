@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OpenRouterModel } from "./types.js";
+import type { OpenRouterModel, RecommendedModel, UnifiedModel } from "./types.js";
 import { OPENROUTER_MODELS } from "./types.js";
+import { PoeProvider, selectTopPoeModels } from "./providers/poe-provider.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -240,4 +241,127 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
 
   // Default to false if no metadata available (safe default)
   return false;
+}
+
+// Multi-provider model loading functions
+
+/**
+ * Get top models from multiple providers
+ */
+export async function getMultiProviderModels(): Promise<{openrouter: RecommendedModel[], poe: RecommendedModel[]}> {
+  try {
+    // Load OpenRouter models (existing logic)
+    const openrouterModels = await getOpenRouterTopModels();
+
+    // Load Poe models (new selection logic)
+    const poeModels = await getPoeTopModels();
+
+    return {
+      openrouter: openrouterModels,
+      poe: poeModels
+    };
+  } catch (error) {
+    console.error('❌ Error loading multi-provider models:', error);
+    // Fallback to empty arrays
+    return { openrouter: [], poe: [] };
+  }
+}
+
+/**
+ * Get top OpenRouter models as RecommendedModel[]
+ */
+async function getOpenRouterTopModels(): Promise<RecommendedModel[]> {
+  const modelInfo = loadModelInfo();
+  const availableModels = getAvailableModels();
+
+  // Get recommended models (excluding custom)
+  const recommendedModels = availableModels
+    .filter(modelId => modelId !== 'custom')
+    .slice(0, 10) // Limit to top 10
+    .map((modelId, index) => {
+      const info = modelInfo[modelId];
+      if (!info) return null;
+
+      return {
+        id: modelId,
+        name: info.name,
+        description: info.description,
+        provider: 'openrouter',
+        context_length: 200000, // Default, will be updated if available
+        pricing: {
+          prompt: '$1.00/1M', // Default pricing
+          completion: '$3.00/1M'
+        },
+        providerSection: 'openrouter',
+        sectionPriority: index + 1,
+        globalPriority: index + 1,
+        supportsTools: true, // Default assumptions
+        supportsReasoning: false,
+        supportsVision: false,
+        priority: info.priority
+      } as RecommendedModel;
+    })
+    .filter(Boolean) as RecommendedModel[];
+
+  // Try to enhance with actual pricing and context info if available
+  await enrichOpenRouterModels(recommendedModels);
+
+  return recommendedModels;
+}
+
+/**
+ * Get top Poe models as RecommendedModel[]
+ */
+async function getPoeTopModels(): Promise<RecommendedModel[]> {
+  try {
+    const poeProvider = new PoeProvider();
+    const allPoeModels = await poeProvider.fetchModels();
+
+    // Select top models using our smart selection
+    const topPoeModels = selectTopPoeModels(allPoeModels, 10);
+
+    // Convert to RecommendedModel format
+    return topPoeModels.map((model, index) => ({
+      ...model,
+      providerSection: 'poe',
+      sectionPriority: index + 1,
+      globalPriority: 100 + index, // Start after OpenRouter
+      supportsTools: true, // Poe models generally support tools
+      supportsReasoning: model.id.includes('o1') || model.id.includes('o3') || model.id.includes('reasoning'),
+      supportsVision: model.id.includes('vision') || model.id.includes('image') || model.id.includes('multimodal')
+    } as RecommendedModel));
+
+  } catch (error) {
+    console.error('❌ Error fetching Poe models:', error);
+    return [];
+  }
+}
+
+/**
+ * Enrich OpenRouter models with real pricing and context data
+ */
+async function enrichOpenRouterModels(models: RecommendedModel[]): Promise<void> {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models");
+    if (response.ok) {
+      const data = await response.json();
+
+      for (const model of models) {
+        const openRouterModel = data.data?.find((m: any) => m.id === model.id);
+        if (openRouterModel) {
+          model.context_length = openRouterModel.context_length || model.context_length;
+          model.pricing = {
+            prompt: openRouterModel.pricing?.prompt || model.pricing.prompt,
+            completion: openRouterModel.pricing?.completion || model.pricing.completion
+          };
+          model.supportsVision = openRouterModel.architecture?.modality === 'multimodal' ||
+                                openRouterModel.architecture?.modality?.includes('image');
+          model.supportsReasoning = openRouterModel.top_provider?.supports_reasoning ||
+                                   model.id.includes('o1') || model.id.includes('o3') || model.id.includes('reasoning');
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️  Could not enrich OpenRouter models with latest data');
+  }
 }

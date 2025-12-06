@@ -463,6 +463,13 @@ export interface UnifiedModel {
   priority?: number;
 }
 
+// Recommended Model Interface for Multi-Provider Support
+export interface RecommendedModel extends UnifiedModel {
+  providerSection: 'openrouter' | 'poe';
+  sectionPriority: number; // Priority within provider section
+  globalPriority: number;   // Overall ranking (for hybrid view)
+}
+
 // Provider interface for extensibility
 export interface ModelProvider {
   name: string;
