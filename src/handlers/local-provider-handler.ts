@@ -12,6 +12,9 @@ import { AdapterManager } from "../adapters/adapter-manager.js";
 import { MiddlewareManager } from "../middleware/index.js";
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   convertMessagesToOpenAI,
   convertToolsToOpenAI,
@@ -28,6 +31,9 @@ export class LocalProviderHandler implements ModelHandler {
   private port: number;
   private healthChecked = false;
   private isHealthy = false;
+  private contextWindow = 8192; // Default context window
+  private sessionInputTokens = 0;
+  private sessionOutputTokens = 0;
 
   constructor(provider: LocalProvider, modelName: string, port: number) {
     this.provider = provider;
@@ -81,6 +87,72 @@ export class LocalProviderHandler implements ModelHandler {
     return false;
   }
 
+  /**
+   * Fetch context window size from Ollama's /api/show endpoint
+   */
+  private async fetchContextWindow(): Promise<void> {
+    if (this.provider.name !== "ollama") return;
+
+    try {
+      const response = await fetch(`${this.provider.baseUrl}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: this.modelName }),
+        signal: AbortSignal.timeout(3000),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        // Ollama returns context window in model_info or parameters
+        const ctxFromInfo = data.model_info?.["general.context_length"];
+        const ctxFromParams = data.parameters?.match(/num_ctx\s+(\d+)/)?.[1];
+        if (ctxFromInfo) {
+          this.contextWindow = parseInt(ctxFromInfo, 10);
+        } else if (ctxFromParams) {
+          this.contextWindow = parseInt(ctxFromParams, 10);
+        } else {
+          // Default based on common model sizes
+          this.contextWindow = 8192;
+        }
+        log(`[LocalProvider:${this.provider.name}] Context window: ${this.contextWindow}`);
+      }
+    } catch (e) {
+      // Use default context window
+    }
+  }
+
+  /**
+   * Write token tracking file for status line
+   */
+  private writeTokenFile(input: number, output: number): void {
+    try {
+      this.sessionInputTokens += input;
+      this.sessionOutputTokens += output;
+      const total = this.sessionInputTokens + this.sessionOutputTokens;
+      const leftPct = this.contextWindow > 0
+        ? Math.max(0, Math.min(100, Math.round(((this.contextWindow - total) / this.contextWindow) * 100)))
+        : 100;
+
+      const data = {
+        input_tokens: this.sessionInputTokens,
+        output_tokens: this.sessionOutputTokens,
+        total_tokens: total,
+        total_cost: 0, // Local models are free
+        context_window: this.contextWindow,
+        context_left_percent: leftPct,
+        updated_at: Date.now(),
+      };
+
+      writeFileSync(
+        join(tmpdir(), `claudish-tokens-${this.port}.json`),
+        JSON.stringify(data),
+        "utf-8"
+      );
+    } catch (e) {
+      // Ignore write errors
+    }
+  }
+
   async handle(c: Context, payload: any): Promise<Response> {
     const target = this.modelName;
 
@@ -97,6 +169,8 @@ export class LocalProviderHandler implements ModelHandler {
       if (!healthy) {
         return this.errorResponse(c, "connection_error", this.getConnectionErrorMessage());
       }
+      // Fetch context window after successful health check
+      await this.fetchContextWindow();
     }
 
     // Transform request
@@ -172,7 +246,8 @@ export class LocalProviderHandler implements ModelHandler {
           response,
           adapter,
           target,
-          this.middlewareManager
+          this.middlewareManager,
+          (input, output) => this.writeTokenFile(input, output)
         );
       }
 

@@ -312,18 +312,50 @@ async function fetchOllamaModels(): Promise<any[]> {
     const data = await response.json();
     const models = data.models || [];
 
-    // Convert Ollama format to OpenRouter-like format for consistency
-    return models.map((m: any) => ({
-      id: `ollama/${m.name}`,
-      name: m.name,
-      description: `Local Ollama model (${m.details?.parameter_size || 'unknown size'})`,
-      provider: "ollama",
-      context_length: null, // Ollama doesn't expose this in /api/tags
-      pricing: { prompt: "0", completion: "0" }, // Free (local)
-      isLocal: true,
-      details: m.details,
-      size: m.size,
-    }));
+    // Fetch capabilities for each model in parallel
+    const modelsWithCapabilities = await Promise.all(
+      models.map(async (m: any) => {
+        let capabilities: string[] = [];
+        try {
+          const showResponse = await fetch(`${ollamaHost}/api/show`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: m.name }),
+            signal: AbortSignal.timeout(2000),
+          });
+          if (showResponse.ok) {
+            const showData = await showResponse.json();
+            capabilities = showData.capabilities || [];
+          }
+        } catch {
+          // Ignore capability fetch errors
+        }
+
+        const supportsTools = capabilities.includes("tools");
+        const isEmbeddingModel = capabilities.includes("embedding") ||
+          m.name.toLowerCase().includes("embed");
+        const sizeInfo = m.details?.parameter_size || 'unknown size';
+        const toolsIndicator = supportsTools ? "✓ tools" : "✗ no tools";
+
+        return {
+          id: `ollama/${m.name}`,
+          name: m.name,
+          description: `Local Ollama model (${sizeInfo}, ${toolsIndicator})`,
+          provider: "ollama",
+          context_length: null, // Ollama doesn't expose this in /api/tags
+          pricing: { prompt: "0", completion: "0" }, // Free (local)
+          isLocal: true,
+          supportsTools,
+          isEmbeddingModel,
+          capabilities,
+          details: m.details,
+          size: m.size,
+        };
+      })
+    );
+
+    // Filter out embedding models - they can't be used for chat/completion
+    return modelsWithCapabilities.filter((m: any) => !m.isEmbeddingModel);
   } catch (e) {
     // Ollama not running or not reachable
     return [];
@@ -403,6 +435,12 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     return;
   }
 
+  // ANSI color codes
+  const RED = "\x1b[31m";
+  const GREEN = "\x1b[32m";
+  const RESET = "\x1b[0m";
+  const DIM = "\x1b[2m";
+
   console.log(`\nFound ${results.length} matching models:\n`);
   console.log("  Model                          Provider    Pricing     Context  Score");
   console.log("  " + "─".repeat(80));
@@ -440,8 +478,17 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       const context = contextLen > 0 ? `${Math.round(contextLen/1000)}K` : "N/A";
       const contextPadded = context.padEnd(7);
 
-      console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
+      // Color code local models based on tool support
+      if (model.isLocal && model.supportsTools === false) {
+        console.log(`  ${RED}${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}% ✗ no tools${RESET}`);
+      } else if (model.isLocal && model.supportsTools === true) {
+        console.log(`  ${GREEN}${modelIdPadded}${RESET} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
+      } else {
+        console.log(`  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`);
+      }
   }
+  console.log("");
+  console.log(`${DIM}Local models: ${RED}red${RESET}${DIM} = no tool support (incompatible), ${GREEN}green${RESET}${DIM} = compatible${RESET}`);
   console.log("");
   console.log("Use a model: claudish --model <model-id>");
   console.log("Local models: claudish --model ollama/<model-name>");
@@ -516,24 +563,40 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     return;
   }
 
+  // ANSI color codes
+  const RED = "\x1b[31m";
+  const GREEN = "\x1b[32m";
+  const RESET = "\x1b[0m";
+  const DIM = "\x1b[2m";
+
   // Print local Ollama models first if available
   if (ollamaModels.length > 0) {
-    console.log(`\n🏠 LOCAL OLLAMA MODELS (${ollamaModels.length} installed):\n`);
-    console.log("  " + "─".repeat(70));
+    const toolCapableCount = ollamaModels.filter((m: any) => m.supportsTools).length;
+    console.log(`\n🏠 LOCAL OLLAMA MODELS (${ollamaModels.length} installed, ${toolCapableCount} with tool support):\n`);
+    console.log("    Model                                     Size         Params    Tools");
+    console.log("  " + "─".repeat(76));
 
     for (const model of ollamaModels) {
-      const shortId = model.name;
-      const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
-      const modelIdPadded = modelId.padEnd(42);
+      const fullId = model.id; // Already has ollama/ prefix
+      const modelId = fullId.length > 35 ? fullId.substring(0, 32) + "..." : fullId;
+      const modelIdPadded = modelId.padEnd(38);
       const size = model.size ? `${(model.size / 1e9).toFixed(1)}GB` : "N/A";
       const sizePadded = size.padEnd(12);
       const params = model.details?.parameter_size || "N/A";
       const paramsPadded = params.padEnd(8);
 
-      console.log(`    ${modelIdPadded} ${sizePadded} ${paramsPadded}`);
+      if (model.supportsTools) {
+        console.log(`    ${modelIdPadded} ${sizePadded} ${paramsPadded}  ${GREEN}✓${RESET}`);
+      } else {
+        console.log(`    ${RED}${modelIdPadded} ${sizePadded} ${paramsPadded}  ✗ no tools${RESET}`);
+      }
     }
     console.log("");
+    console.log(`  ${GREEN}✓${RESET} = Compatible with Claude Code (supports tool calling)`);
+    console.log(`  ${RED}✗${RESET} = Not compatible ${DIM}(Claude Code requires tool support)${RESET}`);
+    console.log("");
     console.log("  Use: claudish --model ollama/<model-name>");
+    console.log("  Pull a compatible model: ollama pull llama3.2");
   } else {
     console.log("\n🏠 LOCAL OLLAMA: Not running or no models installed");
     console.log("   Start Ollama: ollama serve");

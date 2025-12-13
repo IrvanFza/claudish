@@ -42,6 +42,7 @@ process.stdin.on('end', () => {
 
     let ctx = 100, cost = 0;
     const model = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
+    const isLocal = process.env.CLAUDISH_IS_LOCAL === 'true';
 
     try {
       const tokens = JSON.parse(fs.readFileSync('${escapedTokenPath}', 'utf-8'));
@@ -54,8 +55,8 @@ process.stdin.on('end', () => {
       } catch {}
     }
 
-    const costStr = cost.toFixed(3);
-    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}$\${costStr}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
+    const costDisplay = isLocal ? 'LOCAL' : ('$' + cost.toFixed(3));
+    console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${model}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctx}%\${RESET}\`);
   } catch (e) {
     console.log('claudish');
   }
@@ -96,7 +97,7 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";
 
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null) && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && [ -z "$COST" ] && COST="0" || true && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}\\$%.3f${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST" "$CTX"`;
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null) && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi; else COST=$(echo "$JSON" | grep -o '"total_cost_usd":[0-9.]*' | cut -d: -f2); fi && [ -z "$COST" ] && COST="0" || true && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s%%${RESET}\\n" "$DIR" "$CLAUDISH_ACTIVE_MODEL_NAME" "$COST_DISPLAY" "$CTX"`;
   }
 
   const settings = {
@@ -173,6 +174,16 @@ export async function runClaudeWithProxy(
     }
   }
 
+  // Check if this is a local model (ollama/, lmstudio/, vllm/, or http:// URL)
+  const isLocalModel = modelId.startsWith("ollama/") ||
+    modelId.startsWith("ollama:") ||
+    modelId.startsWith("lmstudio/") ||
+    modelId.startsWith("lmstudio:") ||
+    modelId.startsWith("vllm/") ||
+    modelId.startsWith("vllm:") ||
+    modelId.startsWith("http://") ||
+    modelId.startsWith("https://");
+
   // Environment variables for Claude Code
   const env: Record<string, string> = {
     ...process.env,
@@ -180,6 +191,8 @@ export async function runClaudeWithProxy(
     ANTHROPIC_BASE_URL: proxyUrl,
     // Set active model ID for status line (actual OpenRouter model ID)
     [ENV.CLAUDISH_ACTIVE_MODEL_NAME]: modelId,
+    // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
+    CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
     // Set Claude Code standard model environment variables
     // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
     // since we're proxying everything through OpenRouter
