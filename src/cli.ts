@@ -723,24 +723,23 @@ async function updateModelsFromOpenRouter(): Promise<void> {
   try {
     // Top Weekly Programming Models (manually verified from the website)
     // Source: https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly
-    // Last verified: 2025-11-19
+    // Last verified: 2026-01-05
     //
     // This list represents the EXACT ranking shown on OpenRouter's website.
     // The website is client-side rendered (React), so we can't scrape it with HTTP.
     // The API doesn't expose the "top-weekly" ranking, so we maintain this manually.
     const topWeeklyProgrammingModels = [
-      "google/gemini-3-pro-preview",      // #0: Google Gemini 3 Pro Preview (New!)
-      "openai/gpt-5.1-codex",             // #0: OpenAI Codex 5.1 (New!)
-      "x-ai/grok-code-fast-1",            // #1: xAI Grok Code Fast 1
-      "anthropic/claude-sonnet-4.5",      // #2: Anthropic Claude Sonnet 4.5
-      "google/gemini-2.5-flash",          // #3: Google Gemini 2.5 Flash
-      "minimax/minimax-m2",               // #4: MiniMax M2
-      "anthropic/claude-sonnet-4",        // #5: Anthropic Claude Sonnet 4
-      "z-ai/glm-4.6",                     // #6: Z.AI GLM 4.6
-      "anthropic/claude-haiku-4.5",       // #7: Anthropic Claude Haiku 4.5
-      "openai/gpt-5",                     // #8: OpenAI GPT-5
-      "qwen/qwen3-vl-235b-a22b-instruct", // #9: Qwen3 VL 235B
-      "openrouter/polaris-alpha",         // #10: Polaris Alpha (OpenRouter experimental)
+      "x-ai/grok-code-fast-1",              // #1: xAI Grok Code Fast 1
+      "minimax/minimax-m2.1",               // #2: MiniMax M2.1 (Updated)
+      "z-ai/glm-4.7",                       // #3: Z.AI GLM 4.7 (Updated)
+      "google/gemini-3-pro-preview",        // #4: Google Gemini 3 Pro Preview
+      "openai/gpt-5.2",                     // #5: OpenAI GPT-5.2 (Updated)
+      "moonshotai/kimi-k2-thinking",        // #6: MoonShot Kimi K2 Thinking (New!)
+      "deepseek/deepseek-v3.2",             // #7: DeepSeek V3.2 (New!)
+      "qwen/qwen3-vl-235b-a22b-thinking",   // #8: Qwen3 VL 235B Thinking (Updated)
+      "anthropic/claude-sonnet-4.5",        // #9: Anthropic Claude Sonnet 4.5
+      "anthropic/claude-sonnet-4",          // #10: Anthropic Claude Sonnet 4
+      "anthropic/claude-haiku-4.5",         // #11: Anthropic Claude Haiku 4.5
     ];
 
     // Fetch model metadata from OpenRouter API
