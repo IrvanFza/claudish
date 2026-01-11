@@ -266,18 +266,65 @@ export class OpenAIHandler implements ModelHandler {
       stream: true,
     });
 
-    // Make API call
+    // Make API call with timeout
     const endpoint = this.getApiEndpoint();
     log(`[OpenAIHandler] Calling API: ${endpoint}`);
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(openAIPayload),
-    });
+    // Use AbortController for timeout (30 seconds for connection + response)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(openAIPayload),
+        signal: controller.signal,
+      });
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      // Provide helpful error message for common issues
+      if (fetchError.name === "AbortError") {
+        log(`[OpenAIHandler] Request timed out after 30s`);
+        return c.json(
+          {
+            error: {
+              type: "timeout_error",
+              message: "Request to OpenAI API timed out. Check your network connection to api.openai.com",
+            },
+          },
+          504
+        );
+      }
+      if (fetchError.cause?.code === "UND_ERR_CONNECT_TIMEOUT") {
+        log(`[OpenAIHandler] Connection timeout: ${fetchError.message}`);
+        return c.json(
+          {
+            error: {
+              type: "connection_error",
+              message: `Cannot connect to OpenAI API (api.openai.com). This may be due to: network/firewall blocking, VPN interference, or regional restrictions. Error: ${fetchError.cause?.code}`,
+            },
+          },
+          503
+        );
+      }
+      log(`[OpenAIHandler] Fetch error: ${fetchError.message}`);
+      return c.json(
+        {
+          error: {
+            type: "network_error",
+            message: `Failed to connect to OpenAI API: ${fetchError.message}`,
+          },
+        },
+        503
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     log(`[OpenAIHandler] Response status: ${response.status}`);
 

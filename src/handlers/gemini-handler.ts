@@ -238,49 +238,116 @@ export class GeminiHandler implements ModelHandler {
   }
 
   /**
-   * Convert JSON Schema to Gemini's schema format
+   * Normalize type field - Gemini requires single string type, not arrays
+   * JSON Schema allows: type: ["string", "null"] but Gemini needs: type: "string"
    */
-  private convertJsonSchemaToGemini(schema: any): any {
-    if (!schema) return {};
+  private normalizeType(type: any): string {
+    if (!type) return "string";
 
-    // Clone and modify schema for Gemini compatibility
-    const geminiSchema: any = {
-      type: schema.type || "object",
-    };
-
-    if (schema.properties) {
-      geminiSchema.properties = {};
-      for (const [key, prop] of Object.entries(schema.properties)) {
-        geminiSchema.properties[key] = this.convertPropertyToGemini(prop as any);
-      }
+    // Handle array types (e.g., ["string", "null"])
+    if (Array.isArray(type)) {
+      // Filter out "null" and take the first non-null type
+      const nonNullTypes = type.filter((t: string) => t !== "null");
+      return nonNullTypes[0] || "string";
     }
 
-    if (schema.required) {
-      geminiSchema.required = schema.required;
-    }
-
-    return geminiSchema;
+    return type;
   }
 
   /**
-   * Convert a single property to Gemini format
+   * Convert JSON Schema to Gemini's schema format
+   * Gemini uses a strict subset of OpenAPI 3.0.3 schema
    */
-  private convertPropertyToGemini(prop: any): any {
-    const result: any = {
-      type: prop.type || "string",
-    };
+  private convertJsonSchemaToGemini(schema: any): any {
+    if (!schema) return { type: "object" };
 
-    if (prop.description) result.description = prop.description;
-    if (prop.enum) result.enum = prop.enum;
-    if (prop.items) result.items = this.convertPropertyToGemini(prop.items);
-    if (prop.properties) {
+    // Deep clone to avoid mutation
+    return this.sanitizeSchemaForGemini(schema);
+  }
+
+  /**
+   * Recursively sanitize schema for Gemini API compatibility
+   *
+   * Gemini's API is strict about schema format:
+   * - type must be a single string, not an array
+   * - No additionalProperties, $schema, $ref, $id, $defs, definitions
+   * - No anyOf, oneOf, allOf (complex unions not supported)
+   * - No format field (uri, date-time, etc.)
+   * - No default, const, examples
+   * - Properties inside objects must be sanitized recursively
+   */
+  private sanitizeSchemaForGemini(schema: any): any {
+    if (!schema || typeof schema !== "object") {
+      return schema;
+    }
+
+    // Handle arrays (shouldn't be at top level, but handle anyway)
+    if (Array.isArray(schema)) {
+      return schema.map((item) => this.sanitizeSchemaForGemini(item));
+    }
+
+    const result: any = {};
+
+    // Normalize and set type (MUST be single string)
+    const normalizedType = this.normalizeType(schema.type);
+    result.type = normalizedType;
+
+    // Copy allowed properties
+    if (schema.description && typeof schema.description === "string") {
+      result.description = schema.description;
+    }
+
+    // Handle enum (must be array of strings/numbers)
+    if (Array.isArray(schema.enum)) {
+      result.enum = schema.enum.filter(
+        (v: any) => typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+      );
+    }
+
+    // Handle required array
+    if (Array.isArray(schema.required)) {
+      result.required = schema.required.filter((r: any) => typeof r === "string");
+    }
+
+    // Handle properties (for objects)
+    if (schema.properties && typeof schema.properties === "object") {
       result.properties = {};
-      for (const [k, v] of Object.entries(prop.properties)) {
-        result.properties[k] = this.convertPropertyToGemini(v as any);
+      for (const [key, value] of Object.entries(schema.properties)) {
+        if (value && typeof value === "object") {
+          result.properties[key] = this.sanitizeSchemaForGemini(value);
+        }
       }
     }
 
+    // Handle items (for arrays)
+    if (schema.items) {
+      if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
+        result.items = this.sanitizeSchemaForGemini(schema.items);
+      } else if (Array.isArray(schema.items)) {
+        // Tuple validation - take first item's schema
+        result.items = this.sanitizeSchemaForGemini(schema.items[0]);
+      }
+    }
+
+    // Handle nullable - Gemini doesn't support nullable directly
+    // We just use the base type (already handled by normalizeType)
+
+    // IMPORTANT: Do NOT copy these unsupported fields:
+    // - additionalProperties (causes "Proto field is not repeating" error)
+    // - $schema, $ref, $id, $defs, definitions
+    // - anyOf, oneOf, allOf (complex unions)
+    // - format (uri, date-time, etc.)
+    // - default, const, examples
+    // - minimum, maximum, minLength, maxLength, pattern (validation constraints)
+
     return result;
+  }
+
+  /**
+   * Convert a single property to Gemini format (alias for backward compatibility)
+   */
+  private convertPropertyToGemini(prop: any): any {
+    return this.sanitizeSchemaForGemini(prop);
   }
 
   /**
@@ -650,18 +717,66 @@ export class GeminiHandler implements ModelHandler {
       stream: true,
     });
 
-    // Make API call
+    // Make API call with timeout
     const endpoint = this.getApiEndpoint();
     log(`[GeminiHandler] Calling API: ${endpoint}`);
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": this.apiKey,
-      },
-      body: JSON.stringify(geminiPayload),
-    });
+    // Use AbortController for timeout (30 seconds for connection + response)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": this.apiKey,
+        },
+        body: JSON.stringify(geminiPayload),
+        signal: controller.signal,
+      });
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      // Provide helpful error message for common issues
+      if (fetchError.name === "AbortError") {
+        log(`[GeminiHandler] Request timed out after 30s`);
+        return c.json(
+          {
+            error: {
+              type: "timeout_error",
+              message:
+                "Request to Gemini API timed out. Check your network connection to generativelanguage.googleapis.com",
+            },
+          },
+          504
+        );
+      }
+      if (fetchError.cause?.code === "UND_ERR_CONNECT_TIMEOUT") {
+        log(`[GeminiHandler] Connection timeout: ${fetchError.message}`);
+        return c.json(
+          {
+            error: {
+              type: "connection_error",
+              message: `Cannot connect to Gemini API (generativelanguage.googleapis.com). This may be due to: network/firewall blocking, VPN interference, or regional restrictions. Error: ${fetchError.cause?.code}`,
+            },
+          },
+          503
+        );
+      }
+      log(`[GeminiHandler] Fetch error: ${fetchError.message}`);
+      return c.json(
+        {
+          error: {
+            type: "network_error",
+            message: `Failed to connect to Gemini API: ${fetchError.message}`,
+          },
+        },
+        503
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     log(`[GeminiHandler] Response status: ${response.status}`);
 
