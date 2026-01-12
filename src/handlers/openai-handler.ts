@@ -166,6 +166,20 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
+   * Check if model uses max_completion_tokens instead of max_tokens
+   * Newer OpenAI models (GPT-5.x, o1, o3) require this parameter
+   */
+  private usesMaxCompletionTokens(): boolean {
+    const model = this.modelName.toLowerCase();
+    return (
+      model.includes("gpt-5") ||
+      model.includes("o1") ||
+      model.includes("o3") ||
+      model.includes("o4")
+    );
+  }
+
+  /**
    * Build the OpenAI API request payload
    */
   private buildOpenAIPayload(claudeRequest: any, messages: any[], tools: any[]): any {
@@ -174,9 +188,16 @@ export class OpenAIHandler implements ModelHandler {
       messages,
       temperature: claudeRequest.temperature ?? 1,
       stream: true,
-      max_tokens: claudeRequest.max_tokens,
       stream_options: { include_usage: true },
     };
+
+    // Use max_completion_tokens for newer models (GPT-5.x, o1, o3, o4)
+    // Older models use max_tokens
+    if (this.usesMaxCompletionTokens()) {
+      payload.max_completion_tokens = claudeRequest.max_tokens;
+    } else {
+      payload.max_tokens = claudeRequest.max_tokens;
+    }
 
     if (tools.length > 0) {
       payload.tools = tools;
