@@ -442,6 +442,7 @@ export class OpenAIHandler implements ModelHandler {
     const stream = new ReadableStream({
       start: async (controller) => {
         // Send initial message_start event
+        // Use placeholder for input_tokens since Responses API only reports usage at the end
         const messageStart = {
           type: "message_start",
           message: {
@@ -450,7 +451,9 @@ export class OpenAIHandler implements ModelHandler {
             role: "assistant",
             content: [],
             model: this.modelName,
-            usage: { input_tokens: 0, output_tokens: 0 },
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 100, output_tokens: 1 },
           },
         };
         controller.enqueue(
@@ -482,6 +485,14 @@ export class OpenAIHandler implements ModelHandler {
                 // Log event types for debugging (only in debug mode)
                 if (getLogLevel() === "debug" && event.type) {
                   log(`[OpenAIHandler] Responses event: ${event.type}`);
+                  // Log full event for completed/done to debug token tracking
+                  if (
+                    event.type === "response.completed" ||
+                    event.type === "response.done" ||
+                    event.type === "response.created"
+                  ) {
+                    log(`[OpenAIHandler] Event data: ${JSON.stringify(event).slice(0, 500)}`);
+                  }
                 }
 
                 // Handle different Responses API events
@@ -618,11 +629,11 @@ export class OpenAIHandler implements ModelHandler {
           // Determine stop reason
           const stopReason = hasToolUse ? "tool_use" : "end_turn";
 
-          // Send message_delta with usage
+          // Send message_delta with usage (include input_tokens for clients that read it here)
           const messageDelta = {
             type: "message_delta",
             delta: { stop_reason: stopReason, stop_sequence: null },
-            usage: { output_tokens: outputTokens },
+            usage: { input_tokens: inputTokens, output_tokens: outputTokens },
           };
           controller.enqueue(
             encoder.encode(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`)
