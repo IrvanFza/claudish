@@ -274,37 +274,40 @@ export class OpenAIHandler implements ModelHandler {
       }
 
       // Handle assistant messages with tool_calls
+      // In Responses API, function_call is a TOP-LEVEL item, NOT a content block type
       if (msg.role === "assistant" && msg.tool_calls) {
-        const content: any[] = [];
-
-        // Add any text content first
+        // Add any text content as a message first
         if (msg.content) {
           const textContent =
             typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
           if (textContent) {
-            content.push({ type: "output_text", text: textContent });
-          }
-        }
-
-        // Add function calls with call_id (not id)
-        for (const toolCall of msg.tool_calls) {
-          if (toolCall.type === "function") {
-            content.push({
-              type: "function_call",
-              call_id: toolCall.id,
-              name: toolCall.function.name,
-              arguments: toolCall.function.arguments,
+            result.push({
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: textContent }],
             });
           }
         }
 
-        result.push({ role: "assistant", content });
+        // Add function calls as TOP-LEVEL items (NOT inside message content)
+        for (const toolCall of msg.tool_calls) {
+          if (toolCall.type === "function") {
+            result.push({
+              type: "function_call",
+              call_id: toolCall.id,
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments,
+              status: "completed",
+            });
+          }
+        }
         continue;
       }
 
       // Handle string content (simple messages)
       if (typeof msg.content === "string") {
         result.push({
+          type: "message",
           role: msg.role,
           content: [
             {
@@ -346,14 +349,19 @@ export class OpenAIHandler implements ModelHandler {
         });
 
         result.push({
+          type: "message",
           role: msg.role,
           content: convertedContent,
         });
         continue;
       }
 
-      // Fallback for any other format
-      result.push(msg);
+      // Fallback for any other format - add type: "message" if it has role
+      if (msg.role) {
+        result.push({ type: "message", ...msg });
+      } else {
+        result.push(msg);
+      }
     }
 
     return result;

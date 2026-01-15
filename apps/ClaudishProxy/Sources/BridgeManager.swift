@@ -62,8 +62,13 @@ class BridgeManager: ObservableObject {
         Task {
             await startBridge()
 
-            // Wait for bridge to connect, then check auto-start preference
-            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            // Poll bridge connection state with timeout (max 3 seconds)
+            var attempts = 0
+            while !bridgeConnected && attempts < 30 {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                attempts += 1
+            }
+
             await checkAutoStartPreference()
         }
     }
@@ -227,7 +232,9 @@ class BridgeManager: ObservableObject {
     }
 
     /// Stop the bridge process
-    func shutdown() async {
+    /// Returns true if cleanup was successful, false if manual intervention is needed
+    @discardableResult
+    func shutdown() async -> Bool {
         stopStatusPolling()
 
         if isProxyEnabled {
@@ -235,13 +242,15 @@ class BridgeManager: ObservableObject {
         }
 
         // Always clean up system proxy on shutdown, even if proxy wasn't "officially" enabled
-        await unconfigureSystemProxy()
+        let cleanupSuccess = await unconfigureSystemProxy()
 
         bridgeProcess?.terminate()
         bridgeProcess = nil
         bridgePort = nil
         bridgeToken = nil
         bridgeConnected = false
+
+        return cleanupSuccess
     }
 
     // MARK: - HTTP API
@@ -472,6 +481,15 @@ class BridgeManager: ObservableObject {
             return
         }
 
+        // Validate network service name to prevent command injection
+        guard networkService.range(of: "^[a-zA-Z0-9 -]+$", options: .regularExpression) != nil else {
+            print("[BridgeManager] Invalid network service name: \(networkService)")
+            await MainActor.run {
+                errorMessage = "Invalid network service name detected"
+            }
+            return
+        }
+
         let pacURL = "http://127.0.0.1:\(port)/proxy.pac"
         print("[BridgeManager] Configuring system proxy for \(networkService) with PAC: \(pacURL)")
 
@@ -507,10 +525,21 @@ class BridgeManager: ObservableObject {
     }
 
     /// Remove system proxy configuration
-    private func unconfigureSystemProxy() async {
+    /// Returns true if cleanup was successful, false if manual intervention is needed
+    @discardableResult
+    private func unconfigureSystemProxy() async -> Bool {
         guard let networkService = await getActiveNetworkService() else {
             print("[BridgeManager] Cannot unconfigure proxy: no active network service")
-            return
+            return false
+        }
+
+        // Validate network service name to prevent command injection
+        guard networkService.range(of: "^[a-zA-Z0-9 -]+$", options: .regularExpression) != nil else {
+            print("[BridgeManager] Invalid network service name: \(networkService)")
+            await MainActor.run {
+                errorMessage = "Invalid network service name detected during cleanup"
+            }
+            return false
         }
 
         print("[BridgeManager] Disabling system proxy for \(networkService)")
@@ -532,11 +561,20 @@ class BridgeManager: ObservableObject {
 
             if process.terminationStatus == 0 {
                 print("[BridgeManager] System proxy disabled successfully")
+                return true
             } else {
                 print("[BridgeManager] Failed to disable system proxy: \(output)")
+                await MainActor.run {
+                    errorMessage = "Failed to disable system proxy. You may need to manually disable it in System Settings > Network."
+                }
+                return false
             }
         } catch {
             print("[BridgeManager] Error disabling system proxy: \(error)")
+            await MainActor.run {
+                errorMessage = "Error disabling system proxy: \(error.localizedDescription). Please check System Settings > Network."
+            }
+            return false
         }
     }
 }
@@ -548,6 +586,7 @@ enum BridgeError: Error, LocalizedError {
     case unauthorized
     case invalidResponse
     case apiError(status: Int)
+    case invalidNetworkService
 
     var errorDescription: String? {
         switch self {
@@ -559,6 +598,8 @@ enum BridgeError: Error, LocalizedError {
             return "Invalid response from bridge"
         case .apiError(let status):
             return "API error: \(status)"
+        case .invalidNetworkService:
+            return "Invalid network service name"
         }
     }
 }

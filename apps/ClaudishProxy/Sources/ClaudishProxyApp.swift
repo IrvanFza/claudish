@@ -52,6 +52,7 @@ struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
     @Binding var showSettings: Bool
     @State private var showErrorAlert = false
+    @State private var showCleanupAlert = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -159,7 +160,14 @@ struct MenuBarContent: View {
 
             Button("Quit Claudish Proxy") {
                 Task {
-                    await bridgeManager.shutdown()
+                    let cleanupSuccess = await bridgeManager.shutdown()
+                    if !cleanupSuccess {
+                        await MainActor.run {
+                            showCleanupAlert = true
+                        }
+                        // Brief delay to show alert before quitting
+                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                    }
                     NSApplication.shared.terminate(nil)
                 }
             }
@@ -173,6 +181,18 @@ struct MenuBarContent: View {
             }
         } message: {
             Text(bridgeManager.errorMessage ?? "Unknown error")
+        }
+        .alert("Proxy Cleanup Failed", isPresented: $showCleanupAlert) {
+            Button("Open Network Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.network") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            Button("Quit Anyway", role: .destructive) {
+                // Alert will auto-dismiss and app will quit
+            }
+        } message: {
+            Text("Failed to disable system proxy. Your internet may not work until you manually disable the proxy in System Settings > Network.")
         }
     }
 }
