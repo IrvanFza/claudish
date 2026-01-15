@@ -90,8 +90,12 @@ export class OpenAIHandler implements ModelHandler {
 
   /**
    * Get the API endpoint URL
+   * Codex models use /v1/responses, others use /v1/chat/completions
    */
   private getApiEndpoint(): string {
+    if (this.isCodexModel()) {
+      return `${this.provider.baseUrl}/v1/responses`;
+    }
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
   }
 
@@ -166,6 +170,15 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
+   * Check if model is a Codex model that requires the Responses API
+   * Codex models use /v1/responses instead of /v1/chat/completions
+   */
+  private isCodexModel(): boolean {
+    const model = this.modelName.toLowerCase();
+    return model.includes("codex");
+  }
+
+  /**
    * Check if model uses max_completion_tokens instead of max_tokens
    * Newer OpenAI models (GPT-5.x, o1, o3) require this parameter
    */
@@ -233,6 +246,183 @@ export class OpenAIHandler implements ModelHandler {
   }
 
   /**
+   * Build the OpenAI Responses API payload for Codex models
+   * Responses API uses 'input' instead of 'messages'
+   */
+  private buildResponsesPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+    // Convert messages array to input format
+    // The Responses API accepts messages in a compatible format
+    const payload: any = {
+      model: this.modelName,
+      input: messages, // Responses API accepts messages array as input
+      stream: true,
+    };
+
+    // Add system instructions if present
+    if (claudeRequest.system) {
+      payload.instructions = claudeRequest.system;
+    }
+
+    // Add max_output_tokens for Responses API
+    if (claudeRequest.max_tokens) {
+      payload.max_output_tokens = claudeRequest.max_tokens;
+    }
+
+    // Convert tools to Responses API format (flatter structure)
+    if (tools.length > 0) {
+      payload.tools = tools.map((tool: any) => {
+        if (tool.type === "function" && tool.function) {
+          // Flatten function tools for Responses API
+          return {
+            type: "function",
+            name: tool.function.name,
+            description: tool.function.description,
+            parameters: tool.function.parameters,
+          };
+        }
+        return tool;
+      });
+    }
+
+    return payload;
+  }
+
+  /**
+   * Handle streaming response from Responses API
+   * Converts Responses API events to Claude-compatible format
+   */
+  private async handleResponsesStreaming(
+    c: Context,
+    response: Response,
+    _adapter: any,
+    _claudeRequest: any
+  ): Promise<Response> {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return c.json({ error: "No response body" }, 500);
+    }
+
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    let buffer = "";
+    let contentIndex = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    const stream = new ReadableStream({
+      start: async (controller) => {
+        // Send initial message_start event
+        const messageStart = {
+          type: "message_start",
+          message: {
+            id: `msg_${Date.now()}`,
+            type: "message",
+            role: "assistant",
+            content: [],
+            model: this.modelName,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        };
+        controller.enqueue(encoder.encode(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`));
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                // Store event type for next data line
+                continue;
+              }
+
+              if (!line.startsWith("data: ")) continue;
+              const data = line.slice(6);
+              if (data === "[DONE]") continue;
+
+              try {
+                const event = JSON.parse(data);
+
+                // Handle different Responses API events
+                if (event.type === "response.output_text.delta") {
+                  // Convert to Claude content_block_delta
+                  if (contentIndex === 0) {
+                    // Send content_block_start first
+                    const blockStart = {
+                      type: "content_block_start",
+                      index: 0,
+                      content_block: { type: "text", text: "" },
+                    };
+                    controller.enqueue(encoder.encode(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`));
+                    contentIndex = 1;
+                  }
+
+                  const delta = {
+                    type: "content_block_delta",
+                    index: 0,
+                    delta: { type: "text_delta", text: event.delta || "" },
+                  };
+                  controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`));
+                } else if (event.type === "response.completed") {
+                  // Extract usage from completed event
+                  if (event.response?.usage) {
+                    inputTokens = event.response.usage.input_tokens || 0;
+                    outputTokens = event.response.usage.output_tokens || 0;
+                  }
+                } else if (event.type === "response.function_call_arguments.delta") {
+                  // Handle tool call streaming
+                  // TODO: Implement tool call conversion
+                }
+              } catch (parseError) {
+                log(`[OpenAIHandler] Error parsing Responses event: ${parseError}`);
+              }
+            }
+          }
+
+          // Send content_block_stop
+          if (contentIndex > 0) {
+            const blockStop = { type: "content_block_stop", index: 0 };
+            controller.enqueue(encoder.encode(`event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`));
+          }
+
+          // Send message_delta with usage
+          const messageDelta = {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: { output_tokens: outputTokens },
+          };
+          controller.enqueue(encoder.encode(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`));
+
+          // Send message_stop
+          const messageStop = { type: "message_stop" };
+          controller.enqueue(encoder.encode(`event: message_stop\ndata: ${JSON.stringify(messageStop)}\n\n`));
+
+          // Update token tracking
+          this.updateTokenTracking(inputTokens, outputTokens);
+
+          controller.close();
+        } catch (error) {
+          log(`[OpenAIHandler] Responses streaming error: ${error}`);
+          controller.error(error);
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
+  /**
    * Main request handler
    */
   async handle(c: Context, payload: any): Promise<Response> {
@@ -271,13 +461,16 @@ export class OpenAIHandler implements ModelHandler {
       }
     }
 
-    // Build OpenAI request
-    const openAIPayload = this.buildOpenAIPayload(claudeRequest, messages, tools);
+    // Build request payload - use Responses API format for Codex models
+    const isCodex = this.isCodexModel();
+    const apiPayload = isCodex
+      ? this.buildResponsesPayload(claudeRequest, messages, tools)
+      : this.buildOpenAIPayload(claudeRequest, messages, tools);
 
     // Get adapter and prepare request
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
-    adapter.prepareRequest(openAIPayload, claudeRequest);
+    adapter.prepareRequest(apiPayload, claudeRequest);
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -303,7 +496,7 @@ export class OpenAIHandler implements ModelHandler {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify(openAIPayload),
+        body: JSON.stringify(apiPayload),
         signal: controller.signal,
       });
     } catch (fetchError: any) {
@@ -359,7 +552,13 @@ export class OpenAIHandler implements ModelHandler {
       c.header("X-Dropped-Params", droppedParams.join(", "));
     }
 
-    // Use the shared streaming handler since OpenAI uses the same format
+    // Use different streaming handler for Codex (Responses API) vs Chat Completions
+    if (isCodex) {
+      log(`[OpenAIHandler] Using Responses API streaming handler for Codex model`);
+      return this.handleResponsesStreaming(c, response, adapter, claudeRequest);
+    }
+
+    // Use the shared streaming handler for Chat Completions API
     return createStreamingResponseHandler(
       c,
       response,

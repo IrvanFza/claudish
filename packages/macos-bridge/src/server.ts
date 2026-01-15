@@ -83,6 +83,21 @@ export class BridgeServer {
 			return c.json(response);
 		});
 
+		/**
+		 * GET /proxy.pac - Proxy Auto-Config file (public, no auth required)
+		 */
+		this.app.get('/proxy.pac', (c) => {
+			const port = this.proxyPort || 0;
+			const pacContent = `function FindProxyForURL(url, host) {
+  if (host === "api.anthropic.com") {
+    return "PROXY 127.0.0.1:${port}";
+  }
+  return "DIRECT";
+}`;
+			c.header('Content-Type', 'application/x-ns-proxy-autoconfig');
+			return c.text(pacContent);
+		});
+
 		// ============================================
 		// PROTECTED ENDPOINTS (require Bearer token)
 		// ============================================

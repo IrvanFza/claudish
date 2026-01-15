@@ -38,6 +38,12 @@ struct ClaudishProxyApp: App {
         Settings {
             SettingsView(bridgeManager: bridgeManager)
         }
+
+        // Logs window
+        Window("Request Logs", id: "logs") {
+            LogsView(bridgeManager: bridgeManager)
+        }
+        .defaultSize(width: 800, height: 600)
     }
 }
 
@@ -45,6 +51,7 @@ struct ClaudishProxyApp: App {
 struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
     @Binding var showSettings: Bool
+    @State private var showErrorAlert = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -57,6 +64,23 @@ struct MenuBarContent: View {
                     .font(.headline)
             }
             .padding(.bottom, 4)
+
+            // Error message banner
+            if let errorMessage = bridgeManager.errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(errorMessage)
+                        .font(.caption)
+                        .lineLimit(2)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(4)
+                .onTapGesture {
+                    showErrorAlert = true
+                }
+            }
 
             Divider()
 
@@ -81,6 +105,17 @@ struct MenuBarContent: View {
                         Spacer()
                         Text(lastApp)
                             .lineLimit(1)
+                    }
+                    .font(.caption)
+                }
+
+                if let lastModel = bridgeManager.lastTargetModel {
+                    HStack {
+                        Text("Last Model:")
+                        Spacer()
+                        Text(lastModel)
+                            .lineLimit(1)
+                            .foregroundColor(.blue)
                     }
                     .font(.caption)
                 }
@@ -115,7 +150,9 @@ struct MenuBarContent: View {
             .keyboardShortcut(",", modifiers: .command)
 
             Button("View Logs...") {
-                // TODO: Open logs window
+                if let url = URL(string: "claudishproxy://logs") {
+                    NSWorkspace.shared.open(url)
+                }
             }
 
             Divider()
@@ -130,5 +167,12 @@ struct MenuBarContent: View {
         }
         .padding()
         .frame(width: 250)
+        .alert("Error", isPresented: $showErrorAlert) {
+            Button("OK") {
+                bridgeManager.errorMessage = nil
+            }
+        } message: {
+            Text(bridgeManager.errorMessage ?? "Unknown error")
+        }
     }
 }
