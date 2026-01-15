@@ -45,3 +45,13 @@ package-lock.json
 __tests__/
 *.jinja
 logs/
+
+# AI session files
+ai-docs/
+
+# Build artifacts
+*.tsbuildinfo
+
+# Temp dev files
+claude
+claude_desktop.flow
