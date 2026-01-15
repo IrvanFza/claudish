@@ -133,14 +133,21 @@ export class OpenAIHandler implements ModelHandler {
 
   /**
    * Update token tracking
+   * Note: inputTokens is the FULL context each request (not incremental)
+   * We only charge for the DELTA (new tokens) to avoid overcounting
    */
   private updateTokenTracking(inputTokens: number, outputTokens: number): void {
+    // Calculate incremental input tokens (delta from previous request)
+    const incrementalInputTokens = Math.max(0, inputTokens - this.sessionInputTokens);
+
+    // Update session totals
     this.sessionInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
+    // Calculate cost for INCREMENTAL tokens only
     const pricing = this.getPricing();
     const cost =
-      (inputTokens / 1_000_000) * pricing.inputCostPer1M +
+      (incrementalInputTokens / 1_000_000) * pricing.inputCostPer1M +
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
