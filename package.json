@@ -1,32 +1,28 @@
 {
-  "name": "claudish",
+  "name": "claudish-monorepo",
   "version": "3.2.3",
-  "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
+  "private": true,
+  "description": "Monorepo for Claudish - Run Claude Code with any model",
   "type": "module",
-  "main": "./dist/index.js",
-  "bin": {
-    "claudish": "dist/index.js"
-  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "bun run src/index.ts",
-    "dev:mcp": "bun run src/index.ts --mcp",
-    "dev:grok": "bun run src/index.ts --interactive --model x-ai/grok-code-fast-1",
-    "dev:grok:debug": "bun run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
-    "dev:info": "bun run src/index.ts --interactive --monitor",
-    "extract-models": "bun run scripts/extract-models.ts",
-    "build": "bun run extract-models && bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
-    "build:ci": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
-    "build:binary": "bun run extract-models && bun build src/index.ts --compile --outfile claudish",
-    "build:binary:linux": "bun run extract-models && bun build src/index.ts --compile --target=bun-linux-x64 --outfile claudish-linux-x64",
-    "build:binary:mac": "bun run extract-models && bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile claudish-darwin-arm64",
-    "link": "npm link",
-    "unlink": "npm unlink -g claudish",
-    "install-global": "bun run build && npm link",
-    "kill-all": "pkill -f 'bun.*claudish' || pkill -f 'claude.*claudish-settings' || echo 'No claudish processes found'",
-    "test": "bun test ./tests/comprehensive-model-test.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "format": "biome format --write .",
+    "dev": "bun --cwd packages/cli run dev",
+    "dev:mcp": "bun --cwd packages/cli run dev:mcp",
+    "dev:grok": "bun --cwd packages/cli run dev:grok",
+    "dev:grok:debug": "bun --cwd packages/cli run dev:grok:debug",
+    "dev:info": "bun --cwd packages/cli run dev:info",
+    "dev:bridge": "bun --cwd packages/macos-bridge run dev",
+    "build": "bun run build:core && bun run build:cli && bun run build:bridge",
+    "build:core": "cd packages/core && bun run build",
+    "build:cli": "cd packages/cli && bun run build:ci",
+    "build:bridge": "cd packages/macos-bridge && bun run build",
+    "typecheck": "bun --cwd packages/core run typecheck && bun --cwd packages/cli run typecheck && bun --cwd packages/macos-bridge run typecheck",
+    "lint": "bun --cwd packages/core run lint && bun --cwd packages/cli run lint && bun --cwd packages/macos-bridge run lint",
+    "format": "bun --cwd packages/core run format && bun --cwd packages/cli run format && bun --cwd packages/macos-bridge run format",
+    "test": "bun --cwd packages/core run test && bun --cwd packages/cli run test && bun --cwd packages/macos-bridge run test",
+    "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
     "postinstall": "node scripts/postinstall.cjs"
   },
   "dependencies": {
@@ -47,22 +43,10 @@
     "jest-environment-node": "^30.2.0",
     "typescript": "^5.9.3"
   },
-  "files": ["dist/", "scripts/", "skills/", "AI_AGENT_GUIDE.md", "recommended-models.json"],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"
   },
-  "preferGlobal": true,
-  "keywords": [
-    "claude",
-    "claude-code",
-    "openrouter",
-    "proxy",
-    "cli",
-    "mcp",
-    "model-context-protocol",
-    "ai"
-  ],
   "author": "Jack Rudenko <i@madappgang.com>",
   "license": "MIT",
   "repository": {

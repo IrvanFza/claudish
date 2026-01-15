@@ -1,0 +1,35 @@
+{
+  "name": "@claudish/macos-bridge",
+  "version": "3.2.3",
+  "description": "HTTP bridge for macOS desktop app integration with Claudish proxy",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "claudish-bridge": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@claudish/core": "workspace:*",
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "latest",
+    "@types/node": "^25.0.8",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  },
+  "author": "Jack Rudenko <i@madappgang.com>",
+  "license": "MIT"
+}
