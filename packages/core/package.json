@@ -1,6 +1,6 @@
 {
   "name": "@claudish/core",
-  "version": "3.3.9",
+  "version": "3.3.10",
   "description": "Core proxy server and handler logic for Claudish",
   "type": "module",
   "main": "./dist/index.js",

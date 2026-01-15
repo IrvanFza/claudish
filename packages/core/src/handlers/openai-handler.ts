@@ -450,6 +450,7 @@ export class OpenAIHandler implements ModelHandler {
       start: async (controller) => {
         // Send initial message_start event
         // Use placeholder for input_tokens since Responses API only reports usage at the end
+        log(`[OpenAIHandler] Sending message_start with placeholder tokens`);
         const messageStart = {
           type: "message_start",
           message: {
@@ -466,6 +467,9 @@ export class OpenAIHandler implements ModelHandler {
         controller.enqueue(
           encoder.encode(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`)
         );
+
+        // Send ping after message_start (like shared handler does)
+        controller.enqueue(encoder.encode(`event: ping\ndata: {"type":"ping"}\n\n`));
 
         try {
           while (true) {
