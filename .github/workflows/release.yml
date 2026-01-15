@@ -42,11 +42,11 @@ jobs:
 
       - name: Build binary
         run: |
-          cd packages/cli
           # Inject version from tag into fallback (for compiled binaries)
           VERSION="${GITHUB_REF#refs/tags/v}"
-          sed -i.bak "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" src/cli.ts
-          bun build src/index.ts --compile --target=${{ matrix.target }} --outfile ../../${{ matrix.artifact }}
+          sed -i.bak "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" packages/cli/src/cli.ts
+          # Build from root to preserve workspace resolution
+          bun build packages/cli/src/index.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -128,11 +128,11 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build core package
-        run: cd packages/core && bun run build
-
-      - name: Build CLI package
-        run: cd packages/cli && bun run build:ci
+      - name: Build packages
+        run: |
+          # Build from root to preserve workspace resolution
+          bun run build:core
+          bun run build:cli
 
       - name: Prepare for npm publish
         run: |
