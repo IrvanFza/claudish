@@ -40,6 +40,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Build core package
+        run: bun run build:core
+
       - name: Build binary
         run: |
           # Inject version from tag into fallback (for compiled binaries)
