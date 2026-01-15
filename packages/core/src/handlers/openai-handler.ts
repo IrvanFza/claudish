@@ -248,101 +248,115 @@ export class OpenAIHandler implements ModelHandler {
   /**
    * Convert messages from Chat Completions format to Responses API format
    * Key differences:
-   * - User messages: type "text" -> "input_text"
-   * - Assistant messages: type "text" -> "output_text"
-   * - Images: type "image_url" -> "input_image"
-   * - System messages are filtered out (go to instructions field)
+   * - User text: "text" -> "input_text"
+   * - Assistant text: "text" -> "output_text"
+   * - Images: "image_url" -> "input_image" (URL as string, not object)
+   * - Tool results: "tool" role -> "function_call_output" item (top-level, not in content)
+   * - Tool calls: use "call_id" not "id"
    */
   private convertMessagesToResponsesAPI(messages: any[]): any[] {
-    return messages
-      .filter((msg) => msg.role !== "system") // System messages go to instructions
-      .map((msg) => {
-        // Handle tool role messages
-        if (msg.role === "tool") {
-          return {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `[Tool Result for ${msg.tool_call_id}]: ${typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content)}`,
-              },
-            ],
-          };
+    const result: any[] = [];
+
+    for (const msg of messages) {
+      // Skip system messages (they go to instructions field)
+      if (msg.role === "system") continue;
+
+      // Handle tool role messages -> function_call_output items
+      // These are NOT wrapped in role/content, they're top-level items
+      if (msg.role === "tool") {
+        result.push({
+          type: "function_call_output",
+          call_id: msg.tool_call_id,
+          output:
+            typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+        });
+        continue;
+      }
+
+      // Handle assistant messages with tool_calls
+      if (msg.role === "assistant" && msg.tool_calls) {
+        const content: any[] = [];
+
+        // Add any text content first
+        if (msg.content) {
+          const textContent =
+            typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+          if (textContent) {
+            content.push({ type: "output_text", text: textContent });
+          }
         }
 
-        // Handle assistant messages with tool_calls
-        if (msg.role === "assistant" && msg.tool_calls) {
-          const content: any[] = [];
+        // Add function calls with call_id (not id)
+        for (const toolCall of msg.tool_calls) {
+          if (toolCall.type === "function") {
+            content.push({
+              type: "function_call",
+              call_id: toolCall.id,
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments,
+            });
+          }
+        }
 
-          // Add any text content first
-          if (msg.content) {
-            const textContent =
-              typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-            if (textContent) {
-              content.push({ type: "output_text", text: textContent });
-            }
+        result.push({ role: "assistant", content });
+        continue;
+      }
+
+      // Handle string content (simple messages)
+      if (typeof msg.content === "string") {
+        result.push({
+          role: msg.role,
+          content: [
+            {
+              type: msg.role === "user" ? "input_text" : "output_text",
+              text: msg.content,
+            },
+          ],
+        });
+        continue;
+      }
+
+      // Handle array content (structured messages)
+      if (Array.isArray(msg.content)) {
+        const convertedContent = msg.content.map((block: any) => {
+          // Convert text blocks
+          if (block.type === "text") {
+            return {
+              type: msg.role === "user" ? "input_text" : "output_text",
+              text: block.text,
+            };
           }
 
-          // Add function calls
-          for (const toolCall of msg.tool_calls) {
-            if (toolCall.type === "function") {
-              content.push({
-                type: "function_call",
-                id: toolCall.id,
-                name: toolCall.function.name,
-                arguments: toolCall.function.arguments,
-              });
-            }
+          // Convert image blocks - extract URL from nested object
+          // Chat Completions: {type: "image_url", image_url: {url: "..."}}
+          // Responses API: {type: "input_image", image_url: "..."}
+          if (block.type === "image_url") {
+            const imageUrl =
+              typeof block.image_url === "string"
+                ? block.image_url
+                : block.image_url?.url || block.image_url;
+            return {
+              type: "input_image",
+              image_url: imageUrl,
+            };
           }
 
-          return { role: "assistant", content };
-        }
+          // Keep other types as-is
+          return block;
+        });
 
-        // Handle string content (simple messages)
-        if (typeof msg.content === "string") {
-          return {
-            role: msg.role,
-            content: [
-              {
-                type: msg.role === "user" ? "input_text" : "output_text",
-                text: msg.content,
-              },
-            ],
-          };
-        }
+        result.push({
+          role: msg.role,
+          content: convertedContent,
+        });
+        continue;
+      }
 
-        // Handle array content (structured messages)
-        if (Array.isArray(msg.content)) {
-          const convertedContent = msg.content.map((block: any) => {
-            // Convert text blocks
-            if (block.type === "text") {
-              return {
-                type: msg.role === "user" ? "input_text" : "output_text",
-                text: block.text,
-              };
-            }
+      // Fallback for any other format
+      result.push(msg);
+    }
 
-            // Convert image blocks
-            if (block.type === "image_url") {
-              return {
-                type: "input_image",
-                image_url: block.image_url,
-              };
-            }
-
-            // Keep other types as-is
-            return block;
-          });
-
-          return {
-            role: msg.role,
-            content: convertedContent,
-          };
-        }
-
-        // Fallback for any other format
-        return msg;
-      });
+    return result;
   }
 
   /**
@@ -407,9 +421,15 @@ export class OpenAIHandler implements ModelHandler {
     const decoder = new TextDecoder();
 
     let buffer = "";
-    let contentIndex = 0;
+    let blockIndex = 0;
     let inputTokens = 0;
     let outputTokens = 0;
+    let hasTextContent = false;
+    let hasToolUse = false;
+
+    // Track function calls being streamed
+    const functionCalls: Map<string, { name: string; arguments: string; index: number }> =
+      new Map();
 
     const stream = new ReadableStream({
       start: async (controller) => {
@@ -425,7 +445,9 @@ export class OpenAIHandler implements ModelHandler {
             usage: { input_tokens: 0, output_tokens: 0 },
           },
         };
-        controller.enqueue(encoder.encode(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`));
+        controller.enqueue(
+          encoder.encode(`event: message_start\ndata: ${JSON.stringify(messageStart)}\n\n`)
+        );
 
         try {
           while (true) {
@@ -452,32 +474,106 @@ export class OpenAIHandler implements ModelHandler {
                 // Handle different Responses API events
                 if (event.type === "response.output_text.delta") {
                   // Convert to Claude content_block_delta
-                  if (contentIndex === 0) {
+                  if (!hasTextContent) {
                     // Send content_block_start first
                     const blockStart = {
                       type: "content_block_start",
-                      index: 0,
+                      index: blockIndex,
                       content_block: { type: "text", text: "" },
                     };
-                    controller.enqueue(encoder.encode(`event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`));
-                    contentIndex = 1;
+                    controller.enqueue(
+                      encoder.encode(
+                        `event: content_block_start\ndata: ${JSON.stringify(blockStart)}\n\n`
+                      )
+                    );
+                    hasTextContent = true;
                   }
 
                   const delta = {
                     type: "content_block_delta",
-                    index: 0,
+                    index: blockIndex,
                     delta: { type: "text_delta", text: event.delta || "" },
                   };
-                  controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`));
+                  controller.enqueue(
+                    encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+                  );
+                } else if (event.type === "response.output_item.added") {
+                  // New item added - could be function_call
+                  if (event.item?.type === "function_call") {
+                    const callId = event.item.call_id || event.item.id;
+                    const fnIndex = blockIndex + functionCalls.size + (hasTextContent ? 1 : 0);
+                    functionCalls.set(callId, {
+                      name: event.item.name || "",
+                      arguments: "",
+                      index: fnIndex,
+                    });
+
+                    // Close text block if open
+                    if (hasTextContent && !hasToolUse) {
+                      const blockStop = { type: "content_block_stop", index: blockIndex };
+                      controller.enqueue(
+                        encoder.encode(
+                          `event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`
+                        )
+                      );
+                      blockIndex++;
+                    }
+
+                    // Send tool_use block start
+                    const toolStart = {
+                      type: "content_block_start",
+                      index: fnIndex,
+                      content_block: {
+                        type: "tool_use",
+                        id: callId,
+                        name: event.item.name || "",
+                        input: {},
+                      },
+                    };
+                    controller.enqueue(
+                      encoder.encode(
+                        `event: content_block_start\ndata: ${JSON.stringify(toolStart)}\n\n`
+                      )
+                    );
+                    hasToolUse = true;
+                  }
+                } else if (event.type === "response.function_call_arguments.delta") {
+                  // Streaming function call arguments
+                  const callId = event.call_id || event.item_id;
+                  const fnCall = functionCalls.get(callId);
+                  if (fnCall) {
+                    fnCall.arguments += event.delta || "";
+
+                    // Send input_json_delta
+                    const delta = {
+                      type: "content_block_delta",
+                      index: fnCall.index,
+                      delta: { type: "input_json_delta", partial_json: event.delta || "" },
+                    };
+                    controller.enqueue(
+                      encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify(delta)}\n\n`)
+                    );
+                  }
+                } else if (event.type === "response.output_item.done") {
+                  // Item complete - close the tool_use block
+                  if (event.item?.type === "function_call") {
+                    const callId = event.item.call_id || event.item.id;
+                    const fnCall = functionCalls.get(callId);
+                    if (fnCall) {
+                      const blockStop = { type: "content_block_stop", index: fnCall.index };
+                      controller.enqueue(
+                        encoder.encode(
+                          `event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`
+                        )
+                      );
+                    }
+                  }
                 } else if (event.type === "response.completed") {
                   // Extract usage from completed event
                   if (event.response?.usage) {
                     inputTokens = event.response.usage.input_tokens || 0;
                     outputTokens = event.response.usage.output_tokens || 0;
                   }
-                } else if (event.type === "response.function_call_arguments.delta") {
-                  // Handle tool call streaming
-                  // TODO: Implement tool call conversion
                 }
               } catch (parseError) {
                 log(`[OpenAIHandler] Error parsing Responses event: ${parseError}`);
@@ -485,23 +581,32 @@ export class OpenAIHandler implements ModelHandler {
             }
           }
 
-          // Send content_block_stop
-          if (contentIndex > 0) {
-            const blockStop = { type: "content_block_stop", index: 0 };
-            controller.enqueue(encoder.encode(`event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`));
+          // Send content_block_stop for text if not already closed
+          if (hasTextContent && !hasToolUse) {
+            const blockStop = { type: "content_block_stop", index: blockIndex };
+            controller.enqueue(
+              encoder.encode(`event: content_block_stop\ndata: ${JSON.stringify(blockStop)}\n\n`)
+            );
           }
+
+          // Determine stop reason
+          const stopReason = hasToolUse ? "tool_use" : "end_turn";
 
           // Send message_delta with usage
           const messageDelta = {
             type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null },
+            delta: { stop_reason: stopReason, stop_sequence: null },
             usage: { output_tokens: outputTokens },
           };
-          controller.enqueue(encoder.encode(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`));
+          controller.enqueue(
+            encoder.encode(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`)
+          );
 
           // Send message_stop
           const messageStop = { type: "message_stop" };
-          controller.enqueue(encoder.encode(`event: message_stop\ndata: ${JSON.stringify(messageStop)}\n\n`));
+          controller.enqueue(
+            encoder.encode(`event: message_stop\ndata: ${JSON.stringify(messageStop)}\n\n`)
+          );
 
           // Update token tracking
           this.updateTokenTracking(inputTokens, outputTokens);
