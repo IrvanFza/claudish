@@ -6,10 +6,10 @@
  */
 
 import { execSync } from "node:child_process";
-import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
-import { tmpdir, homedir, platform } from "node:os";
+import { createInterface } from "node:readline";
 
 const isWindows = platform() === "win32";
 
@@ -93,7 +93,7 @@ function isCacheValid(cache: UpdateCache): boolean {
 /**
  * Clear the update cache (called after successful update)
  */
-function clearCache(): void {
+export function clearCache(): void {
   try {
     const cachePath = getCacheFilePath();
     if (existsSync(cachePath)) {
@@ -108,7 +108,7 @@ function clearCache(): void {
  * Semantic version comparison
  * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
  */
-function compareVersions(v1: string, v2: string): number {
+export function compareVersions(v1: string, v2: string): number {
   const parts1 = v1.replace(/^v/, "").split(".").map(Number);
   const parts2 = v2.replace(/^v/, "").split(".").map(Number);
 
@@ -124,7 +124,7 @@ function compareVersions(v1: string, v2: string): number {
 /**
  * Fetch latest version from npm registry
  */
-async function fetchLatestVersion(): Promise<string | null> {
+export async function fetchLatestVersion(): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
@@ -140,7 +140,7 @@ async function fetchLatestVersion(): Promise<string | null> {
       return null;
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { version?: string };
     return data.version || null;
   } catch {
     // Network error, timeout, or parsing error - silently fail
@@ -173,12 +173,11 @@ function runUpdate(): boolean {
   try {
     console.error("\n[claudish] Updating...\n");
 
-    // Use execSync with shell: true for cross-platform compatibility
+    // Use execSync with shell for cross-platform compatibility
     // Windows needs shell to find npm.cmd
-    const result = execSync("npm install -g claudish@latest", {
+    execSync("npm install -g claudish@latest", {
       stdio: "inherit",
-      encoding: "utf-8",
-      shell: true,
+      shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
     });
 
     console.error("\n[claudish] Update complete! Please restart claudish.\n");

@@ -1015,6 +1015,9 @@ PROFILE MANAGEMENT:
   claudish profile show    Show profile details (default profile or claudish profile show <name>)
   claudish profile edit    Edit a profile (interactive or claudish profile edit <name>)
 
+UPDATE:
+  claudish update          Check for updates and install latest version
+
 MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)
   --model-sonnet <model>   Model for Sonnet role (default coding)

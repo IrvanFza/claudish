@@ -20,6 +20,9 @@ if (isMcpMode) {
 } else if (firstArg === "profile") {
   // Profile management commands
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)));
+} else if (firstArg === "update") {
+  // Update command
+  import("./update-command.js").then((uc) => uc.updateCommand());
 } else {
   // CLI mode
   runCli();
