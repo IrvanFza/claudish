@@ -15,11 +15,20 @@ import SwiftUI
 @main
 struct ClaudishProxyApp: App {
     @StateObject private var bridgeManager = BridgeManager()
+    @StateObject private var profileManager = ProfileManager()
 
     var body: some Scene {
         // Menu bar extra (status bar icon)
         MenuBarExtra {
-            MenuBarContent(bridgeManager: bridgeManager)
+            MenuBarContent(bridgeManager: bridgeManager, profileManager: profileManager)
+                .onAppear {
+                    // Connect profile manager to bridge manager
+                    profileManager.setBridgeManager(bridgeManager)
+                    // Apply profile when bridge connects
+                    if bridgeManager.bridgeConnected {
+                        profileManager.applySelectedProfile()
+                    }
+                }
         } label: {
             // Status bar icon
             if bridgeManager.isProxyEnabled {
@@ -32,7 +41,7 @@ struct ClaudishProxyApp: App {
 
         // Settings window (using Window instead of Settings for menu bar apps)
         Window("Claudish Proxy Settings", id: "settings") {
-            SettingsView(bridgeManager: bridgeManager)
+            SettingsView(bridgeManager: bridgeManager, profileManager: profileManager)
         }
         .defaultSize(width: 550, height: 450)
         .windowResizability(.contentSize)
@@ -48,10 +57,10 @@ struct ClaudishProxyApp: App {
 /// Menu bar dropdown content using StatsPanel implementation
 struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
+    @ObservedObject var profileManager: ProfileManager
     @Environment(\.openWindow) private var openWindow
     @State private var showErrorAlert = false
     @State private var showCleanupAlert = false
-    @State private var selectedModel = TargetModel.gpt4o.rawValue
     @State private var timeRange = "30 Days"
 
     // Calculate usage percentage from bridge manager data
@@ -214,54 +223,8 @@ struct MenuBarContent: View {
                 .frame(height: 1)
                 .padding(.horizontal, 20)
 
-            // Model Selection
-            VStack(alignment: .leading, spacing: 10) {
-                Text("DEFAULT MODEL")
-                    .font(.system(size: 11, weight: .semibold))
-                    .textCase(.uppercase)
-                    .tracking(1.0)
-                    .foregroundColor(.themeTextMuted)
-
-                Menu {
-                    ForEach(TargetModel.allCases) { model in
-                        Button(action: {
-                            selectedModel = model.rawValue
-                            Task { await updateDefaultModel(model.rawValue) }
-                        }) {
-                            HStack {
-                                Text(model.displayName)
-                                if selectedModel == model.rawValue {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(TargetModel.allCases.first { $0.rawValue == selectedModel }?.displayName ?? "Select Model")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.themeText)
-
-                        Spacer()
-
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.themeTextMuted)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.themeHover)
-                    .cornerRadius(8)
-                }
-                .menuStyle(BorderlessButtonMenuStyle())
-                .onAppear {
-                    if let config = bridgeManager.config, let defaultModel = config.defaultModel {
-                        selectedModel = defaultModel
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            // Unified Model/Profile Picker
+            UnifiedModelPicker(profileManager: profileManager, bridgeManager: bridgeManager)
 
             // Error message banner (if any)
             if let errorMessage = bridgeManager.errorMessage {
@@ -353,11 +316,5 @@ struct MenuBarContent: View {
         } message: {
             Text("Failed to disable system proxy. Your internet may not work until you manually disable the proxy in System Settings > Network.")
         }
-    }
-
-    private func updateDefaultModel(_ model: String) async {
-        guard var config = bridgeManager.config else { return }
-        config.defaultModel = model
-        await bridgeManager.updateConfig(config)
     }
 }

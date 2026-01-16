@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings window for configuring model mappings
 struct SettingsView: View {
     @ObservedObject var bridgeManager: BridgeManager
+    @ObservedObject var profileManager: ProfileManager
     @State private var selectedTab = 0
 
     var body: some View {
@@ -21,19 +22,26 @@ struct SettingsView: View {
                 }
                 .tag(1)
 
+            // Profiles tab
+            ProfilesSettingsView(profileManager: profileManager)
+                .tabItem {
+                    Label("Profiles", systemImage: "slider.horizontal.3")
+                }
+                .tag(2)
+
             // API Keys
             ApiKeysView()
                 .tabItem {
                     Label("API Keys", systemImage: "key")
                 }
-                .tag(2)
+                .tag(3)
 
             // About
             AboutView()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
-                .tag(3)
+                .tag(4)
         }
         .frame(width: 600, height: 500)
         .background(Color.themeBg)
@@ -669,5 +677,5 @@ struct LogsView: View {
 }
 
 #Preview {
-    SettingsView(bridgeManager: BridgeManager())
+    SettingsView(bridgeManager: BridgeManager(), profileManager: ProfileManager())
 }

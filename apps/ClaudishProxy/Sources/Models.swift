@@ -140,3 +140,150 @@ enum TargetModel: String, CaseIterable, Identifiable {
         }
     }
 }
+
+// MARK: - Profile Types
+
+/// Model slots that can be remapped in a profile
+struct ProfileSlots: Codable, Equatable {
+    var opus: String
+    var sonnet: String
+    var haiku: String
+    var subagent: String
+
+    /// Create default passthrough slots (identity mapping)
+    static var passthrough: ProfileSlots {
+        ProfileSlots(
+            opus: "claude-opus-4-5-20251101",
+            sonnet: "claude-sonnet-4-5-20250929",
+            haiku: "claude-3-haiku-20240307",
+            subagent: "claude-sonnet-4-5-20250929"
+        )
+    }
+
+    /// Create cost-optimized slots
+    static var costSaver: ProfileSlots {
+        ProfileSlots(
+            opus: "openai/gpt-4o",
+            sonnet: "openai/gpt-4o-mini",
+            haiku: "openai/gpt-4o-mini",
+            subagent: "openai/gpt-4o-mini"
+        )
+    }
+
+    /// Create performance-optimized slots
+    static var performance: ProfileSlots {
+        ProfileSlots(
+            opus: "openai/gpt-4o",
+            sonnet: "g/gemini-2.0-flash-exp",
+            haiku: "g/gemini-2.0-flash-exp",
+            subagent: "g/gemini-2.0-flash-exp"
+        )
+    }
+
+    /// Create balanced slots
+    static var balanced: ProfileSlots {
+        ProfileSlots(
+            opus: "openai/gpt-4o",
+            sonnet: "g/gemini-2.0-flash-exp",
+            haiku: "openai/gpt-4o-mini",
+            subagent: "openai/gpt-4o-mini"
+        )
+    }
+}
+
+/// A model profile defining how Claude models are remapped
+struct ModelProfile: Codable, Identifiable, Equatable {
+    let id: UUID
+    var name: String
+    var description: String?
+    let isPreset: Bool
+    var slots: ProfileSlots
+    let createdAt: Date
+    var modifiedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        description: String? = nil,
+        isPreset: Bool = false,
+        slots: ProfileSlots,
+        createdAt: Date = Date(),
+        modifiedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.isPreset = isPreset
+        self.slots = slots
+        self.createdAt = createdAt
+        self.modifiedAt = modifiedAt
+    }
+
+    /// Create a preset profile
+    static func preset(
+        name: String,
+        description: String,
+        slots: ProfileSlots
+    ) -> ModelProfile {
+        ModelProfile(
+            name: name,
+            description: description,
+            isPreset: true,
+            slots: slots
+        )
+    }
+
+    /// Create a custom profile
+    static func custom(
+        name: String,
+        description: String? = nil,
+        slots: ProfileSlots
+    ) -> ModelProfile {
+        ModelProfile(
+            name: name,
+            description: description,
+            isPreset: false,
+            slots: slots
+        )
+    }
+}
+
+extension ModelProfile {
+    // Fixed UUIDs for preset profiles to ensure selection persistence
+    private static let passthroughId = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    private static let costSaverId = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    private static let performanceId = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+    private static let balancedId = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+
+    /// Default preset profiles
+    static let presets: [ModelProfile] = [
+        ModelProfile(
+            id: passthroughId,
+            name: "Passthrough",
+            description: "Use original Claude models (no remapping)",
+            isPreset: true,
+            slots: .passthrough
+        ),
+        ModelProfile(
+            id: costSaverId,
+            name: "Cost Saver",
+            description: "Route to cheaper models",
+            isPreset: true,
+            slots: .costSaver
+        ),
+        ModelProfile(
+            id: performanceId,
+            name: "Performance",
+            description: "Route to fastest models",
+            isPreset: true,
+            slots: .performance
+        ),
+        ModelProfile(
+            id: balancedId,
+            name: "Balanced",
+            description: "Mixed performance and cost",
+            isPreset: true,
+            slots: .balanced
+        )
+    ]
+}
