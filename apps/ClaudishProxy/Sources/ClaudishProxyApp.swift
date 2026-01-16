@@ -28,7 +28,7 @@ struct ClaudishProxyApp: App {
                 Image(systemName: "arrow.left.arrow.right.circle")
             }
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         // Settings window (using Window instead of Settings for menu bar apps)
         Window("Claudish Proxy Settings", id: "settings") {
@@ -45,136 +45,297 @@ struct ClaudishProxyApp: App {
     }
 }
 
-/// Menu bar dropdown content
+/// Menu bar dropdown content using StatsPanel implementation
 struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
     @Environment(\.openWindow) private var openWindow
     @State private var showErrorAlert = false
     @State private var showCleanupAlert = false
+    @State private var selectedModel = TargetModel.gpt4o.rawValue
+    @State private var timeRange = "30 Days"
+
+    // Calculate usage percentage from bridge manager data
+    private var usagePercentage: Double {
+        min(Double(bridgeManager.totalRequests) / 1000.0, 1.0)
+    }
+
+    // Recent activity from bridge manager logs (mock data for now)
+    private var recentActivity: [Activity] {
+        [
+            Activity(date: "Jan 15, 2026", model: "claude-3-opus", credits: "14,500", cost: "$0.22"),
+            Activity(date: "Jan 14, 2026", model: "claude-3-sonnet", credits: "8,200", cost: "$0.03"),
+            Activity(date: "Jan 14, 2026", model: "gpt-4", credits: "2,100", cost: "$0.06"),
+            Activity(date: "Jan 13, 2026", model: "claude-3-haiku", credits: "45,000", cost: "$0.01")
+        ]
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Status header
+        VStack(alignment: .leading, spacing: 0) {
+            // Header with time range and proxy toggle
             HStack {
-                Circle()
-                    .fill(bridgeManager.bridgeConnected ? .green : .red)
-                    .frame(width: 8, height: 8)
-                Text(bridgeManager.bridgeConnected ? "Bridge Connected" : "Bridge Disconnected")
-                    .font(.headline)
-            }
-            .padding(.bottom, 4)
+                Text("CREDITS USED")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundColor(.themeTextMuted)
 
-            // Error message banner
+                Spacer()
+
+                DropdownSelector(
+                    selection: $timeRange,
+                    options: ["7 Days", "30 Days", "90 Days", "All Time"]
+                )
+
+                // Proxy toggle
+                Toggle("", isOn: $bridgeManager.isProxyEnabled)
+                    .toggleStyle(SwitchToggleStyle(tint: .themeSuccess))
+                    .labelsHidden()
+                    .disabled(!bridgeManager.bridgeConnected)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+
+            // Big percentage display
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(String(format: "%.1f%%", usagePercentage * 100))
+                    .font(.system(size: 48, weight: .bold))
+                    .foregroundColor(.themeText)
+                    .monospacedDigit()
+
+                Text("\(bridgeManager.totalRequests.formatted()) / 1,000")
+                    .font(.system(size: 14))
+                    .foregroundColor(.themeTextMuted)
+            }
+            .padding(.horizontal, 20)
+
+            // Progress bar
+            SegmentedProgressBar(progress: usagePercentage)
+                .frame(height: 8)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+            // Connection status row
+            HStack {
+                Text("\(bridgeManager.totalRequests)")
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundColor(.themeAccent)
+                + Text(" REQUESTS")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.themeTextSubtle)
+
+                Spacer()
+
+                if bridgeManager.bridgeConnected {
+                    Circle()
+                        .fill(Color.themeSuccess)
+                        .frame(width: 6, height: 6)
+                    Text("CONNECTED")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundColor(.themeSuccess)
+                } else {
+                    Circle()
+                        .fill(Color.themeDestructive)
+                        .frame(width: 6, height: 6)
+                    Text("DISCONNECTED")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundColor(.themeDestructive)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
+
+            // Dashed divider
+            Rectangle()
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .foregroundColor(.themeBorder)
+                .frame(height: 1)
+                .padding(.horizontal, 20)
+
+            // Recent activity table (from StatsPanel)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("RECENT ACTIVITY")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundColor(.themeTextMuted)
+
+                // Table header
+                HStack(spacing: 12) {
+                    Text("DATE")
+                        .frame(width: 70, alignment: .leading)
+                    Text("MODEL")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("CREDITS")
+                        .frame(width: 60, alignment: .trailing)
+                    Text("COST")
+                        .frame(width: 50, alignment: .trailing)
+                }
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.themeTextMuted)
+
+                // Table rows
+                ForEach(recentActivity) { activity in
+                    HStack(spacing: 12) {
+                        Text(activity.date)
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeTextMuted)
+                            .frame(width: 70, alignment: .leading)
+
+                        Text(activity.model)
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(1)
+
+                        Text(activity.credits)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(.themeText)
+                            .frame(width: 60, alignment: .trailing)
+
+                        Text(activity.cost)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundColor(.themeText)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+
+            // Dashed divider
+            Rectangle()
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .foregroundColor(.themeBorder)
+                .frame(height: 1)
+                .padding(.horizontal, 20)
+
+            // Model Selection
+            VStack(alignment: .leading, spacing: 10) {
+                Text("DEFAULT MODEL")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(1.0)
+                    .foregroundColor(.themeTextMuted)
+
+                Menu {
+                    ForEach(TargetModel.allCases) { model in
+                        Button(action: {
+                            selectedModel = model.rawValue
+                            Task { await updateDefaultModel(model.rawValue) }
+                        }) {
+                            HStack {
+                                Text(model.displayName)
+                                if selectedModel == model.rawValue {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(TargetModel.allCases.first { $0.rawValue == selectedModel }?.displayName ?? "Select Model")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.themeText)
+
+                        Spacer()
+
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.themeTextMuted)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.themeHover)
+                    .cornerRadius(8)
+                }
+                .menuStyle(BorderlessButtonMenuStyle())
+                .onAppear {
+                    if let config = bridgeManager.config, let defaultModel = config.defaultModel {
+                        selectedModel = defaultModel
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+
+            // Error message banner (if any)
             if let errorMessage = bridgeManager.errorMessage {
-                HStack {
+                HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
+                        .foregroundColor(.themeAccent)
                     Text(errorMessage)
-                        .font(.caption)
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeTextMuted)
                         .lineLimit(2)
                 }
-                .padding(8)
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(4)
+                .padding(12)
+                .background(Color.themeAccent.opacity(0.1))
+                .cornerRadius(6)
+                .padding(.horizontal, 20)
                 .onTapGesture {
                     showErrorAlert = true
                 }
             }
 
-            Divider()
+            // Dashed divider
+            Rectangle()
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .foregroundColor(.themeBorder)
+                .frame(height: 1)
+                .padding(.horizontal, 20)
 
-            // Proxy toggle
-            Toggle("Enable Proxy", isOn: $bridgeManager.isProxyEnabled)
-                .toggleStyle(.switch)
-                .disabled(!bridgeManager.bridgeConnected)
-
-            // Stats
-            if bridgeManager.isProxyEnabled {
-                HStack {
-                    Text("Requests:")
-                    Spacer()
-                    Text("\(bridgeManager.totalRequests)")
-                        .monospacedDigit()
-                }
-                .font(.caption)
-
-                if let lastApp = bridgeManager.lastDetectedApp {
-                    HStack {
-                        Text("Last App:")
-                        Spacer()
-                        Text(lastApp)
-                            .lineLimit(1)
+            // Footer with actions (matches StatsPanel footer style)
+            HStack {
+                HStack(spacing: 12) {
+                    Button(action: {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "settings")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 14))
                     }
-                    .font(.caption)
-                }
+                    .buttonStyle(PlainButtonStyle())
+                    .keyboardShortcut(",", modifiers: .command)
 
-                if let lastModel = bridgeManager.lastTargetModel {
-                    HStack {
-                        Text("Last Model:")
-                        Spacer()
-                        Text(lastModel)
-                            .lineLimit(1)
-                            .foregroundColor(.blue)
+                    Button(action: {
+                        NSApp.setActivationPolicy(.regular)
+                        openWindow(id: "logs")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }) {
+                        Image(systemName: "list.bullet.rectangle")
+                            .font(.system(size: 14))
                     }
-                    .font(.caption)
+                    .buttonStyle(PlainButtonStyle())
                 }
-            }
+                .foregroundColor(.themeTextMuted)
 
-            Divider()
+                Spacer()
 
-            // Detected Apps
-            if !bridgeManager.detectedApps.isEmpty {
-                Text("Detected Apps")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                ForEach(bridgeManager.detectedApps, id: \.name) { app in
-                    HStack {
-                        Text(app.name)
-                        Spacer()
-                        Text("\(app.requestCount) reqs")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                }
-
-                Divider()
-            }
-
-            // Actions
-            Button("Settings...") {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "settings")
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            .keyboardShortcut(",", modifiers: .command)
-
-            Button("View Logs...") {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "logs")
-                NSApp.activate(ignoringOtherApps: true)
-            }
-
-            Divider()
-
-            Button("Quit Claudish Proxy") {
-                Task {
-                    let cleanupSuccess = await bridgeManager.shutdown()
-                    if !cleanupSuccess {
-                        await MainActor.run {
-                            showCleanupAlert = true
+                PillButton(title: "Quit") {
+                    Task {
+                        let cleanupSuccess = await bridgeManager.shutdown()
+                        if !cleanupSuccess {
+                            await MainActor.run {
+                                showCleanupAlert = true
+                            }
+                            try? await Task.sleep(nanoseconds: 500_000_000)
                         }
-                        // Brief delay to show alert before quitting
-                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                        NSApplication.shared.terminate(nil)
                     }
-                    NSApplication.shared.terminate(nil)
                 }
+                .keyboardShortcut("q", modifiers: .command)
             }
-            .keyboardShortcut("q", modifiers: .command)
+            .padding(20)
         }
-        .padding()
-        .frame(width: 250)
+        .background(Color.themeCard)
+        .cornerRadius(12)
+        .frame(width: 380)
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK") {
                 bridgeManager.errorMessage = nil
@@ -188,11 +349,15 @@ struct MenuBarContent: View {
                     NSWorkspace.shared.open(url)
                 }
             }
-            Button("Quit Anyway", role: .destructive) {
-                // Alert will auto-dismiss and app will quit
-            }
+            Button("Quit Anyway", role: .destructive) {}
         } message: {
             Text("Failed to disable system proxy. Your internet may not work until you manually disable the proxy in System Settings > Network.")
         }
+    }
+
+    private func updateDefaultModel(_ model: String) async {
+        guard var config = bridgeManager.config else { return }
+        config.defaultModel = model
+        await bridgeManager.updateConfig(config)
     }
 }

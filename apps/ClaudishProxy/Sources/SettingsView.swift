@@ -35,8 +35,8 @@ struct SettingsView: View {
                 }
                 .tag(3)
         }
-        .frame(width: 500, height: 400)
-        .padding()
+        .frame(width: 600, height: 500)
+        .background(Color.themeBg)
     }
 }
 
@@ -48,63 +48,68 @@ struct GeneralSettingsView: View {
     @State private var selectedDefaultModel = TargetModel.gpt4o.rawValue
 
     var body: some View {
-        Form {
-            Section("Proxy") {
-                Toggle("Enable proxy on launch", isOn: $enableProxyOnLaunch)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // Stats Card
+                StatsPanel()
 
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .disabled(true)  // TODO: Implement LaunchAtLogin
+                // Proxy Settings Card
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("PROXY SETTINGS")
+                            .font(.system(size: 11, weight: .semibold))
+                            .textCase(.uppercase)
+                            .tracking(1.0)
+                            .foregroundColor(.themeTextMuted)
 
-                if let config = bridgeManager.config {
-                    Toggle("Proxy enabled", isOn: .constant(config.enabled))
-                        .disabled(true)
+                        Toggle("Enable proxy on launch", isOn: $enableProxyOnLaunch)
+                            .toggleStyle(SwitchToggleStyle(tint: .themeSuccess))
+                            .font(.system(size: 14))
+                            .foregroundColor(.themeText)
+
+                        Toggle("Launch at login", isOn: $launchAtLogin)
+                            .toggleStyle(SwitchToggleStyle(tint: .themeSuccess))
+                            .font(.system(size: 14))
+                            .foregroundColor(.themeTextMuted)
+                            .disabled(true)
+                    }
+                }
+
+                // Default Model Card
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("DEFAULT MODEL")
+                            .font(.system(size: 11, weight: .semibold))
+                            .textCase(.uppercase)
+                            .tracking(1.0)
+                            .foregroundColor(.themeTextMuted)
+
+                        Picker("Target Model", selection: $selectedDefaultModel) {
+                            ForEach(TargetModel.allCases) { model in
+                                Text(model.displayName).tag(model.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedDefaultModel) { _, newValue in
+                            Task {
+                                await updateDefaultModel(newValue)
+                            }
+                        }
+                        .onAppear {
+                            if let config = bridgeManager.config, let defaultModel = config.defaultModel {
+                                selectedDefaultModel = defaultModel
+                            }
+                        }
+
+                        Text("This model will be used when no app-specific mapping exists.")
+                            .font(.system(size: 13))
+                            .foregroundColor(.themeTextMuted)
+                    }
                 }
             }
-
-            Section("Default Model") {
-                Picker("Target Model:", selection: $selectedDefaultModel) {
-                    ForEach(TargetModel.allCases) { model in
-                        Text(model.displayName).tag(model.rawValue)
-                    }
-                }
-                .onChange(of: selectedDefaultModel) { _, newValue in
-                    Task {
-                        await updateDefaultModel(newValue)
-                    }
-                }
-                .onAppear {
-                    if let config = bridgeManager.config, let defaultModel = config.defaultModel {
-                        selectedDefaultModel = defaultModel
-                    }
-                }
-
-                Text("This model will be used when no app-specific mapping exists.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Section("Bridge") {
-                HStack {
-                    Text("Status:")
-                    Spacer()
-                    if bridgeManager.bridgeConnected {
-                        Text("Connected")
-                            .foregroundColor(.green)
-                    } else {
-                        Text("Disconnected")
-                            .foregroundColor(.red)
-                    }
-                }
-
-                HStack {
-                    Text("Version:")
-                    Spacer()
-                    Text("1.0.0")
-                        .foregroundColor(.secondary)
-                }
-            }
+            .padding(24)
         }
-        .formStyle(.grouped)
+        .background(Color.themeBg)
     }
 
     private func updateDefaultModel(_ model: String) async {
@@ -121,91 +126,155 @@ struct ModelMappingsView: View {
     @State private var newMapping: (source: String, target: String)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // App selector
-            Picker("Application:", selection: $selectedApp) {
-                ForEach(bridgeManager.config?.apps.keys.sorted() ?? [], id: \.self) { app in
-                    Text(app).tag(app)
-                }
-            }
-            .pickerStyle(.menu)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // App selector card
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("APPLICATION")
+                            .font(.system(size: 11, weight: .semibold))
+                            .textCase(.uppercase)
+                            .tracking(1.0)
+                            .foregroundColor(.themeTextMuted)
 
-            // Current mappings
-            if let config = bridgeManager.config,
-               let appConfig = config.apps[selectedApp] {
-                GroupBox("Model Mappings") {
-                    if appConfig.modelMap.isEmpty {
-                        Text("No mappings configured")
-                            .foregroundColor(.secondary)
-                            .padding()
-                    } else {
-                        List {
-                            ForEach(appConfig.modelMap.sorted(by: { $0.key < $1.key }), id: \.key) { source, target in
-                                HStack {
-                                    Text(source)
-                                        .lineLimit(1)
-                                    Image(systemName: "arrow.right")
-                                        .foregroundColor(.secondary)
-                                    Text(target)
-                                        .lineLimit(1)
-                                        .foregroundColor(.blue)
-                                    Spacer()
-                                    Button(action: {
-                                        // Remove mapping
-                                        Task {
-                                            await removeMapping(source: source)
+                        Picker("", selection: $selectedApp) {
+                            ForEach(bridgeManager.config?.apps.keys.sorted() ?? [], id: \.self) { app in
+                                Text(app).tag(app)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                }
+
+                // Current mappings
+                if let config = bridgeManager.config,
+                   let appConfig = config.apps[selectedApp] {
+                    ThemeCard {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("MODEL MAPPINGS")
+                                .font(.system(size: 11, weight: .semibold))
+                                .textCase(.uppercase)
+                                .tracking(1.0)
+                                .foregroundColor(.themeTextMuted)
+
+                            if appConfig.modelMap.isEmpty {
+                                Text("No mappings configured")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.themeTextMuted)
+                                    .padding(.vertical, 8)
+                            } else {
+                                VStack(spacing: 8) {
+                                    ForEach(appConfig.modelMap.sorted(by: { $0.key < $1.key }), id: \.key) { source, target in
+                                        HStack(spacing: 12) {
+                                            Text(source)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(.themeText)
+                                                .lineLimit(1)
+                                            Image(systemName: "arrow.right")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.themeTextMuted)
+                                            Text(target)
+                                                .font(.system(size: 13))
+                                                .foregroundColor(.themeAccent)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            Button(action: {
+                                                Task {
+                                                    await removeMapping(source: source)
+                                                }
+                                            }) {
+                                                Image(systemName: "trash")
+                                                    .font(.system(size: 13))
+                                                    .foregroundColor(.themeDestructive)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
-                                    }) {
-                                        Image(systemName: "trash")
-                                            .foregroundColor(.red)
+                                        .padding(.vertical, 8)
+                                        .padding(.horizontal, 12)
+                                        .background(Color.themeHover)
+                                        .cornerRadius(6)
                                     }
-                                    .buttonStyle(.plain)
                                 }
                             }
                         }
-                        .frame(height: 150)
                     }
-                }
 
-                // Add new mapping
-                GroupBox("Add Mapping") {
-                    HStack {
-                        Picker("From:", selection: Binding(
-                            get: { newMapping?.source ?? ClaudeModel.opus.rawValue },
-                            set: { newMapping = ($0, newMapping?.target ?? TargetModel.gpt4o.rawValue) }
-                        )) {
-                            ForEach(ClaudeModel.allCases, id: \.rawValue) { model in
-                                Text(model.displayName).tag(model.rawValue)
+                    // Add new mapping
+                    ThemeCard {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("ADD NEW MAPPING")
+                                .font(.system(size: 11, weight: .semibold))
+                                .textCase(.uppercase)
+                                .tracking(1.0)
+                                .foregroundColor(.themeTextMuted)
+
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("From")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.themeTextMuted)
+                                    Picker("", selection: Binding(
+                                        get: { newMapping?.source ?? ClaudeModel.opus.rawValue },
+                                        set: { newMapping = ($0, newMapping?.target ?? TargetModel.gpt4o.rawValue) }
+                                    )) {
+                                        ForEach(ClaudeModel.allCases, id: \.rawValue) { model in
+                                            Text(model.displayName).tag(model.rawValue)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                }
+                                .frame(maxWidth: .infinity)
+
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.themeTextMuted)
+                                    .padding(.top, 16)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("To")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.themeTextMuted)
+                                    Picker("", selection: Binding(
+                                        get: { newMapping?.target ?? TargetModel.gpt4o.rawValue },
+                                        set: { newMapping = (newMapping?.source ?? ClaudeModel.opus.rawValue, $0) }
+                                    )) {
+                                        ForEach(TargetModel.allCases) { model in
+                                            Text(model.displayName).tag(model.rawValue)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                }
+                                .frame(maxWidth: .infinity)
                             }
-                        }
-                        .frame(maxWidth: .infinity)
 
-                        Image(systemName: "arrow.right")
-                            .foregroundColor(.secondary)
-
-                        Picker("To:", selection: Binding(
-                            get: { newMapping?.target ?? TargetModel.gpt4o.rawValue },
-                            set: { newMapping = (newMapping?.source ?? ClaudeModel.opus.rawValue, $0) }
-                        )) {
-                            ForEach(TargetModel.allCases) { model in
-                                Text(model.displayName).tag(model.rawValue)
+                            Button(action: {
+                                Task {
+                                    await addMapping()
+                                }
+                            }) {
+                                HStack {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add Mapping")
+                                }
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.themeText)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
                             }
+                            .buttonStyle(.plain)
+                            .background(Color.themeAccent)
+                            .cornerRadius(6)
+                            .disabled(newMapping == nil)
                         }
-                        .frame(maxWidth: .infinity)
-
-                        Button("Add") {
-                            Task {
-                                await addMapping()
-                            }
-                        }
-                        .disabled(newMapping == nil)
                     }
                 }
             }
-
-            Spacer()
+            .padding(24)
         }
-        .padding()
+        .background(Color.themeBg)
         .onAppear {
             newMapping = (ClaudeModel.opus.rawValue, TargetModel.gpt4o.rawValue)
         }
@@ -236,92 +305,164 @@ struct ModelMappingsView: View {
 
 /// API Keys configuration tab
 struct ApiKeysView: View {
-    @State private var openrouterKey = ""
-    @State private var openaiKey = ""
-    @State private var geminiKey = ""
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("API KEYS")
+                            .font(.system(size: 11, weight: .semibold))
+                            .textCase(.uppercase)
+                            .tracking(1.0)
+                            .foregroundColor(.themeTextMuted)
+
+                        Text("API keys are read from environment variables.")
+                            .font(.system(size: 13))
+                            .foregroundColor(.themeTextMuted)
+
+                        VStack(spacing: 12) {
+                            APIKeyRow(
+                                keyName: "OPENROUTER_API_KEY",
+                                isSet: ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil
+                            )
+
+                            APIKeyRow(
+                                keyName: "OPENAI_API_KEY",
+                                isSet: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil
+                            )
+
+                            APIKeyRow(
+                                keyName: "GEMINI_API_KEY",
+                                isSet: ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil
+                            )
+                        }
+                    }
+                }
+
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "info.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.themeInfo)
+                            Text("HOW TO SET API KEYS")
+                                .font(.system(size: 11, weight: .semibold))
+                                .textCase(.uppercase)
+                                .tracking(1.0)
+                                .foregroundColor(.themeTextMuted)
+                        }
+
+                        Text("To set API keys, add them to your shell profile (~/.zshrc) or use the terminal to export them before launching the app.")
+                            .font(.system(size: 13))
+                            .foregroundColor(.themeTextMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(24)
+        }
+        .background(Color.themeBg)
+    }
+}
+
+struct APIKeyRow: View {
+    let keyName: String
+    let isSet: Bool
 
     var body: some View {
-        Form {
-            Section("API Keys") {
-                Text("API keys are read from environment variables.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                HStack {
-                    Text("OPENROUTER_API_KEY")
-                        .font(.system(.body, design: .monospaced))
-                    Spacer()
-                    if ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                    } else {
-                        Image(systemName: "xmark.circle")
-                            .foregroundColor(.red)
-                    }
+        HStack(spacing: 12) {
+            Text(keyName)
+                .font(.system(.body, design: .monospaced))
+                .font(.system(size: 13))
+                .foregroundColor(.themeText)
+            Spacer()
+            if isSet {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.themeSuccess)
+                    Text("Set")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.themeSuccess)
                 }
-
-                HStack {
-                    Text("OPENAI_API_KEY")
-                        .font(.system(.body, design: .monospaced))
-                    Spacer()
-                    if ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                    } else {
-                        Image(systemName: "xmark.circle")
-                            .foregroundColor(.red)
-                    }
+            } else {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle")
+                        .foregroundColor(.themeDestructive)
+                    Text("Not Set")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.themeDestructive)
                 }
-
-                HStack {
-                    Text("GEMINI_API_KEY")
-                        .font(.system(.body, design: .monospaced))
-                    Spacer()
-                    if ProcessInfo.processInfo.environment["GEMINI_API_KEY"] != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                    } else {
-                        Image(systemName: "xmark.circle")
-                            .foregroundColor(.red)
-                    }
-                }
-            }
-
-            Section("Note") {
-                Text("To set API keys, add them to your shell profile (~/.zshrc) or use the terminal to export them before launching the app.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             }
         }
-        .formStyle(.grouped)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.themeHover)
+        .cornerRadius(6)
     }
 }
 
 /// About tab
 struct AboutView: View {
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "arrow.left.arrow.right.circle.fill")
-                .font(.system(size: 64))
-                .foregroundColor(.accentColor)
+        ScrollView {
+            VStack(spacing: 24) {
+                Spacer()
+                    .frame(height: 20)
 
-            Text("Claudish Proxy")
-                .font(.title)
-                .fontWeight(.bold)
+                Image(systemName: "arrow.left.arrow.right.circle.fill")
+                    .font(.system(size: 72))
+                    .foregroundColor(.themeAccent)
 
-            Text("Version 1.0.0")
-                .foregroundColor(.secondary)
+                VStack(spacing: 8) {
+                    Text("Claudish Proxy")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.themeText)
 
-            Text("A macOS menu bar app for dynamic AI model switching.\nReroute Claude Desktop requests to any model.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
-                .padding()
+                    Text("Version 1.0.0")
+                        .font(.system(size: 14))
+                        .foregroundColor(.themeTextMuted)
+                }
 
-            Link("GitHub Repository", destination: URL(string: "https://github.com/MadAppGang/claudish")!)
+                ThemeCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("ABOUT")
+                            .font(.system(size: 11, weight: .semibold))
+                            .textCase(.uppercase)
+                            .tracking(1.0)
+                            .foregroundColor(.themeTextMuted)
 
-            Spacer()
+                        Text("A macOS menu bar app for dynamic AI model switching. Reroute Claude Desktop requests to any model.")
+                            .font(.system(size: 14))
+                            .foregroundColor(.themeText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Button(action: {
+                    if let url = URL(string: "https://github.com/MadAppGang/claudish") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "link.circle.fill")
+                            .font(.system(size: 14))
+                        Text("GitHub Repository")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .foregroundColor(.themeText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .background(Color.themeAccent)
+                .cornerRadius(8)
+                .padding(.horizontal, 24)
+
+                Spacer()
+            }
+            .padding(24)
         }
-        .padding()
+        .background(Color.themeBg)
     }
 }
 
@@ -335,59 +476,97 @@ struct LogsView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Header with controls
-            HStack {
-                Text("Request Logs")
-                    .font(.title2)
-                    .fontWeight(.bold)
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Request Logs")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.themeText)
+                    Text("\(logs.count) entries")
+                        .font(.system(size: 12))
+                        .foregroundColor(.themeTextMuted)
+                }
 
                 Spacer()
 
                 Toggle("Auto-refresh", isOn: $autoRefresh)
-                    .toggleStyle(.switch)
+                    .toggleStyle(SwitchToggleStyle(tint: .themeSuccess))
+                    .font(.system(size: 13))
+                    .foregroundColor(.themeText)
 
-                Button("Refresh") {
+                Button(action: {
                     Task {
                         await fetchLogs()
                     }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                        Text("Refresh")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundColor(.themeText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                 }
+                .buttonStyle(.plain)
+                .background(Color.themeHover)
+                .cornerRadius(6)
                 .disabled(isLoading)
 
-                Button("Clear") {
+                Button(action: {
                     logs = []
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                        Text("Clear")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundColor(.themeDestructive)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
                 }
+                .buttonStyle(.plain)
+                .background(Color.themeDestructive.opacity(0.1))
+                .cornerRadius(6)
             }
-            .padding()
+            .padding(16)
+            .background(Color.themeCard)
 
             Divider()
+                .background(Color.themeBorder)
 
             // Logs table
             if logs.isEmpty {
                 VStack(spacing: 16) {
                     Image(systemName: "tray")
                         .font(.system(size: 48))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.themeTextMuted)
                     Text("No logs yet")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.themeText)
                     Text("Logs will appear here when the proxy handles requests")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 13))
+                        .foregroundColor(.themeTextMuted)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.themeBg)
             } else {
                 Table(logs) {
                     TableColumn("Time") { log in
                         Text(formatTimestamp(log.timestamp))
                             .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.themeTextMuted)
                     }
                     .width(80)
 
                     TableColumn("App") { log in
                         HStack(spacing: 4) {
                             Text(log.app)
+                                .foregroundColor(.themeText)
                             if log.confidence < 0.8 {
                                 Image(systemName: "questionmark.circle")
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(.themeAccent)
                                     .help("Low confidence: \(String(format: "%.0f%%", log.confidence * 100))")
                             }
                         }
@@ -397,6 +576,7 @@ struct LogsView: View {
                     TableColumn("Requested") { log in
                         Text(log.requestedModel)
                             .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.themeText)
                             .lineLimit(1)
                     }
                     .width(150)
@@ -404,37 +584,42 @@ struct LogsView: View {
                     TableColumn("Target") { log in
                         Text(log.targetModel)
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.blue)
+                            .foregroundColor(.themeAccent)
                             .lineLimit(1)
                     }
                     .width(150)
 
                     TableColumn("Status") { log in
                         Text("\(log.status)")
-                            .foregroundColor(log.status == 200 ? .green : .red)
+                            .foregroundColor(log.status == 200 ? .themeSuccess : .themeDestructive)
                     }
                     .width(60)
 
                     TableColumn("Latency") { log in
                         Text("\(log.latency)ms")
                             .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.themeText)
                     }
                     .width(70)
 
                     TableColumn("Tokens") { log in
                         Text("\(log.inputTokens) → \(log.outputTokens)")
                             .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.themeText)
                     }
                     .width(100)
 
                     TableColumn("Cost") { log in
                         Text(String(format: "$%.4f", log.cost))
                             .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.themeText)
                     }
                     .width(70)
                 }
+                .background(Color.themeBg)
             }
         }
+        .background(Color.themeBg)
         .frame(minWidth: 800, minHeight: 400)
         .onAppear {
             Task {
