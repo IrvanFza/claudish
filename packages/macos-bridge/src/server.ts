@@ -797,7 +797,15 @@ export class BridgeServer {
           "bridge-token"
         );
         try {
-          fs.writeFileSync(tokenFile, JSON.stringify({ port: actualPort, token }));
+          fs.writeFileSync(
+            tokenFile,
+            JSON.stringify({
+              port: actualPort,
+              token,
+              pid: process.pid,
+              startTime: new Date().toISOString(),
+            })
+          );
         } catch (e) {
           console.error("[bridge] Failed to write token file:", e);
         }

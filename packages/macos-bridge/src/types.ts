@@ -150,3 +150,23 @@ export interface ApiResponse<T = unknown> {
   data?: T;
   error?: string;
 }
+
+/**
+ * Process information from ps command
+ */
+export interface ProcessInfo {
+  pid: number;
+  command: string;
+  startTime: string;
+}
+
+/**
+ * PID file data structure
+ */
+export interface PidFileData {
+  pid: number;
+  port?: number;
+  startTime: string;
+  nodeVersion?: string;
+  bunVersion?: string;
+}

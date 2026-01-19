@@ -17,7 +17,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "types": ["bun-types", "node"],
+    "types": ["bun", "node"],
     "skipLibCheck": true
   },
   "include": ["src/**/*"],
