@@ -39,6 +39,11 @@ export class HTTPRequestParser {
     // Try to parse headers if not yet parsed
     if (!this.headersParsed) {
       this.tryParseHeaders();
+    } else {
+      // Headers already parsed, update body bytes count
+      const combined = Buffer.concat(this.buffer);
+      const bodyStart = this.headerEndIndex + 4;
+      this.bodyBytesReceived = combined.length - bodyStart;
     }
   }
 
@@ -208,6 +213,18 @@ export class HTTPRequestParser {
     }
 
     return Buffer.concat(chunks);
+  }
+
+  /**
+   * Get current parser state for debugging
+   */
+  getState(): { method: string | null; contentLength: number | null; bodyReceived: number; isChunked: boolean } {
+    return {
+      method: this.requestLine?.method || null,
+      contentLength: this.contentLength,
+      bodyReceived: this.bodyBytesReceived,
+      isChunked: this.isChunked,
+    };
   }
 
   /**

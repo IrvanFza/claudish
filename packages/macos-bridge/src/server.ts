@@ -5,6 +5,7 @@
  * Uses token-based authentication for security.
  */
 
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { serve } from "@hono/node-server";
@@ -14,6 +15,7 @@ import { AuthManager } from "./auth.js";
 import { CertificateManager } from "./certificate-manager.js";
 import { ConfigManager } from "./config-manager.js";
 import { CONNECTHandler, type TrafficEntry } from "./connect-handler.js";
+import { CycleTLSManager } from "./cycletls-manager.js";
 import { detectFromHeaders } from "./detection.js";
 import { HTTPSProxyServer } from "./https-proxy-server.js";
 import { RoutingMiddleware } from "./routing-middleware.js";
@@ -48,10 +50,15 @@ export class BridgeServer {
   private certManager: CertificateManager;
   private httpsProxyServer: HTTPSProxyServer | null = null;
   private connectHandler: CONNECTHandler | null = null;
+  private cycleTLSManager: CycleTLSManager | null = null;
   private startTime: number;
   private proxyPort: number | undefined;
   private httpsProxyPort: number | undefined;
   private rawTrafficBuffer: RawTrafficEntry[] = [];
+  private debugMode = false;
+  private debugLogDir: string;
+  private debugLogPath: string | null = null;
+  private debugLogStream: fs.WriteStream | null = null;
 
   constructor() {
     this.app = new Hono();
@@ -62,6 +69,9 @@ export class BridgeServer {
     // Initialize certificate manager
     const certDir = path.join(os.homedir(), ".claudish-proxy", "certs");
     this.certManager = new CertificateManager(certDir);
+
+    // Initialize debug log directory
+    this.debugLogDir = path.join(os.homedir(), ".claudish-proxy", "logs");
 
     this.setupRoutes();
   }
@@ -106,17 +116,17 @@ export class BridgeServer {
      *
      * Intercepts traffic for:
      * - api.anthropic.com (Claude Code CLI)
-     * - claude.ai (Claude Desktop conversations)
+     * - claude.ai (Claude Desktop - uses HTTP POST + SSE for chat, not WebSocket)
      */
     this.app.get("/proxy.pac", (c) => {
       const port = this.proxyPort || 0;
       const pacContent = `function FindProxyForURL(url, host) {
-  // Claude Code CLI uses api.anthropic.com
-  if (host === "api.anthropic.com") {
+  // Claude Code CLI and Claude Desktop internal API
+  if (host === "api.anthropic.com" || host.endsWith(".anthropic.com")) {
     return "PROXY 127.0.0.1:${port}";
   }
-  // Claude Desktop uses claude.ai for conversations
-  if (host === "claude.ai") {
+  // Claude Desktop (chat is HTTP+SSE, WebSocket only for notifications)
+  if (host === "claude.ai" || host.endsWith(".claude.ai")) {
     return "PROXY 127.0.0.1:${port}";
   }
   return "DIRECT";
@@ -133,6 +143,7 @@ export class BridgeServer {
      * GET /status - Proxy status
      */
     this.app.get("/status", (c) => {
+      console.error(`[DEBUG] Status check - routingMiddleware exists: ${this.routingMiddleware !== null}`);
       const status: ProxyStatus = {
         running: this.routingMiddleware !== null,
         port: this.proxyPort,
@@ -192,6 +203,7 @@ export class BridgeServer {
 
         // Create routing middleware with API keys
         this.routingMiddleware = new RoutingMiddleware(this.configManager, body.apiKeys);
+        console.error(`[DEBUG] routingMiddleware created: ${this.routingMiddleware !== null}`);
 
         // Create Node.js HTTP request handler that delegates to RoutingMiddleware
         const nodeRequestHandler = (
@@ -220,6 +232,7 @@ export class BridgeServer {
           };
 
           this.rawTrafficBuffer.push(trafficEntry);
+          this.writeDebugLog(trafficEntry);
           // Keep only last 500 entries
           if (this.rawTrafficBuffer.length > 500) {
             this.rawTrafficBuffer.shift();
@@ -312,6 +325,7 @@ export class BridgeServer {
             confidence: 1.0,
           };
           this.rawTrafficBuffer.push(rawEntry);
+          this.writeDebugLog(rawEntry, modelSuffix);
           if (this.rawTrafficBuffer.length > 500) {
             this.rawTrafficBuffer.shift();
           }
@@ -320,11 +334,23 @@ export class BridgeServer {
           );
         };
 
-        // Create CONNECT handler with the same request handler and traffic callback
+        // Initialize CycleTLS manager for Chrome-fingerprinted requests (optional)
+        // If CycleTLS fails, we'll fall back to native TLS which may get 403 from Cloudflare
+        this.cycleTLSManager = new CycleTLSManager();
+        try {
+          await this.cycleTLSManager.initialize();
+          console.error("[bridge] CycleTLS initialized successfully");
+        } catch (cycleTLSError) {
+          console.error("[bridge] CycleTLS failed to initialize, will use native TLS fallback:", cycleTLSError);
+          this.cycleTLSManager = null;
+        }
+
+        // Create CONNECT handler with the same request handler, traffic callback, and CycleTLS manager
         this.connectHandler = new CONNECTHandler(
           this.certManager,
           nodeRequestHandler,
-          trafficCallback
+          trafficCallback,
+          this.cycleTLSManager || undefined
         );
 
         // Set API keys for alternative providers
@@ -333,6 +359,13 @@ export class BridgeServer {
         // Attach CONNECT handler to HTTP server
         if (this.server) {
           this.server.on("connect", (req, socket, head) => {
+            this.connectHandler?.handle(req, socket, head);
+          });
+        }
+
+        // Attach CONNECT handler to HTTPS proxy server for tunneling
+        if (this.httpsProxyServer) {
+          this.httpsProxyServer.setConnectHandler((req, socket, head) => {
             this.connectHandler?.handle(req, socket, head);
           });
         }
@@ -382,6 +415,12 @@ export class BridgeServer {
           this.httpsProxyServer = null;
         }
 
+        // Shutdown CycleTLS manager
+        if (this.cycleTLSManager) {
+          await this.cycleTLSManager.shutdown();
+          this.cycleTLSManager = null;
+        }
+
         // Remove CONNECT handler
         if (this.server && this.connectHandler) {
           this.server.removeAllListeners("connect");
@@ -389,6 +428,7 @@ export class BridgeServer {
         }
 
         // Stop routing middleware
+        console.error(`[DEBUG] Disabling proxy - setting routingMiddleware to null`);
         await this.routingMiddleware.shutdown();
         this.routingMiddleware = null;
 
@@ -615,6 +655,76 @@ export class BridgeServer {
     });
 
     /**
+     * POST /debug - Enable/disable debug mode (traffic logging to file)
+     */
+    this.app.post("/debug", async (c) => {
+      try {
+        const body = (await c.req.json()) as { enabled?: boolean };
+        const enabled = body.enabled ?? false;
+
+        if (enabled && !this.debugMode) {
+          // Enable debug mode - create new session log file
+          // Ensure log directory exists
+          if (!fs.existsSync(this.debugLogDir)) {
+            fs.mkdirSync(this.debugLogDir, { recursive: true });
+          }
+
+          // Create timestamped log file for this session
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          this.debugLogPath = path.join(this.debugLogDir, `debug-${timestamp}.log`);
+
+          this.debugLogStream = fs.createWriteStream(this.debugLogPath, { flags: "w" });
+          this.debugLogStream.write(
+            `=== Debug session started at ${new Date().toISOString()} ===\n\n`
+          );
+          console.error(`[debug] Debug mode enabled, logging to: ${this.debugLogPath}`);
+        } else if (!enabled && this.debugMode) {
+          // Disable debug mode - close log file stream
+          if (this.debugLogStream) {
+            this.debugLogStream.write(
+              `\n=== Debug session ended at ${new Date().toISOString()} ===\n`
+            );
+            this.debugLogStream.end();
+            this.debugLogStream = null;
+          }
+          console.error("[debug] Debug mode disabled");
+        }
+
+        this.debugMode = enabled;
+
+        const response: ApiResponse<{ enabled: boolean; logPath: string | null }> = {
+          success: true,
+          data: {
+            enabled: this.debugMode,
+            logPath: this.debugLogPath,
+          },
+        };
+        return c.json(response);
+      } catch (error) {
+        const response: ApiResponse = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        return c.json(response, 500);
+      }
+    });
+
+    /**
+     * GET /debug - Get current debug mode status
+     */
+    this.app.get("/debug", (c) => {
+      const response: ApiResponse<{ enabled: boolean; logPath: string | null; logDir: string }> = {
+        success: true,
+        data: {
+          enabled: this.debugMode,
+          logPath: this.debugLogPath,
+          logDir: this.debugLogDir,
+        },
+      };
+      return c.json(response);
+    });
+
+    /**
      * GET /certificates/ca - Get CA certificate for installation
      */
     this.app.get("/certificates/ca", async (c) => {
@@ -705,6 +815,16 @@ export class BridgeServer {
         // Return void to satisfy Next type
       });
     });
+  }
+
+  /**
+   * Write a traffic entry to the debug log file (if debug mode is enabled)
+   */
+  private writeDebugLog(entry: RawTrafficEntry, extra?: string): void {
+    if (!this.debugMode || !this.debugLogStream) return;
+
+    const line = `[${entry.timestamp}] ${entry.detectedApp} (${Math.round(entry.confidence * 100)}%) ${entry.method} ${entry.host}${entry.path}${extra ? ` ${extra}` : ""}\n`;
+    this.debugLogStream.write(line);
   }
 
   /**
@@ -831,10 +951,24 @@ export class BridgeServer {
    * Stop the bridge server
    */
   async stop(): Promise<void> {
+    // Close debug log stream
+    if (this.debugLogStream) {
+      this.debugLogStream.write(`\n=== Server stopped at ${new Date().toISOString()} ===\n`);
+      this.debugLogStream.end();
+      this.debugLogStream = null;
+      this.debugMode = false;
+    }
+
     // Stop HTTPS proxy server
     if (this.httpsProxyServer) {
       await this.httpsProxyServer.stop();
       this.httpsProxyServer = null;
+    }
+
+    // Shutdown CycleTLS manager
+    if (this.cycleTLSManager) {
+      await this.cycleTLSManager.shutdown();
+      this.cycleTLSManager = null;
     }
 
     // Remove CONNECT handler
@@ -845,6 +979,7 @@ export class BridgeServer {
 
     // Stop routing middleware
     if (this.routingMiddleware) {
+      console.error(`[DEBUG] stop() called - setting routingMiddleware to null`);
       await this.routingMiddleware.shutdown();
       this.routingMiddleware = null;
     }

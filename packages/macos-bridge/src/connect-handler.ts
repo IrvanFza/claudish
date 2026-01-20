@@ -4,6 +4,7 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import * as zlib from "node:zlib";
 import type { CertificateManager } from "./certificate-manager";
+import { CycleTLSManager } from "./cycletls-manager";
 import { HTTPRequestParser, type ParsedHTTPRequest } from "./http-parser";
 import type { ApiKeys } from "./types";
 
@@ -76,6 +77,7 @@ export interface RoutingConfig {
 export class CONNECTHandler {
   private certManager: CertificateManager;
   private trafficCallback?: TrafficCallback;
+  private cycleTLSManager: CycleTLSManager | null = null;
 
   /** Track model selections for Claude Desktop */
   private modelTracker: ModelTracker = {
@@ -100,14 +102,52 @@ export class CONNECTHandler {
   /** API keys for alternative providers */
   private apiKeys: ApiKeys = {};
 
+  /**
+   * Store for injected messages per conversation
+   * Key: conversation UUID, Value: array of messages to inject
+   */
+  private injectedMessages: Map<
+    string,
+    Array<{
+      uuid: string;
+      text: string;
+      content: Array<{
+        start_timestamp: string;
+        stop_timestamp: string;
+        type: string;
+        text: string;
+        citations: unknown[];
+      }>;
+      sender: "human" | "assistant";
+      index: number;
+      created_at: string;
+      updated_at: string;
+      truncated: boolean;
+      attachments: unknown[];
+      files: unknown[];
+      files_v2: unknown[];
+      sync_sources: unknown[];
+      parent_message_uuid: string;
+    }>
+  > = new Map();
+
   constructor(
     certManager: CertificateManager,
     _requestHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
-    trafficCallback?: TrafficCallback
+    trafficCallback?: TrafficCallback,
+    cycleTLSManager?: CycleTLSManager
   ) {
     this.certManager = certManager;
     // Note: requestHandler reserved for future HTTP routing support
     this.trafficCallback = trafficCallback;
+    this.cycleTLSManager = cycleTLSManager || null;
+  }
+
+  /**
+   * Set CycleTLS manager for Chrome-fingerprinted passthrough requests
+   */
+  setCycleTLSManager(manager: CycleTLSManager): void {
+    this.cycleTLSManager = manager;
   }
 
   /**
@@ -286,7 +326,10 @@ export class CONNECTHandler {
     );
 
     // Upgrade to TLS
-    this.upgradeTLS(hostname, clientSocket, head);
+    this.upgradeTLS(hostname, clientSocket, head).catch((err) => {
+      console.error(`[CONNECTHandler] TLS upgrade failed for ${hostname}:`, err);
+      clientSocket.destroy();
+    });
   }
 
   /**
@@ -337,6 +380,7 @@ export class CONNECTHandler {
         cert: cert,
         key: key,
         requestCert: false,
+        ALPNProtocols: ["http/1.1"], // Force HTTP/1.1 to avoid HTTP/2 parsing issues
       });
 
       tlsServer.on("secureConnection", (tlsSocket: tls.TLSSocket) => {
@@ -346,6 +390,11 @@ export class CONNECTHandler {
 
       tlsServer.on("tlsClientError", (err) => {
         console.error(`[CONNECTHandler] TLS_CLIENT_ERROR for ${hostname}:`, err.message);
+      });
+
+      tlsServer.on("error", (err) => {
+        console.error(`[CONNECTHandler] TLS_SERVER_ERROR for ${hostname}:`, err.message);
+        clientSocket.destroy();
       });
 
       // Start listening on random port
@@ -484,16 +533,28 @@ export class CONNECTHandler {
     // Track conversation creation/usage from POST to chat_conversations
     if (method === "POST" && path.includes("/chat_conversations/")) {
       const convId = this.extractConversationFromPath(path);
-      if (convId && this.modelTracker.currentModel) {
-        // Associate conversation with current model (if not already tracked)
-        if (!this.modelTracker.conversationModels.has(convId)) {
-          this.modelTracker.conversationModels.set(convId, this.modelTracker.currentModel);
-          console.log(
-            `[CONNECTHandler] Conversation ${convId.slice(0, 8)}... -> ${this.modelTracker.currentModel}`
-          );
-        }
+      if (convId) {
+        // Always return conversationId for POST requests (needed for message storage)
         result.conversationId = convId;
-        result.model = this.modelTracker.conversationModels.get(convId);
+
+        // Associate conversation with current model (if available)
+        if (this.modelTracker.currentModel) {
+          if (!this.modelTracker.conversationModels.has(convId)) {
+            this.modelTracker.conversationModels.set(convId, this.modelTracker.currentModel);
+            console.log(
+              `[CONNECTHandler] Conversation ${convId.slice(0, 8)}... -> ${this.modelTracker.currentModel}`
+            );
+          }
+          result.model = this.modelTracker.conversationModels.get(convId);
+        }
+      }
+    }
+
+    // Also extract conversation ID from GET requests (for sync interception)
+    if (method === "GET" && path.includes("/chat_conversations/")) {
+      const convId = this.extractConversationFromPath(path);
+      if (convId) {
+        result.conversationId = convId;
       }
     }
 
@@ -575,7 +636,8 @@ export class CONNECTHandler {
       tools?: Array<{ name: string; description: string; input_schema: unknown }>;
       attachments?: Array<{ file_name: string; extracted_content?: string }>;
     },
-    model: string
+    model: string,
+    conversationId?: string
   ): {
     model: string;
     messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -585,6 +647,23 @@ export class CONNECTHandler {
   } {
     // Build messages array from prompt
     const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+
+    // Add conversation history if available
+    if (conversationId) {
+      const history = this.injectedMessages.get(conversationId);
+      if (history && history.length > 0) {
+        console.log(`[CONNECTHandler] 📚 Including ${history.length} messages from conversation history`);
+        for (const msg of history) {
+          const text = msg.content[0]?.text || "";
+          if (text) {
+            messages.push({
+              role: msg.sender === "human" ? "user" : "assistant",
+              content: text,
+            });
+          }
+        }
+      }
+    }
 
     // Add the user's prompt
     let userContent = claudeDesktopRequest.prompt;
@@ -669,9 +748,499 @@ export class CONNECTHandler {
   }
 
   /**
+   * Forward streaming request (like completions) via native TLS
+   * Pipes data through in real-time without buffering
+   */
+  private async forwardStreamingRequest(
+    parsedRequest: ParsedHTTPRequest,
+    tlsSocket: tls.TLSSocket,
+    targetHost: string
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      console.log(`[CONNECTHandler] 🌊 Streaming request to ${targetHost}${parsedRequest.path.substring(0, 50)}...`);
+
+      // Build modified request without Accept-Encoding
+      const lines = parsedRequest.raw.toString('utf8').split('\r\n');
+      const modifiedLines = lines.filter(line => {
+        const lower = line.toLowerCase();
+        return !lower.startsWith('accept-encoding:');
+      });
+      const modifiedRequest = modifiedLines.join('\r\n');
+
+      // Connect to real server
+      const serverConn = tls.connect({
+        host: targetHost,
+        port: 443,
+        servername: targetHost,
+        ALPNProtocols: ["http/1.1"],
+      });
+
+      serverConn.on("secureConnect", () => {
+        console.log(`[CONNECTHandler] 🔐 Streaming connection established to ${targetHost}`);
+        serverConn.write(modifiedRequest);
+      });
+
+      // Pipe server response directly to client (real-time streaming)
+      serverConn.on("data", (data: Buffer) => {
+        if (!tlsSocket.destroyed) {
+          tlsSocket.write(data);
+        }
+      });
+
+      serverConn.on("end", () => {
+        console.log(`[CONNECTHandler] 🏁 Streaming response ended`);
+        if (!tlsSocket.destroyed) {
+          tlsSocket.end();
+        }
+        resolve();
+      });
+
+      serverConn.on("error", (err) => {
+        console.error(`[CONNECTHandler] Streaming error: ${err.message}`);
+        if (!tlsSocket.destroyed) {
+          tlsSocket.destroy();
+        }
+        reject(err);
+      });
+
+      // If client disconnects, close server connection too
+      tlsSocket.on("close", () => {
+        if (!serverConn.destroyed) {
+          serverConn.destroy();
+        }
+      });
+
+      tlsSocket.on("error", () => {
+        if (!serverConn.destroyed) {
+          serverConn.destroy();
+        }
+      });
+    });
+  }
+
+  /**
+   * Forward request via native TLS with modified headers
+   * Strips Accept-Encoding to get uncompressed responses
+   * Saves all traffic to files for debugging
+   */
+  private async forwardViaNativeTLS(
+    parsedRequest: ParsedHTTPRequest,
+    tlsSocket: tls.TLSSocket,
+    targetHost: string
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timestamp = Date.now();
+      const logPrefix = `/tmp/traffic_${timestamp}`;
+
+      // Build modified request without Accept-Encoding
+      const lines = parsedRequest.raw.toString('utf8').split('\r\n');
+      const modifiedLines = lines.filter(line => {
+        const lower = line.toLowerCase();
+        return !lower.startsWith('accept-encoding:');
+      });
+      const modifiedRequest = modifiedLines.join('\r\n');
+
+      // Save request to file
+      fs.writeFileSync(`${logPrefix}_request.txt`, modifiedRequest);
+      console.log(`[CONNECTHandler] Saved request to ${logPrefix}_request.txt`);
+
+      // Connect to real server
+      const serverConn = tls.connect({
+        host: targetHost,
+        port: 443,
+        servername: targetHost,
+        ALPNProtocols: ["http/1.1"],
+      });
+
+      const responseChunks: Buffer[] = [];
+      let firstChunkLogged = false;
+
+      serverConn.on("secureConnect", () => {
+        console.log(`[CONNECTHandler] Native TLS connected to ${targetHost}`);
+        serverConn.write(modifiedRequest);
+      });
+
+      serverConn.on("data", (data: Buffer) => {
+        responseChunks.push(data);
+
+        // Log the first chunk with headers
+        if (!firstChunkLogged) {
+          firstChunkLogged = true;
+          const separator = Buffer.from('\r\n\r\n');
+          const headerEnd = data.indexOf(separator);
+          if (headerEnd > 0) {
+            const headers = data.subarray(0, headerEnd).toString('utf8');
+            fs.writeFileSync(`${logPrefix}_response_headers.txt`, headers);
+            console.log(`[CONNECTHandler] Response headers:\n${headers.substring(0, 500)}`);
+
+            // Save body preview
+            const bodyStart = headerEnd + 4;
+            const bodyPreview = data.subarray(bodyStart, bodyStart + 500).toString('utf8');
+            fs.writeFileSync(`${logPrefix}_body_preview.txt`, bodyPreview);
+            console.log(`[CONNECTHandler] Body preview: ${bodyPreview.substring(0, 200)}`);
+          }
+        }
+
+        // Forward to client immediately
+        if (!tlsSocket.destroyed) {
+          tlsSocket.write(data);
+        }
+      });
+
+      serverConn.on("end", () => {
+        // Save complete response to file
+        const fullResponse = Buffer.concat(responseChunks);
+        fs.writeFileSync(`${logPrefix}_response.bin`, fullResponse);
+        console.log(`[CONNECTHandler] Saved full response (${fullResponse.length} bytes) to ${logPrefix}_response.bin`);
+
+        if (!tlsSocket.destroyed) {
+          tlsSocket.end();
+        }
+        resolve();
+      });
+
+      serverConn.on("error", (err) => {
+        console.error(`[CONNECTHandler] Native TLS error: ${err.message}`);
+        reject(err);
+      });
+
+      tlsSocket.on("close", () => {
+        serverConn.destroy();
+      });
+    });
+  }
+
+  /**
+   * Forward conversation GET request and inject stored messages into the response
+   * This prevents Claude Desktop from detecting "message loss" when we intercept completion requests
+   */
+  private async forwardWithMessageInjection(
+    parsedRequest: ParsedHTTPRequest,
+    tlsSocket: tls.TLSSocket,
+    targetHost: string,
+    conversationId: string
+  ): Promise<void> {
+    if (!this.cycleTLSManager) {
+      throw new Error("CycleTLS manager not available for message injection");
+    }
+
+    const injectedMsgs = this.injectedMessages.get(conversationId);
+    if (!injectedMsgs || injectedMsgs.length === 0) {
+      // No messages to inject, just forward normally
+      return this.forwardViaCycleTLS(parsedRequest, tlsSocket, targetHost);
+    }
+
+    try {
+      const url = `https://${targetHost}${parsedRequest.path}`;
+
+      console.log(`[CONNECTHandler] 🔀 Fetching conversation for message injection: ${parsedRequest.path.slice(0, 80)}`);
+
+      // Remove headers that CycleTLS manages
+      const headersWithoutCompression: Record<string, string> = {};
+      const skipHeaders = new Set([
+        "accept-encoding",
+        "user-agent",
+        "connection",
+        "host",
+        "content-length",
+      ]);
+      for (const [key, value] of Object.entries(parsedRequest.headers)) {
+        const lowerKey = key.toLowerCase();
+        if (!skipHeaders.has(lowerKey)) {
+          headersWithoutCompression[key] = value;
+        }
+      }
+
+      // Make the request via CycleTLS
+      const response = await this.cycleTLSManager.request(url, {
+        method: parsedRequest.method,
+        headers: headersWithoutCompression,
+        body: parsedRequest.body.length > 0 ? parsedRequest.body.toString("utf8") : undefined,
+      });
+
+      if (response.status !== 200) {
+        // Non-200 response, just forward as-is
+        console.log(`[CONNECTHandler] Conversation fetch returned ${response.status}, forwarding without injection`);
+        const responseStr = this.buildHTTPResponse(response.status, response.headers, response.body);
+        tlsSocket.write(responseStr);
+        return;
+      }
+
+      // Parse the JSON response
+      let conversationData: { chat_messages?: unknown[]; [key: string]: unknown };
+      try {
+        conversationData = JSON.parse(response.body);
+      } catch {
+        // Not JSON, forward as-is
+        console.log("[CONNECTHandler] Conversation response not JSON, forwarding without injection");
+        const responseStr = this.buildHTTPResponse(response.status, response.headers, response.body);
+        tlsSocket.write(responseStr);
+        return;
+      }
+
+      // Debug: Log original server response structure
+      console.log(`[CONNECTHandler] 🔍 Original server response has ${conversationData.chat_messages?.length || 0} messages`);
+      if (conversationData.chat_messages?.[0]) {
+        const serverMsg = conversationData.chat_messages[0] as Record<string, unknown>;
+        console.log(`[CONNECTHandler] 🔍 Server message keys: ${Object.keys(serverMsg).join(', ')}`);
+        // Save first server message to file for comparison
+        try {
+          const fs = require('fs');
+          fs.writeFileSync('/tmp/server_message_sample.json', JSON.stringify(serverMsg, null, 2));
+          console.log(`[CONNECTHandler] 🔍 Server message sample saved to /tmp/server_message_sample.json`);
+        } catch (e) { /* ignore */ }
+      }
+
+      // Inject our messages into chat_messages array
+      if (Array.isArray(conversationData.chat_messages)) {
+        // Check if messages are already there (by UUID)
+        const existingUuids = new Set(
+          conversationData.chat_messages.map((m: { uuid?: string }) => m.uuid)
+        );
+
+        for (const msg of injectedMsgs) {
+          if (!existingUuids.has(msg.uuid)) {
+            conversationData.chat_messages.push(msg);
+            console.log(
+              `[CONNECTHandler] 💉 Injected ${msg.sender} message ${msg.uuid.slice(0, 8)} into conversation`
+            );
+          }
+        }
+
+        // Sort messages by index to maintain order
+        conversationData.chat_messages.sort(
+          (a: { index?: number }, b: { index?: number }) => (a.index || 0) - (b.index || 0)
+        );
+      } else {
+        // No chat_messages array, create one with our messages
+        conversationData.chat_messages = [...injectedMsgs];
+        console.log(`[CONNECTHandler] 💉 Created chat_messages array with ${injectedMsgs.length} injected messages`);
+      }
+
+      // CRITICAL: Set current_leaf_message_uuid to the last message
+      // This tells Claude Desktop which message is the "current" state of the conversation
+      if (conversationData.chat_messages && conversationData.chat_messages.length > 0) {
+        const lastMessage = conversationData.chat_messages[conversationData.chat_messages.length - 1];
+        if (lastMessage?.uuid) {
+          conversationData.current_leaf_message_uuid = lastMessage.uuid;
+          console.log(`[CONNECTHandler] 🔗 Set current_leaf_message_uuid to ${lastMessage.uuid.slice(0, 8)}`);
+        }
+      }
+
+      // Debug: Save modified conversation response for analysis (AFTER injection)
+      try {
+        const fs = require('fs');
+        fs.writeFileSync('/tmp/conversation_response_modified.json', JSON.stringify(conversationData, null, 2));
+        console.log(`[CONNECTHandler] 🔍 Modified conversation saved with ${conversationData.chat_messages?.length || 0} messages`);
+      } catch (e) { /* ignore */ }
+
+      // Serialize the modified response
+      const modifiedBody = JSON.stringify(conversationData);
+
+      // Update Content-Length header (delete all case variants first)
+      const modifiedHeaders = { ...response.headers };
+      // Remove all Content-Length variants to avoid duplicates
+      delete modifiedHeaders["Content-Length"];
+      delete modifiedHeaders["content-length"];
+      delete modifiedHeaders["CONTENT-LENGTH"];
+      // Set the correct content length
+      modifiedHeaders["Content-Length"] = String(Buffer.byteLength(modifiedBody));
+      // Remove content-encoding since we're sending uncompressed
+      delete modifiedHeaders["content-encoding"];
+      delete modifiedHeaders["Content-Encoding"];
+
+      // Build and send response
+      const responseStr = this.buildHTTPResponse(200, modifiedHeaders, modifiedBody);
+      console.log(`[CONNECTHandler] 📤 Sending modified sync response (${modifiedBody.length} bytes)`);
+
+      // Debug: Save exact HTTP response being sent
+      try {
+        const fs = require('fs');
+        fs.writeFileSync('/tmp/http_response_sent.txt', responseStr);
+        console.log(`[CONNECTHandler] 🔍 Full HTTP response saved to /tmp/http_response_sent.txt (${responseStr.length} total bytes)`);
+      } catch (e) { /* ignore */ }
+
+      tlsSocket.write(responseStr);
+
+      console.log(
+        `[CONNECTHandler] ✅ Message injection complete. Conversation now has ${conversationData.chat_messages?.length || 0} messages`
+      );
+
+      // Debug: Log first injected message structure
+      if (conversationData.chat_messages?.[0]) {
+        const firstMsg = conversationData.chat_messages[0];
+        console.log(`[CONNECTHandler] 🔍 First message structure: uuid=${firstMsg.uuid?.slice(0, 8)}, sender=${firstMsg.sender}, index=${firstMsg.index}, parent=${firstMsg.parent_message_uuid?.slice(0, 8)}`);
+      }
+    } catch (err) {
+      console.error("[CONNECTHandler] Message injection failed, falling back to normal forward:", err);
+      // Fallback to normal CycleTLS forward
+      await this.forwardViaCycleTLS(parsedRequest, tlsSocket, targetHost);
+    }
+  }
+
+  /**
+   * Build HTTP response string from status, headers, and body
+   */
+  private buildHTTPResponse(
+    status: number,
+    headers: Record<string, string>,
+    body: string
+  ): string {
+    const statusText = status === 200 ? "OK" : status === 404 ? "Not Found" : "Error";
+    let response = `HTTP/1.1 ${status} ${statusText}\r\n`;
+
+    for (const [key, value] of Object.entries(headers)) {
+      // Skip transfer-encoding as we're sending full body
+      if (key.toLowerCase() === "transfer-encoding") continue;
+      response += `${key}: ${value}\r\n`;
+    }
+
+    response += "\r\n";
+    response += body;
+
+    return response;
+  }
+
+  /**
+   * Forward request via CycleTLS with Chrome fingerprint
+   * Used for passthrough requests to claude.ai to bypass Cloudflare detection
+   */
+  private async forwardViaCycleTLS(
+    parsedRequest: ParsedHTTPRequest,
+    tlsSocket: tls.TLSSocket,
+    targetHost: string
+  ): Promise<void> {
+    if (!this.cycleTLSManager) {
+      throw new Error("CycleTLS manager not available");
+    }
+
+    try {
+      // Build full URL
+      const url = `https://${targetHost}${parsedRequest.path}`;
+
+      console.log(`[CONNECTHandler] 🚀 Forwarding via CycleTLS: ${parsedRequest.method} ${parsedRequest.path}`);
+
+      // Debug: log POST body
+      if (parsedRequest.method === "POST") {
+        console.log(`[CONNECTHandler] POST body (${parsedRequest.body.length} bytes): ${parsedRequest.body.toString("utf8").substring(0, 200)}`);
+      }
+
+      // Remove headers that CycleTLS manages or that could cause issues
+      const headersWithoutCompression: Record<string, string> = {};
+      const skipHeaders = new Set([
+        'accept-encoding',  // CycleTLS handles decompression
+        'user-agent',       // CycleTLS sets Chrome User-Agent
+        'connection',       // CycleTLS manages connections
+        'host',             // CycleTLS derives from URL
+        'content-length',   // CycleTLS computes from body
+      ]);
+      for (const [key, value] of Object.entries(parsedRequest.headers)) {
+        const lowerKey = key.toLowerCase();
+        if (skipHeaders.has(lowerKey)) {
+          continue;
+        }
+        headersWithoutCompression[key] = value;
+      }
+
+      // Ensure Content-Type is set for POST requests with JSON body
+      if (parsedRequest.method === "POST") {
+        const hasContentType = Object.keys(headersWithoutCompression).some(k => k.toLowerCase() === "content-type");
+        console.log(`[CONNECTHandler] POST check: hasContentType=${hasContentType}, keys=${Object.keys(headersWithoutCompression).join(",")}`);
+        if (!hasContentType) {
+          const bodyStr = parsedRequest.body.toString("utf8").trim();
+          if (bodyStr.startsWith("{") || bodyStr.startsWith("[")) {
+            headersWithoutCompression["Content-Type"] = "application/json";
+            console.log(`[CONNECTHandler] Added missing Content-Type: application/json`);
+          }
+        }
+      }
+
+      // Debug: log headers being sent
+      if (parsedRequest.method === "POST") {
+        console.log(`[CONNECTHandler] Headers for POST: ${JSON.stringify(headersWithoutCompression).substring(0, 500)}`);
+      }
+
+      // Make request via CycleTLS
+      const response = await this.cycleTLSManager.request(url, {
+        method: parsedRequest.method,
+        headers: headersWithoutCompression,
+        body: parsedRequest.body.length > 0 ? parsedRequest.body.toString("utf8") : undefined,
+      });
+
+      console.log(`[CONNECTHandler] ✅ CycleTLS response: ${response.status}`);
+
+      // Debug: Save RSC responses to file for inspection
+      if (parsedRequest.path.includes("_rsc=") && response.body) {
+        const convMatch = parsedRequest.path.match(/\/chat\/([a-f0-9-]+)/);
+        const convId = convMatch?.[1]?.slice(0, 8) || "unknown";
+        const filename = `/tmp/rsc_${convId}_${Date.now()}.txt`;
+        fs.writeFileSync(filename, response.body);
+        console.log(`[CONNECTHandler] 📄 Saved RSC response to ${filename} (${response.body.length} bytes)`);
+      }
+
+      // Build HTTP response
+      const statusText = this.getStatusText(response.status);
+      const statusLine = `HTTP/1.1 ${response.status} ${statusText}\r\n`;
+
+      // Build headers - CycleTLS returns arrays, flatten them
+      // Skip Content-Encoding since CycleTLS already decompresses the body
+      const headers = Object.entries(response.headers)
+        .filter(([k]) => k.toLowerCase() !== 'content-encoding')
+        .map(([k, v]) => {
+          // CycleTLS returns header values as arrays - take first value
+          const value = Array.isArray(v) ? v[0] : String(v);
+          const sanitized = value.replace(/[\r\n]/g, '');
+          return `${k}: ${sanitized}`;
+        })
+        .join("\r\n");
+
+      const httpResponse = `${statusLine}${headers}\r\n\r\n`;
+
+      // Debug: log what we're sending
+      console.log(`[CONNECTHandler] Response headers:\n${headers.substring(0, 500)}`);
+      console.log(`[CONNECTHandler] Body length: ${response.body?.length || 0}`);
+
+      // Write response to client (check socket state first)
+      if (tlsSocket.destroyed) {
+        throw new Error("Client socket destroyed before response could be written");
+      }
+      tlsSocket.write(httpResponse);
+      if (response.body) {
+        tlsSocket.write(response.body);
+      }
+    } catch (err) {
+      console.error("[CONNECTHandler] CycleTLS forward failed:", err);
+      throw err;
+    }
+  }
+
+  /**
+   * Get HTTP status text for status code
+   */
+  private getStatusText(statusCode: number): string {
+    const statusTexts: Record<number, string> = {
+      200: "OK",
+      201: "Created",
+      204: "No Content",
+      301: "Moved Permanently",
+      302: "Found",
+      304: "Not Modified",
+      400: "Bad Request",
+      401: "Unauthorized",
+      403: "Forbidden",
+      404: "Not Found",
+      500: "Internal Server Error",
+      502: "Bad Gateway",
+      503: "Service Unavailable",
+    };
+    return statusTexts[statusCode] || "Unknown";
+  }
+
+  /**
    * Handle decrypted HTTP traffic on TLS socket
    *
    * NEW: Buffers requests, parses them, and decides whether to intercept or forward.
+   * Detects WebSocket upgrades and switches to pure passthrough mode.
    *
    * @param tlsSocket Decrypted TLS socket from client
    * @param hostname Target hostname for forwarding
@@ -692,6 +1261,7 @@ export class CONNECTHandler {
     let captureResponse = false;
     let responseBuffer: Buffer[] = [];
     let contentEncoding = "";
+    let isWebSocket = false; // Track if connection has been upgraded to WebSocket
 
     // Helper to establish server connection for passthrough
     const ensureServerConnection = (): tls.TLSSocket => {
@@ -700,15 +1270,25 @@ export class CONNECTHandler {
           host: targetHost,
           port: 443,
           servername: targetHost,
+          ALPNProtocols: ["http/1.1"], // Force HTTP/1.1 for upstream too
         });
 
         serverConn.on("connect", () => {
-          console.log(`[CONNECTHandler] Connected to real server: ${targetHost}`);
+          console.log(`[CONNECTHandler] ✅ Connected to real server: ${targetHost}`);
+        });
+
+        serverConn.on("secureConnect", () => {
+          console.log(`[CONNECTHandler] 🔐 TLS handshake complete with ${targetHost}`);
         });
 
         // Handle server responses
         serverConn.on("data", (rawData) => {
           const data = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+
+          // Log WebSocket upgrade responses (101)
+          if (isWebSocket || data.toString("utf8", 0, 30).includes("101")) {
+            console.log(`[CONNECTHandler] 📥 Server response (${data.length} bytes, isWS=${isWebSocket})`);
+          }
 
           // Capture response for specific endpoints
           if (captureResponse) {
@@ -737,6 +1317,18 @@ export class CONNECTHandler {
                 model: currentModel,
                 conversationId: currentConversationId,
               });
+
+              // Detailed logging for 403 responses
+              if (parsed.statusCode === 403) {
+                console.log(`[CONNECTHandler] ⚠️ 403 Response detected!`);
+                const headerStr = data.toString("utf8", 0, Math.min(2000, data.length));
+                console.log(`[CONNECTHandler] Response headers:\n${headerStr.split('\r\n\r\n')[0]}`);
+                const bodyStart = headerStr.indexOf('\r\n\r\n');
+                if (bodyStart > 0) {
+                  const body = headerStr.slice(bodyStart + 4, bodyStart + 504);
+                  console.log(`[CONNECTHandler] Response body preview:\n${body}`);
+                }
+              }
             }
           }
 
@@ -748,11 +1340,18 @@ export class CONNECTHandler {
 
         // When connection closes, analyze captured response
         serverConn.on("end", async () => {
-          if (captureResponse && responseBuffer.length > 0) {
-            await this.analyzeResponse(responseBuffer, contentEncoding);
-          }
-          if (!tlsSocket.destroyed) {
-            tlsSocket.end();
+          try {
+            if (captureResponse && responseBuffer.length > 0) {
+              await this.analyzeResponse(responseBuffer, contentEncoding);
+            }
+            if (!tlsSocket.destroyed) {
+              tlsSocket.end();
+            }
+          } catch (err) {
+            console.error("[CONNECTHandler] Error in serverConn 'end' handler:", err);
+            if (!tlsSocket.destroyed) {
+              tlsSocket.destroy();
+            }
           }
         });
 
@@ -772,97 +1371,179 @@ export class CONNECTHandler {
 
     // Handle incoming data from client
     tlsSocket.on("data", async (rawData) => {
-      const data = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+      try {
+        const data = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
 
-      // Feed data to parser
-      parser.feed(data);
+        // If already in WebSocket mode, just pipe through without parsing
+        if (isWebSocket) {
+          const conn = ensureServerConnection();
+          conn.write(data);
+          return;
+        }
 
-      // Check if we have a complete request
-      if (parser.isComplete()) {
-        try {
-          const parsedRequest = parser.parse();
-          if (!parsedRequest) {
-            // Should not happen if isComplete() returned true, but handle gracefully
-            console.error("[CONNECTHandler] Parser reported complete but parse() returned null");
+        // Feed data to parser
+        parser.feed(data);
+
+        // Debug: Log parsing state for large requests
+        const parserState = parser.getState();
+        if (parserState.method === "POST" || data.length > 1000) {
+          console.log(`[CONNECTHandler] 📦 Data chunk: ${data.length} bytes, method=${parserState.method || 'unknown'}, isComplete=${parser.isComplete()}, contentLength=${parserState.contentLength}, received=${parserState.bodyReceived}`);
+        }
+
+        // Check if we have a complete request
+        if (parser.isComplete()) {
+          try {
+            const parsedRequest = parser.parse();
+            if (!parsedRequest) {
+              // Should not happen if isComplete() returned true, but handle gracefully
+              console.error("[CONNECTHandler] Parser reported complete but parse() returned null");
+              parser.reset();
+              return;
+            }
+
+            // Capture auth headers
+            if (!this.hasAuth() || !this.capturedAuth.organizationId) {
+              this.captureAuthFromRequest(parsedRequest.raw, parsedRequest.path);
+            }
+
+            // Track model usage
+            const tracking = this.trackModelUsage(parsedRequest.method, parsedRequest.path);
+            if (tracking.model) currentModel = tracking.model;
+            if (tracking.conversationId) currentConversationId = tracking.conversationId;
+
+            // Setup response capture if needed
+            captureResponse = this.shouldCaptureResponse(parsedRequest.path);
+            if (captureResponse) {
+              responseBuffer = [];
+            }
+
+            // Detect WebSocket upgrade request
+            const upgradeHeader = parsedRequest.headers["upgrade"]?.toLowerCase();
+            const isWebSocketRequest = upgradeHeader === "websocket";
+            if (isWebSocketRequest) {
+              console.log(`[CONNECTHandler] 🔌 WebSocket upgrade detected for ${parsedRequest.path}`);
+              console.log(`[CONNECTHandler] 📤 Forwarding WS upgrade request (${parsedRequest.raw.length} bytes)`);
+              isWebSocket = true; // Switch to passthrough mode after this request
+            }
+
+            // Log request
+            if (
+              !parsedRequest.path.includes("/sentry") &&
+              !parsedRequest.path.includes("/icon.png")
+            ) {
+              const preview =
+                parsedRequest.path.length > 60
+                  ? `${parsedRequest.path.slice(0, 60)}...`
+                  : parsedRequest.path;
+              const isCompletion = parsedRequest.path.includes("/completion");
+              console.log(
+                `[CONNECTHandler] ${parsedRequest.method} ${preview}${currentModel ? ` [${currentModel}]` : ""}${isWebSocketRequest ? " [WS]" : ""}${isCompletion ? " [COMPLETION]" : ""}`
+              );
+              if (isCompletion) {
+                console.log(`[CONNECTHandler] 🎯 Completion request detected! Body length: ${parsedRequest.body.length}`);
+              }
+            }
+
+            if (!requestLogged && this.trafficCallback) {
+              requestLogged = true;
+              this.trafficCallback({
+                timestamp: new Date().toISOString(),
+                direction: "request",
+                method: parsedRequest.method,
+                host: targetHost,
+                path: parsedRequest.path,
+                contentLength: parsedRequest.body.length,
+                contentType: parsedRequest.headers["content-type"],
+                model: currentModel,
+                conversationId: currentConversationId,
+              });
+            }
+
+            // Check if we should intercept this request
+            const routing = this.shouldRouteRequest(parsedRequest.path, currentConversationId);
+
+            if (routing.shouldRoute && routing.targetModel) {
+              // INTERCEPT: Route to alternative provider
+              console.log(
+                `[CONNECTHandler] 🔀 INTERCEPTING: ${routing.sourceModel} → ${routing.targetModel}`
+              );
+              await this.handleInterceptedRequest(
+                parsedRequest,
+                tlsSocket,
+                routing.targetModel,
+                currentConversationId
+              );
+            } else {
+              // PASSTHROUGH: Forward to target
+              if (targetHost.includes("claude.ai")) {
+                // Check if this is a streaming endpoint (completion requests use SSE)
+                const isStreamingEndpoint = parsedRequest.path.includes("/completion");
+
+                if (isStreamingEndpoint) {
+                  // Use native TLS for streaming endpoints (CycleTLS doesn't support streaming)
+                  console.log("[CONNECTHandler] 🔄 Using native TLS for streaming endpoint");
+                  await this.forwardStreamingRequest(parsedRequest, tlsSocket, targetHost);
+                } else if (
+                  parsedRequest.method === "GET" &&
+                  parsedRequest.path.includes("/chat_conversations/") &&
+                  parsedRequest.path.includes("tree=True") &&
+                  currentConversationId &&
+                  this.injectedMessages.has(currentConversationId)
+                ) {
+                  // SYNC INTERCEPTION: This is a conversation fetch for a conversation with injected messages
+                  console.log(
+                    `[CONNECTHandler] 🔄 Intercepting conversation sync for ${currentConversationId.slice(0, 8)} (has ${this.injectedMessages.get(currentConversationId)?.length || 0} injected messages)`
+                  );
+                  await this.forwardWithMessageInjection(parsedRequest, tlsSocket, targetHost, currentConversationId);
+                } else if (this.cycleTLSManager) {
+                  // Use CycleTLS for non-streaming claude.ai requests to bypass Cloudflare
+                  try {
+                    await this.forwardViaCycleTLS(parsedRequest, tlsSocket, targetHost);
+                  } catch (err) {
+                    console.error("[CONNECTHandler] CycleTLS forward failed, trying native TLS:", err);
+                    // Fallback to native TLS with modified headers
+                    await this.forwardViaNativeTLS(parsedRequest, tlsSocket, targetHost);
+                  }
+                } else {
+                  // CycleTLS not available, use native TLS
+                  console.log("[CONNECTHandler] CycleTLS not available, using native TLS");
+                  await this.forwardViaNativeTLS(parsedRequest, tlsSocket, targetHost);
+                }
+              } else if (targetHost.includes("anthropic.com")) {
+                // Handle anthropic.com hosts (like a-api.anthropic.com)
+                console.log(`[CONNECTHandler] 📡 Anthropic API: ${parsedRequest.method} ${parsedRequest.path}`);
+                if (parsedRequest.body.length > 0) {
+                  console.log(`[CONNECTHandler] Anthropic API body (${parsedRequest.body.length} bytes): ${parsedRequest.body.toString("utf8").substring(0, 300)}`);
+                }
+                // Check if this might be a messages/completion endpoint
+                if (parsedRequest.path.includes("/messages") || parsedRequest.path.includes("/v1/m")) {
+                  console.log(`[CONNECTHandler] 🎯 Potential completion endpoint detected!`);
+                }
+                const conn = ensureServerConnection();
+                conn.write(parsedRequest.raw);
+              } else {
+                // Use native TLS for other hosts
+                const conn = ensureServerConnection();
+                conn.write(parsedRequest.raw);
+              }
+            }
+
+            // Reset parser for next request
             parser.reset();
-            return;
+          } catch (err) {
+            console.error("[CONNECTHandler] Error processing request:", err);
+            // On error, try to forward raw data to server
+            if (data.length > 0) {
+              const conn = ensureServerConnection();
+              conn.write(data);
+            }
+            parser.reset();
           }
-
-          // Capture auth headers
-          if (!this.hasAuth() || !this.capturedAuth.organizationId) {
-            this.captureAuthFromRequest(parsedRequest.raw, parsedRequest.path);
-          }
-
-          // Track model usage
-          const tracking = this.trackModelUsage(parsedRequest.method, parsedRequest.path);
-          if (tracking.model) currentModel = tracking.model;
-          if (tracking.conversationId) currentConversationId = tracking.conversationId;
-
-          // Setup response capture if needed
-          captureResponse = this.shouldCaptureResponse(parsedRequest.path);
-          if (captureResponse) {
-            responseBuffer = [];
-          }
-
-          // Log request
-          if (
-            !parsedRequest.path.includes("/sentry") &&
-            !parsedRequest.path.includes("/icon.png")
-          ) {
-            const preview =
-              parsedRequest.path.length > 60
-                ? `${parsedRequest.path.slice(0, 60)}...`
-                : parsedRequest.path;
-            console.log(
-              `[CONNECTHandler] ${parsedRequest.method} ${preview}${currentModel ? ` [${currentModel}]` : ""}`
-            );
-          }
-
-          if (!requestLogged && this.trafficCallback) {
-            requestLogged = true;
-            this.trafficCallback({
-              timestamp: new Date().toISOString(),
-              direction: "request",
-              method: parsedRequest.method,
-              host: targetHost,
-              path: parsedRequest.path,
-              contentLength: parsedRequest.body.length,
-              contentType: parsedRequest.headers["content-type"],
-              model: currentModel,
-              conversationId: currentConversationId,
-            });
-          }
-
-          // Check if we should intercept this request
-          const routing = this.shouldRouteRequest(parsedRequest.path, currentConversationId);
-
-          if (routing.shouldRoute && routing.targetModel) {
-            // INTERCEPT: Route to alternative provider
-            console.log(
-              `[CONNECTHandler] 🔀 INTERCEPTING: ${routing.sourceModel} → ${routing.targetModel}`
-            );
-            await this.handleInterceptedRequest(
-              parsedRequest,
-              tlsSocket,
-              routing.targetModel,
-              currentConversationId
-            );
-          } else {
-            // PASSTHROUGH: Forward to Claude
-            const conn = ensureServerConnection();
-            conn.write(parsedRequest.raw);
-          }
-
-          // Reset parser for next request
-          parser.reset();
-        } catch (err) {
-          console.error("[CONNECTHandler] Error processing request:", err);
-          // On error, try to forward raw data to server
-          if (data.length > 0) {
-            const conn = ensureServerConnection();
-            conn.write(data);
-          }
-          parser.reset();
+        }
+      } catch (err) {
+        console.error("[CONNECTHandler] Error in tlsSocket 'data' handler:", err);
+        if (!tlsSocket.destroyed) {
+          tlsSocket.destroy();
         }
       }
     });
@@ -968,8 +1649,8 @@ export class CONNECTHandler {
       // Save for debugging
       this.saveCompletionRequestDebug(claudeDesktopRequest, parsedRequest.path, conversationId);
 
-      // Transform to Anthropic API format
-      const anthropicRequest = this.transformToAnthropicFormat(claudeDesktopRequest, targetModel);
+      // Transform to Anthropic API format (include conversation history for context)
+      const anthropicRequest = this.transformToAnthropicFormat(claudeDesktopRequest, targetModel, conversationId);
 
       // Save transformed request for debugging
       const timestamp = Date.now();
@@ -980,8 +1661,8 @@ export class CONNECTHandler {
       // Call provider API
       const response = await this.callProviderAPI(targetModel, anthropicRequest);
 
-      // Transform and stream response back to client
-      await this.streamTransformedResponse(tlsSocket, response, targetModel);
+      // Transform and stream response back to client, passing conversation ID for sync support
+      await this.streamTransformedResponse(tlsSocket, response, targetModel, claudeDesktopRequest, conversationId);
     } catch (err) {
       console.error("[CONNECTHandler] Interception failed, falling back to Claude:", err);
 
@@ -1113,22 +1794,30 @@ export class CONNECTHandler {
   private async streamTransformedResponse(
     tlsSocket: tls.TLSSocket,
     providerResponse: Response,
-    targetModel: string
+    targetModel: string,
+    originalRequest?: { parent_message_uuid?: string; prompt?: string },
+    conversationId?: string
   ): Promise<void> {
     // Write HTTP response headers
     tlsSocket.write(
       "HTTP/1.1 200 OK\r\n" +
-        "Content-Type: text/event-stream\r\n" +
+        "Content-Type: text/event-stream; charset=utf-8\r\n" +
         "Cache-Control: no-cache\r\n" +
         "Connection: keep-alive\r\n" +
         "Transfer-Encoding: chunked\r\n" +
+        `request-id: req_${Date.now().toString(36)}\r\n` +
         "\r\n"
     );
 
     const decoder = new TextDecoder();
 
-    // Generate message ID
-    const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    // Generate IDs matching Claude's format
+    const msgId = `chatcompl_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const msgUuid = crypto.randomUUID();
+    // Generate trace ID without using crypto.randomBytes (not available in Bun)
+    const traceId = Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
+    const requestId = `req_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const parentUuid = originalRequest?.parent_message_uuid || crypto.randomUUID();
 
     // State for transformation
     let usage: { prompt_tokens?: number; completion_tokens?: number } | null = null;
@@ -1149,6 +1838,13 @@ export class CONNECTHandler {
       }
     >();
 
+    // Track full response for sync support
+    let fullResponseText = "";
+    const responseStartTime = new Date().toISOString();
+
+    // Generate UUIDs for message storage
+    const userMsgUuid = crypto.randomUUID();
+
     // Helper to write SSE event
     const writeEvent = (event: string, data: unknown) => {
       const chunk = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -1156,21 +1852,25 @@ export class CONNECTHandler {
       tlsSocket.write(`${chunkSize}\r\n${chunk}\r\n`);
     };
 
-    // Send message_start
+    // Send message_start with Claude Desktop-compatible format
     writeEvent("message_start", {
       type: "message_start",
       message: {
         id: msgId,
         type: "message",
         role: "assistant",
+        model: "", // Claude Desktop expects empty string for model in response
+        parent_uuid: parentUuid,
+        uuid: msgUuid,
         content: [],
-        model: targetModel,
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 100, output_tokens: 1 },
+        trace_id: traceId,
+        request_id: requestId,
       },
     });
 
+    // Send ping event (required by Claude Desktop)
     writeEvent("ping", { type: "ping" });
 
     try {
@@ -1215,15 +1915,25 @@ export class CONNECTHandler {
                 writeEvent("content_block_start", {
                   type: "content_block_start",
                   index: textIdx,
-                  content_block: { type: "text", text: "" },
+                  content_block: {
+                    type: "text",
+                    text: "",
+                    citations: [],
+                    start_timestamp: new Date().toISOString(),
+                    stop_timestamp: null,
+                    flags: null,
+                  },
                 });
                 textStarted = true;
               }
               writeEvent("content_block_delta", {
                 type: "content_block_delta",
                 index: textIdx,
-                delta: { type: "text_delta", text: txt },
+                delta: { type: "text_delta", text: txt, citations: [] },
               });
+
+              // Track full response for sync support
+              fullResponseText += txt;
             }
 
             // Handle tool calls
@@ -1300,18 +2010,117 @@ export class CONNECTHandler {
         }
       }
 
-      // Send final events
+      // Send final events (matching Claude Desktop's exact format)
       writeEvent("message_delta", {
         type: "message_delta",
         delta: { stop_reason: "end_turn", stop_sequence: null },
-        usage: { output_tokens: usage?.completion_tokens || 0 },
+      });
+
+      // Send message_limit event (Claude Desktop expects this)
+      writeEvent("message_limit", {
+        type: "message_limit",
+        message_limit: {
+          type: "within_limit",
+          resetsAt: Math.floor(Date.now() / 1000) + 86400,
+          remaining: 100,
+          perModelLimit: false,
+          representativeClaim: "seven_day",
+          overageDisabledReason: null,
+          overageInUse: false,
+        },
       });
 
       writeEvent("message_stop", { type: "message_stop" });
 
-      // Write final chunk
-      tlsSocket.write("data: [DONE]\n\n\n");
+      // End chunked transfer encoding
       tlsSocket.write("0\r\n\r\n");
+
+      // Store messages for sync support (so conversation GET requests return our injected messages)
+      console.log(`[CONNECTHandler] 📊 Storage check: convId=${!!conversationId}, prompt=${!!originalRequest?.prompt}, responseLen=${fullResponseText.length}`);
+      if (conversationId && originalRequest?.prompt && fullResponseText) {
+        const now = new Date().toISOString();
+        const responseEndTime = now;
+
+        // Get existing messages or start fresh
+        const existingMessages = this.injectedMessages.get(conversationId) || [];
+
+        // Calculate next index
+        const nextIndex = existingMessages.length;
+
+        // For parent chain: if we have previous messages, use the last assistant's UUID
+        // Otherwise use the parentUuid from the request (root UUID for first message)
+        const prevAssistantMsg = existingMessages.length > 0
+          ? existingMessages[existingMessages.length - 1]
+          : null;
+        const actualParentUuid = prevAssistantMsg?.sender === "assistant"
+          ? prevAssistantMsg.uuid
+          : parentUuid;
+
+        // Create user message
+        const userMessage = {
+          uuid: userMsgUuid,
+          text: "",
+          content: [
+            {
+              start_timestamp: responseStartTime,
+              stop_timestamp: responseStartTime,
+              type: "text",
+              text: originalRequest.prompt,
+              citations: [] as unknown[],
+            },
+          ],
+          sender: "human" as const,
+          index: nextIndex,
+          created_at: responseStartTime,
+          updated_at: responseStartTime,
+          truncated: false,
+          attachments: [] as unknown[],
+          files: [] as unknown[],
+          files_v2: [] as unknown[],
+          sync_sources: [] as unknown[],
+          parent_message_uuid: actualParentUuid,
+        };
+
+        // Create assistant message
+        const assistantMessage = {
+          uuid: msgUuid,
+          text: "",
+          content: [
+            {
+              start_timestamp: responseStartTime,
+              stop_timestamp: responseEndTime,
+              type: "text",
+              text: fullResponseText,
+              citations: [] as unknown[],
+            },
+          ],
+          sender: "assistant" as const,
+          index: nextIndex + 1,
+          created_at: responseStartTime,
+          updated_at: responseEndTime,
+          truncated: false,
+          attachments: [] as unknown[],
+          files: [] as unknown[],
+          files_v2: [] as unknown[],
+          sync_sources: [] as unknown[],
+          parent_message_uuid: userMsgUuid,
+        };
+
+        // Store both messages
+        existingMessages.push(userMessage, assistantMessage);
+        this.injectedMessages.set(conversationId, existingMessages);
+
+        console.log(
+          `[CONNECTHandler] 📝 Stored ${existingMessages.length} messages for conversation ${conversationId.slice(0, 8)}`
+        );
+
+        // Debug: Save injected message sample for comparison
+        try {
+          const fs = require('fs');
+          fs.writeFileSync('/tmp/injected_message_sample.json', JSON.stringify(assistantMessage, null, 2));
+          console.log(`[CONNECTHandler] 🔍 Injected message sample saved to /tmp/injected_message_sample.json`);
+        } catch (e) { /* ignore */ }
+      }
 
       console.log(
         `[CONNECTHandler] ✅ Interception complete. Tokens: in=${usage?.prompt_tokens || 0}, out=${usage?.completion_tokens || 0}`

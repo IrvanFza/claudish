@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import https from "node:https";
+import net from "node:net";
 import tls, { type SecureContext } from "node:tls";
 import type { CertificateManager } from "./certificate-manager";
 
@@ -11,12 +12,20 @@ export interface HTTPSProxyServerOptions {
   hostname?: string;
 }
 
+// Type for CONNECT handler callback
+export type ConnectHandler = (
+  req: IncomingMessage,
+  socket: net.Socket,
+  head: Buffer
+) => void;
+
 export class HTTPSProxyServer {
   private server: https.Server | null = null;
   private port = 0;
   private hostname = "127.0.0.1";
   private certManager: CertificateManager;
   private requestHandler: (req: IncomingMessage, res: ServerResponse) => void;
+  private connectHandler: ConnectHandler | null = null;
   private secureContextCache: Map<string, SecureContext> = new Map();
 
   constructor(
@@ -25,6 +34,13 @@ export class HTTPSProxyServer {
   ) {
     this.certManager = certManager;
     this.requestHandler = requestHandler;
+  }
+
+  /**
+   * Set the CONNECT handler for HTTP tunneling
+   */
+  setConnectHandler(handler: ConnectHandler): void {
+    this.connectHandler = handler;
   }
 
   /**
@@ -38,10 +54,19 @@ export class HTTPSProxyServer {
     }
 
     try {
-      // Create HTTPS server with SNI callback
+      // Get a default certificate for the server
+      const defaultCert = await this.certManager.getCertForDomain("localhost");
+
+      // Create HTTPS server with SNI callback and proper TLS options
       this.server = https.createServer(
         {
           SNICallback: (servername, cb) => this.handleSNI(servername, cb),
+          // Default certificate (required for TLS handshake before SNI)
+          cert: defaultCert.cert,
+          key: defaultCert.key,
+          // Support TLS 1.2 and 1.3
+          minVersion: "TLSv1.2" as const,
+          maxVersion: "TLSv1.3" as const,
         },
         (req, res) => this.requestHandler(req, res)
       );
@@ -67,6 +92,18 @@ export class HTTPSProxyServer {
       this.server.on("secureConnection", (tlsSocket) => {
         const servername = tlsSocket.servername || "unknown";
         console.log(`[HTTPSProxyServer] TLS handshake completed for ${servername}`);
+      });
+
+      // Handle CONNECT requests for HTTP tunneling (proxy mode)
+      this.server.on("connect", (req, socket, head) => {
+        console.log(`[HTTPSProxyServer] CONNECT request for ${req.url}`);
+        if (this.connectHandler) {
+          this.connectHandler(req, socket, head);
+        } else {
+          // No connect handler - reject with 502
+          socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+          socket.end();
+        }
       });
 
       return this.port;

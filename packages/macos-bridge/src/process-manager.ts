@@ -58,7 +58,14 @@ export class ProcessManager {
           console.error(
             `[ProcessManager] Cleaning up stale PID file (PID ${existingData.pid} not running)`
           );
-          fs.unlinkSync(this.pidFilePath);
+          try {
+            fs.unlinkSync(this.pidFilePath);
+          } catch (unlinkErr) {
+            // File might already be deleted by cleanupZombies
+            if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+              throw unlinkErr;
+            }
+          }
         }
       }
 
@@ -87,7 +94,9 @@ export class ProcessManager {
           return false;
         }
         // Stale lock, retry
-        fs.unlinkSync(this.pidFilePath);
+        if (fs.existsSync(this.pidFilePath)) {
+          fs.unlinkSync(this.pidFilePath);
+        }
         return this.acquire();
       }
       console.error("[ProcessManager] Error acquiring lock:", error);
