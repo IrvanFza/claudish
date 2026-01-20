@@ -995,6 +995,7 @@ OPTIONS:
   --top-models             List recommended/top programming models (curated)
   --json                   Output in JSON format (use with --models or --top-models)
   --force-update           Force refresh model cache from OpenRouter API
+  --mcp                    Start as MCP server (stdio transport for Claude Code)
   --version                Show version information
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
@@ -1022,6 +1023,40 @@ CUSTOM MODELS:
 MODES:
   • Interactive mode (default): Shows model selector, starts persistent session
   • Single-shot mode: Runs one task in headless mode and exits (requires --model)
+
+MCP SERVER:
+  Claudish can run as an MCP (Model Context Protocol) server, exposing OpenRouter
+  models as tools that Claude Code can call mid-conversation.
+
+  Start MCP server:
+    claudish --mcp
+
+  Configure in Claude Code (~/.claude/settings.json):
+    {
+      "mcpServers": {
+        "claudish": {
+          "command": "claudish",
+          "args": ["--mcp"],
+          "env": { "OPENROUTER_API_KEY": "your-key" }
+        }
+      }
+    }
+
+  Or use npx (no installation needed):
+    {
+      "mcpServers": {
+        "claudish": {
+          "command": "npx",
+          "args": ["claudish@latest", "--mcp"]
+        }
+      }
+    }
+
+  Available MCP tools:
+    • run_prompt      - Execute a prompt on any OpenRouter model
+    • list_models     - Show recommended models with pricing/capabilities
+    • search_models   - Fuzzy search all OpenRouter models
+    • compare_models  - Run same prompt across multiple models
 
 NOTES:
   • Permission prompts are SKIPPED by default (--dangerously-skip-permissions)

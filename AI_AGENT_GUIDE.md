@@ -1,8 +1,8 @@
 # Claudish AI Agent Usage Guide
 
-**Version:** 2.0.0
+**Version:** 2.1.0
 **Target Audience:** AI Agents running within Claude Code
-**Purpose:** Quick reference for using Claudish CLI in agentic workflows
+**Purpose:** Quick reference for using Claudish CLI and MCP server in agentic workflows
 
 ---
 
@@ -32,6 +32,7 @@ Claudish = Claude Code + Any AI Model
 - ✅ Run Claude Code with **any AI model** via prefix-based routing
 - ✅ Supports OpenRouter (100+ models), direct Gemini API, direct OpenAI API
 - ✅ Supports local models (Ollama, LM Studio, vLLM, MLX)
+- ✅ **MCP Server mode** - expose models as tools for Claude Code
 - ✅ 100% Claude Code feature compatibility
 - ✅ Local proxy server (no data sent to Claudish servers)
 - ✅ Cost tracking and model selection
@@ -245,6 +246,120 @@ git diff | claudish --stdin --model google/gemini-2.5-flash "review for bugs"
 ```bash
 # Vision model for visual tasks
 claudish --model qwen/qwen3-vl-235b-a22b-instruct "implement dashboard from design"
+```
+
+## MCP Server Mode
+
+Claudish can run as an MCP (Model Context Protocol) server, exposing OpenRouter models as tools that Claude Code can call mid-conversation. This is useful when you want to:
+
+- Query external models without spawning a subprocess
+- Compare responses from multiple models
+- Use specific models for specific subtasks
+
+### Starting MCP Server
+
+```bash
+# Start MCP server (stdio transport)
+claudish --mcp
+```
+
+### Claude Code Configuration
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "claudish": {
+      "command": "claudish",
+      "args": ["--mcp"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-v1-..."
+      }
+    }
+  }
+}
+```
+
+Or use npx (no installation needed):
+
+```json
+{
+  "mcpServers": {
+    "claudish": {
+      "command": "npx",
+      "args": ["claudish@latest", "--mcp"]
+    }
+  }
+}
+```
+
+### Available MCP Tools
+
+| Tool | Description | Example Use |
+|------|-------------|-------------|
+| `run_prompt` | Execute prompt on any model | Get a second opinion from Grok |
+| `list_models` | Show recommended models | Find models with tool support |
+| `search_models` | Fuzzy search all models | Find vision-capable models |
+| `compare_models` | Run same prompt on multiple models | Compare reasoning approaches |
+
+### Using MCP Tools from Claude Code
+
+Once configured, Claude Code can use these tools directly:
+
+```
+User: "Use Grok to review this code"
+Claude: [calls run_prompt tool with model="x-ai/grok-code-fast-1"]
+
+User: "What models support vision?"
+Claude: [calls search_models tool with query="vision"]
+
+User: "Compare how GPT-5 and Gemini explain this concept"
+Claude: [calls compare_models tool with models=["openai/gpt-5.2", "google/gemini-3-pro-preview"]]
+```
+
+### MCP vs CLI Mode
+
+| Feature | CLI Mode | MCP Mode |
+|---------|----------|----------|
+| Use case | Replace Claude Code model | Call models as tools |
+| Context | Full Claude Code session | Single prompt/response |
+| Streaming | Full streaming | Buffered response |
+| Best for | Primary model replacement | Second opinions, comparisons |
+
+### MCP Tool Details
+
+**run_prompt**
+```typescript
+{
+  model: string,        // e.g., "x-ai/grok-code-fast-1"
+  prompt: string,       // The prompt to send
+  system_prompt?: string,  // Optional system prompt
+  max_tokens?: number   // Default: 4096
+}
+```
+
+**list_models**
+```typescript
+// No parameters - returns curated list of recommended models
+{}
+```
+
+**search_models**
+```typescript
+{
+  query: string,   // e.g., "grok", "vision", "free"
+  limit?: number   // Default: 10
+}
+```
+
+**compare_models**
+```typescript
+{
+  models: string[],      // e.g., ["openai/gpt-5.2", "x-ai/grok-code-fast-1"]
+  prompt: string,        // Prompt to send to all models
+  system_prompt?: string // Optional system prompt
+}
 ```
 
 ## Getting Model List
@@ -558,6 +673,6 @@ claudish --help-ai > claudish-agent-guide.md
 
 ---
 
-**Version:** 2.0.0
-**Last Updated:** January 5, 2026
+**Version:** 2.1.0
+**Last Updated:** January 21, 2026
 **Maintained by:** MadAppGang
