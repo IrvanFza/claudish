@@ -24,6 +24,7 @@ import type {
   BridgeConfig,
   BridgeStartOptions,
   HealthResponse,
+  LogEntry,
   LogFilter,
   LogResponse,
   ProxyStatus,
@@ -160,6 +161,7 @@ export class BridgeServer {
       const status: ProxyStatus = {
         running: this.routingMiddleware !== null,
         port: this.proxyPort,
+        proxyPort: this.proxyPort, // HTTPS proxy port for --proxy-server flag
         detectedApps: this.routingMiddleware?.getDetectedApps() || [],
         totalRequests: this.routingMiddleware?.getLogs().length || 0,
         activeConnections: 0,
@@ -448,13 +450,11 @@ export class BridgeServer {
           });
         }
 
-        const response: ApiResponse<{
-          proxyUrl: string;
-          httpsProxyUrl: string;
-          actualPort: number;
-          httpsProxyPort: number;
-        }> = {
+        // Response includes proxyPort at top level for easy access by Swift client
+        const response = {
           success: true,
+          proxyPort: this.proxyPort, // HTTPS proxy port for --proxy-server flag
+          message: `Proxy enabled on port ${this.proxyPort}`,
           data: {
             proxyUrl: `http://127.0.0.1:${this.proxyPort}`,
             httpsProxyUrl: `https://127.0.0.1:${this.httpsProxyPort}`,
@@ -539,7 +539,19 @@ export class BridgeServer {
         since: c.req.query("since") || undefined,
       };
 
-      if (!this.routingMiddleware) {
+      // Merge logs from both routingMiddleware (HTTP) and connectHandler (HTTPS)
+      let logs: LogEntry[] = [];
+      if (this.routingMiddleware) {
+        logs = [...this.routingMiddleware.getLogs()];
+      }
+      if (this.connectHandler) {
+        logs = [...logs, ...this.connectHandler.getLogs()];
+      }
+
+      // Sort by timestamp descending (most recent first)
+      logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      if (logs.length === 0) {
         const response: LogResponse = {
           logs: [],
           total: 0,
@@ -547,8 +559,6 @@ export class BridgeServer {
         };
         return c.json(response);
       }
-
-      let logs = this.routingMiddleware.getLogs();
 
       // Apply filter
       if (query.filter) {
@@ -587,6 +597,9 @@ export class BridgeServer {
     this.app.delete("/logs", (c) => {
       if (this.routingMiddleware) {
         this.routingMiddleware.clearLogs();
+      }
+      if (this.connectHandler) {
+        this.connectHandler.clearLogs();
       }
       return c.json({ success: true, message: "Logs cleared" });
     });

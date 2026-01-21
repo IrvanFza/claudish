@@ -47,6 +47,7 @@ struct ClaudishProxyApp: App {
     @StateObject private var bridgeManager: BridgeManager
     @StateObject private var profileManager = ProfileManager()
     @StateObject private var certificateManager: CertificateManager
+    @StateObject private var processManager = ProcessManager()
 
     init() {
         // Initialize state objects with proper dependencies
@@ -54,23 +55,29 @@ struct ClaudishProxyApp: App {
         let bridgeManager = BridgeManager(apiKeyManager: apiKeyManager)
         let profileManager = ProfileManager()
         let certificateManager = CertificateManager(bridgeManager: bridgeManager)
+        let processManager = ProcessManager()
 
         _apiKeyManager = StateObject(wrappedValue: apiKeyManager)
         _bridgeManager = StateObject(wrappedValue: bridgeManager)
         _profileManager = StateObject(wrappedValue: profileManager)
         _certificateManager = StateObject(wrappedValue: certificateManager)
+        _processManager = StateObject(wrappedValue: processManager)
     }
 
     var body: some Scene {
         // Menu bar extra (status bar icon)
         MenuBarExtra {
-            MenuBarContent(bridgeManager: bridgeManager, profileManager: profileManager, certificateManager: certificateManager)
+            MenuBarContent(bridgeManager: bridgeManager, profileManager: profileManager, certificateManager: certificateManager, processManager: processManager)
                 .onAppear {
                     // Connect app delegate to bridge manager for termination cleanup (Layer 3)
                     appDelegate.bridgeManager = bridgeManager
 
                     // Connect profile manager to bridge manager
                     profileManager.setBridgeManager(bridgeManager)
+
+                    // Connect process manager to bridge manager
+                    processManager.setBridgeManager(bridgeManager)
+
                     // Apply profile when bridge connects
                     if bridgeManager.bridgeConnected {
                         profileManager.applySelectedProfile()
@@ -106,9 +113,9 @@ struct MenuBarContent: View {
     @ObservedObject var bridgeManager: BridgeManager
     @ObservedObject var profileManager: ProfileManager
     @ObservedObject var certificateManager: CertificateManager
+    @ObservedObject var processManager: ProcessManager
     @Environment(\.openWindow) private var openWindow
     @State private var showErrorAlert = false
-    @State private var showCleanupAlert = false
     @State private var timeRange = "30 Days"
     @State private var isInstallingCert = false
 
@@ -156,18 +163,6 @@ struct MenuBarContent: View {
             }
         } message: {
             Text(bridgeManager.errorMessage ?? "Unknown error")
-        }
-        .alert("Proxy Cleanup Failed", isPresented: $showCleanupAlert) {
-            Button("Open Network Settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.network") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            Button("Quit Anyway", role: .destructive) {
-                NSApplication.shared.terminate(nil)
-            }
-        } message: {
-            Text("Failed to disable system proxy. Your internet may not work until you manually disable the proxy in System Settings > Network.")
         }
     }
 
@@ -366,7 +361,7 @@ struct MenuBarContent: View {
 
     private var mainContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header with time range and proxy toggle
+            // Header with Launch Claude button
             HStack {
                 Text("REQUESTS TODAY")
                     .font(.system(size: 11, weight: .semibold))
@@ -376,11 +371,32 @@ struct MenuBarContent: View {
 
                 Spacer()
 
-                // Proxy toggle
-                Toggle("", isOn: $bridgeManager.isProxyEnabled)
-                    .toggleStyle(SwitchToggleStyle(tint: .themeSuccess))
-                    .labelsHidden()
-                    .disabled(!bridgeManager.bridgeConnected)
+                // Launch Proxied Claude button
+                Button(action: {
+                    Task {
+                        await processManager.toggleProxiedClaude(skipCertValidation: true)
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        if processManager.isLaunching {
+                            ProgressView()
+                                .scaleEffect(0.6)
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        } else {
+                            Image(systemName: processManager.isClaudeRunning ? "stop.fill" : "play.fill")
+                                .font(.system(size: 10))
+                        }
+                        Text(processManager.isClaudeRunning ? "Stop" : "Launch")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .background(processManager.isClaudeRunning ? Color.themeDestructive : Color.themeSuccess)
+                .cornerRadius(6)
+                .disabled(!bridgeManager.bridgeConnected || processManager.isLaunching)
             }
             .padding(.horizontal, 20)
             .padding(.top, 20)
@@ -421,22 +437,30 @@ struct MenuBarContent: View {
 
                 Spacer()
 
-                if bridgeManager.bridgeConnected {
+                if processManager.isClaudeRunning {
                     Circle()
                         .fill(Color.themeSuccess)
                         .frame(width: 6, height: 6)
-                    Text("CONNECTED")
+                    Text("CLAUDE ACTIVE")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.5)
                         .foregroundColor(.themeSuccess)
-                } else {
+                } else if bridgeManager.bridgeConnected {
                     Circle()
-                        .fill(Color.themeDestructive)
+                        .fill(Color.themeAccent)
                         .frame(width: 6, height: 6)
-                    Text("DISCONNECTED")
+                    Text("READY")
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.5)
-                        .foregroundColor(.themeDestructive)
+                        .foregroundColor(.themeAccent)
+                } else {
+                    Circle()
+                        .fill(Color.themeTextMuted)
+                        .frame(width: 6, height: 6)
+                    Text("OFFLINE")
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundColor(.themeTextMuted)
                 }
             }
             .padding(.horizontal, 20)
@@ -449,6 +473,61 @@ struct MenuBarContent: View {
                 .foregroundColor(.themeBorder)
                 .frame(height: 1)
                 .padding(.horizontal, 20)
+
+            // Routing status section (diagnostic)
+            if let debugState = bridgeManager.debugState {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ROUTING STATUS")
+                        .font(.system(size: 11, weight: .semibold))
+                        .textCase(.uppercase)
+                        .tracking(1.0)
+                        .foregroundColor(.themeTextMuted)
+
+                    HStack(spacing: 16) {
+                        // Routing enabled indicator
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(debugState.routingConfig.enabled ? Color.themeSuccess : Color.themeTextMuted)
+                                .frame(width: 6, height: 6)
+                            Text(debugState.routingConfig.enabled ? "Routing ON" : "Routing OFF")
+                                .font(.system(size: 11))
+                                .foregroundColor(debugState.routingConfig.enabled ? .themeSuccess : .themeTextMuted)
+                        }
+
+                        // Model mappings count
+                        Text("\(debugState.routingConfig.modelMap.count) mappings")
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeTextMuted)
+
+                        // CONNECT handler
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(debugState.connectHandlerExists ? Color.themeSuccess : Color.themeDestructive)
+                                .frame(width: 6, height: 6)
+                            Text(debugState.connectHandlerExists ? "HTTPS Ready" : "No HTTPS")
+                                .font(.system(size: 11))
+                                .foregroundColor(debugState.connectHandlerExists ? .themeSuccess : .themeDestructive)
+                        }
+                    }
+
+                    // Show first mapping if any
+                    if let firstMapping = debugState.routingConfig.modelMap.first {
+                        Text("\(formatModelName(firstMapping.key)) → \(formatModelName(firstMapping.value))")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeAccent)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+
+                // Dashed divider
+                Rectangle()
+                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .foregroundColor(.themeBorder)
+                    .frame(height: 1)
+                    .padding(.horizontal, 20)
+            }
 
             // Recent activity table
             VStack(alignment: .leading, spacing: 12) {
@@ -587,13 +666,10 @@ struct MenuBarContent: View {
 
                 PillButton(title: "Quit") {
                     Task {
-                        let cleanupSuccess = await bridgeManager.shutdown()
-                        if !cleanupSuccess {
-                            await MainActor.run {
-                                showCleanupAlert = true
-                            }
-                            try? await Task.sleep(nanoseconds: 500_000_000)
-                        }
+                        // Shut down process manager first (kill Claude if running)
+                        processManager.shutdown()
+                        // Then shut down bridge
+                        await bridgeManager.shutdown()
                         NSApplication.shared.terminate(nil)
                     }
                 }

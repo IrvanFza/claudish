@@ -64,11 +64,23 @@ export interface DetectedApp {
 export interface ProxyStatus {
   running: boolean;
   port?: number;
+  /** HTTPS proxy port for --proxy-server flag (same as port, explicit for clarity) */
+  proxyPort?: number;
   detectedApps: DetectedApp[];
   totalRequests: number;
   activeConnections: number;
   uptime: number;
   version: string;
+}
+
+/**
+ * Proxy enable response
+ */
+export interface ProxyEnableResponse {
+  success: boolean;
+  /** HTTPS proxy port to use with --proxy-server flag */
+  proxyPort?: number;
+  message?: string;
 }
 
 /**

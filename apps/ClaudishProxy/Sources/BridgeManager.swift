@@ -7,7 +7,7 @@ import Combine
 /// - Start/stop the bridge process
 /// - Parse stdout for port and token
 /// - HTTP API communication with authentication
-/// - Proxy state management
+/// - Proxy state management (per-instance via --proxy-server flag)
 @MainActor
 class BridgeManager: ObservableObject {
     // MARK: - Published State
@@ -33,6 +33,10 @@ class BridgeManager: ObservableObject {
     @Published var detectedApps: [DetectedApp] = []
     @Published var config: BridgeConfig?
     @Published var errorMessage: String?
+    @Published var debugState: DebugState?
+
+    /// Current HTTPS proxy port (set when proxy is enabled)
+    @Published private(set) var proxyPort: Int?
 
     // Statistics manager
     let statsManager: StatsManager
@@ -77,9 +81,6 @@ class BridgeManager: ObservableObject {
 
         Task { [weak self] in
             guard let self = self else { return }
-
-            // Layer 1: Clean up any stale proxy configuration from previous crash
-            await self.cleanupStaleProxyOnStartup()
 
             await self.startBridge()
 
@@ -211,11 +212,6 @@ class BridgeManager: ObservableObject {
             return
         }
 
-        // Layer 2: IMMEDIATELY clean up system proxy to prevent stale state
-        // This ensures traffic goes direct while we attempt recovery
-        print("[BridgeManager] Cleaning up system proxy before recovery attempt...")
-        await unconfigureSystemProxy()
-
         guard recoveryAttempts < maxRecoveryAttempts else {
             print("[BridgeManager] Max recovery attempts (\(maxRecoveryAttempts)) reached, giving up")
             isAttemptingRecovery = false
@@ -343,9 +339,7 @@ class BridgeManager: ObservableObject {
     }
 
     /// Stop the bridge process
-    /// Returns true if cleanup was successful, false if manual intervention is needed
-    @discardableResult
-    func shutdown() async -> Bool {
+    func shutdown() async {
         // Prevent auto-recovery during intentional shutdown
         isShuttingDown = true
 
@@ -355,16 +349,12 @@ class BridgeManager: ObservableObject {
             await disableProxy()
         }
 
-        // Always clean up system proxy on shutdown, even if proxy wasn't "officially" enabled
-        let cleanupSuccess = await unconfigureSystemProxy()
-
         bridgeProcess?.terminate()
         bridgeProcess = nil
         bridgePort = nil
         bridgeToken = nil
+        proxyPort = nil
         bridgeConnected = false
-
-        return cleanupSuccess
     }
 
     // MARK: - HTTP API
@@ -414,6 +404,18 @@ class BridgeManager: ObservableObject {
         }
     }
 
+    /// Fetch debug state (routing config, proxy state)
+    func fetchDebugState() async {
+        do {
+            let state: DebugState = try await apiRequest(method: "GET", path: "/debug/state")
+            await MainActor.run {
+                self.debugState = state
+            }
+        } catch {
+            print("[BridgeManager] Failed to fetch debug state: \(error)")
+        }
+    }
+
     /// Fetch current status
     func fetchStatus() async {
         do {
@@ -426,46 +428,16 @@ class BridgeManager: ObservableObject {
                 if self.isProxyEnabled != status.running {
                     self.isProxyEnabled = status.running
                 }
-            }
-
-            // Layer 4: Periodic verification - if proxy is OFF, ensure system proxy isn't stale
-            if !status.running {
-                await verifySystemProxyCleanedUp()
+                // Update proxy port from status
+                if let port = status.proxyPort {
+                    self.proxyPort = port
+                }
             }
 
             // Fetch last log entry to get last target model
             await fetchLastTargetModel()
         } catch {
             print("[BridgeManager] Failed to fetch status: \(error)")
-        }
-    }
-
-    /// Layer 4: Verify system proxy is cleaned up when proxy is disabled
-    private func verifySystemProxyCleanedUp() async {
-        guard let networkService = await getActiveNetworkService() else { return }
-
-        let checkProcess = Process()
-        checkProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        checkProcess.arguments = ["-getautoproxyurl", networkService]
-
-        let pipe = Pipe()
-        checkProcess.standardOutput = pipe
-        checkProcess.standardError = pipe
-
-        do {
-            try checkProcess.run()
-            checkProcess.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            // If PAC URL points to localhost but proxy is OFF, clean it up
-            if output.contains("127.0.0.1") && output.contains("Enabled: Yes") {
-                print("[BridgeManager] Layer 4: Found stale proxy config while proxy is OFF, cleaning up...")
-                await unconfigureSystemProxy()
-            }
-        } catch {
-            // Ignore errors - this is just a safety check
         }
     }
 
@@ -518,15 +490,16 @@ class BridgeManager: ObservableObject {
             let encoder = JSONEncoder()
             let body = try encoder.encode(options)
 
-            let _: ApiResponse = try await apiRequest(
+            let response: ProxyEnableResponse = try await apiRequest(
                 method: "POST",
                 path: "/proxy/enable",
                 body: body
             )
-            print("[BridgeManager] Proxy enabled")
+            print("[BridgeManager] Proxy enabled on port \(response.proxyPort ?? 0)")
 
-            // Configure system proxy to route traffic through our proxy
-            await configureSystemProxy()
+            await MainActor.run {
+                self.proxyPort = response.proxyPort
+            }
         } catch {
             print("[BridgeManager] Failed to enable proxy: \(error)")
             await MainActor.run {
@@ -538,14 +511,14 @@ class BridgeManager: ObservableObject {
 
     /// Disable the proxy
     private func disableProxy() async {
-        // Remove system proxy configuration first
-        await unconfigureSystemProxy()
-
         do {
             let _: ApiResponse = try await apiRequest(
                 method: "POST",
                 path: "/proxy/disable"
             )
+            await MainActor.run {
+                self.proxyPort = nil
+            }
             print("[BridgeManager] Proxy disabled")
         } catch {
             print("[BridgeManager] Failed to disable proxy: \(error)")
@@ -599,6 +572,7 @@ class BridgeManager: ObservableObject {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task {
                 await self?.fetchStatus()
+                await self?.fetchDebugState()
             }
         }
     }
@@ -606,254 +580,6 @@ class BridgeManager: ObservableObject {
     private func stopStatusPolling() {
         statusTimer?.invalidate()
         statusTimer = nil
-    }
-
-    // MARK: - System Proxy Configuration
-
-    /// Get the active network service (Wi-Fi, Ethernet, etc.)
-    /// Uses the default route to determine which interface is actually routing traffic
-    private func getActiveNetworkService() async -> String? {
-        // First, find the active interface using route
-        let activeInterface = await getActiveInterface()
-        guard let interface = activeInterface else {
-            print("[BridgeManager] Could not determine active interface")
-            return nil
-        }
-
-        print("[BridgeManager] Active interface: \(interface)")
-
-        // Then find the network service that uses this interface
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-listnetworkserviceorder"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-
-            // Parse the output to find the service that matches the active interface
-            // Format: (1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)
-            let lines = output.components(separatedBy: "\n")
-            var currentServiceName: String? = nil
-
-            for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-                // Check for service name line like "(1) Wi-Fi"
-                if trimmed.hasPrefix("(") && !trimmed.contains("Hardware Port") {
-                    if let closeParenIndex = trimmed.firstIndex(of: ")"),
-                       closeParenIndex < trimmed.endIndex {
-                        let name = String(trimmed[trimmed.index(after: closeParenIndex)...])
-                            .trimmingCharacters(in: .whitespaces)
-                        if !name.isEmpty && !name.hasPrefix("*") {
-                            currentServiceName = name
-                        }
-                    }
-                }
-                // Check for device line like "(Hardware Port: Wi-Fi, Device: en0)"
-                else if trimmed.contains("Device:") && currentServiceName != nil {
-                    // Extract device name
-                    if let deviceRange = trimmed.range(of: "Device: ") {
-                        let afterDevice = trimmed[deviceRange.upperBound...]
-                        let deviceName = afterDevice.replacingOccurrences(of: ")", with: "").trimmingCharacters(in: .whitespaces)
-
-                        if deviceName == interface {
-                            print("[BridgeManager] Found network service '\(currentServiceName!)' for interface \(interface)")
-                            return currentServiceName
-                        }
-                    }
-                    currentServiceName = nil
-                }
-            }
-        } catch {
-            print("[BridgeManager] Failed to get network services: \(error)")
-        }
-
-        return nil
-    }
-
-    /// Get the active network interface using route command
-    private func getActiveInterface() async -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/route")
-        process.arguments = ["get", "default"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-
-            // Parse output for "interface: en0"
-            for line in output.components(separatedBy: "\n") {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("interface:") {
-                    let interface = trimmed.replacingOccurrences(of: "interface:", with: "").trimmingCharacters(in: .whitespaces)
-                    return interface
-                }
-            }
-        } catch {
-            print("[BridgeManager] Failed to get active interface: \(error)")
-        }
-
-        return nil
-    }
-
-    /// Configure system proxy to use our PAC file
-    private func configureSystemProxy() async {
-        guard let port = bridgePort else {
-            print("[BridgeManager] Cannot configure proxy: no bridge port")
-            return
-        }
-
-        guard let networkService = await getActiveNetworkService() else {
-            print("[BridgeManager] Cannot configure proxy: no active network service")
-            await MainActor.run {
-                errorMessage = "Cannot configure system proxy: no active network service found"
-            }
-            return
-        }
-
-        // Validate network service name to prevent command injection
-        guard networkService.range(of: "^[a-zA-Z0-9 /\\-]+$", options: .regularExpression) != nil else {
-            print("[BridgeManager] Invalid network service name: \(networkService)")
-            await MainActor.run {
-                errorMessage = "Invalid network service name detected"
-            }
-            return
-        }
-
-        let pacURL = "http://127.0.0.1:\(port)/proxy.pac"
-        print("[BridgeManager] Configuring system proxy for \(networkService) with PAC: \(pacURL)")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-setautoproxyurl", networkService, pacURL]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            if process.terminationStatus == 0 {
-                print("[BridgeManager] System proxy configured successfully")
-            } else {
-                print("[BridgeManager] Failed to configure system proxy: \(output)")
-                await MainActor.run {
-                    errorMessage = "Failed to configure system proxy. May need admin privileges."
-                }
-            }
-        } catch {
-            print("[BridgeManager] Error configuring system proxy: \(error)")
-            await MainActor.run {
-                errorMessage = "Error configuring system proxy: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    /// Clean up stale proxy configuration on startup (Layer 1 defense)
-    /// This handles crash recovery scenarios where the app terminated without cleanup
-    private func cleanupStaleProxyOnStartup() async {
-        guard let networkService = await getActiveNetworkService() else {
-            return
-        }
-
-        // Check if there's a PAC URL configured pointing to localhost
-        let checkProcess = Process()
-        checkProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        checkProcess.arguments = ["-getautoproxyurl", networkService]
-
-        let pipe = Pipe()
-        checkProcess.standardOutput = pipe
-        checkProcess.standardError = pipe
-
-        do {
-            try checkProcess.run()
-            checkProcess.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            // Check if PAC URL points to localhost (our proxy)
-            if output.contains("127.0.0.1") && output.contains("Enabled: Yes") {
-                print("[BridgeManager] Found stale proxy configuration from previous session, cleaning up...")
-                await unconfigureSystemProxy()
-                print("[BridgeManager] Stale proxy configuration removed")
-            }
-        } catch {
-            print("[BridgeManager] Error checking for stale proxy: \(error)")
-        }
-    }
-
-    /// Remove system proxy configuration
-    /// Returns true if cleanup was successful, false if manual intervention is needed
-    @discardableResult
-    private func unconfigureSystemProxy() async -> Bool {
-        guard let networkService = await getActiveNetworkService() else {
-            print("[BridgeManager] Cannot unconfigure proxy: no active network service")
-            return false
-        }
-
-        // Validate network service name to prevent command injection
-        guard networkService.range(of: "^[a-zA-Z0-9 /\\-]+$", options: .regularExpression) != nil else {
-            print("[BridgeManager] Invalid network service name: \(networkService)")
-            await MainActor.run {
-                errorMessage = "Invalid network service name detected during cleanup"
-            }
-            return false
-        }
-
-        print("[BridgeManager] Disabling system proxy for \(networkService)")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-setautoproxystate", networkService, "off"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            if process.terminationStatus == 0 {
-                print("[BridgeManager] System proxy disabled successfully")
-                return true
-            } else {
-                print("[BridgeManager] Failed to disable system proxy: \(output)")
-                await MainActor.run {
-                    errorMessage = "Failed to disable system proxy. You may need to manually disable it in System Settings > Network."
-                }
-                return false
-            }
-        } catch {
-            print("[BridgeManager] Error disabling system proxy: \(error)")
-            await MainActor.run {
-                errorMessage = "Error disabling system proxy: \(error.localizedDescription). Please check System Settings > Network."
-            }
-            return false
-        }
     }
 }
 
@@ -864,7 +590,6 @@ enum BridgeError: Error, LocalizedError {
     case unauthorized
     case invalidResponse
     case apiError(status: Int)
-    case invalidNetworkService
 
     var errorDescription: String? {
         switch self {
@@ -876,8 +601,6 @@ enum BridgeError: Error, LocalizedError {
             return "Invalid response from bridge"
         case .apiError(let status):
             return "API error: \(status)"
-        case .invalidNetworkService:
-            return "Invalid network service name"
         }
     }
 }

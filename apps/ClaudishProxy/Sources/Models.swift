@@ -13,11 +13,19 @@ struct HealthResponse: Codable {
 struct ProxyStatus: Codable {
     let running: Bool
     let port: Int?
+    let proxyPort: Int?  // HTTPS proxy port (separate from HTTP API port)
     let detectedApps: [DetectedApp]
     let totalRequests: Int
     let activeConnections: Int
     let uptime: Double
     let version: String
+}
+
+/// Proxy enable response (includes proxy port)
+struct ProxyEnableResponse: Codable {
+    let success: Bool
+    let proxyPort: Int?
+    let message: String?
 }
 
 /// Detected application info
@@ -29,6 +37,20 @@ struct DetectedApp: Codable, Identifiable {
     let requestCount: Int
 
     var id: String { name }
+}
+
+/// Routing configuration
+struct RoutingConfig: Codable {
+    let enabled: Bool
+    let modelMap: [String: String]
+}
+
+/// Debug state response from /debug/state endpoint
+struct DebugState: Codable {
+    let config: BridgeConfig?
+    let routingConfig: RoutingConfig
+    let proxyEnabled: Bool
+    let connectHandlerExists: Bool
 }
 
 /// Log entry
