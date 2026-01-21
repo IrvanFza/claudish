@@ -166,6 +166,23 @@ export const GLM_PRICING: Record<string, ModelPricing> = {
   default: { inputCostPer1M: 0.16, outputCostPer1M: 0.8, isEstimate: true },
 };
 
+export const VERTEX_PRICING: Record<string, ModelPricing> = {
+  // Vertex AI Express Mode uses same pricing as Gemini API
+  // Gemini 2.5 models
+  "gemini-2.5-flash": { inputCostPer1M: 0.15, outputCostPer1M: 0.6 },
+  "gemini-2.5-flash-preview-05-20": { inputCostPer1M: 0.15, outputCostPer1M: 0.6 },
+  "gemini-2.5-pro": { inputCostPer1M: 1.25, outputCostPer1M: 10.0 },
+  "gemini-2.5-pro-preview-05-06": { inputCostPer1M: 1.25, outputCostPer1M: 10.0 },
+  // Gemini 3.0 models (pricing may vary)
+  "gemini-3-pro-preview": { inputCostPer1M: 2.5, outputCostPer1M: 10.0 },
+  "gemini-3.0-flash": { inputCostPer1M: 0.1, outputCostPer1M: 0.4 },
+  // Gemini 2.0 models
+  "gemini-2.0-flash": { inputCostPer1M: 0.1, outputCostPer1M: 0.4 },
+  "gemini-2.0-flash-thinking": { inputCostPer1M: 0.1, outputCostPer1M: 0.4 },
+  // Default for unknown Vertex models (marked as estimate)
+  default: { inputCostPer1M: 0.5, outputCostPer1M: 2.0, isEstimate: true },
+};
+
 /**
  * Get pricing for a model
  */
@@ -176,6 +193,9 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
     case "gemini":
     case "google":
       pricingTable = GEMINI_PRICING;
+      break;
+    case "vertex":
+      pricingTable = VERTEX_PRICING;
       break;
     case "openai":
     case "oai":

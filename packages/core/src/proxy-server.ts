@@ -106,7 +106,7 @@ export async function createProxyServer(
       return remoteProviderHandlers.get(targetModel)!;
     }
 
-    // Check for remote provider prefix (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, or/)
+    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, or/)
     const resolved = resolveRemoteProvider(targetModel);
     if (!resolved) {
       return null;
@@ -129,6 +129,9 @@ export async function createProxyServer(
     if (resolved.provider.name === "gemini") {
       handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "vertex") {
+      handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+      log(`[Proxy] Created Vertex AI handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "openai") {
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
@@ -167,7 +170,7 @@ export async function createProxyServer(
       // Assuming Haiku mapping covers subagent unless custom logic added.
     }
 
-    // 3. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
+    // 3. Check for Remote Provider (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
     const remoteHandler = getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 

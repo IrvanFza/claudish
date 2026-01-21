@@ -106,7 +106,7 @@ export async function createProxyServer(
       return remoteProviderHandlers.get(targetModel)!;
     }
 
-    // Check for remote provider prefix (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, or/)
+    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, or/)
     const resolved = resolveRemoteProvider(targetModel);
     if (!resolved) {
       return null;
@@ -140,6 +140,10 @@ export async function createProxyServer(
       // GLM uses OpenAI-compatible API
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created GLM handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "vertex") {
+      // Vertex AI Express Mode uses Gemini API format
+      handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+      log(`[Proxy] Created Vertex AI handler: ${resolved.modelName}`);
     } else {
       return null; // Unknown provider
     }

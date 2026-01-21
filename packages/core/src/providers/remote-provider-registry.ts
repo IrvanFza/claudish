@@ -1,11 +1,12 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, Vertex AI)
  * based on model ID prefixes.
  *
  * Prefix patterns:
  * - g/, gemini/ -> Google Gemini API (direct)
+ * - v/, vertex/ -> Google Vertex AI Express Mode (Gemini API format)
  * - oai/, openai/ -> OpenAI API
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
@@ -28,6 +29,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
     prefixes: ["g/", "gemini/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
+  {
+    name: "vertex",
+    baseUrl: process.env.VERTEX_BASE_URL || "https://aiplatform.googleapis.com",
+    apiPath: "/v1/publishers/google/models/{model}:streamGenerateContent?alt=sse",
+    apiKeyEnvVar: "VERTEX_API_KEY",
+    prefixes: ["vertex/", "v/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -161,6 +176,7 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
     const examples: Record<string, string> = {
       GEMINI_API_KEY:
         "export GEMINI_API_KEY='your-key' (get from https://aistudio.google.com/app/apikey)",
+      VERTEX_API_KEY: "export VERTEX_API_KEY='your-key' (get from Google Cloud Console)",
       OPENAI_API_KEY:
         "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
       OPENROUTER_API_KEY:
