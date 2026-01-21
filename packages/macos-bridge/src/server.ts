@@ -974,7 +974,7 @@ export class BridgeServer {
    * @param port - Port to listen on (0 = random available port)
    * @returns Startup result with actual port and auth token
    */
-  async start(port = 0): Promise<BridgeStartResult> {
+  async start(port = 8899): Promise<BridgeStartResult> {
     // Initialize certificates
     await this.certManager.initialize();
 

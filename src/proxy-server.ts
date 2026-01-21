@@ -12,6 +12,7 @@ import {
 import { GeminiHandler } from "./handlers/gemini-handler.js";
 import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
+import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import {
   resolveProvider,
@@ -22,6 +23,10 @@ import {
   resolveRemoteProvider,
   validateRemoteProviderApiKey,
 } from "./providers/remote-provider-registry.js";
+import {
+  getVertexConfig,
+  validateVertexOAuthConfig,
+} from "./auth/vertex-auth.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -141,9 +146,29 @@ export async function createProxyServer(
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created GLM handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "vertex") {
-      // Vertex AI Express Mode uses Gemini API format
-      handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created Vertex AI handler: ${resolved.modelName}`);
+      // Vertex AI supports two modes:
+      // 1. Express Mode (API key) - for Gemini models
+      // 2. OAuth Mode (project/service account) - for all models including partners
+      const hasApiKey = !!process.env.VERTEX_API_KEY;
+      const vertexConfig = getVertexConfig();
+
+      if (hasApiKey) {
+        // Express Mode - use GeminiHandler with API key
+        handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
+      } else if (vertexConfig) {
+        // OAuth Mode - use VertexOAuthHandler
+        const oauthError = validateVertexOAuthConfig();
+        if (oauthError) {
+          log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
+          return null;
+        }
+        handler = new VertexOAuthHandler(resolved.modelName, port);
+        log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
+      } else {
+        log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
+        return null;
+      }
     } else {
       return null; // Unknown provider
     }

@@ -6,7 +6,7 @@ import * as zlib from "node:zlib";
 import type { CertificateManager } from "./certificate-manager";
 import { CycleTLSManager } from "./cycletls-manager";
 import { HTTPRequestParser, type ParsedHTTPRequest } from "./http-parser";
-import type { ApiKeys } from "./types";
+import type { ApiKeys, LogEntry } from "./types";
 
 /**
  * Traffic entry for logging intercepted requests
@@ -101,6 +101,9 @@ export class CONNECTHandler {
 
   /** API keys for alternative providers */
   private apiKeys: ApiKeys = {};
+
+  /** Log buffer for request stats */
+  private logBuffer: LogEntry[] = [];
 
   /**
    * Store for injected messages per conversation
@@ -214,6 +217,20 @@ export class CONNECTHandler {
    */
   getRoutingConfig(): RoutingConfig {
     return this.routingConfig;
+  }
+
+  /**
+   * Get log entries for intercepted requests
+   */
+  getLogs(): LogEntry[] {
+    return this.logBuffer;
+  }
+
+  /**
+   * Clear log buffer
+   */
+  clearLogs(): void {
+    this.logBuffer = [];
   }
 
   /**
@@ -1652,6 +1669,11 @@ export class CONNECTHandler {
     targetModel: string,
     conversationId?: string
   ): Promise<void> {
+    const startTime = Date.now();
+    const sourceModel = conversationId
+      ? this.modelTracker.conversationModels.get(conversationId) || "unknown"
+      : this.modelTracker.currentModel || "unknown";
+
     try {
       // Parse request body as JSON
       const bodyStr = parsedRequest.body.toString("utf8");
@@ -2261,6 +2283,24 @@ export class CONNECTHandler {
         }, null, 2)
       );
       console.log(`[CONNECTHandler] 📝 Success logged to ${successFilename}`);
+
+      // Add to log buffer for stats
+      const logEntry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        app: "Claude Desktop",
+        confidence: 1.0,
+        requestedModel: sourceModel,
+        targetModel: targetModel,
+        status: 200,
+        latency: Date.now() - startTime,
+        inputTokens: usage?.prompt_tokens || 0,
+        outputTokens: usage?.completion_tokens || 0,
+        cost: 0, // TODO: compute cost based on model pricing
+      };
+      this.logBuffer.push(logEntry);
+      if (this.logBuffer.length > 1000) {
+        this.logBuffer.shift();
+      }
     } catch (err) {
       console.error("[CONNECTHandler] Error streaming response:", err);
       writeEvent("error", { type: "error", error: { type: "api_error", message: String(err) } });

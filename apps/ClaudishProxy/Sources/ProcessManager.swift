@@ -166,20 +166,24 @@ class ProcessManager: ObservableObject {
 
         // If port is already available, return it
         if let port = bridge.proxyPort {
+            print("[ProcessManager] Got proxy port from bridge: \(port)")
             return port
         }
 
-        // Wait briefly for proxy to report its port (up to 2 seconds)
-        for _ in 0..<20 {
+        // Wait for proxy to report its port (up to 3 seconds)
+        print("[ProcessManager] Waiting for proxy port...")
+        for i in 0..<30 {
             try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             if let port = bridge.proxyPort {
+                print("[ProcessManager] Got proxy port after \(i * 100)ms: \(port)")
                 return port
             }
         }
 
-        // Fallback to default if not reported (shouldn't happen normally)
-        print("[ProcessManager] Warning: Proxy port not reported, using default 8443")
-        return 8443
+        // Use the well-known default port (8899) as fallback
+        // This should match the default in macos-bridge/src/server.ts
+        print("[ProcessManager] Warning: Using default proxy port 8899")
+        return 8899
     }
 
     /// Handle process termination

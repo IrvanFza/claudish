@@ -968,6 +968,7 @@ USAGE:
 MODEL ROUTING (prefix-based):
   (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
   g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
+  v/, vertex/      Vertex AI (OAuth)      claudish --model v/gemini-2.5-flash "task"
   oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
   mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
@@ -1044,6 +1045,9 @@ ENVIRONMENT VARIABLES:
   API Keys (at least one required for cloud models):
   OPENROUTER_API_KEY              OpenRouter API key (default backend)
   GEMINI_API_KEY                  Google Gemini API key (for g/ prefix)
+  VERTEX_API_KEY                  Vertex AI Express API key (for v/ prefix)
+  VERTEX_PROJECT                  Vertex AI project ID (OAuth mode, for v/ prefix)
+  VERTEX_LOCATION                 Vertex AI region (default: us-central1)
   OPENAI_API_KEY                  OpenAI API key (for oai/ prefix)
   MINIMAX_API_KEY                 MiniMax API key (for mmax/, mm/ prefix)
   MOONSHOT_API_KEY                Kimi/Moonshot API key (for kimi/, moonshot/ prefix)
@@ -1094,6 +1098,15 @@ EXAMPLES:
   # Direct Gemini API (lower latency)
   claudish --model g/gemini-2.0-flash "quick fix"
   claudish --model gemini/gemini-2.5-pro "complex analysis"
+
+  # Vertex AI (Google Cloud - supports Google + partner models)
+  # Express mode (API key):
+  VERTEX_API_KEY=... claudish --model v/gemini-2.5-flash "task"
+  # OAuth mode (gcloud auth):
+  VERTEX_PROJECT=my-project claudish --model v/gemini-2.5-flash "task"
+  # Partner models (MiniMax, Mistral on Vertex):
+  claudish --model vertex/minimaxai/minimax-m2-maas "task"
+  claudish --model vertex/mistralai/codestral-2 "write code"
 
   # Direct OpenAI API
   claudish --model oai/gpt-4o "implement feature"
