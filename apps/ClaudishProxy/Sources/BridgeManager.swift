@@ -193,9 +193,29 @@ class BridgeManager: ObservableObject {
             bridgeProcess = process
             print("[BridgeManager] Bridge process started with PID: \(process.processIdentifier)")
 
+            // Poll for lock file with timeout (max 5 seconds)
+            var attempts = 0
+            while !bridgeConnected && attempts < 50 {
+                checkConnection() // Will try lock file first, then stdout
+
+                if bridgeConnected {
+                    break
+                }
+
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                attempts += 1
+            }
+
+            if !bridgeConnected {
+                print("[BridgeManager] Warning: Bridge did not connect within timeout")
+                errorMessage = "Bridge started but did not respond. Check logs."
+            }
+
             // Start status polling once connected
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                self.startStatusPolling()
+            if bridgeConnected {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    self.startStatusPolling()
+                }
             }
         } catch {
             print("[BridgeManager] Failed to start bridge: \(error)")
@@ -290,51 +310,29 @@ class BridgeManager: ObservableObject {
         }
     }
 
-    /// Check if we have both port and token, then verify connection
+    /// Discover port and token, then verify connection
     private func checkConnection() {
-        guard bridgePort != nil, bridgeToken != nil else { return }
-
-        Task {
-            let connected = await verifyConnection()
-            await MainActor.run {
-                bridgeConnected = connected
-                if !connected {
-                    errorMessage = "Failed to connect to bridge. Check that the bridge process is running."
-                } else {
-                    errorMessage = nil
-                    // Reset recovery state on successful connection
-                    recoveryAttempts = 0
-                    isRecovering = false
-                }
+        // Strategy 1: Read from lock file (PRIMARY)
+        if let lockData = readLockFile() {
+            Task { @MainActor in
+                self.bridgePort = lockData.port
+                self.bridgeToken = lockData.token
+                print("[BridgeManager] Port discovered from lock file: \(lockData.port)")
+                await self.verifyConnectionAndUpdate()
             }
-
-            if connected {
-                await fetchConfig()
-            }
+            return
         }
-    }
 
-    /// Verify connection to bridge
-    private func verifyConnection() async -> Bool {
-        guard let port = bridgePort else { return false }
+        // Strategy 2: Wait for stdout (FALLBACK)
+        // Only proceed if we have both port and token from stdout
+        guard bridgePort != nil, bridgeToken != nil else {
+            print("[BridgeManager] Lock file not available, waiting for stdout...")
+            return
+        }
 
-        let url = URL(string: "http://127.0.0.1:\(port)/health")!
-
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                return false
-            }
-
-            // Parse health response
-            if let json = try? JSONDecoder().decode(HealthResponse.self, from: data) {
-                return json.status == "ok"
-            }
-            return false
-        } catch {
-            print("[BridgeManager] Health check failed: \(error)")
-            return false
+        // We have stdout data, verify it
+        Task {
+            await self.verifyConnectionAndUpdate()
         }
     }
 
@@ -581,6 +579,110 @@ class BridgeManager: ObservableObject {
         statusTimer?.invalidate()
         statusTimer = nil
     }
+
+    // MARK: - Lock File Management
+
+    /// Read port and token from lock file
+    private func readLockFile() -> (port: Int, token: String)? {
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let lockFilePath = homeDir
+            .appendingPathComponent(".claudish-proxy")
+            .appendingPathComponent("bridge-token")
+            .path
+
+        guard FileManager.default.fileExists(atPath: lockFilePath) else {
+            print("[BridgeManager] Lock file not found: \(lockFilePath)")
+            return nil
+        }
+
+        do {
+            let data = try Data(contentsOf: URL(fileURLWithPath: lockFilePath))
+            let json = try JSONDecoder().decode(BridgeLockFile.self, from: data)
+
+            // Verify process is still alive
+            let processAlive = kill(json.pid, 0) == 0
+            if !processAlive {
+                print("[BridgeManager] Lock file PID \(json.pid) not running (stale)")
+                return nil
+            }
+
+            print("[BridgeManager] Lock file read: port=\(json.port), pid=\(json.pid)")
+            return (port: json.port, token: json.token)
+        } catch {
+            print("[BridgeManager] Failed to read lock file: \(error)")
+            return nil
+        }
+    }
+
+    /// Perform health check on bridge port
+    /// - Parameter port: Port to check
+    /// - Returns: true if health check passed
+    private func performHealthCheck(port: Int, timeout: TimeInterval = 3.0) async -> Bool {
+        let url = URL(string: "http://127.0.0.1:\(port)/health")!
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                print("[BridgeManager] Health check failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return false
+            }
+
+            // Parse health response
+            if let json = try? JSONDecoder().decode(HealthResponse.self, from: data),
+               json.status == "ok" {
+                print("[BridgeManager] Health check passed")
+                return true
+            }
+
+            print("[BridgeManager] Health check failed: Invalid response")
+            return false
+        } catch {
+            print("[BridgeManager] Health check failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Verify connection with health check
+    private func verifyConnectionAndUpdate() async {
+        guard let port = bridgePort, let _ = bridgeToken else {
+            print("[BridgeManager] Cannot verify: missing port or token")
+            return
+        }
+
+        let healthy = await performHealthCheck(port: port)
+
+        await MainActor.run {
+            if healthy {
+                self.bridgeConnected = true
+                self.errorMessage = nil
+                self.recoveryAttempts = 0
+                print("[BridgeManager] Bridge connected and healthy")
+            } else {
+                self.bridgeConnected = false
+                self.errorMessage = "Bridge failed health check on port \(port)"
+                print("[BridgeManager] Health check failed for port \(port)")
+            }
+        }
+
+        if healthy {
+            await fetchConfig()
+        }
+    }
+}
+
+// MARK: - Lock File Structure
+
+/// Lock file structure
+struct BridgeLockFile: Codable {
+    let port: Int
+    let token: String
+    let pid: Int32
+    let startTime: String
 }
 
 // MARK: - Errors

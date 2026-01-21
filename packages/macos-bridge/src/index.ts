@@ -38,7 +38,7 @@ async function main() {
   }
   // Parse command line arguments
   const args = process.argv.slice(2);
-  let port = 0;
+  let port: number | undefined = undefined; // undefined = use server default (8899)
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) {
@@ -74,11 +74,11 @@ Output:
   }
 
   // Use environment variable if no command line port specified
-  if (port === 0) {
+  if (port === undefined) {
     const envPort = process.env.BRIDGE_PORT;
     if (envPort) {
       port = Number.parseInt(envPort, 10);
-      if (Number.isNaN(port)) port = 0;
+      if (Number.isNaN(port)) port = undefined;
     }
   }
 

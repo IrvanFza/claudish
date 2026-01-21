@@ -969,12 +969,52 @@ export class BridgeServer {
   }
 
   /**
+   * Clean up stale lock file from previous crashed instance
+   */
+  private cleanupStaleLockFile(): void {
+    const tokenFile = path.join(os.homedir(), ".claudish-proxy", "bridge-token");
+
+    if (!fs.existsSync(tokenFile)) {
+      return;
+    }
+
+    try {
+      const content = fs.readFileSync(tokenFile, "utf-8");
+      const data = JSON.parse(content);
+
+      // Check if process is still alive
+      try {
+        process.kill(data.pid, 0); // Signal 0 = check existence
+        console.error(`[bridge] Lock file exists for PID ${data.pid} (still running)`);
+        // Don't remove if process is alive
+      } catch (err) {
+        // Process not found, stale lock file
+        console.error(`[bridge] Removing stale lock file (PID ${data.pid} not running)`);
+        fs.unlinkSync(tokenFile);
+      }
+    } catch (error) {
+      console.error("[bridge] Error cleaning stale lock file:", error);
+      // Remove corrupted file
+      try {
+        fs.unlinkSync(tokenFile);
+      } catch (unlinkErr) {
+        // Ignore unlink errors
+      }
+    }
+  }
+
+  /**
    * Start the bridge server
    *
-   * @param port - Port to listen on (0 = random available port)
+   * @param port - Port to listen on (default: 8899 for predictability)
+   *               If port is in use, server will fail. Caller should retry
+   *               with port=0 to get random available port.
    * @returns Startup result with actual port and auth token
    */
   async start(port = 8899): Promise<BridgeStartResult> {
+    // Clean up stale lock file from previous crashed instance
+    this.cleanupStaleLockFile();
+
     // Initialize certificates
     await this.certManager.initialize();
 
@@ -1000,25 +1040,29 @@ export class BridgeServer {
 
         const token = this.authManager.getToken();
 
-        // Write token to file for external access
-        const fs = require("node:fs");
-        const tokenFile = require("node:path").join(
-          require("node:os").homedir(),
-          ".claudish-proxy",
-          "bridge-token"
-        );
+        // Write token file for Swift app (atomic operation)
+        const dataDir = path.join(os.homedir(), ".claudish-proxy");
+        const tokenFile = path.join(dataDir, "bridge-token");
+
         try {
-          fs.writeFileSync(
-            tokenFile,
-            JSON.stringify({
-              port: actualPort,
-              token,
-              pid: process.pid,
-              startTime: new Date().toISOString(),
-            })
-          );
+          // Ensure directory exists
+          if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+          }
+
+          // Write atomically
+          const lockData = {
+            port: actualPort,
+            token,
+            pid: process.pid,
+            startTime: new Date().toISOString(),
+          };
+
+          fs.writeFileSync(tokenFile, JSON.stringify(lockData, null, 2));
+          console.error(`[bridge] Lock file written to ${tokenFile}`);
         } catch (e) {
-          console.error("[bridge] Failed to write token file:", e);
+          console.error("[bridge] CRITICAL: Failed to write lock file:", e);
+          // This is not fatal, stdout parsing is fallback
         }
 
         // Output structured data to stdout for Swift app to parse

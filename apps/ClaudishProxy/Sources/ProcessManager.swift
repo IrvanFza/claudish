@@ -56,6 +56,8 @@ class ProcessManager: ObservableObject {
         }
 
         guard bridge.bridgeConnected else {
+            let message = "Bridge is not connected. Please wait for the bridge to start."
+            errorMessage = message
             throw ProcessManagerError.bridgeNotConnected
         }
 
@@ -67,10 +69,14 @@ class ProcessManager: ObservableObject {
             try await Task.sleep(nanoseconds: 500_000_000) // 500ms
         }
 
-        // Get proxy port from bridge
+        // Get proxy port with health check verification
         guard let proxyPort = await getProxyPort() else {
+            let message = "Proxy port health check failed. The bridge may not be running correctly."
+            errorMessage = message
             throw ProcessManagerError.proxyNotReady
         }
+
+        print("[ProcessManager] Launching Claude Desktop with proxy port: \(proxyPort)")
 
         isLaunching = true
         defer { isLaunching = false }
@@ -160,30 +166,84 @@ class ProcessManager: ObservableObject {
 
     // MARK: - Private Helpers
 
-    /// Get proxy port from bridge (with retry logic for async startup)
+    /// Get proxy port from bridge with health check verification
     private func getProxyPort() async -> Int? {
-        guard let bridge = bridgeManager else { return nil }
-
-        // If port is already available, return it
-        if let port = bridge.proxyPort {
-            print("[ProcessManager] Got proxy port from bridge: \(port)")
-            return port
+        guard let bridge = bridgeManager else {
+            print("[ProcessManager] No bridge manager")
+            return nil
         }
 
-        // Wait for proxy to report its port (up to 3 seconds)
-        print("[ProcessManager] Waiting for proxy port...")
-        for i in 0..<30 {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            if let port = bridge.proxyPort {
-                print("[ProcessManager] Got proxy port after \(i * 100)ms: \(port)")
-                return port
+        // Get port from bridge
+        var port: Int?
+        if let bridgePort = bridge.proxyPort {
+            port = bridgePort
+        } else {
+            // Wait for proxy to report its port (up to 3 seconds)
+            print("[ProcessManager] Waiting for proxy port...")
+            for _ in 0..<30 {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                if let bridgePort = bridge.proxyPort {
+                    port = bridgePort
+                    break
+                }
             }
         }
 
-        // Use the well-known default port (8899) as fallback
-        // This should match the default in macos-bridge/src/server.ts
-        print("[ProcessManager] Warning: Using default proxy port 8899")
-        return 8899
+        // If still no port, use default 8899
+        if port == nil {
+            print("[ProcessManager] No port from bridge, trying default 8899")
+            port = 8899
+        }
+
+        guard let finalPort = port else {
+            print("[ProcessManager] Failed to determine port")
+            return nil
+        }
+
+        // CRITICAL: Verify port with health check before launching Claude
+        print("[ProcessManager] Verifying port \(finalPort) with health check...")
+        let healthy = await performHealthCheck(port: finalPort)
+
+        if !healthy {
+            print("[ProcessManager] Health check failed for port \(finalPort)")
+            errorMessage = "Proxy not responding on port \(finalPort). Cannot launch Claude."
+            return nil
+        }
+
+        print("[ProcessManager] Health check passed for port \(finalPort)")
+        return finalPort
+    }
+
+    /// Perform health check on proxy port
+    private func performHealthCheck(port: Int, timeout: TimeInterval = 3.0) async -> Bool {
+        let url = URL(string: "http://127.0.0.1:\(port)/health")!
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return false
+            }
+
+            // Parse health response
+            struct HealthResponse: Codable {
+                let status: String
+            }
+
+            if let json = try? JSONDecoder().decode(HealthResponse.self, from: data),
+               json.status == "ok" {
+                return true
+            }
+
+            return false
+        } catch {
+            print("[ProcessManager] Health check error: \(error)")
+            return false
+        }
     }
 
     /// Handle process termination
