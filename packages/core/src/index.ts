@@ -26,6 +26,7 @@ export { GeminiHandler } from './handlers/gemini-handler.js';
 export { OpenAIHandler } from './handlers/openai-handler.js';
 export { LocalProviderHandler } from './handlers/local-provider-handler.js';
 export { AnthropicCompatHandler } from './handlers/anthropic-compat-handler.js';
+export { PoeHandler } from './handlers/poe-handler.js';
 
 export type { LocalProviderOptions } from './handlers/local-provider-handler.js';
 
