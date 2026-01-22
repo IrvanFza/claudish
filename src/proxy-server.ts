@@ -14,6 +14,7 @@ import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
 import { PoeHandler } from "./handlers/poe-handler.js";
+import { OllamaCloudHandler } from "./handlers/ollamacloud-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import {
   resolveProvider,
@@ -131,7 +132,7 @@ export async function createProxyServer(
       return remoteProviderHandlers.get(targetModel)!;
     }
 
-    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, or/)
+    // Check for remote provider prefix (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/, oc/, or/)
     const resolved = resolveRemoteProvider(targetModel);
     if (!resolved) {
       return null;
@@ -164,7 +165,11 @@ export async function createProxyServer(
     } else if (resolved.provider.name === "glm") {
       // GLM uses OpenAI-compatible API
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
-      log(`[Proxy] Created GLM handler: ${resolved.modelName}`);
+      log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "ollamacloud") {
+      // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
+      handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
+      log(`[Proxy] Created OllamaCloud handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "vertex") {
       // Vertex AI supports two modes:
       // 1. Express Mode (API key) - for Gemini models

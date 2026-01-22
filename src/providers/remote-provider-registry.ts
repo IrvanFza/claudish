@@ -1,7 +1,7 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud)
  * based on model ID prefixes.
  *
  * Prefix patterns:
@@ -10,6 +10,7 @@
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
+ * - oc/ -> OllamaCloud API (OpenAI-compatible)
  * - or/, no prefix with "/" -> OpenRouter (existing handler)
  */
 
@@ -111,6 +112,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsReasoning: false,
     },
   },
+  {
+    name: "ollamacloud",
+    baseUrl: process.env.OLLAMACLOUD_BASE_URL || "https://ollama.com",
+    apiPath: "/api/chat",
+    apiKeyEnvVar: "OLLAMA_API_KEY",
+    prefixes: ["oc/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: false,
+    },
+  },
 ];
 
 /**
@@ -169,6 +184,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       MOONSHOT_API_KEY:
         "export MOONSHOT_API_KEY='your-key' (get from https://platform.moonshot.cn/)",
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
+      OLLAMA_API_KEY:
+        "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
     };
 
     const example = examples[provider.apiKeyEnvVar] || `export ${provider.apiKeyEnvVar}='your-key'`;

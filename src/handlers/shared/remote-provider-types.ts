@@ -140,6 +140,16 @@ export const GLM_PRICING: Record<string, ModelPricing> = {
   default: { inputCostPer1M: 0.16, outputCostPer1M: 0.8 },
 };
 
+export const OLLAMACLOUD_PRICING: Record<string, ModelPricing> = {
+  // OllamaCloud models (ESTIMATED PRICING - update with actual values when available)
+  "gpt-oss:20b": { inputCostPer1M: 0.5, outputCostPer1M: 1.5 },
+  "deepseek-v3.2": { inputCostPer1M: 0.6, outputCostPer1M: 2.4 },
+  "qwen3-coder:480b": { inputCostPer1M: 2.0, outputCostPer1M: 8.0 },
+  "gemini-3-pro-preview": { inputCostPer1M: 2.5, outputCostPer1M: 10.0 },
+  // Default for unknown OllamaCloud models
+  default: { inputCostPer1M: 1.0, outputCostPer1M: 4.0 },
+};
+
 /**
  * Get pricing for a model
  */
@@ -166,6 +176,10 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
     case "glm":
     case "zhipu":
       pricingTable = GLM_PRICING;
+      break;
+    case "ollamacloud":
+    case "oc":
+      pricingTable = OLLAMACLOUD_PRICING;
       break;
     default:
       // Return default pricing for unknown providers

@@ -194,7 +194,9 @@ export class OpenAIHandler implements ModelHandler {
    * Convert Claude messages to OpenAI format
    */
   private convertMessages(claudeRequest: any): any[] {
-    return convertMessagesToOpenAI(claudeRequest, `openai/${this.modelName}`, filterIdentity);
+    // OllamaCloud expects string content, not arrays
+    const useSimpleFormat = this.provider.name === "ollamacloud";
+    return convertMessagesToOpenAI(claudeRequest, `openai/${this.modelName}`, filterIdentity, useSimpleFormat);
   }
 
   /**
