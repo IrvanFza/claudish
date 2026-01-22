@@ -10,6 +10,7 @@ import {
   type LocalProviderOptions,
 } from "./handlers/local-provider-handler.js";
 import { GeminiHandler } from "./handlers/gemini-handler.js";
+import { GeminiCodeAssistHandler } from "./handlers/gemini-codeassist-handler.js";
 import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
@@ -143,36 +144,7 @@ export async function createProxyServer(
       return null; // Will fall through to OpenRouterHandler
     }
 
-    // For vertex, check OAuth mode before validating API key
-    if (resolved.provider.name === "vertex") {
-      const hasApiKey = !!process.env.VERTEX_API_KEY;
-      const vertexConfig = getVertexConfig();
-
-      let handler: ModelHandler;
-      if (hasApiKey) {
-        // Express Mode - use GeminiHandler with API key
-        const apiKey = process.env.VERTEX_API_KEY!;
-        handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
-        log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
-      } else if (vertexConfig) {
-        // OAuth Mode - use VertexOAuthHandler (no API key needed)
-        const oauthError = validateVertexOAuthConfig();
-        if (oauthError) {
-          log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
-          return null;
-        }
-        handler = new VertexOAuthHandler(resolved.modelName, port);
-        log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
-      } else {
-        log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
-        return null;
-      }
-
-      remoteProviderHandlers.set(targetModel, handler);
-      return handler;
-    }
-
-    // Validate API key for non-vertex providers
+    // Validate API key
     const apiKeyError = validateRemoteProviderApiKey(resolved.provider);
     if (apiKeyError) {
       throw new Error(apiKeyError);
@@ -184,6 +156,9 @@ export async function createProxyServer(
     if (resolved.provider.name === "gemini") {
       handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "gemini-codeassist") {
+      handler = new GeminiCodeAssistHandler(resolved.modelName, port);
+      log(`[Proxy] Created Gemini Code Assist handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "openai") {
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
@@ -199,6 +174,30 @@ export async function createProxyServer(
       // OllamaCloud uses Ollama native API (NOT OpenAI-compatible)
       handler = new OllamaCloudHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created OllamaCloud handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "vertex") {
+      // Vertex AI supports two modes:
+      // 1. Express Mode (API key) - for Gemini models
+      // 2. OAuth Mode (project/service account) - for all models including partners
+      const hasApiKey = !!process.env.VERTEX_API_KEY;
+      const vertexConfig = getVertexConfig();
+
+      if (hasApiKey) {
+        // Express Mode - use GeminiHandler with API key
+        handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created Vertex AI Express handler: ${resolved.modelName}`);
+      } else if (vertexConfig) {
+        // OAuth Mode - use VertexOAuthHandler
+        const oauthError = validateVertexOAuthConfig();
+        if (oauthError) {
+          log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
+          return null;
+        }
+        handler = new VertexOAuthHandler(resolved.modelName, port);
+        log(`[Proxy] Created Vertex AI OAuth handler: ${resolved.modelName} (project: ${vertexConfig.projectId})`);
+      } else {
+        log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
+        return null;
+      }
     } else {
       return null; // Unknown provider
     }
@@ -235,7 +234,7 @@ export async function createProxyServer(
       }
     }
 
-    // 4. Check for Remote Provider (g/, gemini/, v/, vertex/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
+    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
     const remoteHandler = getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 
@@ -252,7 +251,7 @@ export async function createProxyServer(
       return nativeHandler;
     }
 
-    // 7. OpenRouter Handler (default for any model with "/" not matched above)
+    // 6. OpenRouter Handler (default for any model with "/" not matched above)
     return getOpenRouterHandler(target);
   };
 

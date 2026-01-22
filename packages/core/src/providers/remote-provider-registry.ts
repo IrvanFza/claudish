@@ -1,12 +1,12 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud, Vertex AI)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud)
  * based on model ID prefixes.
  *
  * Prefix patterns:
  * - g/, gemini/ -> Google Gemini API (direct)
- * - v/, vertex/ -> Google Vertex AI Express Mode (Gemini API format)
+ * - go/ -> Google Gemini Code Assist (OAuth)
  * - oai/, openai/ -> OpenAI API
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
@@ -39,11 +39,11 @@ const getRemoteProviders = (): RemoteProvider[] => [
     },
   },
   {
-    name: "vertex",
-    baseUrl: process.env.VERTEX_BASE_URL || "https://aiplatform.googleapis.com",
-    apiPath: "/v1/publishers/google/models/{model}:streamGenerateContent?alt=sse",
-    apiKeyEnvVar: "VERTEX_API_KEY",
-    prefixes: ["vertex/", "v/"],
+    name: "gemini-codeassist",
+    baseUrl: "https://cloudcode-pa.googleapis.com",
+    apiPath: "/v1internal:streamGenerateContent?alt=sse",
+    apiKeyEnvVar: "", // Empty - OAuth handles auth
+    prefixes: ["go/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -185,13 +185,17 @@ export function getRemoteProviderType(modelId: string): string | null {
  * Returns error message if validation fails, null if OK
  */
 export function validateRemoteProviderApiKey(provider: RemoteProvider): string | null {
+  // Skip validation for OAuth-based providers (empty apiKeyEnvVar)
+  if (provider.apiKeyEnvVar === "") {
+    return null;
+  }
+
   const apiKey = process.env[provider.apiKeyEnvVar];
 
   if (!apiKey) {
     const examples: Record<string, string> = {
       GEMINI_API_KEY:
         "export GEMINI_API_KEY='your-key' (get from https://aistudio.google.com/app/apikey)",
-      VERTEX_API_KEY: "export VERTEX_API_KEY='your-key' (get from Google Cloud Console)",
       OPENAI_API_KEY:
         "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
       OPENROUTER_API_KEY:

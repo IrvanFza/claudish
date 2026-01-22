@@ -6,6 +6,7 @@
  *
  * Prefix patterns:
  * - g/, gemini/ -> Google Gemini API (direct)
+ * - go/ -> Google Gemini Code Assist (OAuth)
  * - oai/, openai/ -> OpenAI API
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
@@ -29,6 +30,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
     prefixes: ["g/", "gemini/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
+  {
+    name: "gemini-codeassist",
+    baseUrl: "https://cloudcode-pa.googleapis.com",
+    apiPath: "/v1internal:streamGenerateContent?alt=sse",
+    apiKeyEnvVar: "", // Empty - OAuth handles auth
+    prefixes: ["go/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -170,6 +185,11 @@ export function getRemoteProviderType(modelId: string): string | null {
  * Returns error message if validation fails, null if OK
  */
 export function validateRemoteProviderApiKey(provider: RemoteProvider): string | null {
+  // Skip validation for OAuth-based providers (empty apiKeyEnvVar)
+  if (provider.apiKeyEnvVar === "") {
+    return null;
+  }
+
   const apiKey = process.env[provider.apiKeyEnvVar];
 
   if (!apiKey) {

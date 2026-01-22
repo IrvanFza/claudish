@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { fuzzyScore } from "./utils.js";
 import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config.js";
+import { GeminiOAuth } from "./auth/gemini-oauth.js";
 
 // Read version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -176,6 +177,27 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       process.exit(0);
     } else if (arg === "--init") {
       await initializeClaudishSkill();
+      process.exit(0);
+    } else if (arg === "--gemini-login") {
+      const oauth = GeminiOAuth.getInstance();
+      try {
+        await oauth.login();
+        console.log("✓ Successfully logged in to Gemini Code Assist API");
+        console.log("\nYou can now use: claudish --model go/gemini-2.5-flash \"your task\"");
+      } catch (e: any) {
+        console.error(`✗ Login failed: ${e.message}`);
+        process.exit(1);
+      }
+      process.exit(0);
+    } else if (arg === "--gemini-logout") {
+      const oauth = GeminiOAuth.getInstance();
+      try {
+        await oauth.logout();
+        console.log("✓ Successfully logged out from Gemini Code Assist API");
+      } catch (e: any) {
+        console.error(`✗ Logout failed: ${e.message}`);
+        process.exit(1);
+      }
       process.exit(0);
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated list)
@@ -962,6 +984,7 @@ USAGE:
 MODEL ROUTING (prefix-based):
   (no prefix)      OpenRouter (default)   claudish --model openai/gpt-5.2 "task"
   g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
+  go/              Gemini Code Assist     claudish --model go/gemini-2.5-flash "task" (requires OAuth)
   oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
   mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
@@ -1001,6 +1024,10 @@ OPTIONS:
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
   --init                   Install Claudish skill in current project (.claude/skills/)
+
+GEMINI OAUTH COMMANDS:
+  --gemini-login           Login to Gemini Code Assist API via OAuth (opens browser)
+  --gemini-logout          Logout and remove stored OAuth credentials
 
 PROFILE MANAGEMENT:
   claudish init            Setup wizard - create config and first profile

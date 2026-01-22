@@ -14,6 +14,33 @@ const firstArg = args[0];
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
   import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
+} else if (firstArg === "--gemini-login" || args.includes("--gemini-login")) {
+  // Gemini OAuth login
+  import("@claudish/core").then(async ({ GeminiOAuth }) => {
+    const oauth = GeminiOAuth.getInstance();
+    try {
+      await oauth.login();
+      console.log("✓ Successfully logged in to Gemini Code Assist API");
+      console.log("\nYou can now use: claudish --model go/gemini-2.5-flash \"your task\"");
+      process.exit(0);
+    } catch (e: any) {
+      console.error(`✗ Login failed: ${e.message}`);
+      process.exit(1);
+    }
+  });
+} else if (firstArg === "--gemini-logout" || args.includes("--gemini-logout")) {
+  // Gemini OAuth logout
+  import("@claudish/core").then(async ({ GeminiOAuth }) => {
+    const oauth = GeminiOAuth.getInstance();
+    try {
+      await oauth.logout();
+      console.log("✓ Successfully logged out from Gemini Code Assist API");
+      process.exit(0);
+    } catch (e: any) {
+      console.error(`✗ Logout failed: ${e.message}`);
+      process.exit(1);
+    }
+  });
 } else if (firstArg === "init") {
   // Profile setup wizard
   import("./profile-commands.js").then((pc) => pc.initCommand());
@@ -103,6 +130,32 @@ async function runCli() {
       console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
       console.error("Try: claudish --list-models");
       process.exit(1);
+    }
+
+    // Check if go/ model requires OAuth login
+    if (cliConfig.model && typeof cliConfig.model === "string" && cliConfig.model.startsWith("go/")) {
+      const { GeminiOAuth } = await import("@claudish/core");
+      const oauth = GeminiOAuth.getInstance();
+
+      if (!oauth.hasCredentials()) {
+        if (cliConfig.interactive) {
+          // Interactive mode: auto-login then continue
+          console.log("[claudish] Gemini OAuth login required for go/ models...\n");
+          try {
+            await oauth.login();
+            console.log("\n✓ Successfully logged in to Gemini Code Assist API\n");
+          } catch (e: any) {
+            console.error(`\n✗ Login failed: ${e.message}`);
+            process.exit(1);
+          }
+        } else {
+          // Non-interactive mode: show error with instructions
+          console.error("Error: Gemini OAuth login required for go/ models");
+          console.error("Please run: claudish --gemini-login");
+          console.error("Or use API key mode with g/ prefix: --model g/gemini-2.5-flash");
+          process.exit(1);
+        }
+      }
     }
 
     // Read prompt from stdin if --stdin flag is set

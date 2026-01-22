@@ -10,6 +10,7 @@ import {
   type LocalProviderOptions,
 } from "./handlers/local-provider-handler.js";
 import { GeminiHandler } from "./handlers/gemini-handler.js";
+import { GeminiCodeAssistHandler } from "./handlers/gemini-codeassist-handler.js";
 import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
@@ -155,6 +156,9 @@ export async function createProxyServer(
     if (resolved.provider.name === "gemini") {
       handler = new GeminiHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created Gemini handler: ${resolved.modelName}`);
+    } else if (resolved.provider.name === "gemini-codeassist") {
+      handler = new GeminiCodeAssistHandler(resolved.modelName, port);
+      log(`[Proxy] Created Gemini Code Assist handler: ${resolved.modelName}`);
     } else if (resolved.provider.name === "openai") {
       handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
       log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
