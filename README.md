@@ -1,6 +1,6 @@
 # Claudish
 
-> Run Claude Code with any AI model - OpenRouter, Gemini, OpenAI, or local models
+> Run Claude Code with any AI model - OpenRouter, Gemini, OpenAI, OllamaCloud, or local models
 
 **Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server. Supports OpenRouter (100+ models), direct Google Gemini API, direct OpenAI API, and local models (Ollama, LM Studio, vLLM, MLX).
 
@@ -49,6 +49,7 @@ bun install -g claudish
   - [OpenRouter API Key](https://openrouter.ai/keys) - Access 100+ models (free tier available)
   - [Google Gemini API Key](https://aistudio.google.com/apikey) - For direct Gemini access
   - [OpenAI API Key](https://platform.openai.com/api-keys) - For direct OpenAI access
+  - [OllamaCloud API Key](https://ollama.com/account) - For cloud-hosted Ollama models (`oc/` prefix)
   - Or local models (Ollama, LM Studio) - No API key needed
 
 ### Other Install Options
@@ -244,6 +245,7 @@ claudish [OPTIONS] <claude-args...>
 | `VERTEX_PROJECT` | GCP Project ID | Vertex AI OAuth mode (`v/` prefix) |
 | `VERTEX_LOCATION` | GCP Region (default: us-central1) | Vertex AI regional endpoint |
 | `OPENAI_API_KEY` | OpenAI API key | Direct OpenAI access (`oai/` prefix) |
+| `OLLAMA_API_KEY` | OllamaCloud API key | OllamaCloud access (`oc/` prefix) |
 | `ANTHROPIC_API_KEY` | Placeholder (any value) | Prevents Claude Code dialog |
 
 #### Custom Endpoints (optional)
@@ -253,6 +255,7 @@ claudish [OPTIONS] <claude-args...>
 | `GEMINI_BASE_URL` | Custom Gemini endpoint | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | Custom OpenAI/Azure endpoint | `https://api.openai.com` |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
+| `OLLAMACLOUD_BASE_URL` | Custom OllamaCloud endpoint | `https://ollama.com` |
 | `LMSTUDIO_BASE_URL` | LM Studio server URL | `http://localhost:1234` |
 | `VLLM_BASE_URL` | vLLM server URL | `http://localhost:8000` |
 | `MLX_BASE_URL` | MLX server URL | `http://127.0.0.1:8080` |
@@ -280,6 +283,7 @@ Claudish uses **prefix-based routing** to determine which API backend to use:
 | `g/` `gemini/` `google/` | Google Gemini | `GEMINI_API_KEY` | `g/gemini-2.0-flash` |
 | `v/` `vertex/` | Vertex AI | `VERTEX_API_KEY` or `VERTEX_PROJECT` | `v/gemini-2.5-flash` |
 | `oai/` `openai/` | OpenAI | `OPENAI_API_KEY` | `oai/gpt-4o` |
+| `oc/` | OllamaCloud | `OLLAMA_API_KEY` | `oc/gpt-oss:20b` |
 | `ollama/` | Ollama | _(none)_ | `ollama/llama3.2` |
 | `lmstudio/` | LM Studio | _(none)_ | `lmstudio/qwen2.5-coder` |
 | `vllm/` | vLLM | _(none)_ | `vllm/mistral-7b` |
@@ -300,6 +304,11 @@ claudish --model gemini/gemini-2.5-pro "complex analysis"
 # Direct OpenAI API - lower latency, direct billing
 claudish --model oai/gpt-4o "implement feature"
 claudish --model openai/o1 "complex reasoning"
+
+# OllamaCloud - cloud-hosted open models
+claudish --model oc/gpt-oss:20b "quick task"
+claudish --model oc/deepseek-v3.2 "complex analysis"
+claudish --model oc/qwen3-coder:480b "write code"
 
 # Vertex AI - Google Cloud, supports partner models
 # Express mode (API key):
