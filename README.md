@@ -1,8 +1,8 @@
 # Claudish
 
-> Run Claude Code with OpenRouter models via local proxy
+> Run Claude Code with OpenRouter and Poe models via local proxy
 
-**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter model by proxying requests through a local Anthropic API-compatible server.
+**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any OpenRouter or Poe model by proxying requests through a local Anthropic API-compatible server. Access 680+ models from 30+ providers with a single tool.
 
 ## Features
 
@@ -19,7 +19,7 @@
 - ✅ **Parallel runs** - Each instance gets isolated proxy
 - ✅ **Autonomous mode** - Bypass all prompts with flags
 - ✅ **Context inheritance** - Runs in current directory with same `.claude` settings
-- ✅ **Multiple models** - 10+ prioritized OpenRouter models
+- ✅ **Multiple providers** - 680+ models from OpenRouter and Poe
 - ✅ **Agent support** - Use Claude Code agents in headless mode with `--agent`
 
 ## Installation
@@ -236,7 +236,8 @@ claudish [OPTIONS] <claude-args...>
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ **Optional in interactive mode** (will prompt if not set)<br>✅ **Required in non-interactive mode** |
+| `OPENROUTER_API_KEY` | Your OpenRouter API key | ⚡ Required for OpenRouter models (`provider/model`) |
+| `POE_API_KEY` | Your Poe API key ([get one here](https://poe.com/api_key)) | ⚡ Required for Poe models (`poe:model`) |
 | `ANTHROPIC_API_KEY` | Placeholder to prevent Claude Code dialog (not used for auth) | ✅ **Required** |
 | `CLAUDISH_MODEL` | Default model to use | ❌ No |
 | `CLAUDISH_PORT` | Default proxy port | ❌ No |
@@ -294,6 +295,78 @@ claudish --force-update=poe
 ```bash
 claudish --force-update=openrouter
 ```
+
+## Poe Provider (NEW)
+
+Claudish supports the Poe API, giving you access to 340+ models from 30+ providers through a single API key.
+
+### Setup
+
+1. **Get your Poe API key** at https://poe.com/api_key
+2. **Set the environment variable:**
+   ```bash
+   export POE_API_KEY=your-poe-api-key
+   ```
+
+### Usage
+
+Poe models use the `poe:` prefix:
+
+```bash
+# Use Grok 4 via Poe
+claudish --model poe:grok-4 "explain this code"
+
+# Use Claude Sonnet 4.5 via Poe
+claudish --model poe:claude-sonnet-4.5 "refactor this function"
+
+# Use Gemini 3 Pro via Poe
+claudish --model poe:gemini-3-pro "analyze architecture"
+
+# Use GPT-5.2 via Poe
+claudish --model poe:gpt-5.2 "implement feature"
+```
+
+### Poe vs OpenRouter
+
+| Feature | OpenRouter | Poe |
+|---------|------------|-----|
+| **Model format** | `provider/model` | `poe:model` |
+| **Pricing** | USD per token | Compute points |
+| **Models** | 340+ | 340+ |
+| **Providers** | 20+ | 30+ |
+| **Custom params** | Provider routing | `extra_body` |
+
+### Custom Bot Parameters
+
+Poe supports `extra_body` parameters for model-specific options:
+
+```bash
+# Image generation with aspect ratio (when using image models)
+# Note: extra_body is passed through the API, useful for custom bots
+
+# Reasoning models with custom parameters
+claudish --model poe:o1-pro "solve this problem"
+```
+
+### List Poe Models
+
+```bash
+# List only Poe models
+claudish --models --provider poe
+
+# Search Poe models
+claudish --models grok --provider poe
+
+# Show top Poe models
+claudish --top-models
+```
+
+### Pricing
+
+Poe uses **compute points** instead of USD. Points are displayed in model listings:
+- Most models: 10-100 points per request
+- Premium models: 100-1000+ points
+- Check your balance at https://poe.com/settings
 
 ## Agent Support (NEW in v2.1.0)
 

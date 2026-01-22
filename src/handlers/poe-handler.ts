@@ -528,6 +528,26 @@ export class PoeHandler implements ModelHandler {
       openAIRequest.temperature = payload.temperature;
     }
 
+    // Add extra_body parameters for Poe-specific options
+    // These allow custom bot parameters like aspect ratios, reasoning effort, etc.
+    // Example: { "extra_body": { "aspect": "1280x720" } } for image generation
+    if (payload.extra_body && typeof payload.extra_body === 'object') {
+      Object.assign(openAIRequest, payload.extra_body);
+    }
+
+    // Add tools if present (for function calling)
+    // Convert from Claude format to OpenAI format
+    if (payload.tools && Array.isArray(payload.tools) && payload.tools.length > 0) {
+      openAIRequest.tools = payload.tools.map((tool: any) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.input_schema,
+        },
+      }));
+    }
+
     return openAIRequest;
   }
 
@@ -885,7 +905,8 @@ export class PoeHandler implements ModelHandler {
                     }
 
                     // After processing tool calls, check for cached text content
-                    if (delta._cachedCleanText && delta._cachedCleanText.length > 0) {
+                    const chunkDelta = openaiChunk.choices?.[0]?.delta as any;
+                    if (chunkDelta?._cachedCleanText && chunkDelta._cachedCleanText.length > 0) {
                       // Start a text block if needed
                       if (currentBlockIndex === null) {
                         currentBlockIndex = blockTracker.startTextBlock();
@@ -905,12 +926,12 @@ export class PoeHandler implements ModelHandler {
                         index: currentBlockIndex,
                         delta: {
                           type: "text_delta",
-                          text: delta._cachedCleanText
+                          text: chunkDelta._cachedCleanText
                         }
                       });
 
                       // Clear the cached text to avoid duplicate processing
-                      delete (delta as any)._cachedCleanText;
+                      delete chunkDelta._cachedCleanText;
                     }
                   }
 

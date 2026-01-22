@@ -974,7 +974,8 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
-  OPENROUTER_API_KEY              Required: Your OpenRouter API key
+  OPENROUTER_API_KEY              Required for OpenRouter models (provider/)
+  POE_API_KEY                     Required for Poe models (poe:)
   CLAUDISH_MODEL                  Default model to use (takes priority)
   ANTHROPIC_MODEL                 Claude Code standard: model to use (fallback)
   CLAUDISH_PORT                   Default port for proxy
@@ -990,6 +991,18 @@ ENVIRONMENT VARIABLES:
   ANTHROPIC_DEFAULT_HAIKU_MODEL   Claude Code standard: Haiku model (fallback)
   CLAUDE_CODE_SUBAGENT_MODEL      Claude Code standard: sub-agent model (fallback)
 
+PROVIDERS:
+  OpenRouter (default):
+    - Model format: provider/model-name (e.g., x-ai/grok-code-fast-1)
+    - Requires: OPENROUTER_API_KEY
+    - Features: 340+ models, provider routing, cost tracking
+
+  Poe:
+    - Model format: poe:model-name (e.g., poe:grok-4, poe:claude-sonnet-4.5)
+    - Requires: POE_API_KEY (get at https://poe.com/api_key)
+    - Features: 340+ models, compute points pricing, custom bot parameters
+    - Extra parameters via extra_body (aspect ratios, reasoning effort, etc.)
+
 EXAMPLES:
   # Interactive mode (default) - shows model selector
   claudish
@@ -1004,6 +1017,11 @@ EXAMPLES:
   # Single-shot mode - one task and exit (requires --model or CLAUDISH_MODEL env var)
   claudish --model openai/gpt-5-codex "implement user authentication"
   claudish --model x-ai/grok-code-fast-1 "add tests for login"
+
+  # Poe models (requires POE_API_KEY)
+  claudish --model poe:grok-4 "explain this code"
+  claudish --model poe:claude-sonnet-4.5 "refactor this function"
+  claudish --model poe:gemini-3-pro "analyze architecture"
 
   # Per-role model mapping (use different models for different Claude Code roles)
   claudish --model-opus openai/gpt-5 --model-sonnet x-ai/grok-code-fast-1 --model-haiku minimax/minimax-m2
