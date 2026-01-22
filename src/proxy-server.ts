@@ -13,6 +13,7 @@ import { GeminiHandler } from "./handlers/gemini-handler.js";
 import { OpenAIHandler } from "./handlers/openai-handler.js";
 import { AnthropicCompatHandler } from "./handlers/anthropic-compat-handler.js";
 import { VertexOAuthHandler } from "./handlers/vertex-oauth-handler.js";
+import { PoeHandler } from "./handlers/poe-handler.js";
 import type { ModelHandler } from "./handlers/types.js";
 import {
   resolveProvider,
@@ -46,6 +47,7 @@ export async function createProxyServer(
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler
+  const poeHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Poe Handler
 
   // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
@@ -56,6 +58,24 @@ export async function createProxyServer(
       );
     }
     return openRouterHandlers.get(targetModel)!;
+  };
+
+  // Helper to get or create Poe handler for a target model
+  const getPoeHandler = (targetModel: string): ModelHandler | null => {
+    const poeApiKey = process.env.POE_API_KEY;
+    if (!poeApiKey) {
+      log(`[Proxy] POE_API_KEY not set, cannot use Poe model: ${targetModel}`);
+      return null;
+    }
+    if (!poeHandlers.has(targetModel)) {
+      poeHandlers.set(targetModel, new PoeHandler(poeApiKey));
+    }
+    return poeHandlers.get(targetModel)!;
+  };
+
+  // Check if model is a Poe model (has poe: prefix)
+  const isPoeModel = (model: string): boolean => {
+    return model.startsWith("poe:");
   };
 
   // Local provider options
@@ -196,15 +216,24 @@ export async function createProxyServer(
       // Assuming Haiku mapping covers subagent unless custom logic added.
     }
 
-    // 3. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
+    // 3. Check for Poe Model (poe: prefix)
+    if (isPoeModel(target)) {
+      const poeHandler = getPoeHandler(target);
+      if (poeHandler) {
+        log(`[Proxy] Routing to Poe: ${target}`);
+        return poeHandler;
+      }
+    }
+
+    // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
     const remoteHandler = getRemoteProviderHandler(target);
     if (remoteHandler) return remoteHandler;
 
-    // 4. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
+    // 5. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
     const localHandler = getLocalProviderHandler(target);
     if (localHandler) return localHandler;
 
-    // 5. Native vs OpenRouter Decision
+    // 6. Native vs OpenRouter Decision
     // Heuristic: OpenRouter models have "/", Native ones don't.
     const isNative = !target.includes("/");
 
