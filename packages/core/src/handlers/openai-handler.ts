@@ -85,7 +85,7 @@ export class OpenAIHandler implements ModelHandler {
    * Get pricing for the current model
    */
   private getPricing(): ModelPricing {
-    return getModelPricing("openai", this.modelName);
+    return getModelPricing(this.provider.name, this.modelName);
   }
 
   /**
