@@ -216,13 +216,17 @@ async function getFreeModels(): Promise<ModelInfo[]> {
     fetchZenFreeModels(),
   ]);
 
-  // Filter for FREE models from TRUSTED providers (OpenRouter)
+  // Filter for FREE models from TRUSTED providers with TOOL SUPPORT (OpenRouter)
   const freeModels = allModels.filter((model) => {
     const promptPrice = parseFloat(model.pricing?.prompt || "0");
     const completionPrice = parseFloat(model.pricing?.completion || "0");
     const isFree = promptPrice === 0 && completionPrice === 0;
 
     if (!isFree) return false;
+
+    // Must support tool calling (required by Claude Code)
+    const supportsTools = (model.supported_parameters || []).includes("tools");
+    if (!supportsTools) return false;
 
     const provider = model.id.split("/")[0].toLowerCase();
     return TRUSTED_FREE_PROVIDERS.includes(provider);
