@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { ENV } from "@claudish/core";
 import type { ClaudishConfig } from "@claudish/core";
@@ -276,12 +276,26 @@ export async function runClaudeWithProxy(
     log(`[claudish] Arguments: ${claudeArgs.join(" ")}\n`);
   }
 
+  // Find Claude binary (supports CLAUDE_PATH, local installation, and global PATH)
+  const claudeBinary = await findClaudeBinary();
+  if (!claudeBinary) {
+    console.error("Error: Claude Code CLI not found");
+    console.error("Install it from: https://claude.com/claude-code");
+    console.error("\nOr set CLAUDE_PATH to your custom installation:");
+    const home = homedir();
+    const localPath = isWindows()
+      ? join(home, ".claude", "local", "claude.exe")
+      : join(home, ".claude", "local", "claude");
+    console.error(`  export CLAUDE_PATH=${localPath}`);
+    process.exit(1);
+  }
+
   // Spawn claude CLI process using Node.js child_process (works on both Node.js and Bun)
-  // Windows needs shell: true to find .cmd/.bat files like claude.cmd
-  const proc = spawn("claude", claudeArgs, {
+  // Use the found binary path directly
+  const proc = spawn(claudeBinary, claudeArgs, {
     env,
     stdio: "inherit", // Stream stdin/stdout/stderr to parent
-    shell: isWindows(),
+    shell: false, // No shell needed when using direct path
   });
 
   // Handle process termination signals (includes cleanup)
@@ -332,16 +346,43 @@ function setupSignalHandlers(proc: ChildProcess, tempSettingsPath: string, quiet
 }
 
 /**
- * Check if Claude Code CLI is installed
+ * Find Claude Code binary in priority order:
+ * 1. CLAUDE_PATH env var
+ * 2. Local installation (~/.claude/local/claude)
+ * 3. Global PATH
  */
-export async function checkClaudeInstalled(): Promise<boolean> {
+async function findClaudeBinary(): Promise<string | null> {
+  const isWindows = process.platform === "win32";
+
+  // 1. Check CLAUDE_PATH env var
+  if (process.env.CLAUDE_PATH) {
+    if (existsSync(process.env.CLAUDE_PATH)) {
+      return process.env.CLAUDE_PATH;
+    }
+  }
+
+  // 2. Check local installation
+  const home = homedir();
+  const localPath = isWindows
+    ? join(home, ".claude", "local", "claude.exe")
+    : join(home, ".claude", "local", "claude");
+
+  if (existsSync(localPath)) {
+    return localPath;
+  }
+
+  // 3. Check global PATH using which/where
   try {
-    const isWindows = process.platform === "win32";
     const command = isWindows ? "where" : "which";
 
     const proc = spawn(command, ["claude"], {
-      stdio: "ignore",
-      shell: isWindows, // Windows needs shell for 'where' command
+      stdio: "pipe",
+      shell: isWindows,
+    });
+
+    let output = "";
+    proc.stdout?.on("data", (data) => {
+      output += data.toString();
     });
 
     const exitCode = await new Promise<number>((resolve) => {
@@ -350,8 +391,21 @@ export async function checkClaudeInstalled(): Promise<boolean> {
       });
     });
 
-    return exitCode === 0;
+    if (exitCode === 0 && output.trim()) {
+      // Return first line (primary match)
+      return output.trim().split("\n")[0];
+    }
   } catch {
-    return false;
+    // Command failed
   }
+
+  return null;
+}
+
+/**
+ * Check if Claude Code CLI is installed
+ */
+export async function checkClaudeInstalled(): Promise<boolean> {
+  const binary = await findClaudeBinary();
+  return binary !== null;
 }

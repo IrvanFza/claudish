@@ -77,8 +77,11 @@ async function runCli() {
 
     // Check if Claude Code is installed
     if (!(await checkClaudeInstalled())) {
-      console.error("Error: Claude Code CLI is not installed");
+      console.error("Error: Claude Code CLI not found");
       console.error("Install it from: https://claude.com/claude-code");
+      console.error("");
+      console.error("Or if you have a local installation, set CLAUDE_PATH:");
+      console.error("  export CLAUDE_PATH=~/.claude/local/claude");
       process.exit(1);
     }
 

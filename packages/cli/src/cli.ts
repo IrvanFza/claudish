@@ -1043,6 +1043,13 @@ NOTES:
 ENVIRONMENT VARIABLES:
   Claudish automatically loads .env file from current directory.
 
+  Claude Code installation:
+  CLAUDE_PATH                     Custom path to Claude Code binary (optional)
+                                  Default search order:
+                                  1. CLAUDE_PATH env var
+                                  2. ~/.claude/local/claude (local install)
+                                  3. Global PATH (npm -g install)
+
   API Keys (at least one required for cloud models):
   OPENROUTER_API_KEY              OpenRouter API key (default backend)
   GEMINI_API_KEY                  Google Gemini API key (for g/ prefix)
