@@ -67,6 +67,9 @@ export class OpenRouterHandler implements ModelHandler {
         ""
       );
 
+      // Check if this is a free model (ends with :free or cost is 0)
+      const isFreeModel = this.targetModel.endsWith(":free") || this.sessionTotalCost === 0;
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -77,6 +80,7 @@ export class OpenRouterHandler implements ModelHandler {
         provider_name: "OpenRouter",
         model_name: displayModelName,
         updated_at: Date.now(),
+        is_free: isFreeModel,
       };
       // Write to ~/.claudish/ directory (same location status line reads from)
       const claudishDir = join(homedir(), ".claudish");

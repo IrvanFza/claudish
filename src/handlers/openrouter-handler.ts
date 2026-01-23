@@ -61,6 +61,9 @@ export class OpenRouterHandler implements ModelHandler {
       const limit = this.contextWindowCache.get(this.targetModel) || 200000;
       const leftPct =
         limit > 0 ? Math.max(0, Math.min(100, Math.round(((limit - total) / limit) * 100))) : 100;
+      // Check if this is a free model (ends with :free or cost is 0)
+      const isFreeModel = this.targetModel.endsWith(":free") || this.sessionTotalCost === 0;
+
       const data = {
         input_tokens: input,
         output_tokens: output,
@@ -70,6 +73,7 @@ export class OpenRouterHandler implements ModelHandler {
         context_left_percent: leftPct,
         provider_name: "OpenRouter",
         updated_at: Date.now(),
+        is_free: isFreeModel,
       };
       // Write to ~/.claudish/ directory (same location status line reads from)
       const claudishDir = join(homedir(), ".claudish");
