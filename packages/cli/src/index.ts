@@ -21,7 +21,7 @@ if (isMcpMode) {
     try {
       await oauth.login();
       console.log("✓ Successfully logged in to Gemini Code Assist API");
-      console.log("\nYou can now use: claudish --model go/gemini-2.5-flash \"your task\"");
+      console.log('\nYou can now use: claudish --model go/gemini-2.5-flash "your task"');
       process.exit(0);
     } catch (e: any) {
       console.error(`✗ Login failed: ${e.message}`);
@@ -115,8 +115,15 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
+    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode, not local models)
+    const { isLocalModel } = await import("./cli.js");
+    const usingLocalModel = isLocalModel(cliConfig.model);
+    if (
+      cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !cliConfig.openrouterApiKey &&
+      !usingLocalModel
+    ) {
       cliConfig.openrouterApiKey = await promptForApiKey();
       console.log(""); // Empty line after input
     }
@@ -136,7 +143,11 @@ async function runCli() {
     }
 
     // Check if go/ model requires OAuth login
-    if (cliConfig.model && typeof cliConfig.model === "string" && cliConfig.model.startsWith("go/")) {
+    if (
+      cliConfig.model &&
+      typeof cliConfig.model === "string" &&
+      cliConfig.model.startsWith("go/")
+    ) {
       const { GeminiOAuth } = await import("@claudish/core");
       const oauth = GeminiOAuth.getInstance();
 

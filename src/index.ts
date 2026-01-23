@@ -85,8 +85,15 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode)
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.openrouterApiKey) {
+    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode, not local models)
+    const { isLocalModel } = await import("./cli.js");
+    const usingLocalModel = isLocalModel(cliConfig.model);
+    if (
+      cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !cliConfig.openrouterApiKey &&
+      !usingLocalModel
+    ) {
       cliConfig.openrouterApiKey = await promptForApiKey();
       console.log(""); // Empty line after input
     }

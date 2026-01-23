@@ -11,7 +11,7 @@ import { getModelMapping } from "./profile-config.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "3.7.7"; // Fallback version for compiled binaries
+let VERSION = "3.7.8"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -24,6 +24,23 @@ try {
  */
 export function getVersion(): string {
   return VERSION;
+}
+
+/**
+ * Check if model ID refers to a local provider (no API key needed)
+ */
+export function isLocalModel(modelId: string | undefined): boolean {
+  if (!modelId) return false;
+  const localPrefixes = [
+    "ollama/",
+    "ollama:",
+    "lmstudio/",
+    "vllm/",
+    "mlx/",
+    "http://",
+    "https://localhost",
+  ];
+  return localPrefixes.some((prefix) => modelId.toLowerCase().startsWith(prefix));
 }
 
 /**
@@ -253,23 +270,31 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
-      if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
-        console.error("Get your API key from: https://openrouter.ai/keys");
-        console.error("");
-        console.error("Set it now:");
-        console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
-        process.exit(1);
+    // Check if using a local model (no API key needed)
+    const usingLocalModel = isLocalModel(config.model);
+
+    if (!usingLocalModel) {
+      // OpenRouter mode: requires OpenRouter API key
+      const apiKey = process.env[ENV.OPENROUTER_API_KEY];
+      if (!apiKey) {
+        // In interactive mode, we'll prompt for it later
+        // In non-interactive mode, it's required now
+        if (!config.interactive) {
+          console.error("Error: OPENROUTER_API_KEY environment variable is required");
+          console.error("Get your API key from: https://openrouter.ai/keys");
+          console.error("");
+          console.error("Set it now:");
+          console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
+          process.exit(1);
+        }
+        // Will be prompted for in interactive mode
+        config.openrouterApiKey = undefined;
+      } else {
+        config.openrouterApiKey = apiKey;
       }
-      // Will be prompted for in interactive mode
-      config.openrouterApiKey = undefined;
     } else {
-      config.openrouterApiKey = apiKey;
+      // Local model - no OpenRouter API key needed
+      config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY]; // Still use if available
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
@@ -340,7 +365,7 @@ async function fetchOllamaModels(): Promise<any[]> {
 
     if (!response.ok) return [];
 
-    const data = await response.json() as { models?: any[] };
+    const data = (await response.json()) as { models?: any[] };
     const models = data.models || [];
 
     // Fetch capabilities for each model in parallel
@@ -355,7 +380,7 @@ async function fetchOllamaModels(): Promise<any[]> {
             signal: AbortSignal.timeout(2000),
           });
           if (showResponse.ok) {
-            const showData = await showResponse.json() as { capabilities?: string[] };
+            const showData = (await showResponse.json()) as { capabilities?: string[] };
             capabilities = showData.capabilities || [];
           }
         } catch {
@@ -422,7 +447,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       const response = await fetch("https://openrouter.ai/api/v1/models");
       if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-      const data = await response.json() as { data: any[] };
+      const data = (await response.json()) as { data: any[] };
       models = data.data;
 
       // Cache result
@@ -574,7 +599,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       const response = await fetch("https://openrouter.ai/api/v1/models");
       if (!response.ok) throw new Error(`API returned ${response.status}`);
 
-      const data = await response.json() as { data: any[] };
+      const data = (await response.json()) as { data: any[] };
       models = data.data;
 
       // Cache result
@@ -794,7 +819,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       throw new Error(`OpenRouter API returned ${apiResponse.status}`);
     }
 
-    const openrouterData = await apiResponse.json() as { data: any[] };
+    const openrouterData = (await apiResponse.json()) as { data: any[] };
     const allModels = openrouterData.data;
 
     // Build a map for quick lookup

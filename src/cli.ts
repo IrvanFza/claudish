@@ -13,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Fallback version - updated during release process
-let VERSION = "3.7.7";
+let VERSION = "3.7.8";
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -26,6 +26,23 @@ try {
  */
 export function getVersion(): string {
   return VERSION;
+}
+
+/**
+ * Check if model ID refers to a local provider (no API key needed)
+ */
+export function isLocalModel(modelId: string | undefined): boolean {
+  if (!modelId) return false;
+  const localPrefixes = [
+    "ollama/",
+    "ollama:",
+    "lmstudio/",
+    "vllm/",
+    "mlx/",
+    "http://",
+    "https://localhost",
+  ];
+  return localPrefixes.some((prefix) => modelId.toLowerCase().startsWith(prefix));
 }
 
 /**
@@ -190,7 +207,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       try {
         await oauth.login();
         console.log("✓ Successfully logged in to Gemini Code Assist API");
-        console.log("\nYou can now use: claudish --model go/gemini-2.5-flash \"your task\"");
+        console.log('\nYou can now use: claudish --model go/gemini-2.5-flash "your task"');
       } catch (e: any) {
         console.error(`✗ Login failed: ${e.message}`);
         process.exit(1);
@@ -276,23 +293,31 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // OpenRouter mode: requires OpenRouter API key
-    const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-    if (!apiKey) {
-      // In interactive mode, we'll prompt for it later
-      // In non-interactive mode, it's required now
-      if (!config.interactive) {
-        console.error("Error: OPENROUTER_API_KEY environment variable is required");
-        console.error("Get your API key from: https://openrouter.ai/keys");
-        console.error("");
-        console.error("Set it now:");
-        console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
-        process.exit(1);
+    // Check if using a local model (no API key needed)
+    const usingLocalModel = isLocalModel(config.model);
+
+    if (!usingLocalModel) {
+      // OpenRouter mode: requires OpenRouter API key
+      const apiKey = process.env[ENV.OPENROUTER_API_KEY];
+      if (!apiKey) {
+        // In interactive mode, we'll prompt for it later
+        // In non-interactive mode, it's required now
+        if (!config.interactive) {
+          console.error("Error: OPENROUTER_API_KEY environment variable is required");
+          console.error("Get your API key from: https://openrouter.ai/keys");
+          console.error("");
+          console.error("Set it now:");
+          console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
+          process.exit(1);
+        }
+        // Will be prompted for in interactive mode
+        config.openrouterApiKey = undefined;
+      } else {
+        config.openrouterApiKey = apiKey;
       }
-      // Will be prompted for in interactive mode
-      config.openrouterApiKey = undefined;
     } else {
-      config.openrouterApiKey = apiKey;
+      // Local model - no OpenRouter API key needed
+      config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY]; // Still use if available
     }
 
     // Note: ANTHROPIC_API_KEY is NOT required here
