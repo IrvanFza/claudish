@@ -30,3 +30,11 @@ Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conver
 ## Debug Logging
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.
+
+## Version Fallback for Compiled Binaries
+
+When bumping the version in `package.json`, also update the fallback VERSION in:
+- `src/cli.ts` (line ~15)
+- `packages/cli/src/cli.ts` (line ~14)
+
+This ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available.

@@ -11,7 +11,7 @@ import { getModelMapping } from "./profile-config.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "3.5.0"; // Fallback version for compiled binaries
+let VERSION = "3.7.7"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;

@@ -8,11 +8,18 @@ import { fuzzyScore } from "./utils.js";
 import { getProfile, getDefaultProfile, getModelMapping } from "./profile-config.js";
 import { GeminiOAuth } from "./auth/gemini-oauth.js";
 
-// Read version from package.json
+// Read version from package.json (with fallback for compiled binaries)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
-const VERSION = packageJson.version;
+
+// Fallback version - updated during release process
+let VERSION = "3.7.7";
+try {
+  const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
+  VERSION = packageJson.version;
+} catch {
+  // Running as compiled binary - use fallback version
+}
 
 /**
  * Get current version
