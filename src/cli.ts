@@ -13,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Fallback version - updated during release process
-let VERSION = "3.7.8";
+let VERSION = "3.7.9";
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -293,10 +293,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
   } else {
-    // Check if using a local model (no API key needed)
-    const usingLocalModel = isLocalModel(config.model);
+    // Check if ANY model requires OpenRouter API key (non-local)
+    // Must check all model slots: model, modelOpus, modelSonnet, modelHaiku, modelSubagent
+    const allModels = [
+      config.model,
+      config.modelOpus,
+      config.modelSonnet,
+      config.modelHaiku,
+      config.modelSubagent,
+    ];
+    const hasNonLocalModel = allModels.some((m) => m && !isLocalModel(m));
 
-    if (!usingLocalModel) {
+    if (hasNonLocalModel) {
       // OpenRouter mode: requires OpenRouter API key
       const apiKey = process.env[ENV.OPENROUTER_API_KEY];
       if (!apiKey) {
@@ -316,7 +324,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         config.openrouterApiKey = apiKey;
       }
     } else {
-      // Local model - no OpenRouter API key needed
+      // All models are local - no OpenRouter API key needed
       config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY]; // Still use if available
     }
 
