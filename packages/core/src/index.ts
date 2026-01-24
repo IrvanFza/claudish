@@ -83,6 +83,19 @@ export {
 	getRegisteredRemoteProviders,
 } from './providers/remote-provider-registry.js';
 
+// Centralized provider resolution - THE single source of truth for API key validation
+export {
+	resolveModelProvider,
+	validateApiKeysForModels,
+	getMissingKeyError,
+	getMissingKeysError,
+	getMissingKeyResolutions,
+	requiresOpenRouterKey,
+	isLocalModel,
+	type ProviderCategory,
+	type ProviderResolution,
+} from './providers/provider-resolver.js';
+
 // ============================================================================
 // FORMAT TYPES (for logging token usage and computing costs)
 // ============================================================================

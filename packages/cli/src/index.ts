@@ -63,6 +63,12 @@ async function runCli() {
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("@claudish/core");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
+  const {
+    resolveModelProvider,
+    validateApiKeysForModels,
+    getMissingKeyResolutions,
+    getMissingKeysError,
+  } = await import("@claudish/core");
   const { initLogger, getLogFilePath } = await import("@claudish/core");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("@claudish/core");
@@ -115,19 +121,6 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Prompt for OpenRouter API key if not set (interactive mode only, not monitor mode, not local models)
-    const { isLocalModel } = await import("./cli.js");
-    const usingLocalModel = isLocalModel(cliConfig.model);
-    if (
-      cliConfig.interactive &&
-      !cliConfig.monitor &&
-      !cliConfig.openrouterApiKey &&
-      !usingLocalModel
-    ) {
-      cliConfig.openrouterApiKey = await promptForApiKey();
-      console.log(""); // Empty line after input
-    }
-
     // Show interactive model selector ONLY in interactive mode when model not specified
     if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
@@ -140,6 +133,58 @@ async function runCli() {
       console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
       console.error("Try: claudish --list-models");
       process.exit(1);
+    }
+
+    // === API Key Validation ===
+    // This happens AFTER model selection so we know exactly which provider(s) are being used
+    // The centralized ProviderResolver handles all provider detection and key requirements
+    if (!cliConfig.monitor) {
+      // When --model is explicitly set, it overrides ALL role mappings (opus/sonnet/haiku/subagent)
+      // So we only need to validate the explicit model, not the profile mappings
+      const hasExplicitModel = typeof cliConfig.model === "string";
+
+      // Collect models to validate
+      const modelsToValidate = hasExplicitModel
+        ? [cliConfig.model] // Only validate the explicit model
+        : [
+            cliConfig.model,
+            cliConfig.modelOpus,
+            cliConfig.modelSonnet,
+            cliConfig.modelHaiku,
+            cliConfig.modelSubagent,
+          ];
+
+      // Validate API keys for all models
+      const resolutions = validateApiKeysForModels(modelsToValidate);
+      const missingKeys = getMissingKeyResolutions(resolutions);
+
+      if (missingKeys.length > 0) {
+        if (cliConfig.interactive) {
+          // Interactive mode: prompt for missing OpenRouter key if that's what's needed
+          const needsOpenRouter = missingKeys.some((r) => r.category === "openrouter");
+          if (needsOpenRouter && !cliConfig.openrouterApiKey) {
+            cliConfig.openrouterApiKey = await promptForApiKey();
+            console.log(""); // Empty line after input
+
+            // Re-validate after getting the key (it's now in process.env)
+            process.env.OPENROUTER_API_KEY = cliConfig.openrouterApiKey;
+          }
+
+          // Check if there are still missing keys (non-OpenRouter providers)
+          const stillMissing = getMissingKeyResolutions(validateApiKeysForModels(modelsToValidate));
+          const nonOpenRouterMissing = stillMissing.filter((r) => r.category !== "openrouter");
+
+          if (nonOpenRouterMissing.length > 0) {
+            // Can't prompt for other providers - show error
+            console.error(getMissingKeysError(nonOpenRouterMissing));
+            process.exit(1);
+          }
+        } else {
+          // Non-interactive mode: fail with clear error message
+          console.error(getMissingKeysError(missingKeys));
+          process.exit(1);
+        }
+      }
     }
 
     // Check if go/ model requires OAuth login
