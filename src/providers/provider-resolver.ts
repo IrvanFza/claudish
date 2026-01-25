@@ -15,8 +15,7 @@
  */
 
 import { resolveProvider, parseUrlModel } from "./provider-registry.js";
-import { resolveRemoteProvider, getRegisteredRemoteProviders } from "./remote-provider-registry.js";
-import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import { resolveRemoteProvider } from "./remote-provider-registry.js";
 
 /**
  * Provider category types

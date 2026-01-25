@@ -7,7 +7,7 @@
  * Prefix patterns:
  * - g/, gemini/ -> Google Gemini API (direct)
  * - go/ -> Google Gemini Code Assist (OAuth)
- * - oai/, openai/ -> OpenAI API
+ * - oai/ -> OpenAI API (openai/ routes to OpenRouter)
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
@@ -30,7 +30,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com",
     apiPath: "/v1beta/models/{model}:streamGenerateContent?alt=sse",
     apiKeyEnvVar: "GEMINI_API_KEY",
-    prefixes: ["g/", "gemini/", "google/"], // Per README: google/ routes to Gemini if GEMINI_API_KEY available
+    prefixes: ["g/", "gemini/"], // google/ routes to OpenRouter to avoid breaking existing workflows
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -58,7 +58,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com",
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENAI_API_KEY",
-    prefixes: ["oai/", "openai/"], // Per README: openai/ routes to OpenAI if OPENAI_API_KEY available
+    prefixes: ["oai/"], // openai/ routes to OpenRouter to avoid breaking existing workflows
     capabilities: {
       supportsTools: true,
       supportsVision: true,
