@@ -6,6 +6,18 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping } from "./profile-config.js";
+// Re-export from centralized provider-resolver for backwards compatibility
+export {
+  resolveModelProvider,
+  validateApiKeysForModels,
+  getMissingKeyError,
+  getMissingKeysError,
+  getMissingKeyResolutions,
+  requiresOpenRouterKey,
+  isLocalModel,
+  type ProviderCategory,
+  type ProviderResolution,
+} from "@claudish/core";
 
 // Read version from package.json (with fallback for compiled binaries)
 const __filename = fileURLToPath(import.meta.url);
@@ -24,23 +36,6 @@ try {
  */
 export function getVersion(): string {
   return VERSION;
-}
-
-/**
- * Check if model ID refers to a local provider (no API key needed)
- */
-export function isLocalModel(modelId: string | undefined): boolean {
-  if (!modelId) return false;
-  const localPrefixes = [
-    "ollama/",
-    "ollama:",
-    "lmstudio/",
-    "vllm/",
-    "mlx/",
-    "http://",
-    "https://localhost",
-  ];
-  return localPrefixes.some((prefix) => modelId.toLowerCase().startsWith(prefix));
 }
 
 /**
@@ -250,7 +245,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.interactive = true;
   }
 
-  // Handle API keys based on mode
+  // Handle monitor mode setup (no API key validation - that happens in index.ts AFTER model selection)
   if (config.monitor) {
     // Monitor mode: extracts API key from Claude Code's requests
     // No need for user to provide API key - we intercept it from Claude Code
@@ -269,47 +264,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       console.log("[claudish] API key will be extracted from Claude Code's requests");
       console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
     }
-  } else {
-    // Check if ANY model requires OpenRouter API key (non-local)
-    // Must check all model slots: model, modelOpus, modelSonnet, modelHaiku, modelSubagent
-    const allModels = [
-      config.model,
-      config.modelOpus,
-      config.modelSonnet,
-      config.modelHaiku,
-      config.modelSubagent,
-    ];
-    const hasNonLocalModel = allModels.some((m) => m && !isLocalModel(m));
-
-    if (hasNonLocalModel) {
-      // OpenRouter mode: requires OpenRouter API key
-      const apiKey = process.env[ENV.OPENROUTER_API_KEY];
-      if (!apiKey) {
-        // In interactive mode, we'll prompt for it later
-        // In non-interactive mode, it's required now
-        if (!config.interactive) {
-          console.error("Error: OPENROUTER_API_KEY environment variable is required");
-          console.error("Get your API key from: https://openrouter.ai/keys");
-          console.error("");
-          console.error("Set it now:");
-          console.error("  export OPENROUTER_API_KEY='sk-or-v1-...'");
-          process.exit(1);
-        }
-        // Will be prompted for in interactive mode
-        config.openrouterApiKey = undefined;
-      } else {
-        config.openrouterApiKey = apiKey;
-      }
-    } else {
-      // All models are local - no OpenRouter API key needed
-      config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY]; // Still use if available
-    }
-
-    // Note: ANTHROPIC_API_KEY is NOT required here
-    // claude-runner.ts automatically sets a placeholder if not provided (see line 138)
-    // This allows single-variable setup - users only need OPENROUTER_API_KEY
-    config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   }
+
+  // Collect available API keys (NO validation here - validation happens in index.ts AFTER model selection)
+  // This ensures we know which model the user wants before checking if they have the right key
+  config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
+  config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 
   // Set default for quiet mode if not explicitly set
   // Single-shot mode: quiet by default
