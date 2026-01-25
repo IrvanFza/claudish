@@ -131,6 +131,14 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Update recommended models from OpenRouter
+        run: |
+          echo "🔄 Fetching latest model data from OpenRouter..."
+          bun scripts/update-models.ts
+          echo ""
+          echo "📋 Updated recommended-models.json:"
+          cat packages/cli/recommended-models.json | head -50
+
       - name: Build packages
         run: |
           # Build from root to preserve workspace resolution

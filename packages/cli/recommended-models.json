@@ -1,6 +1,6 @@
 {
   "version": "1.1.5",
-  "lastUpdated": "2026-01-12",
+  "lastUpdated": "2026-01-25",
   "source": "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
   "models": [
     {
@@ -32,12 +32,12 @@
       "category": "reasoning",
       "priority": 2,
       "pricing": {
-        "input": "$0.28/1M",
-        "output": "$1.20/1M",
-        "average": "$0.74/1M"
+        "input": "$0.27/1M",
+        "output": "$1.10/1M",
+        "average": "$0.69/1M"
       },
       "context": "196K",
-      "maxOutputTokens": null,
+      "maxOutputTokens": 196608,
       "modality": "text->text",
       "supportsTools": true,
       "supportsReasoning": true,
@@ -80,7 +80,7 @@
       },
       "context": "1048K",
       "maxOutputTokens": 65536,
-      "modality": "text+image->text",
+      "modality": "text+image+file+audio+video->text",
       "supportsTools": true,
       "supportsReasoning": true,
       "supportsVision": true,
@@ -101,7 +101,7 @@
       },
       "context": "400K",
       "maxOutputTokens": 128000,
-      "modality": "text+image->text",
+      "modality": "text+image+file->text",
       "supportsTools": true,
       "supportsReasoning": true,
       "supportsVision": true,
