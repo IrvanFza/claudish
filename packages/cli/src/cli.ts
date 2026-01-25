@@ -988,7 +988,7 @@ function printVersion(): void {
  */
 function printHelp(): void {
   console.log(`
-claudish - Run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, MiniMax, Kimi, GLM, Local)
+claudish - Run Claude Code with any AI model (OpenRouter, Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, Local)
 
 USAGE:
   claudish                                # Interactive mode (default, shows model selector)
@@ -1002,6 +1002,7 @@ MODEL ROUTING (prefix-based):
   mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
   kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
   glm/, zhipu/     GLM Direct API         claudish --model glm/glm-4.7 "task"
+  zai/             Z.AI Direct API        claudish --model zai/glm-4.7 "task"
   oc/              OllamaCloud            claudish --model oc/gpt-oss:20b "task"
   zen/             OpenCode Zen (free)    claudish --model zen/grok-code "task"
   ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
