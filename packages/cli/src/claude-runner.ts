@@ -378,13 +378,16 @@ async function findClaudeBinary(): Promise<string | null> {
       }
     }
   } else {
-    // Mac/Linux paths
+    // Mac/Linux/Android paths
     const commonPaths = [
       "/usr/local/bin/claude",           // Homebrew (Intel), npm global
       "/opt/homebrew/bin/claude",        // Homebrew (Apple Silicon)
       join(home, ".npm-global/bin/claude"), // Custom npm global prefix
       join(home, ".local/bin/claude"),   // User-local installations
       join(home, "node_modules/.bin/claude"), // Local node_modules
+      // Termux (Android) paths
+      "/data/data/com.termux/files/usr/bin/claude",
+      join(home, "../usr/bin/claude"),   // Termux relative path
     ];
 
     for (const path of commonPaths) {
@@ -394,14 +397,16 @@ async function findClaudeBinary(): Promise<string | null> {
     }
   }
 
-  // 4. Check global PATH using which/where
+  // 4. Check global PATH using command -v (portable) / where (Windows)
   // Use shell: true to inherit user's PATH from .zshrc/.bashrc (fixes Mac detection)
+  // Note: "command -v" is a shell builtin, more portable than "which" (works on Termux without extra packages)
   try {
-    const command = isWindows ? "where" : "which";
+    // On Windows use "where claude", on Unix use "command -v claude" (shell builtin, no external dependency)
+    const shellCommand = isWindows ? "where claude" : "command -v claude";
 
-    const proc = spawn(command, ["claude"], {
+    const proc = spawn(shellCommand, [], {
       stdio: "pipe",
-      shell: true,  // Always use shell to inherit user's PATH
+      shell: true,  // Always use shell to inherit user's PATH and run builtins
     });
 
     let output = "";
