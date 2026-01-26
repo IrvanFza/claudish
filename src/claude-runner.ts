@@ -363,8 +363,22 @@ async function findClaudeBinary(): Promise<string | null> {
     return localPath;
   }
 
-  // 3. Check common global installation paths (Mac/Linux only)
-  if (!isWindows) {
+  // 3. Check common global installation paths
+  if (isWindows) {
+    // Windows: Check npm global paths for .cmd files
+    const windowsPaths = [
+      join(home, "AppData", "Roaming", "npm", "claude.cmd"),  // npm global (default)
+      join(home, ".npm-global", "claude.cmd"),                // Custom npm prefix
+      join(home, "node_modules", ".bin", "claude.cmd"),       // Local node_modules
+    ];
+
+    for (const path of windowsPaths) {
+      if (existsSync(path)) {
+        return path;
+      }
+    }
+  } else {
+    // Mac/Linux paths
     const commonPaths = [
       "/usr/local/bin/claude",           // Homebrew (Intel), npm global
       "/opt/homebrew/bin/claude",        // Homebrew (Apple Silicon)
@@ -402,8 +416,18 @@ async function findClaudeBinary(): Promise<string | null> {
     });
 
     if (exitCode === 0 && output.trim()) {
+      const lines = output.trim().split(/\r?\n/);
+
+      if (isWindows) {
+        // On Windows, prefer .cmd file over shell script
+        const cmdPath = lines.find(line => line.endsWith(".cmd"));
+        if (cmdPath) {
+          return cmdPath;
+        }
+      }
+
       // Return first line (primary match)
-      return output.trim().split("\n")[0];
+      return lines[0];
     }
   } catch {
     // Command failed
