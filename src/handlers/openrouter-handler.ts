@@ -688,7 +688,11 @@ export class OpenRouterHandler implements ModelHandler {
         if (msg.includes("tool use")) {
           return `❌ Model "${model}" does not support tool calling, which is required by Claude Code. Try a different model with tool support.`;
         }
-        return `❌ Model not found or unavailable: ${model}`;
+        // Check if this is a :free model
+        if (model.endsWith(":free")) {
+          return `❌ Free model "${model}" is currently unavailable. Free tier models are rate-limited and may be discontinued. Try a paid model or use direct API (e.g., google@gemini-2.0-flash with GEMINI_API_KEY).`;
+        }
+        return `❌ Model not found or unavailable: ${model}. The model may have been removed or renamed.`;
       }
 
       // Handle 401/403 auth errors

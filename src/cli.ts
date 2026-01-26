@@ -474,11 +474,23 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
   console.log("  " + "─".repeat(80));
 
   for (const { model, score } of results) {
-    // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    // Format model ID with proper prefix for explicit routing
+    // Local models (ollama/) get ollama@ prefix, OpenRouter models get openrouter@ prefix
+    let fullModelId: string;
+    if (model.isLocal) {
+      // Convert ollama/model-name to ollama@model-name
+      fullModelId = model.id.replace("ollama/", "ollama@");
+    } else if (model.id.startsWith("zen/")) {
+      // Already has zen/ prefix, convert to zen@
+      fullModelId = model.id.replace("zen/", "zen@");
+    } else {
+      // OpenRouter model - add openrouter@ prefix
+      fullModelId = `openrouter@${model.id}`;
+    }
+    const modelId = fullModelId.length > 30 ? fullModelId.substring(0, 27) + "..." : fullModelId;
     const modelIdPadded = modelId.padEnd(30);
 
-    // Determine provider from ID
+    // Determine provider from original ID
     const providerName = model.id.split("/")[0];
     const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
     const providerPadded = provider.padEnd(10);
@@ -526,8 +538,9 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     `${DIM}Local models: ${RED}red${RESET}${DIM} = no tool support (incompatible), ${GREEN}green${RESET}${DIM} = compatible${RESET}`
   );
   console.log("");
-  console.log("Use a model: claudish --model <model-id>");
-  console.log("Local models: claudish --model ollama/<model-name>");
+  console.log("Use OpenRouter model: claudish --model openrouter@<provider/model-id>");
+  console.log("Local Ollama model:   claudish --model ollama@<model-name>");
+  console.log("OpenCode Zen model:   claudish --model zen@<model-id>");
 }
 
 /**
@@ -600,14 +613,25 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
           localCount: ollamaModels.length,
           zenCount: zenModels.length,
           lastUpdated: new Date().toISOString().split("T")[0],
-          models: allModels.map((m) => ({
-            id: m.id,
-            name: m.name,
-            context: m.context_length || m.top_provider?.context_length,
-            pricing: m.pricing,
-            isLocal: m.isLocal || false,
-            isZen: m.isZen || false,
-          })),
+          models: allModels.map((m) => {
+            // Add proper prefix for explicit routing
+            let id: string;
+            if (m.isLocal) {
+              id = m.id.replace("ollama/", "ollama@");
+            } else if (m.isZen || m.id.startsWith("zen/")) {
+              id = m.id.replace("zen/", "zen@");
+            } else {
+              id = `openrouter@${m.id}`;
+            }
+            return {
+              id,
+              name: m.name,
+              context: m.context_length || m.top_provider?.context_length,
+              pricing: m.pricing,
+              isLocal: m.isLocal || false,
+              isZen: m.isZen || false,
+            };
+          }),
         },
         null,
         2
@@ -632,7 +656,8 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     console.log("  " + "─".repeat(76));
 
     for (const model of ollamaModels) {
-      const fullId = model.id; // Already has ollama/ prefix
+      // Convert ollama/model-name to ollama@model-name for explicit routing
+      const fullId = model.id.replace("ollama/", "ollama@");
       const modelId = fullId.length > 35 ? fullId.substring(0, 32) + "..." : fullId;
       const modelIdPadded = modelId.padEnd(38);
       const size = model.size ? `${(model.size / 1e9).toFixed(1)}GB` : "N/A";
@@ -652,7 +677,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
       `  ${RED}✗${RESET} = Not compatible ${DIM}(Claude Code requires tool support)${RESET}`
     );
     console.log("");
-    console.log("  Use: claudish --model ollama/<model-name>");
+    console.log("  Use: claudish --model ollama@<model-name>");
     console.log("  Pull a compatible model: ollama pull llama3.2");
   } else {
     console.log("\n🏠 LOCAL OLLAMA: Not running or no models installed");
@@ -675,7 +700,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     });
 
     for (const model of sortedModels) {
-      const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+      // Convert zen/model-id to zen@model-id for explicit routing
+      const fullId = model.id.replace("zen/", "zen@");
+      const modelId = fullId.length > 30 ? fullId.substring(0, 27) + "..." : fullId;
       const modelIdPadded = modelId.padEnd(32);
       const contextLen = model.context_length || 0;
       const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
@@ -688,7 +715,7 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     }
     console.log("");
     console.log(`  ${DIM}FREE models work without API key!${RESET}`);
-    console.log("  Use: claudish --model zen/<model-id>");
+    console.log("  Use: claudish --model zen@<model-id>");
   }
 
   // Group by provider
@@ -712,9 +739,9 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     console.log("  " + "─".repeat(70));
 
     for (const model of providerModels) {
-      // Format model ID (remove provider prefix, truncate if too long)
-      const shortId = model.id.split("/").slice(1).join("/");
-      const modelId = shortId.length > 40 ? shortId.substring(0, 37) + "..." : shortId;
+      // Format model ID with openrouter@ prefix for explicit routing
+      const fullId = `openrouter@${model.id}`;
+      const modelId = fullId.length > 40 ? fullId.substring(0, 37) + "..." : fullId;
       const modelIdPadded = modelId.padEnd(42);
 
       // Format pricing (handle special cases: negative = varies, 0 = free)
@@ -741,10 +768,12 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
   }
 
   console.log("\n");
-  console.log("Use a model:   claudish --model <provider/model-id>");
-  console.log("Local model:   claudish --model ollama/<model-name>");
-  console.log("Search:        claudish --search <query>");
-  console.log("Top models:    claudish --top-models");
+  console.log("Use OpenRouter model:  claudish --model openrouter@<provider/model-id>");
+  console.log("  Example:             claudish --model openrouter@google/gemini-2.0-flash-exp:free");
+  console.log("Local Ollama model:    claudish --model ollama@<model-name>");
+  console.log("OpenCode Zen model:    claudish --model zen@<model-id>");
+  console.log("Search:                claudish --search <query>");
+  console.log("Top models:            claudish --top-models");
 }
 
 /**
@@ -1088,7 +1117,7 @@ MODEL MAPPING (per-role override):
 
 CUSTOM MODELS:
   Claudish accepts ANY valid OpenRouter model ID, even if not in --list-models
-  Example: claudish --model your_provider/custom-model-123 "task"
+  Example: claudish --model openrouter@your_provider/custom-model-123 "task"
 
 MODES:
   • Interactive mode (default): Shows model selector, starts persistent session
@@ -1211,7 +1240,7 @@ EXAMPLES:
 
   # Use stdin for large prompts (e.g., git diffs, code review)
   echo "Review this code..." | claudish --stdin --model g@gemini-2.0-flash
-  git diff | claudish --stdin --model openai/gpt-5.2 "Review these changes"
+  git diff | claudish --stdin --model oai@gpt-5.2 "Review these changes"
 
   # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"
@@ -1229,7 +1258,7 @@ EXAMPLES:
   claudish --port 3000 "analyze code structure"
 
   # Pass flags to claude
-  claudish --model x-ai/grok-code-fast-1 --verbose "debug issue"
+  claudish --model openrouter@x-ai/grok-code-fast-1 --verbose "debug issue"
 
   # JSON output for tool integration (quiet by default)
   claudish --json "list 5 prime numbers"
@@ -1386,7 +1415,9 @@ function printAvailableModels(): void {
     const modelInfo = loadModelInfo();
     for (const model of basicModels) {
       const info = modelInfo[model];
-      console.log(`  ${model}`);
+      // Add openrouter@ prefix for explicit routing
+      const displayModel = model === "custom" ? model : `openrouter@${model}`;
+      console.log(`  ${displayModel}`);
       console.log(`    ${info.name} - ${info.description}`);
       console.log("");
     }
@@ -1401,8 +1432,9 @@ function printAvailableModels(): void {
 
   // Table rows
   for (const model of models) {
-    // Format model ID (truncate if too long)
-    const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
+    // Format model ID with openrouter@ prefix for explicit routing
+    const fullModelId = model.id.startsWith("openrouter@") ? model.id : `openrouter@${model.id}`;
+    const modelId = fullModelId.length > 30 ? fullModelId.substring(0, 27) + "..." : fullModelId;
     const modelIdPadded = modelId.padEnd(30);
 
     // Format provider (max 10 chars)
@@ -1456,8 +1488,17 @@ function printAvailableModelsJSON(): void {
     const jsonContent = readFileSync(jsonPath, "utf-8");
     const data = JSON.parse(jsonContent);
 
+    // Add openrouter@ prefix to model IDs for explicit routing
+    const outputData = {
+      ...data,
+      models: data.models.map((model: any) => ({
+        ...model,
+        id: model.id.startsWith("openrouter@") ? model.id : `openrouter@${model.id}`,
+      })),
+    };
+
     // Output clean JSON to stdout
-    console.log(JSON.stringify(data, null, 2));
+    console.log(JSON.stringify(outputData, null, 2));
   } catch (error) {
     // If JSON file doesn't exist, construct from model info
     const models = getAvailableModels();
@@ -1472,7 +1513,8 @@ function printAvailableModelsJSON(): void {
         .map((modelId) => {
           const info = modelInfo[modelId];
           return {
-            id: modelId,
+            // Add openrouter@ prefix for explicit routing
+            id: `openrouter@${modelId}`,
             name: info.name,
             description: info.description,
             provider: info.provider,

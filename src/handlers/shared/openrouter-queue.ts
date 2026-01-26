@@ -10,6 +10,7 @@
  * - Proactive throttling when quota is low
  * - Exponential backoff for consecutive errors
  * - Automatic queue size management (max 100 requests)
+ * - **Automatic retry for 429 errors** (up to 3 attempts with backoff)
  *
  * Rate limit headers parsed:
  * - X-RateLimit-Limit-Requests: Total requests allowed
@@ -17,6 +18,11 @@
  * - X-RateLimit-Reset-Requests: Unix timestamp when limit resets
  * - X-RateLimit-Remaining-Tokens: Remaining tokens in current window
  * - Retry-After: Seconds to wait after 429 error
+ *
+ * Retry behavior:
+ * - 429 errors: Retry up to 3 times with exponential backoff
+ * - Network errors: Retry up to 3 times with exponential backoff
+ * - Respects Retry-After header when present
  */
 
 import { getLogLevel, log } from "../../logger.js";
@@ -50,6 +56,7 @@ interface RateLimitState {
   totalProcessed: number;
   totalErrors: number;
   total429Errors: number;
+  total429Retries: number;
 }
 
 /**
@@ -63,6 +70,7 @@ export interface QueueStats {
   totalProcessed: number;
   totalErrors: number;
   total429Errors: number;
+  total429Retries: number;
   remainingRequests: number | null;
   remainingTokens: number | null;
   resetTime: number | null;
@@ -98,12 +106,14 @@ export class OpenRouterRequestQueue {
     totalProcessed: 0,
     totalErrors: 0,
     total429Errors: 0,
+    total429Retries: 0,
   };
 
   // Configuration constants
   private readonly baseDelayMs = 1000; // 60 req/min
   private readonly maxDelayMs = 10000; // Max 10s delay
   private readonly maxQueueSize = 100;
+  private readonly maxRetries = 3; // Max retries for 429 errors
 
   private constructor() {
     if (getLogLevel() === "debug") {
@@ -182,42 +192,80 @@ export class OpenRouterRequestQueue {
         log(`[OpenRouterQueue] Processing request (${this.queue.length} remaining in queue)`);
       }
 
-      try {
-        // Wait for next available slot
-        await this.waitForNextSlot();
+      let lastResponse: Response | null = null;
+      let retryAttempt = 0;
 
-        // Execute the request
-        const response = await request.fetchFn();
-        this.rateLimitState.lastRequestTime = Date.now();
+      // Retry loop for 429 errors
+      while (retryAttempt < this.maxRetries) {
+        try {
+          // Wait for next available slot
+          await this.waitForNextSlot();
 
-        // Parse rate limit headers
-        this.parseRateLimitHeaders(response);
+          // Execute the request
+          const response = await request.fetchFn();
+          this.rateLimitState.lastRequestTime = Date.now();
+          lastResponse = response;
 
-        // Check for rate limit response
-        if (response.status === 429) {
-          this.rateLimitState.totalErrors++;
-          this.rateLimitState.total429Errors++;
-          await this.handleRateLimitError(response);
-          if (getLogLevel() === "debug") {
-            log(
-              `[OpenRouterQueue] Rate limit hit (429), adjusted delay to ${this.rateLimitState.currentDelayMs}ms`
-            );
+          // Parse rate limit headers
+          this.parseRateLimitHeaders(response);
+
+          // Check for rate limit response
+          if (response.status === 429) {
+            this.rateLimitState.total429Errors++;
+            retryAttempt++;
+
+            // Get retry delay from response
+            const retryDelayMs = await this.handleRateLimitError(response);
+
+            if (retryAttempt < this.maxRetries) {
+              this.rateLimitState.total429Retries++;
+              log(
+                `[OpenRouterQueue] Rate limit hit (429), retrying in ${retryDelayMs}ms (attempt ${retryAttempt}/${this.maxRetries})`
+              );
+              // Wait the recommended delay before retrying
+              await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+              continue; // Retry the request
+            } else {
+              this.rateLimitState.totalErrors++;
+              log(
+                `[OpenRouterQueue] Rate limit hit (429), max retries (${this.maxRetries}) reached`
+              );
+            }
+          } else {
+            // Success - reset error tracking
+            this.handleSuccessResponse();
           }
-        } else {
-          // Success - reset error tracking
-          this.handleSuccessResponse();
-        }
 
-        this.rateLimitState.totalProcessed++;
-        request.resolve(response);
-      } catch (error) {
-        // Network error or other exception
-        this.rateLimitState.totalErrors++;
-        this.rateLimitState.consecutiveErrors++;
-        if (getLogLevel() === "debug") {
-          log(`[OpenRouterQueue] Request failed with error: ${error}`);
+          this.rateLimitState.totalProcessed++;
+          request.resolve(response);
+          break; // Exit retry loop on success or non-429 error
+        } catch (error) {
+          // Network error or other exception
+          this.rateLimitState.totalErrors++;
+          this.rateLimitState.consecutiveErrors++;
+          retryAttempt++;
+
+          if (retryAttempt < this.maxRetries) {
+            const backoffMs = Math.min(1000 * Math.pow(2, retryAttempt), this.maxDelayMs);
+            log(
+              `[OpenRouterQueue] Network error, retrying in ${backoffMs}ms (attempt ${retryAttempt}/${this.maxRetries}): ${error}`
+            );
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            continue;
+          }
+
+          if (getLogLevel() === "debug") {
+            log(`[OpenRouterQueue] Request failed after ${this.maxRetries} attempts: ${error}`);
+          }
+          request.reject(error instanceof Error ? error : new Error(String(error)));
+          break;
         }
-        request.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+
+      // If we exhausted retries on 429, resolve with the last response
+      if (lastResponse && lastResponse.status === 429 && retryAttempt >= this.maxRetries) {
+        this.rateLimitState.totalProcessed++;
+        request.resolve(lastResponse);
       }
     }
 
@@ -366,27 +414,29 @@ export class OpenRouterRequestQueue {
   /**
    * Handle 429 rate limit error
    * Parse Retry-After header and apply exponential backoff
+   * @returns The recommended delay in milliseconds before retrying
    */
-  private async handleRateLimitError(response: Response): Promise<void> {
+  private async handleRateLimitError(response: Response): Promise<number> {
     this.rateLimitState.consecutiveErrors++;
 
     // Set remaining requests to 0 (quota exhausted)
     this.rateLimitState.remainingRequests = 0;
+
+    let retryDelayMs = this.baseDelayMs * 2; // Default 2s for 429
 
     // Parse Retry-After header (seconds to wait)
     const retryAfter = response.headers.get("Retry-After");
     if (retryAfter) {
       const retryAfterSeconds = Number.parseInt(retryAfter, 10);
       if (!Number.isNaN(retryAfterSeconds)) {
-        const retryAfterMs = retryAfterSeconds * 1000;
-        this.rateLimitState.currentDelayMs = Math.min(retryAfterMs, this.maxDelayMs);
+        retryDelayMs = Math.min(retryAfterSeconds * 1000, this.maxDelayMs);
         if (getLogLevel() === "debug") {
-          log(`[OpenRouterQueue] Retry-After header: ${retryAfterSeconds}s (${retryAfterMs}ms)`);
+          log(`[OpenRouterQueue] Retry-After header: ${retryAfterSeconds}s (${retryDelayMs}ms)`);
         }
       }
     }
 
-    // Try to parse error response body for additional info
+    // Try to parse error response body for additional retry info
     try {
       const errorText = await response.clone().text();
       const errorData = JSON.parse(errorText);
@@ -395,21 +445,32 @@ export class OpenRouterRequestQueue {
           log(`[OpenRouterQueue] 429 error message: ${errorData.error.message}`);
         }
       }
+      // Some providers return retry delay in the error body
+      if (errorData?.error?.metadata?.retry_after) {
+        const bodyRetryAfter = Number.parseFloat(errorData.error.metadata.retry_after);
+        if (!Number.isNaN(bodyRetryAfter)) {
+          retryDelayMs = Math.min(bodyRetryAfter * 1000, this.maxDelayMs);
+        }
+      }
     } catch {
       // Ignore JSON parse errors
     }
 
-    // Apply exponential backoff
-    const backoffMultiplier = 1 + this.rateLimitState.consecutiveErrors * 0.5;
+    // Apply exponential backoff based on consecutive errors
+    const backoffMultiplier = Math.pow(1.5, this.rateLimitState.consecutiveErrors);
     const backoffDelay = Math.min(this.baseDelayMs * backoffMultiplier, this.maxDelayMs);
-    this.rateLimitState.currentDelayMs = Math.max(this.rateLimitState.currentDelayMs, backoffDelay);
+    retryDelayMs = Math.max(retryDelayMs, backoffDelay);
+
+    this.rateLimitState.currentDelayMs = retryDelayMs;
 
     if (getLogLevel() === "debug") {
       log(
-        `[OpenRouterQueue] Applied exponential backoff: ${this.rateLimitState.currentDelayMs}ms ` +
+        `[OpenRouterQueue] Applied exponential backoff: ${retryDelayMs}ms ` +
           `(${this.rateLimitState.consecutiveErrors} consecutive errors)`
       );
     }
+
+    return retryDelayMs;
   }
 
   /**
@@ -450,6 +511,7 @@ export class OpenRouterRequestQueue {
       totalProcessed: this.rateLimitState.totalProcessed,
       totalErrors: this.rateLimitState.totalErrors,
       total429Errors: this.rateLimitState.total429Errors,
+      total429Retries: this.rateLimitState.total429Retries,
       remainingRequests: this.rateLimitState.remainingRequests,
       remainingTokens: this.rateLimitState.remainingTokens,
       resetTime: this.rateLimitState.resetTime,

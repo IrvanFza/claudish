@@ -19,6 +19,7 @@ const __dirname = dirname(__filename);
 const ALL_MODELS_JSON_PATH = join(__dirname, "../all-models.json");
 const RECOMMENDED_MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
+const FREE_MODELS_CACHE_MAX_AGE_HOURS = 3; // Free models change frequently, refresh every 3 hours
 
 /**
  * Model data structure
@@ -39,34 +40,26 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
+  source?: "OpenRouter" | "Zen"; // Which platform the model is from
 }
 
-/**
- * Trusted providers for free models
- */
-const TRUSTED_FREE_PROVIDERS = [
-  "google",
-  "openai",
-  "x-ai",
-  "deepseek",
-  "qwen",
-  "alibaba",
-  "meta-llama",
-  "microsoft",
-  "mistralai",
-  "nvidia",
-  "cohere",
-];
+// OpenRouter free models are routed with openrouter@ prefix for explicit routing
 
 /**
  * Load recommended models from JSON
+ * Adds openrouter@ prefix for explicit routing
  */
 function loadRecommendedModels(): ModelInfo[] {
   if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
     try {
       const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
       const data = JSON.parse(content);
-      return data.models || [];
+      // Add openrouter@ prefix to all recommended models for explicit routing
+      return (data.models || []).map((model: ModelInfo) => ({
+        ...model,
+        id: model.id.startsWith("openrouter@") ? model.id : `openrouter@${model.id}`,
+        source: "OpenRouter" as const,
+      }));
     } catch {
       return [];
     }
@@ -145,7 +138,8 @@ function toModelInfo(model: any): ModelInfo {
   }
 
   return {
-    id: model.id,
+    // Add openrouter@ prefix for explicit routing
+    id: `openrouter@${model.id}`,
     name: model.name || model.id,
     description: model.description || "",
     provider: provider.charAt(0).toUpperCase() + provider.slice(1),
@@ -160,48 +154,120 @@ function toModelInfo(model: any): ModelInfo {
     supportsReasoning: (model.supported_parameters || []).includes("reasoning"),
     supportsVision: (model.architecture?.input_modalities || []).includes("image"),
     isFree,
+    source: "OpenRouter",
   };
 }
 
 /**
- * Get free models from cache/API
+ * Fetch free models from OpenCode Zen
+ */
+async function fetchZenFreeModels(): Promise<ModelInfo[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const opencode = data.opencode;
+    if (!opencode?.models) return [];
+
+    // Get free models with tool support
+    return Object.entries(opencode.models)
+      .filter(([_, m]: [string, any]) => {
+        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
+        const supportsTools = m.tool_call === true;
+        return isFree && supportsTools;
+      })
+      .map(([id, m]: [string, any]) => ({
+        id: `zen@${id}`,
+        name: m.name || id,
+        description: `OpenCode Zen free model`,
+        provider: "Zen",
+        pricing: {
+          input: "FREE",
+          output: "FREE",
+          average: "FREE",
+        },
+        context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
+        contextLength: m.limit?.context || 128000,
+        supportsTools: true,
+        supportsReasoning: m.reasoning || false,
+        supportsVision: false,
+        isFree: true,
+        source: "Zen" as const,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Check if cache needs refresh for free models (more frequent updates)
+ */
+function shouldRefreshForFreeModels(): boolean {
+  if (!existsSync(ALL_MODELS_JSON_PATH)) {
+    return true;
+  }
+  try {
+    const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
+    const lastUpdated = new Date(cacheData.lastUpdated);
+    const now = new Date();
+    const ageInHours = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60);
+    return ageInHours > FREE_MODELS_CACHE_MAX_AGE_HOURS;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Get free models from OpenRouter API + Zen
+ * Uses 3-hour cache refresh for free models since they change frequently
  */
 async function getFreeModels(): Promise<ModelInfo[]> {
-  const allModels = await fetchAllModels();
+  // Fetch OpenRouter models and Zen models in parallel
+  const forceUpdate = shouldRefreshForFreeModels();
+  const [allModels, zenModels] = await Promise.all([
+    fetchAllModels(forceUpdate),
+    fetchZenFreeModels(),
+  ]);
 
-  // Filter for FREE models from TRUSTED providers with TOOL SUPPORT
-  const freeModels = allModels.filter((model) => {
-    const promptPrice = parseFloat(model.pricing?.prompt || "0");
-    const completionPrice = parseFloat(model.pricing?.completion || "0");
-    const isFree = promptPrice === 0 && completionPrice === 0;
-
-    if (!isFree) return false;
+  // Filter OpenRouter for FREE models with :free suffix and TOOL SUPPORT
+  const openRouterFreeModels = allModels.filter((model) => {
+    // Must have :free suffix (these are the actual free tier models)
+    if (!model.id?.endsWith(":free")) return false;
 
     // Must support tool calling (required by Claude Code)
     const supportsTools = (model.supported_parameters || []).includes("tools");
     if (!supportsTools) return false;
 
-    const provider = model.id.split("/")[0].toLowerCase();
-    return TRUSTED_FREE_PROVIDERS.includes(provider);
+    return true;
   });
 
   // Sort by context window (largest first)
-  freeModels.sort((a, b) => {
+  openRouterFreeModels.sort((a, b) => {
     const contextA = a.context_length || a.top_provider?.context_length || 0;
     const contextB = b.context_length || b.top_provider?.context_length || 0;
     return contextB - contextA;
   });
 
-  // Dedupe: prefer non-:free variant
-  const seenBase = new Set<string>();
-  const dedupedModels = freeModels.filter((model) => {
-    const baseId = model.id.replace(/:free$/, "");
-    if (seenBase.has(baseId)) return false;
-    seenBase.add(baseId);
-    return true;
+  // Convert to ModelInfo (adds openrouter@ prefix for explicit routing)
+  const openRouterModels = openRouterFreeModels.slice(0, 20).map(toModelInfo);
+
+  // Combine: Zen models first (most reliable), then OpenRouter
+  const combined = [...zenModels, ...openRouterModels];
+
+  // Sort: Zen first, then by context window
+  combined.sort((a, b) => {
+    if (a.source === "Zen" && b.source !== "Zen") return -1;
+    if (a.source !== "Zen" && b.source === "Zen") return 1;
+    return (b.contextLength || 0) - (a.contextLength || 0);
   });
 
-  return dedupedModels.slice(0, 20).map(toModelInfo);
+  return combined;
 }
 
 /**
@@ -215,7 +281,7 @@ async function getAllModelsForSearch(): Promise<ModelInfo[]> {
 /**
  * Format model for display in selector
  */
-function formatModelChoice(model: ModelInfo): string {
+function formatModelChoice(model: ModelInfo, showSource = false): string {
   const caps = [
     model.supportsTools ? "T" : "",
     model.supportsReasoning ? "R" : "",
@@ -227,6 +293,12 @@ function formatModelChoice(model: ModelInfo): string {
   const capsStr = caps ? ` [${caps}]` : "";
   const priceStr = model.pricing?.average || "N/A";
   const ctxStr = model.context || "N/A";
+
+  // Show source for free models list (OpenRouter vs Zen)
+  if (showSource && model.source) {
+    const sourceTag = model.source === "Zen" ? "Zen" : "OR";
+    return `${sourceTag} ${model.id} (${priceStr}, ${ctxStr}${capsStr})`;
+  }
 
   return `${model.id} (${model.provider}, ${priceStr}, ${ctxStr}${capsStr})`;
 }
@@ -292,7 +364,9 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
   const promptMessage =
     message ||
-    (freeOnly ? "Select a FREE model (type to search):" : "Select a model (type to search):");
+    (freeOnly
+      ? "Select a FREE model:"
+      : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,
@@ -300,7 +374,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       if (!term) {
         // Show all/top models when no search term
         return models.slice(0, 15).map((m) => ({
-          name: formatModelChoice(m),
+          name: formatModelChoice(m, freeOnly), // Show source for free models
           value: m.id,
           description: m.description?.slice(0, 80),
         }));
@@ -321,7 +395,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         .slice(0, 15);
 
       return results.map((r) => ({
-        name: formatModelChoice(r.model),
+        name: formatModelChoice(r.model, freeOnly), // Show source for free models
         value: r.model.id,
         description: r.model.description?.slice(0, 80),
       }));

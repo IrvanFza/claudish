@@ -22,6 +22,7 @@ import {
   parseUrlModel,
   createUrlProvider,
 } from "./providers/provider-registry.js";
+import { parseModelSpec } from "./providers/model-parser.js";
 import {
   resolveRemoteProvider,
   validateRemoteProviderApiKey,
@@ -54,13 +55,17 @@ export async function createProxyServer(
 
   // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
-    if (!openRouterHandlers.has(targetModel)) {
+    // Strip provider prefix (e.g., openrouter@google/gemini -> google/gemini)
+    const parsed = parseModelSpec(targetModel);
+    const modelId = parsed.provider === "openrouter" ? parsed.model : targetModel;
+
+    if (!openRouterHandlers.has(modelId)) {
       openRouterHandlers.set(
-        targetModel,
-        new OpenRouterHandler(targetModel, openrouterApiKey, port)
+        modelId,
+        new OpenRouterHandler(modelId, openrouterApiKey, port)
       );
     }
-    return openRouterHandlers.get(targetModel)!;
+    return openRouterHandlers.get(modelId)!;
   };
 
   // Helper to get or create Poe handler for a target model
