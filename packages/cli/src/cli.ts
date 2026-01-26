@@ -1112,6 +1112,10 @@ PROFILE MANAGEMENT:
 UPDATE:
   claudish update          Check for updates and install latest version
 
+AUTHENTICATION:
+  --gemini-login           Login to Gemini Code Assist via OAuth (for go@ prefix)
+  --gemini-logout          Clear Gemini OAuth credentials
+
 MODEL MAPPING (per-role override):
   --model-opus <model>     Model for Opus role (planning, complex tasks)
   --model-sonnet <model>   Model for Sonnet role (default coding)

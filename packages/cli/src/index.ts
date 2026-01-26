@@ -7,13 +7,44 @@ config({ quiet: true }); // Loads .env from current working directory
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");
 
-// Check for profile management commands
+// Check for auth and profile management commands
 const args = process.argv.slice(2);
 const firstArg = args[0];
+
+// Auth commands (--gemini-login, --gemini-logout)
+const isGeminiLogin = args.includes("--gemini-login");
+const isGeminiLogout = args.includes("--gemini-logout");
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
   import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
+} else if (isGeminiLogin) {
+  // Gemini OAuth login
+  import("./auth/gemini-oauth.js").then(async ({ GeminiOAuth }) => {
+    try {
+      const oauth = GeminiOAuth.getInstance();
+      await oauth.login();
+      console.log("\n✅ Gemini OAuth login successful!");
+      console.log("You can now use Gemini Code Assist with: claudish --model go@gemini-2.5-flash");
+      process.exit(0);
+    } catch (error) {
+      console.error("\n❌ Gemini OAuth login failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+} else if (isGeminiLogout) {
+  // Gemini OAuth logout
+  import("./auth/gemini-oauth.js").then(async ({ GeminiOAuth }) => {
+    try {
+      const oauth = GeminiOAuth.getInstance();
+      await oauth.logout();
+      console.log("✅ Gemini OAuth credentials cleared.");
+      process.exit(0);
+    } catch (error) {
+      console.error("❌ Gemini OAuth logout failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
 } else if (firstArg === "init") {
   // Profile setup wizard
   import("./profile-commands.js").then((pc) => pc.initCommand());
