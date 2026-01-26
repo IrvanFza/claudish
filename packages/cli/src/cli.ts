@@ -44,7 +44,7 @@ export function getVersion(): string {
 export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   const config: Partial<ClaudishConfig> = {
     model: undefined, // Will prompt interactively if not provided
-    autoApprove: true, // Skip permissions by default (--dangerously-skip-permissions)
+    autoApprove: false, // Don't skip permissions by default (safer)
     dangerous: false,
     interactive: false, // Single-shot mode by default
     debug: false, // No debug logging by default
@@ -132,6 +132,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.port = port;
+    } else if (arg === "--auto-approve" || arg === "-y") {
+      config.autoApprove = true;
     } else if (arg === "--no-auto-approve") {
       config.autoApprove = false;
     } else if (arg === "--dangerous") {
@@ -1082,7 +1084,8 @@ OPTIONS:
   --stdin                  Read prompt from stdin (useful for large prompts or piping)
   --free                   Show only FREE models in the interactive selector
   --monitor                Monitor mode - proxy to REAL Anthropic API and log all traffic
-  --no-auto-approve        Disable auto permission skip (prompts enabled)
+  -y, --auto-approve       Skip permission prompts (--dangerously-skip-permissions)
+  --no-auto-approve        Explicitly enable permission prompts (default)
   --dangerous              Pass --dangerouslyDisableSandbox to Claude Code
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
@@ -1124,8 +1127,8 @@ MODES:
   • Single-shot mode: Runs one task in headless mode and exits (requires --model)
 
 NOTES:
-  • Permission prompts are SKIPPED by default (--dangerously-skip-permissions)
-  • Use --no-auto-approve to enable permission prompts
+  • Permission prompts are ENABLED by default (normal Claude Code behavior)
+  • Use -y or --auto-approve to skip permission prompts
   • Model selector appears ONLY in interactive mode when --model not specified
   • Use --dangerous to disable sandbox (use with extreme caution!)
 
@@ -1245,14 +1248,15 @@ EXAMPLES:
   # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"
 
-  # Disable auto-approve (require manual confirmation)
-  claudish --no-auto-approve "make changes to config"
+  # Skip permission prompts (auto-approve)
+  claudish -y "make changes to config"
+  claudish --auto-approve "refactor the function"
 
   # Dangerous mode (disable sandbox - use with extreme caution)
   claudish --dangerous "refactor entire codebase"
 
-  # Both flags (fully autonomous)
-  claudish --dangerous "refactor entire codebase"
+  # Both flags (fully autonomous - no prompts, no sandbox)
+  claudish -y --dangerous "refactor entire codebase"
 
   # With custom port
   claudish --port 3000 "analyze code structure"
