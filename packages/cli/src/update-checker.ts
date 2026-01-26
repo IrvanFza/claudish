@@ -14,6 +14,21 @@ import { createInterface } from "node:readline";
 const isWindows = platform() === "win32";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/claudish/latest";
+
+/**
+ * Detect installation method from process.argv[1] path
+ */
+function getUpdateCommand(): string {
+  const scriptPath = process.argv[1] || "";
+
+  // Bun installation
+  if (scriptPath.includes("/.bun/")) {
+    return "bun add -g claudish@latest";
+  }
+
+  // Default to npm (works for npm, nvm, and most other installations)
+  return "npm install -g claudish@latest";
+}
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface UpdateCache {
@@ -167,15 +182,16 @@ function promptUser(question: string): Promise<boolean> {
 }
 
 /**
- * Run npm install -g claudish
+ * Run update command (auto-detects npm vs bun)
  */
 function runUpdate(): boolean {
+  const command = getUpdateCommand();
   try {
     console.error("\n[claudish] Updating...\n");
 
     // Use execSync with shell for cross-platform compatibility
     // Windows needs shell to find npm.cmd
-    execSync("npm install -g claudish@latest", {
+    execSync(command, {
       stdio: "inherit",
       shell: process.platform === "win32" ? "cmd.exe" : "/bin/sh",
     });
@@ -184,7 +200,7 @@ function runUpdate(): boolean {
     return true;
   } catch (error) {
     console.error("\n[claudish] Update failed. Try manually:");
-    console.error("  npm install -g claudish@latest\n");
+    console.error(`  ${command}\n`);
     return false;
   }
 }

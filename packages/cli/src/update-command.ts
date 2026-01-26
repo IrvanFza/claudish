@@ -64,7 +64,7 @@ function getUpdateCommand(method: InstallationInfo["method"]): string {
     case "npm":
       return "npm install -g claudish@latest";
     case "bun":
-      return "bun update -g claudish";
+      return "bun add -g claudish@latest";
     case "brew":
       return "brew upgrade claudish";
     case "unknown":
