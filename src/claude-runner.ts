@@ -231,21 +231,27 @@ export async function runClaudeWithProxy(
     [ENV.CLAUDISH_ACTIVE_MODEL_NAME]: modelId,
     // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
-    // Set Claude Code standard model environment variables
-    // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
-    // since we're proxying everything through OpenRouter
-    [ENV.ANTHROPIC_MODEL]: modelId,
-    [ENV.ANTHROPIC_SMALL_FAST_MODEL]: modelId,
   };
 
-  // Handle API key based on mode
+  // Handle API key and model based on mode
   if (config.monitor) {
     // Monitor mode: Don't set ANTHROPIC_API_KEY at all
     // This allows Claude Code to use its native authentication
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
+    // Don't override ANTHROPIC_MODEL - let Claude Code use its default
+    // (unless user explicitly specified a model)
+    if (modelId && modelId !== "unknown") {
+      env[ENV.ANTHROPIC_MODEL] = modelId;
+      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
+    }
   } else {
+    // Set Claude Code standard model environment variables
+    // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
+    // since we're proxying everything through OpenRouter
+    env[ENV.ANTHROPIC_MODEL] = modelId;
+    env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
     // OpenRouter mode: Use placeholder to prevent Claude Code dialog
     // The proxy will handle authentication with OPENROUTER_API_KEY
     env.ANTHROPIC_API_KEY =

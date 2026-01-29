@@ -8,43 +8,32 @@ export class NativeHandler implements ModelHandler {
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey;
-    this.baseUrl = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
+    // Always forward to real Anthropic API
+    this.baseUrl = "https://api.anthropic.com";
   }
 
   async handle(c: Context, payload: any): Promise<Response> {
     const originalHeaders = c.req.header();
-    const target = payload.model; // Use the model from usage, or overridden
+    const target = payload.model;
 
     log("\n=== [NATIVE] Claude Code → Anthropic API Request ===");
-
-    // Extract API key
-    const extractedApiKey =
-      originalHeaders["x-api-key"] || originalHeaders["authorization"] || this.apiKey;
-
-    if (!extractedApiKey) {
-      log("[Native] WARNING: No API key found in headers!");
-      log("[Native] Looking for: x-api-key or authorization header");
-    } else {
-      log(`API Key found: ${maskCredential(extractedApiKey)}`);
-    }
-
+    log(`[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`);
+    log(`[Native] authorization: ${originalHeaders["authorization"] ? maskCredential(originalHeaders["authorization"]) : "(not set)"}`);
     log(`Request body (Model: ${target}):`);
-    // log(JSON.stringify(payload, null, 2)); // Verbose
     log("=== End Request ===\n");
 
-    // Build headers
+    // Build headers - pass through auth headers exactly as received
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "anthropic-version": originalHeaders["anthropic-version"] || "2023-06-01",
     };
 
+    // Pass through auth headers as-is
     if (originalHeaders["authorization"]) {
       headers["authorization"] = originalHeaders["authorization"];
     }
     if (originalHeaders["x-api-key"]) {
       headers["x-api-key"] = originalHeaders["x-api-key"];
-    } else if (extractedApiKey) {
-      headers["x-api-key"] = extractedApiKey;
     }
     if (originalHeaders["anthropic-beta"]) {
       headers["anthropic-beta"] = originalHeaders["anthropic-beta"];

@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.1.1"; // Fallback version for compiled binaries
+let VERSION = "4.0.7"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -248,24 +248,20 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.interactive = true;
   }
 
-  // Handle monitor mode setup (no API key validation - that happens in index.ts AFTER model selection)
+  // Handle monitor mode setup
   if (config.monitor) {
-    // Monitor mode: extracts API key from Claude Code's requests
-    // No need for user to provide API key - we intercept it from Claude Code
-    // IMPORTANT: Unset ANTHROPIC_API_KEY if it's a placeholder, so Claude Code uses its native auth
+    // Monitor mode: proxies to real Anthropic API for monitoring/debugging
+    // Uses Claude Code's native authentication (from `claude auth login`)
+    //
+    // Remove any placeholder API keys so Claude Code uses its stored credentials
     if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes("placeholder")) {
       delete process.env.ANTHROPIC_API_KEY;
-      if (!config.quiet) {
-        console.log(
-          "[claudish] Removed placeholder API key - Claude Code will use native authentication"
-        );
-      }
     }
 
     if (!config.quiet) {
       console.log("[claudish] Monitor mode enabled - proxying to real Anthropic API");
-      console.log("[claudish] API key will be extracted from Claude Code's requests");
-      console.log("[claudish] Ensure you are logged in to Claude Code (claude auth login)");
+      console.log("[claudish] Using Claude Code's native authentication");
+      console.log("[claudish] Tip: Run with --debug to see request/response details");
     }
   }
 
