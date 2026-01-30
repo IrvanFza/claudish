@@ -141,6 +141,20 @@ async function runCli() {
       }
     }
 
+    // Stream mode: bypass Claude Code entirely and stream NDJSON directly
+    if (cliConfig.streamOutput) {
+      // Read prompt from stdin if --stdin flag is set
+      if (cliConfig.stdin) {
+        const stdinInput = await readStdin();
+        if (stdinInput.trim()) {
+          cliConfig.claudeArgs = [stdinInput, ...cliConfig.claudeArgs];
+        }
+      }
+
+      const { runStreamMode } = await import("./stream-runner.js");
+      process.exit(await runStreamMode(cliConfig));
+    }
+
     // Check if Claude Code is installed
     if (!(await checkClaudeInstalled())) {
       console.error("Error: Claude Code CLI not found");

@@ -36,6 +36,9 @@ export interface ClaudishConfig {
 
   // Local model optimizations
   summarizeTools?: boolean; // Summarize tool descriptions to reduce prompt size for local models
+
+  // Streaming output
+  streamOutput: boolean; // Stream NDJSON events directly, bypass Claude Code
 }
 
 // Anthropic API Types

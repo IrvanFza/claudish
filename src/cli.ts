@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.2.2"; // Fallback version for compiled binaries
+let VERSION = "4.3.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -52,6 +52,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     logLevel: "info", // Default to info level (structured logging with truncated content)
     quiet: undefined, // Will be set based on mode (true for single-shot, false for interactive)
     jsonOutput: false, // No JSON output by default
+    streamOutput: false, // No NDJSON streaming by default
     monitor: false, // Monitor mode disabled by default
     stdin: false, // Read prompt from stdin instead of args
     freeOnly: false, // Show all models by default
@@ -160,6 +161,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.quiet = false;
     } else if (arg === "--json") {
       config.jsonOutput = true;
+    } else if (arg === "--stream") {
+      config.streamOutput = true;
+      config.quiet = true; // Stream mode is always quiet
     } else if (arg === "--monitor") {
       config.monitor = true;
     } else if (arg === "--stdin") {
@@ -1085,6 +1089,8 @@ OPTIONS:
   -q, --quiet              Suppress [claudish] log messages (default in single-shot mode)
   -v, --verbose            Show [claudish] log messages (default in interactive mode)
   --json                   Output in JSON format for tool integration (implies --quiet)
+  --stream                 Stream NDJSON events directly (bypasses Claude Code)
+                           Output: {"event":"delta","content":"..."}
   --stdin                  Read prompt from stdin (useful for large prompts or piping)
   --free                   Show only FREE models in the interactive selector
   --monitor                Monitor mode - proxy to REAL Anthropic API and log all traffic
@@ -1276,6 +1282,11 @@ EXAMPLES:
 
   # JSON output for tool integration (quiet by default)
   claudish --json "list 5 prime numbers"
+
+  # Streaming NDJSON output (bypasses Claude Code, direct API calls)
+  claudish --stream --model gpt-4o "Hello world"
+  cat prompt.txt | claudish --stream --stdin --model gemini-2.0-flash
+  claudish --stream --model grok-code "Explain recursion" | jq -c 'select(.event=="delta")'
 
   # Verbose mode in single-shot (show [claudish] logs)
   claudish --verbose "analyze code structure"
