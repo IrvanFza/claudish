@@ -18,7 +18,7 @@ import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middlewa
 import { transformOpenAIToClaude } from "../transform.js";
 import { log, logStructured } from "../logger.js";
 import { filterIdentity } from "./shared/openai-compat.js";
-import { sanitizeSchemaForGemini, convertToolsToGemini } from "./shared/gemini-schema.js";
+import { convertToolsToGemini } from "./shared/gemini-schema.js";
 import { fetchWithRetry } from "./shared/gemini-retry.js";
 import { getModelPricing, type ModelPricing } from "./shared/remote-provider-types.js";
 

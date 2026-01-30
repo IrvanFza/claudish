@@ -5,6 +5,48 @@
  * Used by both GeminiHandler (API key) and GeminiCodeAssistHandler (OAuth).
  */
 
+import { log } from "../../logger.js";
+
+/**
+ * Sanitize a function name for Gemini API compatibility.
+ *
+ * Gemini requires function names to:
+ * - Start with a letter or underscore
+ * - Only contain alphanumeric chars (a-z, A-Z, 0-9), underscores (_), dots (.), colons (:), or dashes (-)
+ * - Maximum length of 64 characters
+ *
+ * @param name The original function name
+ * @returns Sanitized name that meets Gemini requirements, or null if name is invalid/empty
+ */
+export function sanitizeToolNameForGemini(name: string | undefined | null): string | null {
+  // Handle undefined/null/empty names
+  if (!name || typeof name !== "string" || name.trim() === "") {
+    log(`[GeminiSchema] Skipping tool with invalid name: ${JSON.stringify(name)}`);
+    return null;
+  }
+
+  // Replace invalid characters with underscores
+  // Valid: a-z, A-Z, 0-9, _, ., :, -
+  let sanitized = name.replace(/[^a-zA-Z0-9_.\-:]/g, "_");
+
+  // Ensure name starts with a letter or underscore
+  if (!/^[a-zA-Z_]/.test(sanitized)) {
+    sanitized = "_" + sanitized;
+  }
+
+  // Truncate to max 64 characters
+  if (sanitized.length > 64) {
+    sanitized = sanitized.substring(0, 64);
+  }
+
+  // Log if name was changed
+  if (sanitized !== name) {
+    log(`[GeminiSchema] Sanitized tool name: "${name}" -> "${sanitized}"`);
+  }
+
+  return sanitized;
+}
+
 /**
  * Normalize type field - Gemini requires single string type, not arrays
  * JSON Schema allows: type: ["string", "null"] but Gemini needs: type: "string"
@@ -102,17 +144,36 @@ export function sanitizeSchemaForGemini(schema: any): any {
 
 /**
  * Convert Claude/Anthropic tools to Gemini function declarations format
+ *
+ * Filters out tools with invalid names and sanitizes remaining names
+ * to meet Gemini's function naming requirements.
  */
 export function convertToolsToGemini(tools: any[] | undefined): any {
   if (!tools || tools.length === 0) {
     return undefined;
   }
 
-  const functionDeclarations = tools.map((tool: any) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: sanitizeSchemaForGemini(tool.input_schema),
-  }));
+  const functionDeclarations: any[] = [];
+
+  for (const tool of tools) {
+    const sanitizedName = sanitizeToolNameForGemini(tool.name);
+
+    // Skip tools with invalid names that can't be sanitized
+    if (!sanitizedName) {
+      log(`[GeminiSchema] Skipping tool without valid name: ${JSON.stringify(tool)}`);
+      continue;
+    }
+
+    functionDeclarations.push({
+      name: sanitizedName,
+      description: tool.description || "",
+      parameters: sanitizeSchemaForGemini(tool.input_schema),
+    });
+  }
+
+  if (functionDeclarations.length === 0) {
+    return undefined;
+  }
 
   return [{ functionDeclarations }];
 }

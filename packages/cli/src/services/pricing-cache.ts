@@ -125,7 +125,9 @@ export async function warmPricingCache(): Promise<void> {
       if (cached && cached.length > 0) {
         populateFromOpenRouterModels(cached);
         saveDiskCache();
-        log(`[PricingCache] Populated from existing model-loader cache (${pricingMap.size} models)`);
+        log(
+          `[PricingCache] Populated from existing model-loader cache (${pricingMap.size} models)`
+        );
         return;
       }
       log("[PricingCache] No models available, will use provider defaults");

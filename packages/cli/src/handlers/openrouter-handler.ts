@@ -337,7 +337,9 @@ export class OpenRouterHandler implements ModelHandler {
 
     // Capture references for use in closure
     const middlewareManager = this.middlewareManager;
-    const updateCost = (cost: number) => { this.sessionTotalCost += cost; };
+    const updateCost = (cost: number) => {
+      this.sessionTotalCost += cost;
+    };
     const writeTokens = (input: number, output: number) => this.writeTokenFile(input, output);
     // Shared metadata for middleware across all chunks in this stream
     const streamMetadata = new Map<string, any>();
@@ -423,7 +425,8 @@ export class OpenRouterHandler implements ModelHandler {
               } else {
                 const pricing = getModelPricing("openrouter", target);
                 const inputCost = ((usage.prompt_tokens || 0) / 1_000_000) * pricing.inputCostPer1M;
-                const outputCost = ((usage.completion_tokens || 0) / 1_000_000) * pricing.outputCostPer1M;
+                const outputCost =
+                  ((usage.completion_tokens || 0) / 1_000_000) * pricing.outputCostPer1M;
                 updateCost(inputCost + outputCost);
               }
 

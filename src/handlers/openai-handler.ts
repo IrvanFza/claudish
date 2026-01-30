@@ -68,7 +68,25 @@ export class OpenAIHandler implements ModelHandler {
    */
   private setContextWindow(): void {
     const model = this.modelName.toLowerCase();
-    if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
+
+    // xAI Grok models (context windows from xAI docs/OpenRouter)
+    if (model.includes("grok-4.1-fast") || model.includes("grok-4-1-fast")) {
+      this.contextWindow = 2000000; // 2M context
+    } else if (model.includes("grok-4-fast")) {
+      this.contextWindow = 2000000; // 2M context
+    } else if (model.includes("grok-code-fast")) {
+      this.contextWindow = 256000; // 256K context
+    } else if (model.includes("grok-4")) {
+      this.contextWindow = 256000; // 256K context
+    } else if (model.includes("grok-3")) {
+      this.contextWindow = 131072; // 131K context
+    } else if (model.includes("grok-2")) {
+      this.contextWindow = 131072; // 131K context
+    } else if (model.includes("grok")) {
+      this.contextWindow = 131072; // Default for other grok models
+    }
+    // OpenAI models
+    else if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
       this.contextWindow = 128000;
     } else if (model.includes("gpt-5")) {
       this.contextWindow = 256000; // GPT-5 has larger context

@@ -128,16 +128,19 @@ async function runCli() {
       process.exit(1);
     }
 
-    // Show interactive model selector ONLY in interactive mode when model not specified
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
+    // Show interactive model selector ONLY when no model configuration exists
+    // Skip if: explicit --model, OR profile provides tier mappings (Claude Code uses these internally)
+    const hasProfileTiers =
+      cliConfig.modelOpus || cliConfig.modelSonnet || cliConfig.modelHaiku || cliConfig.modelSubagent;
+    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       cliConfig.model = await selectModel({ freeOnly: cliConfig.freeOnly });
       console.log(""); // Empty line after selection
     }
 
-    // In non-interactive mode, model must be specified (via --model flag or CLAUDISH_MODEL env var)
-    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model) {
+    // In non-interactive mode, model must be specified (via --model, env var, or profile)
+    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
       console.error("Error: Model must be specified in non-interactive mode");
-      console.error("Use --model <model> flag or set CLAUDISH_MODEL environment variable");
+      console.error("Use --model <model> flag, set CLAUDISH_MODEL env var, or use --profile");
       console.error("Try: claudish --list-models");
       process.exit(1);
     }

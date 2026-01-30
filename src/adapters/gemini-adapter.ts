@@ -24,6 +24,7 @@
 
 import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
 import { truncateToolName } from "./tool-name-utils";
+import { sanitizeToolNameForGemini } from "../handlers/shared/gemini-schema.js";
 import { log } from "../logger";
 
 /**
@@ -217,41 +218,18 @@ export class GeminiAdapter extends BaseModelAdapter {
 
   /**
    * Handle request preparation:
-   * - Map reasoning parameters (thinking budget -> thinking_config/thinking_level)
-   * - Truncate tool names that exceed Gemini's 64-char limit
+   * - Sanitize and truncate tool names that exceed Gemini's 64-char limit
+   *
+   * NOTE: Thinking/reasoning config is NOT handled here because:
+   * - Native Gemini handlers set it correctly in buildGeminiPayload() as generationConfig.thinkingConfig
+   * - OpenRouter passes thinking directly in the request payload
+   * Adding thinking_level/thinking_config at the root level would cause API errors.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
-    if (originalRequest.thinking) {
-      const { budget_tokens } = originalRequest.thinking;
-      const modelId = this.modelId || "";
-
-      if (modelId.includes("gemini-3")) {
-        // Gemini 3 uses thinking_level
-        const level = budget_tokens >= 16000 ? "high" : "low";
-        request.thinking_level = level;
-        log(`[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_level: ${level}`);
-      } else {
-        // Default to Gemini 2.5 thinking_config (also covers 2.0-flash-thinking)
-        // Cap budget at max allowed (24k) to prevent errors
-        const MAX_GEMINI_BUDGET = 24576;
-        const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
-
-        request.thinking_config = {
-          thinking_budget: budget,
-        };
-        log(
-          `[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`
-        );
-      }
-
-      // Cleanup: Remove raw thinking object
-      delete request.thinking;
-    }
-
-    // Truncate tool names in Gemini format
+  override prepareRequest(request: any, _originalRequest: any): any {
+    // Sanitize and truncate tool names in Gemini format
     this.truncateGeminiToolNames(request);
 
-    // Truncate tool names in message history (contents array)
+    // Sanitize and truncate tool names in message history (contents array)
     if (request.contents) {
       this.truncateGeminiToolNamesInContents(request.contents);
     }
@@ -260,8 +238,11 @@ export class GeminiAdapter extends BaseModelAdapter {
   }
 
   /**
-   * Truncate tool names in Gemini's functionDeclarations format.
+   * Sanitize and truncate tool names in Gemini's functionDeclarations format.
    * Gemini tools are structured as: { tools: [{ functionDeclarations: [{ name, ... }] }] }
+   *
+   * Note: Names should already be sanitized by convertToolsToGemini(), but this
+   * provides a safety net and handles any edge cases.
    */
   private truncateGeminiToolNames(request: any): void {
     const limit = this.getToolNameLimit();
@@ -270,18 +251,38 @@ export class GeminiAdapter extends BaseModelAdapter {
     for (const toolGroup of request.tools) {
       if (!toolGroup.functionDeclarations) continue;
       for (const fn of toolGroup.functionDeclarations) {
-        if (fn.name && fn.name.length > limit) {
-          const truncated = truncateToolName(fn.name, limit);
-          this.toolNameMap.set(truncated, fn.name);
-          fn.name = truncated;
+        if (!fn.name) continue;
+        const originalName = fn.name;
+        // First sanitize for invalid characters (safety net)
+        let sanitizedName = sanitizeToolNameForGemini(originalName);
+        if (!sanitizedName) {
+          log(`[GeminiAdapter] Warning: Removing function with invalid name: ${originalName}`);
+          fn.name = null; // Mark for removal
+          continue;
         }
+        // Then truncate if still too long
+        if (sanitizedName.length > limit) {
+          sanitizedName = truncateToolName(sanitizedName, limit);
+        }
+        // Store mapping if name changed
+        if (sanitizedName !== originalName) {
+          this.toolNameMap.set(sanitizedName, originalName);
+        }
+        fn.name = sanitizedName;
       }
+      // Remove any functions with null names
+      toolGroup.functionDeclarations = toolGroup.functionDeclarations.filter(
+        (fn: any) => fn.name !== null
+      );
     }
   }
 
   /**
-   * Truncate tool names in Gemini message history (contents array).
+   * Sanitize and truncate tool names in Gemini message history (contents array).
    * Handles functionCall.name and functionResponse.name in message parts.
+   *
+   * This ensures tool names in message history match the sanitized names
+   * in function declarations.
    */
   private truncateGeminiToolNamesInContents(contents: any[]): void {
     const limit = this.getToolNameLimit();
@@ -290,19 +291,41 @@ export class GeminiAdapter extends BaseModelAdapter {
     for (const msg of contents) {
       if (!msg.parts) continue;
       for (const part of msg.parts) {
-        if (part.functionCall?.name && part.functionCall.name.length > limit) {
-          const truncated = truncateToolName(part.functionCall.name, limit);
-          if (!this.toolNameMap.has(truncated)) {
-            this.toolNameMap.set(truncated, part.functionCall.name);
+        if (part.functionCall?.name) {
+          const originalName = part.functionCall.name;
+          // First sanitize for invalid characters
+          let sanitizedName = sanitizeToolNameForGemini(originalName);
+          if (!sanitizedName) {
+            log(`[GeminiAdapter] Warning: Invalid functionCall name in history: ${originalName}`);
+            continue;
           }
-          part.functionCall.name = truncated;
+          // Then truncate if still too long
+          if (sanitizedName.length > limit) {
+            sanitizedName = truncateToolName(sanitizedName, limit);
+          }
+          // Store mapping if name changed
+          if (sanitizedName !== originalName && !this.toolNameMap.has(sanitizedName)) {
+            this.toolNameMap.set(sanitizedName, originalName);
+          }
+          part.functionCall.name = sanitizedName;
         }
-        if (part.functionResponse?.name && part.functionResponse.name.length > limit) {
-          const truncated = truncateToolName(part.functionResponse.name, limit);
-          if (!this.toolNameMap.has(truncated)) {
-            this.toolNameMap.set(truncated, part.functionResponse.name);
+        if (part.functionResponse?.name) {
+          const originalName = part.functionResponse.name;
+          // First sanitize for invalid characters
+          let sanitizedName = sanitizeToolNameForGemini(originalName);
+          if (!sanitizedName) {
+            log(`[GeminiAdapter] Warning: Invalid functionResponse name in history: ${originalName}`);
+            continue;
           }
-          part.functionResponse.name = truncated;
+          // Then truncate if still too long
+          if (sanitizedName.length > limit) {
+            sanitizedName = truncateToolName(sanitizedName, limit);
+          }
+          // Store mapping if name changed
+          if (sanitizedName !== originalName && !this.toolNameMap.has(sanitizedName)) {
+            this.toolNameMap.set(sanitizedName, originalName);
+          }
+          part.functionResponse.name = sanitizedName;
         }
       }
     }

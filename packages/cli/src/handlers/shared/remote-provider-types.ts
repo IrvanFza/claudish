@@ -77,12 +77,12 @@ export interface ResolvedRemoteProvider {
  * Prices are in USD per 1M tokens.
  */
 export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
-  gemini:      { inputCostPer1M: 0.5,  outputCostPer1M: 2.0,  isEstimate: true },
-  openai:      { inputCostPer1M: 2.0,  outputCostPer1M: 8.0,  isEstimate: true },
-  minimax:     { inputCostPer1M: 0.12, outputCostPer1M: 0.48, isEstimate: true },
-  kimi:        { inputCostPer1M: 0.32, outputCostPer1M: 0.48, isEstimate: true },
-  glm:         { inputCostPer1M: 0.16, outputCostPer1M: 0.8,  isEstimate: true },
-  ollamacloud: { inputCostPer1M: 1.0,  outputCostPer1M: 4.0,  isEstimate: true },
+  gemini: { inputCostPer1M: 0.5, outputCostPer1M: 2.0, isEstimate: true },
+  openai: { inputCostPer1M: 2.0, outputCostPer1M: 8.0, isEstimate: true },
+  minimax: { inputCostPer1M: 0.12, outputCostPer1M: 0.48, isEstimate: true },
+  kimi: { inputCostPer1M: 0.32, outputCostPer1M: 0.48, isEstimate: true },
+  glm: { inputCostPer1M: 0.16, outputCostPer1M: 0.8, isEstimate: true },
+  ollamacloud: { inputCostPer1M: 1.0, outputCostPer1M: 4.0, isEstimate: true },
 };
 
 // Free providers — always return free pricing regardless of model
@@ -103,7 +103,8 @@ const PROVIDER_ALIAS: Record<string, string> = {
  * Set by pricing-cache.ts at startup via registerDynamicPricingLookup().
  * This avoids circular ESM imports between this module and pricing-cache.
  */
-let _dynamicLookup: ((provider: string, modelName: string) => ModelPricing | undefined) | null = null;
+let _dynamicLookup: ((provider: string, modelName: string) => ModelPricing | undefined) | null =
+  null;
 
 /**
  * Register a dynamic pricing lookup function.
@@ -138,7 +139,9 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
 
   // 3. Provider defaults with alias resolution
   const canonical = PROVIDER_ALIAS[p] || p;
-  return PROVIDER_DEFAULTS[canonical] || { inputCostPer1M: 1.0, outputCostPer1M: 4.0, isEstimate: true };
+  return (
+    PROVIDER_DEFAULTS[canonical] || { inputCostPer1M: 1.0, outputCostPer1M: 4.0, isEstimate: true }
+  );
 }
 
 /**

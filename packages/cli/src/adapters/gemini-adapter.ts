@@ -208,35 +208,15 @@ export class GeminiAdapter extends BaseModelAdapter {
   }
 
   /**
-   * Handle request preparation - specifically for mapping reasoning parameters
+   * Handle request preparation
+   *
+   * NOTE: Thinking/reasoning config is NOT handled here because:
+   * - Native Gemini handlers set it correctly in buildGeminiPayload() as generationConfig.thinkingConfig
+   * - OpenRouter passes thinking directly in the request payload
+   * Adding thinking_level/thinking_config at the root level would cause API errors.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
-    if (originalRequest.thinking) {
-      const { budget_tokens } = originalRequest.thinking;
-      const modelId = this.modelId || "";
-
-      if (modelId.includes("gemini-3")) {
-        // Gemini 3 uses thinking_level
-        const level = budget_tokens >= 16000 ? "high" : "low";
-        request.thinking_level = level;
-        log(`[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_level: ${level}`);
-      } else {
-        // Default to Gemini 2.5 thinking_config (also covers 2.0-flash-thinking)
-        // Cap budget at max allowed (24k) to prevent errors
-        const MAX_GEMINI_BUDGET = 24576;
-        const budget = Math.min(budget_tokens, MAX_GEMINI_BUDGET);
-
-        request.thinking_config = {
-          thinking_budget: budget,
-        };
-        log(
-          `[GeminiAdapter] Mapped budget ${budget_tokens} -> thinking_config.thinking_budget: ${budget}`
-        );
-      }
-
-      // Cleanup: Remove raw thinking object
-      delete request.thinking;
-    }
+  override prepareRequest(request: any, _originalRequest: any): any {
+    // No transformations needed - thinking is handled by the handlers
     return request;
   }
 
