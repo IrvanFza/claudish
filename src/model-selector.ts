@@ -185,24 +185,30 @@ async function fetchZenFreeModels(): Promise<ModelInfo[]> {
         const supportsTools = m.tool_call === true;
         return isFree && supportsTools;
       })
-      .map(([id, m]: [string, any]) => ({
-        id: `zen@${id}`,
-        name: m.name || id,
-        description: `OpenCode Zen free model`,
-        provider: "Zen",
-        pricing: {
-          input: "FREE",
-          output: "FREE",
-          average: "FREE",
-        },
-        context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
-        contextLength: m.limit?.context || 128000,
-        supportsTools: true,
-        supportsReasoning: m.reasoning || false,
-        supportsVision: false,
-        isFree: true,
-        source: "Zen" as const,
-      }));
+      .map(([id, m]: [string, any]) => {
+        // Check vision support from modalities
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+
+        return {
+          id: `zen@${id}`,
+          name: m.name || id,
+          description: `OpenCode Zen free model`,
+          provider: "Zen",
+          pricing: {
+            input: "FREE",
+            output: "FREE",
+            average: "FREE",
+          },
+          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
+          contextLength: m.limit?.context || 128000,
+          supportsTools: true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision,
+          isFree: true,
+          source: "Zen" as const,
+        };
+      });
   } catch {
     return [];
   }
@@ -489,17 +495,18 @@ async function getFreeModels(): Promise<ModelInfo[]> {
  * Fetches from all available providers in parallel
  */
 async function getAllModelsForSearch(): Promise<ModelInfo[]> {
-  // Fetch from all providers in parallel
-  const [openRouterModels, xaiModels, geminiModels, openaiModels] = await Promise.all([
+  // Fetch from all providers in parallel (including Zen for free models)
+  const [openRouterModels, xaiModels, geminiModels, openaiModels, zenModels] = await Promise.all([
     fetchAllModels().then((models) => models.map(toModelInfo)),
     fetchXAIModels(),
     fetchGeminiModels(),
     fetchOpenAIModels(),
+    fetchZenFreeModels(),
   ]);
 
-  // Combine results: Direct providers first (xAI, Gemini, OpenAI), then OpenRouter
+  // Combine results: Zen first (free), then direct providers (xAI, Gemini, OpenAI), then OpenRouter
   const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels];
-  const allModels = [...directApiModels, ...openRouterModels];
+  const allModels = [...zenModels, ...directApiModels, ...openRouterModels];
 
   return allModels;
 }
@@ -581,18 +588,48 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     if (models.length === 0) {
       throw new Error("No free models available");
     }
-  } else if (recommended) {
-    // Load recommended models first
-    const recommendedModels = loadRecommendedModels();
-    if (recommendedModels.length > 0) {
-      models = recommendedModels;
-    } else {
-      // Fall back to fetching
-      const allModels = await getAllModelsForSearch();
-      models = allModels.slice(0, 20);
-    }
   } else {
-    models = await getAllModelsForSearch();
+    // Fetch all models from all providers (Zen, xAI, Gemini, OpenAI, OpenRouter)
+    const [allModels, recommendedModels] = await Promise.all([
+      getAllModelsForSearch(),
+      Promise.resolve(recommended ? loadRecommendedModels() : []),
+    ]);
+
+    // Build prioritized list: Zen (free) -> Recommended -> All others
+    const seenIds = new Set<string>();
+    models = [];
+
+    // 1. Add Zen models first (they're free)
+    for (const m of allModels.filter((m) => m.source === "Zen")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 2. Add recommended models
+    for (const m of recommendedModels) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 3. Add direct API models (xAI, Gemini, OpenAI) - user has keys for these
+    for (const m of allModels.filter((m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 4. Add remaining OpenRouter models
+    for (const m of allModels.filter((m) => m.source === "OpenRouter")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
   }
 
   const promptMessage =
@@ -603,11 +640,12 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
   const selected = await search<string>({
     message: promptMessage,
+    pageSize: 20, // Show more models in the list
     source: async (term) => {
       if (!term) {
-        // Show all/top models when no search term
-        return models.slice(0, 15).map((m) => ({
-          name: formatModelChoice(m, freeOnly), // Show source for free models
+        // Show all/top models when no search term (up to 30)
+        return models.slice(0, 30).map((m) => ({
+          name: formatModelChoice(m, true), // Always show source
           value: m.id,
           description: m.description?.slice(0, 80),
         }));
@@ -625,10 +663,10 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         }))
         .filter((r) => r.score > 0.1)
         .sort((a, b) => b.score - a.score)
-        .slice(0, 15);
+        .slice(0, 30);
 
       return results.map((r) => ({
-        name: formatModelChoice(r.model, freeOnly), // Show source for free models
+        name: formatModelChoice(r.model, true), // Always show source
         value: r.model.id,
         description: r.model.description?.slice(0, 80),
       }));

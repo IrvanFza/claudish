@@ -53,12 +53,8 @@ const DEFAULT_CONFIG: ClaudishProfileConfig = {
   profiles: {
     default: {
       name: "default",
-      description: "Default profile - balanced performance and cost",
-      models: {
-        opus: "xai@grok-4-0709",
-        sonnet: "xai@grok-4-1-fast-reasoning",
-        haiku: "xai@grok-code-fast-1",
-      },
+      description: "Default profile - shows model selector when no model specified",
+      models: {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },

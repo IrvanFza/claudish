@@ -85,6 +85,14 @@ export class OpenAIHandler implements ModelHandler {
     } else if (model.includes("grok")) {
       this.contextWindow = 131072; // Default for other grok models
     }
+    // Kimi models (from OpenCode Zen / models.dev)
+    else if (model.includes("kimi-k2.5") || model.includes("kimi-k2-5")) {
+      this.contextWindow = 262144; // 256K context (from models.dev)
+    } else if (model.includes("kimi-k2")) {
+      this.contextWindow = 262144; // 256K context
+    } else if (model.includes("kimi")) {
+      this.contextWindow = 131072; // 128K default for older kimi
+    }
     // OpenAI models
     else if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
       this.contextWindow = 128000;
