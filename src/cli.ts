@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.0.7"; // Fallback version for compiled binaries
+let VERSION = "4.2.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -1037,6 +1037,7 @@ MODEL ROUTING:
   Provider shortcuts:
     g, gemini    -> Google Gemini     google@gemini-3-pro
     oai          -> OpenAI Direct     oai@gpt-5.2
+    xai, x-ai    -> xAI Direct        xai@grok-3
     or           -> OpenRouter        or@openai/gpt-5.2
     mm, mmax     -> MiniMax Direct    mm@MiniMax-M2.1
     kimi, moon   -> Kimi Direct       kimi@kimi-k2-thinking-turbo
@@ -1056,6 +1057,7 @@ MODEL ROUTING:
   Native model auto-detection (when no provider specified):
     google/*, gemini-*      -> Google API
     openai/*, gpt-*, o1-*   -> OpenAI API
+    x-ai/*, xai/*, grok-*   -> xAI API
     meta-llama/*, llama-*   -> OllamaCloud
     minimax/*, abab-*       -> MiniMax API
     moonshot/*, kimi-*      -> Kimi API
@@ -1067,6 +1069,7 @@ MODEL ROUTING:
   Legacy syntax (deprecated, still works):
     g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
     oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
+    xai/, x-ai/      xAI Direct API         claudish --model xai/grok-3 "task"
     mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
     kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
     ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
@@ -1269,7 +1272,7 @@ EXAMPLES:
   claudish --port 3000 "analyze code structure"
 
   # Pass flags to claude
-  claudish --model openrouter@x-ai/grok-code-fast-1 --verbose "debug issue"
+  claudish --model xai@grok-code-fast-1 --verbose "debug issue"
 
   # JSON output for tool integration (quiet by default)
   claudish --json "list 5 prime numbers"

@@ -177,6 +177,10 @@ export async function createProxyServer(
       } else if (resolved.provider.name === "openai") {
         handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created OpenAI handler: ${resolved.modelName}`);
+      } else if (resolved.provider.name === "xai") {
+        // xAI uses OpenAI-compatible API format
+        handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
+        log(`[Proxy] Created xAI handler: ${resolved.modelName}`);
       } else if (resolved.provider.name === "minimax" || resolved.provider.name === "kimi" || resolved.provider.name === "kimi-coding" || resolved.provider.name === "zai") {
         // MiniMax, Kimi, and Z.AI use Anthropic-compatible APIs
         handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);

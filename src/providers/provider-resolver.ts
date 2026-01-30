@@ -110,6 +110,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "OpenAI API Key",
     url: "https://platform.openai.com/api-keys",
   },
+  xai: {
+    envVar: "XAI_API_KEY",
+    description: "xAI API Key",
+    url: "https://x.ai/api",
+  },
   minimax: {
     envVar: "MINIMAX_API_KEY",
     description: "MiniMax API Key",
@@ -175,6 +180,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   "gemini-codeassist": "Gemini Code Assist",
   vertex: "Vertex AI",
   openai: "OpenAI",
+  xai: "xAI",
   openrouter: "OpenRouter",
   minimax: "MiniMax",
   kimi: "Kimi",

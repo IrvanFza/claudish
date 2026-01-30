@@ -76,6 +76,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     },
   },
   {
+    name: "xai",
+    baseUrl: process.env.XAI_BASE_URL || "https://api.x.ai",
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "XAI_API_KEY",
+    prefixes: ["xai/", "x-ai/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: false,
+    },
+  },
+  {
     name: "openrouter",
     baseUrl: "https://openrouter.ai",
     apiPath: "/api/v1/chat/completions",
@@ -219,6 +233,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
   const providerNameMap: Record<string, string> = {
     google: "gemini",
     openai: "openai",
+    xai: "xai",
     openrouter: "openrouter",
     minimax: "minimax",
     kimi: "kimi",
@@ -293,6 +308,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
         "export GEMINI_API_KEY='your-key' (get from https://aistudio.google.com/app/apikey)",
       OPENAI_API_KEY:
         "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
+      XAI_API_KEY:
+        "export XAI_API_KEY='xai-...' (get from https://x.ai/api)",
       OPENROUTER_API_KEY:
         "export OPENROUTER_API_KEY='sk-or-...' (get from https://openrouter.ai/keys)",
       MINIMAX_API_KEY: "export MINIMAX_API_KEY='your-key' (get from https://www.minimaxi.com/)",

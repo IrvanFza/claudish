@@ -40,6 +40,8 @@ const PROVIDER_TO_OR_PREFIX: Record<string, string[]> = {
   oai: ["openai/"],
   gemini: ["google/"],
   google: ["google/"],
+  xai: ["x-ai/"],
+  "x-ai": ["x-ai/"],
   minimax: ["minimax/"],
   mm: ["minimax/"],
   kimi: ["moonshotai/"],

@@ -81,6 +81,7 @@ export interface ResolvedRemoteProvider {
 export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
   gemini:      { inputCostPer1M: 0.5,  outputCostPer1M: 2.0,  isEstimate: true },
   openai:      { inputCostPer1M: 2.0,  outputCostPer1M: 8.0,  isEstimate: true },
+  xai:         { inputCostPer1M: 0.20, outputCostPer1M: 0.50, isEstimate: true },
   minimax:     { inputCostPer1M: 0.12, outputCostPer1M: 0.48, isEstimate: true },
   kimi:        { inputCostPer1M: 0.32, outputCostPer1M: 0.48, isEstimate: true },
   glm:         { inputCostPer1M: 0.16, outputCostPer1M: 0.8,  isEstimate: true },
@@ -97,6 +98,7 @@ const SUBSCRIPTION_PROVIDERS = new Set(["kimi-coding"]);
 const PROVIDER_ALIAS: Record<string, string> = {
   google: "gemini",
   oai: "openai",
+  "x-ai": "xai",
   mm: "minimax",
   moonshot: "kimi",
   zhipu: "glm",

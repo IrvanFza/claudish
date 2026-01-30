@@ -36,7 +36,7 @@
  *   moonshot/*, kimi-*     -> kimi (direct)
  *   zhipu/*, glm-*         -> glm (direct)
  *   deepseek/*             -> openrouter (no direct API)
- *   x-ai/*, grok-*         -> openrouter (no direct API)
+ *   x-ai/*, xai/*, grok-*  -> xai (direct API)
  *   qwen/*                 -> openrouter (no direct API)
  *   anthropic/*            -> native-anthropic
  *   (anything else with /) -> openrouter
@@ -70,6 +70,8 @@ export const PROVIDER_SHORTCUTS: Record<string, string> = {
   gemini: "google",
   oai: "openai",
   or: "openrouter",
+  xai: "xai",
+  "x-ai": "xai",
   mm: "minimax",
   mmax: "minimax",
   kimi: "kimi",
@@ -105,6 +107,7 @@ export const PROVIDER_SHORTCUTS: Record<string, string> = {
 export const DIRECT_API_PROVIDERS = new Set([
   "google",
   "openai",
+  "xai",
   "minimax",
   "kimi",
   "kimi-coding",
@@ -142,6 +145,11 @@ export const NATIVE_MODEL_PATTERNS: Array<{
   { pattern: /^o1(-|$)/i, provider: "openai" },
   { pattern: /^o3(-|$)/i, provider: "openai" },
   { pattern: /^chatgpt-/i, provider: "openai" },
+
+  // xAI Grok models
+  { pattern: /^x-ai\//i, provider: "xai" },
+  { pattern: /^xai\//i, provider: "xai" },
+  { pattern: /^grok-/i, provider: "xai" },
 
   // MiniMax models
   { pattern: /^minimax\//i, provider: "minimax" },
@@ -193,6 +201,8 @@ export const LEGACY_PREFIX_PATTERNS: Array<{
   { prefix: "gemini/", provider: "google", stripPrefix: true },
   { prefix: "oai/", provider: "openai", stripPrefix: true },
   { prefix: "or/", provider: "openrouter", stripPrefix: true },
+  { prefix: "xai/", provider: "xai", stripPrefix: true },
+  { prefix: "x-ai/", provider: "xai", stripPrefix: true },
   { prefix: "mmax/", provider: "minimax", stripPrefix: true },
   { prefix: "mm/", provider: "minimax", stripPrefix: true },
   { prefix: "kimi/", provider: "kimi", stripPrefix: true },
