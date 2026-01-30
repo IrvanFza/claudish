@@ -80,9 +80,42 @@ if (isMcpMode) {
 } else if (firstArg === "profile") {
   // Profile management commands
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)));
+} else if (firstArg === "update") {
+  // Self-update command
+  runUpdate();
 } else {
   // CLI mode
   runCli();
+}
+
+/**
+ * Run claudish self-update
+ */
+async function runUpdate() {
+  const { getVersion } = await import("./cli.js");
+  const { checkForUpdates } = await import("./update-checker.js");
+
+  const currentVersion = getVersion();
+  console.log(`Current version: ${currentVersion}`);
+  console.log("Checking for updates...\n");
+
+  const didUpdate = await checkForUpdates(currentVersion, {
+    quiet: false,
+    skipPrompt: false,
+  });
+
+  if (!didUpdate) {
+    // Check if we're already at latest
+    const response = await fetch("https://registry.npmjs.org/claudish/latest");
+    if (response.ok) {
+      const data = await response.json();
+      if (data.version === currentVersion) {
+        console.log(`✓ claudish is up to date (${currentVersion})`);
+      }
+    }
+  }
+
+  process.exit(0);
 }
 
 /**

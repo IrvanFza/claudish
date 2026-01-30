@@ -42,7 +42,7 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?: "OpenRouter" | "Zen"; // Which platform the model is from
+  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI"; // Which platform the model is from
 }
 
 // OpenRouter free models are routed with openrouter@ prefix for explicit routing
@@ -167,7 +167,7 @@ function toModelInfo(model: any): ModelInfo {
 async function fetchZenFreeModels(): Promise<ModelInfo[]> {
   try {
     const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(5000),
     });
 
     if (!response.ok) {
@@ -185,24 +185,241 @@ async function fetchZenFreeModels(): Promise<ModelInfo[]> {
         const supportsTools = m.tool_call === true;
         return isFree && supportsTools;
       })
-      .map(([id, m]: [string, any]) => ({
-        id: `zen@${id}`,
-        name: m.name || id,
-        description: `OpenCode Zen free model`,
-        provider: "Zen",
-        pricing: {
-          input: "FREE",
-          output: "FREE",
-          average: "FREE",
-        },
-        context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
-        contextLength: m.limit?.context || 128000,
-        supportsTools: true,
-        supportsReasoning: m.reasoning || false,
-        supportsVision: false,
-        isFree: true,
-        source: "Zen" as const,
-      }));
+      .map(([id, m]: [string, any]) => {
+        // Check vision support from modalities
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+
+        return {
+          id: `zen@${id}`,
+          name: m.name || id,
+          description: `OpenCode Zen free model`,
+          provider: "Zen",
+          pricing: {
+            input: "FREE",
+            output: "FREE",
+            average: "FREE",
+          },
+          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
+          contextLength: m.limit?.context || 128000,
+          supportsTools: true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision,
+          isFree: true,
+          source: "Zen" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get context window for xAI model (not returned by API, hardcoded from docs)
+ */
+function getXAIContextWindow(modelId: string): { context: string; contextLength: number } {
+  const id = modelId.toLowerCase();
+  if (id.includes("grok-4.1-fast") || id.includes("grok-4-1-fast")) {
+    return { context: "2M", contextLength: 2000000 };
+  }
+  if (id.includes("grok-4-fast")) {
+    return { context: "2M", contextLength: 2000000 };
+  }
+  if (id.includes("grok-code-fast")) {
+    return { context: "256K", contextLength: 256000 };
+  }
+  if (id.includes("grok-4")) {
+    return { context: "256K", contextLength: 256000 };
+  }
+  if (id.includes("grok-3")) {
+    return { context: "131K", contextLength: 131072 };
+  }
+  if (id.includes("grok-2")) {
+    return { context: "131K", contextLength: 131072 };
+  }
+  return { context: "131K", contextLength: 131072 }; // Default for older models
+}
+
+/**
+ * Fetch models from xAI using /v1/language-models endpoint
+ * This endpoint returns pricing info (but not context_length)
+ */
+async function fetchXAIModels(): Promise<ModelInfo[]> {
+  const apiKey = process.env.XAI_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  try {
+    const response = await fetch("https://api.x.ai/v1/language-models", {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    if (!data.models || !Array.isArray(data.models)) {
+      return [];
+    }
+
+    return data.models
+      .filter((model: any) => !model.id.includes("image") && !model.id.includes("imagine")) // Skip image models
+      .map((model: any) => {
+        // Pricing from API: prompt_text_token_price is in nano-dollars (10^-9) per token
+        // Convert to $/1M tokens: price * 1M / 10^9 = price / 1000
+        const inputPricePerM = (model.prompt_text_token_price || 0) / 1000;
+        const outputPricePerM = (model.completion_text_token_price || 0) / 1000;
+        const avgPrice = (inputPricePerM + outputPricePerM) / 2;
+
+        const { context, contextLength } = getXAIContextWindow(model.id);
+        const supportsVision = (model.input_modalities || []).includes("image");
+        const supportsReasoning = model.id.includes("reasoning");
+
+        return {
+          id: `xai@${model.id}`,
+          name: model.id,
+          description: `xAI ${supportsReasoning ? "reasoning " : ""}model`,
+          provider: "xAI",
+          pricing: {
+            input: `$${inputPricePerM.toFixed(2)}`,
+            output: `$${outputPricePerM.toFixed(2)}`,
+            average: `$${avgPrice.toFixed(2)}/1M`,
+          },
+          context,
+          contextLength,
+          supportsTools: true,
+          supportsReasoning,
+          supportsVision,
+          isFree: false,
+          source: "xAI" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch models from Google Gemini
+ */
+async function fetchGeminiModels(): Promise<ModelInfo[]> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+      {
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    if (!data.models || !Array.isArray(data.models)) {
+      return [];
+    }
+
+    // Filter for models that support generateContent
+    return data.models
+      .filter((model: any) => {
+        const methods = model.supportedGenerationMethods || [];
+        return methods.includes("generateContent");
+      })
+      .map((model: any) => {
+        // Extract model name from "models/gemini-..." format
+        const modelName = model.name.replace("models/", "");
+        return {
+          id: `google@${modelName}`,
+          name: model.displayName || modelName,
+          description: model.description || `Google Gemini model`,
+          provider: "Gemini",
+          pricing: {
+            input: "$0.50",
+            output: "$2.00",
+            average: "$1.25/1M",
+          },
+          context: "128K",
+          contextLength: 128000,
+          supportsTools: true,
+          supportsReasoning: false,
+          supportsVision: true,
+          isFree: false,
+          source: "Gemini" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch models from OpenAI
+ */
+async function fetchOpenAIModels(): Promise<ModelInfo[]> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/models", {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    if (!data.data || !Array.isArray(data.data)) {
+      return [];
+    }
+
+    // Filter for chat models
+    const chatModels = data.data.filter((model: any) => {
+      const id = model.id.toLowerCase();
+      return (
+        id.startsWith("gpt-") ||
+        id.startsWith("o1-") ||
+        id.startsWith("o3-") ||
+        id.startsWith("chatgpt-")
+      );
+    });
+
+    return chatModels.map((model: any) => ({
+      id: `oai@${model.id}`,
+      name: model.id,
+      description: `OpenAI model`,
+      provider: "OpenAI",
+      pricing: {
+        input: "$2.00",
+        output: "$8.00",
+        average: "$5.00/1M",
+      },
+      context: "128K",
+      contextLength: 128000,
+      supportsTools: true,
+      supportsReasoning: model.id.startsWith("o1-") || model.id.startsWith("o3-"),
+      supportsVision: model.id.includes("vision") || model.id.startsWith("gpt-4"),
+      isFree: false,
+      source: "OpenAI" as const,
+    }));
   } catch {
     return [];
   }
@@ -275,10 +492,23 @@ async function getFreeModels(): Promise<ModelInfo[]> {
 
 /**
  * Get all models for search
+ * Fetches from all available providers in parallel
  */
 async function getAllModelsForSearch(): Promise<ModelInfo[]> {
-  const allModels = await fetchAllModels();
-  return allModels.map(toModelInfo);
+  // Fetch from all providers in parallel (including Zen for free models)
+  const [openRouterModels, xaiModels, geminiModels, openaiModels, zenModels] = await Promise.all([
+    fetchAllModels().then((models) => models.map(toModelInfo)),
+    fetchXAIModels(),
+    fetchGeminiModels(),
+    fetchOpenAIModels(),
+    fetchZenFreeModels(),
+  ]);
+
+  // Combine results: Zen first (free), then direct providers (xAI, Gemini, OpenAI), then OpenRouter
+  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels];
+  const allModels = [...zenModels, ...directApiModels, ...openRouterModels];
+
+  return allModels;
 }
 
 /**
@@ -299,7 +529,14 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
 
   // Show source for free models list (OpenRouter vs Zen)
   if (showSource && model.source) {
-    const sourceTag = model.source === "Zen" ? "Zen" : "OR";
+    const sourceTagMap: Record<string, string> = {
+      Zen: "Zen",
+      OpenRouter: "OR",
+      xAI: "xAI",
+      Gemini: "Gem",
+      OpenAI: "OAI",
+    };
+    const sourceTag = sourceTagMap[model.source] || model.source;
     return `${sourceTag} ${model.id} (${priceStr}, ${ctxStr}${capsStr})`;
   }
 
@@ -351,30 +588,64 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     if (models.length === 0) {
       throw new Error("No free models available");
     }
-  } else if (recommended) {
-    // Load recommended models first
-    const recommendedModels = loadRecommendedModels();
-    if (recommendedModels.length > 0) {
-      models = recommendedModels;
-    } else {
-      // Fall back to fetching
-      const allModels = await getAllModelsForSearch();
-      models = allModels.slice(0, 20);
-    }
   } else {
-    models = await getAllModelsForSearch();
+    // Fetch all models from all providers (Zen, xAI, Gemini, OpenAI, OpenRouter)
+    const [allModels, recommendedModels] = await Promise.all([
+      getAllModelsForSearch(),
+      Promise.resolve(recommended ? loadRecommendedModels() : []),
+    ]);
+
+    // Build prioritized list: Zen (free) -> Recommended -> All others
+    const seenIds = new Set<string>();
+    models = [];
+
+    // 1. Add Zen models first (they're free)
+    for (const m of allModels.filter((m) => m.source === "Zen")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 2. Add recommended models
+    for (const m of recommendedModels) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 3. Add direct API models (xAI, Gemini, OpenAI) - user has keys for these
+    for (const m of allModels.filter((m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
+
+    // 4. Add remaining OpenRouter models
+    for (const m of allModels.filter((m) => m.source === "OpenRouter")) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        models.push(m);
+      }
+    }
   }
 
   const promptMessage =
-    message || (freeOnly ? "Select a FREE model:" : "Select a model (type to search):");
+    message ||
+    (freeOnly
+      ? "Select a FREE model:"
+      : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,
+    pageSize: 20, // Show more models in the list
     source: async (term) => {
       if (!term) {
-        // Show all/top models when no search term
-        return models.slice(0, 15).map((m) => ({
-          name: formatModelChoice(m, freeOnly), // Show source for free models
+        // Show all/top models when no search term (up to 30)
+        return models.slice(0, 30).map((m) => ({
+          name: formatModelChoice(m, true), // Always show source
           value: m.id,
           description: m.description?.slice(0, 80),
         }));
@@ -392,10 +663,10 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         }))
         .filter((r) => r.score > 0.1)
         .sort((a, b) => b.score - a.score)
-        .slice(0, 15);
+        .slice(0, 30);
 
       return results.map((r) => ({
-        name: formatModelChoice(r.model, freeOnly), // Show source for free models
+        name: formatModelChoice(r.model, true), // Always show source
         value: r.model.id,
         description: r.model.description?.slice(0, 80),
       }));

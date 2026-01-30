@@ -57,9 +57,89 @@ if (isMcpMode) {
 } else if (firstArg === "profile") {
   // Profile management commands
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)));
+} else if (firstArg === "update") {
+  // Self-update command
+  runSelfUpdate();
 } else {
   // CLI mode
   runCli();
+}
+
+/**
+ * Detect how claudish was installed
+ */
+function detectInstallMethod(): "npm" | "bun" | "brew" | "unknown" {
+  const scriptPath = process.argv[1] || "";
+
+  if (scriptPath.includes("/.bun/")) {
+    return "bun";
+  }
+  if (scriptPath.includes("/Cellar/") || scriptPath.includes("/homebrew/")) {
+    return "brew";
+  }
+  if (scriptPath.includes("/node_modules/") || scriptPath.includes("/.nvm/") || scriptPath.includes("/npm/")) {
+    return "npm";
+  }
+  return "unknown";
+}
+
+/**
+ * Get update command based on installation method
+ */
+function getUpdateCommand(method: "npm" | "bun" | "brew" | "unknown"): string {
+  switch (method) {
+    case "bun":
+      return "bun install -g claudish@latest";
+    case "brew":
+      return "brew upgrade claudish";
+    case "npm":
+    default:
+      return "npm install -g claudish@latest";
+  }
+}
+
+/**
+ * Run claudish self-update
+ */
+async function runSelfUpdate() {
+  const { getVersion } = await import("./cli.js");
+
+  const currentVersion = getVersion();
+  const installMethod = detectInstallMethod();
+
+  console.log(`claudish v${currentVersion}`);
+  console.log(`Installation: ${installMethod}`);
+  console.log("\nChecking for updates...\n");
+
+  try {
+    // Fetch latest version from npm
+    const response = await fetch("https://registry.npmjs.org/claudish/latest", {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      console.error("Failed to check for updates");
+      process.exit(1);
+    }
+
+    const data = await response.json();
+    const latestVersion = data.version;
+
+    if (latestVersion === currentVersion) {
+      console.log(`✓ claudish is up to date (v${currentVersion})`);
+      process.exit(0);
+    }
+
+    console.log(`New version available: v${currentVersion} → v${latestVersion}\n`);
+
+    const updateCmd = getUpdateCommand(installMethod);
+    console.log(`To update, run:\n  ${updateCmd}\n`);
+
+    process.exit(0);
+  } catch (error) {
+    console.error("Failed to check for updates:", error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
 }
 
 /**

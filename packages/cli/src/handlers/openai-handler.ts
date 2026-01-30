@@ -85,6 +85,14 @@ export class OpenAIHandler implements ModelHandler {
     } else if (model.includes("grok")) {
       this.contextWindow = 131072; // Default for other grok models
     }
+    // Kimi models (from OpenCode Zen / models.dev)
+    else if (model.includes("kimi-k2.5") || model.includes("kimi-k2-5")) {
+      this.contextWindow = 262144; // 256K context (from models.dev)
+    } else if (model.includes("kimi-k2")) {
+      this.contextWindow = 262144; // 256K context
+    } else if (model.includes("kimi")) {
+      this.contextWindow = 131072; // 128K default for older kimi
+    }
     // OpenAI models
     else if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
       this.contextWindow = 128000;
@@ -135,6 +143,7 @@ export class OpenAIHandler implements ModelHandler {
       const formatProviderName = (name: string): string => {
         if (name === "opencode-zen") return "Zen";
         if (name === "glm") return "GLM";
+        if (name === "openai") return "OpenAI";
         return name.charAt(0).toUpperCase() + name.slice(1);
       };
 
@@ -495,7 +504,8 @@ export class OpenAIHandler implements ModelHandler {
     c: Context,
     response: Response,
     _adapter: any,
-    _claudeRequest: any
+    _claudeRequest: any,
+    toolNameMap?: Map<string, string>
   ): Promise<Response> {
     const reader = response.body?.getReader();
     if (!reader) {
@@ -631,7 +641,8 @@ export class OpenAIHandler implements ModelHandler {
                     const callId = openaiCallId.startsWith("toolu_")
                       ? openaiCallId
                       : `toolu_${openaiCallId.replace(/^fc_/, "")}`;
-                    const fnName = event.item.name || "";
+                    const rawFnName = event.item.name || "";
+                    const fnName = toolNameMap?.get(rawFnName) || rawFnName;
                     const fnIndex = blockIndex + functionCalls.size + (hasTextContent ? 1 : 0);
 
                     log(
@@ -794,10 +805,7 @@ export class OpenAIHandler implements ModelHandler {
                   });
                   send("message_stop", { type: "message_stop" });
                   isClosed = true;
-                  if (pingInterval) {
-                    clearInterval(pingInterval);
-                    pingInterval = null;
-                  }
+                  if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
                   this.updateTokenTracking(inputTokens, outputTokens);
                   controller.close();
                   return;
@@ -898,11 +906,7 @@ export class OpenAIHandler implements ModelHandler {
 
             isClosed = true;
             this.updateTokenTracking(inputTokens, outputTokens);
-            try {
-              controller.close();
-            } catch {
-              /* already closed */
-            }
+            try { controller.close(); } catch { /* already closed */ }
           }
         }
       },
@@ -962,10 +966,13 @@ export class OpenAIHandler implements ModelHandler {
       ? this.buildResponsesPayload(claudeRequest, messages, tools)
       : this.buildOpenAIPayload(claudeRequest, messages, tools);
 
-    // Get adapter and prepare request
+    // Get adapter and prepare request (adapter truncates tool names if needed)
     const adapter = this.adapterManager.getAdapter();
     if (typeof adapter.reset === "function") adapter.reset();
     adapter.prepareRequest(apiPayload, claudeRequest);
+
+    // Get tool name map from adapter (populated during prepareRequest)
+    const toolNameMap = adapter.getToolNameMap();
 
     // Call middleware
     await this.middlewareManager.beforeRequest({
@@ -1051,7 +1058,7 @@ export class OpenAIHandler implements ModelHandler {
     // Use different streaming handler for Codex (Responses API) vs Chat Completions
     if (isCodex) {
       log(`[OpenAIHandler] Using Responses API streaming handler for Codex model`);
-      return this.handleResponsesStreaming(c, response, adapter, claudeRequest);
+      return this.handleResponsesStreaming(c, response, adapter, claudeRequest, toolNameMap);
     }
 
     // Use the shared streaming handler for Chat Completions API
@@ -1062,7 +1069,8 @@ export class OpenAIHandler implements ModelHandler {
       `openai/${this.modelName}`,
       this.middlewareManager,
       (input, output) => this.updateTokenTracking(input, output),
-      claudeRequest.tools
+      claudeRequest.tools,
+      toolNameMap
     );
   }
 
