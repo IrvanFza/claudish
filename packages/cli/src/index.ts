@@ -15,6 +15,11 @@ const firstArg = args[0];
 const isGeminiLogin = args.includes("--gemini-login");
 const isGeminiLogout = args.includes("--gemini-logout");
 
+// Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
+const isUpdateCommand = args.includes("update");
+const isInitCommand = args[0] === "init" || args.includes("init");
+const isProfileCommand = args[0] === "profile" || args.some((a, i) => a === "profile" && (i === 0 || !args[i-1]?.startsWith("-")));
+
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
   import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
@@ -51,15 +56,16 @@ if (isMcpMode) {
       process.exit(1);
     }
   });
-} else if (firstArg === "init") {
+} else if (isUpdateCommand) {
+  // Self-update command (checked early to work with aliases like `claudish -y update`)
+  runSelfUpdate();
+} else if (isInitCommand) {
   // Profile setup wizard
   import("./profile-commands.js").then((pc) => pc.initCommand());
-} else if (firstArg === "profile") {
+} else if (isProfileCommand) {
   // Profile management commands
-  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)));
-} else if (firstArg === "update") {
-  // Self-update command
-  runSelfUpdate();
+  const profileArgIndex = args.findIndex(a => a === "profile");
+  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)));
 } else {
   // CLI mode
   runCli();
