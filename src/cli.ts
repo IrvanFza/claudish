@@ -1037,7 +1037,7 @@ MODEL ROUTING:
   Provider shortcuts:
     g, gemini    -> Google Gemini     google@gemini-3-pro
     oai          -> OpenAI Direct     oai@gpt-5.2
-    xai, x-ai    -> xAI Direct        xai@grok-3
+    xai, x-ai    -> xAI Direct        xai@grok-4-1-fast-reasoning
     or           -> OpenRouter        or@openai/gpt-5.2
     mm, mmax     -> MiniMax Direct    mm@MiniMax-M2.1
     kimi, moon   -> Kimi Direct       kimi@kimi-k2-thinking-turbo
@@ -1069,7 +1069,7 @@ MODEL ROUTING:
   Legacy syntax (deprecated, still works):
     g/, gemini/      Google Gemini API      claudish --model g/gemini-2.0-flash "task"
     oai/             OpenAI Direct API      claudish --model oai/gpt-4o "task"
-    xai/, x-ai/      xAI Direct API         claudish --model xai/grok-3 "task"
+    xai/, x-ai/      xAI Direct API         claudish --model xai/grok-4-1-fast-reasoning "task"
     mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
     kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
     ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
