@@ -140,11 +140,11 @@ const HeroSection: React.FC = () => {
         <div className="flex gap-3 mb-8 animate-fadeIn">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
             <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
-            v2.4.0 Public Beta
+            v4.3.1
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
             <span className="text-[10px]">🎁</span>
-            Top models free on OpenRouter — Grok, Gemini, DeepSeek, Llama
+            OpenRouter + Ollama + LM Studio + Direct APIs
           </div>
         </div>
 
@@ -162,7 +162,7 @@ const HeroSection: React.FC = () => {
           <br />
           <span className="text-white">Gemini</span>, <span className="text-white">GPT</span>,{" "}
           <span className="text-white">Grok</span>, <span className="text-white">DeepSeek</span>.{" "}
-          <span className="text-white">580+ models via OpenRouter.</span>
+          <span className="text-white">580+ cloud models. Local via Ollama.</span>
           <br />
           <span className="text-claude-ish">
             Works with your Claude subscription. Or start completely free.

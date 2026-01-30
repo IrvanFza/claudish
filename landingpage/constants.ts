@@ -17,7 +17,7 @@ export const HERO_SEQUENCE: TerminalLine[] = [
     data: {
       user: "Developer",
       model: "google/gemini-3-pro-preview",
-      version: "v2.4.0",
+      version: "v4.3.1",
     },
     delay: 1500,
   },

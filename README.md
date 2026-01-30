@@ -1,8 +1,27 @@
-# Claudish
+<div align="center">
 
-> Run Claude Code with any AI model - OpenRouter, Gemini, OpenAI, OllamaCloud, or local models
+# 🔮 Claudish
 
-**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server. Supports OpenRouter (100+ models), direct Google Gemini API, direct OpenAI API, and local models (Ollama, LM Studio, vLLM, MLX).
+### Claude Code. Any Model.
+
+[![npm version](https://img.shields.io/npm/v/claudish.svg?style=flat-square&color=00D4AA)](https://www.npmjs.com/package/claudish)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-d97757?style=flat-square)](https://claude.ai/claude-code)
+
+**Run Claude Code with 580+ cloud models via OpenRouter, local models with Ollama/LM Studio, and direct APIs for Gemini, GPT, Grok, DeepSeek, MiniMax, Kimi, GLM, and more.**
+
+[Website](https://claudish.com) · [Documentation](https://github.com/MadAppGang/claudish/blob/main/docs/index.md) · [Report Bug](https://github.com/MadAppGang/claudish/issues)
+
+</div>
+
+---
+
+**Claudish** (Claude-ish) is a CLI tool that allows you to run Claude Code with any AI model by proxying requests through a local Anthropic API-compatible server.
+
+**Supported Providers:**
+- **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, OpenCode Zen
+- **Local:** Ollama, LM Studio, vLLM, MLX
+- **Enterprise:** Vertex AI (Google Cloud)
 
 ## Features
 
@@ -1129,7 +1148,7 @@ Thank you to the claude-code-proxy team for building a robust, production-ready 
 
 ## Links
 
-- **GitHub**: https://github.com/MadAppGang/claude-code
+- **GitHub**: https://github.com/MadAppGang/claudish
 - **OpenRouter**: https://openrouter.ai
 - **Claude Code**: https://claude.com/claude-code
 - **Bun**: https://bun.sh
