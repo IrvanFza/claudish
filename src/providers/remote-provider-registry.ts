@@ -205,6 +205,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsReasoning: false,
     },
   },
+  {
+    name: "vertex",
+    baseUrl: "", // Vertex uses regional endpoints, constructed dynamically
+    apiPath: "", // Constructed dynamically based on project/location
+    apiKeyEnvVar: "VERTEX_PROJECT", // OAuth-based, uses project ID as indicator
+    prefixes: ["v/", "vertex/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
 ];
 
 /**

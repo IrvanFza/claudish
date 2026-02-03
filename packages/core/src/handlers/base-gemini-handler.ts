@@ -721,6 +721,50 @@ export abstract class BaseGeminiHandler implements ModelHandler {
     if (!response.ok) {
       const errorText = response.status === 429 ? lastErrorText : await response.text();
       log(`[BaseGeminiHandler] API error ${response.status} after ${attempts} attempt(s): ${errorText}`);
+
+      // Parse Google API errors for better user experience
+      if (response.status === 429) {
+        try {
+          const errorJson = typeof errorText === "string" ? JSON.parse(errorText) : errorText;
+          const googleError = errorJson?.error;
+          if (googleError?.status === "RESOURCE_EXHAUSTED") {
+            // Extract quota metric from details
+            const quotaViolation = googleError.details?.find(
+              (d: any) => d["@type"]?.includes("QuotaFailure")
+            );
+            const quotaMetric = quotaViolation?.violations?.[0]?.quotaMetric || "unknown";
+            const isDaily = quotaMetric.includes("per_day");
+            const isModel = quotaMetric.includes("per_model");
+
+            let userMessage = "Gemini API quota exceeded.";
+            if (isDaily && isModel) {
+              userMessage = `Daily quota exceeded for model ${this.modelName}. Try again tomorrow or use a different model.`;
+            } else if (isDaily) {
+              userMessage = "Daily API quota exceeded. Try again tomorrow or upgrade your plan.";
+            } else {
+              userMessage = "API rate limit hit. Please wait and retry.";
+            }
+
+            return c.json(
+              {
+                error: {
+                  type: "quota_exceeded",
+                  message: userMessage,
+                  details: {
+                    status: "RESOURCE_EXHAUSTED",
+                    metric: quotaMetric,
+                    help_url: "https://ai.google.dev/gemini-api/docs/rate-limits",
+                  },
+                },
+              },
+              429
+            );
+          }
+        } catch {
+          // Fall through to default error handling
+        }
+      }
+
       return c.json({ error: errorText }, response.status as any);
     }
 

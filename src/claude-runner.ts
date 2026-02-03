@@ -84,10 +84,17 @@ process.stdin.on('end', () => {
       costDisplay = '$' + cost.toFixed(3);
     }
     const modelDisplay = providerName ? providerName + ' ' + model : model;
-    // Format context display: "96% (37k/1M)" or just "96%" if no token data
-    let ctxDisplay = ctx + '%';
+    // Format context display as progress bar: [████░░░░░░] 116k/1M
+    let ctxDisplay = '';
     if (inputTokens > 0 && contextWindow > 0) {
-      ctxDisplay = ctx + '% (' + formatTokens(inputTokens) + '/' + formatTokens(contextWindow) + ')';
+      const usedPct = 100 - ctx; // ctx is "left", so used = 100 - left
+      const barWidth = 15;
+      const filled = Math.round((usedPct / 100) * barWidth);
+      const empty = barWidth - filled;
+      const bar = '█'.repeat(filled) + '░'.repeat(empty);
+      ctxDisplay = '[' + bar + '] ' + formatTokens(inputTokens) + '/' + formatTokens(contextWindow);
+    } else {
+      ctxDisplay = ctx + '%';
     }
     console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\`);
   } catch (e) {

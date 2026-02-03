@@ -913,6 +913,23 @@ export class VertexOAuthHandler implements ModelHandler {
         body: JSON.stringify(requestPayload),
       });
 
+      if (!response.ok && response.status === 401) {
+        // Still getting 401 after refresh - credentials are stale
+        return c.json(
+          {
+            error: {
+              type: "authentication_error",
+              message:
+                "Vertex AI authentication failed. Your Google Cloud credentials may have expired.\n\n" +
+                "To fix, run:\n" +
+                "  gcloud auth application-default login\n\n" +
+                "Then restart claudish.",
+            },
+          },
+          401
+        );
+      }
+
       if (!response.ok) {
         const errorText = await response.text();
         return c.json({ error: errorText }, response.status as any);
