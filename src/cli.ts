@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.3.1"; // Fallback version for compiled binaries
+let VERSION = "4.4.4"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -448,6 +448,57 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     models = [...ollamaModels, ...models];
   }
 
+  // Fetch OpenAI direct models from models.dev if OPENAI_API_KEY is set
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const modelsDevResponse = await fetch("https://models.dev/api.json", {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (modelsDevResponse.ok) {
+        const modelsDevData = await modelsDevResponse.json();
+        const openaiData = modelsDevData.openai;
+        if (openaiData?.models) {
+          const openaiModels = Object.entries(openaiData.models)
+            .filter(([id, _]: [string, any]) => {
+              const lowerId = id.toLowerCase();
+              return (
+                lowerId.startsWith("gpt-") ||
+                lowerId.startsWith("o1-") ||
+                lowerId.startsWith("o3-") ||
+                lowerId.startsWith("o4-") ||
+                lowerId.startsWith("chatgpt-")
+              );
+            })
+            .map(([id, m]: [string, any]) => {
+              const inputCost = m.cost?.input || 2;
+              const outputCost = m.cost?.output || 8;
+              const contextLen = m.limit?.context || 128000;
+              const inputModalities = m.modalities?.input || [];
+              return {
+                id: `oai/${id}`,
+                name: m.name || id,
+                description: `OpenAI direct model`,
+                context_length: contextLen,
+                pricing: {
+                  prompt: String(inputCost / 1000000),
+                  completion: String(outputCost / 1000000),
+                },
+                isOAIDirect: true,
+                supportsTools: m.tool_call === true,
+                supportsReasoning: m.reasoning === true,
+                supportsVision:
+                  inputModalities.includes("image") || inputModalities.includes("video"),
+              };
+            });
+          console.error(`🔑 Found ${openaiModels.length} OpenAI direct models`);
+          models = [...openaiModels, ...models];
+        }
+      }
+    } catch {
+      // Ignore models.dev fetch errors
+    }
+  }
+
   // Perform fuzzy search
   const results = models
     .map((model) => {
@@ -489,6 +540,9 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
     } else if (model.id.startsWith("zen/")) {
       // Already has zen/ prefix, convert to zen@
       fullModelId = model.id.replace("zen/", "zen@");
+    } else if (model.id.startsWith("oai/") || model.isOAIDirect) {
+      // OAI direct model - convert oai/model to oai@model
+      fullModelId = model.id.replace("oai/", "oai@");
     } else {
       // OpenRouter model - add openrouter@ prefix
       fullModelId = `openrouter@${model.id}`;
@@ -545,6 +599,7 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
   );
   console.log("");
   console.log("Use OpenRouter model: claudish --model openrouter@<provider/model-id>");
+  console.log("OpenAI direct model:  claudish --model oai@<model-name>");
   console.log("Local Ollama model:   claudish --model ollama@<model-name>");
   console.log("OpenCode Zen model:   claudish --model zen@<model-id>");
 }

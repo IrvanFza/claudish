@@ -365,7 +365,7 @@ async function fetchGeminiModels(): Promise<ModelInfo[]> {
 }
 
 /**
- * Fetch models from OpenAI
+ * Fetch models from OpenAI using models.dev API for accurate context windows and pricing
  */
 async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -374,11 +374,7 @@ async function fetchOpenAIModels(): Promise<ModelInfo[]> {
   }
 
   try {
-    const response = await fetch("https://api.openai.com/v1/models", {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+    const response = await fetch("https://models.dev/api.json", {
       signal: AbortSignal.timeout(5000),
     });
 
@@ -387,39 +383,58 @@ async function fetchOpenAIModels(): Promise<ModelInfo[]> {
     }
 
     const data = await response.json();
-    if (!data.data || !Array.isArray(data.data)) {
-      return [];
-    }
+    const openaiData = data.openai;
+    if (!openaiData?.models) return [];
 
-    // Filter for chat models
-    const chatModels = data.data.filter((model: any) => {
-      const id = model.id.toLowerCase();
-      return (
-        id.startsWith("gpt-") ||
-        id.startsWith("o1-") ||
-        id.startsWith("o3-") ||
-        id.startsWith("chatgpt-")
-      );
-    });
+    // Filter for chat models (GPT, o1, o3, chatgpt)
+    return Object.entries(openaiData.models)
+      .filter(([id, _]: [string, any]) => {
+        const lowerId = id.toLowerCase();
+        return (
+          lowerId.startsWith("gpt-") ||
+          lowerId.startsWith("o1-") ||
+          lowerId.startsWith("o3-") ||
+          lowerId.startsWith("o4-") ||
+          lowerId.startsWith("chatgpt-")
+        );
+      })
+      .map(([id, m]: [string, any]) => {
+        // Calculate average price from input/output costs
+        const inputCost = m.cost?.input || 2;
+        const outputCost = m.cost?.output || 8;
+        const avgCost = (inputCost + outputCost) / 2;
 
-    return chatModels.map((model: any) => ({
-      id: `oai@${model.id}`,
-      name: model.id,
-      description: `OpenAI model`,
-      provider: "OpenAI",
-      pricing: {
-        input: "$2.00",
-        output: "$8.00",
-        average: "$5.00/1M",
-      },
-      context: "128K",
-      contextLength: 128000,
-      supportsTools: true,
-      supportsReasoning: model.id.startsWith("o1-") || model.id.startsWith("o3-"),
-      supportsVision: model.id.includes("vision") || model.id.startsWith("gpt-4"),
-      isFree: false,
-      source: "OpenAI" as const,
-    }));
+        // Get context window from models.dev data
+        const contextLength = m.limit?.context || 128000;
+        const contextStr =
+          contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`;
+
+        // Check vision support from modalities
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision =
+          inputModalities.includes("image") || inputModalities.includes("video");
+
+        return {
+          id: `oai@${id}`,
+          name: m.name || id,
+          description: `OpenAI model`,
+          provider: "OpenAI",
+          pricing: {
+            input: `$${inputCost.toFixed(2)}`,
+            output: `$${outputCost.toFixed(2)}`,
+            average: `$${avgCost.toFixed(2)}/1M`,
+          },
+          context: contextStr,
+          contextLength,
+          supportsTools: m.tool_call === true,
+          supportsReasoning: m.reasoning === true,
+          supportsVision,
+          isFree: false,
+          source: "OpenAI" as const,
+        };
+      });
   } catch {
     return [];
   }
