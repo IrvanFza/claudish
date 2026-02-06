@@ -69,12 +69,9 @@ export async function initCommand(): Promise<void> {
   );
 
   // Create default profile
-  console.log(`${BOLD}Step 1: Create your default profile${RESET}\n`);
+  const profileName = "default";
 
-  const profileName = await promptForProfileName([]);
-  const description = await promptForProfileDescription();
-
-  console.log(`\n${BOLD}Step 2: Select models for each Claude tier${RESET}`);
+  console.log(`${BOLD}Step 1: Select models for each Claude tier${RESET}`);
   console.log(
     `${DIM}These models will be used when Claude Code requests specific model types.${RESET}\n`
   );
@@ -82,7 +79,7 @@ export async function initCommand(): Promise<void> {
   const models = await selectModelsForProfile();
 
   // Create and save profile
-  const profile = createProfile(profileName, models, description);
+  const profile = createProfile(profileName, models);
 
   // Set as default
   setDefaultProfile(profileName);
@@ -93,7 +90,6 @@ export async function initCommand(): Promise<void> {
 
   console.log(`\n${BOLD}Usage:${RESET}`);
   console.log(`  ${CYAN}claudish${RESET}              # Use default profile`);
-  console.log(`  ${CYAN}claudish -p ${profileName}${RESET}   # Use this profile explicitly`);
   console.log(`  ${CYAN}claudish profile add${RESET}  # Add another profile`);
   console.log("");
 }

@@ -7,6 +7,15 @@ config({ quiet: true }); // Loads .env from current working directory
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");
 
+// Handle Ctrl+C gracefully during interactive prompts
+function handlePromptExit(err: unknown): void {
+  if (err && typeof err === "object" && "name" in err && err.name === "ExitPromptError") {
+    console.log("");
+    process.exit(0);
+  }
+  throw err;
+}
+
 // Check for auth and profile management commands
 const args = process.argv.slice(2);
 const firstArg = args[0];
@@ -61,11 +70,11 @@ if (isMcpMode) {
   runSelfUpdate();
 } else if (isInitCommand) {
   // Profile setup wizard
-  import("./profile-commands.js").then((pc) => pc.initCommand());
+  import("./profile-commands.js").then((pc) => pc.initCommand().catch(handlePromptExit));
 } else if (isProfileCommand) {
   // Profile management commands
   const profileArgIndex = args.findIndex(a => a === "profile");
-  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)));
+  import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(profileArgIndex + 1)).catch(handlePromptExit));
 } else {
   // CLI mode
   runCli();

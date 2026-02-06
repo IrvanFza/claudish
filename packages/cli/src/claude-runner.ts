@@ -53,7 +53,7 @@ process.stdin.on('end', () => {
     if (dir.length > 15) dir = dir.substring(0, 12) + '...';
 
     let ctx = 100, cost = 0, inputTokens = 0, contextWindow = 0;
-    const model = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
+    let model = process.env.CLAUDISH_ACTIVE_MODEL_NAME || 'unknown';
     const isLocal = process.env.CLAUDISH_IS_LOCAL === 'true';
 
     let isFree = false, isEstimated = false, providerName = '';
@@ -66,6 +66,7 @@ process.stdin.on('end', () => {
       isFree = tokens.is_free || false;
       isEstimated = tokens.is_estimated || false;
       providerName = tokens.provider_name || '';
+      if (tokens.model_name) model = tokens.model_name;
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -84,10 +85,17 @@ process.stdin.on('end', () => {
       costDisplay = '$' + cost.toFixed(3);
     }
     const modelDisplay = providerName ? providerName + ' ' + model : model;
-    // Format context display: "96% (37k/1M)" or just "96%" if no token data
-    let ctxDisplay = ctx + '%';
+    // Format context display as progress bar: [████░░░░░░] 116k/1M
+    let ctxDisplay = '';
     if (inputTokens > 0 && contextWindow > 0) {
-      ctxDisplay = ctx + '% (' + formatTokens(inputTokens) + '/' + formatTokens(contextWindow) + ')';
+      const usedPct = 100 - ctx; // ctx is "left", so used = 100 - left
+      const barWidth = 15;
+      const filled = Math.round((usedPct / 100) * barWidth);
+      const empty = barWidth - filled;
+      const bar = '█'.repeat(filled) + '░'.repeat(empty);
+      ctxDisplay = '[' + bar + '] ' + formatTokens(inputTokens) + '/' + formatTokens(contextWindow);
+    } else {
+      ctxDisplay = ctx + '%';
     }
     console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\`);
   } catch (e) {
@@ -145,7 +153,7 @@ function createTempSettingsFile(modelDisplay: string, port: string): string {
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
     const formatTokensBash = `fmt_tok() { local n=\${1:-0}; if [ "$n" -ge 1000000 ]; then echo "$((n/1000000))M"; elif [ "$n" -ge 1000 ]; then echo "$((n/1000))k"; else echo "$n"; fi; }`;
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && IN_TOK=0 && CTX_WIN=0 && ${formatTokensBash} && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IN_TOK=$(echo "$TOKENS" | grep -o '"input_tokens":[0-9]*' | grep -o '[0-9]*') && CTX_WIN=$(echo "$TOKENS" | grep -o '"context_window":[0-9]*' | grep -o '[0-9]*') && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="$CLAUDISH_ACTIVE_MODEL_NAME" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && if [ "$IN_TOK" -gt 0 ] 2>/dev/null && [ "$CTX_WIN" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX%"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=100 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && TOKEN_MODEL="" && IN_TOK=0 && CTX_WIN=0 && ${formatTokensBash} && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":[0-9]*' | grep -o '[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IN_TOK=$(echo "$TOKENS" | grep -o '"input_tokens":[0-9]*' | grep -o '[0-9]*') && CTX_WIN=$(echo "$TOKENS" | grep -o '"context_window":[0-9]*' | grep -o '[0-9]*') && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4) && TOKEN_MODEL=$(echo "$TOKENS" | grep -o '"model_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && if [ "$IN_TOK" -gt 0 ] 2>/dev/null && [ "$CTX_WIN" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX%"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
   }
 
   const settings = {
@@ -169,7 +177,10 @@ export async function runClaudeWithProxy(
 ): Promise<number> {
   // Use actual OpenRouter model ID (no translation)
   // This ensures ANY model works, not just our shortlist
-  const modelId = config.model || "unknown";
+  // In profile/multi-model mode, don't set a single model - let Claude Code use its defaults
+  // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
+  const hasProfileMappings = config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+  const modelId = config.model || (hasProfileMappings ? undefined : "unknown");
 
   // Extract port from proxy URL for token file path
   const portMatch = proxyUrl.match(/:(\d+)/);
@@ -223,25 +234,28 @@ export async function runClaudeWithProxy(
   }
 
   // Check if this is a local model (ollama/, lmstudio/, vllm/, mlx/, or http:// URL)
-  const isLocalModel =
-    modelId.startsWith("ollama/") ||
-    modelId.startsWith("ollama:") ||
-    modelId.startsWith("lmstudio/") ||
-    modelId.startsWith("lmstudio:") ||
-    modelId.startsWith("vllm/") ||
-    modelId.startsWith("vllm:") ||
-    modelId.startsWith("mlx/") ||
-    modelId.startsWith("mlx:") ||
-    modelId.startsWith("http://") ||
-    modelId.startsWith("https://");
+  const isLocalModel = modelId
+    ? modelId.startsWith("ollama/") ||
+      modelId.startsWith("ollama:") ||
+      modelId.startsWith("lmstudio/") ||
+      modelId.startsWith("lmstudio:") ||
+      modelId.startsWith("vllm/") ||
+      modelId.startsWith("vllm:") ||
+      modelId.startsWith("mlx/") ||
+      modelId.startsWith("mlx:") ||
+      modelId.startsWith("http://") ||
+      modelId.startsWith("https://")
+    : false;
 
   // Environment variables for Claude Code
+  // For display: show profile name before first request; token file model_name takes over after
+  const modelDisplayName = modelId || config.profile || "default";
   const env: Record<string, string> = {
     ...process.env,
     // Point Claude Code to our local proxy
     ANTHROPIC_BASE_URL: proxyUrl,
     // Set active model ID for status line (actual OpenRouter model ID)
-    [ENV.CLAUDISH_ACTIVE_MODEL_NAME]: modelId,
+    [ENV.CLAUDISH_ACTIVE_MODEL_NAME]: modelDisplayName,
     // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
   };
@@ -255,16 +269,19 @@ export async function runClaudeWithProxy(
     delete env.ANTHROPIC_AUTH_TOKEN;
     // Don't override ANTHROPIC_MODEL - let Claude Code use its default
     // (unless user explicitly specified a model)
-    if (modelId && modelId !== "unknown") {
+    if (modelId) {
       env[ENV.ANTHROPIC_MODEL] = modelId;
       env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
     }
   } else {
     // Set Claude Code standard model environment variables
-    // Both ANTHROPIC_MODEL and ANTHROPIC_SMALL_FAST_MODEL point to the same model
-    // since we're proxying everything through OpenRouter
-    env[ENV.ANTHROPIC_MODEL] = modelId;
-    env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
+    // When using profile mode (no explicit --model), DON'T override ANTHROPIC_MODEL
+    // Let Claude Code use its default model names (e.g., "claude-sonnet-4-5-20250929")
+    // so the proxy can match "opus"/"sonnet"/"haiku" in the model name and apply mappings
+    if (modelId) {
+      env[ENV.ANTHROPIC_MODEL] = modelId;
+      env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
+    }
     // OpenRouter mode: Use placeholder to prevent Claude Code dialog
     // The proxy will handle authentication with OPENROUTER_API_KEY
     env.ANTHROPIC_API_KEY =
@@ -285,9 +302,9 @@ export async function runClaudeWithProxy(
   };
 
   if (config.interactive) {
-    log(`\n[claudish] Model: ${modelId}\n`);
+    log(`\n[claudish] Model: ${modelDisplayName}\n`);
   } else {
-    log(`\n[claudish] Model: ${modelId}`);
+    log(`\n[claudish] Model: ${modelDisplayName}`);
     log(`[claudish] Arguments: ${claudeArgs.join(" ")}\n`);
   }
 

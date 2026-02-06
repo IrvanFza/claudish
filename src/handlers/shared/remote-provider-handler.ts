@@ -132,6 +132,7 @@ export abstract class RemoteProviderHandler implements ModelHandler {
         is_free: pricing.isFree || false,
         is_estimated: pricing.isEstimate || false,
         provider_name: this.getProviderName(),
+        model_name: this.modelName,
         updated_at: Date.now(),
       };
 

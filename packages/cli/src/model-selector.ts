@@ -692,7 +692,246 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 }
 
 /**
+ * Provider choices for profile model configuration
+ */
+const PROVIDER_CHOICES = [
+  { name: "Skip (keep Claude default)", value: "skip", description: "Use native Claude model for this tier" },
+  { name: "OpenRouter", value: "openrouter", description: "580+ models via unified API" },
+  { name: "OpenCode Zen", value: "zen", description: "Free models, no API key needed" },
+  { name: "Google Gemini", value: "google", description: "Direct API (GEMINI_API_KEY)" },
+  { name: "OpenAI", value: "openai", description: "Direct API (OPENAI_API_KEY)" },
+  { name: "xAI / Grok", value: "xai", description: "Direct API (XAI_API_KEY)" },
+  { name: "MiniMax", value: "minimax", description: "Direct API (MINIMAX_API_KEY)" },
+  { name: "Kimi / Moonshot", value: "kimi", description: "Direct API (MOONSHOT_API_KEY)" },
+  { name: "GLM / Zhipu", value: "glm", description: "Direct API (ZHIPU_API_KEY)" },
+  { name: "Z.AI", value: "zai", description: "Z.AI API (ZAI_API_KEY)" },
+  { name: "OllamaCloud", value: "ollamacloud", description: "Cloud Llama models (OLLAMA_API_KEY)" },
+  { name: "Ollama (local)", value: "ollama", description: "Local Ollama instance" },
+  { name: "LM Studio (local)", value: "lmstudio", description: "Local LM Studio instance" },
+  { name: "Enter custom model", value: "custom", description: "Type a provider@model specification" },
+];
+
+/**
+ * Model ID prefix for each provider
+ */
+const PROVIDER_MODEL_PREFIX: Record<string, string> = {
+  google: "google@",
+  openai: "oai@",
+  xai: "xai@",
+  minimax: "mm@",
+  kimi: "kimi@",
+  glm: "glm@",
+  zai: "zai@",
+  ollamacloud: "oc@",
+  ollama: "ollama@",
+  lmstudio: "lmstudio@",
+  zen: "zen@",
+  openrouter: "openrouter@",
+};
+
+/**
+ * Map provider value to ModelInfo source field for filtering fetched models
+ */
+const PROVIDER_SOURCE_FILTER: Record<string, string> = {
+  openrouter: "OpenRouter",
+  google: "Gemini",
+  openai: "OpenAI",
+  xai: "xAI",
+  zen: "Zen",
+};
+
+/**
+ * Well-known models per provider (fallback when API fetch returns no results)
+ */
+function getKnownModels(provider: string): ModelInfo[] {
+  const known: Record<string, Array<{ id: string; name: string; context?: string; description?: string }>> = {
+    google: [
+      { id: "google@gemini-2.5-pro", name: "Gemini 2.5 Pro", context: "1M" },
+      { id: "google@gemini-2.5-flash", name: "Gemini 2.5 Flash", context: "1M" },
+      { id: "google@gemini-2.0-flash", name: "Gemini 2.0 Flash", context: "1M" },
+    ],
+    openai: [
+      { id: "oai@o3", name: "o3", context: "200K", description: "Reasoning model" },
+      { id: "oai@o4-mini", name: "o4-mini", context: "200K", description: "Fast reasoning model" },
+      { id: "oai@gpt-4.1", name: "GPT-4.1", context: "1M", description: "Latest model" },
+      { id: "oai@gpt-4.1-mini", name: "GPT-4.1 Mini", context: "1M", description: "Latest mini model" },
+      { id: "oai@gpt-4o", name: "GPT-4o", context: "128K", description: "Multimodal model" },
+      { id: "oai@gpt-4o-mini", name: "GPT-4o Mini", context: "128K", description: "Fast multimodal model" },
+    ],
+    xai: [
+      { id: "xai@grok-4", name: "Grok 4", context: "256K" },
+      { id: "xai@grok-4-fast", name: "Grok 4 Fast", context: "2M" },
+      { id: "xai@grok-code-fast-1", name: "Grok Code Fast 1", context: "256K", description: "Optimized for coding" },
+    ],
+    minimax: [
+      { id: "mm@minimax-m2.1", name: "MiniMax M2.1", context: "196K", description: "Lightweight coding model" },
+    ],
+    kimi: [
+      { id: "kimi@kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", context: "128K" },
+      { id: "kimi@moonshot-v1-128k", name: "Moonshot V1 128K", context: "128K" },
+    ],
+    glm: [
+      { id: "glm@glm-4-plus", name: "GLM-4 Plus", context: "128K" },
+      { id: "glm@glm-4-flash", name: "GLM-4 Flash", context: "128K" },
+    ],
+    zai: [
+      { id: "zai@glm-4.7", name: "GLM 4.7 (Z.AI)", context: "128K" },
+    ],
+    ollamacloud: [
+      { id: "oc@llama-3.3-70b", name: "Llama 3.3 70B", context: "128K" },
+      { id: "oc@llama-3.1-405b", name: "Llama 3.1 405B", context: "128K" },
+    ],
+  };
+
+  const providerDisplay = provider.charAt(0).toUpperCase() + provider.slice(1);
+  return (known[provider] || []).map((m) => ({
+    id: m.id,
+    name: m.name,
+    description: m.description || `${providerDisplay} model`,
+    provider: providerDisplay,
+    context: m.context,
+    supportsTools: true,
+  }));
+}
+
+/**
+ * Filter models by provider using source tag or ID prefix
+ */
+function filterModelsByProvider(allModels: ModelInfo[], provider: string): ModelInfo[] {
+  const source = PROVIDER_SOURCE_FILTER[provider];
+  if (source) {
+    return allModels.filter((m) => m.source === source);
+  }
+
+  const prefix = PROVIDER_MODEL_PREFIX[provider];
+  if (prefix) {
+    return allModels.filter((m) => m.id.startsWith(prefix));
+  }
+
+  return [];
+}
+
+/**
+ * Select a model from a specific provider with filterable search
+ */
+async function selectModelFromProvider(
+  provider: string,
+  tierName: string,
+  allModels: ModelInfo[],
+  recommendedModels: ModelInfo[],
+): Promise<string> {
+  const LOCAL_INPUT_PROVIDERS = new Set(["ollama", "lmstudio"]);
+  const prefix = PROVIDER_MODEL_PREFIX[provider] || `${provider}@`;
+
+  // Local providers: just ask for model name
+  if (LOCAL_INPUT_PROVIDERS.has(provider)) {
+    const modelName = await input({
+      message: `Enter ${provider} model name for ${tierName}:`,
+      validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
+    });
+    return `${prefix}${modelName.trim()}`;
+  }
+
+  // Get fetched models for this provider
+  let providerModels = filterModelsByProvider(allModels, provider);
+
+  // For OpenRouter, prioritize recommended models
+  if (provider === "openrouter") {
+    const seenIds = new Set<string>();
+    const merged: ModelInfo[] = [];
+    for (const m of recommendedModels) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        merged.push(m);
+      }
+    }
+    for (const m of providerModels) {
+      if (!seenIds.has(m.id)) {
+        seenIds.add(m.id);
+        merged.push(m);
+      }
+    }
+    providerModels = merged;
+  }
+
+  // Add known fallback models if not already present
+  const knownModels = getKnownModels(provider);
+  if (knownModels.length > 0) {
+    const seenIds = new Set(providerModels.map((m) => m.id));
+    for (const m of knownModels) {
+      if (!seenIds.has(m.id)) {
+        providerModels.unshift(m);
+      }
+    }
+  }
+
+  // No models at all: fall back to text input
+  if (providerModels.length === 0) {
+    const modelName = await input({
+      message: `Enter ${provider} model name for ${tierName} (prefix ${prefix} will be added):`,
+      validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
+    });
+    return `${prefix}${modelName.trim()}`;
+  }
+
+  // Show filterable search with custom entry option
+  const CUSTOM_VALUE = "__custom_model__";
+
+  const selected = await search<string>({
+    message: `Select model for ${tierName} (type to filter):`,
+    pageSize: 15,
+    source: async (term) => {
+      let filtered: ModelInfo[];
+
+      if (term) {
+        filtered = providerModels
+          .map((m) => ({
+            model: m,
+            score: Math.max(
+              fuzzyMatch(m.id, term),
+              fuzzyMatch(m.name, term),
+              fuzzyMatch(m.provider, term) * 0.5
+            ),
+          }))
+          .filter((r) => r.score > 0.1)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 20)
+          .map((r) => r.model);
+      } else {
+        filtered = providerModels.slice(0, 25);
+      }
+
+      const choices = filtered.map((m) => ({
+        name: formatModelChoice(m, true),
+        value: m.id,
+        description: m.description?.slice(0, 80),
+      }));
+
+      // Always add custom option at the end
+      choices.push({
+        name: ">> Enter custom model ID",
+        value: CUSTOM_VALUE,
+        description: `Type a custom ${provider} model name`,
+      });
+
+      return choices;
+    },
+  });
+
+  if (selected === CUSTOM_VALUE) {
+    const modelName = await input({
+      message: `Enter model name (will be prefixed with ${prefix}):`,
+      validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
+    });
+    return `${prefix}${modelName.trim()}`;
+  }
+
+  return selected;
+}
+
+/**
  * Select multiple models for profile setup
+ * Interactive flow: provider selection -> filterable model list for each tier
  */
 export async function selectModelsForProfile(): Promise<{
   opus?: string;
@@ -700,57 +939,60 @@ export async function selectModelsForProfile(): Promise<{
   haiku?: string;
   subagent?: string;
 }> {
-  const allModels = await getAllModelsForSearch();
+  console.log("\nLoading available models...");
+  const [fetchedModels, recommendedModels] = await Promise.all([
+    getAllModelsForSearch(),
+    Promise.resolve(loadRecommendedModels()),
+  ]);
 
-  console.log("\nConfigure models for each Claude tier:\n");
+  const tiers = [
+    { key: "opus" as const, name: "Opus", description: "Most capable, used for complex reasoning" },
+    { key: "sonnet" as const, name: "Sonnet", description: "Balanced, used for general tasks" },
+    { key: "haiku" as const, name: "Haiku", description: "Fast & cheap, used for simple tasks" },
+    { key: "subagent" as const, name: "Subagent", description: "Used for spawned sub-agents" },
+  ];
 
-  // Helper to select a model for a tier
-  const selectForTier = async (tier: string, description: string): Promise<string | undefined> => {
-    const useCustom = await confirm({
-      message: `Configure ${tier} model? (${description})`,
-      default: true,
+  const result: { opus?: string; sonnet?: string; haiku?: string; subagent?: string } = {};
+  let lastProvider: string | undefined;
+
+  console.log("\nConfigure models for each Claude tier:");
+
+  for (const tier of tiers) {
+    console.log(""); // Spacing between tiers
+
+    // Step 1: Select provider
+    const provider = await select({
+      message: `Select provider for ${tier.name} tier (${tier.description}):`,
+      choices: PROVIDER_CHOICES,
+      default: lastProvider,
     });
 
-    if (!useCustom) return undefined;
+    if (provider === "skip") {
+      result[tier.key] = undefined;
+      continue;
+    }
 
-    return search<string>({
-      message: `Select model for ${tier}:`,
-      source: async (term) => {
-        let filtered = allModels;
+    lastProvider = provider;
 
-        if (term) {
-          filtered = allModels
-            .map((m) => ({
-              model: m,
-              score: Math.max(
-                fuzzyMatch(m.id, term),
-                fuzzyMatch(m.name, term),
-                fuzzyMatch(m.provider, term) * 0.5
-              ),
-            }))
-            .filter((r) => r.score > 0.1)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 15)
-            .map((r) => r.model);
-        } else {
-          filtered = filtered.slice(0, 15);
-        }
+    if (provider === "custom") {
+      const customModel = await input({
+        message: `Enter custom model for ${tier.name} (e.g., provider@model):`,
+        validate: (v) => (v.trim() ? true : "Model cannot be empty"),
+      });
+      result[tier.key] = customModel.trim();
+      continue;
+    }
 
-        return filtered.map((m) => ({
-          name: formatModelChoice(m),
-          value: m.id,
-          description: m.description?.slice(0, 80),
-        }));
-      },
-    });
-  };
+    // Step 2: Select model from the chosen provider
+    result[tier.key] = await selectModelFromProvider(
+      provider,
+      tier.name,
+      fetchedModels,
+      recommendedModels,
+    );
+  }
 
-  const opus = await selectForTier("Opus", "Most capable, used for complex reasoning");
-  const sonnet = await selectForTier("Sonnet", "Balanced, used for general tasks");
-  const haiku = await selectForTier("Haiku", "Fast & cheap, used for simple tasks");
-  const subagent = await selectForTier("Subagent", "Used for spawned sub-agents");
-
-  return { opus, sonnet, haiku, subagent };
+  return result;
 }
 
 /**
