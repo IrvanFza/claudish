@@ -137,14 +137,18 @@ const HeroSection: React.FC = () => {
       </div>
 
       <div className="text-center mb-12 max-w-5xl mx-auto z-10 flex flex-col items-center">
-        <div className="flex gap-3 mb-8 animate-fadeIn">
+        <div className="flex flex-wrap gap-3 mb-8 animate-fadeIn justify-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
             <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
-            v4.3.1
+            v4.4.3
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
-            <span className="text-[10px]">🎁</span>
-            OpenRouter + Ollama + LM Studio + Direct APIs
+            <span className="text-[10px]">🔑</span>
+            BYOK — Bring Your Own Key
+          </div>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-900/20 border border-purple-500/20 text-xs font-mono text-purple-400">
+            <span className="text-[10px]">💰</span>
+            Use Existing Subscriptions
           </div>
         </div>
 
@@ -154,18 +158,18 @@ const HeroSection: React.FC = () => {
         </div>
 
         <h1 className="text-3xl md:text-5xl font-sans font-bold tracking-tight text-white mb-2">
-          Claude Code. <span className="text-gray-500">Any Model.</span>
+          Use Your AI Subscriptions <span className="text-gray-500">with Claude Code.</span>
         </h1>
 
         <p className="text-lg md:text-xl text-gray-400 max-w-3xl mx-auto leading-relaxed font-sans mb-10">
-          The most powerful AI coding agent now speaks every language.
+          <span className="text-claude-ish font-medium">Stop paying for multiple AI subscriptions.</span>
           <br />
-          <span className="text-white">Gemini</span>, <span className="text-white">GPT</span>,{" "}
-          <span className="text-white">Grok</span>, <span className="text-white">DeepSeek</span>.{" "}
-          <span className="text-white">580+ cloud models. Local via Ollama.</span>
+          Use <span className="text-white">Gemini Advanced</span>, <span className="text-white">ChatGPT Plus</span>,{" "}
+          <span className="text-white">Kimi</span>, <span className="text-white">GLM</span>, <span className="text-white">OllamaCloud</span>{" "}
+          with Claude Code's interface.
           <br />
-          <span className="text-claude-ish">
-            Works with your Claude subscription. Or start completely free.
+          <span className="text-gray-500">
+            580+ models via OpenRouter. Run offline with Ollama for complete privacy.
           </span>
         </p>
 

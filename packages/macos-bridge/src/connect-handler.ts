@@ -512,7 +512,7 @@ export class CONNECTHandler {
 
   /**
    * Extract model ID from model_configs path
-   * Example: "/api/organizations/.../model_configs/claude-opus-4-5-20251101" -> "claude-opus-4-5-20251101"
+   * Example: "/api/organizations/.../model_configs/claude-opus-4-6-20260201" -> "claude-opus-4-6-20260201"
    */
   private extractModelFromPath(path: string): string | null {
     const match = path.match(/\/model_configs\/([^?\s]+)/);

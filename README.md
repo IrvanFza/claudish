@@ -8,7 +8,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-d97757?style=flat-square)](https://claude.ai/claude-code)
 
-**Run Claude Code with 580+ cloud models via OpenRouter, local models with Ollama/LM Studio, and direct APIs for Gemini, GPT, Grok, DeepSeek, MiniMax, Kimi, GLM, and more.**
+**Use your existing AI subscriptions with Claude Code.** Works with Anthropic Max, Gemini Advanced, ChatGPT Plus/Codex, Kimi, GLM, OllamaCloud — plus 580+ models via OpenRouter and local models for complete privacy.
 
 [Website](https://claudish.com) · [Documentation](https://github.com/MadAppGang/claudish/blob/main/docs/index.md) · [Report Bug](https://github.com/MadAppGang/claudish/issues)
 
@@ -22,6 +22,34 @@
 - **Cloud:** OpenRouter (580+ models), Google Gemini, OpenAI, MiniMax, Kimi, GLM, Z.AI, OllamaCloud, OpenCode Zen
 - **Local:** Ollama, LM Studio, vLLM, MLX
 - **Enterprise:** Vertex AI (Google Cloud)
+
+## Use Your Existing AI Subscriptions
+
+**Stop paying for multiple AI subscriptions.** Claudish lets you use subscriptions you already have with Claude Code's powerful interface:
+
+| Your Subscription | Command |
+|-------------------|---------|
+| **Anthropic Max** | Native support (just use `claude`) |
+| **Gemini Advanced** | `claudish --model g@gemini-3-pro-preview` |
+| **ChatGPT Plus/Codex** | `claudish --model oai@gpt-5.3` or `oai@gpt-5.3-codex` |
+| **Kimi** | `claudish --model kimi@kimi-k2.5` |
+| **GLM** | `claudish --model glm@GLM-4.7` |
+| **MiniMax** | `claudish --model mm@minimax-m2.1` |
+| **OllamaCloud** | `claudish --model oc@qwen3-next` |
+
+**100% Offline Option — Your code never leaves your machine:**
+```bash
+claudish --model ollama@qwen3-coder:latest "your task"
+```
+
+## Bring Your Own Key (BYOK)
+
+Claudish is a **BYOK AI coding assistant**:
+- ✅ Use API keys you already have
+- ✅ No additional subscription fees
+- ✅ Full cost control — pay only for what you use
+- ✅ Works with any provider
+- ✅ Switch models mid-session
 
 ## Features
 
@@ -288,7 +316,7 @@ claudish [OPTIONS] <claude-args...>
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDISH_MODEL` | Default model to use | `openai/gpt-5.2` |
+| `CLAUDISH_MODEL` | Default model to use | `openai/gpt-5.3` |
 | `CLAUDISH_PORT` | Default proxy port | Random (3000-9000) |
 | `CLAUDISH_CONTEXT_WINDOW` | Override context window size | Auto-detected |
 
@@ -395,7 +423,7 @@ Top recommended models for development (v3.1.1):
 
 | Model | Provider | Best For |
 |-------|----------|----------|
-| `openai/gpt-5.2` | OpenAI | **Default** - Most advanced reasoning |
+| `openai/gpt-5.3` | OpenAI | **Default** - Most advanced reasoning |
 | `minimax/minimax-m2.1` | MiniMax | Budget-friendly, fast |
 | `z-ai/glm-4.7` | Z.AI | Balanced performance |
 | `google/gemini-3-pro-preview` | Google | 1M context window |
@@ -430,7 +458,7 @@ Run specialized agents in headless mode with direct agent selection:
 claudish --model x-ai/grok-code-fast-1 --agent frontend:developer "create a React button component"
 
 # Use API architect agent
-claudish --model openai/gpt-5-codex --agent api-architect "design REST API for user management"
+claudish --model openai/gpt-5.3-codex --agent api-architect "design REST API for user management"
 
 # Discover available agents in your project
 claudish --list-agents
@@ -566,7 +594,7 @@ claudish "debug issue" --verbose
 claudish "analyze code" --cwd /path/to/project
 
 # Multiple flags
-claudish --model openai/gpt-5-codex "task" --verbose --debug
+claudish --model openai/gpt-5.3-codex "task" --verbose --debug
 ```
 
 ### Monitor Mode
@@ -750,7 +778,7 @@ This allows multiple parallel runs:
 claudish --model x-ai/grok-code-fast-1 "task A"
 
 # Terminal 2
-claudish --model openai/gpt-5-codex "task B"
+claudish --model openai/gpt-5.3-codex "task B"
 
 # Terminal 3
 claudish --model minimax/minimax-m2 "task C"

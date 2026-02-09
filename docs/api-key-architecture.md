@@ -14,7 +14,7 @@ All API key validation flows through a single source of truth: the `ProviderReso
 |----------|----------|--------------|-------|
 | `local` | `ollama/llama3`, `lmstudio/qwen`, `http://localhost:8000` | None | Runs on local machine |
 | `direct-api` | `g/gemini-2.0`, `oai/gpt-4o`, `mmax/M2.1`, `zen/grok-code` | Provider-specific | Uses provider's native API |
-| `openrouter` | `google/gemini-3-pro`, `openai/gpt-5.2`, `or/model` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
+| `openrouter` | `google/gemini-3-pro`, `openai/gpt-5.3`, `or/model` | `OPENROUTER_API_KEY` | Routed through OpenRouter |
 | `native-anthropic` | `claude-3-opus-20240229` (no "/") | None | Uses Claude Code's native auth |
 
 ## Resolution Priority
@@ -93,7 +93,7 @@ A common source of confusion is the difference between OpenRouter model IDs and 
 |----------|----------|------------|
 | `google/gemini-3-pro` | OpenRouter | `OPENROUTER_API_KEY` |
 | `g/gemini-2.0-flash` | Direct Gemini | `GEMINI_API_KEY` |
-| `openai/gpt-5.2` | OpenRouter | `OPENROUTER_API_KEY` |
+| `openai/gpt-5.3` | OpenRouter | `OPENROUTER_API_KEY` |
 | `oai/gpt-4o` | Direct OpenAI | `OPENAI_API_KEY` |
 
 **Why the difference?**

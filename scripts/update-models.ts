@@ -25,7 +25,7 @@ const TOP_WEEKLY_PROGRAMMING_MODELS = [
   "minimax/minimax-m2.1", // #2: MiniMax M2.1
   "z-ai/glm-4.7", // #3: Z.AI GLM 4.7
   "google/gemini-3-pro-preview", // #4: Google Gemini 3 Pro Preview
-  "openai/gpt-5.2", // #5: OpenAI GPT-5.2
+  "openai/gpt-5.3", // #5: OpenAI GPT-5.3
   "moonshotai/kimi-k2-thinking", // #6: MoonShot Kimi K2 Thinking
   "deepseek/deepseek-v3.2", // #7: DeepSeek V3.2
   "qwen/qwen3-vl-235b-a22b-thinking", // #8: Qwen3 VL 235B Thinking

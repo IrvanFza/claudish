@@ -13,7 +13,7 @@
 claudish --models --json
 
 # 2. Run task with specific model (OpenRouter)
-claudish --model openai/gpt-5.2 "your task here"
+claudish --model openai/gpt-5.3 "your task here"
 
 # 3. Run with direct Gemini API
 claudish --model g/gemini-2.0-flash "your task here"
@@ -22,7 +22,7 @@ claudish --model g/gemini-2.0-flash "your task here"
 claudish --model ollama/llama3.2 "your task here"
 
 # 5. For large prompts, use stdin
-echo "your task" | claudish --stdin --model openai/gpt-5.2
+echo "your task" | claudish --stdin --model openai/gpt-5.3
 ```
 
 ## What is Claudish?
@@ -41,7 +41,7 @@ Claudish = Claude Code + Any AI Model
 
 | Prefix | Backend | Example |
 |--------|---------|---------|
-| _(none)_ | OpenRouter | `openai/gpt-5.2` |
+| _(none)_ | OpenRouter | `openai/gpt-5.3` |
 | `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
 | `v/` `vertex/` | Vertex AI | `v/gemini-2.5-flash` |
 | `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
@@ -96,7 +96,7 @@ claudish --model vertex/openai/gpt-oss-120b-maas "reason"
 
 | Model ID | Provider | Category | Best For |
 |----------|----------|----------|----------|
-| `openai/gpt-5.2` | OpenAI | Reasoning | **Default** - Most advanced reasoning |
+| `openai/gpt-5.3` | OpenAI | Reasoning | **Default** - Most advanced reasoning |
 | `minimax/minimax-m2.1` | MiniMax | Coding | Budget-friendly, fast |
 | `z-ai/glm-4.7` | Z.AI | Coding | Balanced performance |
 | `google/gemini-3-pro-preview` | Google | Reasoning | 1M context window |
@@ -353,7 +353,7 @@ User: "What models support vision?"
 Claude: [calls search_models tool with query="vision"]
 
 User: "Compare how GPT-5 and Gemini explain this concept"
-Claude: [calls compare_models tool with models=["openai/gpt-5.2", "google/gemini-3-pro-preview"]]
+Claude: [calls compare_models tool with models=["openai/gpt-5.3", "google/gemini-3-pro-preview"]]
 ```
 
 ### MCP vs CLI Mode
@@ -394,7 +394,7 @@ Claude: [calls compare_models tool with models=["openai/gpt-5.2", "google/gemini
 **compare_models**
 ```typescript
 {
-  models: string[],      // e.g., ["openai/gpt-5.2", "x-ai/grok-code-fast-1"]
+  models: string[],      // e.g., ["openai/gpt-5.3", "x-ai/grok-code-fast-1"]
   prompt: string,        // Prompt to send to all models
   system_prompt?: string // Optional system prompt
 }

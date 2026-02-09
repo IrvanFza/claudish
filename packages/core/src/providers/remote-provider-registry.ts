@@ -8,7 +8,7 @@
  * Examples:
  *   google@gemini-3-pro-preview          - Direct Google API
  *   openrouter@google/gemini-3-pro       - Explicit OpenRouter
- *   oai@gpt-5.2                          - Direct OpenAI API (shortcut)
+ *   oai@gpt-5.3                          - Direct OpenAI API (shortcut)
  *
  * Legacy prefix patterns (deprecated, still supported):
  * - g/, gemini/ -> Google Gemini API (direct)

@@ -1,6 +1,6 @@
 # Issue Triage Bot Setup
 
-The Claudish project uses an automated issue triage bot powered by [Claude Code](https://github.com/anthropics/claude-code) (Opus 4.5) to categorize and respond to new GitHub issues.
+The Claudish project uses an automated issue triage bot powered by [Claude Code](https://github.com/anthropics/claude-code) (Opus 4.6) to categorize and respond to new GitHub issues.
 
 ## How It Works
 
@@ -46,7 +46,7 @@ Add these secrets to your repository:
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude Code (Opus 4.5) |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude Code (Opus 4.6) |
 | `CLAUDISH_BOT_APP_ID` | Yes | GitHub App ID for the triage bot |
 | `CLAUDISH_BOT_PRIVATE_KEY` | Yes | GitHub App private key |
 

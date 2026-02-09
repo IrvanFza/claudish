@@ -108,22 +108,22 @@ class ModelProvider: ObservableObject {
         // OpenAI Direct API Models (GPT-5.x series)
         models.append(contentsOf: [
             AvailableModel(
-                id: "oai/gpt-5.2",
-                displayName: "GPT-5.2",
+                id: "oai/gpt-5.3",
+                displayName: "GPT-5.3",
                 provider: .openai,
                 description: "Complex reasoning, broad knowledge, code-heavy tasks",
                 contextLength: 128000
             ),
             AvailableModel(
-                id: "oai/gpt-5.2-pro",
-                displayName: "GPT-5.2 Pro",
+                id: "oai/gpt-5.3-pro",
+                displayName: "GPT-5.3 Pro",
                 provider: .openai,
                 description: "Tough problems requiring harder thinking",
                 contextLength: 128000
             ),
             AvailableModel(
-                id: "oai/gpt-5.2-codex",
-                displayName: "GPT-5.2 Codex",
+                id: "oai/gpt-5.3-codex",
+                displayName: "GPT-5.3 Codex",
                 provider: .openai,
                 description: "Full spectrum coding tasks",
                 contextLength: 128000

@@ -2,7 +2,7 @@
 
 The marketing site for [Claudish](https://github.com/MadAppGang/claudish) - run Claude Code with any AI model via OpenRouter.
 
-Built with Claudish itself: Opus 4.5 and Gemini 3.0 Pro collaborating in a single session.
+Built with Claudish itself: Opus 4.6 and Gemini 3.0 Pro collaborating in a single session.
 
 ## Development
 

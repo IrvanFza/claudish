@@ -176,9 +176,10 @@ export async function createProxyServer(
       } else if (
         resolved.provider.name === "minimax" ||
         resolved.provider.name === "kimi" ||
+        resolved.provider.name === "kimi-coding" ||
         resolved.provider.name === "zai"
       ) {
-        // MiniMax, Kimi, and Z.AI use Anthropic-compatible APIs
+        // MiniMax, Kimi, Kimi Coding, and Z.AI use Anthropic-compatible APIs
         handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
       } else if (resolved.provider.name === "glm") {

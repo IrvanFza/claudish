@@ -179,7 +179,7 @@ enum TargetModel: String, CaseIterable, Identifiable {
     case minimaxM2 = "mm/minimax-m2.1"
     case glm47 = "z-ai/glm-4.7"
     case gemini3Pro = "g/gemini-3-pro-preview"
-    case gpt52Codex = "oai/gpt-5.2-codex"
+    case gpt53Codex = "oai/gpt-5.3-codex"
     case grokCodeFast = "x-ai/grok-code-fast-1"
 
     var id: String { rawValue }
@@ -190,7 +190,7 @@ enum TargetModel: String, CaseIterable, Identifiable {
         case .minimaxM2: return "MiniMax M2.1"
         case .glm47: return "GLM-4.7"
         case .gemini3Pro: return "Gemini 3 Pro"
-        case .gpt52Codex: return "GPT-5.2 Codex"
+        case .gpt53Codex: return "GPT-5.3 Codex"
         case .grokCodeFast: return "Grok Code Fast"
         }
     }
@@ -208,7 +208,7 @@ struct ProfileSlots: Codable, Equatable {
     /// Create default passthrough slots (identity mapping)
     static var passthrough: ProfileSlots {
         ProfileSlots(
-            opus: "claude-opus-4-5-20251101",
+            opus: "claude-opus-4-6-20260201",
             sonnet: "claude-sonnet-4-5-20250929",
             haiku: "claude-3-haiku-20240307",
             subagent: "claude-sonnet-4-5-20250929"
@@ -349,7 +349,7 @@ extension ModelProfile {
 struct RequestStat: Codable, Identifiable {
     let id: UUID
     let timestamp: Date
-    let sourceModel: String  // e.g., "claude-opus-4-5"
+    let sourceModel: String  // e.g., "claude-opus-4-6"
     let targetModel: String  // e.g., "g/gemini-3-pro-preview" or "internal"
     let inputTokens: Int
     let outputTokens: Int

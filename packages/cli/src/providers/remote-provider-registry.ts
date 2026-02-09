@@ -8,7 +8,7 @@
  * Examples:
  *   google@gemini-3-pro-preview          - Direct Google API
  *   openrouter@google/gemini-3-pro       - Explicit OpenRouter
- *   oai@gpt-5.2                          - Direct OpenAI API (shortcut)
+ *   oai@gpt-5.3                          - Direct OpenAI API (shortcut)
  *
  * Legacy prefix patterns (deprecated, still supported):
  * - g/, gemini/ -> Google Gemini API (direct)
@@ -123,6 +123,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     },
   },
   {
+    name: "kimi-coding",
+    baseUrl: "https://api.kimi.com/coding/v1",
+    apiPath: "/messages",
+    apiKeyEnvVar: "KIMI_CODING_API_KEY",
+    prefixes: ["kc/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: true,
+    },
+  },
+  {
     name: "glm",
     baseUrl: process.env.ZHIPU_BASE_URL || process.env.GLM_BASE_URL || "https://open.bigmodel.cn",
     apiPath: "/api/paas/v4/chat/completions",
@@ -223,6 +237,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     openrouter: "openrouter",
     minimax: "minimax",
     kimi: "kimi",
+    "kimi-coding": "kimi-coding",
     glm: "glm",
     zai: "zai",
     ollamacloud: "ollamacloud",
@@ -298,6 +313,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       MINIMAX_API_KEY: "export MINIMAX_API_KEY='your-key' (get from https://www.minimaxi.com/)",
       MOONSHOT_API_KEY:
         "export MOONSHOT_API_KEY='your-key' (get from https://platform.moonshot.cn/)",
+      KIMI_CODING_API_KEY:
+        "export KIMI_CODING_API_KEY='sk-kimi-...' (get from https://kimi.com/code membership page, or run: claudish --kimi-login)",
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
       OLLAMA_API_KEY: "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
       OPENCODE_API_KEY: "export OPENCODE_API_KEY='your-key' (get from https://opencode.ai/)",

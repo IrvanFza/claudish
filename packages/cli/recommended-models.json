@@ -1,6 +1,6 @@
 {
   "version": "1.1.5",
-  "lastUpdated": "2026-01-25",
+  "lastUpdated": "2026-02-09",
   "source": "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
   "models": [
     {
@@ -33,11 +33,11 @@
       "priority": 2,
       "pricing": {
         "input": "$0.27/1M",
-        "output": "$1.10/1M",
-        "average": "$0.69/1M"
+        "output": "$0.95/1M",
+        "average": "$0.61/1M"
       },
       "context": "196K",
-      "maxOutputTokens": 196608,
+      "maxOutputTokens": null,
       "modality": "text->text",
       "supportsTools": true,
       "supportsReasoning": true,
@@ -88,33 +88,12 @@
       "recommended": true
     },
     {
-      "id": "openai/gpt-5.2",
-      "name": "OpenAI: GPT-5.2",
-      "description": "GPT-5.2 is the latest frontier-grade model in the GPT-5 series, offering stronger agentic and long context perfomance compared to GPT-5.1. It uses adaptive reasoning to allocate computation dynamically, responding quickly to simple queries while spending more depth on complex tasks.\n\nBuilt for broad task coverage, GPT-5.2 delivers consistent gains across math, coding, sciende, and tool calling workloads, with more coherent long-form answers and improved tool-use reliability.",
-      "provider": "Openai",
-      "category": "reasoning",
-      "priority": 5,
-      "pricing": {
-        "input": "$1.75/1M",
-        "output": "$14.00/1M",
-        "average": "$7.88/1M"
-      },
-      "context": "400K",
-      "maxOutputTokens": 128000,
-      "modality": "text+image+file->text",
-      "supportsTools": true,
-      "supportsReasoning": true,
-      "supportsVision": true,
-      "isModerated": true,
-      "recommended": true
-    },
-    {
       "id": "moonshotai/kimi-k2-thinking",
       "name": "MoonshotAI: Kimi K2 Thinking",
       "description": "Kimi K2 Thinking is Moonshot AI’s most advanced open reasoning model to date, extending the K2 series into agentic, long-horizon reasoning. Built on the trillion-parameter Mixture-of-Experts (MoE) architecture introduced in Kimi K2, it activates 32 billion parameters per forward pass and supports 256 k-token context windows. The model is optimized for persistent step-by-step thought, dynamic tool invocation, and complex reasoning workflows that span hundreds of turns. It interleaves step-by-step reasoning with tool use, enabling autonomous research, coding, and writing that can persist for hundreds of sequential actions without drift.\n\nIt sets new open-source benchmarks on HLE, BrowseComp, SWE-Multilingual, and LiveCodeBench, while maintaining stable multi-agent behavior through 200–300 tool calls. Built on a large-scale MoE architecture with MuonClip optimization, it combines strong reasoning depth with high inference efficiency for demanding agentic and analytical tasks.",
       "provider": "Moonshotai",
       "category": "reasoning",
-      "priority": 6,
+      "priority": 5,
       "pricing": {
         "input": "$0.40/1M",
         "output": "$1.75/1M",
@@ -135,7 +114,7 @@
       "description": "DeepSeek-V3.2 is a large language model designed to harmonize high computational efficiency with strong reasoning and agentic tool-use performance. It introduces DeepSeek Sparse Attention (DSA), a fine-grained sparse attention mechanism that reduces training and inference cost while preserving quality in long-context scenarios. A scalable reinforcement learning post-training framework further improves reasoning, with reported performance in the GPT-5 class, and the model has demonstrated gold-medal results on the 2025 IMO and IOI. V3.2 also uses a large-scale agentic task synthesis pipeline to better integrate reasoning into tool-use settings, boosting compliance and generalization in interactive environments.\n\nUsers can control the reasoning behaviour with the `reasoning` `enabled` boolean. [Learn more in our docs](https://openrouter.ai/docs/use-cases/reasoning-tokens#enable-reasoning-with-default-config)",
       "provider": "Deepseek",
       "category": "reasoning",
-      "priority": 7,
+      "priority": 6,
       "pricing": {
         "input": "$0.25/1M",
         "output": "$0.38/1M",
@@ -156,7 +135,7 @@
       "description": "Qwen3-VL-235B-A22B Thinking is a multimodal model that unifies strong text generation with visual understanding across images and video. The Thinking model is optimized for multimodal reasoning in STEM and math. The series emphasizes robust perception (recognition of diverse real-world and synthetic categories), spatial understanding (2D/3D grounding), and long-form visual comprehension, with competitive results on public multimodal benchmarks for both perception and reasoning.\n\nBeyond analysis, Qwen3-VL supports agentic interaction and tool use: it can follow complex instructions over multi-image, multi-turn dialogues; align text to video timelines for precise temporal queries; and operate GUI elements for automation tasks. The models also enable visual coding workflows, turning sketches or mockups into code and assisting with UI debugging, while maintaining strong text-only performance comparable to the flagship Qwen3 language models. This makes Qwen3-VL suitable for production scenarios spanning document AI, multilingual OCR, software/UI assistance, spatial/embodied tasks, and research on vision-language agents.",
       "provider": "Qwen",
       "category": "vision",
-      "priority": 8,
+      "priority": 7,
       "pricing": {
         "input": "$0.45/1M",
         "output": "$3.50/1M",

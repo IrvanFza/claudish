@@ -174,8 +174,8 @@ export class AnthropicCompatHandler implements ModelHandler {
       Object.assign(headers, this.provider.headers);
     }
 
-    // Kimi Coding OAuth: replace API key header with Bearer token + platform headers
-    if (this.provider.name === "kimi-coding") {
+    // Kimi Coding: prefer API key auth, fall back to OAuth if no key provided
+    if (this.provider.name === "kimi-coding" && !this.apiKey) {
       try {
         const { existsSync, readFileSync } = await import("node:fs");
         const { join } = await import("node:path");
@@ -200,8 +200,8 @@ export class AnthropicCompatHandler implements ModelHandler {
           }
         }
       } catch (e: any) {
-        // If OAuth fails, fall through to API key auth
-        log(`[KimiOAuth] OAuth header injection failed, using API key: ${e.message}`);
+        // If OAuth fails, no auth available
+        log(`[KimiCoding] OAuth fallback failed: ${e.message}`);
       }
     }
 

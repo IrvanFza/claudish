@@ -27,7 +27,7 @@ description: CRITICAL - Guide for using Claudish CLI ONLY through sub-agents to 
 
 **When you MUST use sub-agent:**
 - ✅ User says "use Grok to implement X" (delegate to sub-agent)
-- ✅ User says "ask GPT-5 to review X" (delegate to sub-agent)
+- ✅ User says "ask GPT-5.3 to review X" (delegate to sub-agent)
 - ✅ User mentions any model name without "directly" (delegate to sub-agent)
 - ✅ Any production task (always delegate)
 
@@ -125,14 +125,14 @@ Decision:
 4. User declines? → Use general-purpose with file-based pattern
 ```
 
-**Example 2: User says "ask GPT-5 to review my API design"**
+**Example 2: User says "ask GPT-5.3 to review my API design"**
 ```
 Task: Code review (API design)
 Plugin: Bun Backend
 
 Decision:
 1. Check for api-architect or senior-code-reviewer agent
-2. Found? → Use it with GPT-5 proxy
+2. Found? → Use it with GPT-5.3 proxy
 3. Not found? → Use general-purpose with review instructions
 4. Never run directly in main context
 ```
@@ -169,7 +169,7 @@ Claudish (Claude-ish) is a proxy tool that:
 
 | Prefix | Backend | Example |
 |--------|---------|---------|
-| _(none)_ | OpenRouter | `openai/gpt-5.2` |
+| _(none)_ | OpenRouter | `openai/gpt-5.3` |
 | `g/` `gemini/` | Google Gemini | `g/gemini-2.0-flash` |
 | `oai/` `openai/` | OpenAI | `oai/gpt-4o` |
 | `ollama/` | Ollama | `ollama/llama3.2` |
@@ -177,7 +177,7 @@ Claudish (Claude-ish) is a proxy tool that:
 | `http://...` | Custom | `http://localhost:8000/model` |
 
 **Use Cases:**
-- Run tasks with different AI models (Grok for speed, GPT-5 for reasoning, Gemini for large context)
+- Run tasks with different AI models (Grok for speed, GPT-5.3 for reasoning, Gemini for large context)
 - Use direct APIs for lower latency (Gemini, OpenAI)
 - Use local models for free, private inference (Ollama, LM Studio)
 - Compare model performance on same task
@@ -208,7 +208,7 @@ export OLLAMA_BASE_URL='http://...'       # Custom Ollama server
 export LMSTUDIO_BASE_URL='http://...'     # Custom LM Studio server
 
 # Default model (optional)
-export CLAUDISH_MODEL='openai/gpt-5.2'    # Default model
+export CLAUDISH_MODEL='openai/gpt-5.3'    # Default model
 ```
 
 **Get API Keys:**
@@ -270,7 +270,7 @@ claudish --model x-ai/grok-code-fast-1 "implement user authentication"
 **With stdin for large prompts:**
 ```bash
 # Read prompt from stdin (useful for git diffs, code review)
-git diff | claudish --stdin --model openai/gpt-5-codex "Review these changes"
+git diff | claudish --stdin --model openai/gpt-5.3-codex "Review these changes"
 ```
 
 ## Recommended Models
@@ -279,7 +279,7 @@ git diff | claudish --stdin --model openai/gpt-5-codex "Review these changes"
 
 | Model | Provider | Best For |
 |-------|----------|----------|
-| `openai/gpt-5.2` | OpenAI | **Default** - Most advanced reasoning |
+| `openai/gpt-5.3` | OpenAI | **Default** - Most advanced reasoning |
 | `minimax/minimax-m2.1` | MiniMax | Budget-friendly, fast |
 | `z-ai/glm-4.7` | Z.AI | Balanced performance |
 | `google/gemini-3-pro-preview` | Google | 1M context window |
@@ -672,7 +672,7 @@ DO NOT return full output.
 claudish --model x-ai/grok-code-fast-1 "add error handling to api routes"
 ```
 
-### Workflow 2: Complex Refactoring with GPT-5
+### Workflow 2: Complex Refactoring with GPT-5.3
 
 ```bash
 # Advanced reasoning for complex tasks
@@ -697,7 +697,7 @@ git diff | claudish --stdin --model google/gemini-2.5-flash "Review these change
 
 ```bash
 # Run same task with multiple models
-for model in "x-ai/grok-code-fast-1" "google/gemini-2.5-flash" "openai/gpt-5"; do
+for model in "x-ai/grok-code-fast-1" "google/gemini-2.5-flash" "openai/gpt-5.3"; do
   echo "=== Testing with $model ==="
   claudish --model "$model" "find security vulnerabilities in auth.ts"
 done
@@ -1009,7 +1009,7 @@ COST=$(claudish --json --model grok "task" | jq -r '.total_cost_usd')
 
 **Wrong:**
 ```typescript
-const MODELS = ["x-ai/grok-code-fast-1", "openai/gpt-5"];
+const MODELS = ["x-ai/grok-code-fast-1", "openai/gpt-5.3"];
 ```
 
 **Right:**
@@ -1025,7 +1025,7 @@ const models = JSON.parse(stdout).models.map(m => m.id);
 
 **Wrong (rejecting custom models):**
 ```typescript
-const availableModels = ["x-ai/grok-code-fast-1", "openai/gpt-5"];
+const availableModels = ["x-ai/grok-code-fast-1", "openai/gpt-5.3"];
 const userModel = "custom/provider/model-123";
 
 if (!availableModels.includes(userModel)) {
@@ -1152,7 +1152,7 @@ async function reviewCodeWithMultipleModels(files: string[]) {
   const models = [
     "x-ai/grok-code-fast-1",      // Fast initial scan
     "google/gemini-2.5-flash",    // Deep analysis
-    "openai/gpt-5"                // Final validation
+    "openai/gpt-5.3"                // Final validation
   ];
 
   const reviews = [];

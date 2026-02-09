@@ -24,6 +24,9 @@
  * - g/, gemini/, oai/, mmax/, etc. prefixes still work with deprecation warnings
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { resolveProvider, parseUrlModel } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import {
@@ -83,6 +86,8 @@ interface ApiKeyInfo {
   url: string;
   /** Alternative env vars to check (aliases) */
   aliases?: string[];
+  /** OAuth credential file under ~/.claudish/ to check as fallback */
+  oauthFallback?: string;
 }
 
 /**
@@ -125,6 +130,12 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "Kimi/Moonshot API Key",
     url: "https://platform.moonshot.cn/",
     aliases: ["KIMI_API_KEY"],
+  },
+  "kimi-coding": {
+    envVar: "KIMI_CODING_API_KEY",
+    description: "Kimi Coding API Key",
+    url: "https://kimi.com/code (get key from membership page, or run: claudish --kimi-login)",
+    oauthFallback: "kimi-oauth.json",
   },
   glm: {
     envVar: "ZHIPU_API_KEY",
@@ -178,6 +189,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openrouter: "OpenRouter",
   minimax: "MiniMax",
   kimi: "Kimi",
+  "kimi-coding": "Kimi Coding",
   glm: "GLM",
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",
@@ -202,6 +214,18 @@ function isApiKeyAvailable(info: ApiKeyInfo): boolean {
       if (process.env[alias]) {
         return true;
       }
+    }
+  }
+
+  // Check for OAuth credential file as fallback
+  if (info.oauthFallback) {
+    try {
+      const credPath = join(homedir(), ".claudish", info.oauthFallback);
+      if (existsSync(credPath)) {
+        return true;
+      }
+    } catch {
+      // Ignore filesystem errors
     }
   }
 

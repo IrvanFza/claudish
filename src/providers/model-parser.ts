@@ -8,7 +8,7 @@
  *   g@gemini-3-pro-preview                  - Direct Google API (shortcut)
  *   ollama@llama3.2:3                       - Ollama with concurrency 3
  *   ollama@llama3.2:0                       - Ollama with no limits
- *   openai/gpt-5.2                          - Legacy syntax (auto-detected)
+ *   openai/gpt-5.3                          - Legacy syntax (auto-detected)
  *
  * Provider shortcuts (case-insensitive):
  *   g, gemini     -> google (direct Gemini API)

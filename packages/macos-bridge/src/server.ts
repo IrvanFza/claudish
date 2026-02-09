@@ -695,7 +695,7 @@ export class BridgeServer {
      * {
      *   "enabled": true,
      *   "modelMap": {
-     *     "claude-opus-4-5-20251101": "openai/gpt-4o",
+     *     "claude-opus-4-6-20260201": "openai/gpt-4o",
      *     "claude-sonnet-4-5-20250929": "anthropic/claude-3-sonnet"
      *   }
      * }

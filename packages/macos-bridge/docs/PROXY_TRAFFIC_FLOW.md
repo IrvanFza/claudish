@@ -72,7 +72,7 @@ When a completion request is detected:
 3. If routing enabled and model mapped:
    a. Extract messages from Claude's request format
    b. Convert to OpenAI chat/completions format
-   c. Send to OpenRouter with target model (e.g., openai/gpt-5.2)
+   c. Send to OpenRouter with target model (e.g., openai/gpt-5.3)
    d. Stream response back, converting SSE format
    e. Store messages in MessageStore for later sync
 4. Claude Desktop displays the response
@@ -82,8 +82,8 @@ When a completion request is detected:
 ```
 Claude Format:                          OpenAI Format:
 {                                       {
-  "prompt": "...",          ──────▶       "model": "openai/gpt-5.2",
-  "model": "claude-opus-4-5",             "messages": [...],
+  "prompt": "...",          ──────▶       "model": "openai/gpt-5.3",
+  "model": "claude-opus-4-6",             "messages": [...],
   "stream": true                          "stream": true
 }                                       }
 ```
@@ -202,7 +202,7 @@ POST /routing
 {
   "enabled": true,
   "modelMap": {
-    "claude-opus-4-5-20251101": "openai/gpt-5.2"
+    "claude-opus-4-6-20260201": "openai/gpt-5.3"
   }
 }
 ```

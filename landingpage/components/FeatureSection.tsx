@@ -37,8 +37,11 @@ const FeatureSection: React.FC = () => {
           <h2 className="text-3xl md:text-5xl font-sans font-bold text-white mb-6">
             Claude Code is incredible.
             <br />
-            <span className="text-gray-500">But what if you want to use other models?</span>
+            <span className="text-gray-500">But you already pay for other AI subscriptions.</span>
           </h2>
+          <p className="text-xl text-gray-500 max-w-2xl mx-auto">
+            Why not use your <span className="text-white">Gemini Advanced</span>, <span className="text-white">ChatGPT Plus</span>, or <span className="text-white">Kimi</span> subscription with Claude Code's powerful interface?
+          </p>
         </div>
 
         {/* Terminal Comparison */}
@@ -302,32 +305,32 @@ const FeatureSection: React.FC = () => {
                 {/* List Items */}
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">1</div>
-                  <div className="col-span-5 text-purple-400">gemini-3-pro</div>
+                  <div className="col-span-5 text-blue-400">gemini-3-pro-preview</div>
                   <div className="col-span-3">$0.00</div>
                   <div className="col-span-3 text-right">2,000K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">2</div>
-                  <div className="col-span-5 text-green-400">gpt-5.1</div>
+                  <div className="col-span-5 text-green-400">gpt-5.3-codex</div>
                   <div className="col-span-3">$15.00</div>
-                  <div className="col-span-3 text-right">128K</div>
+                  <div className="col-span-3 text-right">256K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">3</div>
-                  <div className="col-span-5 text-white">claude-3.7-opus</div>
-                  <div className="col-span-3">$15.00</div>
-                  <div className="col-span-3 text-right">200K</div>
+                  <div className="col-span-5 text-purple-400">kimi-k2.5</div>
+                  <div className="col-span-3">$8.00</div>
+                  <div className="col-span-3 text-right">256K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">4</div>
-                  <div className="col-span-5 text-blue-400">deepseek-r1</div>
-                  <div className="col-span-3">$0.55</div>
+                  <div className="col-span-5 text-red-400">GLM-4.7</div>
+                  <div className="col-span-3">$2.00</div>
                   <div className="col-span-3 text-right">128K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">5</div>
-                  <div className="col-span-5 text-orange-400">mistral-large</div>
-                  <div className="col-span-3">$3.00</div>
+                  <div className="col-span-5 text-cyan-400">qwen3-coder (local)</div>
+                  <div className="col-span-3">$0.00</div>
                   <div className="col-span-3 text-right">32K</div>
                 </div>
               </div>

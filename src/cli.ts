@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.5.0"; // Fallback version for compiled binaries
+let VERSION = "4.5.1"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -899,7 +899,7 @@ async function updateModelsFromOpenRouter(): Promise<void> {
       "minimax/minimax-m2.1", // #2: MiniMax M2.1 (Updated)
       "z-ai/glm-4.7", // #3: Z.AI GLM 4.7 (Updated)
       "google/gemini-3-pro-preview", // #4: Google Gemini 3 Pro Preview
-      "openai/gpt-5.2", // #5: OpenAI GPT-5.2 (Updated)
+      "openai/gpt-5.3", // #5: OpenAI GPT-5.3 (Updated)
       "moonshotai/kimi-k2-thinking", // #6: MoonShot Kimi K2 Thinking (New!)
       "deepseek/deepseek-v3.2", // #7: DeepSeek V3.2 (New!)
       "qwen/qwen3-vl-235b-a22b-thinking", // #8: Qwen3 VL 235B Thinking (Updated)
@@ -1089,17 +1089,18 @@ MODEL ROUTING:
   New syntax: provider@model[:concurrency]
     google@gemini-3-pro              Direct Google API (explicit)
     openrouter@google/gemini-3-pro   OpenRouter (explicit)
-    oai@gpt-5.2                      Direct OpenAI API (shortcut)
+    oai@gpt-5.3                      Direct OpenAI API (shortcut)
     ollama@llama3.2:3                Local Ollama with 3 concurrent requests
     ollama@llama3.2:0                Local Ollama with no limits
 
   Provider shortcuts:
     g, gemini    -> Google Gemini     google@gemini-3-pro
-    oai          -> OpenAI Direct     oai@gpt-5.2
+    oai          -> OpenAI Direct     oai@gpt-5.3
     xai, x-ai    -> xAI Direct        xai@grok-4-1-fast-reasoning
-    or           -> OpenRouter        or@openai/gpt-5.2
+    or           -> OpenRouter        or@openai/gpt-5.3
     mm, mmax     -> MiniMax Direct    mm@MiniMax-M2.1
     kimi, moon   -> Kimi Direct       kimi@kimi-k2-thinking-turbo
+    kc           -> Kimi Coding       kc@kimi-for-coding
     glm, zhipu   -> GLM Direct        glm@glm-4.7
     zai          -> Z.AI Direct       zai@glm-4.7
     oc           -> OllamaCloud       oc@llama-3.1
@@ -1131,6 +1132,7 @@ MODEL ROUTING:
     xai/, x-ai/      xAI Direct API         claudish --model xai/grok-4-1-fast-reasoning "task"
     mmax/, mm/       MiniMax Direct API     claudish --model mmax/MiniMax-M2.1 "task"
     kimi/, moonshot/ Kimi Direct API        claudish --model kimi/kimi-k2-thinking-turbo "task"
+    kc/              Kimi Coding API        claudish --model kc/kimi-for-coding "task"
     ollama/          Ollama (local)         claudish --model ollama/llama3.2 "task"
     http://...       Custom endpoint        claudish --model http://localhost:8000/model "task"
 
@@ -1223,6 +1225,7 @@ ENVIRONMENT VARIABLES:
   MINIMAX_API_KEY                 MiniMax API key (for mmax/, mm/ prefix)
   MOONSHOT_API_KEY                Kimi/Moonshot API key (for kimi/, moonshot/ prefix)
   KIMI_API_KEY                    Alias for MOONSHOT_API_KEY
+  KIMI_CODING_API_KEY             Kimi Coding API key (for kc/ prefix, from kimi.com/code membership)
   ZHIPU_API_KEY                   GLM/Zhipu API key (for glm/, zhipu/ prefix)
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
@@ -1249,7 +1252,7 @@ ENVIRONMENT VARIABLES:
   MLX_BASE_URL                    MLX server (default: http://127.0.0.1:8080)
 
   Model settings:
-  CLAUDISH_MODEL                  Default model to use (default: openai/gpt-5.2)
+  CLAUDISH_MODEL                  Default model to use (default: openai/gpt-5.3)
   CLAUDISH_PORT                   Default port for proxy
   CLAUDISH_CONTEXT_WINDOW         Override context window size
 
@@ -1269,8 +1272,8 @@ EXAMPLES:
 
   # New @ syntax - explicit provider routing
   claudish --model google@gemini-3-pro "implement user authentication"
-  claudish --model openrouter@openai/gpt-5.2 "add tests for login"
-  claudish --model oai@gpt-5.2 "direct to OpenAI"
+  claudish --model openrouter@openai/gpt-5.3 "add tests for login"
+  claudish --model oai@gpt-5.3 "direct to OpenAI"
 
   # Native model auto-detection (provider detected from model name)
   claudish --model gpt-4o "routes to OpenAI API (detected from model name)"
@@ -1297,6 +1300,9 @@ EXAMPLES:
   # Direct Kimi API (with reasoning support)
   claudish --model kimi@kimi-k2-thinking-turbo "complex analysis"
 
+  # Kimi Coding (subscription-based, API key or OAuth)
+  claudish --model kc@kimi-for-coding "implement feature"
+
   # Direct GLM API
   claudish --model glm@glm-4.7 "code generation"
 
@@ -1310,11 +1316,11 @@ EXAMPLES:
   claudish --model lms@qwen2.5-coder "LM Studio shortcut"
 
   # Per-role model mapping (works with all syntaxes)
-  claudish --model-opus oai@gpt-5.2 --model-sonnet google@gemini-3-pro --model-haiku mm@MiniMax-M2.1
+  claudish --model-opus oai@gpt-5.3 --model-sonnet google@gemini-3-pro --model-haiku mm@MiniMax-M2.1
 
   # Use stdin for large prompts (e.g., git diffs, code review)
   echo "Review this code..." | claudish --stdin --model g@gemini-2.0-flash
-  git diff | claudish --stdin --model oai@gpt-5.2 "Review these changes"
+  git diff | claudish --stdin --model oai@gpt-5.3 "Review these changes"
 
   # Monitor mode - understand how Claude Code works
   claudish --monitor --debug "analyze code structure"

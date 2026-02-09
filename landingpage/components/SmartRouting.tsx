@@ -210,7 +210,7 @@ export const SmartRouting: React.FC = () => {
                 <div className="font-mono text-xs space-y-2 min-h-[40px]">
                   <div className="text-gray-500">$ claudish routing-table --watch</div>
                   <div className="text-claude-ish truncate">
-                    {activePath === 0 && ">> DETECTED: opus-4.5 (NATIVE)"}
+                    {activePath === 0 && ">> DETECTED: opus-4.6 (NATIVE)"}
                     {activePath === 1 && ">> DETECTED: grok-free (OPENROUTER)"}
                     {activePath === 2 && ">> DETECTED: gpt-5.1 (PREMIUM)"}
                   </div>
@@ -252,7 +252,7 @@ export const SmartRouting: React.FC = () => {
                 </p>
                 <ul className="space-y-2">
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#d97757]">✓</span> opus-4.5
+                    <span className="text-[#d97757]">✓</span> opus-4.6
                   </li>
                   <li className="flex items-center gap-2 text-white">
                     <span className="text-[#d97757]">✓</span> sonnet-4.5
@@ -516,7 +516,7 @@ export const SmartRouting: React.FC = () => {
                 <div className="flex flex-col">
                   <div>claudish \</div>
                   <div className="pl-4">
-                    --model-opus anthropic/claude-opus-4.5 \{" "}
+                    --model-opus anthropic/claude-opus-4.6 \{" "}
                     <span className="text-gray-600"># Native Claude</span>
                   </div>
                   <div className="pl-4">

@@ -294,7 +294,7 @@ class ProfileManager: ObservableObject {
 
         // Build model map from profile slots
         let modelMap: [String: String] = [
-            "claude-opus-4-5-20251101": profile.slots.opus,
+            "claude-opus-4-6-20260201": profile.slots.opus,
             "claude-sonnet-4-5-20250929": profile.slots.sonnet,
             "claude-3-haiku-20240307": profile.slots.haiku,
             // Subagent mapping (used by Claude Code)

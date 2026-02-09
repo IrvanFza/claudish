@@ -1,5 +1,6 @@
 import React from "react";
 import HeroSection from "./components/HeroSection";
+import SubscriptionSection from "./components/SubscriptionSection";
 import FeatureSection from "./components/FeatureSection";
 import SupportSection from "./components/SupportSection";
 
@@ -32,6 +33,7 @@ const App: React.FC = () => {
 
       <main>
         <HeroSection />
+        <SubscriptionSection />
         <FeatureSection />
         <SupportSection />
       </main>
@@ -75,7 +77,7 @@ const App: React.FC = () => {
               </h3>
 
               <p className="text-gray-400 text-sm md:text-base max-w-2xl mx-auto leading-relaxed font-mono">
-                This landing page: <span className="text-gray-200 font-bold">Opus 4.5</span> +{" "}
+                This landing page: <span className="text-gray-200 font-bold">Opus 4.6</span> +{" "}
                 <span className="text-gray-200 font-bold">Gemini 3.0 Pro</span> working together
                 <br />
                 in a single session.
@@ -132,7 +134,7 @@ const App: React.FC = () => {
 
             {/* Copyright */}
             <div className="text-[10px] text-gray-600 uppercase tracking-widest font-mono">
-              © 2025 • MIT License
+              © 2026 • MIT License
             </div>
           </div>
         </div>

@@ -141,7 +141,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # Run Claude Code in print mode with Opus 4.5
+          # Run Claude Code in print mode with Opus 4.6
           claude --model opus -p --dangerously-skip-permissions \
             --system-prompt "$(cat .github/prompts/issue-triage-system.md)" \
             "Triage the GitHub issue in .triage/issue.md. Read it, explore the codebase for context, then write your triage result to .triage/result.json"

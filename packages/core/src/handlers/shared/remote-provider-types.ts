@@ -94,7 +94,7 @@ export const GEMINI_PRICING: Record<string, ModelPricing> = {
 export const OPENAI_PRICING: Record<string, ModelPricing> = {
   // GPT-5 models
   "gpt-5": { inputCostPer1M: 2.0, outputCostPer1M: 8.0 },
-  "gpt-5.2": { inputCostPer1M: 2.5, outputCostPer1M: 10.0 },
+  "gpt-5.3": { inputCostPer1M: 2.5, outputCostPer1M: 10.0 },
   "gpt-5-turbo": { inputCostPer1M: 1.5, outputCostPer1M: 6.0 },
   "gpt-5.1-codex": { inputCostPer1M: 3.0, outputCostPer1M: 12.0 },
   // GPT-4o models

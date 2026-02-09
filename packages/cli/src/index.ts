@@ -20,9 +20,11 @@ function handlePromptExit(err: unknown): void {
 const args = process.argv.slice(2);
 const firstArg = args[0];
 
-// Auth commands (--gemini-login, --gemini-logout)
+// Auth commands (--gemini-login, --gemini-logout, --kimi-login, --kimi-logout)
 const isGeminiLogin = args.includes("--gemini-login");
 const isGeminiLogout = args.includes("--gemini-logout");
+const isKimiLogin = args.includes("--kimi-login");
+const isKimiLogout = args.includes("--kimi-logout");
 
 // Check for subcommands (can appear anywhere in args due to aliases like `claudish -y`)
 const isUpdateCommand = args.includes("update");
@@ -62,6 +64,33 @@ if (isMcpMode) {
         "❌ Gemini OAuth logout failed:",
         error instanceof Error ? error.message : error
       );
+      process.exit(1);
+    }
+  });
+} else if (isKimiLogin) {
+  // Kimi OAuth login (Device Authorization Grant)
+  import("./auth/kimi-oauth.js").then(async ({ KimiOAuth }) => {
+    try {
+      const oauth = KimiOAuth.getInstance();
+      await oauth.login();
+      console.log("\n✅ Kimi OAuth login successful!");
+      console.log("You can now use Kimi Coding with: claudish --model kc@kimi-for-coding");
+      process.exit(0);
+    } catch (error) {
+      console.error("\n❌ Kimi OAuth login failed:", error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+} else if (isKimiLogout) {
+  // Kimi OAuth logout
+  import("./auth/kimi-oauth.js").then(async ({ KimiOAuth }) => {
+    try {
+      const oauth = KimiOAuth.getInstance();
+      await oauth.logout();
+      console.log("✅ Kimi OAuth credentials cleared.");
+      process.exit(0);
+    } catch (error) {
+      console.error("❌ Kimi OAuth logout failed:", error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
