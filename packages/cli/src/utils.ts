@@ -21,6 +21,15 @@ export function fuzzyScore(text: string, query: string): number {
   // Contains match
   if (t.includes(q)) return 0.6; // base score for inclusion
 
+  // Separator-normalized match: treat spaces, hyphens, dots, underscores as equivalent
+  // This lets "glm 5" match "glm-5", "gpt4o" match "gpt-4o", etc.
+  const normSep = (s: string) => s.replace(/[\s\-_.]/g, "");
+  const tn = normSep(t);
+  const qn = normSep(q);
+  if (tn === qn) return 0.95;
+  if (tn.startsWith(qn)) return 0.85;
+  if (tn.includes(qn)) return 0.65;
+
   // Subsequence match (fuzzy)
   let score = 0;
   let tIdx = 0;

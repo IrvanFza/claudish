@@ -42,7 +42,7 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM Coding"; // Which platform the model is from
+  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM" | "GLM Coding" | "OllamaCloud"; // Which platform the model is from
 }
 
 // OpenRouter free models are routed with openrouter@ prefix for explicit routing
@@ -466,8 +466,7 @@ async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
       .filter(([_, m]: [string, any]) => m.tool_call === true)
       .map(([id, m]: [string, any]) => {
         const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
         const contextLength = m.limit?.context || 131072;
 
         return {
@@ -480,16 +479,121 @@ async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
             output: "SUB",
             average: "SUB",
           },
-          context:
-            contextLength >= 1000000
-              ? `${Math.round(contextLength / 1000000)}M`
-              : `${Math.round(contextLength / 1000)}K`,
+          context: contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`,
           contextLength,
           supportsTools: true,
           supportsReasoning: m.reasoning || false,
           supportsVision,
           isFree: false,
           source: "GLM Coding" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch GLM/Zhipu direct API models from models.dev
+ * Uses the zai-coding-plan data (same models, different API endpoint)
+ * No API key needed to browse - models.dev is a public catalog
+ */
+async function fetchGLMDirectModels(): Promise<ModelInfo[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const codingPlan = data["zai-coding-plan"];
+    if (!codingPlan?.models) return [];
+
+    return Object.entries(codingPlan.models)
+      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .map(([id, m]: [string, any]) => {
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const contextLength = m.limit?.context || 131072;
+        const inputCost = m.cost?.input || 0;
+        const outputCost = m.cost?.output || 0;
+        const isFree = inputCost === 0 && outputCost === 0;
+
+        return {
+          id: `glm@${id}`,
+          name: m.name || id,
+          description: `GLM/Zhipu direct API`,
+          provider: "GLM",
+          pricing: {
+            input: isFree ? "FREE" : `$${inputCost.toFixed(2)}`,
+            output: isFree ? "FREE" : `$${outputCost.toFixed(2)}`,
+            average: isFree ? "FREE" : `$${((inputCost + outputCost) / 2).toFixed(2)}/1M`,
+          },
+          context: contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`,
+          contextLength,
+          supportsTools: true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision,
+          isFree,
+          source: "GLM" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch OllamaCloud models from models.dev
+ * Cloud-hosted models accessible with OLLAMA_API_KEY
+ * No API key needed to browse - models.dev is a public catalog
+ */
+async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const ollamaCloud = data["ollama-cloud"];
+    if (!ollamaCloud?.models) return [];
+
+    return Object.entries(ollamaCloud.models)
+      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .map(([id, m]: [string, any]) => {
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const contextLength = m.limit?.context || 131072;
+
+        return {
+          id: `oc@${id}`,
+          name: m.name || id,
+          description: `OllamaCloud`,
+          provider: "OllamaCloud",
+          pricing: {
+            input: "N/A",
+            output: "N/A",
+            average: "N/A",
+          },
+          context: contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`,
+          contextLength,
+          supportsTools: true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision,
+          source: "OllamaCloud" as const,
         };
       });
   } catch {
@@ -568,19 +672,20 @@ async function getFreeModels(): Promise<ModelInfo[]> {
  */
 async function getAllModelsForSearch(): Promise<ModelInfo[]> {
   // Fetch from all providers in parallel (including Zen for free models)
-  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmCodingModels, zenModels] =
-    await Promise.all([
-      fetchAllModels().then((models) => models.map(toModelInfo)),
-      fetchXAIModels(),
-      fetchGeminiModels(),
-      fetchOpenAIModels(),
-      fetchGLMCodingModels(),
-      fetchZenFreeModels(),
-    ]);
+  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmDirectModels, glmCodingModels, ollamaCloudModels, zenModels] = await Promise.all([
+    fetchAllModels().then((models) => models.map(toModelInfo)),
+    fetchXAIModels(),
+    fetchGeminiModels(),
+    fetchOpenAIModels(),
+    fetchGLMDirectModels(),
+    fetchGLMCodingModels(),
+    fetchOllamaCloudModels(),
+    fetchZenFreeModels(),
+  ]);
 
-  // Combine results: Zen first (free), then direct providers (xAI, Gemini, OpenAI, GLM Coding), then OpenRouter
-  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmCodingModels];
-  const allModels = [...zenModels, ...directApiModels, ...openRouterModels];
+  // Combine results: Zen first (free), then OllamaCloud, then direct providers, then OpenRouter
+  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmDirectModels, ...glmCodingModels];
+  const allModels = [...zenModels, ...ollamaCloudModels, ...directApiModels, ...openRouterModels];
 
   return allModels;
 }
@@ -609,6 +714,9 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
       xAI: "xAI",
       Gemini: "Gem",
       OpenAI: "OAI",
+      GLM: "GLM",
+      "GLM Coding": "GC",
+      OllamaCloud: "OC",
     };
     const sourceTag = sourceTagMap[model.source] || model.source;
     return `${sourceTag} ${model.id} (${priceStr}, ${ctxStr}${capsStr})`;
@@ -629,6 +737,14 @@ function fuzzyMatch(text: string, query: string): number {
 
   // Contains match
   if (lowerText.includes(lowerQuery)) return 0.8;
+
+  // Separator-normalized match: treat spaces, hyphens, dots, underscores as equivalent
+  // This lets "glm 5" match "glm-5", "gpt4o" match "gpt-4o", etc.
+  const normSep = (s: string) => s.replace(/[\s\-_.]/g, "");
+  const tn = normSep(lowerText);
+  const qn = normSep(lowerQuery);
+  if (tn === qn) return 0.95;
+  if (tn.includes(qn)) return 0.75;
 
   // Fuzzy character match
   let queryIdx = 0;
@@ -764,7 +880,7 @@ const PROVIDER_CHOICES = [
   { name: "Kimi / Moonshot", value: "kimi", description: "Direct API (MOONSHOT_API_KEY)" },
   { name: "GLM / Zhipu", value: "glm", description: "Direct API (ZHIPU_API_KEY)" },
   { name: "Z.AI", value: "zai", description: "Z.AI API (ZAI_API_KEY)" },
-  { name: "OllamaCloud", value: "ollamacloud", description: "Cloud Llama models (OLLAMA_API_KEY)" },
+  { name: "OllamaCloud", value: "ollamacloud", description: "Cloud models (OLLAMA_API_KEY)" },
   { name: "Ollama (local)", value: "ollama", description: "Local Ollama instance" },
   { name: "LM Studio (local)", value: "lmstudio", description: "Local LM Studio instance" },
   { name: "Enter custom model", value: "custom", description: "Type a provider@model specification" },
@@ -796,6 +912,8 @@ const PROVIDER_SOURCE_FILTER: Record<string, string> = {
   google: "Gemini",
   openai: "OpenAI",
   xai: "xAI",
+  glm: "GLM",
+  ollamacloud: "OllamaCloud",
   zen: "Zen",
 };
 
@@ -810,12 +928,12 @@ function getKnownModels(provider: string): ModelInfo[] {
       { id: "google@gemini-2.0-flash", name: "Gemini 2.0 Flash", context: "1M" },
     ],
     openai: [
+      { id: "oai@gpt-5.3-codex", name: "GPT-5.3 Codex", context: "400K", description: "Latest coding model" },
+      { id: "oai@gpt-5.2-codex", name: "GPT-5.2 Codex", context: "400K", description: "Coding model" },
+      { id: "oai@gpt-5.1-codex-mini", name: "GPT-5.1 Codex Mini", context: "400K", description: "Fast coding model" },
       { id: "oai@o3", name: "o3", context: "200K", description: "Reasoning model" },
       { id: "oai@o4-mini", name: "o4-mini", context: "200K", description: "Fast reasoning model" },
-      { id: "oai@gpt-4.1", name: "GPT-4.1", context: "1M", description: "Latest model" },
-      { id: "oai@gpt-4.1-mini", name: "GPT-4.1 Mini", context: "1M", description: "Latest mini model" },
-      { id: "oai@gpt-4o", name: "GPT-4o", context: "128K", description: "Multimodal model" },
-      { id: "oai@gpt-4o-mini", name: "GPT-4o Mini", context: "128K", description: "Fast multimodal model" },
+      { id: "oai@gpt-4.1", name: "GPT-4.1", context: "1M", description: "Large context model" },
     ],
     xai: [
       { id: "xai@grok-4", name: "Grok 4", context: "256K" },
@@ -830,15 +948,22 @@ function getKnownModels(provider: string): ModelInfo[] {
       { id: "kimi@moonshot-v1-128k", name: "Moonshot V1 128K", context: "128K" },
     ],
     glm: [
-      { id: "glm@glm-4-plus", name: "GLM-4 Plus", context: "128K" },
-      { id: "glm@glm-4-flash", name: "GLM-4 Flash", context: "128K" },
+      { id: "glm@glm-5", name: "GLM-5", context: "200K", description: "Latest GLM model with reasoning" },
+      { id: "glm@glm-4.7", name: "GLM-4.7", context: "200K", description: "GLM 4.7 with reasoning" },
+      { id: "glm@glm-4.7-flash", name: "GLM-4.7 Flash", context: "200K", description: "Fast GLM 4.7" },
+      { id: "glm@glm-4.6", name: "GLM-4.6", context: "200K" },
+      { id: "glm@glm-4.5-flash", name: "GLM-4.5 Flash", context: "128K" },
     ],
     zai: [
       { id: "zai@glm-4.7", name: "GLM 4.7 (Z.AI)", context: "128K" },
     ],
     ollamacloud: [
-      { id: "oc@llama-3.3-70b", name: "Llama 3.3 70B", context: "128K" },
-      { id: "oc@llama-3.1-405b", name: "Llama 3.1 405B", context: "128K" },
+      { id: "oc@glm-5", name: "GLM-5", context: "203K", description: "GLM-5 on OllamaCloud" },
+      { id: "oc@deepseek-v3.2", name: "DeepSeek V3.2", context: "164K", description: "DeepSeek V3.2 on OllamaCloud" },
+      { id: "oc@gemini-3-pro-preview", name: "Gemini 3 Pro Preview", context: "1M", description: "Gemini 3 Pro on OllamaCloud" },
+      { id: "oc@kimi-k2.5", name: "Kimi K2.5", context: "262K", description: "Kimi K2.5 on OllamaCloud" },
+      { id: "oc@qwen3-coder-next", name: "Qwen3 Coder Next", context: "262K", description: "Qwen3 Coder on OllamaCloud" },
+      { id: "oc@minimax-m2.1", name: "MiniMax M2.1", context: "205K", description: "MiniMax M2.1 on OllamaCloud" },
     ],
   };
 
