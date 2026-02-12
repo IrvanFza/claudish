@@ -39,6 +39,10 @@ export interface ClaudishConfig {
 
   // Streaming output
   streamOutput: boolean; // Stream NDJSON events directly, bypass Claude Code
+
+  // LiteLLM provider configuration
+  litellmBaseUrl?: string;
+  litellmApiKey?: string;
 }
 
 // Anthropic API Types

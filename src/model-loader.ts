@@ -1,6 +1,8 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import type { OpenRouterModel } from "./types.js";
 
 // Get __dirname equivalent in ESM
@@ -234,4 +236,143 @@ export async function doesModelSupportReasoning(modelId: string): Promise<boolea
 
   // Default to false if no metadata available (safe default)
   return false;
+}
+
+/**
+ * LiteLLM model structure from /public/model_hub API
+ */
+interface LiteLLMModel {
+  model_group: string;
+  providers: string[];
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  input_cost_per_token?: number;
+  output_cost_per_token?: number;
+  supports_vision?: boolean;
+  supports_reasoning?: boolean;
+  supports_function_calling?: boolean;
+  mode?: string;
+}
+
+/**
+ * Cache structure for LiteLLM models
+ */
+interface LiteLLMCache {
+  timestamp: string;
+  models: any[];
+}
+
+const LITELLM_CACHE_MAX_AGE_HOURS = 24;
+
+/**
+ * Fetch models from LiteLLM instance with caching
+ * @param baseUrl LiteLLM instance base URL
+ * @param apiKey LiteLLM API key
+ * @returns Array of transformed models compatible with model selector
+ */
+export async function fetchLiteLLMModels(baseUrl: string, apiKey: string): Promise<any[]> {
+  // Create cache key from baseUrl hash
+  const hash = createHash('sha256').update(baseUrl).digest('hex').substring(0, 16);
+  const cacheDir = join(homedir(), ".claudish");
+  const cachePath = join(cacheDir, `litellm-models-${hash}.json`);
+
+  // Check cache
+  if (existsSync(cachePath)) {
+    try {
+      const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
+      const timestamp = new Date(cacheData.timestamp);
+      const now = new Date();
+      const ageInHours = (now.getTime() - timestamp.getTime()) / (1000 * 60 * 60);
+
+      if (ageInHours < LITELLM_CACHE_MAX_AGE_HOURS) {
+        return cacheData.models;
+      }
+    } catch {
+      // Cache read error, will fetch fresh data
+    }
+  }
+
+  // Fetch from LiteLLM API
+  try {
+    const url = `${baseUrl.replace(/\/$/, '')}/public/model_hub`;
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to fetch LiteLLM models: ${response.status} ${response.statusText}`);
+      // Return cached data if available, even if stale
+      if (existsSync(cachePath)) {
+        try {
+          const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
+          return cacheData.models;
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    }
+
+    const rawModels: LiteLLMModel[] = await response.json();
+
+    // Transform to model selector format
+    const transformedModels = rawModels
+      .filter((m) => m.mode === "chat" && m.supports_function_calling) // Only chat models with tool support
+      .map((m) => {
+        const inputCostPerM = (m.input_cost_per_token || 0) * 1_000_000;
+        const outputCostPerM = (m.output_cost_per_token || 0) * 1_000_000;
+        const avgCost = (inputCostPerM + outputCostPerM) / 2;
+        const isFree = inputCostPerM === 0 && outputCostPerM === 0;
+
+        const contextLength = m.max_input_tokens || 128000;
+        const contextStr =
+          contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`;
+
+        return {
+          id: `litellm@${m.model_group}`,
+          name: m.model_group,
+          description: `LiteLLM model (providers: ${m.providers.join(", ")})`,
+          provider: "LiteLLM",
+          pricing: {
+            input: isFree ? "FREE" : `$${inputCostPerM.toFixed(2)}`,
+            output: isFree ? "FREE" : `$${outputCostPerM.toFixed(2)}`,
+            average: isFree ? "FREE" : `$${avgCost.toFixed(2)}/1M`,
+          },
+          context: contextStr,
+          contextLength,
+          supportsTools: m.supports_function_calling || false,
+          supportsReasoning: m.supports_reasoning || false,
+          supportsVision: m.supports_vision || false,
+          isFree,
+          source: "LiteLLM" as const,
+        };
+      });
+
+    // Cache results - ensure directory exists
+    mkdirSync(cacheDir, { recursive: true });
+    const cacheData: LiteLLMCache = {
+      timestamp: new Date().toISOString(),
+      models: transformedModels,
+    };
+    writeFileSync(cachePath, JSON.stringify(cacheData, null, 2), "utf-8");
+
+    return transformedModels;
+  } catch (error) {
+    console.error(`Failed to fetch LiteLLM models: ${error}`);
+    // Return cached data if available, even if stale
+    if (existsSync(cachePath)) {
+      try {
+        const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
+        return cacheData.models;
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
 }

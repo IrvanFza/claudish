@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.5.3"; // Fallback version for compiled binaries
+let VERSION = "4.6.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -236,6 +236,20 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--summarize-tools") {
       // Summarize tool descriptions to reduce prompt size for local models
       config.summarizeTools = true;
+    } else if (arg === "--litellm-url") {
+      const val = args[++i];
+      if (!val) {
+        console.error("--litellm-url requires a URL");
+        process.exit(1);
+      }
+      config.litellmBaseUrl = val;
+    } else if (arg === "--litellm-key") {
+      const val = args[++i];
+      if (!val) {
+        console.error("--litellm-key requires a value");
+        process.exit(1);
+      }
+      config.litellmApiKey = val;
     } else {
       // All remaining args go to claude CLI
       config.claudeArgs = args.slice(i);
@@ -273,6 +287,18 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // This ensures we know which model the user wants before checking if they have the right key
   config.openrouterApiKey = process.env[ENV.OPENROUTER_API_KEY];
   config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+
+  // CLI flags take precedence over env vars for LiteLLM
+  config.litellmBaseUrl = config.litellmBaseUrl || process.env.LITELLM_BASE_URL;
+  config.litellmApiKey = config.litellmApiKey || process.env.LITELLM_API_KEY;
+
+  // Set environment variables so provider registry can access them
+  if (config.litellmBaseUrl) {
+    process.env.LITELLM_BASE_URL = config.litellmBaseUrl;
+  }
+  if (config.litellmApiKey) {
+    process.env.LITELLM_API_KEY = config.litellmApiKey;
+  }
 
   // Set default for quiet mode if not explicitly set
   // Single-shot mode: quiet by default
@@ -1122,6 +1148,7 @@ MODEL ROUTING:
     v, vertex    -> Vertex AI         v@gemini-2.5-flash
     go           -> Gemini CodeAssist go@gemini-2.5-flash
     poe          -> Poe               poe@GPT-4o
+    litellm, ll  -> LiteLLM           litellm@model-name
     ollama       -> Ollama (local)    ollama@llama3.2
     lms,lmstudio -> LM Studio (local) lms@qwen
     vllm         -> vLLM (local)      vllm@model
@@ -1170,6 +1197,8 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
+  --litellm-url URL        LiteLLM proxy base URL (e.g., https://your-instance.com)
+  --litellm-key KEY        LiteLLM API key (optional, depends on proxy configuration)
   --models                 List ALL models (OpenRouter + OpenCode Zen + Ollama)
   --models <query>         Fuzzy search all models by name, ID, or description
   --top-models             List recommended/top programming models (curated)
@@ -1248,6 +1277,8 @@ ENVIRONMENT VARIABLES:
   GLM_API_KEY                     Alias for ZHIPU_API_KEY
   OLLAMA_API_KEY                  OllamaCloud API key (for oc/ prefix)
   OPENCODE_API_KEY                OpenCode Zen API key (optional - free models work without it)
+  LITELLM_BASE_URL                LiteLLM proxy base URL (required for litellm@ prefix)
+  LITELLM_API_KEY                 LiteLLM API key (optional, depends on proxy configuration)
   ANTHROPIC_API_KEY               Placeholder (prevents Claude Code dialog)
   ANTHROPIC_AUTH_TOKEN            Placeholder (prevents Claude Code login screen)
 
