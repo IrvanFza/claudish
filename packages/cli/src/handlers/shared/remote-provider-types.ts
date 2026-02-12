@@ -33,6 +33,8 @@ export interface ModelPricing {
   isEstimate?: boolean;
   /** Whether this model is free (e.g., OAuth-based Code Assist sessions) */
   isFree?: boolean;
+  /** Whether this model uses a subscription service (e.g., Kimi Coding) */
+  isSubscription?: boolean;
 }
 
 /**
@@ -88,6 +90,9 @@ export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
 // Free providers — always return free pricing regardless of model
 const FREE_PROVIDERS = new Set(["opencode-zen", "zen"]);
 
+// Subscription providers — display "SUB" instead of cost
+const SUBSCRIPTION_PROVIDERS = new Set(["kimi-coding", "glm-coding"]);
+
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */
 const PROVIDER_ALIAS: Record<string, string> = {
   google: "gemini",
@@ -95,6 +100,7 @@ const PROVIDER_ALIAS: Record<string, string> = {
   mm: "minimax",
   moonshot: "kimi",
   zhipu: "glm",
+  "glm-coding": "glm",  // Use GLM pricing as fallback (though subscription overrides)
   oc: "ollamacloud",
 };
 
@@ -129,6 +135,11 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
   // 1. Free providers
   if (FREE_PROVIDERS.has(p)) {
     return { inputCostPer1M: 0, outputCostPer1M: 0, isFree: true };
+  }
+
+  // 1b. Subscription providers
+  if (SUBSCRIPTION_PROVIDERS.has(p)) {
+    return { inputCostPer1M: 0, outputCostPer1M: 0, isSubscription: true };
   }
 
   // 2. Dynamic pricing cache

@@ -84,8 +84,9 @@ if (isMcpMode) {
     }
   });
 } else if (firstArg === "init") {
-  // Profile setup wizard
-  import("./profile-commands.js").then((pc) => pc.initCommand().catch(handlePromptExit));
+  // Profile setup wizard — pass --local/--global scope flag if provided
+  const scopeFlag = args.includes("--local") ? "local" : args.includes("--global") ? "global" : undefined;
+  import("./profile-commands.js").then((pc) => pc.initCommand(scopeFlag).catch(handlePromptExit));
 } else if (firstArg === "profile") {
   // Profile management commands
   import("./profile-commands.js").then((pc) => pc.profileCommand(args.slice(1)).catch(handlePromptExit));

@@ -2,7 +2,11 @@
  * Claudish Profile Configuration
  *
  * Manages user profiles for model mapping.
- * Config file location: ~/.claudish/config.json
+ * Supports two scopes:
+ *   - Global: ~/.claudish/config.json (shared across all projects)
+ *   - Local:  .claudish.json in project root (project-specific overrides)
+ *
+ * Resolution order: local config takes priority over global config.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,6 +16,9 @@ import { join } from "node:path";
 // Config directory and file paths
 const CONFIG_DIR = join(homedir(), ".claudish");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+const LOCAL_CONFIG_FILENAME = ".claudish.json";
+
+export type ProfileScope = "local" | "global";
 
 /**
  * Model mapping for a profile
@@ -33,6 +40,15 @@ export interface Profile {
   models: ModelMapping;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Profile with scope metadata for display
+ */
+export interface ProfileWithScope extends Profile {
+  scope: ProfileScope;
+  isDefault: boolean;
+  shadowed?: boolean; // global profile hidden by same-name local profile
 }
 
 /**
@@ -61,8 +77,10 @@ const DEFAULT_CONFIG: ClaudishProfileConfig = {
   },
 };
 
+// ─── Global Config ───────────────────────────────────────
+
 /**
- * Ensure config directory exists
+ * Ensure global config directory exists
  */
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
@@ -71,7 +89,7 @@ function ensureConfigDir(): void {
 }
 
 /**
- * Load configuration from file
+ * Load global configuration from ~/.claudish/config.json
  * Returns default config if file doesn't exist
  */
 export function loadConfig(): ClaudishProfileConfig {
@@ -98,7 +116,7 @@ export function loadConfig(): ClaudishProfileConfig {
 }
 
 /**
- * Save configuration to file
+ * Save global configuration to file
  */
 export function saveConfig(config: ClaudishProfileConfig): void {
   ensureConfigDir();
@@ -106,60 +124,213 @@ export function saveConfig(config: ClaudishProfileConfig): void {
 }
 
 /**
- * Check if config file exists
+ * Check if global config file exists
  */
 export function configExists(): boolean {
   return existsSync(CONFIG_FILE);
 }
 
 /**
- * Get config file path
+ * Get global config file path
  */
 export function getConfigPath(): string {
   return CONFIG_FILE;
 }
 
+// ─── Local Config ────────────────────────────────────────
+
 /**
- * Get a profile by name
- * Returns undefined if profile doesn't exist
+ * Get path to local config file (.claudish.json in CWD)
  */
-export function getProfile(name: string): Profile | undefined {
+export function getLocalConfigPath(): string {
+  return join(process.cwd(), LOCAL_CONFIG_FILENAME);
+}
+
+/**
+ * Check if local config file exists
+ */
+export function localConfigExists(): boolean {
+  return existsSync(getLocalConfigPath());
+}
+
+/**
+ * Detect if CWD looks like a project directory
+ */
+export function isProjectDirectory(): boolean {
+  const cwd = process.cwd();
+  return [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".claudish.json"].some(
+    (f) => existsSync(join(cwd, f))
+  );
+}
+
+/**
+ * Load local configuration from .claudish.json in CWD
+ * Returns null if file doesn't exist
+ */
+export function loadLocalConfig(): ClaudishProfileConfig | null {
+  const localPath = getLocalConfigPath();
+
+  if (!existsSync(localPath)) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(localPath, "utf-8");
+    const config = JSON.parse(content) as ClaudishProfileConfig;
+
+    return {
+      version: config.version || DEFAULT_CONFIG.version,
+      defaultProfile: config.defaultProfile || "",
+      profiles: config.profiles || {},
+    };
+  } catch (error) {
+    console.error(`Warning: Failed to load local config: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Save local configuration to .claudish.json in CWD
+ */
+export function saveLocalConfig(config: ClaudishProfileConfig): void {
+  writeFileSync(getLocalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+}
+
+// ─── Scope-Aware Operations ─────────────────────────────
+
+function loadConfigForScope(scope: ProfileScope): ClaudishProfileConfig {
+  if (scope === "local") {
+    return loadLocalConfig() || { version: "1.0.0", defaultProfile: "", profiles: {} };
+  }
+  return loadConfig();
+}
+
+function saveConfigForScope(config: ClaudishProfileConfig, scope: ProfileScope): void {
+  if (scope === "local") {
+    saveLocalConfig(config);
+  } else {
+    saveConfig(config);
+  }
+}
+
+/**
+ * Check if config exists for a given scope
+ */
+export function configExistsForScope(scope: ProfileScope): boolean {
+  if (scope === "local") {
+    return localConfigExists();
+  }
+  return configExists();
+}
+
+/**
+ * Get config file path for a given scope
+ */
+export function getConfigPathForScope(scope: ProfileScope): string {
+  if (scope === "local") {
+    return getLocalConfigPath();
+  }
+  return getConfigPath();
+}
+
+/**
+ * Get a profile by name with optional scope
+ * - scope="local": only local config
+ * - scope="global": only global config
+ * - scope=undefined: local first, then global
+ */
+export function getProfile(name: string, scope?: ProfileScope): Profile | undefined {
+  if (scope === "local") {
+    const local = loadLocalConfig();
+    return local?.profiles[name];
+  }
+  if (scope === "global") {
+    const config = loadConfig();
+    return config.profiles[name];
+  }
+
+  // No scope: local first, then global
+  const local = loadLocalConfig();
+  if (local?.profiles[name]) {
+    return local.profiles[name];
+  }
   const config = loadConfig();
   return config.profiles[name];
 }
 
 /**
- * Get the default profile
+ * Get the default profile with optional scope
+ * - scope="local": only local config's default
+ * - scope="global": only global config's default
+ * - scope=undefined: local default first (if local config exists and has a non-empty defaultProfile),
+ *   otherwise fall through to global
  */
-export function getDefaultProfile(): Profile {
-  const config = loadConfig();
-  const profile = config.profiles[config.defaultProfile];
-
-  if (!profile) {
-    // Fallback to first profile or create default
-    const firstProfile = Object.values(config.profiles)[0];
-    if (firstProfile) {
-      return firstProfile;
+export function getDefaultProfile(scope?: ProfileScope): Profile {
+  if (scope === "local") {
+    const local = loadLocalConfig();
+    if (local && local.defaultProfile && local.profiles[local.defaultProfile]) {
+      return local.profiles[local.defaultProfile];
     }
+    // Local config exists but no valid default — return empty
     return DEFAULT_CONFIG.profiles.default;
   }
 
-  return profile;
+  if (scope === "global") {
+    const config = loadConfig();
+    const profile = config.profiles[config.defaultProfile];
+    if (profile) return profile;
+    const firstProfile = Object.values(config.profiles)[0];
+    if (firstProfile) return firstProfile;
+    return DEFAULT_CONFIG.profiles.default;
+  }
+
+  // No scope: local-first resolution
+  const local = loadLocalConfig();
+  if (local && local.defaultProfile) {
+    // Resolve the name local-first, then global
+    const profile = getProfile(local.defaultProfile);
+    if (profile) return profile;
+  }
+
+  // Fall through to global
+  const config = loadConfig();
+  const profile = config.profiles[config.defaultProfile];
+  if (profile) return profile;
+  const firstProfile = Object.values(config.profiles)[0];
+  if (firstProfile) return firstProfile;
+  return DEFAULT_CONFIG.profiles.default;
 }
 
 /**
- * Get all profile names
+ * Get all profile names with optional scope
+ * - scope="local"/"global": names from that scope only
+ * - scope=undefined: merged set from both
  */
-export function getProfileNames(): string[] {
+export function getProfileNames(scope?: ProfileScope): string[] {
+  if (scope === "local") {
+    const local = loadLocalConfig();
+    return local ? Object.keys(local.profiles) : [];
+  }
+  if (scope === "global") {
+    const config = loadConfig();
+    return Object.keys(config.profiles);
+  }
+
+  // Merged set
+  const local = loadLocalConfig();
   const config = loadConfig();
-  return Object.keys(config.profiles);
+  const names = new Set<string>([
+    ...(local ? Object.keys(local.profiles) : []),
+    ...Object.keys(config.profiles),
+  ]);
+  return [...names];
 }
 
 /**
- * Add or update a profile
+ * Add or update a profile in the specified scope
  */
-export function setProfile(profile: Profile): void {
-  const config = loadConfig();
+export function setProfile(profile: Profile, scope: ProfileScope = "global"): void {
+  const config = loadConfigForScope(scope);
 
   const existingProfile = config.profiles[profile.name];
   if (existingProfile) {
@@ -170,53 +341,59 @@ export function setProfile(profile: Profile): void {
   profile.updatedAt = new Date().toISOString();
 
   config.profiles[profile.name] = profile;
-  saveConfig(config);
+  saveConfigForScope(config, scope);
 }
 
 /**
- * Delete a profile
- * Cannot delete the last profile or the default profile if it's the only one
+ * Delete a profile from the specified scope
+ * For global scope: cannot delete the last profile
+ * For local scope: can delete any profile (local config can be empty)
  */
-export function deleteProfile(name: string): boolean {
-  const config = loadConfig();
+export function deleteProfile(name: string, scope: ProfileScope = "global"): boolean {
+  const config = loadConfigForScope(scope);
 
   if (!config.profiles[name]) {
     return false;
   }
 
-  const profileCount = Object.keys(config.profiles).length;
-  if (profileCount <= 1) {
-    throw new Error("Cannot delete the last profile");
+  // Only enforce "last profile" constraint on global scope
+  if (scope === "global") {
+    const profileCount = Object.keys(config.profiles).length;
+    if (profileCount <= 1) {
+      throw new Error("Cannot delete the last global profile");
+    }
   }
 
   delete config.profiles[name];
 
   // If we deleted the default profile, set a new default
   if (config.defaultProfile === name) {
-    config.defaultProfile = Object.keys(config.profiles)[0];
+    const remaining = Object.keys(config.profiles);
+    config.defaultProfile = remaining.length > 0 ? remaining[0] : "";
   }
 
-  saveConfig(config);
+  saveConfigForScope(config, scope);
   return true;
 }
 
 /**
- * Set the default profile
+ * Set the default profile in the specified scope
  */
-export function setDefaultProfile(name: string): void {
-  const config = loadConfig();
+export function setDefaultProfile(name: string, scope: ProfileScope = "global"): void {
+  const config = loadConfigForScope(scope);
 
   if (!config.profiles[name]) {
-    throw new Error(`Profile "${name}" does not exist`);
+    // For setting default, the profile must exist in the target scope
+    throw new Error(`Profile "${name}" does not exist in ${scope} config`);
   }
 
   config.defaultProfile = name;
-  saveConfig(config);
+  saveConfigForScope(config, scope);
 }
 
 /**
  * Get model mapping from a profile
- * Falls back to environment variables if profile doesn't have a mapping
+ * Uses local-first resolution when no scope is given
  */
 export function getModelMapping(profileName?: string): ModelMapping {
   const profile = profileName ? getProfile(profileName) : getDefaultProfile();
@@ -229,9 +406,14 @@ export function getModelMapping(profileName?: string): ModelMapping {
 }
 
 /**
- * Create a new profile with the given models
+ * Create a new profile with the given models in the specified scope
  */
-export function createProfile(name: string, models: ModelMapping, description?: string): Profile {
+export function createProfile(
+  name: string,
+  models: ModelMapping,
+  description?: string,
+  scope: ProfileScope = "global"
+): Profile {
   const now = new Date().toISOString();
   const profile: Profile = {
     name,
@@ -241,12 +423,12 @@ export function createProfile(name: string, models: ModelMapping, description?: 
     updatedAt: now,
   };
 
-  setProfile(profile);
+  setProfile(profile, scope);
   return profile;
 }
 
 /**
- * List all profiles with their details
+ * List profiles from a single scope (legacy behavior for global)
  */
 export function listProfiles(): Profile[] {
   const config = loadConfig();
@@ -254,4 +436,38 @@ export function listProfiles(): Profile[] {
     ...profile,
     isDefault: profile.name === config.defaultProfile,
   })) as (Profile & { isDefault?: boolean })[];
+}
+
+/**
+ * List all profiles from both scopes with scope metadata
+ */
+export function listAllProfiles(): ProfileWithScope[] {
+  const globalConfig = loadConfig();
+  const localConfig = loadLocalConfig();
+  const result: ProfileWithScope[] = [];
+
+  // Local profiles first
+  if (localConfig) {
+    for (const profile of Object.values(localConfig.profiles)) {
+      result.push({
+        ...profile,
+        scope: "local",
+        isDefault: profile.name === localConfig.defaultProfile,
+      });
+    }
+  }
+
+  // Global profiles (mark shadowed if local has same name)
+  const localNames = localConfig ? new Set(Object.keys(localConfig.profiles)) : new Set<string>();
+
+  for (const profile of Object.values(globalConfig.profiles)) {
+    result.push({
+      ...profile,
+      scope: "global",
+      isDefault: profile.name === globalConfig.defaultProfile,
+      shadowed: localNames.has(profile.name),
+    });
+  }
+
+  return result;
 }

@@ -24,7 +24,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "4.5.1"; // Fallback version for compiled binaries
+let VERSION = "4.5.2"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -492,6 +492,19 @@ async function searchAndPrintModels(query: string, forceUpdate: boolean): Promis
       }
     } catch {
       // Ignore models.dev fetch errors
+    }
+  }
+
+  // Fetch GLM Coding Plan models from models.dev if GLM_CODING_API_KEY is set
+  if (process.env.GLM_CODING_API_KEY) {
+    try {
+      const glmCodingModels = await fetchGLMCodingModels();
+      if (glmCodingModels.length > 0) {
+        console.error(`🔑 Found ${glmCodingModels.length} GLM Coding Plan models`);
+        models = [...glmCodingModels, ...models];
+      }
+    } catch {
+      // Ignore fetch errors
     }
   }
 
@@ -1160,13 +1173,18 @@ OPTIONS:
   --init                   Install Claudish skill in current project (.claude/skills/)
 
 PROFILE MANAGEMENT:
-  claudish init            Setup wizard - create config and first profile
-  claudish profile list    List all profiles
-  claudish profile add     Add a new profile
-  claudish profile remove  Remove a profile (interactive or claudish profile remove <name>)
-  claudish profile use     Set default profile (interactive or claudish profile use <name>)
-  claudish profile show    Show profile details (default profile or claudish profile show <name>)
-  claudish profile edit    Edit a profile (interactive or claudish profile edit <name>)
+  claudish init [--local|--global]            Setup wizard - create config and first profile
+  claudish profile list [--local|--global]    List all profiles (both scopes by default)
+  claudish profile add [--local|--global]     Add a new profile
+  claudish profile remove [name] [--local|--global]  Remove a profile
+  claudish profile use [name] [--local|--global]     Set default profile
+  claudish profile show [name] [--local|--global]    Show profile details
+  claudish profile edit [name] [--local|--global]    Edit a profile
+
+  Scope flags:
+    --local   Target .claudish.json in the current directory (project-specific)
+    --global  Target ~/.claudish/config.json (shared across projects)
+    (omit)    Prompted interactively; suggests local if in a project directory
 
 UPDATE:
   claudish update          Check for updates and install latest version
@@ -1629,6 +1647,44 @@ async function fetchZenModels(): Promise<any[]> {
         isFree,
         supportsTools: m.tool_call || false,
         supportsReasoning: m.reasoning || false,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch GLM Coding Plan models from models.dev API
+ * Returns all models with full metadata (subscription-based, all free)
+ */
+async function fetchGLMCodingModels(): Promise<any[]> {
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const codingPlan = data["zai-coding-plan"];
+    if (!codingPlan?.models) return [];
+
+    return Object.entries(codingPlan.models).map(([id, m]: [string, any]) => {
+      const inputModalities = m.modalities?.input || [];
+      return {
+        id: `gc/${id}`,
+        name: m.name || id,
+        description: `GLM Coding Plan model (subscription)`,
+        context_length: m.limit?.context || 131072,
+        pricing: { prompt: "0", completion: "0" },
+        isGLMCoding: true,
+        isSubscription: true,
+        supportsTools: m.tool_call || false,
+        supportsReasoning: m.reasoning || false,
+        supportsVision: inputModalities.includes("image") || inputModalities.includes("video"),
       };
     });
   } catch {

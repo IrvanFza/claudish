@@ -98,8 +98,9 @@ if (isMcpMode) {
   // Self-update command (checked early to work with aliases like `claudish -y update`)
   runSelfUpdate();
 } else if (isInitCommand) {
-  // Profile setup wizard
-  import("./profile-commands.js").then((pc) => pc.initCommand().catch(handlePromptExit));
+  // Profile setup wizard — pass --local/--global scope flag if provided
+  const scopeFlag = args.includes("--local") ? "local" : args.includes("--global") ? "global" : undefined;
+  import("./profile-commands.js").then((pc) => pc.initCommand(scopeFlag).catch(handlePromptExit));
 } else if (isProfileCommand) {
   // Profile management commands
   const profileArgIndex = args.findIndex(a => a === "profile");

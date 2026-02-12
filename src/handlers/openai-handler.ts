@@ -93,6 +93,28 @@ export class OpenAIHandler implements ModelHandler {
     } else if (model.includes("kimi")) {
       this.contextWindow = 131072; // 128K default for older kimi
     }
+    // GLM/Zhipu models (context windows from models.dev)
+    else if (model.includes("glm-5")) {
+      this.contextWindow = 204800; // 200K context
+    } else if (model.includes("glm-4.7-flash")) {
+      this.contextWindow = 200000; // ~195K context
+    } else if (model.includes("glm-4.7")) {
+      this.contextWindow = 204800; // 200K context
+    } else if (model.includes("glm-4.6v")) {
+      this.contextWindow = 128000; // 128K context
+    } else if (model.includes("glm-4.6")) {
+      this.contextWindow = 204800; // 200K context
+    } else if (model.includes("glm-4.5v")) {
+      this.contextWindow = 64000; // 64K context
+    } else if (model.includes("glm-4.5-flash")) {
+      this.contextWindow = 131072; // 128K context
+    } else if (model.includes("glm-4.5-air")) {
+      this.contextWindow = 131072; // 128K context
+    } else if (model.includes("glm-4.5")) {
+      this.contextWindow = 131072; // 128K context
+    } else if (model.includes("glm-")) {
+      this.contextWindow = 131072; // Default for other GLM models
+    }
     // OpenAI models
     else if (model.includes("gpt-4o") || model.includes("gpt-4-turbo")) {
       this.contextWindow = 128000;

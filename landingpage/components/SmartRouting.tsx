@@ -210,9 +210,9 @@ export const SmartRouting: React.FC = () => {
                 <div className="font-mono text-xs space-y-2 min-h-[40px]">
                   <div className="text-gray-500">$ claudish routing-table --watch</div>
                   <div className="text-claude-ish truncate">
-                    {activePath === 0 && ">> DETECTED: opus-4.6 (NATIVE)"}
-                    {activePath === 1 && ">> DETECTED: grok-free (OPENROUTER)"}
-                    {activePath === 2 && ">> DETECTED: gpt-5.1 (PREMIUM)"}
+                    {activePath === 0 && ">> DETECTED: claude-opus-4-6 (NATIVE)"}
+                    {activePath === 1 && ">> DETECTED: grok-3-fast:free (OPENROUTER)"}
+                    {activePath === 2 && ">> DETECTED: g@gemini-2.5-pro (DIRECT)"}
                   </div>
                 </div>
               </div>
@@ -252,13 +252,13 @@ export const SmartRouting: React.FC = () => {
                 </p>
                 <ul className="space-y-2">
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#d97757]">✓</span> opus-4.6
+                    <span className="text-[#d97757]">✓</span> claude-opus-4-6
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#d97757]">✓</span> sonnet-4.5
+                    <span className="text-[#d97757]">✓</span> claude-sonnet-4-5
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#d97757]">✓</span> haiku-4.5
+                    <span className="text-[#d97757]">✓</span> claude-haiku-4-5
                   </li>
                 </ul>
               </div>
@@ -301,19 +301,19 @@ export const SmartRouting: React.FC = () => {
                 </p>
                 <ul className="space-y-2">
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#3fb950]">✓</span> x-ai/grok-4.1-fast:free
+                    <span className="text-[#3fb950]">✓</span> x-ai/grok-3-fast:free
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#3fb950]">✓</span> gemini-2.0-flash
+                    <span className="text-[#3fb950]">✓</span> google/gemini-2.5-flash
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#3fb950]">✓</span> deepseek-r1
+                    <span className="text-[#3fb950]">✓</span> deepseek/deepseek-r1:free
                   </li>
                 </ul>
               </div>
 
               <div className="mt-auto pt-4 border-t border-gray-800 text-xs text-gray-500 font-mono">
-                Google · xAI · DeepSeek · Meta · Microsoft
+                Google · xAI · DeepSeek · Meta · Qwen
               </div>
             </div>
           </div>
@@ -335,32 +335,32 @@ export const SmartRouting: React.FC = () => {
                 <h3
                   className={`text-xl font-bold font-sans ${activePath === 2 ? "text-white" : "text-gray-400"}`}
                 >
-                  Pay As You Go
+                  Direct API / BYOK
                 </h3>
                 <div className="text-[10px] font-bold bg-[#8b5cf6]/20 text-[#8b5cf6] px-2 py-1 rounded border border-[#8b5cf6]/30">
-                  PREMIUM
+                  15+ PROVIDERS
                 </div>
               </div>
 
               <div className="text-sm font-mono text-gray-400 mb-6 flex-1">
                 <p className="mb-4 text-gray-500">
-                  Use top-tier reasoning models from other providers. Paid per token.
+                  Use your own API key with Google, OpenAI, Kimi, MiniMax, Vertex AI, and more.
                 </p>
                 <ul className="space-y-2">
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#8b5cf6]">✓</span> gpt-5.1
+                    <span className="text-[#8b5cf6]">✓</span> g@gemini-2.5-pro
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#8b5cf6]">✓</span> gemini-3-pro
+                    <span className="text-[#8b5cf6]">✓</span> oai@gpt-4.1
                   </li>
                   <li className="flex items-center gap-2 text-white">
-                    <span className="text-[#8b5cf6]">✓</span> deepseek-v3.1
+                    <span className="text-[#8b5cf6]">✓</span> kc@kimi-for-coding
                   </li>
                 </ul>
               </div>
 
               <div className="mt-auto pt-4 border-t border-gray-800 text-xs text-gray-500 font-mono">
-                PAY PER TOKEN • PREPAID
+                BRING YOUR OWN KEY • DIRECT API
               </div>
             </div>
           </div>
@@ -393,7 +393,7 @@ export const SmartRouting: React.FC = () => {
               <div className="flex gap-2 text-white mb-4">
                 <span className="text-claude-ish">$</span>
                 <TypingAnimation
-                  text="claudish --model anthropic/claude-sonnet-4.5"
+                  text="claudish --model claude-sonnet-4-5"
                   speed={20}
                   className="font-semibold"
                 />
@@ -442,15 +442,15 @@ export const SmartRouting: React.FC = () => {
             >
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
-                <span className="text-white">15 curated free models from trusted providers</span>
+                <span className="text-white">15+ curated free models from trusted providers</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
-                <span className="text-white">Grok 4.1 Fast — 2M context</span>
+                <span className="text-white">Grok 3 Fast — 131K context</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
-                <span className="text-white">Gemini 2.0 Flash — 1M context</span>
+                <span className="text-white">Gemini 2.5 Flash — 1M context</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
@@ -458,7 +458,7 @@ export const SmartRouting: React.FC = () => {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
-                <span className="text-white">Llama 3.3 70B — 131K context</span>
+                <span className="text-white">Llama 4 Maverick — 1M context</span>
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-gray-400">
@@ -471,11 +471,11 @@ export const SmartRouting: React.FC = () => {
             <div
               className={`transition-opacity duration-500 ${actionStep >= 5 ? "opacity-100" : "opacity-0 hidden"}`}
             >
-              <div className="text-gray-500 mb-1"># Use premium models (pay per token)</div>
+              <div className="text-gray-500 mb-1"># Use direct API with your own key (BYOK)</div>
               <div className="flex gap-2 text-white mb-4">
                 <span className="text-claude-ish">$</span>
                 <TypingAnimation
-                  text="claudish --model openai/gpt-5.1"
+                  text="claudish --model g@gemini-2.5-pro"
                   speed={20}
                   className="font-semibold"
                 />
@@ -488,17 +488,17 @@ export const SmartRouting: React.FC = () => {
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
                 <span className="text-gray-400">Routing:</span>
-                <span className="text-white">OpenRouter</span>
+                <span className="text-white">Google Gemini API (direct)</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
                 <span className="text-gray-400">Cost:</span>
-                <span className="text-white">$5.63 / 1M tokens</span>
+                <span className="text-white">$1.25 / 1M tokens</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
                 <span className="text-gray-400">Context:</span>
-                <span className="text-white">400K available</span>
+                <span className="text-white">1,000K available</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
@@ -516,15 +516,16 @@ export const SmartRouting: React.FC = () => {
                 <div className="flex flex-col">
                   <div>claudish \</div>
                   <div className="pl-4">
-                    --model-opus anthropic/claude-opus-4.6 \{" "}
+                    --model-opus claude-opus-4-6 \{" "}
                     <span className="text-gray-600"># Native Claude</span>
                   </div>
                   <div className="pl-4">
-                    --model-sonnet x-ai/grok-4 \ <span className="text-gray-600"># Premium</span>
+                    --model-sonnet g@gemini-2.5-pro \{" "}
+                    <span className="text-gray-600"># Direct Google API</span>
                   </div>
                   <div className="pl-4 mb-4">
-                    --model-haiku x-ai/grok-4.1-fast:free{" "}
-                    <span className="text-gray-600"># Free</span>
+                    --model-haiku x-ai/grok-3-fast:free{" "}
+                    <span className="text-gray-600"># Free via OpenRouter</span>
                   </div>
                 </div>
               </div>
@@ -541,7 +542,7 @@ export const SmartRouting: React.FC = () => {
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>
                 <span className="text-gray-400">Sonnet:</span>
-                <span className="text-white">OpenRouter ($9.00/1M)</span>
+                <span className="text-white">Google Gemini API ($1.25/1M)</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[#3fb950]">✓</span>

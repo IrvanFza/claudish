@@ -143,6 +143,12 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     url: "https://open.bigmodel.cn/",
     aliases: ["GLM_API_KEY"],
   },
+  "glm-coding": {
+    envVar: "GLM_CODING_API_KEY",
+    description: "GLM Coding Plan API Key",
+    url: "https://z.ai/subscribe",
+    aliases: ["ZAI_CODING_API_KEY"],
+  },
   ollamacloud: {
     envVar: "OLLAMA_API_KEY",
     description: "OllamaCloud API Key",
@@ -192,6 +198,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   kimi: "Kimi",
   "kimi-coding": "Kimi Coding",
   glm: "GLM",
+  "glm-coding": "GLM Coding",
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",
   "opencode-zen": "OpenCode Zen",

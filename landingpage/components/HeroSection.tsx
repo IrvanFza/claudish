@@ -28,7 +28,7 @@ const HeroSection: React.FC = () => {
 
   // State for status bar
   const [status, setStatus] = useState({
-    model: "google/gemini-3-pro-preview",
+    model: "g@gemini-2.5-pro",
     cost: "$0.000",
     context: "0%",
   });
@@ -140,7 +140,7 @@ const HeroSection: React.FC = () => {
         <div className="flex flex-wrap gap-3 mb-8 animate-fadeIn justify-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
             <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
-            v4.4.3
+            v4.5.1
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
             <span className="text-[10px]">🔑</span>
@@ -164,12 +164,12 @@ const HeroSection: React.FC = () => {
         <p className="text-lg md:text-xl text-gray-400 max-w-3xl mx-auto leading-relaxed font-sans mb-10">
           <span className="text-claude-ish font-medium">Stop paying for multiple AI subscriptions.</span>
           <br />
-          Use <span className="text-white">Gemini Advanced</span>, <span className="text-white">ChatGPT Plus</span>,{" "}
-          <span className="text-white">Kimi</span>, <span className="text-white">GLM</span>, <span className="text-white">OllamaCloud</span>{" "}
-          with Claude Code's interface.
+          Use <span className="text-white">Gemini</span>, <span className="text-white">ChatGPT</span>,{" "}
+          <span className="text-white">Grok</span>, <span className="text-white">Kimi</span>, <span className="text-white">Vertex AI</span>,{" "}
+          <span className="text-white">MiniMax</span> with Claude Code's interface.
           <br />
           <span className="text-gray-500">
-            580+ models via OpenRouter. Run offline with Ollama for complete privacy.
+            15+ direct providers. 580+ models via OpenRouter. Run offline with Ollama.
           </span>
         </p>
 

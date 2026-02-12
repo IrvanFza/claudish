@@ -40,7 +40,7 @@ const FeatureSection: React.FC = () => {
             <span className="text-gray-500">But you already pay for other AI subscriptions.</span>
           </h2>
           <p className="text-xl text-gray-500 max-w-2xl mx-auto">
-            Why not use your <span className="text-white">Gemini Advanced</span>, <span className="text-white">ChatGPT Plus</span>, or <span className="text-white">Kimi</span> subscription with Claude Code's powerful interface?
+            Why not use your <span className="text-white">Gemini</span>, <span className="text-white">ChatGPT</span>, <span className="text-white">Grok</span>, or <span className="text-white">Kimi</span> subscription with Claude Code's powerful interface?
           </p>
         </div>
 
@@ -59,10 +59,10 @@ const FeatureSection: React.FC = () => {
             </div>
             <div className="p-6 font-mono text-sm text-left flex-1 flex flex-col justify-center min-h-[200px]">
               <div className="text-gray-400 mb-2">
-                <span className="text-green-500">➜</span> claude --model google/gemini-3-pro-preview
+                <span className="text-green-500">➜</span> claude --model g@gemini-2.5-pro
               </div>
               <div className="text-red-400">
-                Error: Invalid model "google/gemini-3-pro-preview"
+                Error: Invalid model "g@gemini-2.5-pro"
                 <br />
                 <span className="text-gray-600 mt-2 block leading-relaxed text-xs">
                   Only Anthropic models are supported.
@@ -87,11 +87,11 @@ const FeatureSection: React.FC = () => {
             <div className="p-6 font-mono text-sm text-left flex-1 flex flex-col justify-center min-h-[200px]">
               <div className="text-gray-400 mb-2">
                 <span className="text-claude-ish">➜</span> claudish --model
-                google/gemini-3-pro-preview
+                g@gemini-2.5-pro
               </div>
               <div className="text-gray-300">
-                <div className="text-claude-ish/80 mb-1">✓ Connected via OpenRouter</div>
-                <div className="text-claude-ish/80 mb-1">✓ Architecture: Claude Code 2.4.0</div>
+                <div className="text-claude-ish/80 mb-1">✓ Connected via Google Gemini API</div>
+                <div className="text-claude-ish/80 mb-1">✓ Architecture: Claude Code</div>
                 <div className="text-claude-ish/80 mb-1">
                   ✓ Access OpenRouter's free tier — real top models, not scraps
                 </div>
@@ -212,7 +212,7 @@ const FeatureSection: React.FC = () => {
 
           {/* DIALECT LIST */}
           <div className="flex flex-wrap justify-center gap-2 md:gap-4 opacity-70 hover:opacity-100 transition-opacity">
-            {["ANTHROPIC", "OPENAI", "GOOGLE", "X.AI", "MISTRAL", "DEEPSEEK", "+580 MORE"].map(
+            {["ANTHROPIC", "OPENAI", "GOOGLE", "X.AI", "KIMI", "MINIMAX", "GLM", "VERTEX AI", "DEEPSEEK", "+580 MORE"].map(
               (provider) => (
                 <span
                   key={provider}
@@ -305,26 +305,26 @@ const FeatureSection: React.FC = () => {
                 {/* List Items */}
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">1</div>
-                  <div className="col-span-5 text-blue-400">gemini-3-pro-preview</div>
-                  <div className="col-span-3">$0.00</div>
-                  <div className="col-span-3 text-right">2,000K</div>
+                  <div className="col-span-5 text-blue-400">gemini-2.5-pro</div>
+                  <div className="col-span-3">$1.25</div>
+                  <div className="col-span-3 text-right">1,000K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">2</div>
-                  <div className="col-span-5 text-green-400">gpt-5.3-codex</div>
-                  <div className="col-span-3">$15.00</div>
-                  <div className="col-span-3 text-right">256K</div>
+                  <div className="col-span-5 text-green-400">gpt-4.1</div>
+                  <div className="col-span-3">$2.00</div>
+                  <div className="col-span-3 text-right">1,000K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">3</div>
-                  <div className="col-span-5 text-purple-400">kimi-k2.5</div>
-                  <div className="col-span-3">$8.00</div>
-                  <div className="col-span-3 text-right">256K</div>
+                  <div className="col-span-5 text-gray-200">grok-3-fast</div>
+                  <div className="col-span-3">$5.00</div>
+                  <div className="col-span-3 text-right">131K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">
                   <div className="col-span-1 text-gray-600">4</div>
-                  <div className="col-span-5 text-red-400">GLM-4.7</div>
-                  <div className="col-span-3">$2.00</div>
+                  <div className="col-span-5 text-purple-400">kimi-k2</div>
+                  <div className="col-span-3">$0.60</div>
                   <div className="col-span-3 text-right">128K</div>
                 </div>
                 <div className="grid grid-cols-12 text-gray-300 hover:bg-white/5 p-0.5 rounded cursor-default">

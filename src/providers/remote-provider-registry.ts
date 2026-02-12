@@ -1,7 +1,7 @@
 /**
  * Remote Provider Registry
  *
- * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, OllamaCloud, OpenCode Zen)
+ * Handles resolution of remote cloud API providers (Gemini, OpenAI, MiniMax, Kimi, GLM, GLM Coding, OllamaCloud, OpenCode Zen)
  * based on model ID specifications.
  *
  * New syntax: provider@model
@@ -17,6 +17,7 @@
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
+ * - gc/ -> GLM Coding Plan API (OpenAI-compatible)
  * - zai/ -> Z.AI API (Anthropic-compatible)
  * - oc/ -> OllamaCloud API (OpenAI-compatible)
  * - zen/ -> OpenCode Zen API (OpenAI-compatible + Anthropic for MiniMax)
@@ -164,6 +165,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     },
   },
   {
+    name: "glm-coding",
+    baseUrl: "https://api.z.ai",
+    apiPath: "/api/coding/paas/v4/chat/completions",
+    apiKeyEnvVar: "GLM_CODING_API_KEY",
+    prefixes: ["gc/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: true,
+    },
+  },
+  {
     name: "zai",
     baseUrl: process.env.ZAI_BASE_URL || "https://api.z.ai",
     apiPath: "/api/anthropic/v1/messages",
@@ -253,6 +268,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     kimi: "kimi",
     "kimi-coding": "kimi-coding",
     glm: "glm",
+    "glm-coding": "glm-coding",
     zai: "zai",
     ollamacloud: "ollamacloud",
     "opencode-zen": "opencode-zen",
@@ -332,6 +348,7 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       KIMI_CODING_API_KEY:
         "export KIMI_CODING_API_KEY='sk-kimi-...' (get from https://kimi.com/code membership page, or run: claudish --kimi-login)",
       ZHIPU_API_KEY: "export ZHIPU_API_KEY='your-key' (get from https://open.bigmodel.cn/)",
+      GLM_CODING_API_KEY: "export GLM_CODING_API_KEY='your-key' (get from https://z.ai/subscribe)",
       OLLAMA_API_KEY:
         "export OLLAMA_API_KEY='your-key' (get from https://ollama.com/account)",
       OPENCODE_API_KEY:

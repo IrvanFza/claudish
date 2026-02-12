@@ -41,6 +41,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `mm@`, `mmax@` → MiniMax
 - `kimi@`, `moon@` → Kimi
 - `glm@`, `zhipu@` → GLM
+- `gc@` → GLM Coding Plan
 - `llama@`, `oc@` → OllamaCloud
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)

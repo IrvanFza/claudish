@@ -42,7 +42,7 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI"; // Which platform the model is from
+  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM Coding"; // Which platform the model is from
 }
 
 // OpenRouter free models are routed with openrouter@ prefix for explicit routing
@@ -441,6 +441,61 @@ async function fetchOpenAIModels(): Promise<ModelInfo[]> {
 }
 
 /**
+ * Fetch GLM Coding Plan models from models.dev
+ */
+async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
+  const apiKey = process.env.GLM_CODING_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const data = await response.json();
+    const codingPlan = data["zai-coding-plan"];
+    if (!codingPlan?.models) return [];
+
+    return Object.entries(codingPlan.models)
+      .filter(([_, m]: [string, any]) => m.tool_call === true)
+      .map(([id, m]: [string, any]) => {
+        const inputModalities = m.modalities?.input || [];
+        const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
+        const contextLength = m.limit?.context || 131072;
+
+        return {
+          id: `gc@${id}`,
+          name: m.name || id,
+          description: `GLM Coding Plan (subscription)`,
+          provider: "GLM Coding",
+          pricing: {
+            input: "SUB",
+            output: "SUB",
+            average: "SUB",
+          },
+          context: contextLength >= 1000000
+            ? `${Math.round(contextLength / 1000000)}M`
+            : `${Math.round(contextLength / 1000)}K`,
+          contextLength,
+          supportsTools: true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision,
+          isFree: false,
+          source: "GLM Coding" as const,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Check if cache needs refresh for free models (more frequent updates)
  */
 function shouldRefreshForFreeModels(): boolean {
@@ -511,16 +566,17 @@ async function getFreeModels(): Promise<ModelInfo[]> {
  */
 async function getAllModelsForSearch(): Promise<ModelInfo[]> {
   // Fetch from all providers in parallel (including Zen for free models)
-  const [openRouterModels, xaiModels, geminiModels, openaiModels, zenModels] = await Promise.all([
+  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmCodingModels, zenModels] = await Promise.all([
     fetchAllModels().then((models) => models.map(toModelInfo)),
     fetchXAIModels(),
     fetchGeminiModels(),
     fetchOpenAIModels(),
+    fetchGLMCodingModels(),
     fetchZenFreeModels(),
   ]);
 
-  // Combine results: Zen first (free), then direct providers (xAI, Gemini, OpenAI), then OpenRouter
-  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels];
+  // Combine results: Zen first (free), then direct providers (xAI, Gemini, OpenAI, GLM Coding), then OpenRouter
+  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmCodingModels];
   const allModels = [...zenModels, ...directApiModels, ...openRouterModels];
 
   return allModels;

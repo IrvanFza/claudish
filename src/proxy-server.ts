@@ -185,8 +185,8 @@ export async function createProxyServer(
         // MiniMax, Kimi, and Z.AI use Anthropic-compatible APIs
         handler = new AnthropicCompatHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
-      } else if (resolved.provider.name === "glm") {
-        // GLM uses OpenAI-compatible API
+      } else if (resolved.provider.name === "glm" || resolved.provider.name === "glm-coding") {
+        // GLM and GLM Coding use OpenAI-compatible API
         handler = new OpenAIHandler(resolved.provider, resolved.modelName, apiKey, port);
         log(`[Proxy] Created ${resolved.provider.name} handler: ${resolved.modelName}`);
       } else if (resolved.provider.name === "opencode-zen") {
