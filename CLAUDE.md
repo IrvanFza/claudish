@@ -43,6 +43,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `glm@`, `zhipu@` → GLM
 - `gc@` → GLM Coding Plan
 - `llama@`, `oc@` → OllamaCloud
+- `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 
@@ -67,10 +68,12 @@ Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conver
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.
 
-## Version Fallback for Compiled Binaries
+## Version Bumping Checklist
 
-When bumping the version in `package.json`, also update the fallback VERSION in:
-- `src/cli.ts` (line ~15)
-- `packages/cli/src/cli.ts` (line ~14)
+When releasing a new version, update ALL of these locations:
+1. `package.json` (root monorepo version)
+2. `packages/cli/package.json` (npm-published package - **CI/CD publishes from here**)
+3. `src/cli.ts` (fallback VERSION constant, line ~27)
+4. `packages/cli/src/cli.ts` (fallback VERSION constant, line ~27)
 
-This ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available.
+The fallback VERSION in cli.ts files ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
