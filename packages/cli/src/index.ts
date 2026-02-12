@@ -148,6 +148,8 @@ function getUpdateCommand(method: "npm" | "bun" | "brew" | "unknown"): string {
  */
 async function runSelfUpdate() {
   const { getVersion } = await import("./cli.js");
+  const { execSync } = await import("node:child_process");
+  const { createInterface } = await import("node:readline");
 
   const currentVersion = getVersion();
   const installMethod = detectInstallMethod();
@@ -175,10 +177,33 @@ async function runSelfUpdate() {
       process.exit(0);
     }
 
+    const updateCmd = getUpdateCommand(installMethod);
     console.log(`New version available: v${currentVersion} → v${latestVersion}\n`);
 
-    const updateCmd = getUpdateCommand(installMethod);
-    console.log(`To update, run:\n  ${updateCmd}\n`);
+    // Prompt user for confirmation
+    const shouldUpdate = await new Promise<boolean>((resolve) => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question("Update now? [Y/n] ", (answer) => {
+        rl.close();
+        const normalized = answer.toLowerCase().trim();
+        resolve(normalized === "" || normalized === "y" || normalized === "yes");
+      });
+    });
+
+    if (!shouldUpdate) {
+      console.log(`\nSkipped. Update later with:\n  ${updateCmd}\n`);
+      process.exit(0);
+    }
+
+    // Run the update
+    console.log("\nUpdating...\n");
+    try {
+      execSync(updateCmd, { stdio: "inherit", shell: true });
+      console.log(`\n✓ Updated to v${latestVersion}! Please restart claudish.\n`);
+    } catch {
+      console.error(`\nUpdate failed. Try manually:\n  ${updateCmd}\n`);
+      process.exit(1);
+    }
 
     process.exit(0);
   } catch (error) {

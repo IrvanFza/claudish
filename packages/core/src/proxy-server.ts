@@ -31,6 +31,7 @@ import {
   validateVertexOAuthConfig,
 } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
+import { parseModelSpec } from "./providers/model-parser.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -54,13 +55,17 @@ export async function createProxyServer(
 
   // Helper to get or create OpenRouter handler for a target model
   const getOpenRouterHandler = (targetModel: string): ModelHandler => {
-    if (!openRouterHandlers.has(targetModel)) {
+    // Strip any provider prefix (e.g., openrouter@google/gemini -> google/gemini, glm@glm-5 -> glm-5)
+    const parsed = parseModelSpec(targetModel);
+    const modelId = parsed.provider !== "native-anthropic" ? parsed.model : targetModel;
+
+    if (!openRouterHandlers.has(modelId)) {
       openRouterHandlers.set(
-        targetModel,
-        new OpenRouterHandler(targetModel, openrouterApiKey, port)
+        modelId,
+        new OpenRouterHandler(modelId, openrouterApiKey, port)
       );
     }
-    return openRouterHandlers.get(targetModel)!;
+    return openRouterHandlers.get(modelId)!;
   };
 
   // Helper to get or create Poe handler for a target model
@@ -237,16 +242,20 @@ export async function createProxyServer(
     if (monitorMode) return nativeHandler;
 
     // 2. Resolve target model based on mappings or defaults
-    let target = model || requestedModel; // Start with global default or request
+    // Priority: role mappings > default model (--model) > requested model (native)
+    let target = requestedModel;
 
     const req = requestedModel.toLowerCase();
     if (modelMap) {
+      // Role-specific mappings take highest priority
       if (req.includes("opus") && modelMap.opus) target = modelMap.opus;
       else if (req.includes("sonnet") && modelMap.sonnet) target = modelMap.sonnet;
       else if (req.includes("haiku") && modelMap.haiku) target = modelMap.haiku;
-      // Note: We don't verify "subagent" string because we don't know what Claude sends for subagents
-      // unless it's "claude-3-haiku" (which is covered above) or specific.
-      // Assuming Haiku mapping covers subagent unless custom logic added.
+      // Default model (--model) is fallback for all roles
+      else if (model) target = model;
+    } else if (model) {
+      // No role mappings at all - use default model
+      target = model;
     }
 
     // 3. Check for Poe Model (poe: prefix)
@@ -267,15 +276,18 @@ export async function createProxyServer(
     if (localHandler) return localHandler;
 
     // 6. Native vs OpenRouter Decision
-    // Heuristic: OpenRouter models have "/", Native ones don't.
-    const isNative = !target.includes("/");
+    // Models with explicit provider prefix (@) should never fall to native Anthropic handler.
+    // They were explicitly routed to a provider - if the handler wasn't created above,
+    // it's because the API key is missing, not because it's a native model.
+    const hasExplicitProvider = target.includes("@");
+    const isNative = !target.includes("/") && !hasExplicitProvider;
 
     if (isNative) {
       // If we mapped to a native string (unlikely) or passed through
       return nativeHandler;
     }
 
-    // 6. OpenRouter Handler (default for any model with "/" not matched above)
+    // 7. OpenRouter Handler (default for any model with "/" or explicit provider not matched above)
     return getOpenRouterHandler(target);
   };
 
