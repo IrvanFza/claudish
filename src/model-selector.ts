@@ -675,31 +675,47 @@ async function getAllModelsForSearch(): Promise<ModelInfo[]> {
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   const litellmApiKey = process.env.LITELLM_API_KEY;
 
-  // Fetch from all providers in parallel (including Zen for free models)
-  const fetchPromises = [
-    fetchAllModels().then((models) => models.map(toModelInfo)),
-    fetchXAIModels(),
-    fetchGeminiModels(),
-    fetchOpenAIModels(),
-    fetchGLMDirectModels(),
-    fetchGLMCodingModels(),
-    fetchOllamaCloudModels(),
-    fetchZenFreeModels(),
+  // Build named fetch entries for robust error handling
+  const fetchEntries: Array<{ name: string; promise: Promise<ModelInfo[]> }> = [
+    { name: "OpenRouter", promise: fetchAllModels().then((models) => models.map(toModelInfo)) },
+    { name: "xAI", promise: fetchXAIModels() },
+    { name: "Gemini", promise: fetchGeminiModels() },
+    { name: "OpenAI", promise: fetchOpenAIModels() },
+    { name: "GLM", promise: fetchGLMDirectModels() },
+    { name: "GLM Coding", promise: fetchGLMCodingModels() },
+    { name: "OllamaCloud", promise: fetchOllamaCloudModels() },
+    { name: "Zen", promise: fetchZenFreeModels() },
   ];
 
   // Add LiteLLM fetch if configured
   if (litellmBaseUrl && litellmApiKey) {
-    fetchPromises.push(fetchLiteLLMModels(litellmBaseUrl, litellmApiKey));
+    fetchEntries.push({ name: "LiteLLM", promise: fetchLiteLLMModels(litellmBaseUrl, litellmApiKey) });
   }
 
-  const results = await Promise.all(fetchPromises);
+  // Use allSettled so one failing provider can't break the whole list
+  const settled = await Promise.allSettled(fetchEntries.map((e) => e.promise));
 
-  // Unpack results
-  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmDirectModels, glmCodingModels, ollamaCloudModels, zenModels, litellmModels = []] = results;
+  const fetchResults: Record<string, ModelInfo[]> = {};
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    fetchResults[fetchEntries[i].name] = result.status === "fulfilled" ? result.value : [];
+  }
 
   // Combine results: Zen first (free), then OllamaCloud, then direct providers, then LiteLLM, then OpenRouter
-  const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmDirectModels, ...glmCodingModels];
-  const allModels = [...zenModels, ...ollamaCloudModels, ...directApiModels, ...litellmModels, ...openRouterModels];
+  const directApiModels = [
+    ...fetchResults["xAI"],
+    ...fetchResults["Gemini"],
+    ...fetchResults["OpenAI"],
+    ...fetchResults["GLM"],
+    ...fetchResults["GLM Coding"],
+  ];
+  const allModels = [
+    ...fetchResults["Zen"],
+    ...fetchResults["OllamaCloud"],
+    ...directApiModels,
+    ...(fetchResults["LiteLLM"] || []),
+    ...fetchResults["OpenRouter"],
+  ];
 
   return allModels;
 }
