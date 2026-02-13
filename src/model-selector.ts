@@ -741,6 +741,75 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
 }
 
 /**
+ * Provider filter aliases for @prefix search syntax
+ * Maps user-typed aliases to the ModelInfo.source value
+ */
+const PROVIDER_FILTER_ALIASES: Record<string, string> = {
+  // Full names
+  zen: "Zen",
+  openrouter: "OpenRouter",
+  or: "OpenRouter",
+  xai: "xAI",
+  gemini: "Gemini",
+  gem: "Gemini",
+  google: "Gemini",
+  openai: "OpenAI",
+  oai: "OpenAI",
+  glm: "GLM",
+  "glm-coding": "GLM Coding",
+  gc: "GLM Coding",
+  ollamacloud: "OllamaCloud",
+  oc: "OllamaCloud",
+  litellm: "LiteLLM",
+  ll: "LiteLLM",
+};
+
+/**
+ * Parse search term for @provider filter prefix
+ * Returns { provider: source string or null, searchTerm: remaining text }
+ *
+ * Examples:
+ *   "@xai"        → { provider: "xAI", searchTerm: "" }
+ *   "@xai grok"   → { provider: "xAI", searchTerm: "grok" }
+ *   "@ll gemini"  → { provider: "LiteLLM", searchTerm: "gemini" }
+ *   "grok"        → { provider: null, searchTerm: "grok" }
+ */
+function parseProviderFilter(term: string): { provider: string | null; searchTerm: string } {
+  if (!term.startsWith("@")) {
+    return { provider: null, searchTerm: term };
+  }
+
+  const withoutAt = term.slice(1);
+  const spaceIdx = withoutAt.indexOf(" ");
+
+  let prefix: string;
+  let rest: string;
+  if (spaceIdx === -1) {
+    prefix = withoutAt;
+    rest = "";
+  } else {
+    prefix = withoutAt.slice(0, spaceIdx);
+    rest = withoutAt.slice(spaceIdx + 1).trim();
+  }
+
+  const source = PROVIDER_FILTER_ALIASES[prefix.toLowerCase()];
+  if (source) {
+    return { provider: source, searchTerm: rest };
+  }
+
+  // Partial match: find aliases that start with the typed prefix
+  const partialMatch = Object.entries(PROVIDER_FILTER_ALIASES).find(([alias]) =>
+    alias.startsWith(prefix.toLowerCase())
+  );
+  if (partialMatch) {
+    return { provider: partialMatch[1], searchTerm: rest };
+  }
+
+  // No match — treat the whole thing as a regular search term
+  return { provider: null, searchTerm: term };
+}
+
+/**
  * Fuzzy match score
  */
 function fuzzyMatch(text: string, query: string): number {
@@ -837,11 +906,25 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
   }
 
+  // Collect unique provider sources for the hint
+  const availableProviders = [...new Set(models.map((m) => m.source).filter(Boolean))];
+  const providerHints = availableProviders
+    .map((src) => {
+      // Find shortest alias for this source
+      const aliases = Object.entries(PROVIDER_FILTER_ALIASES)
+        .filter(([, v]) => v === src)
+        .map(([k]) => k)
+        .sort((a, b) => a.length - b.length);
+      return aliases[0] ? `@${aliases[0]}` : null;
+    })
+    .filter(Boolean)
+    .join(" ");
+
   const promptMessage =
     message ||
     (freeOnly
       ? "Select a FREE model:"
-      : "Select a model (type to search):");
+      : `Select a model (type to search, ${providerHints} to filter):`);
 
   const selected = await search<string>({
     message: promptMessage,
@@ -856,14 +939,31 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         }));
       }
 
-      // Fuzzy search
-      const results = models
+      // Check for @provider filter prefix
+      const { provider: filterProvider, searchTerm } = parseProviderFilter(term);
+
+      let pool = models;
+      if (filterProvider) {
+        pool = models.filter((m) => m.source === filterProvider);
+      }
+
+      if (!searchTerm) {
+        // Provider filter only, no additional search — show all from that provider
+        return pool.slice(0, 30).map((m) => ({
+          name: formatModelChoice(m, true),
+          value: m.id,
+          description: m.description?.slice(0, 80),
+        }));
+      }
+
+      // Fuzzy search within the (possibly filtered) pool
+      const results = pool
         .map((m) => ({
           model: m,
           score: Math.max(
-            fuzzyMatch(m.id, term),
-            fuzzyMatch(m.name, term),
-            fuzzyMatch(m.provider, term) * 0.5
+            fuzzyMatch(m.id, searchTerm),
+            fuzzyMatch(m.name, searchTerm),
+            fuzzyMatch(m.provider, searchTerm) * 0.5
           ),
         }))
         .filter((r) => r.score > 0.1)
