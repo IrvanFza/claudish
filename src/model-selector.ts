@@ -906,25 +906,42 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
   }
 
-  // Collect unique provider sources for the hint
-  const availableProviders = [...new Set(models.map((m) => m.source).filter(Boolean))];
-  const providerHints = availableProviders
-    .map((src) => {
-      // Find shortest alias for this source
-      const aliases = Object.entries(PROVIDER_FILTER_ALIASES)
-        .filter(([, v]) => v === src)
-        .map(([k]) => k)
-        .sort((a, b) => a.length - b.length);
-      return aliases[0] ? `@${aliases[0]}` : null;
-    })
-    .filter(Boolean)
-    .join(" ");
+  // Build provider filter choices from actually loaded models
+  const providerCounts = new Map<string, number>();
+  for (const m of models) {
+    if (m.source) {
+      providerCounts.set(m.source, (providerCounts.get(m.source) || 0) + 1);
+    }
+  }
+
+  // Provider selection step (skip if freeOnly or custom message — those are special flows)
+  let filteredModels = models;
+  if (!freeOnly && !message && providerCounts.size > 1) {
+    const providerChoices = [
+      { name: `All providers (${models.length} models)`, value: "__all__" },
+      ...Array.from(providerCounts.entries())
+        .sort((a, b) => b[1] - a[1]) // Sort by model count descending
+        .map(([source, count]) => ({
+          name: `${source} (${count})`,
+          value: source,
+        })),
+    ];
+
+    const selectedProvider = await select({
+      message: "Filter by provider:",
+      choices: providerChoices,
+    });
+
+    if (selectedProvider !== "__all__") {
+      filteredModels = models.filter((m) => m.source === selectedProvider);
+    }
+  }
 
   const promptMessage =
     message ||
     (freeOnly
       ? "Select a FREE model:"
-      : `Select a model (type to search, ${providerHints} to filter):`);
+      : "Select a model (type to search):");
 
   const selected = await search<string>({
     message: promptMessage,
@@ -932,23 +949,22 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     source: async (term) => {
       if (!term) {
         // Show all/top models when no search term (up to 30)
-        return models.slice(0, 30).map((m) => ({
+        return filteredModels.slice(0, 30).map((m) => ({
           name: formatModelChoice(m, true), // Always show source
           value: m.id,
           description: m.description?.slice(0, 80),
         }));
       }
 
-      // Check for @provider filter prefix
+      // Also support @provider prefix as power-user shortcut
       const { provider: filterProvider, searchTerm } = parseProviderFilter(term);
 
-      let pool = models;
+      let pool = filteredModels;
       if (filterProvider) {
         pool = models.filter((m) => m.source === filterProvider);
       }
 
       if (!searchTerm) {
-        // Provider filter only, no additional search — show all from that provider
         return pool.slice(0, 30).map((m) => ({
           name: formatModelChoice(m, true),
           value: m.id,
