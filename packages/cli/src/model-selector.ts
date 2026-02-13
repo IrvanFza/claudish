@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { OpenRouterModel } from "./types.js";
-import { getAvailableModels } from "./model-loader.js";
+import { getAvailableModels, fetchLiteLLMModels } from "./model-loader.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -42,7 +42,7 @@ export interface ModelInfo {
   supportsReasoning?: boolean;
   supportsVision?: boolean;
   isFree?: boolean;
-  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM" | "GLM Coding" | "OllamaCloud"; // Which platform the model is from
+  source?: "OpenRouter" | "Zen" | "xAI" | "Gemini" | "OpenAI" | "GLM" | "GLM Coding" | "OllamaCloud" | "LiteLLM"; // Which platform the model is from
 }
 
 // OpenRouter free models are routed with openrouter@ prefix for explicit routing
@@ -671,8 +671,12 @@ async function getFreeModels(): Promise<ModelInfo[]> {
  * Fetches from all available providers in parallel
  */
 async function getAllModelsForSearch(): Promise<ModelInfo[]> {
+  // Check for LiteLLM configuration
+  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
+  const litellmApiKey = process.env.LITELLM_API_KEY;
+
   // Fetch from all providers in parallel (including Zen for free models)
-  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmDirectModels, glmCodingModels, ollamaCloudModels, zenModels] = await Promise.all([
+  const fetchPromises = [
     fetchAllModels().then((models) => models.map(toModelInfo)),
     fetchXAIModels(),
     fetchGeminiModels(),
@@ -681,11 +685,21 @@ async function getAllModelsForSearch(): Promise<ModelInfo[]> {
     fetchGLMCodingModels(),
     fetchOllamaCloudModels(),
     fetchZenFreeModels(),
-  ]);
+  ];
 
-  // Combine results: Zen first (free), then OllamaCloud, then direct providers, then OpenRouter
+  // Add LiteLLM fetch if configured
+  if (litellmBaseUrl && litellmApiKey) {
+    fetchPromises.push(fetchLiteLLMModels(litellmBaseUrl, litellmApiKey));
+  }
+
+  const results = await Promise.all(fetchPromises);
+
+  // Unpack results
+  const [openRouterModels, xaiModels, geminiModels, openaiModels, glmDirectModels, glmCodingModels, ollamaCloudModels, zenModels, litellmModels = []] = results;
+
+  // Combine results: Zen first (free), then OllamaCloud, then direct providers, then LiteLLM, then OpenRouter
   const directApiModels = [...xaiModels, ...geminiModels, ...openaiModels, ...glmDirectModels, ...glmCodingModels];
-  const allModels = [...zenModels, ...ollamaCloudModels, ...directApiModels, ...openRouterModels];
+  const allModels = [...zenModels, ...ollamaCloudModels, ...directApiModels, ...litellmModels, ...openRouterModels];
 
   return allModels;
 }
@@ -717,6 +731,7 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
       GLM: "GLM",
       "GLM Coding": "GC",
       OllamaCloud: "OC",
+      LiteLLM: "LL",
     };
     const sourceTag = sourceTagMap[model.source] || model.source;
     return `${sourceTag} ${model.id} (${priceStr}, ${ctxStr}${capsStr})`;
@@ -805,7 +820,7 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       }
     }
 
-    // 3. Add direct API models (xAI, Gemini, OpenAI) - user has keys for these
+    // 3. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
     for (const m of allModels.filter((m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter")) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
