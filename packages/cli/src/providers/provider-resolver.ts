@@ -164,6 +164,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "Z.AI API Key",
     url: "https://z.ai/",
   },
+  litellm: {
+    envVar: "LITELLM_API_KEY",
+    description: "LiteLLM API Key",
+    url: "https://docs.litellm.ai/",
+  },
 };
 
 /**
@@ -201,6 +206,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   zai: "Z.AI",
   ollamacloud: "OllamaCloud",
   "opencode-zen": "OpenCode Zen",
+  litellm: "LiteLLM",
 };
 
 /**
