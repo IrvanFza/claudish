@@ -29,6 +29,18 @@ import { log } from "../logger.js";
 const INLINE_IMAGE_MODEL_PATTERNS = ["minimax"];
 
 /**
+ * Extra headers that LiteLLM should forward to specific providers.
+ * Matched by model name pattern (case-insensitive).
+ *
+ * Kimi for Coding requires a recognized agent User-Agent header,
+ * otherwise returns 403 "only available for Coding Agents".
+ * See: https://github.com/router-for-me/CLIProxyAPI/issues/1280
+ */
+const MODEL_EXTRA_HEADERS: Array<{ pattern: string; headers: Record<string, string> }> = [
+  { pattern: "kimi", headers: { "User-Agent": "claude-code/1.0" } },
+];
+
+/**
  * LiteLLM Handler
  *
  * Uses LiteLLM's OpenAI-compatible API with dynamic base URL configuration.
@@ -200,6 +212,31 @@ export class LiteLLMHandler extends RemoteProviderHandler {
       }
     }
 
+    // Add provider-specific extra headers that LiteLLM forwards downstream
+    const extraHeaders = this.getExtraHeaders();
+    if (extraHeaders) {
+      payload.extra_headers = extraHeaders;
+    }
+
     return payload;
+  }
+
+  /**
+   * Get extra headers for LiteLLM to forward to the downstream provider.
+   * Matches model name against known patterns that require specific headers.
+   */
+  private getExtraHeaders(): Record<string, string> | null {
+    const model = this.modelName.toLowerCase();
+    const merged: Record<string, string> = {};
+    let found = false;
+
+    for (const { pattern, headers } of MODEL_EXTRA_HEADERS) {
+      if (model.includes(pattern)) {
+        Object.assign(merged, headers);
+        found = true;
+      }
+    }
+
+    return found ? merged : null;
   }
 }
