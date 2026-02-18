@@ -125,6 +125,11 @@ const API_KEY_INFO: Record<string, ApiKeyInfo> = {
     description: "MiniMax API Key",
     url: "https://www.minimaxi.com/",
   },
+  "minimax-coding": {
+    envVar: "MINIMAX_CODING_API_KEY",
+    description: "MiniMax Coding Plan API Key",
+    url: "https://platform.minimax.io/user-center/basic-information/interface-key",
+  },
   kimi: {
     envVar: "MOONSHOT_API_KEY",
     description: "Kimi/Moonshot API Key",
@@ -199,6 +204,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openai: "OpenAI",
   openrouter: "OpenRouter",
   minimax: "MiniMax",
+  "minimax-coding": "MiniMax Coding",
   kimi: "Kimi",
   "kimi-coding": "Kimi Coding",
   glm: "GLM",

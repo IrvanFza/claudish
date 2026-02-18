@@ -1,5 +1,3 @@
-export { PoeProvider } from "./poe-provider.js";
-
 // Centralized provider resolution - THE single source of truth
 export {
   resolveModelProvider,

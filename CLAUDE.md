@@ -39,6 +39,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `oai@` → OpenAI Direct
 - `or@`, `openrouter@` → OpenRouter
 - `mm@`, `mmax@` → MiniMax
+- `mmc@` → MiniMax Coding Plan
 - `kimi@`, `moon@` → Kimi
 - `glm@`, `zhipu@` → GLM
 - `gc@` → GLM Coding Plan
@@ -73,7 +74,6 @@ Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It'
 When releasing a new version, update ALL of these locations:
 1. `package.json` (root monorepo version)
 2. `packages/cli/package.json` (npm-published package - **CI/CD publishes from here**)
-3. `src/cli.ts` (fallback VERSION constant, line ~27)
-4. `packages/cli/src/cli.ts` (fallback VERSION constant, line ~27)
+3. `packages/cli/src/cli.ts` (fallback VERSION constant, line ~27)
 
-The fallback VERSION in cli.ts files ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
+The fallback VERSION in cli.ts ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.

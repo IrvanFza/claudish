@@ -91,7 +91,7 @@ export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
 const FREE_PROVIDERS = new Set(["opencode-zen", "zen"]);
 
 // Subscription providers — display "SUB" instead of cost
-const SUBSCRIPTION_PROVIDERS = new Set(["kimi-coding", "glm-coding"]);
+const SUBSCRIPTION_PROVIDERS = new Set(["minimax-coding", "kimi-coding", "glm-coding"]);
 
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */
 const PROVIDER_ALIAS: Record<string, string> = {
@@ -100,6 +100,7 @@ const PROVIDER_ALIAS: Record<string, string> = {
   mm: "minimax",
   moonshot: "kimi",
   zhipu: "glm",
+  "minimax-coding": "minimax",  // Use MiniMax pricing as fallback (though subscription overrides)
   "glm-coding": "glm",  // Use GLM pricing as fallback (though subscription overrides)
   oc: "ollamacloud",
 };

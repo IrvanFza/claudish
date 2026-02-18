@@ -5,15 +5,24 @@
  * Handles both streaming and non-streaming responses.
  */
 
+// Import from CLI package's internal modules (same monorepo)
+import { ComposedHandler } from "../../cli/src/handlers/composed-handler.js";
+import { GeminiApiKeyProvider } from "../../cli/src/providers/transport/gemini-apikey.js";
+import { GeminiAdapter } from "../../cli/src/adapters/gemini-adapter.js";
+import { OpenAIProvider } from "../../cli/src/providers/transport/openai.js";
+import { OpenAIAdapter } from "../../cli/src/adapters/openai-adapter.js";
+import { AnthropicCompatProvider } from "../../cli/src/providers/transport/anthropic-compat.js";
+import { AnthropicPassthroughAdapter } from "../../cli/src/adapters/anthropic-passthrough-adapter.js";
+import { LocalTransport } from "../../cli/src/providers/transport/local.js";
+import { LocalModelAdapter } from "../../cli/src/adapters/local-adapter.js";
+import { OpenRouterProvider } from "../../cli/src/providers/transport/openrouter.js";
+import { OpenRouterAdapter } from "../../cli/src/adapters/openrouter-adapter.js";
 import {
-  AnthropicCompatHandler,
-  GeminiHandler,
-  LocalProviderHandler,
-  OpenAIHandler,
-  OpenRouterHandler,
   getRegisteredRemoteProviders,
+} from "../../cli/src/providers/remote-provider-registry.js";
+import {
   resolveProvider,
-} from "@claudish/core";
+} from "../../cli/src/providers/provider-registry.js";
 import type { Context, Next } from "hono";
 import type { ConfigManager } from "./config-manager.js";
 import { detectFromHeaders } from "./detection.js";
@@ -56,130 +65,94 @@ export class RoutingMiddleware {
   }
 
   /**
-   * Create handler for a model ID
+   * Create handler for a model ID using ComposedHandler + Provider + Adapter.
    */
   private createHandlerForModel(model: string): Handler {
-    // Get remote providers for reference
     const remoteProviders = getRegisteredRemoteProviders();
 
-    // Try Gemini direct API: g/gemini-2.0-flash-exp, gemini/gemini-pro
+    // Gemini direct API: g/gemini-2.0-flash-exp, gemini/gemini-pro
     if (model.startsWith("g/") || model.startsWith("gemini/")) {
       const apiKey = this.apiKeys.gemini;
-      if (!apiKey) {
-        throw new Error(`Gemini API key required for model: ${model}`);
-      }
-      // Find the Gemini provider configuration
-      const geminiProvider = remoteProviders.find((p) => p.name === "gemini");
-      if (!geminiProvider) {
-        throw new Error("Gemini provider not found in registry");
-      }
+      if (!apiKey) throw new Error(`Gemini API key required for model: ${model}`);
+      const geminiConfig = remoteProviders.find((p) => p.name === "gemini");
+      if (!geminiConfig) throw new Error("Gemini provider not found in registry");
       const modelName = model.startsWith("g/") ? model.slice(2) : model.slice(7);
-      return new GeminiHandler(
-        geminiProvider,
-        modelName,
-        apiKey,
-        this.bridgePort
-      ) as unknown as Handler;
+      const provider = new GeminiApiKeyProvider(geminiConfig, modelName, apiKey);
+      const adapter = new GeminiAdapter(modelName);
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
     }
 
     // OpenAI direct API: oai/gpt-4o
     if (model.startsWith("oai/")) {
       const apiKey = this.apiKeys.openai;
-      if (!apiKey) {
-        throw new Error(`OpenAI API key required for model: ${model}`);
-      }
-      const openaiProvider = remoteProviders.find((p) => p.name === "openai");
-      if (!openaiProvider) {
-        throw new Error("OpenAI provider not found in registry");
-      }
+      if (!apiKey) throw new Error(`OpenAI API key required for model: ${model}`);
+      const openaiConfig = remoteProviders.find((p) => p.name === "openai");
+      if (!openaiConfig) throw new Error("OpenAI provider not found in registry");
       const modelName = model.slice(4);
-      return new OpenAIHandler(
-        openaiProvider,
-        modelName,
-        apiKey,
-        this.bridgePort
-      ) as unknown as Handler;
+      const provider = new OpenAIProvider(openaiConfig, modelName, apiKey);
+      const adapter = new OpenAIAdapter(modelName, openaiConfig.capabilities);
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, {
+        adapter, tokenStrategy: "delta-aware",
+      }) as unknown as Handler;
     }
 
     // MiniMax direct API: mm/minimax-m2.1, mmax/...
     if (model.startsWith("mm/") || model.startsWith("mmax/")) {
       const apiKey = this.apiKeys.minimax || process.env.MINIMAX_API_KEY;
-      if (!apiKey) {
-        throw new Error(`MiniMax API key required for model: ${model}`);
-      }
-      const minimaxProvider = remoteProviders.find((p) => p.name === "minimax");
-      if (!minimaxProvider) {
-        throw new Error("MiniMax provider not found in registry");
-      }
+      if (!apiKey) throw new Error(`MiniMax API key required for model: ${model}`);
+      const mmConfig = remoteProviders.find((p) => p.name === "minimax");
+      if (!mmConfig) throw new Error("MiniMax provider not found in registry");
       const prefix = model.startsWith("mm/") ? 3 : 5;
       const modelName = model.slice(prefix);
-      return new AnthropicCompatHandler(
-        minimaxProvider,
-        modelName,
-        apiKey,
-        this.bridgePort
-      ) as unknown as Handler;
+      const provider = new AnthropicCompatProvider(mmConfig, apiKey);
+      const adapter = new AnthropicPassthroughAdapter(modelName, mmConfig.name);
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
     }
 
     // Kimi/Moonshot direct API: kimi/..., moonshot/...
     if (model.startsWith("kimi/") || model.startsWith("moonshot/")) {
       const apiKey = this.apiKeys.kimi || process.env.MOONSHOT_API_KEY;
-      if (!apiKey) {
-        throw new Error(`Kimi/Moonshot API key required for model: ${model}`);
-      }
-      const kimiProvider = remoteProviders.find((p) => p.name === "kimi");
-      if (!kimiProvider) {
-        throw new Error("Kimi provider not found in registry");
-      }
+      if (!apiKey) throw new Error(`Kimi/Moonshot API key required for model: ${model}`);
+      const kimiConfig = remoteProviders.find((p) => p.name === "kimi");
+      if (!kimiConfig) throw new Error("Kimi provider not found in registry");
       const prefix = model.startsWith("kimi/") ? 5 : 9;
       const modelName = model.slice(prefix);
-      return new AnthropicCompatHandler(
-        kimiProvider,
-        modelName,
-        apiKey,
-        this.bridgePort
-      ) as unknown as Handler;
+      const provider = new AnthropicCompatProvider(kimiConfig, apiKey);
+      const adapter = new AnthropicPassthroughAdapter(modelName, kimiConfig.name);
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
     }
 
     // GLM/Zhipu direct API: glm/..., zhipu/...
     if (model.startsWith("glm/") || model.startsWith("zhipu/")) {
       const apiKey = this.apiKeys.glm || process.env.ZHIPU_API_KEY;
-      if (!apiKey) {
-        throw new Error(`GLM/Zhipu API key required for model: ${model}`);
-      }
-      const glmProvider = remoteProviders.find((p) => p.name === "glm");
-      if (!glmProvider) {
-        throw new Error("GLM provider not found in registry");
-      }
+      if (!apiKey) throw new Error(`GLM/Zhipu API key required for model: ${model}`);
+      const glmConfig = remoteProviders.find((p) => p.name === "glm");
+      if (!glmConfig) throw new Error("GLM provider not found in registry");
       const prefix = model.startsWith("glm/") ? 4 : 6;
       const modelName = model.slice(prefix);
-      // GLM uses OpenAI-compatible API, but we'll use AnthropicCompat for now
-      return new AnthropicCompatHandler(
-        glmProvider,
-        modelName,
-        apiKey,
-        this.bridgePort
-      ) as unknown as Handler;
+      const provider = new OpenAIProvider(glmConfig, modelName, apiKey);
+      const adapter = new OpenAIAdapter(modelName, glmConfig.capabilities);
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, {
+        adapter, tokenStrategy: "delta-aware",
+      }) as unknown as Handler;
     }
 
     // Local providers (Ollama, LM Studio, etc.)
-    const localProvider = resolveProvider(model);
-    if (localProvider) {
-      return new LocalProviderHandler(
-        localProvider.provider,
-        localProvider.modelName,
-        this.bridgePort,
-        { summarizeTools: false }
-      ) as unknown as Handler;
+    const localResolved = resolveProvider(model);
+    if (localResolved) {
+      const transport = new LocalTransport(localResolved.provider, localResolved.modelName);
+      const adapter = new LocalModelAdapter(localResolved.provider, localResolved.modelName);
+      return new ComposedHandler(transport, model, localResolved.modelName, this.bridgePort, {
+        adapter, tokenStrategy: "local",
+      }) as unknown as Handler;
     }
 
     // Default: OpenRouter for everything else
-    // This handles models like "openai/gpt-4o", "anthropic/claude-3-opus", etc.
     const apiKey = this.apiKeys.openrouter;
-    if (!apiKey) {
-      throw new Error(`OpenRouter API key required for model: ${model}`);
-    }
-    return new OpenRouterHandler(model, apiKey, this.bridgePort) as unknown as Handler;
+    if (!apiKey) throw new Error(`OpenRouter API key required for model: ${model}`);
+    const orProvider = new OpenRouterProvider(apiKey);
+    const orAdapter = new OpenRouterAdapter(model);
+    return new ComposedHandler(orProvider, model, model, this.bridgePort, { adapter: orAdapter }) as unknown as Handler;
   }
 
   /**

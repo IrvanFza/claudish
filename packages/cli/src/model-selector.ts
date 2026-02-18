@@ -746,6 +746,8 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
       OpenAI: "OAI",
       GLM: "GLM",
       "GLM Coding": "GC",
+      "MiniMax Coding": "MMC",
+      "Kimi Coding": "KC",
       OllamaCloud: "OC",
       LiteLLM: "LL",
     };
@@ -774,6 +776,10 @@ const PROVIDER_FILTER_ALIASES: Record<string, string> = {
   glm: "GLM",
   "glm-coding": "GLM Coding",
   gc: "GLM Coding",
+  mmc: "MiniMax Coding",
+  "minimax-coding": "MiniMax Coding",
+  kc: "Kimi Coding",
+  "kimi-coding": "Kimi Coding",
   ollamacloud: "OllamaCloud",
   oc: "OllamaCloud",
   litellm: "LiteLLM",
@@ -1017,22 +1023,33 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 /**
  * Provider choices for profile model configuration
  */
-const PROVIDER_CHOICES = [
+const ALL_PROVIDER_CHOICES: Array<{ name: string; value: string; description: string; envVar?: string }> = [
   { name: "Skip (keep Claude default)", value: "skip", description: "Use native Claude model for this tier" },
   { name: "OpenRouter", value: "openrouter", description: "580+ models via unified API" },
   { name: "OpenCode Zen", value: "zen", description: "Free models, no API key needed" },
-  { name: "Google Gemini", value: "google", description: "Direct API (GEMINI_API_KEY)" },
-  { name: "OpenAI", value: "openai", description: "Direct API (OPENAI_API_KEY)" },
-  { name: "xAI / Grok", value: "xai", description: "Direct API (XAI_API_KEY)" },
-  { name: "MiniMax", value: "minimax", description: "Direct API (MINIMAX_API_KEY)" },
-  { name: "Kimi / Moonshot", value: "kimi", description: "Direct API (MOONSHOT_API_KEY)" },
-  { name: "GLM / Zhipu", value: "glm", description: "Direct API (ZHIPU_API_KEY)" },
-  { name: "Z.AI", value: "zai", description: "Z.AI API (ZAI_API_KEY)" },
+  { name: "Google Gemini", value: "google", description: "Direct API (GEMINI_API_KEY)", envVar: "GEMINI_API_KEY" },
+  { name: "OpenAI", value: "openai", description: "Direct API (OPENAI_API_KEY)", envVar: "OPENAI_API_KEY" },
+  { name: "xAI / Grok", value: "xai", description: "Direct API (XAI_API_KEY)", envVar: "XAI_API_KEY" },
+  { name: "MiniMax", value: "minimax", description: "Direct API (MINIMAX_API_KEY)", envVar: "MINIMAX_API_KEY" },
+  { name: "MiniMax Coding", value: "minimax-coding", description: "MiniMax Coding subscription (MINIMAX_CODING_API_KEY)", envVar: "MINIMAX_CODING_API_KEY" },
+  { name: "Kimi / Moonshot", value: "kimi", description: "Direct API (MOONSHOT_API_KEY)", envVar: "MOONSHOT_API_KEY" },
+  { name: "Kimi Coding", value: "kimi-coding", description: "Kimi Coding subscription (KIMI_CODING_API_KEY)", envVar: "KIMI_CODING_API_KEY" },
+  { name: "GLM / Zhipu", value: "glm", description: "Direct API (ZHIPU_API_KEY)", envVar: "ZHIPU_API_KEY" },
+  { name: "GLM Coding Plan", value: "glm-coding", description: "GLM Coding subscription (GLM_CODING_API_KEY)", envVar: "GLM_CODING_API_KEY" },
+  { name: "Z.AI", value: "zai", description: "Z.AI API (ZAI_API_KEY)", envVar: "ZAI_API_KEY" },
   { name: "OllamaCloud", value: "ollamacloud", description: "Cloud models (OLLAMA_API_KEY)" },
   { name: "Ollama (local)", value: "ollama", description: "Local Ollama instance" },
   { name: "LM Studio (local)", value: "lmstudio", description: "Local LM Studio instance" },
   { name: "Enter custom model", value: "custom", description: "Type a provider@model specification" },
 ];
+
+/**
+ * Get provider choices filtered by available env vars
+ * Providers with envVar requirement are only shown when that env var is set
+ */
+function getProviderChoices() {
+  return ALL_PROVIDER_CHOICES.filter((choice) => !choice.envVar || process.env[choice.envVar]);
+}
 
 /**
  * Model ID prefix for each provider
@@ -1043,7 +1060,10 @@ const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   xai: "xai@",
   minimax: "mm@",
   kimi: "kimi@",
+  "minimax-coding": "mmc@",
+  "kimi-coding": "kc@",
   glm: "glm@",
+  "glm-coding": "gc@",
   zai: "zai@",
   ollamacloud: "oc@",
   ollama: "ollama@",
@@ -1091,9 +1111,16 @@ function getKnownModels(provider: string): ModelInfo[] {
     minimax: [
       { id: "mm@minimax-m2.1", name: "MiniMax M2.1", context: "196K", description: "Lightweight coding model" },
     ],
+    "minimax-coding": [
+      { id: "mmc@minimax-m2.5", name: "MiniMax M2.5", context: "196K", description: "MiniMax Coding subscription model" },
+      { id: "mmc@minimax-m2.1", name: "MiniMax M2.1", context: "196K", description: "MiniMax Coding subscription model" },
+    ],
     kimi: [
       { id: "kimi@kimi-k2-thinking-turbo", name: "Kimi K2 Thinking Turbo", context: "128K" },
       { id: "kimi@moonshot-v1-128k", name: "Moonshot V1 128K", context: "128K" },
+    ],
+    "kimi-coding": [
+      { id: "kc@kimi-for-coding", name: "Kimi for Coding", context: "128K", description: "Kimi Coding subscription model" },
     ],
     glm: [
       { id: "glm@glm-5", name: "GLM-5", context: "200K", description: "Latest GLM model with reasoning" },
@@ -1295,7 +1322,7 @@ export async function selectModelsForProfile(): Promise<{
     // Step 1: Select provider
     const provider = await select({
       message: `Select provider for ${tier.name} tier (${tier.description}):`,
-      choices: PROVIDER_CHOICES,
+      choices: getProviderChoices(),
       default: lastProvider,
     });
 

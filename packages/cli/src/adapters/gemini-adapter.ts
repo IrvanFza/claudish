@@ -1,140 +1,265 @@
 /**
- * Gemini adapter for extracting thought signatures from reasoning_details
+ * Gemini Adapter
  *
- * OpenRouter translates Gemini's responses to OpenAI format but puts
- * thought_signatures in the reasoning_details array instead of tool_calls.extra_content.
+ * Handles Gemini-specific transformations:
+ * - Message conversion: Claude → Gemini parts format (user→user, assistant→model)
+ * - Tool conversion: Claude tools → Gemini function declarations
+ * - Payload building: generationConfig, systemInstruction, thinkingConfig
+ * - thoughtSignature tracking across requests (required for Gemini 3/2.5 thinking)
+ * - Reasoning text filtering (removes leaked internal monologue)
  *
- * Streaming response structure from OpenRouter:
- * {
- *   "choices": [{
- *     "delta": {
- *       "tool_calls": [{...}],  // No extra_content here
- *       "reasoning_details": [{  // Thought signatures are HERE
- *         "id": "tool_123",
- *         "type": "reasoning.encrypted",
- *         "data": "<encrypted-signature>"
- *       }]
- *     }
- *   }]
- * }
- *
- * This adapter extracts signatures from reasoning_details and stores them
- * for later inclusion in tool results.
+ * Used with GeminiApiKeyProvider (direct API) and GeminiCodeAssistProvider (OAuth).
  */
 
-import { BaseModelAdapter, AdapterResult, ToolCall } from "./base-adapter";
-import { log } from "../logger";
+import { BaseModelAdapter, type AdapterResult } from "./base-adapter.js";
+import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
+import { filterIdentity } from "../handlers/shared/openai-compat.js";
+import { log } from "../logger.js";
 
 /**
- * Patterns that indicate internal reasoning/monologue that should be filtered
- * These are common patterns Gemini uses when "thinking out loud" instead of
- * keeping reasoning internal.
+ * Patterns that indicate internal reasoning/monologue that should be filtered.
+ * Gemini sometimes leaks reasoning as regular text instead of keeping it in thinking blocks.
  */
 const REASONING_PATTERNS = [
-  // "Wait, I'm X-ing" pattern (the scaling tools bug)
   /^Wait,?\s+I(?:'m|\s+am)\s+\w+ing\b/i,
-  // "Wait, if/that/the/this" reasoning patterns
   /^Wait,?\s+(?:if|that|the|this|I\s+(?:need|should|will|have|already))/i,
-  // Simple "Wait" or "Wait." lines
   /^Wait[.!]?\s*$/i,
-  // "Let me think/check/verify" patterns
   /^Let\s+me\s+(think|check|verify|see|look|analyze|consider|first|start)/i,
-  // "Let's" patterns (common in Gemini reasoning)
   /^Let's\s+(check|see|look|start|first|try|think|verify|examine|analyze)/i,
-  // "I need to" reasoning
   /^I\s+need\s+to\s+/i,
-  // "Okay" or "Ok" standalone or with trailing reasoning
   /^O[kK](?:ay)?[.,!]?\s*(?:so|let|I|now|first)?/i,
-  // "Hmm" thinking
   /^[Hh]mm+/,
-  // "So," or "So I" reasoning connectors
   /^So[,.]?\s+(?:I|let|first|now|the)/i,
-  // "First," "Next," "Then," step reasoning
   /^(?:First|Next|Then|Now)[,.]?\s+(?:I|let|we)/i,
-  // "Thinking about" or "Considering"
   /^(?:Thinking\s+about|Considering)/i,
-  // "I should/will/ll" followed by verbs - EXPANDED to catch more patterns
-  // This catches most "I'll <verb>" reasoning patterns
   /^I(?:'ll|\s+will)\s+(?:first|now|start|begin|try|check|fix|look|examine|modify|create|update|read|investigate|adjust|improve|integrate|mark|also|verify|need|rethink|add|help|use|run|search|find|explore|analyze|review|test|implement|write|make|set|get|see|open|close|save|load|fetch|call|send|build|compile|execute|process|handle|parse|format|validate|clean|clear|remove|delete|move|copy|rename|install|configure|setup|initialize|prepare|work|continue|proceed|ensure|confirm)/i,
   /^I\s+should\s+/i,
-  // "I will" at start of sentence (planning statement)
   /^I\s+will\s+(?:first|now|start|verify|check|create|modify|look|need|also|add|help|use|run|search|find|explore|analyze|review|test|implement|write)/i,
-  // Internal debugging statements
   /^(?:Debug|Checking|Verifying|Looking\s+at):/i,
-  // "I also" observations
   /^I\s+also\s+(?:notice|need|see|want)/i,
-  // "The goal is" or "The issue is" observations
   /^The\s+(?:goal|issue|problem|idea|plan)\s+is/i,
-  // "In the old/current/previous" design observations
   /^In\s+the\s+(?:old|current|previous|new|existing)\s+/i,
-  // Code-like reasoning with backticks followed by observations
   /^`[^`]+`\s+(?:is|has|does|needs|should|will|doesn't|hasn't)/i,
 ];
 
-/**
- * Patterns that indicate a line is likely part of reasoning block
- * Used for multi-line reasoning detection
- */
 const REASONING_CONTINUATION_PATTERNS = [
-  // "And then" or "And I"
   /^And\s+(?:then|I|now|so)/i,
-  // "And I'll" continuation
   /^And\s+I(?:'ll|\s+will)/i,
-  // "But" reasoning pivots
   /^But\s+(?:I|first|wait|actually|the|if)/i,
-  // "Actually" corrections
   /^Actually[,.]?\s+/i,
-  // "Also" additions
   /^Also[,.]?\s+(?:I|the|check|note)/i,
-  // Numbered steps (1., 2., etc) in reasoning
   /^\d+\.\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix|Look)/i,
-  // Dash-prefixed steps
   /^-\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix)/i,
-  // "Or" alternatives in reasoning
   /^Or\s+(?:I|just|we|maybe|perhaps)/i,
-  // "Since" explanations
   /^Since\s+(?:I|the|this|we|it)/i,
-  // "Because" explanations
   /^Because\s+(?:I|the|this|we|it)/i,
-  // "If" conditional reasoning
   /^If\s+(?:I|the|this|we|it)\s+/i,
-  // "This" observations in reasoning context
   /^This\s+(?:is|means|requires|should|will|confirms|suggests)/i,
-  // "That" observations
   /^That\s+(?:means|is|should|will|explains|confirms)/i,
-  // Code file references in reasoning
   /^Lines?\s+\d+/i,
-  // Variable/property observations
   /^The\s+`[^`]+`\s+(?:is|has|contains|needs|should)/i,
 ];
 
 export class GeminiAdapter extends BaseModelAdapter {
-  // Store for thought signatures: tool_call_id -> signature
-  private thoughtSignatures = new Map<string, string>();
+  /**
+   * Map of tool_use_id → { name, thoughtSignature }.
+   * Persists across requests (NOT cleared in reset) because Gemini requires
+   * thoughtSignatures from previous responses to be echoed back in subsequent requests.
+   */
+  private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>();
 
-  // Buffer for detecting multi-line reasoning blocks
-  private reasoningBuffer: string[] = [];
+  /** Reasoning filter state */
   private inReasoningBlock = false;
   private reasoningBlockDepth = 0;
 
+  constructor(modelId: string) {
+    super(modelId);
+  }
+
+  // ─── Message Conversion (Claude → Gemini parts) ─────────────────
+
+  override convertMessages(claudeRequest: any, _filterIdentityFn?: (s: string) => string): any[] {
+    const messages: any[] = [];
+
+    if (claudeRequest.messages) {
+      for (const msg of claudeRequest.messages) {
+        if (msg.role === "user") {
+          const parts = this.convertUserParts(msg);
+          if (parts.length > 0) messages.push({ role: "user", parts });
+        } else if (msg.role === "assistant") {
+          const parts = this.convertAssistantParts(msg);
+          if (parts.length > 0) messages.push({ role: "model", parts });
+        }
+      }
+    }
+
+    return messages;
+  }
+
+  private convertUserParts(msg: any): any[] {
+    const parts: any[] = [];
+
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          parts.push({ text: block.text });
+        } else if (block.type === "image") {
+          parts.push({
+            inlineData: {
+              mimeType: block.source.media_type,
+              data: block.source.data,
+            },
+          });
+        } else if (block.type === "tool_result") {
+          const toolInfo = this.toolCallMap.get(block.tool_use_id);
+          if (!toolInfo) {
+            log(`[GeminiAdapter] Warning: No function name found for tool_use_id ${block.tool_use_id}`);
+            continue;
+          }
+          parts.push({
+            functionResponse: {
+              name: toolInfo.name,
+              response: {
+                content:
+                  typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+              },
+            },
+          });
+        }
+      }
+    } else if (typeof msg.content === "string") {
+      parts.push({ text: msg.content });
+    }
+
+    return parts;
+  }
+
+  private convertAssistantParts(msg: any): any[] {
+    const parts: any[] = [];
+
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          parts.push({ text: block.text });
+        } else if (block.type === "tool_use") {
+          // Look up stored thoughtSignature for this tool call
+          const toolInfo = this.toolCallMap.get(block.id);
+          let thoughtSignature = toolInfo?.thoughtSignature;
+
+          // If no signature found, use dummy to skip validation.
+          // Required for Gemini 3/2.5 with thinking enabled.
+          // Handles session recovery, migrations, or first request with history.
+          if (!thoughtSignature) {
+            thoughtSignature = "skip_thought_signature_validator";
+            log(`[GeminiAdapter] Using dummy thoughtSignature for tool ${block.name} (${block.id})`);
+          }
+
+          const functionCallPart: any = {
+            functionCall: {
+              name: block.name,
+              args: block.input,
+            },
+          };
+
+          if (thoughtSignature) {
+            functionCallPart.thoughtSignature = thoughtSignature;
+          }
+
+          // Ensure tool is tracked in our map (for tool_result lookups)
+          if (!this.toolCallMap.has(block.id)) {
+            this.toolCallMap.set(block.id, { name: block.name, thoughtSignature });
+          }
+
+          parts.push(functionCallPart);
+        }
+      }
+    } else if (typeof msg.content === "string") {
+      parts.push({ text: msg.content });
+    }
+
+    return parts;
+  }
+
+  // ─── Tool Conversion ──────────────────────────────────────────────
+
+  override convertTools(claudeRequest: any, _summarize = false): any[] {
+    const result = convertToolsToGemini(claudeRequest.tools);
+    return result || [];
+  }
+
+  // ─── Payload Building ─────────────────────────────────────────────
+
+  override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+    const payload: any = {
+      contents: messages,
+      generationConfig: {
+        temperature: claudeRequest.temperature ?? 1,
+        maxOutputTokens: claudeRequest.max_tokens,
+      },
+    };
+
+    // System instruction
+    if (claudeRequest.system) {
+      let systemContent = Array.isArray(claudeRequest.system)
+        ? claudeRequest.system.map((i: any) => i.text || i).join("\n\n")
+        : claudeRequest.system;
+      systemContent = filterIdentity(systemContent);
+
+      // Gemini-specific reasoning suppression
+      systemContent += `\n\nCRITICAL INSTRUCTION FOR OUTPUT FORMAT:
+1. Keep ALL internal reasoning INTERNAL. Never output your thought process as visible text.
+2. Do NOT start responses with phrases like "Wait, I'm...", "Let me think...", "Okay, so..."
+3. Only output: final responses, tool calls, and code. Nothing else.`;
+
+      payload.systemInstruction = { parts: [{ text: systemContent }] };
+    }
+
+    // Tools — convertTools returns Gemini format [{functionDeclarations: [...]}] or []
+    if (tools && tools.length > 0) {
+      payload.tools = tools;
+    }
+
+    // Thinking/reasoning configuration
+    if (claudeRequest.thinking) {
+      const { budget_tokens } = claudeRequest.thinking;
+
+      if (this.modelId.includes("gemini-3")) {
+        // Gemini 3 uses thinking_level
+        payload.generationConfig.thinkingConfig = {
+          thinkingLevel: budget_tokens >= 16000 ? "high" : "low",
+        };
+      } else {
+        // Gemini 2.5 uses thinking_budget
+        const MAX_GEMINI_BUDGET = 24576;
+        payload.generationConfig.thinkingConfig = {
+          thinkingBudget: Math.min(budget_tokens, MAX_GEMINI_BUDGET),
+        };
+      }
+    }
+
+    return payload;
+  }
+
+  // ─── Tool Call Registration (called by stream parser) ─────────────
+
   /**
-   * Process text content from Gemini, filtering out internal reasoning
-   * that should not be displayed to the user.
-   *
-   * Gemini models (especially through OpenRouter) sometimes output their
-   * internal reasoning as regular text instead of keeping it in reasoning_details.
-   * This manifests as lines like:
-   * - "Wait, I'm scaling tools."
-   * - "Let me check the file first."
-   * - "Okay, so I need to..."
+   * Register a tool call from the streaming response.
+   * Stores the tool ID, name, and thoughtSignature for use in subsequent requests.
    */
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
-    // Skip empty content
+  registerToolCall(toolId: string, name: string, thoughtSignature?: string): void {
+    this.toolCallMap.set(toolId, { name, thoughtSignature });
+    if (thoughtSignature) {
+      log(`[GeminiAdapter] Captured thoughtSignature for tool ${name} (${toolId})`);
+    }
+  }
+
+  // ─── Text Processing (reasoning filter) ───────────────────────────
+
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     if (!textContent || textContent.trim() === "") {
       return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };
     }
 
-    // Check for reasoning patterns in the new content
     const lines = textContent.split("\n");
     const cleanedLines: string[] = [];
     let wasFiltered = false;
@@ -142,31 +267,25 @@ export class GeminiAdapter extends BaseModelAdapter {
     for (const line of lines) {
       const trimmed = line.trim();
 
-      // Skip empty lines
       if (!trimmed) {
         cleanedLines.push(line);
         continue;
       }
 
-      // Check if this line matches reasoning patterns
-      const isReasoning = this.isReasoningLine(trimmed);
-
-      if (isReasoning) {
+      if (this.isReasoningLine(trimmed)) {
         log(`[GeminiAdapter] Filtered reasoning: "${trimmed.substring(0, 50)}..."`);
         wasFiltered = true;
         this.inReasoningBlock = true;
         this.reasoningBlockDepth++;
-        continue; // Skip this line
+        continue;
       }
 
-      // Check for reasoning continuation
       if (this.inReasoningBlock && this.isReasoningContinuation(trimmed)) {
         log(`[GeminiAdapter] Filtered reasoning continuation: "${trimmed.substring(0, 50)}..."`);
         wasFiltered = true;
         continue;
       }
 
-      // End reasoning block on substantial non-reasoning content
       if (this.inReasoningBlock && trimmed.length > 20 && !this.isReasoningContinuation(trimmed)) {
         this.inReasoningBlock = false;
         this.reasoningBlockDepth = 0;
@@ -184,92 +303,29 @@ export class GeminiAdapter extends BaseModelAdapter {
     };
   }
 
-  /**
-   * Check if a line matches known reasoning patterns
-   */
   private isReasoningLine(line: string): boolean {
     return REASONING_PATTERNS.some((pattern) => pattern.test(line));
   }
 
-  /**
-   * Check if a line is likely a continuation of reasoning
-   */
   private isReasoningContinuation(line: string): boolean {
     return REASONING_CONTINUATION_PATTERNS.some((pattern) => pattern.test(line));
   }
 
+  // ─── Adapter metadata ─────────────────────────────────────────────
+
   /**
-   * Reset reasoning state (called between messages)
+   * Reset reasoning filter state between requests.
+   * NOTE: toolCallMap is intentionally NOT cleared — it persists across requests
+   * because Gemini requires thoughtSignatures from previous responses.
    */
-  private resetReasoningState(): void {
-    this.reasoningBuffer = [];
+  override reset(): void {
     this.inReasoningBlock = false;
     this.reasoningBlockDepth = 0;
+    // Do NOT clear toolCallMap or toolNameMap
   }
 
-  /**
-   * Handle request preparation
-   *
-   * NOTE: Thinking/reasoning config is NOT handled here because:
-   * - Native Gemini handlers set it correctly in buildGeminiPayload() as generationConfig.thinkingConfig
-   * - OpenRouter passes thinking directly in the request payload
-   * Adding thinking_level/thinking_config at the root level would cause API errors.
-   */
-  override prepareRequest(request: any, _originalRequest: any): any {
-    // No transformations needed - thinking is handled by the handlers
-    return request;
-  }
-
-  /**
-   * Extract thought signatures from reasoning_details
-   * This should be called when processing streaming chunks
-   */
-  extractThoughtSignaturesFromReasoningDetails(
-    reasoningDetails: any[] | undefined
-  ): Map<string, string> {
-    const extracted = new Map<string, string>();
-
-    if (!reasoningDetails || !Array.isArray(reasoningDetails)) {
-      return extracted;
-    }
-
-    for (const detail of reasoningDetails) {
-      if (detail && detail.type === "reasoning.encrypted" && detail.id && detail.data) {
-        this.thoughtSignatures.set(detail.id, detail.data);
-        extracted.set(detail.id, detail.data);
-      }
-    }
-
-    return extracted;
-  }
-
-  /**
-   * Get a thought signature for a specific tool call ID
-   */
-  getThoughtSignature(toolCallId: string): string | undefined {
-    return this.thoughtSignatures.get(toolCallId);
-  }
-
-  /**
-   * Check if we have a thought signature for a tool call
-   */
-  hasThoughtSignature(toolCallId: string): boolean {
-    return this.thoughtSignatures.has(toolCallId);
-  }
-
-  /**
-   * Get all stored thought signatures
-   */
-  getAllThoughtSignatures(): Map<string, string> {
-    return new Map(this.thoughtSignatures);
-  }
-
-  /**
-   * Clear stored signatures and reasoning state (call between requests)
-   */
-  reset(): void {
-    this.thoughtSignatures.clear();
-    this.resetReasoningState();
+  override getContextWindow(): number {
+    return 1_000_000; // Gemini models have 1M context
   }
 
   shouldHandle(modelId: string): boolean {
@@ -278,5 +334,48 @@ export class GeminiAdapter extends BaseModelAdapter {
 
   getName(): string {
     return "GeminiAdapter";
+  }
+
+  /**
+   * Extract thought signatures from reasoning_details (OpenRouter path).
+   * Not used in the native Gemini path — only relevant when Gemini models
+   * are accessed through OpenRouter which translates to OpenAI format.
+   */
+  extractThoughtSignaturesFromReasoningDetails(
+    reasoningDetails: any[] | undefined
+  ): Map<string, string> {
+    const extracted = new Map<string, string>();
+    if (!reasoningDetails || !Array.isArray(reasoningDetails)) return extracted;
+
+    for (const detail of reasoningDetails) {
+      if (detail?.type === "reasoning.encrypted" && detail.id && detail.data) {
+        this.toolCallMap.set(detail.id, {
+          name: this.toolCallMap.get(detail.id)?.name || "",
+          thoughtSignature: detail.data,
+        });
+        extracted.set(detail.id, detail.data);
+      }
+    }
+
+    return extracted;
+  }
+
+  /** Get a thought signature for a specific tool call ID */
+  getThoughtSignature(toolCallId: string): string | undefined {
+    return this.toolCallMap.get(toolCallId)?.thoughtSignature;
+  }
+
+  /** Check if we have a thought signature for a tool call */
+  hasThoughtSignature(toolCallId: string): boolean {
+    return this.toolCallMap.has(toolCallId) && !!this.toolCallMap.get(toolCallId)?.thoughtSignature;
+  }
+
+  /** Get all stored thought signatures */
+  getAllThoughtSignatures(): Map<string, string> {
+    const result = new Map<string, string>();
+    for (const [id, info] of this.toolCallMap) {
+      if (info.thoughtSignature) result.set(id, info.thoughtSignature);
+    }
+    return result;
   }
 }

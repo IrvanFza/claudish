@@ -8,6 +8,7 @@
  */
 
 import { truncateToolName } from "./tool-name-utils.js";
+import type { ModelPricing } from "../handlers/shared/remote-provider-types.js";
 
 export interface ToolCall {
   id: string;
@@ -94,6 +95,77 @@ export abstract class BaseModelAdapter {
    */
   reset(): void {
     this.toolNameMap.clear();
+  }
+
+  // ─── ComposedHandler integration (Phase 1c) ───────────────────────
+  // These methods have sensible defaults so existing adapters continue
+  // to work unchanged. Override in specific adapters as needed.
+
+  /**
+   * Convert Claude-format messages to the target API format.
+   * Default: delegates to convertMessagesToOpenAI (imported dynamically to avoid circular deps).
+   * Override for non-OpenAI formats (e.g., Gemini parts-based format).
+   */
+  convertMessages(claudeRequest: any, filterIdentityFn?: (s: string) => string): any[] {
+    // Lazy import to avoid circular dependency
+    const { convertMessagesToOpenAI } = require("../handlers/shared/openai-compat.js");
+    return convertMessagesToOpenAI(claudeRequest, this.modelId, filterIdentityFn);
+  }
+
+  /**
+   * Convert Claude tools to the target API format.
+   * Default: OpenAI function-calling format.
+   */
+  convertTools(claudeRequest: any, summarize = false): any[] {
+    const { convertToolsToOpenAI } = require("../handlers/shared/openai-compat.js");
+    return convertToolsToOpenAI(claudeRequest, summarize);
+  }
+
+  /**
+   * Build the full request payload for the target API.
+   * Default: OpenAI Chat Completions format.
+   * Override for Gemini (generateContent), Anthropic passthrough, etc.
+   */
+  buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+    const payload: any = {
+      model: this.modelId,
+      messages,
+      stream: true,
+    };
+    if (tools.length > 0) {
+      payload.tools = tools;
+    }
+    if (claudeRequest.max_tokens) {
+      payload.max_tokens = claudeRequest.max_tokens;
+    }
+    if (claudeRequest.temperature !== undefined) {
+      payload.temperature = claudeRequest.temperature;
+    }
+    return payload;
+  }
+
+  /**
+   * Context window size for this model (tokens).
+   * Used for token tracking and context-left-percent calculation.
+   */
+  getContextWindow(): number {
+    return 200_000;
+  }
+
+  /**
+   * Pricing info for this model. Used by TokenTracker.
+   * Default: delegates to the centralized getModelPricing.
+   */
+  getPricing(providerName: string): ModelPricing {
+    const { getModelPricing } = require("../handlers/shared/remote-provider-types.js");
+    return getModelPricing(providerName, this.modelId);
+  }
+
+  /**
+   * Whether this model supports vision/image input.
+   */
+  supportsVision(): boolean {
+    return true;
   }
 
   /**

@@ -16,7 +16,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@claudish/core": "workspace:*",
+    "claudish": "workspace:*",
     "@hono/node-server": "^1.19.6",
     "cycletls": "^2.0.5",
     "hono": "^4.10.6",

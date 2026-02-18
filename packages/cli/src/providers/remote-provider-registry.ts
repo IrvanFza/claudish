@@ -15,6 +15,7 @@
  * - go/ -> Google Gemini Code Assist (OAuth)
  * - oai/ -> OpenAI API (openai/ routes to OpenRouter)
  * - mmax/, mm/ -> MiniMax API (Anthropic-compatible)
+ * - mmc/ -> MiniMax Coding Plan API (Anthropic-compatible)
  * - kimi/, moonshot/ -> Kimi/Moonshot API (Anthropic-compatible)
  * - glm/, zhipu/ -> GLM/Zhipu API (OpenAI-compatible)
  * - gc/ -> GLM Coding Plan API (OpenAI-compatible)
@@ -100,6 +101,20 @@ const getRemoteProviders = (): RemoteProvider[] => [
     apiPath: "/anthropic/v1/messages",
     apiKeyEnvVar: "MINIMAX_API_KEY",
     prefixes: ["mmax/", "mm/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsJsonMode: false,
+      supportsReasoning: false,
+    },
+  },
+  {
+    name: "minimax-coding",
+    baseUrl: process.env.MINIMAX_CODING_BASE_URL || "https://api.minimax.io",
+    apiPath: "/anthropic/v1/messages",
+    apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
+    prefixes: ["mmc/"],
     capabilities: {
       supportsTools: true,
       supportsVision: true,
@@ -265,6 +280,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     openai: "openai",
     openrouter: "openrouter",
     minimax: "minimax",
+    "minimax-coding": "minimax-coding",
     kimi: "kimi",
     "kimi-coding": "kimi-coding",
     glm: "glm",
@@ -342,6 +358,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
       OPENROUTER_API_KEY:
         "export OPENROUTER_API_KEY='sk-or-...' (get from https://openrouter.ai/keys)",
       MINIMAX_API_KEY: "export MINIMAX_API_KEY='your-key' (get from https://www.minimaxi.com/)",
+      MINIMAX_CODING_API_KEY:
+        "export MINIMAX_CODING_API_KEY='your-key' (get from https://platform.minimax.io/user-center/basic-information/interface-key)",
       MOONSHOT_API_KEY:
         "export MOONSHOT_API_KEY='your-key' (get from https://platform.moonshot.cn/)",
       KIMI_CODING_API_KEY:

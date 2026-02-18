@@ -56,3 +56,16 @@ ai_docs/
 # Temp dev files
 claude
 claude_desktop.flow
+
+# Debug/analysis artifacts
+*.pid
+*.mitm
+*.offset
+analysis_result.txt
+content_types.txt
+decode_traffic.py
+extracted_urls.txt
+jetski_service.txt
+service_offset.txt
+tokens.json
+test-results/

@@ -1,6 +1,6 @@
 {
   "name": "claudish",
-  "version": "4.6.11",
+  "version": "5.0.0",
   "description": "Run Claude Code with any model - OpenRouter, Ollama, LM Studio & local models",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,6 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@claudish/core": "workspace:*",
     "@inquirer/prompts": "^8.0.1",
     "@inquirer/search": "^4.0.1",
     "@modelcontextprotocol/sdk": "^1.22.0",
