@@ -31,6 +31,14 @@ import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthro
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { log, logStructured, getLogLevel, truncateContent } from "../logger.js";
+import { describeImages, type OpenAIImageBlock, type VisionProxyAuthHeaders } from "../services/vision-proxy.js";
+
+function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
+  const headers = c.req.header();
+  const auth: VisionProxyAuthHeaders = {};
+  if (headers["x-api-key"]) auth["x-api-key"] = headers["x-api-key"];
+  return auth;
+}
 
 export interface ComposedHandlerOptions {
   /** Override adapter selection — use this specific adapter instance */
@@ -101,15 +109,49 @@ export class ComposedHandler implements ModelHandler {
     const messages = adapter.convertMessages(claudeRequest, filterIdentity);
     const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
-    // Strip image content for models that don't support vision
+    // Handle image content for models that don't support vision
     if (!adapter.supportsVision()) {
-      for (const msg of messages) {
+      // Collect all image blocks from all messages with their positions
+      const imageBlocks: Array<{ msgIdx: number; partIdx: number; block: OpenAIImageBlock }> = [];
+      for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
+        const msg = messages[msgIdx];
         if (Array.isArray(msg.content)) {
-          msg.content = msg.content.filter((part: any) => part.type !== "image_url");
-          if (msg.content.length === 1 && msg.content[0].type === "text") {
-            msg.content = msg.content[0].text;
-          } else if (msg.content.length === 0) {
-            msg.content = "";
+          for (let partIdx = 0; partIdx < msg.content.length; partIdx++) {
+            const part = msg.content[partIdx];
+            if (part.type === "image_url") {
+              imageBlocks.push({ msgIdx, partIdx, block: part as OpenAIImageBlock });
+            }
+          }
+        }
+      }
+
+      if (imageBlocks.length > 0) {
+        log(`[ComposedHandler] Non-vision model received ${imageBlocks.length} image(s), calling vision proxy`);
+        const auth = extractAuthHeaders(c);
+        const descriptions = await describeImages(imageBlocks.map((b) => b.block), auth);
+
+        if (descriptions !== null) {
+          // Replace image_url blocks with [Image Description: ...] text blocks
+          for (let i = 0; i < imageBlocks.length; i++) {
+            const { msgIdx, partIdx } = imageBlocks[i];
+            messages[msgIdx].content[partIdx] = {
+              type: "text",
+              text: `[Image Description: ${descriptions[i]}]`,
+            };
+          }
+          log(`[ComposedHandler] Vision proxy described ${descriptions.length} image(s)`);
+        } else {
+          // Vision proxy failed — fall back to stripping
+          log(`[ComposedHandler] Vision proxy failed, stripping images`);
+          for (const msg of messages) {
+            if (Array.isArray(msg.content)) {
+              msg.content = msg.content.filter((part: any) => part.type !== "image_url");
+              if (msg.content.length === 1 && msg.content[0].type === "text") {
+                msg.content = msg.content[0].text;
+              } else if (msg.content.length === 0) {
+                msg.content = "";
+              }
+            }
           }
         }
       }
