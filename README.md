@@ -72,6 +72,7 @@ Claudish is a **BYOK AI coding assistant**:
 - ✅ **Autonomous mode** - Bypass all prompts with flags
 - ✅ **Context inheritance** - Runs in current directory with same `.claude` settings
 - ✅ **Agent support** - Use Claude Code agents in headless mode with `--agent`
+- ✅ **Vision proxy** - Non-vision models automatically get image descriptions via Claude, so every model can "see"
 
 ## Installation
 
@@ -470,6 +471,48 @@ claudish --list-agents
 - ✅ **Automatic prefixing** - Adds `@agent-` automatically (`frontend:developer` → `@agent-frontend:developer`)
 - ✅ **Project-specific agents** - Works with any agents installed in `.claude/agents/`
 - ✅ **Agent discovery** - List all available agents with `--list-agents`
+
+## Vision Proxy (NEW in v5.1.0)
+
+**Every model can now "see" images** — even models without native vision support.
+
+When you send an image to a non-vision model (like local Ollama models), Claudish automatically:
+
+1. Detects that the model cannot process images
+2. Sends each image to the Anthropic API (Claude Sonnet) for a rich description
+3. Replaces the image block with `[Image Description: ...]` text
+4. Forwards the enriched message to the target model
+
+```
+Claude Code → image + "what's in this?" → Claudish
+                                             ↓
+                              ┌──────────────────────────────┐
+                              │ Model supports vision?       │
+                              │  YES → pass image through    │
+                              │  NO  → describe via Claude → │
+                              │        replace with text     │
+                              └──────────────────────────────┘
+                                             ↓
+                                      Target Model
+```
+
+**How it works:**
+- Uses your existing `x-api-key` from Claude Code (no extra configuration)
+- Each image is described in parallel (fast even with multiple images)
+- 30-second timeout per image with graceful fallback to stripping
+- Descriptions include text content, layout, colors, code, diagrams, and UI elements
+
+**Example:**
+
+```bash
+# Local Ollama model (no vision) — images are automatically described
+claudish --model ollama@llama3.2 "what's in this screenshot?"
+
+# Vision-capable model — images pass through unchanged
+claudish --model g@gemini-2.5-flash "what's in this screenshot?"
+```
+
+**Fallback behavior:** If the vision proxy fails (network error, timeout, API issue), Claudish falls back to stripping images — the request still goes through, just without image context.
 
 ## Status Line Display
 
@@ -953,7 +996,9 @@ mcp/claudish/
 │   ├── claude-runner.ts      # Claude CLI runner (creates temp settings)
 │   ├── port-manager.ts       # Port utilities
 │   ├── config.ts             # Constants and defaults
-│   └── types.ts              # TypeScript types
+│   ├── types.ts              # TypeScript types
+│   └── services/
+│       └── vision-proxy.ts   # Image description for non-vision models
 ├── tests/                    # Test files
 ├── package.json
 ├── tsconfig.json
@@ -1136,6 +1181,7 @@ If the status line doesn't show the model name:
 | Setup | API key → direct | API key → proxy → OpenRouter |
 | Speed | Direct connection | ~Same (local proxy) |
 | Features | All Claude Code features | All Claude Code features |
+| Vision | Native (Anthropic models) | Any model (auto-described via Claude) |
 
 **When to use Claudish:**
 - ✅ Want to try different models (Grok, GPT-5, etc.)
