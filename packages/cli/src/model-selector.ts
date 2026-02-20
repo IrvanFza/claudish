@@ -306,6 +306,62 @@ async function fetchXAIModels(): Promise<ModelInfo[]> {
 }
 
 /**
+ * Get pricing for Gemini models
+ * Hardcoded based on https://ai.google.dev/gemini-api/docs/pricing
+ */
+function getGeminiPricing(modelId: string): { input: string; output: string; average: string } {
+  const id = modelId.toLowerCase();
+
+  // Gemini 3.1 Pro Preview / Gemini 3 Pro Preview
+  if (id.includes("gemini-3.1-pro") || id.includes("gemini-3-pro")) {
+    return { input: "$2.00", output: "$12.00", average: "$7.00/1M" };
+  }
+  // Gemini 3 Flash Preview
+  if (id.includes("gemini-3-flash")) {
+    return { input: "$0.50", output: "$3.00", average: "$1.75/1M" };
+  }
+  // Gemini 2.5 Pro
+  if (id.includes("gemini-2.5-pro")) {
+    return { input: "$1.25", output: "$10.00", average: "$5.63/1M" };
+  }
+  // Gemini 2.5 Flash-Lite
+  if (id.includes("gemini-2.5-flash-lite")) {
+    return { input: "$0.10", output: "$0.40", average: "$0.25/1M" };
+  }
+  // Gemini 2.5 Flash
+  if (id.includes("gemini-2.5-flash")) {
+    return { input: "$0.30", output: "$2.50", average: "$1.40/1M" };
+  }
+  // Gemini 2.0 Pro Experimental / 2.0 Pro
+  if (id.includes("gemini-2.0-pro")) {
+    return { input: "$1.25", output: "$5.00", average: "$3.13/1M" };
+  }
+  // Gemini 2.0 Flash-Lite
+  if (id.includes("gemini-2.0-flash-lite")) {
+    return { input: "$0.075", output: "$0.30", average: "$0.19/1M" };
+  }
+  // Gemini 2.0 Flash
+  if (id.includes("gemini-2.0-flash")) {
+    return { input: "$0.10", output: "$0.40", average: "$0.25/1M" };
+  }
+  // Gemini 1.5 Pro
+  if (id.includes("gemini-1.5-pro")) {
+    return { input: "$1.25", output: "$5.00", average: "$3.13/1M" };
+  }
+  // Gemini 1.5 Flash-8b
+  if (id.includes("gemini-1.5-flash-8b")) {
+    return { input: "$0.0375", output: "$0.15", average: "$0.09/1M" };
+  }
+  // Gemini 1.5 Flash
+  if (id.includes("gemini-1.5-flash")) {
+    return { input: "$0.075", output: "$0.30", average: "$0.19/1M" };
+  }
+
+  // Default to N/A instead of showing wrong prices
+  return { input: "N/A", output: "N/A", average: "N/A" };
+}
+
+/**
  * Fetch models from Google Gemini
  */
 async function fetchGeminiModels(): Promise<ModelInfo[]> {
@@ -345,11 +401,7 @@ async function fetchGeminiModels(): Promise<ModelInfo[]> {
           name: model.displayName || modelName,
           description: model.description || `Google Gemini model`,
           provider: "Gemini",
-          pricing: {
-            input: "$0.50",
-            output: "$2.00",
-            average: "$1.25/1M",
-          },
+          pricing: getGeminiPricing(modelName),
           context: "128K",
           contextLength: 128000,
           supportsTools: true,

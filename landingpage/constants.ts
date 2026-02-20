@@ -1,4 +1,4 @@
-import { TerminalLine, Feature, ModelCard } from "./types";
+import type { Feature, ModelCard, TerminalLine } from "./types";
 
 export const HERO_SEQUENCE: TerminalLine[] = [
   // 1. System Boot
@@ -17,7 +17,7 @@ export const HERO_SEQUENCE: TerminalLine[] = [
     data: {
       user: "Developer",
       model: "g@gemini-2.5-pro",
-      version: "v4.5.1",
+      version: "v5.1.0",
     },
     delay: 1500,
   },

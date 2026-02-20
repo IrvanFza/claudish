@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from "react";
+import type React from "react";
+import { useEffect, useState } from "react";
 import { HIGHLIGHT_FEATURES, STANDARD_FEATURES } from "../constants";
-import { TerminalWindow } from "./TerminalWindow";
-import { MultiModelAnimation } from "./MultiModelAnimation";
 import { BridgeDiagram } from "./BridgeDiagram";
+import { MultiModelAnimation } from "./MultiModelAnimation";
 import { SmartRouting } from "./SmartRouting";
+import { TerminalWindow } from "./TerminalWindow";
+import { VisionSection } from "./VisionSection";
 
 const COMPARISON_ROWS = [
   { label: "Sub-agent context", others: "Lost", claudish: "Full inheritance" },
@@ -40,7 +42,10 @@ const FeatureSection: React.FC = () => {
             <span className="text-gray-500">But you already pay for other AI subscriptions.</span>
           </h2>
           <p className="text-xl text-gray-500 max-w-2xl mx-auto">
-            Why not use your <span className="text-white">Gemini</span>, <span className="text-white">ChatGPT</span>, <span className="text-white">Grok</span>, or <span className="text-white">Kimi</span> subscription with Claude Code's powerful interface?
+            Why not use your <span className="text-white">Gemini</span>,{" "}
+            <span className="text-white">ChatGPT</span>, <span className="text-white">Grok</span>,
+            or <span className="text-white">Kimi</span> subscription with Claude Code's powerful
+            interface?
           </p>
         </div>
 
@@ -86,8 +91,7 @@ const FeatureSection: React.FC = () => {
             </div>
             <div className="p-6 font-mono text-sm text-left flex-1 flex flex-col justify-center min-h-[200px]">
               <div className="text-gray-400 mb-2">
-                <span className="text-claude-ish">➜</span> claudish --model
-                g@gemini-2.5-pro
+                <span className="text-claude-ish">➜</span> claudish --model g@gemini-2.5-pro
               </div>
               <div className="text-gray-300">
                 <div className="text-claude-ish/80 mb-1">✓ Connected via Google Gemini API</div>
@@ -212,16 +216,25 @@ const FeatureSection: React.FC = () => {
 
           {/* DIALECT LIST */}
           <div className="flex flex-wrap justify-center gap-2 md:gap-4 opacity-70 hover:opacity-100 transition-opacity">
-            {["ANTHROPIC", "OPENAI", "GOOGLE", "X.AI", "KIMI", "MINIMAX", "GLM", "VERTEX AI", "DEEPSEEK", "+580 MORE"].map(
-              (provider) => (
-                <span
-                  key={provider}
-                  className="px-3 py-1 bg-[#151515] border border-gray-800 rounded text-[10px] md:text-xs font-mono text-gray-400"
-                >
-                  [{provider}]
-                </span>
-              )
-            )}
+            {[
+              "ANTHROPIC",
+              "OPENAI",
+              "GOOGLE",
+              "X.AI",
+              "KIMI",
+              "MINIMAX",
+              "GLM",
+              "VERTEX AI",
+              "DEEPSEEK",
+              "+580 MORE",
+            ].map((provider) => (
+              <span
+                key={provider}
+                className="px-3 py-1 bg-[#151515] border border-gray-800 rounded text-[10px] md:text-xs font-mono text-gray-400"
+              >
+                [{provider}]
+              </span>
+            ))}
           </div>
         </div>
       </section>
@@ -229,6 +242,11 @@ const FeatureSection: React.FC = () => {
       {/* NEW SECTION: SMART ROUTING */}
       <section className="py-24 max-w-7xl mx-auto px-6 border-b border-white/5 bg-[#0a0a0a]">
         <SmartRouting />
+      </section>
+
+      {/* NEW SECTION: VISION SECTION */}
+      <section className="py-24 max-w-7xl mx-auto px-6 border-b border-white/5 bg-[#080808]">
+        <VisionSection />
       </section>
 
       {/* 3. FEATURE SHOWCASE */}

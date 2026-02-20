@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from "react";
-import { TerminalWindow } from "./TerminalWindow";
+import type React from "react";
+import { useEffect, useRef, useState } from "react";
 import { HERO_SEQUENCE } from "../constants";
-import { TypingAnimation } from "./TypingAnimation";
 import { BlockLogo } from "./BlockLogo";
+import { TerminalWindow } from "./TerminalWindow";
+import { TypingAnimation } from "./TypingAnimation";
 
 // Text-based Ghost Logo from CLI
 const AsciiGhost = () => {
@@ -91,7 +92,7 @@ const HeroSection: React.FC = () => {
 
   // Update Status Bar based on visible lines
   useEffect(() => {
-    let newStatus = { ...status };
+    const newStatus = { ...status };
     let hasUpdates = false;
 
     // Scan visible lines to find the latest state
@@ -138,15 +139,19 @@ const HeroSection: React.FC = () => {
 
       <div className="text-center mb-12 max-w-5xl mx-auto z-10 flex flex-col items-center">
         <div className="flex flex-wrap gap-3 mb-8 animate-fadeIn justify-center">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-900/30 border border-purple-500/30 text-xs font-mono text-purple-300 shadow-[0_0_15px_rgba(168,85,247,0.2)]">
+            <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
+            NEW: Universal Vision Proxy 👁️
+          </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono text-claude-ish">
             <span className="w-2 h-2 rounded-full bg-claude-ish animate-pulse"></span>
-            v4.5.1
+            v5.1.0
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-900/20 border border-green-500/20 text-xs font-mono text-green-400">
             <span className="text-[10px]">🔑</span>
             BYOK — Bring Your Own Key
           </div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-900/20 border border-purple-500/20 text-xs font-mono text-purple-400">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-900/20 border border-purple-500/20 text-xs font-mono text-gray-400">
             <span className="text-[10px]">💰</span>
             Use Existing Subscriptions
           </div>
@@ -162,10 +167,13 @@ const HeroSection: React.FC = () => {
         </h1>
 
         <p className="text-lg md:text-xl text-gray-400 max-w-3xl mx-auto leading-relaxed font-sans mb-10">
-          <span className="text-claude-ish font-medium">Stop paying for multiple AI subscriptions.</span>
+          <span className="text-claude-ish font-medium">
+            Stop paying for multiple AI subscriptions.
+          </span>
           <br />
-          Use <span className="text-white">Gemini</span>, <span className="text-white">ChatGPT</span>,{" "}
-          <span className="text-white">Grok</span>, <span className="text-white">Kimi</span>, <span className="text-white">Vertex AI</span>,{" "}
+          Use <span className="text-white">Gemini</span>,{" "}
+          <span className="text-white">ChatGPT</span>, <span className="text-white">Grok</span>,{" "}
+          <span className="text-white">Kimi</span>, <span className="text-white">Vertex AI</span>,{" "}
           <span className="text-white">MiniMax</span> with Claude Code's interface.
           <br />
           <span className="text-gray-500">

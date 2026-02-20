@@ -77,7 +77,7 @@ async function describeImage(
 ): Promise<string | null> {
   const parsed = parseDataUrl(image.image_url.url);
   if (!parsed) {
-    log(`[VisionProxy] Skipping image: malformed or non-base64 data URL`);
+    log("[VisionProxy] Skipping image: malformed or non-base64 data URL");
     return null;
   }
 
@@ -136,7 +136,7 @@ async function describeImage(
     const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
     const textBlock = json.content?.find((block) => block.type === "text");
     if (!textBlock || !textBlock.text) {
-      log(`[VisionProxy] No text content in response`);
+      log("[VisionProxy] No text content in response");
       return null;
     }
 
@@ -171,7 +171,7 @@ export async function describeImages(
     const results = await Promise.all(images.map((img) => describeImage(img, auth)));
     // If any result is null, return null to trigger fallback
     if (results.some((r) => r === null)) {
-      log(`[VisionProxy] One or more image descriptions failed, falling back`);
+      log("[VisionProxy] One or more image descriptions failed, falling back");
       return null;
     }
 
