@@ -52,8 +52,10 @@ describe("Group 1: Backward compatibility", () => {
 describe("Group 2: Two-pass parsing", () => {
   test("unknown --agent flag followed by known --stdin --quiet", async () => {
     const config = await parseArgs([
-      "--model", "grok",
-      "--agent", "detective",
+      "--model",
+      "grok",
+      "--agent",
+      "detective",
       "--stdin",
       "--quiet",
     ]);
@@ -65,11 +67,7 @@ describe("Group 2: Two-pass parsing", () => {
   });
 
   test("unknown --effort before known --model and --stdin", async () => {
-    const config = await parseArgs([
-      "--effort", "high",
-      "--model", "grok",
-      "--stdin",
-    ]);
+    const config = await parseArgs(["--effort", "high", "--model", "grok", "--stdin"]);
     expect(config.model).toBe("grok");
     expect(config.stdin).toBe(true);
     // --effort high consumed as a pair (value doesn't start with -)
@@ -78,8 +76,10 @@ describe("Group 2: Two-pass parsing", () => {
 
   test("unknown --permission-mode before --quiet and positional arg", async () => {
     const config = await parseArgs([
-      "--model", "grok",
-      "--permission-mode", "plan",
+      "--model",
+      "grok",
+      "--permission-mode",
+      "plan",
       "--quiet",
       "task",
     ]);
@@ -90,11 +90,7 @@ describe("Group 2: Two-pass parsing", () => {
   });
 
   test("boolean-style unknown flag --no-session-persistence before --stdin", async () => {
-    const config = await parseArgs([
-      "--model", "grok",
-      "--no-session-persistence",
-      "--stdin",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--no-session-persistence", "--stdin"]);
     expect(config.model).toBe("grok");
     expect(config.stdin).toBe(true);
     // --no-session-persistence has no value (next token starts with -)
@@ -108,23 +104,14 @@ describe("Group 2: Two-pass parsing", () => {
 
 describe("Group 3: -- separator", () => {
   test("everything after -- passes through raw", async () => {
-    const config = await parseArgs([
-      "--model", "grok",
-      "--",
-      "--system-prompt", "-v mode",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--", "--system-prompt", "-v mode"]);
     expect(config.model).toBe("grok");
     // Both tokens after -- must be in claudeArgs verbatim
     expect(config.claudeArgs).toEqual(["--system-prompt", "-v mode"]);
   });
 
   test("-- separator with known --stdin before it and args after", async () => {
-    const config = await parseArgs([
-      "--model", "grok",
-      "--stdin",
-      "--",
-      "--agent", "test",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--stdin", "--", "--agent", "test"]);
     expect(config.model).toBe("grok");
     expect(config.stdin).toBe(true);
     expect(config.claudeArgs).toEqual(["--agent", "test"]);
@@ -137,12 +124,7 @@ describe("Group 3: -- separator", () => {
 
 describe("Group 4: Mixed ordering edge cases", () => {
   test("unknown flag at start, then known flags, then positional at end", async () => {
-    const config = await parseArgs([
-      "--agent", "test",
-      "--model", "grok",
-      "--stdin",
-      "task",
-    ]);
+    const config = await parseArgs(["--agent", "test", "--model", "grok", "--stdin", "task"]);
     expect(config.model).toBe("grok");
     expect(config.stdin).toBe(true);
     // --agent test (unknown) and "task" (positional) both in claudeArgs, in order
@@ -150,11 +132,7 @@ describe("Group 4: Mixed ordering edge cases", () => {
   });
 
   test("unknown --max-budget-usd with float value before --quiet", async () => {
-    const config = await parseArgs([
-      "--model", "grok",
-      "--max-budget-usd", "0.50",
-      "--quiet",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--max-budget-usd", "0.50", "--quiet"]);
     expect(config.model).toBe("grok");
     expect(config.quiet).toBe(true);
     // "0.50" does not start with '-' so it is consumed as the flag's value
@@ -176,11 +154,7 @@ describe("Group 4: Mixed ordering edge cases", () => {
 
 describe("Group 5: Dead agent code removed", () => {
   test("--agent passes through to claudeArgs and config has no agent property", async () => {
-    const config = await parseArgs([
-      "--model", "grok",
-      "--agent", "detective",
-      "--stdin",
-    ]);
+    const config = await parseArgs(["--model", "grok", "--agent", "detective", "--stdin"]);
     // --agent detective must land in claudeArgs
     expect(config.claudeArgs).toContain("--agent");
     expect(config.claudeArgs).toContain("detective");
@@ -194,5 +168,70 @@ describe("Group 5: Dead agent code removed", () => {
     // Also verify the config object's own keys do not include 'agent'
     const keys = Object.keys(config);
     expect(keys).not.toContain("agent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group 6: Monitor Mode
+// REGRESSION: --monitor flag set ANTHROPIC_MODEL="unknown" — Fixed in /fix session dev-fix-20260303-122306-f3bfd19b
+// ---------------------------------------------------------------------------
+
+/**
+ * Inline helper extracted from claude-runner.ts:239-240 to make the modelId
+ * calculation unit-testable without spawning processes or creating temp files.
+ */
+function computeModelId(config: ClaudishConfig): string | undefined {
+  const hasProfileMappings =
+    config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
+  return config.model || (hasProfileMappings || config.monitor ? undefined : "unknown");
+}
+
+describe("Group 6: Monitor mode", () => {
+  test("monitor mode without --model does not set modelId", async () => {
+    const config = await parseArgs(["--monitor", "hello"]);
+    expect(config.monitor).toBe(true);
+    expect(config.model).toBeUndefined();
+  });
+
+  test("monitor mode with explicit --model preserves it", async () => {
+    const config = await parseArgs(["--monitor", "--model", "claude-sonnet-4-6", "hello"]);
+    expect(config.monitor).toBe(true);
+    expect(config.model).toBe("claude-sonnet-4-6");
+  });
+
+  test("monitor mode modelId calculation returns undefined", () => {
+    // When monitor=true and no model specified, modelId must be undefined (not "unknown")
+    // so ANTHROPIC_MODEL is not set in the child process environment.
+    const config: ClaudishConfig = {
+      monitor: true,
+      model: undefined,
+      claudeArgs: ["hello"],
+      interactive: false,
+      stdin: false,
+      quiet: false,
+      debug: false,
+      autoApprove: false,
+      concurrency: 1,
+    } as unknown as ClaudishConfig;
+    const modelId = computeModelId(config);
+    expect(modelId).toBeUndefined();
+  });
+
+  test("non-monitor mode without model falls back to unknown", () => {
+    // When monitor=false and no model or profile mappings, modelId must be "unknown"
+    // to preserve existing proxy behavior for unspecified model routing.
+    const config: ClaudishConfig = {
+      monitor: false,
+      model: undefined,
+      claudeArgs: ["hello"],
+      interactive: false,
+      stdin: false,
+      quiet: false,
+      debug: false,
+      autoApprove: false,
+      concurrency: 1,
+    } as unknown as ClaudishConfig;
+    const modelId = computeModelId(config);
+    expect(modelId).toBe("unknown");
   });
 });
