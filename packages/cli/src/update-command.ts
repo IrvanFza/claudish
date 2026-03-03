@@ -129,10 +129,13 @@ function printManualInstructions(): void {
  * Main update command entry point
  */
 export async function updateCommand(): Promise<void> {
-  console.log(`\n${BOLD}Checking for updates...${RESET}\n`);
-
-  // Get current version
+  // Get current version and installation info
   const currentVersion = getVersion();
+  const installInfo = detectInstallationMethod();
+
+  console.log(`claudish v${currentVersion}`);
+  console.log(`Installation: ${installInfo.method}`);
+  console.log(`\n${BOLD}Checking for updates...${RESET}\n`);
 
   // Fetch latest version
   const latestVersion = await fetchLatestVersion();
@@ -156,16 +159,10 @@ export async function updateCommand(): Promise<void> {
   console.log(`${BOLD}Current version:${RESET} ${YELLOW}${currentVersion}${RESET}`);
   console.log(`${BOLD}Latest version:${RESET}  ${GREEN}${latestVersion}${RESET}\n`);
 
-  // Detect installation method
-  const installInfo = detectInstallationMethod();
-
   if (installInfo.method === "unknown") {
     printManualInstructions();
     process.exit(1);
   }
-
-  // Show detected installation method
-  console.log(`${BOLD}Detected installation method:${RESET} ${CYAN}${installInfo.method}${RESET}`);
 
   // Get update command
   const command = getUpdateCommand(installInfo.method);

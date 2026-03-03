@@ -98,7 +98,7 @@ if (isMcpMode) {
   });
 } else if (isUpdateCommand) {
   // Self-update command (checked early to work with aliases like `claudish -y update`)
-  runSelfUpdate();
+  import("./update-command.js").then((m) => m.updateCommand());
 } else if (isInitCommand) {
   // Profile setup wizard — pass --local/--global scope flag if provided
   const scopeFlag = args.includes("--local") ? "local" : args.includes("--global") ? "global" : undefined;
@@ -117,108 +117,6 @@ if (isMcpMode) {
 } else {
   // CLI mode
   runCli();
-}
-
-/**
- * Detect how claudish was installed
- */
-function detectInstallMethod(): "npm" | "bun" | "brew" | "unknown" {
-  const scriptPath = process.argv[1] || "";
-
-  if (scriptPath.includes("/.bun/")) {
-    return "bun";
-  }
-  if (scriptPath.includes("/Cellar/") || scriptPath.includes("/homebrew/")) {
-    return "brew";
-  }
-  if (scriptPath.includes("/node_modules/") || scriptPath.includes("/.nvm/") || scriptPath.includes("/npm/")) {
-    return "npm";
-  }
-  return "unknown";
-}
-
-/**
- * Get update command based on installation method
- */
-function getUpdateCommand(method: "npm" | "bun" | "brew" | "unknown"): string {
-  switch (method) {
-    case "bun":
-      return "bun install -g claudish@latest";
-    case "brew":
-      return "brew upgrade claudish";
-    case "npm":
-    default:
-      return "npm install -g claudish@latest";
-  }
-}
-
-/**
- * Run claudish self-update
- */
-async function runSelfUpdate() {
-  const { getVersion } = await import("./cli.js");
-  const { execSync } = await import("node:child_process");
-  const { createInterface } = await import("node:readline");
-
-  const currentVersion = getVersion();
-  const installMethod = detectInstallMethod();
-
-  console.log(`claudish v${currentVersion}`);
-  console.log(`Installation: ${installMethod}`);
-  console.log("\nChecking for updates...\n");
-
-  try {
-    // Fetch latest version from npm
-    const response = await fetch("https://registry.npmjs.org/claudish/latest", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      console.error("Failed to check for updates");
-      process.exit(1);
-    }
-
-    const data = await response.json();
-    const latestVersion = data.version;
-
-    if (latestVersion === currentVersion) {
-      console.log(`✓ claudish is up to date (v${currentVersion})`);
-      process.exit(0);
-    }
-
-    const updateCmd = getUpdateCommand(installMethod);
-    console.log(`New version available: v${currentVersion} → v${latestVersion}\n`);
-
-    // Prompt user for confirmation
-    const shouldUpdate = await new Promise<boolean>((resolve) => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question("Update now? [Y/n] ", (answer) => {
-        rl.close();
-        const normalized = answer.toLowerCase().trim();
-        resolve(normalized === "" || normalized === "y" || normalized === "yes");
-      });
-    });
-
-    if (!shouldUpdate) {
-      console.log(`\nSkipped. Update later with:\n  ${updateCmd}\n`);
-      process.exit(0);
-    }
-
-    // Run the update
-    console.log("\nUpdating...\n");
-    try {
-      execSync(updateCmd, { stdio: "inherit", shell: true });
-      console.log(`\n✓ Updated to v${latestVersion}! Please restart claudish.\n`);
-    } catch {
-      console.error(`\nUpdate failed. Try manually:\n  ${updateCmd}\n`);
-      process.exit(1);
-    }
-
-    process.exit(0);
-  } catch (error) {
-    console.error("Failed to check for updates:", error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
 }
 
 /**
