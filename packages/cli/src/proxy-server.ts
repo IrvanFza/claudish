@@ -39,6 +39,11 @@ import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.j
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import { fetchLiteLLMModels } from "./model-loader.js";
+import {
+  resolveModelNameSync,
+  logResolution,
+  warmAllCatalogs,
+} from "./providers/model-catalog-resolver.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -415,6 +420,22 @@ export async function createProxyServer(
       target = model;
     }
 
+    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter and LiteLLM
+    // This must happen after target is determined but before handler construction.
+    // resolveModelNameSync is synchronous (uses in-memory cache + readFileSync).
+    {
+      const parsedTarget = parseModelSpec(target);
+      if (parsedTarget.provider === "openrouter" || parsedTarget.provider === "litellm") {
+        const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
+        logResolution(parsedTarget.model, resolution, options.quiet);
+        if (resolution.wasResolved) {
+          // Reconstruct target with resolved model name so handler construction
+          // uses the correct fully-qualified API ID (e.g., "qwen/qwen3-coder-next").
+          target = `${parsedTarget.provider}@${resolution.resolvedId}`;
+        }
+      }
+    }
+
     // 3. Check for Poe Model (poe: prefix)
     if (isPoeModel(target)) {
       const poeHandler = getPoeHandler(target);
@@ -512,6 +533,14 @@ export async function createProxyServer(
 
   // Warm pricing cache in background (non-blocking)
   warmPricingCache().catch(() => {});
+
+  // Warm model catalog resolvers in background (non-blocking)
+  // OpenRouter always warms; LiteLLM only if configured.
+  const catalogProvidersToWarm = ["openrouter"];
+  if (process.env.LITELLM_BASE_URL) catalogProvidersToWarm.push("litellm");
+  warmAllCatalogs(catalogProvidersToWarm).catch(() => {
+    // Warming failures are non-fatal — resolver falls back to passthrough
+  });
 
   return {
     port,

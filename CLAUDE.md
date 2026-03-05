@@ -48,11 +48,26 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 
-### Unknown Vendors
-Models like `deepseek/`, `qwen/`, `mistralai/` require explicit routing:
-```bash
-claudish --model openrouter@deepseek/deepseek-r1 "task"
-```
+### Vendor Prefix Auto-Resolution (ModelCatalogResolver)
+
+API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that users shouldn't need to know. The `ModelCatalogResolver` interface searches each aggregator's dynamic model catalog to find the correct prefix automatically.
+
+**How it works**: User types bare model name → resolver searches the provider's already-fetched model list → finds the exact match with vendor prefix → sends the prefixed name to the API.
+
+**Current resolvers**:
+- **OpenRouter**: `or@qwen3-coder-next` → searches catalog → sends `qwen/qwen3-coder-next`
+- **LiteLLM**: `ll@gpt-4o` → searches model groups → finds `openai/gpt-4o` (prefix-strip match)
+- **Static fallback**: `OPENROUTER_VENDOR_MAP` for cold starts when catalog isn't loaded yet
+
+**Key design rules**:
+- Exact match only — no fuzzy/normalized matching. Find the right prefix, don't guess the model.
+- Dynamic catalogs (from provider APIs) are PRIMARY. Static map is cold-start fallback only.
+- Resolution happens BEFORE handler construction (in `proxy-server.ts`), not inside adapters.
+- Sync entry point (`resolveModelNameSync()`) — uses in-memory caches + `readFileSync`, no async propagation.
+
+**Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
+
+**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`
 
 ## Local Model Support
 

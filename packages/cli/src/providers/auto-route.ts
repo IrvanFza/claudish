@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
+import { resolveModelNameSync } from "./model-catalog-resolver.js";
 
 export interface AutoRouteResult {
   provider: string;
@@ -38,20 +39,6 @@ const API_KEY_ENV_VARS: Record<string, { envVar: string; aliases?: string[] }> =
   openrouter: { envVar: "OPENROUTER_API_KEY" },
   vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
   poe: { envVar: "POE_API_KEY" },
-};
-
-const OPENROUTER_VENDOR_MAP: Record<string, string> = {
-  google: "google",
-  openai: "openai",
-  kimi: "moonshotai",
-  "kimi-coding": "moonshotai",
-  glm: "z-ai",
-  "glm-coding": "z-ai",
-  zai: "z-ai",
-  minimax: "minimax",
-  ollamacloud: "meta-llama",
-  qwen: "qwen",
-  // poe intentionally excluded - not available on OpenRouter
 };
 
 function readLiteLLMCacheSync(baseUrl: string): Array<{ id: string; name: string }> | null {
@@ -116,19 +103,6 @@ function checkApiKeyForProvider(
   }
 
   return null;
-}
-
-function formatForOpenRouter(modelName: string, nativeProvider: string): string {
-  if (modelName.includes("/")) {
-    return modelName;
-  }
-
-  const vendor = OPENROUTER_VENDOR_MAP[nativeProvider];
-  if (vendor) {
-    return `${vendor}/${modelName}`;
-  }
-
-  return modelName;
 }
 
 /**
@@ -265,7 +239,8 @@ export function autoRoute(modelName: string, nativeProvider: string): AutoRouteR
 
   // Step 4: OpenRouter fallback
   if (process.env.OPENROUTER_API_KEY) {
-    const orModelId = formatForOpenRouter(modelName, nativeProvider);
+    const resolution = resolveModelNameSync(modelName, "openrouter");
+    const orModelId = resolution.resolvedId;
     return {
       provider: "openrouter",
       resolvedModelId: orModelId,
