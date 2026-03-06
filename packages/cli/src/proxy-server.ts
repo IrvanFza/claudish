@@ -265,26 +265,33 @@ export async function createProxyServer(
           isInteractive: options.isInteractive,
         });
         log(`[Proxy] Created ${resolved.provider.name} handler (composed): ${resolved.modelName}`);
-      } else if (resolved.provider.name === "opencode-zen") {
-        // OpenCode Zen uses OpenAI-compatible API for most models
-        // MiniMax models on Zen use Anthropic-compatible API
+      } else if (
+        resolved.provider.name === "opencode-zen" ||
+        resolved.provider.name === "opencode-zen-go"
+      ) {
+        // OpenCode Zen — two tiers:
+        //   zen/  (opencode-zen):    free anonymous models + full paid access (OPENCODE_API_KEY)
+        //   zgo/  (opencode-zen-go): go-plan models (glm-5, minimax-m2.5, kimi-k2.5) via zen/go/v1/
+        // Free anonymous models work without a key; use "public" as fallback for consistent rate-limit bucket
+        const zenApiKey = apiKey || "public";
+        const isGoProvider = resolved.provider.name === "opencode-zen-go";
         if (resolved.modelName.toLowerCase().includes("minimax")) {
-          const zenAcProvider = new AnthropicCompatProvider(resolved.provider, apiKey);
+          const zenAcProvider = new AnthropicCompatProvider(resolved.provider, zenApiKey);
           const zenAcAdapter = new AnthropicPassthroughAdapter(resolved.modelName, resolved.provider.name);
           handler = new ComposedHandler(zenAcProvider, targetModel, resolved.modelName, port, {
             adapter: zenAcAdapter,
             isInteractive: options.isInteractive,
           });
-          log(`[Proxy] Created OpenCode Zen (Anthropic composed): ${resolved.modelName}`);
+          log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Anthropic composed): ${resolved.modelName}`);
         } else {
-          const zenProvider = new OpenAIProvider(resolved.provider, resolved.modelName, apiKey);
+          const zenProvider = new OpenAIProvider(resolved.provider, resolved.modelName, zenApiKey);
           const zenAdapter = new OpenAIAdapter(resolved.modelName, resolved.provider.capabilities);
           handler = new ComposedHandler(zenProvider, targetModel, resolved.modelName, port, {
             adapter: zenAdapter,
             tokenStrategy: "delta-aware",
             isInteractive: options.isInteractive,
           });
-          log(`[Proxy] Created OpenCode Zen (composed): ${resolved.modelName}`);
+          log(`[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (composed): ${resolved.modelName}`);
         }
       } else if (resolved.provider.name === "ollamacloud") {
         // OllamaCloud uses Ollama native API (NOT OpenAI-compatible) — composed handler

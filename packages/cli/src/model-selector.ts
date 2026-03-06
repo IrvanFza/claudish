@@ -158,31 +158,124 @@ function toModelInfo(model: any): ModelInfo {
 }
 
 /**
- * Fetch free models from OpenCode Zen
+ * Fetch Zen Go plan models (glm-5, minimax-m2.5, kimi-k2.5).
+ * Probes zen/go/v1/ to discover which models the key has go-plan access to,
+ * then enriches with models.dev metadata.
+ */
+async function fetchZenGoModels(): Promise<ModelInfo[]> {
+  const apiKey = process.env.OPENCODE_API_KEY;
+  if (!apiKey) return [];
+
+  const ZEN_GO_BASE = process.env.OPENCODE_BASE_URL
+    ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go")
+    : "https://opencode.ai/zen/go";
+
+  try {
+    // Fetch models.dev for metadata
+    const mdevResp = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(5000) });
+    if (!mdevResp.ok) return [];
+    const mdevData = await mdevResp.json();
+    const ocModels: Record<string, any> = mdevData?.opencode?.models ?? {};
+
+    // Probe candidate models against zen/go/v1/ to discover which ones actually work.
+    // Only probe models that appear in models.dev opencode catalog (so we have metadata).
+    // We check for actual success (choices in response) rather than inferring from error type,
+    // because different backends (Kimi, MiniMax) use non-standard error schemas that make
+    // the "not ModelError" heuristic unreliable.
+    const candidateIds = Object.keys(ocModels);
+    const fallbackIds = ["glm-5"]; // confirmed working as of investigation
+
+    // Probe each candidate in parallel — include only if we get a real choices response
+    const probeResults = await Promise.all(
+      candidateIds.map(async (modelId) => {
+        try {
+          const r = await fetch(`${ZEN_GO_BASE}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({ model: modelId, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+            signal: AbortSignal.timeout(8000),
+          });
+          if (!r.ok) return null;
+          const body = await r.json().catch(() => ({}));
+          // Only include if we got actual completion choices back
+          return Array.isArray(body?.choices) && body.choices.length > 0 ? modelId : null;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    // If probing fails entirely (network error, all timeouts), fall back to known list
+    const discoveredIds = probeResults.filter(Boolean) as string[];
+    const goModelIds = discoveredIds.length > 0 ? discoveredIds : fallbackIds;
+
+    return goModelIds
+      .map((id) => {
+        const m = ocModels[id];
+        if (!m) return null;
+        const inputModalities = m.modalities?.input ?? [];
+        return {
+          id: `zgo@${id}`,
+          name: m.name || id,
+          description: `OpenCode Zen Go plan model`,
+          provider: "Zen Go",
+          pricing: { input: "PLAN", output: "PLAN", average: "PLAN" },
+          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
+          contextLength: m.limit?.context || 128000,
+          supportsTools: m.tool_call === true,
+          supportsReasoning: m.reasoning || false,
+          supportsVision: inputModalities.includes("image") || inputModalities.includes("video"),
+          isFree: false,
+          source: "Zen" as const,
+        };
+      })
+      .filter(Boolean) as ModelInfo[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch free models from OpenCode Zen.
+ * Cross-references models.dev catalog (cost/capabilities) with the live Zen
+ * /v1/models endpoint so we only surface models that are actually deployed.
  */
 async function fetchZenFreeModels(): Promise<ModelInfo[]> {
   try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
+    const ZEN_BASE = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen";
+    const ZEN_API_KEY = process.env.OPENCODE_API_KEY || "public";
 
-    if (!response.ok) {
-      return [];
-    }
+    // Fetch models.dev catalog and live Zen model list in parallel
+    const [mdevResp, liveResp] = await Promise.all([
+      fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(5000) }),
+      fetch(`${ZEN_BASE}/v1/models`, {
+        headers: { Authorization: `Bearer ${ZEN_API_KEY}` },
+        signal: AbortSignal.timeout(5000),
+      }),
+    ]);
 
-    const data = await response.json();
-    const opencode = data.opencode;
+    if (!mdevResp.ok) return [];
+
+    const mdevData = await mdevResp.json();
+    const opencode = mdevData.opencode;
     if (!opencode?.models) return [];
 
-    // Get free models with tool support
+    // Build set of model IDs actually deployed on Zen
+    const liveIds = new Set<string>();
+    if (liveResp.ok) {
+      const liveData = await liveResp.json();
+      for (const m of liveData.data ?? []) liveIds.add(m.id);
+    }
+
     return Object.entries(opencode.models)
-      .filter(([_, m]: [string, any]) => {
+      .filter(([id, m]: [string, any]) => {
         const isFree = m.cost?.input === 0 && m.cost?.output === 0;
         const supportsTools = m.tool_call === true;
-        return isFree && supportsTools;
+        // Only include models that are actually live on the Zen API
+        const isLive = liveIds.size === 0 || liveIds.has(id);
+        return isFree && supportsTools && isLive;
       })
       .map(([id, m]: [string, any]) => {
-        // Check vision support from modalities
         const inputModalities = m.modalities?.input || [];
         const supportsVision = inputModalities.includes("image") || inputModalities.includes("video");
 
@@ -733,6 +826,7 @@ async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> 
     { name: "GLM Coding", promise: fetchGLMCodingModels() },
     { name: "OllamaCloud", promise: fetchOllamaCloudModels() },
     { name: "Zen", promise: fetchZenFreeModels() },
+    { name: "Zen Go", promise: fetchZenGoModels() },
   ];
 
   // Add LiteLLM fetch if configured

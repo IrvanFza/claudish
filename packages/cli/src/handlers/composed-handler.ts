@@ -521,6 +521,10 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
   if (status === 401 || status === 403) {
+    // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
+    if (lower.includes("not supported") || lower.includes("unsupported model") || lower.includes("model not found")) {
+      return "Model not supported by this provider. Verify model name.";
+    }
     return "Check API key / OAuth credentials.";
   }
   if (status === 404) {

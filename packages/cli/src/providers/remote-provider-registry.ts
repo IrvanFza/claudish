@@ -214,7 +214,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     name: "opencode-zen",
     baseUrl: process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen",
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "", // Empty - free models don't require API key
+    apiKeyEnvVar: "OPENCODE_API_KEY",
     prefixes: ["zen/"],
     capabilities: {
       supportsTools: true,
@@ -222,6 +222,23 @@ const getRemoteProviders = (): RemoteProvider[] => [
       supportsStreaming: true,
       supportsJsonMode: true,
       supportsReasoning: false,
+    },
+  },
+  {
+    // OpenCode Zen "Go" plan — same API key, lite model list (glm-5, minimax-m2.5, kimi-k2.5)
+    name: "opencode-zen-go",
+    baseUrl: process.env.OPENCODE_BASE_URL
+      ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go")
+      : "https://opencode.ai/zen/go",
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "OPENCODE_API_KEY",
+    prefixes: ["zengo/", "zgo/"],
+    capabilities: {
+      supportsTools: true,
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsJsonMode: true,
+      supportsReasoning: true,
     },
   },
   {
@@ -290,6 +307,7 @@ export function resolveRemoteProvider(modelId: string): ResolvedRemoteProvider |
     zai: "zai",
     ollamacloud: "ollamacloud",
     "opencode-zen": "opencode-zen",
+    "opencode-zen-go": "opencode-zen-go",
     vertex: "vertex", // Note: vertex might need special handling
     "gemini-codeassist": "gemini-codeassist",
     litellm: "litellm",

@@ -77,6 +77,7 @@ export class OpenAIProvider implements ProviderTransport {
 
   private static formatDisplayName(name: string): string {
     if (name === "opencode-zen") return "Zen";
+    if (name === "opencode-zen-go") return "Zen Go";
     if (name === "glm") return "GLM";
     if (name === "glm-coding") return "GLM Coding";
     if (name === "openai") return "OpenAI";
