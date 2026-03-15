@@ -104,7 +104,7 @@ const getRemoteProviders = (): RemoteProvider[] => [
     authScheme: "bearer",
     capabilities: {
       supportsTools: true,
-      supportsVision: true,
+      supportsVision: false, // MiniMax-M2.5 cannot process images
       supportsStreaming: true,
       supportsJsonMode: false,
       supportsReasoning: false,
