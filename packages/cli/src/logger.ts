@@ -3,6 +3,7 @@ import { join } from "path";
 
 let logFilePath: string | null = null;
 let logLevel: "debug" | "info" | "minimal" = "info"; // Default to structured logging
+let stderrQuiet = false; // When true, logStderr writes to log file only (no terminal output)
 let logBuffer: string[] = []; // Buffer for async writes
 let flushTimer: NodeJS.Timeout | null = null;
 const FLUSH_INTERVAL_MS = 100; // Flush every 100ms
@@ -116,12 +117,23 @@ export function log(message: string, forceConsole = false): void {
 }
 
 /**
- * Log a message to stderr (always visible) and to the debug log file.
- * Use for errors and warnings that programmatic callers need to detect.
+ * Log a message to stderr and to the debug log file.
+ * In quiet mode (interactive Claude Code sessions), only writes to log file
+ * to avoid corrupting Claude Code's TUI display.
  */
 export function logStderr(message: string): void {
-  process.stderr.write(`[claudish] ${message}\n`);
-  log(message); // also write to debug log
+  if (!stderrQuiet) {
+    process.stderr.write(`[claudish] ${message}\n`);
+  }
+  log(message); // always write to debug log
+}
+
+/**
+ * Suppress stderr output (for interactive Claude Code sessions where
+ * stderr corrupts the TUI). Log file output is preserved.
+ */
+export function setStderrQuiet(quiet: boolean): void {
+  stderrQuiet = quiet;
 }
 
 /**

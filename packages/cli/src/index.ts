@@ -197,7 +197,7 @@ async function runCli() {
     getMissingKeyResolutions,
     getMissingKeysError,
   } = await import("./providers/provider-resolver.js");
-  const { initLogger, getLogFilePath } = await import("./logger.js");
+  const { initLogger, getLogFilePath, setStderrQuiet } = await import("./logger.js");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdates } = await import("./update-checker.js");
@@ -388,11 +388,19 @@ async function runCli() {
       }
     );
 
+    // In interactive mode, Claude Code owns the terminal — suppress stderr
+    // to avoid corrupting its TUI. All messages still go to the debug log file.
+    if (cliConfig.interactive) {
+      setStderrQuiet(true);
+    }
+
     // Run Claude Code with proxy
     let exitCode = 0;
     try {
       exitCode = await runClaudeWithProxy(cliConfig, proxy.url);
     } finally {
+      // Restore stderr before shutdown messages
+      setStderrQuiet(false);
       // Always cleanup proxy
       if (!cliConfig.quiet) {
         console.log("\n[claudish] Shutting down proxy server...");
