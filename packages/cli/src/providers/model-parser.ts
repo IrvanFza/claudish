@@ -180,6 +180,9 @@ export const NATIVE_MODEL_PATTERNS: Array<{
   { pattern: /^llama-/i, provider: "ollamacloud" },
   { pattern: /^llama3/i, provider: "ollamacloud" },
 
+  // OpenRouter vendor-prefixed models (openrouter/hunter-alpha, etc.)
+  { pattern: /^openrouter\//i, provider: "openrouter" },
+
   // Qwen models (auto-routed, no direct API yet)
   { pattern: /^qwen/i, provider: "qwen" },
 
@@ -205,7 +208,6 @@ export const LEGACY_PREFIX_PATTERNS: Array<{
   { prefix: "gemini/", provider: "google", stripPrefix: true },
   { prefix: "oai/", provider: "openai", stripPrefix: true },
   { prefix: "or/", provider: "openrouter", stripPrefix: true },
-  { prefix: "openrouter/", provider: "openrouter", stripPrefix: false },
   { prefix: "mmax/", provider: "minimax", stripPrefix: true },
   { prefix: "mm/", provider: "minimax", stripPrefix: true },
   { prefix: "mmc/", provider: "minimax-coding", stripPrefix: true },

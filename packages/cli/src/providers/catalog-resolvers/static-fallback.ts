@@ -12,6 +12,7 @@ const OPENROUTER_VENDOR_MAP: Record<string, string> = {
   "glm-coding": "z-ai",
   zai: "z-ai",
   minimax: "minimax",
+  openrouter: "openrouter",
   ollamacloud: "meta-llama",
   qwen: "qwen",
   // poe intentionally excluded - not available on OpenRouter

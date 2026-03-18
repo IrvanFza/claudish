@@ -531,7 +531,14 @@ export class ComposedHandler implements ModelHandler {
           // Stats must never crash claudish
         }
 
-        return c.json({ error: errorText }, response.status as any);
+        // Parse error body to avoid double-JSON-encoding (errorText is already JSON)
+        let errorBody: any;
+        try {
+          errorBody = JSON.parse(errorText);
+        } catch {
+          errorBody = { error: { type: "api_error", message: errorText } };
+        }
+        return c.json(errorBody, response.status as any);
       }
     }
 
@@ -616,7 +623,10 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    switch (this.provider.streamFormat) {
+    // Stream format: adapter knows the target API's response format.
+    // Transport can override for aggregators that normalize format.
+    const streamFormat = this.provider.overrideStreamFormat?.() ?? this.getAdapter().getStreamFormat();
+    switch (streamFormat) {
       case "openai-sse":
         return createStreamingResponseHandler(
           c,
@@ -666,7 +676,7 @@ export class ComposedHandler implements ModelHandler {
         });
 
       default:
-        throw new Error(`Unknown stream format: ${this.provider.streamFormat}`);
+        throw new Error(`Unknown stream format: ${streamFormat}`);
     }
   }
 
