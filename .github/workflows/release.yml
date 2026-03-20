@@ -75,95 +75,59 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Install git-cliff
+        uses: kenji-miyake/setup-git-cliff@v2
+
       - name: Generate release notes
-        id: notes
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           CURRENT_TAG="v${VERSION}"
-
-          # Find previous tag
           PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | grep -v "^${CURRENT_TAG}$" | head -1)
 
-          if [ -z "$PREV_TAG" ]; then
-            # No previous tag — use all commits
-            RANGE="HEAD"
+          # Generate release notes for this tag only
+          if [ -n "$PREV_TAG" ]; then
+            git cliff "${PREV_TAG}..${CURRENT_TAG}" --strip header -o release-notes.md
           else
-            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+            git cliff --strip header -o release-notes.md
           fi
 
-          echo "Generating notes for range: ${RANGE}"
+          # Append install section
+          cat >> release-notes.md <<'INSTALL'
 
-          # Collect commits by category using conventional commit prefixes
-          FEATURES=""
-          FIXES=""
-          DOCS=""
-          OTHER=""
+## Install
 
-          while IFS= read -r line; do
-            # Skip empty lines
-            [ -z "$line" ] && continue
+```bash
+# npm
+npm install -g claudish
 
-            # Extract hash and message
-            HASH=$(echo "$line" | cut -d' ' -f1)
-            MSG=$(echo "$line" | cut -d' ' -f2-)
-            SHORT_HASH="${HASH:0:7}"
+# Homebrew
+brew install MadAppGang/tap/claudish
 
-            # Categorize by conventional commit prefix
-            case "$MSG" in
-              feat!:*|feat\!:*)
-                FEATURES="${FEATURES}- **BREAKING**: ${MSG#feat!: } (\`${SHORT_HASH}\`)"$'\n'
-                ;;
-              feat:*)
-                FEATURES="${FEATURES}- ${MSG#feat: } (\`${SHORT_HASH}\`)"$'\n'
-                ;;
-              fix:*)
-                FIXES="${FIXES}- ${MSG#fix: } (\`${SHORT_HASH}\`)"$'\n'
-                ;;
-              docs:*)
-                DOCS="${DOCS}- ${MSG#docs: } (\`${SHORT_HASH}\`)"$'\n'
-                ;;
-              *)
-                OTHER="${OTHER}- ${MSG} (\`${SHORT_HASH}\`)"$'\n'
-                ;;
-            esac
-          done <<< "$(git log --oneline --no-merges ${RANGE})"
-
-          # Build release notes body
-          BODY=""
-
-          if [ -n "$FEATURES" ]; then
-            BODY="${BODY}## 🚀 New Features"$'\n\n'"${FEATURES}"$'\n'
-          fi
-
-          if [ -n "$FIXES" ]; then
-            BODY="${BODY}## 🐛 Bug Fixes"$'\n\n'"${FIXES}"$'\n'
-          fi
-
-          if [ -n "$DOCS" ]; then
-            BODY="${BODY}## 📖 Documentation"$'\n\n'"${DOCS}"$'\n'
-          fi
-
-          if [ -n "$OTHER" ]; then
-            BODY="${BODY}## 🔧 Other Changes"$'\n\n'"${OTHER}"$'\n'
-          fi
-
-          # Add install section
-          BODY="${BODY}## 📦 Install"$'\n\n'
-          BODY="${BODY}"'```bash'$'\n'
-          BODY="${BODY}# npm"$'\n'
-          BODY="${BODY}npm install -g claudish"$'\n\n'
-          BODY="${BODY}# or download binary from assets below"$'\n'
-          BODY="${BODY}"'```'$'\n\n'
+# or download binary from assets below
+```
+INSTALL
 
           # Add compare link
           if [ -n "$PREV_TAG" ]; then
-            BODY="${BODY}**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${CURRENT_TAG}"$'\n'
+            echo "" >> release-notes.md
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${CURRENT_TAG}" >> release-notes.md
           fi
 
-          # Write to file (avoids shell escaping issues with $GITHUB_OUTPUT)
-          echo "$BODY" > release-notes.md
           echo "Generated release notes:"
           cat release-notes.md
+
+      - name: Update CHANGELOG.md
+        run: |
+          git cliff -o CHANGELOG.md
+          if git diff --quiet CHANGELOG.md; then
+            echo "CHANGELOG.md unchanged"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "docs: update CHANGELOG.md for v${GITHUB_REF#refs/tags/v}"
+            git push origin HEAD:main
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

@@ -31,6 +31,8 @@ const SECTION_COLORS: Record<string, string> = {
   "New Features": "border-emerald-500/60",
   "Bug Fixes": "border-yellow-500/60",
   Documentation: "border-blue-500/60",
+  Performance: "border-purple-500/60",
+  Refactoring: "border-cyan-500/60",
   "Other Changes": "border-gray-500/60",
 };
 
