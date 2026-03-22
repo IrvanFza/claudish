@@ -375,7 +375,7 @@ export function getStatus(sessionPath: string): TeamStatus {
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
 
-function fisherYatesShuffle<T>(arr: T[]): T[] {
+export function fisherYatesShuffle<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
@@ -390,7 +390,7 @@ function getDefaultJudgeModels(sessionPath: string): string[] {
   return Object.values(manifest.models).map((e) => e.model);
 }
 
-function buildJudgePrompt(input: string, responses: Record<string, string>): string {
+export function buildJudgePrompt(input: string, responses: Record<string, string>): string {
   const ids = Object.keys(responses).sort();
   let prompt = "## Blind Evaluation Task\n\n";
   prompt += "### Original Task\n\n";
@@ -420,7 +420,7 @@ function buildJudgePrompt(input: string, responses: Record<string, string>): str
   return prompt;
 }
 
-function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteResult[] {
+export function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteResult[] {
   const votes: VoteResult[] = [];
   const responseFiles = readdirSync(judgePath)
     .filter((f) => f.startsWith("response-") && f.endsWith(".md"))
@@ -471,7 +471,7 @@ function parseJudgeVotes(judgePath: string, responseIds: string[]): VoteResult[]
   return votes;
 }
 
-function aggregateVerdict(votes: VoteResult[], responseIds: string[]): TeamVerdict {
+export function aggregateVerdict(votes: VoteResult[], responseIds: string[]): TeamVerdict {
   const responses: TeamVerdict["responses"] = {};
 
   for (const id of responseIds) {
