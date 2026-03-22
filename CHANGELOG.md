@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [5.18.1] - 2026-03-22
+
+### Documentation
+
+- update CHANGELOG.md for v5.18.0([`3e934c5`](https://github.com/MadAppGang/claudish/commit/3e934c592263e58afb3885c3a4c03d982a004558))
+
+### New Features
+
+- v5.18.1 - API key provenance in debug logs and --probe([`cedd48d`](https://github.com/MadAppGang/claudish/commit/cedd48d22bd26e68a99a43269caeee83c987f073))
+- API key provenance tracking in debug logs and --probe (#83)([`c9996a1`](https://github.com/MadAppGang/claudish/commit/c9996a155515e1e4a588d177a7204bee8b442fe8))
+
 ## [5.18.0] - 2026-03-21
 
 ### Documentation
