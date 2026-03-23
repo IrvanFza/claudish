@@ -114,8 +114,8 @@ describe("Group 1: E2E — Single-shot mode full pipeline", () => {
     expect(args[1]).toBe(MOCK_SETTINGS_PATH);
     expect(args[2]).toBe("-p");
     expect(args).toContain("hello");
-    // No extra flags added
-    expect(args).not.toContain("--dangerously-skip-permissions");
+    // Auto-approve is enabled by default
+    expect(args).toContain("--dangerously-skip-permissions");
     expect(args).not.toContain("--output-format");
   });
 
@@ -249,13 +249,13 @@ describe("Group 2: E2E — Interactive mode full pipeline", () => {
     expect(args).toContain("researcher");
   });
 
-  test("claudish --model grok -i (no claudeArgs) → default to interactive, args only has --settings", async () => {
+  test("claudish --model grok -i (no claudeArgs) → default to interactive, args has --settings and --dangerously-skip-permissions", async () => {
     const config = await parseArgs(["--model", "grok", "-i"]);
     expect(config.interactive).toBe(true);
     expect(config.claudeArgs).toEqual([]);
 
     const args = buildClaudeArgs(config);
-    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH]);
+    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH, "--dangerously-skip-permissions"]);
   });
 });
 
@@ -391,8 +391,8 @@ describe("Group 4: E2E — Backward compatibility regression", () => {
     const config = await parseArgs(["--model", "grok", "prompt"]);
     const args = buildClaudeArgs(config);
 
-    // Exact shape: --settings <path> -p prompt
-    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH, "-p", "prompt"]);
+    // Exact shape: --settings <path> -p --dangerously-skip-permissions prompt
+    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH, "-p", "--dangerously-skip-permissions", "prompt"]);
   });
 
   test("claudish --stdin --quiet --model grok → claudeArgs empty, stdin=true, quiet=true", async () => {
@@ -446,14 +446,14 @@ describe("Group 5: E2E — Edge cases", () => {
     expect(config.claudeArgs).toEqual(["--no-session-persistence"]);
   });
 
-  test("claudish with no args → interactive mode, empty claudeArgs", async () => {
+  test("claudish with no args → interactive mode, empty claudeArgs, auto-approve on", async () => {
     const config = await parseArgs([]);
     expect(config.interactive).toBe(true);
     expect(config.claudeArgs).toEqual([]);
 
     const args = buildClaudeArgs(config);
-    // Interactive mode with no claudeArgs: only --settings <path>
-    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH]);
+    // Interactive mode: --settings <path> + --dangerously-skip-permissions (default)
+    expect(args).toEqual(["--settings", MOCK_SETTINGS_PATH, "--dangerously-skip-permissions"]);
     expect(args).not.toContain("-p");
   });
 

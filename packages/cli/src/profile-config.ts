@@ -121,6 +121,8 @@ export interface ClaudishProfileConfig {
   apiKeys?: Record<string, string>;
   /** Custom provider endpoints (env var name → URL) */
   endpoints?: Record<string, string>;
+  /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
+  autoApproveConfirmedAt?: string;
 }
 
 /**

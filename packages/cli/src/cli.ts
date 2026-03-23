@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { getFallbackChain, warmZenModelCache } from "./providers/auto-route.js";
+import { getFallbackChain, warmZenModelCache, warmZenGoModelCache } from "./providers/auto-route.js";
 import {
   loadRoutingRules,
   matchRoutingRule,
@@ -92,7 +92,7 @@ function clearAllModelCaches(): void {
 export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   const config: Partial<ClaudishConfig> = {
     model: undefined, // Will prompt interactively if not provided
-    autoApprove: false, // Don't skip permissions by default (safer)
+    autoApprove: true, // Auto-approve enabled by default (confirmed on first run)
     dangerous: false,
     interactive: false, // Single-shot mode by default
     debug: false, // No debug logging by default
@@ -1255,6 +1255,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
   console.error(`${DIM}Warming provider caches...${RESET}`);
   await Promise.allSettled([
     warmZenModelCache(),
+    warmZenGoModelCache(),
     // LiteLLM cache is disk-based and already populated by proxy start; just ensure it's loaded
   ]);
 

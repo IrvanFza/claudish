@@ -90,7 +90,9 @@ if (isMcpMode) {
       const oauth = GeminiOAuth.getInstance();
       await oauth.login();
       console.log("\n✅ Gemini OAuth login successful!");
-      console.log("You can now use Gemini Code Assist with: claudish --model go@gemini-3-pro-preview");
+      console.log(
+        "You can now use Gemini Code Assist with: claudish --model go@gemini-3-pro-preview"
+      );
       process.exit(0);
     } catch (error) {
       console.error(
@@ -202,9 +204,11 @@ async function runCli() {
     getMissingKeyResolutions,
     getMissingKeysError,
   } = await import("./providers/provider-resolver.js");
-  const { initLogger, getLogFilePath, getAlwaysOnLogPath, setDiagOutput } = await import("./logger.js");
+  const { initLogger, getLogFilePath, getAlwaysOnLogPath, setDiagOutput } = await import(
+    "./logger.js"
+  );
   const { createDiagOutput, LogFileDiagOutput } = await import("./diag-output.js");
-  const { tryCreatePtyRunner } = await import("./pty-diag-runner.js");
+  const { tryCreateMtmRunner } = await import("./pty-diag-runner.js");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
   const { checkForUpdates } = await import("./update-checker.js");
@@ -223,6 +227,45 @@ async function runCli() {
   try {
     // Parse CLI arguments
     const cliConfig = await parseArgs(process.argv.slice(2));
+
+    // First-run auto-approve confirmation
+    // Auto-approve is enabled by default, but on first run we confirm with the user.
+    // If user explicitly passed --no-auto-approve, skip the prompt entirely.
+    const rawArgs = process.argv.slice(2);
+    const explicitNoAutoApprove = rawArgs.includes("--no-auto-approve");
+    if (cliConfig.autoApprove && !explicitNoAutoApprove) {
+      const { loadConfig, saveConfig } = await import("./profile-config.js");
+      try {
+        const cfg = loadConfig();
+        if (!cfg.autoApproveConfirmedAt) {
+          // First run — show one-time confirmation
+          const { createInterface } = await import("node:readline");
+          process.stderr.write(
+            "\n[claudish] Auto-approve is enabled by default.\n" +
+              "  This skips Claude Code permission prompts for tools like Bash, Read, Write.\n" +
+              "  You can disable it anytime with: --no-auto-approve\n\n"
+          );
+          const answer = await new Promise<string>((resolve) => {
+            const rl = createInterface({ input: process.stdin, output: process.stderr });
+            rl.question("Enable auto-approve? [Y/n] ", (ans) => {
+              rl.close();
+              resolve(ans.trim().toLowerCase());
+            });
+          });
+          const declined = answer === "n" || answer === "no";
+          if (declined) {
+            cliConfig.autoApprove = false;
+            process.stderr.write("[claudish] Auto-approve disabled. Use -y to enable per-run.\n\n");
+          } else {
+            process.stderr.write("[claudish] Auto-approve confirmed.\n\n");
+          }
+          cfg.autoApproveConfirmedAt = new Date().toISOString();
+          saveConfig(cfg);
+        }
+      } catch {
+        // Config read/write failure — proceed with default (auto-approve on)
+      }
+    }
 
     // Initialize logger: always-on structural logging + optional debug logging
     initLogger(cliConfig.debug, cliConfig.logLevel, cliConfig.noLogs);
@@ -395,22 +438,33 @@ async function runCli() {
       }
     );
 
-    // Create PTY runner for built-in split view (Bun native PTY, no tmux needed)
+    // Create mtm runner for built-in split view (mtm terminal multiplexer)
     // Skip if diagMode explicitly set to tmux/logfile/off
-    const needsPty = cliConfig.interactive && (cliConfig.diagMode === "auto" || cliConfig.diagMode === "pty");
-    const ptyRunner = needsPty ? await tryCreatePtyRunner() : null;
+    const needsMtm =
+      cliConfig.interactive && (cliConfig.diagMode === "auto" || cliConfig.diagMode === "pty");
+    const mtmRunner = needsMtm ? await tryCreateMtmRunner() : null;
 
-    // Route diagnostic output: PTY split → tmux pane → log file (priority order)
+    // Set model name on the status bar
+    if (mtmRunner && explicitModel) {
+      mtmRunner.setModel(explicitModel);
+    }
+
+    // Route diagnostic output: mtm → tmux pane → log file (priority order)
     const diag = createDiagOutput({
       interactive: cliConfig.interactive,
-      ptyRunner,
+      mtmRunner,
       diagMode: cliConfig.diagMode,
     });
     if (cliConfig.interactive) {
       setDiagOutput(diag);
 
-      // If no PTY and no tmux, tell the user where to find diagnostic output
-      if (!ptyRunner && !process.env.TMUX && !cliConfig.quiet && diag instanceof LogFileDiagOutput) {
+      // If no mtm and no tmux, tell the user where to find diagnostic output
+      if (
+        !mtmRunner &&
+        !process.env.TMUX &&
+        !cliConfig.quiet &&
+        diag instanceof LogFileDiagOutput
+      ) {
         console.log(`[claudish] Diagnostic log: ${diag.getLogPath()}`);
       }
     }
@@ -418,7 +472,7 @@ async function runCli() {
     // Run Claude Code with proxy
     let exitCode = 0;
     try {
-      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, () => diag.cleanup(), ptyRunner);
+      exitCode = await runClaudeWithProxy(cliConfig, proxy.url, () => diag.cleanup(), mtmRunner);
     } finally {
       // Clear diagOutput BEFORE cleanup to prevent write-after-end
       setDiagOutput(null);
