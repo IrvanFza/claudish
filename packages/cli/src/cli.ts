@@ -221,7 +221,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.stdin = true;
     } else if (arg === "--free") {
       config.freeOnly = true;
-    } else if (arg === "--profile" || arg === "-p") {
+    } else if (arg === "--profile") {
       const profileArg = args[++i];
       if (!profileArg) {
         console.error("--profile requires a profile name");

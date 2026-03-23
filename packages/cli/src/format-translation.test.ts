@@ -97,9 +97,7 @@ async function parseClaudeSseStream(response: Response): Promise<ClaudeEvent[]> 
 /** Extract all text content from parsed Claude events */
 function extractText(events: ClaudeEvent[]): string {
   return events
-    .filter(
-      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "text_delta"
-    )
+    .filter((e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "text_delta")
     .map((e) => e.data.delta.text)
     .join("");
 }
@@ -108,8 +106,7 @@ function extractText(events: ClaudeEvent[]): string {
 function extractToolNames(events: ClaudeEvent[]): string[] {
   return events
     .filter(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
     )
     .map((e) => e.data.content_block.name);
 }
@@ -132,9 +129,7 @@ function createMockContext(): any {
       return new Response(stream, init);
     },
     getCapturedResponse() {
-      return capturedBody
-        ? new Response(capturedBody, capturedInit)
-        : null;
+      return capturedBody ? new Response(capturedBody, capturedInit) : null;
     },
   };
 }
@@ -370,10 +365,14 @@ describe("Adapter: AnthropicAPIFormat", () => {
         {
           role: "user",
           content: [
-            { type: "tool_result", tool_use_id: "t1", content: [
-              { type: "text", text: "result" },
-              { type: "tool_reference", tool_use_id: "t0" },
-            ]},
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: [
+                { type: "text", text: "result" },
+                { type: "tool_reference", tool_use_id: "t0" },
+              ],
+            },
           ],
         },
       ],
@@ -473,12 +472,8 @@ describe("APIFormat: getStreamFormat()", () => {
   });
 
   test("AnthropicAPIFormat returns anthropic-sse", async () => {
-    const { AnthropicAPIFormat } = await import(
-      "./adapters/anthropic-api-format.js"
-    );
-    expect(new AnthropicAPIFormat("test", "minimax").getStreamFormat()).toBe(
-      "anthropic-sse"
-    );
+    const { AnthropicAPIFormat } = await import("./adapters/anthropic-api-format.js");
+    expect(new AnthropicAPIFormat("test", "minimax").getStreamFormat()).toBe("anthropic-sse");
   });
 
   test("GeminiAPIFormat returns gemini-sse", async () => {
@@ -555,11 +550,21 @@ describe("ProviderProfile table completeness", () => {
     const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
 
     const expectedProviders = [
-      "gemini", "gemini-codeassist", "openai",
-      "minimax", "minimax-coding", "kimi", "kimi-coding", "zai",
-      "glm", "glm-coding",
-      "opencode-zen", "opencode-zen-go",
-      "ollamacloud", "litellm", "vertex",
+      "gemini",
+      "gemini-codeassist",
+      "openai",
+      "minimax",
+      "minimax-coding",
+      "kimi",
+      "kimi-coding",
+      "zai",
+      "glm",
+      "glm-coding",
+      "opencode-zen",
+      "opencode-zen-go",
+      "ollamacloud",
+      "litellm",
+      "vertex",
     ];
 
     for (const provider of expectedProviders) {
@@ -608,8 +613,7 @@ describe("Structural log redaction", () => {
 
   test("preserves model names and event types (short strings)", async () => {
     const { structuralRedact } = await import("./logger.js");
-    const input =
-      '{"type":"message_start","message":{"model":"gpt-5.4","role":"assistant"}}';
+    const input = '{"type":"message_start","message":{"model":"gpt-5.4","role":"assistant"}}';
     const result = structuralRedact(input);
     const parsed = JSON.parse(result);
     expect(parsed.type).toBe("message_start");
@@ -629,7 +633,7 @@ describe("Structural log redaction", () => {
   test("preserves tool call names but redacts arguments", async () => {
     const { structuralRedact } = await import("./logger.js");
     const input =
-      '{"choices":[{"delta":{"tool_calls":[{"function":{"name":"Read","arguments":"{\\\"file_path\\\":\\\"/Users/jack/secret/important-file.ts\\\"}"}}]}}]}';
+      '{"choices":[{"delta":{"tool_calls":[{"function":{"name":"Read","arguments":"{\\"file_path\\":\\"/Users/jack/secret/important-file.ts\\"}"}}]}}]}';
     const result = structuralRedact(input);
     const parsed = JSON.parse(result);
     expect(parsed.choices[0].delta.tool_calls[0].function.name).toBe("Read");
@@ -642,5 +646,34 @@ describe("Structural log redaction", () => {
     const input = "[DONE]";
     const result = structuralRedact(input);
     expect(result).toBe("[DONE]");
+  });
+});
+
+// ─── Regression: Z.AI GLM-5 usage tokens (GitHub #74) ─────────────────────
+
+describe("Regression: Z.AI GLM-5 input_tokens in final usage event (#74)", () => {
+  test("input_tokens from message_delta.usage is captured (not stuck at 0)", async () => {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    const createAnthropicPassthroughStream = mod.createAnthropicPassthroughStream;
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-glm5-usage.sse"));
+    const ctx = createMockContext();
+
+    let tokenInput = 0;
+    let tokenOutput = 0;
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5",
+      onTokenUpdate: (input, output) => {
+        tokenInput = input;
+        tokenOutput = output;
+      },
+    });
+
+    await parseClaudeSseStream(response);
+
+    // Z.AI sends input_tokens:0 in message_start, real value in message_delta.usage
+    // Before fix: tokenInput stayed at 0 because data.usage only read output_tokens
+    expect(tokenInput).toBe(8897);
+    expect(tokenOutput).toBe(125);
   });
 });

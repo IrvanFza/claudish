@@ -66,16 +66,22 @@ export function createAnthropicPassthroughStream(
                     outputTokens = data.message.usage.output_tokens || outputTokens;
                   }
                   if (data.usage) {
+                    inputTokens = data.usage.input_tokens || inputTokens;
                     outputTokens = data.usage.output_tokens || outputTokens;
                   }
                   // Log text content for debugging
                   if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
                     const txt = data.delta.text || "";
                     textChunks++;
-                    log(`[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`);
+                    log(
+                      `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
+                    );
                   }
                   // Track tool_use blocks
-                  if (data.type === "content_block_start" && data.content_block?.type === "tool_use") {
+                  if (
+                    data.type === "content_block_start" &&
+                    data.content_block?.type === "tool_use"
+                  ) {
                     toolUseBlocks++;
                     log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
                   }
@@ -88,7 +94,9 @@ export function createAnthropicPassthroughStream(
             }
           }
 
-          log(`[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}`);
+          log(
+            `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}`
+          );
 
           if (opts.onTokenUpdate) {
             opts.onTokenUpdate(inputTokens, outputTokens);

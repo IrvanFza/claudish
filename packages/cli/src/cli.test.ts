@@ -235,3 +235,20 @@ describe("Group 6: Monitor mode", () => {
     expect(modelId).toBe("unknown");
   });
 });
+
+// ─── Regression: -p flag conflict with Claude CLI (GitHub #76) ─────────────
+
+describe("Regression: -p flag is not consumed by claudish (#76)", () => {
+  test("-p is passed through to Claude CLI, not parsed as --profile", async () => {
+    const config = await parseArgs(["--model", "grok", "-p", "hello"]);
+    // -p should NOT be consumed as --profile
+    expect(config.profile).toBeUndefined();
+    // -p and "hello" should pass through to claudeArgs
+    expect(config.claudeArgs).toContain("-p");
+  });
+
+  test("--profile still works without -p shorthand", async () => {
+    const config = await parseArgs(["--profile", "myprofile", "--model", "grok"]);
+    expect(config.profile).toBe("myprofile");
+  });
+});
