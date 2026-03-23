@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.1.0] - 2026-03-23
+
+### Bug Fixes
+
+- ad-hoc sign macOS binaries for Gatekeeper compatibility (#73)([`e1eb919`](https://github.com/MadAppGang/claudish/commit/e1eb91930c1ac99427eff77e3c041ce768c7841a))
+
+### Documentation
+
+- update CHANGELOG.md for v6.0.1([`05ae6a2`](https://github.com/MadAppGang/claudish/commit/05ae6a21c4304a86f5186567912a9173224fc527))
+
+### New Features
+
+- v6.1.0 - centralized model catalog and MiniMax Anthropic API fixes([`fa0cf0f`](https://github.com/MadAppGang/claudish/commit/fa0cf0f0e17dda06e34bdd5707bec1c1603ac995))
+
 ## [6.0.1] - 2026-03-23
 
 ### Bug Fixes
