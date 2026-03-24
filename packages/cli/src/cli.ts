@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fuzzyScore } from "./utils.js";
-import { getModelMapping } from "./profile-config.js";
+import { getModelMapping, loadConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getFallbackChain, warmZenModelCache, warmZenGoModelCache } from "./providers/auto-route.js";
 import {
@@ -44,7 +44,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "6.2.0"; // Fallback version for compiled binaries
+let VERSION = "6.2.1"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -144,7 +144,15 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.summarizeTools = true;
   }
 
-  // Check for diagnostic mode env var (pty, tmux, logfile, off)
+  // Load diagMode from settings file (lowest priority — env/CLI override)
+  try {
+    const fileConfig = loadConfig();
+    if (fileConfig.diagMode && ["auto", "pty", "tmux", "logfile", "off"].includes(fileConfig.diagMode)) {
+      config.diagMode = fileConfig.diagMode;
+    }
+  } catch {}
+
+  // Check for diagnostic mode env var (overrides settings file)
   const envDiagMode = process.env[ENV.CLAUDISH_DIAG_MODE]?.toLowerCase();
   if (envDiagMode && ["auto", "pty", "tmux", "logfile", "off"].includes(envDiagMode)) {
     config.diagMode = envDiagMode as typeof config.diagMode;
@@ -1701,6 +1709,7 @@ OPTIONS:
   -d, --debug              Enable debug logging to file (logs/claudish_*.log)
   --no-logs                Disable always-on structural logging (~/.claudish/logs/)
   --diag-mode <mode>       Diagnostic output: auto (default), pty, tmux, logfile, off
+                           Also: CLAUDISH_DIAG_MODE env var or "diagMode" in config.json
   --log-level <level>      Log verbosity: debug (full), info (truncated), minimal (labels only)
   -q, --quiet              Suppress [claudish] log messages (default in single-shot mode)
   -v, --verbose            Show [claudish] log messages (default in interactive mode)

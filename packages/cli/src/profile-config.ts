@@ -123,6 +123,8 @@ export interface ClaudishProfileConfig {
   endpoints?: Record<string, string>;
   /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
   autoApproveConfirmedAt?: string;
+  /** Diagnostic output mode: auto (default), pty, tmux, logfile, off */
+  diagMode?: "auto" | "pty" | "tmux" | "logfile" | "off";
 }
 
 /**
@@ -191,6 +193,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.endpoints !== undefined) {
       merged.endpoints = config.endpoints;
+    }
+    if (config.autoApproveConfirmedAt !== undefined) {
+      merged.autoApproveConfirmedAt = config.autoApproveConfirmedAt;
     }
     return merged;
   } catch (error) {

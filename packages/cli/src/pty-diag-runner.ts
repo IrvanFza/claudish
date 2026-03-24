@@ -96,12 +96,31 @@ export class MtmDiagRunner {
     } catch {
       // Ignore write errors — diag output is best-effort
     }
-    // Parse and track errors
+    // Parse and track metrics from log messages
     const parsed = parseLogMessage(msg);
     if (parsed.isError) {
       this.errorCount++;
       this.lastError = parsed.short;
       if (parsed.provider) this.provider = parsed.provider;
+    }
+    // Track request count from streaming handler
+    if (msg.includes("HANDLER STARTED") || msg.includes("=== Request")) {
+      this.requestCount++;
+    }
+    // Track roundtrip time
+    const rtMatch = msg.match(/(\d+)ms\b/);
+    if (rtMatch && msg.includes("Response")) {
+      const ms = parseInt(rtMatch[1], 10);
+      this.roundtripSamples.push(ms);
+      if (this.roundtripSamples.length > 20) this.roundtripSamples.shift();
+      this.avgRoundtripMs = Math.round(
+        this.roundtripSamples.reduce((a, b) => a + b, 0) / this.roundtripSamples.length
+      );
+    }
+    // Track adapter composition from probe output
+    if (msg.includes("Format:") || msg.includes("Transport:") || msg.includes("Translator:")) {
+      const parts = msg.split(":").slice(1).join(":").trim();
+      if (parts) this.adapters = parts;
     }
     this.refreshStatusBar();
   }
@@ -111,6 +130,11 @@ export class MtmDiagRunner {
   private provider = "";
   private lastError = "";
   private errorCount = 0;
+  private requestCount = 0;
+  private totalCost = 0;
+  private avgRoundtripMs = 0;
+  private roundtripSamples: number[] = [];
+  private adapters = ""; // translation layers: format + model + transport
 
   /**
    * Set the model name shown in the status bar.
@@ -136,6 +160,8 @@ export class MtmDiagRunner {
       provider: this.provider,
       errorCount: this.errorCount,
       lastError: this.lastError,
+      requestCount: this.requestCount,
+      avgRoundtripMs: this.avgRoundtripMs,
     });
     try {
       // Append new line — tail -f picks it up and shows the latest
@@ -178,9 +204,8 @@ export class MtmDiagRunner {
 
   /**
    * Find the mtm binary. Priority:
-   * 1. Bundled platform-specific binary (native/mtm/mtm-<platform>-<arch>)
-   * 2. Built binary in source tree (native/mtm/mtm) — for development
-   * 3. mtm in PATH
+   * 1. Bundled binary relative to package root (native/mtm/mtm-<platform>-<arch> or mtm)
+   * 2. mtm in PATH (only if it supports -e flag — upstream mtm doesn't)
    */
   findMtmBinary(): string {
     // Resolve __dirname equivalent for ESM
@@ -190,23 +215,46 @@ export class MtmDiagRunner {
     const platform = process.platform;
     const arch = process.arch;
 
-    // 1. Platform-specific bundled binary (distributed with npm package)
-    const bundledPlatform = join(thisDir, "..", "..", "native", "mtm", `mtm-${platform}-${arch}`);
+    // Package root is one level up from dist/ or src/
+    const pkgRoot = join(thisDir, "..");
+
+    // 1a. Platform-specific bundled binary (distributed with npm package)
+    const bundledPlatform = join(pkgRoot, "native", "mtm", `mtm-${platform}-${arch}`);
     if (existsSync(bundledPlatform)) return bundledPlatform;
 
-    // 2. Generic built binary (dev mode — run `make` in packages/cli/native/mtm/)
-    const builtDev = join(thisDir, "..", "native", "mtm", "mtm");
+    // 1b. Generic built binary (dev mode — run `make` in packages/cli/native/mtm/)
+    const builtDev = join(pkgRoot, "native", "mtm", "mtm");
     if (existsSync(builtDev)) return builtDev;
 
-    // 3. mtm in PATH
+    // 2. mtm in PATH — but only our fork that supports -e (execute command).
+    // Upstream mtm (e.g. Homebrew) only supports -T/-t/-c and will fail with
+    // "illegal option -- e" when we try to launch Claude Code.
     try {
       const result = execSync("which mtm", { encoding: "utf-8" }).trim();
-      if (result) return result;
+      if (result && this.isMtmFork(result)) return result;
     } catch {
       // Not in PATH
     }
 
     throw new Error("mtm binary not found. Build it with: cd packages/cli/native/mtm && make");
+  }
+
+  /**
+   * Check if an mtm binary is our fork (supports -e flag).
+   * Upstream mtm's usage line: "usage: mtm [-T NAME] [-t NAME] [-c KEY]"
+   * Our fork's usage line includes "-e CMD".
+   */
+  private isMtmFork(binPath: string): boolean {
+    try {
+      // mtm prints usage to stderr and exits non-zero for --help / bad args
+      const output = execSync(`"${binPath}" --help 2>&1 || true`, {
+        encoding: "utf-8",
+        timeout: 2000,
+      });
+      return output.includes("-e ");
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -222,6 +270,8 @@ interface StatusBarState {
   provider: string;
   errorCount: number;
   lastError: string;
+  requestCount: number;
+  avgRoundtripMs: number;
 }
 
 /**
@@ -231,7 +281,7 @@ interface StatusBarState {
  * mtm renders each segment as a colored pill using ncurses.
  */
 function renderStatusBar(state: StatusBarState): string {
-  const { model, provider, errorCount, lastError } = state;
+  const { model, provider, errorCount, lastError, requestCount, avgRoundtripMs } = state;
 
   const parts: string[] = [];
 
@@ -239,6 +289,13 @@ function renderStatusBar(state: StatusBarState): string {
   if (model) parts.push(`C: ${model} `);
   if (provider) parts.push(`D: ${provider} `);
 
+  // Request count + avg roundtrip
+  if (requestCount > 0) {
+    const rt = avgRoundtripMs > 0 ? ` ~${avgRoundtripMs}ms` : "";
+    parts.push(`D: ${requestCount} req${rt} `);
+  }
+
+  // Status
   if (errorCount > 0) {
     const errLabel = errorCount === 1 ? " ⚠ 1 error " : ` ⚠ ${errorCount} errors `;
     parts.push(`R:${errLabel}`);
