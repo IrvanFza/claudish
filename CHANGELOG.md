@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.2.1] - 2026-03-24
+
+### Bug Fixes
+
+- v6.2.1 - bundle mtm binary, reject upstream mtm, fix path resolution([`c8df199`](https://github.com/MadAppGang/claudish/commit/c8df199d8efa625870a53a68f8ac6612fb00e1d0))
+- add 429 retry with exponential backoff to OpenAI transport (#66)([`9ac8991`](https://github.com/MadAppGang/claudish/commit/9ac8991deaf65e08c85e5100a3fe7dc70130452e))
+
+### Documentation
+
+- update CHANGELOG.md for v6.2.0([`68bf83c`](https://github.com/MadAppGang/claudish/commit/68bf83c6377c595de8452cde07d023870a627d78))
+
 ## [6.2.0] - 2026-03-24
 
 ### Documentation
