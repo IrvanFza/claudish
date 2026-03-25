@@ -6,10 +6,12 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Documentation
 
+- update CHANGELOG.md for v6.3.0([`eb5ac71`](https://github.com/MadAppGang/claudish/commit/eb5ac7172e679fc6cee378288d1b55d0d8ad5e66))
 - update CHANGELOG.md for v6.2.2([`6ffafd4`](https://github.com/MadAppGang/claudish/commit/6ffafd4512aa05b8d0c455d907f58db87a6007a0))
 
 ### New Features
 
+- expandable diagnostics panel — click status bar or Ctrl-G d to toggle([`42debca`](https://github.com/MadAppGang/claudish/commit/42debca56ae15f19f5e6c39c87b384f7bad1d9e5))
 - v6.3.0 - TUI redesign, provider key test, route probe([`207813a`](https://github.com/MadAppGang/claudish/commit/207813acb05637df083613ea14d7e5e0f477bf55))
 
 ### Other Changes
