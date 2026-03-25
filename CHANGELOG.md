@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.3.2] - 2026-03-25
+
+### Bug Fixes
+
+- v6.3.2 - rebuild mtm binary with -L flag support, remove debug code([`8842ac2`](https://github.com/MadAppGang/claudish/commit/8842ac2277a2b0268d8677e7c4490eb4dce13f42))
+
+### Documentation
+
+- update CHANGELOG.md for v6.3.1([`ec18d6b`](https://github.com/MadAppGang/claudish/commit/ec18d6b4e3f9965b0b1c85320eb1fc807786d557))
+
 ## [6.3.1] - 2026-03-25
 
 ### Bug Fixes
