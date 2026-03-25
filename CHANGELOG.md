@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.3.0] - 2026-03-25
+
+### Documentation
+
+- update CHANGELOG.md for v6.2.2([`6ffafd4`](https://github.com/MadAppGang/claudish/commit/6ffafd4512aa05b8d0c455d907f58db87a6007a0))
+
+### New Features
+
+- v6.3.0 - TUI redesign, provider key test, route probe([`207813a`](https://github.com/MadAppGang/claudish/commit/207813acb05637df083613ea14d7e5e0f477bf55))
+
+### Other Changes
+
+- update landing page model names to latest versions (March 2026)([`63f652c`](https://github.com/MadAppGang/claudish/commit/63f652cec86919efbaf167ad9348ea545ab5c3a7))
+
 ## [6.2.2] - 2026-03-24
 
 ### Bug Fixes
