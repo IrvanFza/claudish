@@ -969,13 +969,14 @@ static void
 drawchildren(const NODE *n) /* Draw all children of n. */
 {
     draw(n->c1);
-    if (n->t == HORIZONTAL)
+    if (n->t == HORIZONTAL) {
         mvvline(n->y, n->x + n->w / 2, ACS_VLINE, n->h);
-    else if (n->t == VERTICAL)
+        wnoutrefresh(stdscr);
+    } else if (n->t == VERTICAL) {
         mvhline(n->c1->y + n->c1->h, n->x, ACS_HLINE, n->w);
-    else
-        mvhline(n->y + n->h / 2, n->x, ACS_HLINE, n->w);
-    wnoutrefresh(stdscr);
+        wnoutrefresh(stdscr);
+    }
+    /* No separator drawing for unknown types — don't touch stdscr */
     draw(n->c2);
 }
 
@@ -1403,6 +1404,12 @@ main(int argc, char **argv)
     start_color();
     use_default_colors();
     start_pairs();
+
+    /* Clear stdscr completely — it must stay blank except for status bar.
+     * Any stale content on stdscr would show through pnoutrefresh/doupdate
+     * as rendering artifacts over the pane content. */
+    werase(stdscr);
+    wnoutrefresh(stdscr);
 
     /* Pane starts at FULL terminal height. When -S is set, the status bar
      * appears dynamically on first content — at that point draw_statusbar()

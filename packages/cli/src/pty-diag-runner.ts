@@ -318,25 +318,31 @@ function renderStatusBar(state: StatusBarState): string {
  * Parse a logStderr message into a short, human-readable form.
  */
 function parseLogMessage(msg: string): { isError: boolean; short: string; provider?: string } {
-  // Extract provider name: "Error [OpenRouter]: ..."
-  const providerMatch = msg.match(/\[(\w+)\]/);
+  // Extract provider name: "Error [OpenRouter]: ..." or "Error [Gemini Free]: ..."
+  // Use [^\]]+ to handle spaces/hyphens. Exclude [Fallback] and [Streaming] as providers.
+  const providerMatch = msg.match(/\[(?!Fallback|Streaming|Auto-route|SSE)([^\]]+)\]/);
   const provider = providerMatch?.[1];
+
+  // "All providers failed" — this IS an error, not just a fallback info message
+  if (msg.includes("All") && msg.includes("failed")) {
+    const countMatch = msg.match(/All (\d+)/);
+    return { isError: true, short: `all ${countMatch?.[1] || ""} providers failed`, provider };
+  }
 
   // Fallback chain messages (check BEFORE HTTP — fallback msgs contain "HTTP NNN" too)
   if (msg.includes("[Fallback]")) {
-    // Extract the key info: "X failed (HTTP 401), trying next" or "succeeded after N"
     if (msg.includes("succeeded")) {
       const n = msg.match(/after (\d+)/)?.[1] || "?";
       return { isError: false, short: `succeeded after ${n} retries`, provider };
     }
-    const failMatch = msg.match(/(\w[\w\s]*?) failed/);
+    // "Gemini Code Assist failed (HTTP 401), trying next provider..."
+    const failMatch = msg.match(/\]\s*(.+?)\s+failed/);
     return { isError: false, short: failMatch ? `${failMatch[1]} failed, retrying` : "fallback", provider };
   }
 
   // HTTP status errors — extract the human-readable part
   const httpMatch = msg.match(/HTTP (\d{3})/);
   if (httpMatch) {
-    // Try to extract error message from JSON body
     const jsonMatch = msg.match(/"message"\s*:\s*"([^"]+)"/);
     if (jsonMatch?.[1]) {
       const detail = jsonMatch[1]
@@ -344,7 +350,6 @@ function parseLogMessage(msg: string): { isError: boolean; short: string; provid
         .replace(/Provider returned error/, "provider error");
       return { isError: true, short: detail, provider };
     }
-    // Extract the hint after "HTTP NNN. "
     const hintMatch = msg.match(/HTTP \d{3}\.\s*(.+?)\.?\s*$/);
     if (hintMatch?.[1]) {
       return { isError: true, short: hintMatch[1], provider };
@@ -352,9 +357,8 @@ function parseLogMessage(msg: string): { isError: boolean; short: string; provid
     return { isError: true, short: `HTTP ${httpMatch[1]}`, provider };
   }
 
-  // Generic error
+  // Generic error — strip provider prefix
   if (msg.toLowerCase().includes("error")) {
-    // Trim provider prefix: "Error [Provider Name]: message" → "message"
     const short = msg.replace(/^Error\s*\[[^\]]+\]:\s*/, "").replace(/\.\s*$/, "");
     return { isError: true, short: short.length > 80 ? short.slice(0, 79) + "…" : short, provider };
   }
