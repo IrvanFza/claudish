@@ -38,7 +38,7 @@
 #define MIN(x, y) ((x) < (y)? (x) : (y))
 #define MAX(x, y) ((x) > (y)? (x) : (y))
 #define CTL(x) ((x) & 0x1f)
-#define USAGE "usage: mtm [-T NAME] [-t NAME] [-c KEY] [-e CMD] [-s PERCENT] [-L LOGFILE]\n"
+#define USAGE "usage: mtm [-T NAME] [-t NAME] [-c KEY] [-e CMD] [-g GRIDFILE] [-S FILE] [-L FILE]\n"
 
 /*** DATA TYPES */
 typedef enum{
@@ -66,6 +66,7 @@ struct NODE{
     SCRN pri, alt, *s;
     wchar_t *g0, *g1, *g2, *g3, *gc, *gs, *sgc, *sgs;
     VTPARSER vp;
+    char *cmd; /* command to run in this view (grid mode) */
 };
 
 /*** GLOBALS AND PROTOTYPES */
@@ -74,6 +75,7 @@ static int commandkey = CTL(COMMAND_KEY), nfds = 1; /* stdin */
 static fd_set fds;
 static char iobuf[BUFSIZ];
 static char *initial_cmd = NULL;   /* Set via -e flag: command to run in pane */
+static char *gridfile = NULL;       /* Set via -g flag: file listing commands for grid layout */
 static char *statusbar_file = NULL; /* Set via -S flag: file to read status bar from */
 static char *diag_log_file = NULL;  /* Set via -L flag: diagnostic log file for expanded view */
 static NODE *primary_pane = NULL;   /* The pane — mtm exits when it closes */
@@ -721,6 +723,7 @@ newnode(Node t, NODE *p, int y, int x, int h, int w) /* Create a new node. */
     n->w = w;
     n->tabs = tabs;
     n->ntabs = w;
+    n->cmd = NULL;
 
     return n;
 }
@@ -744,6 +747,7 @@ freenode(NODE *n, bool recurse) /* Free a node. */
             FD_CLR(n->pt, &fds);
         }
         free(n->tabs);
+        free(n->cmd);
         free(n);
     }
 }
@@ -772,12 +776,14 @@ getterm(void)
 }
 
 static NODE *
-newview(NODE *p, int y, int x, int h, int w) /* Open a new view. */
+newview(NODE *p, int y, int x, int h, int w, const char *cmd) /* Open a new view. */
 {
     struct winsize ws = {.ws_row = h, .ws_col = w};
     NODE *n = newnode(VIEW, p, y, x, h, w);
     if (!n)
         return NULL;
+
+    n->cmd = cmd ? strdup(cmd) : NULL;
 
     SCRN *pri = &n->pri, *alt = &n->alt;
     pri->win = newpad(MAX(h, SCROLLBACK), w);
@@ -806,7 +812,9 @@ newview(NODE *p, int y, int x, int h, int w) /* Open a new view. */
         setenv("MTM", buf, 1);
         setenv("TERM", getterm(), 1);
         signal(SIGCHLD, SIG_DFL);
-        if (initial_cmd && !p) {  /* Root pane: run -e command */
+        if (n->cmd) {            /* Grid pane: run specific command */
+            execl("/bin/sh", "/bin/sh", "-c", n->cmd, NULL);
+        } else if (initial_cmd && !p) {  /* Root pane: run -e command */
             execl("/bin/sh", "/bin/sh", "-c", initial_cmd, NULL);
         } else {
             execl(getshell(), getshell(), NULL);
@@ -998,7 +1006,7 @@ split(NODE *n, Node t) /* Split a node. */
     int nw;
     nw = t == HORIZONTAL? (n->w) / 2 : n->w;
     NODE *p = n->p;
-    NODE *v = newview(NULL, 0, 0, MAX(0, nh), MAX(0, nw));
+    NODE *v = newview(NULL, 0, 0, MAX(0, nh), MAX(0, nw), NULL);
     if (!v)
         return;
 
@@ -1011,6 +1019,71 @@ split(NODE *n, Node t) /* Split a node. */
     replacechild(p, n, c);
     focus(v);
     draw(p? p : root);
+}
+
+#define MAX_GRID_CMDS 20
+
+static NODE *
+build_column(char **cmds, int count, int y, int x, int h, int w)
+{
+    if (count == 1)
+        return newview(NULL, y, x, h, w, cmds[0]);
+
+    /* Split height: top gets half, bottom gets rest */
+    int top_count = count / 2;
+    int bot_count = count - top_count;
+    int top_h = h / 2;
+    int bot_h = h - top_h - 1; /* -1 for separator */
+
+    NODE *top = build_column(cmds, top_count, y, x, top_h, w);
+    NODE *bot = build_column(cmds + top_count, bot_count, y + top_h + 1, x, bot_h, w);
+
+    if (!top || !bot) return NULL;
+
+    return newcontainer(VERTICAL, NULL, y, x, h, w, top, bot);
+}
+
+static NODE *
+build_grid(const char *path, int y, int x, int h, int w)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+
+    char *cmds[MAX_GRID_CMDS];
+    int count = 0;
+    char line[4096];
+
+    while (count < MAX_GRID_CMDS && fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = '\0';
+        if (line[0] == '\0' || line[0] == '#') continue; /* skip empty/comments */
+        cmds[count] = strdup(line);
+        if (!cmds[count]) break;
+        count++;
+    }
+    fclose(f);
+
+    if (count == 0) return NULL;
+    if (count == 1) return newview(NULL, y, x, h, w, cmds[0]);
+
+    /* Split into left and right halves */
+    int left_count = (count + 1) / 2; /* left gets extra if odd */
+    int right_count = count - left_count;
+    int left_w = w / 2;
+    int right_w = w - left_w - 1; /* -1 for separator */
+
+    NODE *left = build_column(cmds, left_count, y, x, h, left_w);
+    NODE *right = build_column(cmds + left_count, right_count, y, x + left_w + 1, h, right_w);
+
+    if (!left || !right) return NULL;
+
+    NODE *grid = newcontainer(HORIZONTAL, NULL, y, x, h, w, left, right);
+
+    /* cmds[] entries are now owned by the nodes (strdup'd into n->cmd) */
+    for (int i = 0; i < count; i++)
+        free(cmds[i]);
+
+    return grid;
 }
 
 static bool
@@ -1027,8 +1100,9 @@ getinput(NODE *n, fd_set *f) /* Recursively check all ptty's for input. */
         if (r > 0)
             vtwrite(&n->vp, iobuf, r);
         if (r <= 0 && errno != EINTR && errno != EWOULDBLOCK){
-            /* If the primary pane (-e command) exits, quit mtm entirely */
-            if (n == primary_pane)
+            /* If the primary pane (-e command) exits, quit mtm entirely.
+             * In grid mode (primary_pane == NULL), continue until all panes close. */
+            if (primary_pane != NULL && n == primary_pane)
                 quit(EXIT_SUCCESS, NULL);
             return deletenode(n), false;
         }
@@ -1364,6 +1438,7 @@ run(void) /* Run MTM. */
         while (handlechar(r, w))
             r = wget_wch(focused->s->win, &w);
         getinput(root, &sfds);
+        if (!root) quit(EXIT_SUCCESS, NULL);
 
         draw(root);
         draw_statusbar();
@@ -1382,11 +1457,12 @@ main(int argc, char **argv)
     signal(SIGCHLD, SIG_IGN); /* automatically reap children */
 
     int c = 0;
-    while ((c = getopt(argc, argv, "c:T:t:e:S:L:")) != -1) switch (c){
+    while ((c = getopt(argc, argv, "c:T:t:e:g:S:L:")) != -1) switch (c){
         case 'c': commandkey = CTL(optarg[0]);      break;
         case 'T': setenv("TERM", optarg, 1);        break;
         case 't': term = optarg;                    break;
         case 'e': initial_cmd = optarg;             break;
+        case 'g': gridfile = optarg;                break;
         case 'S': statusbar_file = optarg;           break;
         case 'L': diag_log_file = optarg;            break;
         default:  quit(EXIT_FAILURE, USAGE);        break;
@@ -1416,10 +1492,17 @@ main(int argc, char **argv)
      * appears dynamically on first content — at that point draw_statusbar()
      * shrinks the pane by 1 row via reshape(). Claude Code gets SIGWINCH
      * and re-renders naturally. */
-    root = newview(NULL, 0, 0, LINES, COLS);
-    if (!root)
-        quit(EXIT_FAILURE, "could not open root window");
-    primary_pane = root;
+    if (gridfile) {
+        root = build_grid(gridfile, 0, 0, LINES, COLS);
+        if (!root)
+            quit(EXIT_FAILURE, "could not create grid from file");
+        primary_pane = NULL; /* grid mode: exit when all panes close */
+    } else {
+        root = newview(NULL, 0, 0, LINES, COLS, NULL);
+        if (!root)
+            quit(EXIT_FAILURE, "could not open root window");
+        primary_pane = root;
+    }
     focus(root);
     draw(root);
 

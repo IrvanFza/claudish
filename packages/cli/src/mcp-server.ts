@@ -362,8 +362,9 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         }
         return { content: [{ type: "text" as const, text: response }] };
       } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
         return {
-          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: "text" as const, text: `Error: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.` }],
           isError: true,
         };
       }
@@ -492,6 +493,10 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
           }
         }
         output += "---\n\n";
+      }
+      const failed = results.filter(r => r.error);
+      if (failed.length > 0) {
+        output += "---\n**To report failed model(s)**, use the `report_error` tool with `error_type: \"provider_failure\"` and the model ID(s) above.\n";
       }
       return { content: [{ type: "text" as const, text: output }] };
     },
@@ -709,8 +714,9 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
           content: [{ type: "text" as const, text: JSON.stringify({ session_id: sessionId, status: "starting" }) }],
         };
       } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
         return {
-          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          content: [{ type: "text" as const, text: `Error creating session: ${errMsg}\n\n---\n**To report this error**, use the \`report_error\` tool with \`error_type: "provider_failure"\` and \`model: "${args.model}"\`.` }],
           isError: true,
         };
       }
@@ -851,10 +857,14 @@ async function main() {
   // Create session manager with channel notification bridge
   const sessionManager = new SessionManager({
     onStateChange: (sessionId, event) => {
+      const notificationContent =
+        event.type === "failed"
+          ? `${event.content}\n\nTo report this error, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
+          : event.content;
       server.notification({
         method: "notifications/claude/channel",
         params: {
-          content: event.content,
+          content: notificationContent,
           meta: {
             session_id: sessionId,
             event: event.type,

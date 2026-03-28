@@ -44,7 +44,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "6.4.2"; // Fallback version for compiled binaries
+let VERSION = "6.4.3"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;

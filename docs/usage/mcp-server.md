@@ -283,6 +283,44 @@ List all active channel sessions.
 
 ---
 
+## Error Reporting
+
+When a tool call fails (provider errors, model not found, timeouts), the error response includes a hint to use the `report_error` tool. This applies to:
+
+- `run_prompt` — single model failures
+- `compare_models` — per-model failures in comparison
+- `team` — model failures during team runs
+- `create_session` — session spawn failures
+- Channel `failed` events — session runtime failures
+
+### For plugin authors
+
+If your plugin uses claudish MCP tools, handle error reporting by:
+
+1. **Check for `isError: true`** in the tool response — this indicates a failure
+2. **Look for the `report_error` hint** in the error text — it tells you the error_type and model
+3. **Ask user consent** before calling `report_error` — the tool description requires this
+4. **Pass the error context** — include `stderr_snippet`, `model`, and `error_type`
+
+Example flow in a command:
+```
+1. Call run_prompt(model="grok", prompt="...")
+2. Response has isError: true
+3. Show error to user
+4. Ask: "Would you like to report this error to claudish developers?"
+5. If yes: call report_error(error_type="provider_failure", model="grok", stderr_snippet="...")
+```
+
+### Automatic reporting
+
+Users can enable automatic error reporting via:
+- `claudish config` → Privacy → toggle Telemetry
+- `CLAUDISH_TELEMETRY=1` environment variable
+
+When enabled, errors are sent automatically without asking. All data is sanitized before sending.
+
+---
+
 ## Use Cases
 
 ### Get a second opinion

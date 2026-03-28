@@ -56,6 +56,7 @@ Options (run / run-and-judge):
   --models <a,b,...>  Comma-separated model IDs to run
   --input <text>      Task prompt (or create input.md in --path beforehand)
   --timeout <secs>    Timeout per model in seconds (default: 300)
+  --grid              Show all models in an mtm grid with live output + status bar
 
 Options (judge / run-and-judge):
   --judges <a,b,...>  Comma-separated judge model IDs (default: same as runners)
@@ -65,6 +66,7 @@ Options (status):
 
 Examples:
   claudish team run --path ./review --models minimax-m2.5,kimi-k2.5 --input "Review this code"
+  claudish team run --grid --models kimi-k2.5,gpt-5.4,gemini-3.1-pro --input "Solve this"
   claudish team judge --path ./review
   claudish team run-and-judge --path ./review --models gpt-5.4,gemini-3.1-pro-preview --input "Evaluate this design"
   claudish team status --path ./review
@@ -114,14 +116,20 @@ export async function teamCommand(args: string[]): Promise<void> {
         console.error("Error: --models is required for 'run'");
         process.exit(1);
       }
-      setupSession(sessionPath, models, input);
-      const runStatus = await runModels(sessionPath, {
-        timeout,
-        onStatusChange: (id, s) => {
-          process.stderr.write(`[team] ${id}: ${s.state}\n`);
-        },
-      });
-      printStatus(runStatus);
+      if (hasFlag(args, "--grid")) {
+        const { runWithGrid } = await import("./team-grid.js");
+        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", { timeout });
+        printStatus(gridStatus);
+      } else {
+        setupSession(sessionPath, models, input);
+        const runStatus = await runModels(sessionPath, {
+          timeout,
+          onStatusChange: (id, s) => {
+            process.stderr.write(`[team] ${id}: ${s.state}\n`);
+          },
+        });
+        printStatus(runStatus);
+      }
       break;
     }
 
