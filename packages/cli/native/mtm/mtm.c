@@ -66,7 +66,9 @@ struct NODE{
     SCRN pri, alt, *s;
     wchar_t *g0, *g1, *g2, *g3, *gc, *gs, *sgc, *sgs;
     VTPARSER vp;
-    char *cmd; /* command to run in this view (grid mode) */
+    char *cmd;  /* command to run in this view (grid mode) */
+    bool dead;  /* grid mode: process exited, pane frozen with overlay */
+    int exit_status; /* exit code of dead process (grid mode) */
 };
 
 /*** GLOBALS AND PROTOTYPES */
@@ -76,6 +78,7 @@ static fd_set fds;
 static char iobuf[BUFSIZ];
 static char *initial_cmd = NULL;   /* Set via -e flag: command to run in pane */
 static char *gridfile = NULL;       /* Set via -g flag: file listing commands for grid layout */
+static void draw_statusbar(void);  /* forward declaration */
 static char *statusbar_file = NULL; /* Set via -S flag: file to read status bar from */
 static char *diag_log_file = NULL;  /* Set via -L flag: diagnostic log file for expanded view */
 static NODE *primary_pane = NULL;   /* The pane — mtm exits when it closes */
@@ -95,6 +98,11 @@ quit(int rc, const char *m) /* Shut down MTM. */
 {
     if (m)
         fprintf(stderr, "%s\n", m);
+    /* Disable xterm mouse tracking before exiting */
+    if (gridfile) {
+        printf("\033[?1002l\033[?1000l");
+        fflush(stdout);
+    }
     if (root)
         freenode(root, true);
     endwin();
@@ -724,6 +732,8 @@ newnode(Node t, NODE *p, int y, int x, int h, int w) /* Create a new node. */
     n->tabs = tabs;
     n->ntabs = w;
     n->cmd = NULL;
+    n->dead = false;
+    n->exit_status = -1;
 
     return n;
 }
@@ -1095,15 +1105,27 @@ getinput(NODE *n, fd_set *f) /* Recursively check all ptty's for input. */
     if (n && n->c2 && !getinput(n->c2, f))
         return false;
 
-    if (n && n->t == VIEW && n->pt > 0 && FD_ISSET(n->pt, f)){
+    if (n && n->t == VIEW && !n->dead && n->pt > 0 && FD_ISSET(n->pt, f)){
         ssize_t r = read(n->pt, iobuf, sizeof(iobuf));
         if (r > 0)
             vtwrite(&n->vp, iobuf, r);
         if (r <= 0 && errno != EINTR && errno != EWOULDBLOCK){
-            /* If the primary pane (-e command) exits, quit mtm entirely.
-             * In grid mode (primary_pane == NULL), continue until all panes close. */
+            /* If the primary pane (-e command) exits, quit mtm entirely. */
             if (primary_pane != NULL && n == primary_pane)
                 quit(EXIT_SUCCESS, NULL);
+
+            /* Grid mode: freeze pane with overlay instead of deleting.
+             * Exit status comes from the .exit-code marker file written
+             * by the shell command — waitpid is unreliable with SIG_IGN. */
+            if (gridfile) {
+                FD_CLR(n->pt, &fds);
+                close(n->pt);
+                n->pt = -1;
+                n->dead = true;
+                n->exit_status = 0; /* default: success */
+                return true; /* keep pane alive */
+            }
+
             return deletenode(n), false;
         }
     }
@@ -1116,6 +1138,216 @@ static time_t statusbar_mtime = 0;
 static bool statusbar_visible = false; /* Status bar starts hidden */
 static bool statusbar_expanded = false; /* Expanded log view */
 #define EXPANDED_ROWS 12 /* Number of rows for expanded view */
+
+/* ─── Grid Mode: Pane-Local Text Selection ─────────────────────────────────── */
+static bool sel_active = false;    /* drag in progress */
+static NODE *sel_pane = NULL;      /* pane being selected in */
+static int sel_sy = 0, sel_sx = 0; /* start position (pane-relative) */
+static int sel_ey = 0, sel_ex = 0; /* end position (pane-relative) */
+
+static void
+sel_clear(void) /* Clear any active selection highlight. */
+{
+    if (!sel_pane) return;
+    /* Re-draw the pane to remove highlight — pnoutrefresh restores original colors */
+    draw(sel_pane);
+    sel_pane = NULL;
+    sel_active = false;
+}
+
+static void
+sel_highlight(void) /* Highlight selected region in the pane. */
+{
+    if (!sel_pane || sel_pane->t != VIEW) return;
+
+    /* Normalize: ensure start <= end */
+    int sy = sel_sy, sx = sel_sx, ey = sel_ey, ex = sel_ex;
+    if (sy > ey || (sy == ey && sx > ex)) {
+        int ty = sy, tx = sx;
+        sy = ey; sx = ex; ey = ty; ex = tx;
+    }
+
+    /* Overlay highlight with reversed colors on stdscr.
+     * Pane was already drawn by draw(root) via pnoutrefresh — we just layer on top. */
+    short pair = mtm_alloc_pair(COLOR_BLACK, COLOR_YELLOW);
+    attron(COLOR_PAIR(pair));
+
+    for (int r = sy; r <= ey; r++) {
+        int cs = (r == sy) ? sx : 0;
+        int ce = (r == ey) ? ex : sel_pane->w - 1;
+        /* Read characters from the pad and redraw highlighted */
+        for (int c = cs; c <= ce; c++) {
+            cchar_t cc;
+            if (mvwin_wch(sel_pane->s->win, sel_pane->s->off + r, c, &cc) == OK) {
+                wchar_t wc = cc.chars[0] ? cc.chars[0] : L' ';
+                mvaddnwstr(sel_pane->y + r, sel_pane->x + c, &wc, 1);
+            } else {
+                mvaddch(sel_pane->y + r, sel_pane->x + c, ' ');
+            }
+        }
+    }
+
+    attroff(COLOR_PAIR(pair));
+    wnoutrefresh(stdscr);
+}
+
+static void
+sel_copy(void) /* Copy selected text to system clipboard via pbcopy/xclip. */
+{
+    if (!sel_pane || sel_pane->t != VIEW) return;
+
+    /* Normalize */
+    int sy = sel_sy, sx = sel_sx, ey = sel_ey, ex = sel_ex;
+    if (sy > ey || (sy == ey && sx > ex)) {
+        int ty = sy, tx = sx;
+        sy = ey; sx = ex; ey = ty; ex = tx;
+    }
+
+    /* Extract text from the pad */
+    size_t bufsz = (size_t)(ey - sy + 1) * (size_t)(sel_pane->w + 1) + 1;
+    char *buf = calloc(1, bufsz);
+    if (!buf) return;
+
+    size_t pos = 0;
+    for (int r = sy; r <= ey; r++) {
+        int cs = (r == sy) ? sx : 0;
+        int ce = (r == ey) ? ex : sel_pane->w - 1;
+        size_t line_start = pos;
+
+        for (int c = cs; c <= ce; c++) {
+            cchar_t cc;
+            wchar_t wc = L' ';
+            if (mvwin_wch(sel_pane->s->win, sel_pane->s->off + r, c, &cc) == OK)
+                wc = cc.chars[0] ? cc.chars[0] : L' ';
+
+            char mb[MB_LEN_MAX + 1] = {0};
+            int len = wctomb(mb, wc);
+            if (len > 0) {
+                memcpy(buf + pos, mb, (size_t)len);
+                pos += (size_t)len;
+            }
+        }
+        /* Trim trailing spaces on this line */
+        while (pos > line_start && buf[pos - 1] == ' ')
+            pos--;
+        if (r < ey) buf[pos++] = '\n';
+    }
+    buf[pos] = '\0';
+
+    /* Copy to clipboard via multiple methods:
+     * 1. tmux load-buffer (works over SSH with prefix+])
+     * 2. OSC 52 escape sequence (terminal clipboard, works over SSH if supported)
+     * 3. pbcopy/xclip fallback (local clipboard) */
+    int pipefd[2];
+
+    /* Method 1: tmux paste buffer — works with prefix+] over SSH */
+    if (getenv("TMUX")) {
+        if (pipe(pipefd) == 0) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(pipefd[1]);
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[0]);
+                execlp("tmux", "tmux", "load-buffer", "-", NULL);
+                _exit(1);
+            } else if (pid > 0) {
+                close(pipefd[0]);
+                write(pipefd[1], buf, pos);
+                close(pipefd[1]);
+                usleep(50000);
+            } else {
+                close(pipefd[0]);
+                close(pipefd[1]);
+            }
+        }
+    }
+
+    /* Method 2: OSC 52 — sets terminal clipboard over SSH (iTerm2, kitty, etc.) */
+    {
+        /* Base64 encode the text */
+        static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        size_t b64sz = ((pos + 2) / 3) * 4 + 1;
+        char *b64buf = calloc(1, b64sz);
+        if (b64buf) {
+            size_t bi = 0;
+            for (size_t i = 0; i < pos; i += 3) {
+                unsigned int n = ((unsigned char)buf[i]) << 16;
+                if (i + 1 < pos) n |= ((unsigned char)buf[i+1]) << 8;
+                if (i + 2 < pos) n |= ((unsigned char)buf[i+2]);
+                b64buf[bi++] = b64[(n >> 18) & 0x3f];
+                b64buf[bi++] = b64[(n >> 12) & 0x3f];
+                b64buf[bi++] = (i + 1 < pos) ? b64[(n >> 6) & 0x3f] : '=';
+                b64buf[bi++] = (i + 2 < pos) ? b64[n & 0x3f] : '=';
+            }
+            /* Write OSC 52: \033]52;c;<base64>\a */
+            fprintf(stderr, "\033]52;c;%s\a", b64buf);
+            free(b64buf);
+        }
+    }
+
+    /* Method 3: pbcopy/xclip — local clipboard fallback */
+    if (pipe(pipefd) == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+#ifdef __linux__
+            execlp("xclip", "xclip", "-selection", "clipboard", NULL);
+#else
+            execlp("pbcopy", "pbcopy", NULL);
+#endif
+            _exit(1);
+        } else if (pid > 0) {
+            close(pipefd[0]);
+            write(pipefd[1], buf, pos);
+            close(pipefd[1]);
+            usleep(50000);
+        } else {
+            close(pipefd[0]);
+            close(pipefd[1]);
+        }
+    }
+    free(buf);
+}
+
+/* Grid mode: pane-local text selection */
+
+static void
+handle_grid_mouse(MEVENT *me)
+{
+    if (!gridfile) return;
+
+    if (me->bstate & BUTTON1_PRESSED) {
+        /* Start selection — clear old, record pane and start position */
+        sel_clear();
+        NODE *n = findnode(root, me->y, me->x);
+        if (n && n->t == VIEW) {
+            sel_pane = n;
+            sel_active = true;
+            sel_sy = sel_ey = me->y - n->y;
+            sel_sx = sel_ex = me->x - n->x;
+            focus(n);
+        }
+    } else if (sel_active && sel_pane && (me->bstate & REPORT_MOUSE_POSITION)) {
+        /* Drag — update end position, highlight redrawn by run() loop */
+        sel_ey = MAX(0, MIN(me->y - sel_pane->y, sel_pane->h - 1));
+        sel_ex = MAX(0, MIN(me->x - sel_pane->x, sel_pane->w - 1));
+    } else if (me->bstate & BUTTON1_RELEASED) {
+        /* End selection — finalize, copy to clipboard */
+        if (sel_active && sel_pane) {
+            sel_ey = MAX(0, MIN(me->y - sel_pane->y, sel_pane->h - 1));
+            sel_ex = MAX(0, MIN(me->x - sel_pane->x, sel_pane->w - 1));
+            if (sel_sy != sel_ey || sel_sx != sel_ex) {
+                sel_copy();
+            } else {
+                sel_clear(); /* just a click, no selection */
+            }
+            sel_active = false;
+        }
+    }
+    doupdate();
+}
 
 static void
 draw_statusbar(void) /* Draw the 1-line status bar on the last row. */
@@ -1190,14 +1422,16 @@ draw_statusbar(void) /* Draw the 1-line status bar on the last row. */
         if (end) { seg = end + 1; mvaddch(y, x++, ' '); }
         else break;
     }
-    /* Draw expand/collapse hint on far right */
-    const char *hint = statusbar_expanded ? " c=copy  ESC=close " : " click to expand ";
-    int hlen = strlen(hint);
-    if (COLS > x + hlen + 2) {
-        short hpair = mtm_alloc_pair(8, 237);
-        attron(COLOR_PAIR(hpair));
-        mvaddstr(y, COLS - hlen, hint);
-        attroff(COLOR_PAIR(hpair));
+    /* Draw expand/collapse hint on far right (not in grid mode) */
+    if (!gridfile) {
+        const char *hint = statusbar_expanded ? " c=copy  ESC=close " : " click to expand ";
+        int hlen = strlen(hint);
+        if (COLS > x + hlen + 2) {
+            short hpair = mtm_alloc_pair(8, 237);
+            attron(COLOR_PAIR(hpair));
+            mvaddstr(y, COLS - hlen, hint);
+            attroff(COLOR_PAIR(hpair));
+        }
     }
 
     wnoutrefresh(stdscr);
@@ -1368,8 +1602,25 @@ handlechar(int r, int k) /* Handle a single input character. */
     DO(false, KEY(L'c'),           { if (statusbar_expanded) copy_diag_to_clipboard(); else SEND(n, "c"); })
     /* ESC: collapse expanded panel (or pass through ESC to terminal) */
     DO(false, KEY(L'\x1b'),        { if (statusbar_expanded) toggle_statusbar_expand(); else SEND(n, "\x1b"); })
-    /* Mouse click on status bar area: only expand (never collapse) */
-    DO(false, CODE(KEY_MOUSE),     { MEVENT me; if (getmouse(&me) == OK) { int bar_top = statusbar_expanded ? (LINES - 1 - MIN(EXPANDED_ROWS, LINES - 2)) : (LINES - 1); if (me.y >= bar_top && statusbar_visible && !statusbar_expanded) toggle_statusbar_expand(); } })
+    /* Ctrl-C / q / ESC ESC: in grid mode quit mtm, otherwise send to pane.
+     * Ctrl-C (0x03) should work, but add q (on dead panes) as fallback. */
+    DO(false, KEY(3),              { if (gridfile) quit(EXIT_SUCCESS, NULL); else SEND(n, "\x03"); })
+    DO(false, KEY(L'q'),           { if (gridfile && n->dead) quit(EXIT_SUCCESS, NULL); else SEND(n, "q"); })
+    /* Mouse events: grid mode gets pane-local selection; normal mode gets status bar click */
+    DO(false, CODE(KEY_MOUSE),     {
+        MEVENT me;
+        if (getmouse(&me) == OK) {
+            if (gridfile) {
+                handle_grid_mouse(&me);
+            } else {
+                int bar_top = statusbar_expanded
+                    ? (LINES - 1 - MIN(EXPANDED_ROWS, LINES - 2))
+                    : (LINES - 1);
+                if (me.y >= bar_top && statusbar_visible && !statusbar_expanded)
+                    toggle_statusbar_expand();
+            }
+        }
+    })
     DO(false, KEY(commandkey),     return cmd = true)
     DO(false, KEY(0),              SENDN(n, "\000", 1); SB)
     DO(false, KEY(L'\n'),          SEND(n, "\n"); SB)
@@ -1410,6 +1661,7 @@ handlechar(int r, int k) /* Handle a single input character. */
     DO(true,  HSPLIT,              split(n, HORIZONTAL))
     DO(true,  VSPLIT,              split(n, VERTICAL))
     DO(true,  DELETE_NODE,         deletenode(n))
+    DO(true,  KEY(L'q'),           { if (gridfile) quit(EXIT_SUCCESS, NULL); }) /* Ctrl-G q = quit grid */
     DO(true,  BAILOUT,             (void)1)
     DO(true,  NUKE,                wclear(n->s->win))
     DO(true,  REDRAW,              touchwin(stdscr); draw(root); redrawwin(stdscr))
@@ -1431,7 +1683,10 @@ run(void) /* Run MTM. */
     while (root){
         wint_t w = 0;
         fd_set sfds = fds;
-        if (select(nfds + 1, &sfds, NULL, NULL, NULL) < 0)
+        /* In grid mode use a timeout so status bar updates even after all panes finish */
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 500000}; /* 500ms */
+        struct timeval *tvp = gridfile ? &tv : NULL;
+        if (select(nfds + 1, &sfds, NULL, NULL, tvp) < 0)
             FD_ZERO(&sfds);
 
         int r = wget_wch(focused->s->win, &w);
@@ -1441,10 +1696,16 @@ run(void) /* Run MTM. */
         if (!root) quit(EXIT_SUCCESS, NULL);
 
         draw(root);
+        /* Draw selection highlight AFTER panes but BEFORE doupdate,
+         * so it overlays on the virtual screen without modifying pads */
+        if (sel_pane && (sel_active || (sel_sy != sel_ey || sel_sx != sel_ex)))
+            sel_highlight();
         draw_statusbar();
         doupdate();
         fixcursor();
         draw(focused);
+        if (sel_pane && (sel_active || (sel_sy != sel_ey || sel_sx != sel_ex)))
+            sel_highlight();
         doupdate();
     }
 }
@@ -1471,9 +1732,20 @@ main(int argc, char **argv)
     if (!initscr())
         quit(EXIT_FAILURE, "could not initialize terminal");
     ESCDELAY = ESCAPE_TIME;
-    /* Enable mouse — click on status bar to toggle expanded view */
-    mousemask(BUTTON1_CLICKED | BUTTON1_PRESSED, NULL);
-    mouseinterval(0); /* Don't wait for double-click */
+    /* Mouse: grid mode captures press+release for pane-local copy.
+     * Click start → release end → copies text within that pane to clipboard.
+     * Normal mode: just click for status bar expand.
+     *
+     * The screen-256color-bce terminfo has kmous=\E[M (parse) but no XM
+     * (enable/disable), so ncurses never sends \E[?1000h to the terminal.
+     * We send it manually after mousemask(). */
+    if (gridfile) {
+        mousemask(BUTTON1_PRESSED | BUTTON1_RELEASED | REPORT_MOUSE_POSITION, NULL);
+        mouseinterval(0);
+    } else {
+        mousemask(BUTTON1_CLICKED | BUTTON1_PRESSED, NULL);
+        mouseinterval(0);
+    }
     raw();
     noecho();
     nonl();
@@ -1487,6 +1759,14 @@ main(int argc, char **argv)
      * as rendering artifacts over the pane content. */
     werase(stdscr);
     wnoutrefresh(stdscr);
+
+    /* Manually enable xterm mouse tracking for grid mode.
+     * Must be after raw()/initscr() so the terminal is fully initialized.
+     * \E[?1000h = basic mouse (press+release), \E[?1002h = button-event (drag) */
+    if (gridfile) {
+        printf("\033[?1000h\033[?1002h");
+        fflush(stdout);
+    }
 
     /* Pane starts at FULL terminal height. When -S is set, the status bar
      * appears dynamically on first content — at that point draw_statusbar()

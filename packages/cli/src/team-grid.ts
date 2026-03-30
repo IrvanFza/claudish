@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -105,6 +106,7 @@ function renderGridStatusBar(counts: GridStatusCounts): string {
         `R: ${failed} failed`,
         `D: ${elapsed}`,
         "R: \u2717 issues",
+        "D: ctrl-g q to quit",
       ].join("\t");
     }
     return [
@@ -112,6 +114,7 @@ function renderGridStatusBar(counts: GridStatusCounts): string {
       `G: ${total} done`,
       `D: ${elapsed}`,
       "G: \u2713 complete",
+      "D: ctrl-g q to quit",
     ].join("\t");
   }
 
@@ -134,6 +137,7 @@ interface PollState {
   startTime: number;
   timeoutMs: number;
   statusbarPath: string;
+  completedAtMs: number | null; // frozen elapsed time when all done
 }
 
 /**
@@ -166,22 +170,11 @@ function pollStatus(state: PollState): boolean {
     }
 
     const exitCodePath = join(sessionPath, "work", anonId, ".exit-code");
-    const responsePath = join(sessionPath, `response-${anonId}.md`);
 
     if (existsSync(exitCodePath)) {
       const codeStr = readFileSync(exitCodePath, "utf-8").trim();
       const code = parseInt(codeStr, 10);
       const isSuccess = code === 0;
-
-      // Measure output size
-      let outputSize = 0;
-      try {
-        outputSize = existsSync(responsePath)
-          ? readFileSync(responsePath, "utf-8").length
-          : 0;
-      } catch {
-        // best-effort
-      }
 
       const newState: ModelStatus = {
         ...current,
@@ -189,7 +182,7 @@ function pollStatus(state: PollState): boolean {
         exitCode: code,
         startedAt: current.startedAt ?? new Date().toISOString(),
         completedAt: new Date().toISOString(),
-        outputSize,
+        outputSize: 0,
       };
       statusCache.models[anonId] = newState;
       changed = true;
@@ -204,13 +197,14 @@ function pollStatus(state: PollState): boolean {
           state: "TIMEOUT",
           startedAt: current.startedAt ?? new Date().toISOString(),
           completedAt: new Date().toISOString(),
+          outputSize: 0,
         };
         statusCache.models[anonId] = newState;
         changed = true;
         failed++;
       } else {
-        // Mark as RUNNING if response file has appeared
-        if (current.state === "PENDING" && existsSync(responsePath)) {
+        // Mark as RUNNING after first second (panes launch immediately)
+        if (current.state === "PENDING" && elapsedMs > 1000) {
           statusCache.models[anonId] = {
             ...current,
             state: "RUNNING",
@@ -230,12 +224,17 @@ function pollStatus(state: PollState): boolean {
   const total = anonIds.length;
   const allDone = done + failed >= total;
 
+  // Freeze elapsed time when all models complete
+  if (allDone && !state.completedAtMs) {
+    state.completedAtMs = elapsedMs;
+  }
+
   const counts: GridStatusCounts = {
     done,
     running,
     failed,
     total,
-    elapsedMs,
+    elapsedMs: state.completedAtMs ?? elapsedMs,
     allDone,
   };
 
@@ -268,22 +267,34 @@ export async function runWithGrid(
   // 1. Set up session directory (manifest.json, status.json, work dirs, input.md)
   const manifest: TeamManifest = setupSession(sessionPath, models, input);
 
-  // 2. Ensure errors directory exists (setupSession creates work/ but not errors/)
+  // 2. Ensure errors directory exists and clean stale .exit-code files from previous runs
   mkdirSync(join(sessionPath, "errors"), { recursive: true });
+  for (const anonId of Object.keys(manifest.models)) {
+    const stale = join(sessionPath, "work", anonId, ".exit-code");
+    try { unlinkSync(stale); } catch { /* doesn't exist — fine */ }
+  }
 
   // 3. Generate gridfile — one shell command per pane
   const gridfilePath = join(sessionPath, "gridfile.txt");
+  // Read prompt once, shell-escape single quotes
+  const prompt = readFileSync(join(sessionPath, "input.md"), "utf-8").replace(/'/g, "'\\''");
+
   const gridLines = Object.entries(manifest.models).map(([anonId]) => {
-    const inputMd = join(sessionPath, "input.md");
     const errorLog = join(sessionPath, "errors", `${anonId}.log`);
-    const responseMd = join(sessionPath, `response-${anonId}.md`);
     const exitCodeFile = join(sessionPath, "work", anonId, ".exit-code");
-    return (
-      `claudish --model ${manifest.models[anonId].model} -y --stdin --quiet` +
-      ` < ${inputMd} 2>${errorLog}` +
-      ` | tee ${responseMd}` +
-      `; echo $? > ${exitCodeFile}`
-    );
+    // Run claudish in print mode — streams text to stdout without alternate screen.
+    // -p = print mode (headless), -v = verbose claudish logs, -y = auto-approve.
+    const model = manifest.models[anonId].model;
+    return [
+      `claudish --model ${model} -y -v '${prompt}' 2>${errorLog};`,
+      `_ec=$?; echo $_ec > ${exitCodeFile};`,
+      `if [ $_ec -eq 0 ]; then`,
+      `printf "\\n\\033[42;97;1m ✓ DONE \\033[0m\\n";`,
+      `else`,
+      `printf "\\n\\033[41;97;1m ✗ FAIL (exit $_ec) \\033[0m\\n";`,
+      `fi;`,
+      `exec sleep 86400`,
+    ].join(" ");
   });
   writeFileSync(gridfilePath, gridLines.join("\n") + "\n", "utf-8");
 
@@ -319,6 +330,7 @@ export async function runWithGrid(
     startTime,
     timeoutMs,
     statusbarPath,
+    completedAtMs: null,
   };
 
   const pollInterval = setInterval(() => {

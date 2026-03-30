@@ -370,6 +370,9 @@ function parseLogMessage(msg: string): { isError: boolean; short: string; provid
  * Try to create an MtmDiagRunner. Returns null if mtm binary is not available.
  */
 export async function tryCreateMtmRunner(): Promise<MtmDiagRunner | null> {
+  // Don't nest mtm inside mtm (e.g., grid mode panes)
+  if (process.env.MTM) return null;
+
   try {
     const runner = new MtmDiagRunner();
     // Verify we can find the mtm binary before committing
