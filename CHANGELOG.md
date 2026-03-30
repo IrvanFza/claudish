@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.4.6] - 2026-03-30
+
+### Bug Fixes
+
+- v6.4.6 - subcommand routing broken when shell alias prepends flags([`3d40667`](https://github.com/MadAppGang/claudish/commit/3d406677606b9c31b1cc638f017964e5edb2138f))
+
+### Documentation
+
+- update CHANGELOG.md for v6.4.5([`9751770`](https://github.com/MadAppGang/claudish/commit/975177019310c5a07f0fe38b0878e5d101e9aee1))
+
+### New Features
+
+- magmux - Go terminal multiplexer replacing C MTM implementation([`4e436e9`](https://github.com/MadAppGang/claudish/commit/4e436e9380b4c104072fab2cd880154270b9a70c))
+- add plugin defaults endpoint for Magus plugin system([`c43d927`](https://github.com/MadAppGang/claudish/commit/c43d9277fca41ffbc28013102094187a90a97103))
+
 ## [6.4.5] - 2026-03-28
 
 ### Bug Fixes
