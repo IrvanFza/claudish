@@ -71,14 +71,16 @@ const isInitCommand = args[0] === "init" || args.includes("init");
 const isProfileCommand =
   args[0] === "profile" ||
   args.some((a, i) => a === "profile" && (i === 0 || !args[i - 1]?.startsWith("-")));
+// Find first positional (non-flag) arg — handles aliases like `claudish -y config`
+const firstPositional = args.find((a) => !a.startsWith("-"));
 // Check for telemetry management subcommand
-const isTelemetryCommand = args[0] === "telemetry";
+const isTelemetryCommand = firstPositional === "telemetry";
 // Check for stats management subcommand
-const isStatsCommand = args[0] === "stats";
+const isStatsCommand = firstPositional === "stats";
 // Check for interactive config TUI
-const isConfigCommand = args[0] === "config";
+const isConfigCommand = firstPositional === "config";
 // Check for team orchestrator subcommand
-const isTeamCommand = args[0] === "team";
+const isTeamCommand = firstPositional === "team";
 
 if (isMcpMode) {
   // MCP server mode - dynamic import to keep CLI fast
