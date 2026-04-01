@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.5.1] - 2026-04-01
+
+### Bug Fixes
+
+- show provider name and quota in claudish status bar([`eb8693c`](https://github.com/MadAppGang/claudish/commit/eb8693c9b60ed3e6e7f007c7061f51918a07733d))
+
+### Documentation
+
+- update CHANGELOG.md for v6.5.0([`ad801f6`](https://github.com/MadAppGang/claudish/commit/ad801f66c7862212752442b455677857301367f2))
+
+### Other Changes
+
+- bump to v6.5.1([`9ed4074`](https://github.com/MadAppGang/claudish/commit/9ed40745d52c7a278faa7a00a15680a2fddfebd7))
+
 ## [6.5.0] - 2026-04-01
 
 ### Bug Fixes
