@@ -166,6 +166,8 @@ export class MtmDiagRunner {
   private modelName = "";
   private provider = "";
   private port = "";
+  private quotaRemaining: number | undefined;
+  private tokenPollTimer: ReturnType<typeof setInterval> | null = null;
   private lastError = "";
   private errorCount = 0;
   private requestCount = 0;
@@ -174,9 +176,14 @@ export class MtmDiagRunner {
   private roundtripSamples: number[] = [];
   private adapters = ""; // translation layers: format + model + transport
 
-  /** Set the proxy port (for reading token file) */
+  /** Set the proxy port (for reading token file) and start polling for updates */
   setPort(port: number | string): void {
     this.port = String(port);
+    // Poll token file every 3s to pick up provider name and quota after first request
+    this.tokenPollTimer = setInterval(() => {
+      const changed = this.readTokenFile();
+      if (changed) this.refreshStatusBar();
+    }, 3000);
   }
 
   /**
@@ -198,16 +205,29 @@ export class MtmDiagRunner {
   /**
    * Render and write the ANSI-formatted status bar to the status file.
    */
-  private refreshStatusBar(): void {
-    // Read quota from token file (best-effort)
-    let quotaRemaining: number | undefined;
+  /** Read provider/quota from token file. Returns true if anything changed. */
+  private readTokenFile(): boolean {
+    if (!this.port) return false;
     try {
       const tokPath = join(homedir(), ".claudish", `tokens-${this.port}.json`);
       const tok = JSON.parse(readFileSync(tokPath, "utf-8"));
-      if (typeof tok.quota_remaining === "number") quotaRemaining = tok.quota_remaining;
-      // Also pick up provider name from token file if not set from logs
-      if (!this.provider && tok.provider_name) this.provider = tok.provider_name;
-    } catch { /* best-effort */ }
+      let changed = false;
+      if (typeof tok.quota_remaining === "number" && tok.quota_remaining !== this.quotaRemaining) {
+        this.quotaRemaining = tok.quota_remaining;
+        changed = true;
+      }
+      if (tok.provider_name && tok.provider_name !== this.provider) {
+        this.provider = tok.provider_name;
+        changed = true;
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  }
+
+  private refreshStatusBar(): void {
+    this.readTokenFile();
 
     const bar = renderStatusBar({
       model: this.modelName,
@@ -216,7 +236,7 @@ export class MtmDiagRunner {
       lastError: this.lastError,
       requestCount: this.requestCount,
       avgRoundtripMs: this.avgRoundtripMs,
-      quotaRemaining,
+      quotaRemaining: this.quotaRemaining,
     });
     try {
       // Append new line — tail -f picks it up and shows the latest
@@ -237,6 +257,10 @@ export class MtmDiagRunner {
    * Clean up: close the log stream and remove the ephemeral log file.
    */
   cleanup(): void {
+    if (this.tokenPollTimer) {
+      clearInterval(this.tokenPollTimer);
+      this.tokenPollTimer = null;
+    }
     if (this.logStream) {
       try {
         this.logStream.end();
