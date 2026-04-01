@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.5.3] - 2026-04-01
+
+### Bug Fixes
+
+- quota display in status bar — strip provider prefix, await fetch, rewrite token file([`b026b2f`](https://github.com/MadAppGang/claudish/commit/b026b2ff3d2a3b95530f3136e125971177315508))
+
+### Documentation
+
+- update CHANGELOG.md for v6.5.2([`67d4181`](https://github.com/MadAppGang/claudish/commit/67d418143f2ee718ee425ce7a26d6f32fb3e2f8d))
+
+### Other Changes
+
+- bump to v6.5.3([`1eafee8`](https://github.com/MadAppGang/claudish/commit/1eafee81943eb2d45ee552de3184935f8365205a))
+
 ## [6.5.2] - 2026-04-01
 
 ### Bug Fixes
