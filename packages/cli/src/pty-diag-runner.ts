@@ -365,28 +365,30 @@ interface StatusBarState {
  * mtm renders each segment as a colored pill using ncurses.
  */
 function renderStatusBar(state: StatusBarState): string {
-  const { model, provider, errorCount, lastError, requestCount, avgRoundtripMs, quotaRemaining } = state;
+  const { model, provider, errorCount, lastError, quotaRemaining } = state;
 
   const parts: string[] = [];
 
   parts.push("M: claudish ");
-  if (provider) parts.push(`D: ${provider} `);
   if (model) parts.push(`C: ${model} `);
+  if (provider) parts.push(`D: ${provider}`);
 
-  // Status: ok or error
+  // Only show errors — no "ok" pill (it's noise)
   if (errorCount > 0) {
-    const errLabel = errorCount === 1 ? " ⚠ 1 error " : ` ⚠ ${errorCount} errors `;
-    parts.push(`R:${errLabel}`);
-    if (lastError) parts.push(`D: ${lastError} `);
-  } else {
-    parts.push("G: ● ok ");
+    const errLabel = errorCount === 1 ? "⚠ 1 error" : `⚠ ${errorCount} errors`;
+    parts.push(`R: ${errLabel} `);
+    if (lastError) parts.push(`D: ${lastError}`);
   }
 
-  // Quota remaining (for Code Assist models) — after status
+  // Quota: mini bar + percentage
   if (typeof quotaRemaining === "number") {
-    const pct = Math.round(quotaRemaining * 100);
-    const color = pct > 50 ? "G" : pct > 20 ? "Y" : "R";
-    parts.push(`${color}: ${pct}% quota `);
+    const usedPct = Math.round((1 - quotaRemaining) * 100);
+    const barWidth = 8;
+    const usedCols = Math.max(usedPct > 0 ? 1 : 0, Math.round((usedPct / 100) * barWidth));
+    const freeCols = barWidth - usedCols;
+    const bar = "█".repeat(usedCols) + "░".repeat(freeCols);
+    const color = usedPct < 50 ? "G" : usedPct < 80 ? "Y" : "R";
+    parts.push(`${color}: ${bar} ${usedPct}% `);
   }
 
   return parts.join("\t");
