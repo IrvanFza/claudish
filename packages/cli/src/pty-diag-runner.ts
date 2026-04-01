@@ -370,24 +370,23 @@ function renderStatusBar(state: StatusBarState): string {
   const parts: string[] = [];
 
   parts.push("M: claudish ");
+  if (provider) parts.push(`D: ${provider} `);
   if (model) parts.push(`C: ${model} `);
-  if (provider) parts.push(`W: ${provider} `);
 
-  // Quota remaining (for Code Assist models)
-  if (typeof quotaRemaining === "number") {
-    const pct = Math.round(quotaRemaining * 100);
-    // Color: green >50%, yellow 20-50%, red <20%
-    const color = pct > 50 ? "G" : pct > 20 ? "Y" : "R";
-    parts.push(`${color}: ${pct}% quota `);
-  }
-
-  // Status
+  // Status: ok or error
   if (errorCount > 0) {
     const errLabel = errorCount === 1 ? " ⚠ 1 error " : ` ⚠ ${errorCount} errors `;
     parts.push(`R:${errLabel}`);
     if (lastError) parts.push(`D: ${lastError} `);
   } else {
     parts.push("G: ● ok ");
+  }
+
+  // Quota remaining (for Code Assist models) — after status
+  if (typeof quotaRemaining === "number") {
+    const pct = Math.round(quotaRemaining * 100);
+    const color = pct > 50 ? "G" : pct > 20 ? "Y" : "R";
+    parts.push(`${color}: ${pct}% quota `);
   }
 
   return parts.join("\t");

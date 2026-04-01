@@ -302,9 +302,12 @@ export class ComposedHandler implements ModelHandler {
         if (this.provider.displayName) {
           this.tokenTracker.setProviderDisplayName(this.provider.displayName);
         }
-        // Fetch quota for Code Assist so status line shows usage remaining
-        if (this.provider.name === "gemini-codeassist") {
-          this.fetchQuotaForStatusLine().catch(() => {});
+        // Fetch quota so status line shows usage remaining (await but with timeout)
+        if (typeof (this.provider as any).getQuotaRemaining === "function") {
+          await Promise.race([
+            this.fetchQuotaForStatusLine(),
+            new Promise((r) => setTimeout(r, 2000)), // 2s timeout
+          ]).catch(() => {});
         }
       } catch (err: any) {
         log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
@@ -748,24 +751,19 @@ export class ComposedHandler implements ModelHandler {
     return this.tokenTracker;
   }
 
-  /** Fetch Code Assist quota and update token tracker (non-blocking, best-effort) */
+  /** Fetch quota and update token tracker (non-blocking, best-effort) */
   private async fetchQuotaForStatusLine(): Promise<void> {
     try {
-      const { retrieveUserQuota, getValidAccessToken } = await import("../auth/gemini-oauth.js");
-      const token = await getValidAccessToken();
-      // Get projectId from the transport (already set by refreshAuth)
-      const transport = this.provider as any;
-      const projectId = transport.projectId;
-      if (!projectId) return;
-
-      const quota = await retrieveUserQuota(token, projectId);
-      if (!quota?.buckets?.length) return;
-
-      // Find the bucket for the current model
-      const modelName = this.targetModel;
-      const bucket = quota.buckets.find((b: any) => b.modelId === modelName);
-      if (bucket && typeof bucket.remainingFraction === "number") {
-        this.tokenTracker.setQuotaRemaining(bucket.remainingFraction);
+      const fn = (this.provider as any).getQuotaRemaining;
+      if (typeof fn !== "function") return;
+      // Strip provider prefix (go@gemini-2.5-flash → gemini-2.5-flash)
+      const bareModel = this.targetModel.includes("@")
+        ? this.targetModel.split("@")[1]
+        : this.targetModel;
+      const remaining = await fn.call(this.provider, bareModel);
+      if (typeof remaining === "number") {
+        this.tokenTracker.setQuotaRemaining(remaining);
+        this.tokenTracker.rewrite();
       }
     } catch {
       // Non-fatal

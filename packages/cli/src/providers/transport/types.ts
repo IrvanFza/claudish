@@ -98,6 +98,12 @@ export interface ProviderTransport {
   getActiveModelName?(): string | undefined;
 
   /**
+   * Get quota remaining fraction (0-1) for a specific model.
+   * Used by Code Assist to surface per-model quota in the status bar.
+   */
+  getQuotaRemaining?(modelName: string): Promise<number | undefined>;
+
+  /**
    * Optional cleanup on shutdown.
    */
   shutdown?(): Promise<void>;

@@ -55,6 +55,11 @@ export class TokenTracker {
     this.quotaRemaining = fraction;
   }
 
+  /** Force rewrite the token file with current state */
+  rewrite(): void {
+    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens);
+  }
+
   /**
    * Standard update: assign input (latest context), accumulate output.
    * Used by most remote providers (Gemini, AnthropicCompat, Vertex, RemoteProvider, etc.)

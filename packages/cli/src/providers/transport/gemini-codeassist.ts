@@ -410,6 +410,22 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       // Non-fatal: quota check is informational only
     }
   }
+
+  /**
+   * Get quota remaining for a specific model from Code Assist API.
+   */
+  async getQuotaRemaining(modelName: string): Promise<number | undefined> {
+    if (!this.accessToken || !this.projectId) return undefined;
+    try {
+      const { retrieveUserQuota } = await import("../../auth/gemini-oauth.js");
+      const data = await retrieveUserQuota(this.accessToken, this.projectId);
+      if (!data?.buckets?.length) return undefined;
+      const bucket = data.buckets.find((b: any) => b.modelId === modelName);
+      return typeof bucket?.remainingFraction === "number" ? bucket.remainingFraction : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 // Backward-compatible alias
