@@ -935,9 +935,207 @@ describe("sanitizeSchemaForOpenAI", () => {
     expect(params.oneOf).toBeUndefined();
     expect(params.properties.selector.type).toBe("string");
   });
+
+  // REGRESSION: OpenAI rejects bare object schemas without properties field
+  // Fixed in /dev:fix session dev-fix-20260405-102347-199b209c
+  test("adds properties:{} to bare { type: 'object' } schema", async () => {
+    const sanitize = await getSanitizer();
+    const schema = { type: "object" };
+    const result = sanitize(schema);
+    expect(result.type).toBe("object");
+    expect(result.properties).toEqual({});
+  });
+
+  test("adds properties:{} to empty schema {}", async () => {
+    const sanitize = await getSanitizer();
+    const schema = {};
+    const result = sanitize(schema);
+    expect(result.type).toBe("object");
+    expect(result.properties).toEqual({});
+  });
+
+  test("convertToolsToOpenAI handles MCP tool with no parameters (list_models pattern)", async () => {
+    const { convertToolsToOpenAI } = await import("./handlers/shared/format/openai-tools.js");
+    const req = {
+      tools: [
+        {
+          name: "mcp__plugin_claudish__list_models",
+          description: "List recommended models",
+          input_schema: { type: "object" },
+        },
+      ],
+    };
+    const tools = convertToolsToOpenAI(req, false);
+    expect(tools).toHaveLength(1);
+    const params = tools[0].function.parameters;
+    expect(params.type).toBe("object");
+    expect(params.properties).toEqual({});
+  });
 });
 
 // ─── Regression: Z.AI GLM-5 usage tokens (GitHub #74) ─────────────────────
+
+// ─── Regression: Gemini images in tool_result (browser_screenshot) ──────────
+
+describe("Regression: GeminiAPIFormat images in tool_result", () => {
+  async function getAdapter() {
+    const mod = await import("./adapters/gemini-api-format.js");
+    return mod.GeminiAPIFormat;
+  }
+
+  // Minimal 1x1 red PNG (base64) for test assertions
+  const TINY_PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+
+  test("tool_result with image array extracts inlineData parts (not JSON-stringified)", async () => {
+    const GeminiAPIFormat = await getAdapter();
+    const adapter = new GeminiAPIFormat("gemini-3.1-pro-preview");
+
+    // Simulate: assistant called browser_screenshot, now user sends tool_result with text+image
+    // First, register the tool call so convertUserParts can find it
+    adapter.registerToolCall("toolu_screenshot_1", "browser_screenshot");
+
+    const claudeRequest = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_screenshot_1",
+              name: "browser_screenshot",
+              input: {},
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_screenshot_1",
+              content: [
+                { type: "text", text: '{"size_bytes": 358688, "viewport": {"width": 1800, "height": 991}}' },
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: TINY_PNG_B64,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = adapter.convertMessages(claudeRequest);
+
+    // The user message should have parts for both the functionResponse AND the inlineData
+    const userMsg = messages.find((m: any) => m.role === "user");
+    expect(userMsg).toBeDefined();
+
+    // Should have functionResponse part
+    const fnResponse = userMsg.parts.find((p: any) => p.functionResponse);
+    expect(fnResponse).toBeDefined();
+    expect(fnResponse.functionResponse.name).toBe("browser_screenshot");
+    // The text content should be in the response (not the raw image data)
+    expect(fnResponse.functionResponse.response.content).toContain("size_bytes");
+
+    // Should have inlineData part for the image (NOT embedded in functionResponse)
+    const inlineData = userMsg.parts.find((p: any) => p.inlineData);
+    expect(inlineData).toBeDefined();
+    expect(inlineData.inlineData.mimeType).toBe("image/png");
+    expect(inlineData.inlineData.data).toBe(TINY_PNG_B64);
+  });
+
+  test("tool_result with string content still works as before", async () => {
+    const GeminiAPIFormat = await getAdapter();
+    const adapter = new GeminiAPIFormat("gemini-2.0-flash");
+
+    adapter.registerToolCall("toolu_read_1", "Read");
+
+    const claudeRequest = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_read_1", name: "Read", input: { file_path: "/tmp/test.ts" } },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_read_1",
+              content: "file contents here",
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = adapter.convertMessages(claudeRequest);
+    const userMsg = messages.find((m: any) => m.role === "user");
+
+    const fnResponse = userMsg.parts.find((p: any) => p.functionResponse);
+    expect(fnResponse).toBeDefined();
+    expect(fnResponse.functionResponse.response.content).toBe("file contents here");
+
+    // No inlineData for plain text tool results
+    const inlineData = userMsg.parts.find((p: any) => p.inlineData);
+    expect(inlineData).toBeUndefined();
+  });
+
+  test("tool_result with multiple images extracts all as inlineData", async () => {
+    const GeminiAPIFormat = await getAdapter();
+    const adapter = new GeminiAPIFormat("gemini-3.1-pro-preview");
+
+    adapter.registerToolCall("toolu_multi_1", "multi_screenshot");
+
+    const claudeRequest = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_multi_1", name: "multi_screenshot", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_multi_1",
+              content: [
+                { type: "text", text: "Two screenshots captured" },
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: TINY_PNG_B64 },
+                },
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/jpeg", data: TINY_PNG_B64 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const messages = adapter.convertMessages(claudeRequest);
+    const userMsg = messages.find((m: any) => m.role === "user");
+
+    const inlineDataParts = userMsg.parts.filter((p: any) => p.inlineData);
+    expect(inlineDataParts).toHaveLength(2);
+    expect(inlineDataParts[0].inlineData.mimeType).toBe("image/png");
+    expect(inlineDataParts[1].inlineData.mimeType).toBe("image/jpeg");
+  });
+});
 
 describe("Regression: Z.AI GLM-5 input_tokens in final usage event (#74)", () => {
   test("input_tokens from message_delta.usage is captured (not stuck at 0)", async () => {

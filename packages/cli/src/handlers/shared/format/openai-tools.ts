@@ -51,8 +51,9 @@ export function sanitizeSchemaForOpenAI(schema: any): any {
   const { enum: _enum, not: _not, ...withoutForbidden } = root;
   root = withoutForbidden;
 
-  // Ensure root type is "object"
+  // Ensure root type is "object" with properties (OpenAI requires both)
   root.type = "object";
+  if (!root.properties) root.properties = {};
 
   return removeUriFormat(root);
 }
