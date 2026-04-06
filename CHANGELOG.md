@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.8.1] - 2026-04-06
+
+### Documentation
+
+- update CHANGELOG.md for v6.8.0([`d72520d`](https://github.com/MadAppGang/claudish/commit/d72520db1264cf6799a9c470f5fc94d1e86fe3a3))
+
+### New Features
+
+- platform-specific magmux npm packages + stripped binaries([`efd6bba`](https://github.com/MadAppGang/claudish/commit/efd6bba4dd71f3ae34e9868501d10941a10b9258))
+
+### Other Changes
+
+- bump to v6.8.1 — platform-specific magmux packages([`a03e995`](https://github.com/MadAppGang/claudish/commit/a03e99558e06c1bae0bdfb485d471716b1bbe785))
+
 ## [6.8.0] - 2026-04-06
 
 ### Documentation
