@@ -178,9 +178,13 @@ jobs:
         run: |
           mkdir -p release
           for dir in artifacts/*/; do
-            name=$(basename "$dir")
-            cp "$dir/$name" "release/$name"
-            chmod +x "release/$name"
+            # Copy all files from each artifact directory into release/
+            # Handles both claudish binaries (file matches dir name) and
+            # magmux binaries (file is magmux-*, dir is magmux-claudish-*)
+            find "$dir" -type f | while read -r file; do
+              cp "$file" "release/$(basename "$file")"
+              chmod +x "release/$(basename "$file")"
+            done
           done
           ls -la release/
 
@@ -197,6 +201,7 @@ jobs:
           body_path: release-notes.md
           files: |
             release/claudish-*
+            release/magmux-*
             release/manifest.json
             release/checksums.txt
           draft: false
