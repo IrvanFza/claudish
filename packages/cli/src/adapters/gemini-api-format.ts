@@ -119,15 +119,48 @@ export class GeminiAPIFormat extends BaseAPIFormat {
             );
             continue;
           }
-          parts.push({
-            functionResponse: {
-              name: toolInfo.name,
-              response: {
-                content:
-                  typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+
+          // Extract images from array content and send as separate inlineData parts.
+          // Claude sends tool_results like browser_screenshot as [{type:"text",...},{type:"image",...}].
+          // Gemini can't interpret images embedded in a JSON string — they need inlineData parts.
+          if (Array.isArray(block.content)) {
+            const textParts: string[] = [];
+            const imageParts: any[] = [];
+
+            for (const item of block.content) {
+              if (item.type === "image" && item.source?.data) {
+                imageParts.push({
+                  inlineData: {
+                    mimeType: item.source.media_type,
+                    data: item.source.data,
+                  },
+                });
+              } else if (item.type === "text") {
+                textParts.push(item.text);
+              }
+            }
+
+            parts.push({
+              functionResponse: {
+                name: toolInfo.name,
+                response: {
+                  content: textParts.join("\n") || "OK",
+                },
               },
-            },
-          });
+            });
+
+            // Append image parts after the functionResponse
+            parts.push(...imageParts);
+          } else {
+            parts.push({
+              functionResponse: {
+                name: toolInfo.name,
+                response: {
+                  content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                },
+              },
+            });
+          }
         }
       }
     } else if (typeof msg.content === "string") {
