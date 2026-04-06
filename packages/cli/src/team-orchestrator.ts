@@ -80,6 +80,31 @@ export function validateSessionPath(sessionPath: string): string {
   return resolved;
 }
 
+// ─── Sentinel Model Validation ───────────────────────────────────────────────
+
+/**
+ * Model names that are semantic directives for the calling agent, not real
+ * external model IDs. These must never be passed to claudish child processes.
+ */
+const SENTINEL_MODELS = new Set([
+  "internal",   // means "use a local Claude Code Task agent"
+  "default",    // means "use whatever Claude Code is configured with"
+  "opus",       // Claude tier selector — calling agent should handle
+  "sonnet",     // Claude tier selector — calling agent should handle
+  "haiku",      // Claude tier selector — calling agent should handle
+]);
+
+/**
+ * Check if a model ID is a sentinel or native Anthropic model.
+ * These cannot be run as external claudish processes.
+ */
+function isSentinelModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  if (SENTINEL_MODELS.has(lower)) return true;
+  if (lower.startsWith("claude-")) return true;
+  return false;
+}
+
 // ─── Core Functions ───────────────────────────────────────────────────────────
 
 /**
@@ -89,6 +114,17 @@ export function validateSessionPath(sessionPath: string): string {
 export function setupSession(sessionPath: string, models: string[], input?: string): TeamManifest {
   if (models.length === 0) {
     throw new Error("At least one model is required");
+  }
+
+  // Reject sentinel model names that should be handled by the calling agent
+  const sentinels = models.filter(isSentinelModel);
+  if (sentinels.length > 0) {
+    throw new Error(
+      `Invalid model(s) for team run: ${sentinels.join(", ")}. ` +
+      `These are Claude Code agent selectors, not external model IDs. ` +
+      `Use real external models (e.g., "gemini-2.0-flash", "gpt-4o", "or@deepseek/deepseek-r1"). ` +
+      `For Claude models, use a Task agent instead of the team tool.`
+    );
   }
 
   // Create directories

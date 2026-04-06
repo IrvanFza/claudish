@@ -263,6 +263,60 @@ describe("team-orchestrator", () => {
     });
   });
 
+  // ── Sentinel model rejection ────────────────────────────────────────────
+  // REGRESSION: sentinel model names leaked to claudish child processes — Fixed in /dev:fix session dev-fix-20260406-131846-32b9662c
+
+  describe("setupSession — sentinel model rejection", () => {
+    it("TEST-17: rejects 'internal' sentinel model", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["internal"], "task")).toThrow(/internal/i);
+    });
+
+    it("TEST-18: rejects 'default' sentinel model", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["default"], "task")).toThrow(/default/i);
+    });
+
+    it("TEST-19: rejects Claude tier sentinels (opus, sonnet, haiku)", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["opus"], "task")).toThrow(/opus/i);
+      expect(() => setupSession(tempDir, ["sonnet"], "task")).toThrow(/sonnet/i);
+      expect(() => setupSession(tempDir, ["haiku"], "task")).toThrow(/haiku/i);
+    });
+
+    it("TEST-20: rejects claude-* model IDs", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["claude-sonnet-4-6"], "task")).toThrow(/claude-sonnet-4-6/i);
+      expect(() => setupSession(tempDir, ["claude-3-opus-20240229"], "task")).toThrow(/claude-3-opus/i);
+    });
+
+    it("TEST-21: rejects sentinels case-insensitively", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["Internal"], "task")).toThrow(/Internal/i);
+      expect(() => setupSession(tempDir, ["OPUS"], "task")).toThrow(/OPUS/i);
+    });
+
+    it("TEST-22: rejects mixed arrays containing sentinels alongside valid models", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      expect(() => setupSession(tempDir, ["gemini-2.0-flash", "internal", "gpt-4o"], "task")).toThrow(/internal/i);
+    });
+
+    it("TEST-23: accepts valid external model names", async () => {
+      const { setupSession } = await getOrchestrator();
+
+      // These should NOT throw
+      const manifest = setupSession(tempDir, ["gemini-2.0-flash", "gpt-4o", "or@deepseek/deepseek-r1"], "task");
+      expect(manifest).toBeDefined();
+      expect(Object.keys(manifest.models)).toHaveLength(3);
+    });
+  });
+
   // ── Security: validateSessionPath ─────────────────────────────────────────
 
   describe("validateSessionPath", () => {

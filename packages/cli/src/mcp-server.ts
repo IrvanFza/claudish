@@ -570,7 +570,10 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         models: {
           type: "array",
           items: { type: "string" },
-          description: "Model IDs to run (required for 'run' and 'run-and-judge' modes)",
+          description:
+            "External model IDs to run (required for 'run' and 'run-and-judge' modes). " +
+            "Do NOT pass 'internal', 'default', 'opus', 'sonnet', 'haiku', or 'claude-*' model IDs — " +
+            "those are Claude Code agent selectors and must be handled via Task agents instead.",
         },
         judges: {
           type: "array",
