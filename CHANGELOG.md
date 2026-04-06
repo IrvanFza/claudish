@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.9.0] - 2026-04-06
+
+### Documentation
+
+- update CHANGELOG.md for v6.8.1([`9b376b6`](https://github.com/MadAppGang/claudish/commit/9b376b6eb588441bcaf165764c41052303598bc2))
+
+### New Features
+
+- v6.9.0 — model catalog overhaul, team grid mode, Slack alerts([`de0b815`](https://github.com/MadAppGang/claudish/commit/de0b81554206fc3072f6e74549a3699220c2862e))
+
 ## [6.8.1] - 2026-04-06
 
 ### Documentation
