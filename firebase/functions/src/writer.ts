@@ -4,8 +4,10 @@ import type { ModelDoc, FieldChange, ModelChangeDoc } from "./schema.js";
 export class FirestoreWriter {
   private db = getFirestore();
 
-  async write(docs: ModelDoc[]): Promise<void> {
+  /** Write merged docs to Firestore. Returns IDs of newly created models. */
+  async write(docs: ModelDoc[]): Promise<string[]> {
     const writer = this.db.bulkWriter();
+    const newModelIds: string[] = [];
 
     for (const doc of docs) {
       // Firestore doc IDs cannot contain slashes — replace with double underscore
@@ -20,6 +22,7 @@ export class FirestoreWriter {
       writer.set(ref, doc, { merge: true });
 
       if (!existingData) {
+        newModelIds.push(doc.modelId);
         // New model — write a "created" changelog entry (no field-level diffs)
         const changelogRef = ref.collection("changelog").doc();
         const changeDoc: ModelChangeDoc = {
@@ -79,6 +82,7 @@ export class FirestoreWriter {
     }
 
     await writer.close();
+    return newModelIds;
   }
 }
 

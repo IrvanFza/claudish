@@ -28,7 +28,7 @@ export class OpenCodeZenCollector extends BaseCollector {
     const models: RawModel[] = [];
 
     try {
-      const resp = await fetch("https://api.opencode.ai/zen/v1/models", {
+      const resp = await fetch("https://opencode.ai/zen/v1/models", {
         headers: {
           Authorization: `Bearer ${OPENCODE_ZEN_API_KEY.value()}`,
           "Accept": "application/json",
@@ -76,7 +76,7 @@ export class OpenCodeZenCollector extends BaseCollector {
         models.push({
           collectorId: this.collectorId,
           confidence: "gateway_official",
-          sourceUrl: "https://api.opencode.ai/zen/v1/models",
+          sourceUrl: "https://opencode.ai/zen/v1/models",
           externalId: m.id,
           canonicalId: m.id,
           provider,

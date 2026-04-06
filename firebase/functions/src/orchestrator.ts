@@ -12,18 +12,14 @@ import { OpenCodeZenCollector } from "./collectors/api/opencode-zen.js";
 import { AnthropicPricingScraper } from "./collectors/scraper/anthropic-pricing.js";
 import { OpenAIPricingScraper } from "./collectors/scraper/openai-pricing.js";
 import { GooglePricingScraper } from "./collectors/scraper/google-pricing.js";
-import { MiniMaxScraper } from "./collectors/scraper/minimax.js";
-import { KimiScraper } from "./collectors/scraper/kimi.js";
 import { GLMScraper } from "./collectors/scraper/glm.js";
-import { QwenScraper } from "./collectors/scraper/qwen.js";
-import { OpenCodeZenPricingScraper } from "./collectors/scraper/opencode-zen-pricing.js";
 import { DeepSeekScraper } from "./collectors/scraper/deepseek.js";
 import { XAIScraper } from "./collectors/scraper/xai.js";
 import { MistralPricingScraper } from "./collectors/scraper/mistral-pricing.js";
 
 export class CollectorOrchestrator {
-  private collectors: BaseCollector[] = [
-    // API collectors — highest confidence, run in parallel
+  // API collectors — no external rate limits, safe to run fully in parallel
+  private apiCollectors: BaseCollector[] = [
     new AnthropicCollector(),
     new OpenAICollector(),
     new GoogleCollector(),
@@ -33,35 +29,52 @@ export class CollectorOrchestrator {
     new DeepSeekCollector(),
     new FireworksCollector(),
     new OpenCodeZenCollector(),
-    // Scraper collectors — run concurrently with API collectors
-    // Active scrapers (proven URLs)
+  ];
+
+  // Firecrawl scrapers — share a single Firecrawl API key with concurrency limits.
+  // Run in batches of 3 to avoid queueing timeouts.
+  private scraperCollectors: BaseCollector[] = [
     new AnthropicPricingScraper(),
     new OpenAIPricingScraper(),
     new GooglePricingScraper(),
     new GLMScraper(),
-    new OpenCodeZenPricingScraper(),
     new DeepSeekScraper(),
     new XAIScraper(),
     new MistralPricingScraper(),
-    // NO-OP scrapers — pages unreliable/gated; rely on API collectors
-    new MiniMaxScraper(),
-    new KimiScraper(),
-    new QwenScraper(),
   ];
+
+  private static readonly SCRAPER_BATCH_SIZE = 3;
 
   async runAll(): Promise<CollectorResult[]> {
     const start = Date.now();
-    console.log(`[catalog] running ${this.collectors.length} collectors in parallel`);
-
-    const results = await Promise.allSettled(
-      this.collectors.map(c => c.collect())
+    const totalCount = this.apiCollectors.length + this.scraperCollectors.length;
+    console.log(
+      `[catalog] running ${totalCount} collectors ` +
+      `(${this.apiCollectors.length} API parallel + ${this.scraperCollectors.length} scrapers in batches of ${CollectorOrchestrator.SCRAPER_BATCH_SIZE})`
     );
 
+    // Run API collectors fully in parallel (no shared rate limits)
+    const apiPromise = Promise.allSettled(
+      this.apiCollectors.map(c => c.collect())
+    );
+
+    // Run Firecrawl scrapers in batches to respect concurrency limits
+    const scraperResults: PromiseSettledResult<CollectorResult>[] = [];
+    for (let i = 0; i < this.scraperCollectors.length; i += CollectorOrchestrator.SCRAPER_BATCH_SIZE) {
+      const batch = this.scraperCollectors.slice(i, i + CollectorOrchestrator.SCRAPER_BATCH_SIZE);
+      const batchResults = await Promise.allSettled(batch.map(c => c.collect()));
+      scraperResults.push(...batchResults);
+    }
+
+    // Wait for API collectors (likely already done by now)
+    const apiResults = await apiPromise;
+
+    const allResults = [...apiResults, ...scraperResults];
     const collected: CollectorResult[] = [];
     let successCount = 0;
     let errorCount = 0;
 
-    for (const result of results) {
+    for (const result of allResults) {
       if (result.status === "fulfilled") {
         collected.push(result.value);
         if (result.value.error) {

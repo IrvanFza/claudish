@@ -283,7 +283,9 @@ export async function runWithGrid(
   // 3. Generate gridfile — one shell command per pane
   const gridfilePath = join(sessionPath, "gridfile.txt");
   // Read prompt once, shell-escape single quotes
-  const prompt = readFileSync(join(sessionPath, "input.md"), "utf-8").replace(/'/g, "'\\''");
+  const prompt = readFileSync(join(sessionPath, "input.md"), "utf-8")
+    .replace(/'/g, "'\\''")
+    .replace(/\n/g, " ");  // Flatten newlines — gridfile is one command per line
 
   const gridLines = Object.entries(manifest.models).map(([anonId]) => {
     const errorLog = join(sessionPath, "errors", `${anonId}.log`);

@@ -38,6 +38,11 @@ export interface ClaudishConfig {
 
   noLogs: boolean; // Disable always-on structural logging
   diagMode: "auto" | "logfile" | "off"; // Diagnostic output mode
+
+  // Team mode
+  team?: string[]; // Model IDs for team mode (from --team flag)
+  teamMode?: "default" | "interactive" | "json"; // Team execution mode
+  inputFile?: string; // File path for prompt input (-f / --file)
 }
 
 // Anthropic API Types

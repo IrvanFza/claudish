@@ -8,6 +8,7 @@ import { mergeResults } from "./merger.js";
 import { FirestoreWriter } from "./writer.js";
 import { handleQueryModels } from "./query-handler.js";
 import { handlePluginDefaults } from "./plugin-defaults-handler.js";
+import { alertCatalogResults, alertNewModels } from "./slack-alert.js";
 
 initializeApp();
 const db = getFirestore();
@@ -148,6 +149,7 @@ const MISTRAL_API_KEY = defineSecret("MISTRAL_API_KEY");
 const DEEPSEEK_API_KEY = defineSecret("DEEPSEEK_API_KEY");
 const FIREWORKS_API_KEY = defineSecret("FIREWORKS_API_KEY");
 const OPENCODE_ZEN_API_KEY = defineSecret("OPENCODE_ZEN_API_KEY");
+const SLACK_WEBHOOK_URL = defineSecret("SLACK_WEBHOOK_URL");
 
 const CATALOG_SECRETS = [
   ANTHROPIC_API_KEY,
@@ -159,6 +161,7 @@ const CATALOG_SECRETS = [
   DEEPSEEK_API_KEY,
   FIREWORKS_API_KEY,
   OPENCODE_ZEN_API_KEY,
+  SLACK_WEBHOOK_URL,
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -189,10 +192,23 @@ export const collectModelCatalog = onSchedule(
     console.log(`[catalog] merged to ${merged.length} unique models`);
 
     const writer = new FirestoreWriter();
-    await writer.write(merged);
+    const newModelIds = await writer.write(merged);
 
     const duration = Date.now() - start;
-    console.log(`[catalog] write complete — total duration: ${duration}ms`);
+    console.log(`[catalog] write complete — ${newModelIds.length} new models — total duration: ${duration}ms`);
+
+    // Slack alerts
+    const webhook = SLACK_WEBHOOK_URL.value();
+    await alertCatalogResults(webhook, results, merged.length, duration);
+
+    // Alert for newly discovered models from major providers
+    if (newModelIds.length > 0) {
+      const providerMap: Record<string, string> = {};
+      for (const doc of merged) {
+        providerMap[doc.modelId] = doc.provider;
+      }
+      await alertNewModels(webhook, newModelIds, providerMap);
+    }
   }
 );
 

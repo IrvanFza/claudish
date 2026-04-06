@@ -73,8 +73,6 @@ const isTelemetryCommand = firstPositional === "telemetry";
 const isStatsCommand = firstPositional === "stats";
 // Check for interactive config TUI
 const isConfigCommand = firstPositional === "config";
-// Check for team orchestrator subcommand
-const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -151,9 +149,6 @@ if (isMcpMode) {
 } else if (isConfigCommand) {
   // Interactive configuration TUI: claudish config (full-screen btop-inspired TUI)
   import("./tui/index.js").then((m) => m.startConfigTui().catch(handlePromptExit));
-} else if (isTeamCommand) {
-  // Team orchestrator: claudish team run|judge|run-and-judge|status
-  import("./team-cli.js").then((m) => m.teamCommand(args.slice(1)));
 } else {
   // CLI mode
   runCli();
@@ -195,6 +190,41 @@ async function runCli() {
   try {
     // Parse CLI arguments
     const cliConfig = await parseArgs(process.argv.slice(2));
+
+    // Team mode: run models in magmux grid (skip normal Claude Code path)
+    if (cliConfig.team && cliConfig.team.length > 0) {
+      const { runWithGrid } = await import("./team-grid.js");
+
+      // Resolve prompt: --file flag, or positional args from claudeArgs
+      let prompt = cliConfig.claudeArgs.join(" ");
+      if (cliConfig.inputFile) {
+        prompt = readFileSync(cliConfig.inputFile, "utf-8");
+      }
+      if (!prompt.trim()) {
+        console.error("Error: --team requires a prompt (positional args or -f <file>)");
+        process.exit(1);
+      }
+
+      const interactive = cliConfig.teamMode !== "json";
+      const sessionPath = join(process.cwd(), `.claudish-team-${Date.now()}`);
+      const status = await runWithGrid(sessionPath, cliConfig.team, prompt, {
+        timeout: 300,
+        interactive,
+      });
+
+      // Print final status
+      const modelIds = Object.keys(status.models).sort();
+      console.log(`\nTeam Status`);
+      for (const id of modelIds) {
+        const m = status.models[id];
+        const duration =
+          m.startedAt && m.completedAt
+            ? `${Math.round((new Date(m.completedAt).getTime() - new Date(m.startedAt).getTime()) / 1000)}s`
+            : "pending";
+        console.log(`  ${id}  ${m.state.padEnd(10)}  ${duration}`);
+      }
+      process.exit(0);
+    }
 
     // First-run auto-approve confirmation
     // Auto-approve is enabled by default, but on first run we confirm with the user.
