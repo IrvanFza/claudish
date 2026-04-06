@@ -361,6 +361,7 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   "glm-coding": glmProfile,
   "opencode-zen": openCodeZenProfile,
   "opencode-zen-go": openCodeZenProfile,
+  deepseek: openaiProfile,
   ollamacloud: ollamaCloudProfile,
   litellm: litellmProfile,
   vertex: vertexProfile,

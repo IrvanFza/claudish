@@ -100,6 +100,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   "minimax-coding": { apiKeyEnvVar: "MINIMAX_CODING_API_KEY" },
   glm: { apiKeyEnvVar: "ZHIPU_API_KEY" },
   "glm-coding": { apiKeyEnvVar: "GLM_CODING_API_KEY" },
+  deepseek: { apiKeyEnvVar: "DEEPSEEK_API_KEY" },
   ollamacloud: { apiKeyEnvVar: "OLLAMA_API_KEY" },
 };
 
@@ -444,7 +445,6 @@ export function getFallbackChain(modelName: string, nativeProvider: string): Fal
   if (
     nativeProvider !== "unknown" &&
     nativeProvider !== "qwen" &&
-    nativeProvider !== "deepseek" &&
     nativeProvider !== "native-anthropic"
   ) {
     if (hasProviderCredentials(nativeProvider)) {

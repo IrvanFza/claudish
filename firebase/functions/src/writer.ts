@@ -8,7 +8,9 @@ export class FirestoreWriter {
     const writer = this.db.bulkWriter();
 
     for (const doc of docs) {
-      const ref = this.db.collection("models").doc(doc.modelId);
+      // Firestore doc IDs cannot contain slashes — replace with double underscore
+      const docId = doc.modelId.replace(/\//g, "__");
+      const ref = this.db.collection("models").doc(docId);
 
       // Read existing doc to detect changes (individual reads, not in bulkWriter)
       const existing = await ref.get();

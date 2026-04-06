@@ -304,7 +304,6 @@ describe("PROVIDER_PROFILES — coverage", () => {
     // openrouter has its own dedicated handler (not ComposedHandler), poe has transport but no profile yet
     const skipProviders = new Set([
       "qwen",
-      "deepseek", // auto-routed through OpenRouter
       "native-anthropic",
       "poe",
       "openrouter",

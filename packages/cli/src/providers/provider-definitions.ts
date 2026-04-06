@@ -590,21 +590,24 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Local MLX (mlx@)",
   },
 
-  // ── DeepSeek (auto-routed, no direct API) ───────────────────────────
+  // ── DeepSeek (OpenAI-compatible direct API) ─────────────────────────
   {
     name: "deepseek",
     displayName: "DeepSeek",
     transport: "openai",
-    baseUrl: "",
-    apiPath: "",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "DeepSeek (auto-routed via OpenRouter)",
-    apiKeyUrl: "",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.deepseek.com",
+    baseUrlEnvVars: ["DEEPSEEK_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "DEEPSEEK_API_KEY",
+    apiKeyDescription: "DeepSeek API Key",
+    apiKeyUrl: "https://platform.deepseek.com/api_keys",
     shortcuts: ["ds"],
     shortestPrefix: "ds",
-    legacyPrefixes: [],
+    legacyPrefixes: [{ prefix: "ds/", stripPrefix: true }],
     nativeModelPatterns: [{ pattern: /^deepseek\//i }, { pattern: /^deepseek-/i }],
-    description: "DeepSeek (auto-routed via OpenRouter)",
+    isDirectApi: true,
+    description: "DeepSeek API (ds@)",
   },
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
