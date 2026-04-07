@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.10.0] - 2026-04-07
+
+### Documentation
+
+- update CHANGELOG.md for v6.9.1([`714b1b5`](https://github.com/MadAppGang/claudish/commit/714b1b5166662ea3aac3087faad51be0e896fd25))
+
+### New Features
+
+- v6.10.0 — Codex subscription OAuth, unified login/logout, quota registry([`a2dd1ea`](https://github.com/MadAppGang/claudish/commit/a2dd1ea156b96da16ac8021702edf614ce9ebe3d))
+
 ## [6.9.1] - 2026-04-06
 
 ### Documentation
