@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.10.1] - 2026-04-07
+
+### Documentation
+
+- update CHANGELOG.md for v6.10.0([`aaf24f2`](https://github.com/MadAppGang/claudish/commit/aaf24f21df44867cf42770202d0d7ee0a0cd0033))
+
+### New Features
+
+- v6.10.1 — auto-update with changelog, single version source of truth([`de889eb`](https://github.com/MadAppGang/claudish/commit/de889eb6609145bb1a40643101b70236576be1e3))
+
 ## [6.10.0] - 2026-04-07
 
 ### Documentation
