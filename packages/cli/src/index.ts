@@ -205,11 +205,11 @@ async function runCli() {
         process.exit(1);
       }
 
-      const interactive = cliConfig.teamMode !== "json";
+      const keep = cliConfig.teamKeep ?? false;
       const sessionPath = join(process.cwd(), `.claudish-team-${Date.now()}`);
       const status = await runWithGrid(sessionPath, cliConfig.team, prompt, {
         timeout: 300,
-        interactive,
+        keep,
       });
 
       // Print final status
@@ -289,13 +289,7 @@ async function runCli() {
 
     // Check for updates (only in interactive mode, skip in JSON output mode)
     if (cliConfig.interactive && !cliConfig.jsonOutput) {
-      const shouldExit = await checkForUpdates(getVersion(), {
-        quiet: cliConfig.quiet,
-        skipPrompt: false,
-      });
-      if (shouldExit) {
-        process.exit(0);
-      }
+      await checkForUpdates(getVersion(), { quiet: cliConfig.quiet });
     }
 
     // Check if Claude Code is installed

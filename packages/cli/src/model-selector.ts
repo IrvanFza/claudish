@@ -66,6 +66,23 @@ export interface ModelInfo {
  * IDs are provider-agnostic — auto-routing decides the provider
  */
 function loadRecommendedModels(): ModelInfo[] {
+  // Try Firebase-cached version first (auto-generated, more current)
+  const cachedPath = join(CLAUDISH_CACHE_DIR, "recommended-models-cache.json");
+  if (existsSync(cachedPath)) {
+    try {
+      const data = JSON.parse(readFileSync(cachedPath, "utf-8"));
+      if (data.models && data.models.length > 0) {
+        return data.models.map((model: ModelInfo) => ({
+          ...model,
+          source: "Recommended" as const,
+        }));
+      }
+    } catch {
+      // Fall through to bundled
+    }
+  }
+
+  // Fall back to bundled JSON
   if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
     try {
       const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");

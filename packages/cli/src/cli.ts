@@ -48,7 +48,7 @@ export {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-let VERSION = "6.9.1"; // Fallback version for compiled binaries
+let VERSION = "6.10.0"; // Fallback version for compiled binaries
 try {
   const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8"));
   VERSION = packageJson.version;
@@ -352,6 +352,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       if (["default", "interactive", "json"].includes(mode)) {
         config.teamMode = mode as "default" | "interactive" | "json";
       }
+    } else if (arg === "--keep") {
+      config.teamKeep = true;
     } else if ((arg === "-f" || arg === "--file") && i + 1 < args.length) {
       config.inputFile = args[++i];
     } else if (arg === "--") {

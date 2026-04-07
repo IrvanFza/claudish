@@ -239,3 +239,15 @@ When releasing a new version, update ALL of these locations:
 3. `packages/cli/src/cli.ts` (fallback VERSION constant, line ~27)
 
 The fallback VERSION in cli.ts ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
+
+## Learned Preferences
+
+### Tools & Commands
+<!-- learned: 2026-03-28 session: 03cd7cc5 source: repeated_pattern -->
+- Use `bun` for all package management and scripts (`bun run build`, `bun test`, etc.) — not npm or yarn
+<!-- learned: 2026-04-06 session: df311293 source: repeated_pattern -->
+- Use Grep/grep tool for code investigation instead of mnemex — prefer built-in search tools during investigation phases
+
+### Workflow
+<!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->
+- Don't run claudish directly in main bash — use dedicated channel sessions or `/delegate`
