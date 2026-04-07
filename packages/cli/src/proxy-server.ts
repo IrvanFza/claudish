@@ -38,7 +38,7 @@ import {
 import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
-import { fetchLiteLLMModels } from "./model-loader.js";
+import { fetchLiteLLMModels, warmRecommendedModels } from "./model-loader.js";
 import {
   resolveModelNameSync,
   logResolution,
@@ -47,6 +47,7 @@ import {
 } from "./providers/model-catalog-resolver.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import {
   getFallbackChain,
   warmZenModelCache,
@@ -495,7 +496,7 @@ export async function createProxyServer(
         return c.json({ input_tokens: Math.ceil(txt.length / 4) });
       }
     } catch (e) {
-      return c.json({ error: String(e) }, 500);
+      return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
 
@@ -508,7 +509,7 @@ export async function createProxyServer(
       return handler.handle(c, body);
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
-      return c.json({ error: { type: "server_error", message: String(e) } }, 500);
+      return c.json(wrapAnthropicError(500, String(e)), 500);
     }
   });
 
@@ -523,6 +524,9 @@ export async function createProxyServer(
 
   // Warm pricing cache in background (non-blocking)
   warmPricingCache().catch(() => {});
+
+  // Warm recommended models from Firebase in background (non-blocking)
+  warmRecommendedModels().catch(() => {});
 
   // Warm model catalog resolvers in background (non-blocking)
   // OpenRouter always warms; LiteLLM only if configured.

@@ -15,6 +15,7 @@ import {
   extractToolCallsFromText,
   type ToolSchema,
 } from "../tool-call-recovery.js";
+import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
 
 export interface StreamingState {
   usage: any;
@@ -504,6 +505,9 @@ export function createStreamingResponseHandler(
                             buffered: !!toolSchemas && toolSchemas.length > 0, // Buffer if we have schemas to validate
                           };
                           state.tools.set(idx, t);
+                          if (isWebSearchToolCall(restoredName)) {
+                            warnWebSearchUnsupported(restoredName, target);
+                          }
                         }
                         // Only send content_block_start immediately if NOT buffering
                         if (!t.started && !t.buffered) {

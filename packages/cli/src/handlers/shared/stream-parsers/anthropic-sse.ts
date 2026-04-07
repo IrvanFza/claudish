@@ -26,10 +26,26 @@ export function createAnthropicPassthroughStream(
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let isClosed = false;
+  let lastActivity = Date.now();
+  let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   return c.body(
     new ReadableStream({
       async start(controller) {
+        const sendPing = () => {
+          if (!isClosed) {
+            controller.enqueue(encoder.encode("event: ping\ndata: {\"type\":\"ping\"}\n\n"));
+          }
+        };
+
+        sendPing();
+
+        pingInterval = setInterval(() => {
+          if (!isClosed && Date.now() - lastActivity > 1000) {
+            sendPing();
+          }
+        }, 1000);
+
         try {
           const reader = response.body!.getReader();
           let buffer = "";
@@ -45,6 +61,7 @@ export function createAnthropicPassthroughStream(
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
+            lastActivity = Date.now();
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
 
@@ -103,19 +120,31 @@ export function createAnthropicPassthroughStream(
           }
 
           if (!isClosed) {
-            controller.close();
             isClosed = true;
+            if (pingInterval) {
+              clearInterval(pingInterval);
+              pingInterval = null;
+            }
+            controller.close();
           }
         } catch (e) {
           log(`[AnthropicSSE] Stream error: ${e}`);
           if (!isClosed) {
-            controller.close();
             isClosed = true;
+            if (pingInterval) {
+              clearInterval(pingInterval);
+              pingInterval = null;
+            }
+            controller.close();
           }
         }
       },
       cancel() {
         isClosed = true;
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
       },
     }),
     {

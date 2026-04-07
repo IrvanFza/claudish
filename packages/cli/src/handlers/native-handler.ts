@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import type { ModelHandler } from "./types.js";
 import { log, maskCredential } from "../logger.js";
+import { wrapAnthropicError } from "./shared/anthropic-error.js";
 
 export class NativeHandler implements ModelHandler {
   private apiKey?: string;
@@ -111,7 +112,7 @@ export class NativeHandler implements ModelHandler {
       return c.json(data, { status: anthropicResponse.status as any, headers: responseHeaders });
     } catch (error) {
       log(`[Native] Fetch Error: ${error}`);
-      return c.json({ error: { type: "api_error", message: String(error) } }, 500);
+      return c.json(wrapAnthropicError(500, String(error)), 500);
     }
   }
 

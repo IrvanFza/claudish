@@ -13,6 +13,7 @@
 
 import type { Context } from "hono";
 import { log, getLogLevel } from "../../../logger.js";
+import { wrapAnthropicError } from "../anthropic-error.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -25,7 +26,7 @@ export function createResponsesStreamHandler(
 ): Response {
   const reader = response.body?.getReader();
   if (!reader) {
-    return c.json({ error: "No response body" }, 500) as any;
+    return c.json(wrapAnthropicError(500, "No response body"), 500) as any;
   }
 
   const encoder = new TextEncoder();

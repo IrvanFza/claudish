@@ -41,6 +41,7 @@ import {
 import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
 import { lookupModel } from "../adapters/model-catalog.js";
+import { wrapAnthropicError, ensureAnthropicErrorFormat } from "./shared/anthropic-error.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -414,7 +415,7 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        return c.json({ error: { type: "connection_error", message: msg } }, 503 as any);
+        return c.json(wrapAnthropicError(503, msg, "connection_error"), 503 as any);
       }
       throw error;
     }
@@ -488,7 +489,7 @@ export class ComposedHandler implements ModelHandler {
             } catch {
               // Stats must never crash claudish
             }
-            return c.json({ error: errorText }, retryResp.status as any);
+            return c.json(wrapAnthropicError(retryResp.status, errorText), retryResp.status as any);
           }
         } catch (err: any) {
           log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
@@ -530,7 +531,7 @@ export class ComposedHandler implements ModelHandler {
             // Stats must never crash claudish
           }
           return c.json(
-            { error: { type: "authentication_error", message: err.message } },
+            wrapAnthropicError(401, err.message, "authentication_error"),
             401 as any
           );
         }
@@ -599,7 +600,7 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           errorBody = { error: { type: "api_error", message: errorText } };
         }
-        return c.json(errorBody, response.status as any);
+        return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
       }
     }
 
