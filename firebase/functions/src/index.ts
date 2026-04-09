@@ -9,6 +9,7 @@ import { FirestoreWriter } from "./writer.js";
 import { handleQueryModels } from "./query-handler.js";
 import { handlePluginDefaults } from "./plugin-defaults-handler.js";
 import { alertCatalogResults, alertNewModels } from "./slack-alert.js";
+import { generateRecommendedModels } from "./recommender.js";
 
 initializeApp();
 const db = getFirestore();
@@ -138,6 +139,91 @@ export const telemetryIngest = onRequest(
 );
 
 // ─────────────────────────────────────────────────────────────
+// Error reports — from report_error MCP tool
+// ─────────────────────────────────────────────────────────────
+
+// Valid error types from the MCP tool
+const VALID_ERROR_TYPES = new Set([
+  "provider_failure", "team_failure", "stream_error", "adapter_error", "other",
+]);
+
+// Max error report size (64KB — reports include session data)
+const MAX_ERROR_REPORT_BYTES = 65536;
+
+export const errorReportIngest = onRequest(
+  {
+    region: "us-central1",
+    maxInstances: 5,
+    cors: true,
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    const contentType = req.headers["content-type"] ?? "";
+    if (!contentType.includes("application/json")) {
+      res.status(400).json({ error: "Content-Type must be application/json" });
+      return;
+    }
+
+    const rawBody = JSON.stringify(req.body);
+    if (rawBody.length > MAX_ERROR_REPORT_BYTES) {
+      res.status(413).json({ error: "Payload too large" });
+      return;
+    }
+
+    const body = req.body;
+
+    // Validate required field
+    if (!body.error_type || !VALID_ERROR_TYPES.has(body.error_type)) {
+      res.status(400).json({ error: `Invalid or missing error_type: ${body.error_type}` });
+      return;
+    }
+
+    const now = Timestamp.now();
+
+    // Truncate session data values to prevent oversized documents
+    let sessionData: Record<string, string> = {};
+    if (body.session && typeof body.session === "object") {
+      for (const [key, value] of Object.entries(body.session)) {
+        if (typeof value === "string") {
+          sessionData[String(key).slice(0, 100)] = String(value).slice(0, 2000);
+        }
+      }
+    }
+
+    const doc = {
+      ingested_at: now,
+      expires_at: Timestamp.fromMillis(now.toMillis() + TTL_MS),
+
+      // Report fields (sanitized on client side, but we truncate defensively)
+      version: String(body.version || "unknown").slice(0, 20),
+      timestamp: String(body.timestamp || "").slice(0, 30),
+      error_type: String(body.error_type).slice(0, 30),
+      model: String(body.model || "unknown").slice(0, 100),
+      command: String(body.command || "").slice(0, 500),
+      stderr: String(body.stderr || "").slice(0, 5000),
+      exit_code: typeof body.exit_code === "number" ? body.exit_code : null,
+      platform: String(body.platform || "").slice(0, 10),
+      arch: String(body.arch || "").slice(0, 10),
+      runtime: String(body.runtime || "").slice(0, 30),
+      context: String(body.context || "").slice(0, 5000),
+      session: sessionData,
+    };
+
+    try {
+      await db.collection("error_reports_mcp").add(doc);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      console.error("Firestore write failed:", err);
+      res.status(500).json({ error: "Internal error" });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────
 // Model catalog — secrets required by collectors
 // ─────────────────────────────────────────────────────────────
 const ANTHROPIC_API_KEY = defineSecret("ANTHROPIC_API_KEY");
@@ -150,6 +236,11 @@ const DEEPSEEK_API_KEY = defineSecret("DEEPSEEK_API_KEY");
 const FIREWORKS_API_KEY = defineSecret("FIREWORKS_API_KEY");
 const OPENCODE_ZEN_API_KEY = defineSecret("OPENCODE_ZEN_API_KEY");
 const SLACK_WEBHOOK_URL = defineSecret("SLACK_WEBHOOK_URL");
+const XAI_API_KEY = defineSecret("XAI_API_KEY");
+const MOONSHOT_API_KEY = defineSecret("MOONSHOT_API_KEY");
+const MINIMAX_API_KEY = defineSecret("MINIMAX_API_KEY");
+const ZHIPU_API_KEY = defineSecret("ZHIPU_API_KEY");
+const DASHSCOPE_API_KEY = defineSecret("DASHSCOPE_API_KEY");
 
 const CATALOG_SECRETS = [
   ANTHROPIC_API_KEY,
@@ -162,6 +253,11 @@ const CATALOG_SECRETS = [
   FIREWORKS_API_KEY,
   OPENCODE_ZEN_API_KEY,
   SLACK_WEBHOOK_URL,
+  XAI_API_KEY,
+  MOONSHOT_API_KEY,
+  MINIMAX_API_KEY,
+  ZHIPU_API_KEY,
+  DASHSCOPE_API_KEY,
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -193,6 +289,10 @@ export const collectModelCatalog = onSchedule(
 
     const writer = new FirestoreWriter();
     const newModelIds = await writer.write(merged);
+
+    // Auto-generate recommended models from scored catalog
+    const recommended = await generateRecommendedModels();
+    console.log(`[catalog] recommended models updated: ${recommended.length} picks`);
 
     const duration = Date.now() - start;
     console.log(`[catalog] write complete — ${newModelIds.length} new models — total duration: ${duration}ms`);
@@ -264,6 +364,9 @@ export const collectModelCatalogManual = onRequest(
       const writer = new FirestoreWriter();
       await writer.write(merged);
 
+      // Auto-generate recommended models
+      const recommended = await generateRecommendedModels();
+
       const successCount = results.filter(r => !r.error).length;
       const failureCount = results.filter(r => r.error).length;
 
@@ -271,6 +374,7 @@ export const collectModelCatalogManual = onRequest(
         ok: true,
         modelsCollected: results.reduce((s, r) => s + r.models.length, 0),
         modelsMerged: merged.length,
+        recommendedModels: recommended.length,
         collectorsOk: successCount,
         collectorsFailed: failureCount,
         errors: results.filter(r => r.error).map(r => ({

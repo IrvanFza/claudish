@@ -1,69 +1,71 @@
 import { BaseCollector } from "../base-collector.js";
-import { extractModelsWithFirecrawl } from "./firecrawl.js";
+import { fetchHTML, validateParseResults } from "./html-parse.js";
 import type { CollectorResult, RawModel } from "../../schema.js";
 
 const SOURCE_URL = "https://ai.google.dev/pricing";
 
-const PROMPT =
-  "Extract ALL Google Gemini model pricing. Include model IDs, input/output prices per million tokens USD, " +
-  "context window sizes in tokens, and capabilities (vision, thinking, tools, audio, video, code). " +
-  "Include free tier limits. Include all Gemini models: Pro, Flash, Nano, etc.";
-
+/**
+ * Google Gemini pricing scraper — parses ai.google.dev/pricing (SSR HTML).
+ * The page has model sections with dollar amounts near model names.
+ */
 export class GooglePricingScraper extends BaseCollector {
   readonly collectorId = "google-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
     try {
-      const extracted = await extractModelsWithFirecrawl(
-        SOURCE_URL,
-        "google gemini",
-        PROMPT,
-        8000,
-        120000
-      );
+      const html = await fetchHTML(SOURCE_URL);
 
-      const models: RawModel[] = extracted.map(m => ({
-        collectorId: this.collectorId,
-        confidence: "scrape_unverified" as const,
-        sourceUrl: SOURCE_URL,
-        externalId: m.modelId,
-        canonicalId: m.modelId,
-        displayName: m.displayName ?? m.modelId,
-        provider: "google",
-        pricing:
-          m.inputPerMTok !== undefined && m.outputPerMTok !== undefined
-            ? {
-                input: m.inputPerMTok,
-                output: m.outputPerMTok,
-                ...(m.cacheReadPerMTok !== undefined ? { cachedRead: m.cacheReadPerMTok } : {}),
-                ...(m.cacheWritePerMTok !== undefined ? { cachedWrite: m.cacheWritePerMTok } : {}),
-              }
-            : undefined,
-        contextWindow: m.contextWindow,
-        maxOutputTokens: m.maxOutputTokens,
-        capabilities: {
-          vision: m.supportsVision ?? false,
-          thinking: m.supportsThinking ?? false,
-          tools: m.supportsTools ?? false,
-          streaming: m.supportsStreaming ?? true,
-          jsonMode: m.supportsJsonMode ?? false,
-          audioInput: m.supportsAudio ?? false,
-          videoInput: m.supportsAudio ?? false,
-          codeExecution: false,
-          batchApi: false,
-          structuredOutput: false,
-          citations: false,
-          pdfInput: m.supportsPdf ?? false,
-          fineTuning: false,
-        },
-        status:
-          m.status === "deprecated"
-            ? "deprecated"
-            : m.status === "preview" || m.status === "beta"
-            ? "preview"
-            : "active",
-      }));
+      const models: RawModel[] = [];
+      const seen = new Set<string>();
 
+      // Split page by gemini model ID patterns
+      const sections = html.split(/(?=gemini-[\d][\w.-]*)/gi);
+
+      for (const section of sections) {
+        const modelMatch = section.match(/^(gemini-[\d][\w.-]*)/i);
+        if (!modelMatch) continue;
+
+        const modelId = modelMatch[1].toLowerCase();
+        if (seen.has(modelId)) continue;
+        if (modelId.includes("tts") || modelId.includes("audio")) continue;
+
+        // Find dollar amounts in the next ~1500 chars
+        const chunk = section.slice(0, 1500);
+        const prices = chunk.match(/\$([\d.]+)/g)?.map(p => parseFloat(p.replace("$", "")));
+        if (!prices || prices.length < 2) continue;
+
+        const inputPrice = prices[0];
+        const outputPrice = prices[1];
+        if (inputPrice > 20 || outputPrice > 50) continue;
+
+        seen.add(modelId);
+        models.push({
+          collectorId: this.collectorId,
+          confidence: "scrape_verified",
+          sourceUrl: SOURCE_URL,
+          externalId: modelId,
+          canonicalId: modelId,
+          displayName: modelId,
+          provider: "google",
+          pricing: { input: inputPrice, output: outputPrice },
+          capabilities: {
+            vision: true,
+            tools: true,
+            streaming: true,
+            thinking: false,
+            batchApi: false,
+            jsonMode: true,
+            structuredOutput: true,
+            citations: false,
+            codeExecution: true,
+            pdfInput: false,
+            fineTuning: false,
+          },
+          status: modelId.includes("preview") ? "preview" : "active",
+        });
+      }
+
+      validateParseResults("Google", models, 5);
       return this.makeResult(models);
     } catch (err) {
       return this.makeResult([], String(err));

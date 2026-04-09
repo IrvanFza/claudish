@@ -19,20 +19,26 @@ export function mergeResults(results: CollectorResult[]): ModelDoc[] {
   // Step 1: Flatten all raw models
   const allRaw: RawModel[] = results.flatMap(r => r.models);
 
-  // Step 2: Group by canonical ID
+  // Step 2: Group by canonical ID (case-insensitive, strip :free suffix)
   const byId = new Map<string, RawModel[]>();
   for (const raw of allRaw) {
-    const key = raw.canonicalId ?? normalizeId(raw.externalId);
+    const rawKey = raw.canonicalId ?? normalizeId(raw.externalId);
+    const key = normalizeCanonicalKey(rawKey);
     const existing = byId.get(key) ?? [];
     existing.push(raw);
     byId.set(key, existing);
   }
 
-  // Step 3: Merge each group
+  // Step 3: Merge each group (modelId = clean canonical key)
   const docs: ModelDoc[] = [];
   for (const [canonicalId, raws] of byId) {
     docs.push(mergeGroup(canonicalId, raws));
   }
+
+  // Step 4: Deduplicate — if both "model" and "model:free" existed, they merged
+  // into the same key. But if only "model:free" existed (no paid version), the
+  // normalizeCanonicalKey already stripped ":free" from the key, so the stored
+  // modelId is already clean.
 
   return docs;
 }
@@ -82,7 +88,7 @@ function mergeGroup(modelId: string, raws: RawModel[]): ModelDoc {
   const doc: ModelDoc = {
     modelId,
     displayName: displayResult?.value ?? modelId,
-    provider: pickBest(sorted, r => r.provider) ?? "unknown",
+    provider: pickProvider(raws) ?? "unknown",
     ...(descResult?.value !== undefined ? { description: descResult.value } : {}),
     ...(releaseDate !== undefined ? { releaseDate } : {}),
     pricing: pricing ?? undefined,
@@ -107,6 +113,31 @@ function mergeGroup(modelId: string, raws: RawModel[]): ModelDoc {
   };
 
   return doc;
+}
+
+/**
+ * Pick the model's native provider, not a gateway/aggregator name.
+ * Provider reflects who MADE the model, not who resells it.
+ * Strategy: prefer vendor-specific names over generic gateway names.
+ */
+function pickProvider(raws: RawModel[]): string | undefined {
+  const GATEWAY_PROVIDERS = new Set([
+    "opencode", "opencode-zen", "fireworks", "together", "togethercomputer",
+  ]);
+
+  // First pass: find a non-gateway provider from any source
+  for (const raw of raws) {
+    if (raw.provider && !GATEWAY_PROVIDERS.has(raw.provider.toLowerCase())) {
+      return raw.provider;
+    }
+  }
+
+  // Fallback: any provider at all
+  for (const raw of raws) {
+    if (raw.provider) return raw.provider;
+  }
+
+  return undefined;
 }
 
 /** Pick the first non-null/undefined value from the sorted (highest confidence first) list. */
@@ -203,6 +234,15 @@ function buildSourcesMap(raws: RawModel[]): ModelDoc["sources"] {
 function normalizeId(id: string): string {
   // Strip common vendor prefixes: "anthropic/", "openai/", etc.
   return id.replace(/^[a-z-]+\//, "").toLowerCase();
+}
+
+/**
+ * Normalize a canonical key for grouping: lowercase + strip :free suffix.
+ * OpenRouter appends ":free" to free-tier model IDs — these should merge
+ * with the paid version, not create separate documents.
+ */
+function normalizeCanonicalKey(key: string): string {
+  return key.toLowerCase().replace(/:free$/, "");
 }
 
 function roundPrice(n: number): number {

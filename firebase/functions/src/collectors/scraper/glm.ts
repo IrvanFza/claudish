@@ -1,71 +1,78 @@
 import { BaseCollector } from "../base-collector.js";
-import { extractModelsWithFirecrawl } from "./firecrawl.js";
+import { fetchHTML, validateParseResults } from "./html-parse.js";
 import type { CollectorResult, RawModel } from "../../schema.js";
 
-const SOURCE_URL = "https://open.bigmodel.cn/pricing";
+const SOURCE_URL = "https://docs.z.ai/guides/overview/pricing";
 
-const PROMPT =
-  "Extract ALL GLM/Zhipu AI text and chat model pricing. Prices are in Chinese Yuan (CNY). " +
-  "Convert to USD using 1 CNY = 0.14 USD. For each model: model ID (GLM-5, GLM-5-Turbo, GLM-4.7, " +
-  "GLM-4.5, GLM-4-Plus, GLM-4-Air, GLM-4-Flash, GLM-4.6V, etc.), input price per million tokens in USD, " +
-  "output price per million tokens in USD, context window in tokens, and whether free or paid. " +
-  "Vision model flag for GLM-4.6V variants. ONLY text/chat models, NOT image generation.";
-
+/**
+ * GLM/Z.ai pricing scraper — parses docs.z.ai (clean HTML tables with USD).
+ * Tables have columns: Model | Input | Cached Input | Cached Input Storage | Output
+ */
 export class GLMScraper extends BaseCollector {
   readonly collectorId = "glm-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
     try {
-      const extracted = await extractModelsWithFirecrawl(
-        SOURCE_URL,
-        "zhipu glm",
-        PROMPT,
-        8000,
-        120000
-      );
+      const html = await fetchHTML(SOURCE_URL);
 
-      const models: RawModel[] = extracted.map(m => ({
-        collectorId: this.collectorId,
-        confidence: "scrape_unverified" as const,
-        sourceUrl: SOURCE_URL,
-        externalId: m.modelId,
-        canonicalId: m.modelId,
-        displayName: m.displayName ?? m.modelId,
-        provider: "glm",
-        pricing:
-          m.inputPerMTok !== undefined && m.outputPerMTok !== undefined
-            ? {
-                input: m.inputPerMTok,
-                output: m.outputPerMTok,
-                ...(m.cacheReadPerMTok !== undefined ? { cachedRead: m.cacheReadPerMTok } : {}),
-                ...(m.cacheWritePerMTok !== undefined ? { cachedWrite: m.cacheWritePerMTok } : {}),
-              }
-            : undefined,
-        contextWindow: m.contextWindow,
-        maxOutputTokens: m.maxOutputTokens,
-        capabilities: {
-          vision: m.supportsVision ?? false,
-          thinking: m.supportsThinking ?? false,
-          tools: m.supportsTools ?? false,
-          streaming: m.supportsStreaming ?? true,
-          jsonMode: m.supportsJsonMode ?? false,
-          batchApi: false,
-          structuredOutput: false,
-          citations: false,
-          codeExecution: false,
-          pdfInput: false,
-          fineTuning: false,
-        },
-        status:
-          m.status === "deprecated"
-            ? "deprecated"
-            : m.status === "preview" || m.status === "beta"
-            ? "preview"
-            : m.tier === "free"
-            ? "active"
-            : "active",
-      }));
+      const models: RawModel[] = [];
+      const tables = html.match(/<table[\s\S]*?<\/table>/g) ?? [];
 
+      for (const table of tables) {
+        const rows = table.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
+
+        for (const row of rows.slice(1)) { // skip header
+          const cells = (row.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g) ?? [])
+            .map(c => c.replace(/<[^>]+>/g, "").trim());
+
+          if (cells.length < 3) continue;
+          const modelId = cells[0];
+          if (!modelId.match(/^[A-Za-z]/)) continue; // skip non-model rows
+
+          const inputStr = cells[1];
+          const outputStr = cells[cells.length - 1];
+
+          const inputPrice = inputStr.match(/\$([\d.]+)/)?.[1];
+          const outputPrice = outputStr.match(/\$([\d.]+)/)?.[1];
+          const isFree = inputStr === "Free" && outputStr === "Free";
+
+          const cachedReadStr = cells.length >= 3 ? cells[2] : undefined;
+          const cachedRead = cachedReadStr?.match(/\$([\d.]+)/)?.[1];
+
+          const isVision = modelId.toLowerCase().includes("v") && !modelId.toLowerCase().includes("video");
+
+          models.push({
+            collectorId: this.collectorId,
+            confidence: "scrape_verified",
+            sourceUrl: SOURCE_URL,
+            externalId: modelId,
+            canonicalId: modelId.toLowerCase(),
+            displayName: modelId,
+            provider: "z-ai",
+            pricing: {
+              input: isFree ? 0 : parseFloat(inputPrice ?? "0"),
+              output: isFree ? 0 : parseFloat(outputPrice ?? "0"),
+              ...(cachedRead ? { cachedRead: parseFloat(cachedRead) } : {}),
+            },
+            capabilities: {
+              vision: isVision,
+              tools: true,
+              streaming: true,
+              thinking: false,
+              batchApi: false,
+              jsonMode: true,
+              structuredOutput: true,
+              citations: false,
+              codeExecution: false,
+              pdfInput: false,
+              fineTuning: false,
+            },
+            status: "active",
+          });
+        }
+      }
+
+      validateParseResults("GLM/Z.ai", models, 8);
       return this.makeResult(models);
     } catch (err) {
       return this.makeResult([], String(err));

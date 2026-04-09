@@ -1,82 +1,86 @@
 import { BaseCollector } from "../base-collector.js";
-import { extractFromMultipleUrls } from "./firecrawl.js";
+import { fetchHTML, validateParseResults } from "./html-parse.js";
 import type { CollectorResult, RawModel } from "../../schema.js";
 
-const PRICING_URL = "https://www.anthropic.com/pricing";
-const MODELS_URL = "https://docs.anthropic.com/en/docs/about-claude/models";
+const SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 
-const PRICING_PROMPT =
-  "Extract ALL Claude model pricing. For each model: model name/ID, input price per million tokens, " +
-  "output price per million tokens, cached input read price per MTok, cached write price per MTok. " +
-  "Include ALL versions: Opus 4.6, 4.5, 4.1, 4, Sonnet 4.6, 4.5, 4, Haiku 4.5, 3.5, 3.";
-
-const MODELS_PROMPT =
-  "Extract ALL Claude model information. For each: exact API model ID (e.g. claude-opus-4-6-20250219), " +
-  "context window in tokens (e.g. 200000 or 1000000), max output tokens, and capabilities: " +
-  "vision, extended thinking, tool use, PDF input, citations, code execution, batch API.";
-
+/**
+ * Anthropic pricing scraper — parses platform.claude.com (clean HTML tables).
+ * Table columns: Model | Base Input Tokens | 5m Cache Writes | 1h Cache Writes | Cache Hits | Output Tokens
+ */
 export class AnthropicPricingScraper extends BaseCollector {
   readonly collectorId = "anthropic-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
     try {
-      const extracted = await extractFromMultipleUrls([
-        {
-          url: PRICING_URL,
-          providerHint: "anthropic",
-          prompt: PRICING_PROMPT,
-          waitFor: 5000,
-          timeout: 120000,
-        },
-        {
-          url: MODELS_URL,
-          providerHint: "anthropic",
-          prompt: MODELS_PROMPT,
-          waitFor: 5000,
-          timeout: 120000,
-        },
-      ]);
+      const html = await fetchHTML(SOURCE_URL);
 
-      const models: RawModel[] = extracted.map(m => ({
-        collectorId: this.collectorId,
-        confidence: "scrape_unverified" as const,
-        sourceUrl: PRICING_URL,
-        externalId: m.modelId,
-        canonicalId: m.modelId,
-        displayName: m.displayName ?? m.modelId,
-        provider: "anthropic",
-        pricing:
-          m.inputPerMTok !== undefined && m.outputPerMTok !== undefined
-            ? {
-                input: m.inputPerMTok,
-                output: m.outputPerMTok,
-                ...(m.cacheReadPerMTok !== undefined ? { cachedRead: m.cacheReadPerMTok } : {}),
-                ...(m.cacheWritePerMTok !== undefined ? { cachedWrite: m.cacheWritePerMTok } : {}),
-              }
-            : undefined,
-        contextWindow: m.contextWindow,
-        maxOutputTokens: m.maxOutputTokens,
-        capabilities: {
-          vision: m.supportsVision ?? false,
-          thinking: m.supportsThinking ?? false,
-          tools: m.supportsTools ?? true,
-          streaming: m.supportsStreaming ?? true,
-          jsonMode: m.supportsJsonMode ?? false,
-          pdfInput: m.supportsPdf ?? false,
-          batchApi: false,
-          structuredOutput: false,
-          citations: false,
-          codeExecution: false,
-          fineTuning: false,
-        },
-        status:
-          m.status === "deprecated"
-            ? "deprecated"
-            : m.status === "preview" || m.status === "beta"
-            ? "preview"
-            : "active",
-      }));
+      const tables = html.match(/<table[\s\S]*?<\/table>/g) ?? [];
+      if (tables.length === 0) {
+        throw new Error("HTML parse broken for Anthropic: no tables found");
+      }
 
+      const models: RawModel[] = [];
+
+      // The first table has the main model pricing
+      const rows = tables[0]!.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
+
+      for (const row of rows.slice(1)) { // skip header
+        const cells = (row.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g) ?? [])
+          .map(c => c.replace(/<[^>]+>/g, "").trim());
+
+        if (cells.length < 3) continue;
+
+        const modelName = cells[0]; // e.g. "Claude Opus 4.6"
+        if (!modelName.startsWith("Claude")) continue;
+
+        const inputStr = cells[1];  // "$5 / MTok"
+        const outputStr = cells[cells.length - 1]; // "$25 / MTok"
+        const cacheHitStr = cells.length >= 5 ? cells[4] : undefined; // Cache Hits column
+
+        const inputPrice = inputStr.match(/\$([\d.]+)/)?.[1];
+        const outputPrice = outputStr.match(/\$([\d.]+)/)?.[1];
+        const cacheHitPrice = cacheHitStr?.match(/\$([\d.]+)/)?.[1];
+
+        if (!inputPrice || !outputPrice) continue;
+
+        // Convert model name to API ID: "Claude Opus 4.6" → "claude-opus-4-6"
+        const modelId = modelName
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/\./g, "-");
+
+        models.push({
+          collectorId: this.collectorId,
+          confidence: "scrape_verified",
+          sourceUrl: SOURCE_URL,
+          externalId: modelId,
+          canonicalId: modelId,
+          displayName: modelName,
+          provider: "anthropic",
+          pricing: {
+            input: parseFloat(inputPrice),
+            output: parseFloat(outputPrice),
+            ...(cacheHitPrice ? { cachedRead: parseFloat(cacheHitPrice) } : {}),
+          },
+          capabilities: {
+            vision: true,
+            tools: true,
+            streaming: true,
+            thinking: true,
+            pdfInput: true,
+            jsonMode: true,
+            structuredOutput: true,
+            batchApi: true,
+            citations: false,
+            codeExecution: false,
+            fineTuning: false,
+          },
+          status: "active",
+        });
+      }
+
+      validateParseResults("Anthropic", models, 3);
       return this.makeResult(models);
     } catch (err) {
       return this.makeResult([], String(err));

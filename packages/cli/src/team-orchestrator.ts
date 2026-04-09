@@ -318,9 +318,12 @@ export async function runModels(
     new Promise<void>((resolve) => {
       timeoutHandle = setTimeout(() => {
         for (const [id, proc] of processes) {
-          if (!proc.killed) {
-            proc.kill("SIGTERM");
-            // Mark as TIMEOUT — exit handler will see this and skip overwrite
+          const current = statusCache.models[id];
+          // Only timeout models that are still RUNNING — not ones that already
+          // completed/failed. proc.killed is NOT reliable: it's only true when
+          // the parent called .kill(), not when the child exited naturally.
+          if (current.state === "RUNNING") {
+            if (!proc.killed) proc.kill("SIGTERM");
             updateModelStatus(id, {
               state: "TIMEOUT",
               completedAt: new Date().toISOString(),

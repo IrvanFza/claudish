@@ -1,52 +1,80 @@
 import { BaseCollector } from "../base-collector.js";
-import { extractModelsWithFirecrawl } from "./firecrawl.js";
+import { fetchHTML, validateParseResults } from "./html-parse.js";
 import type { CollectorResult, RawModel } from "../../schema.js";
 
 const SOURCE_URL = "https://api-docs.deepseek.com/quick_start/pricing";
 
-const PROMPT =
-  "Extract ALL DeepSeek model pricing and capabilities. For each: model ID, input price per million tokens USD, " +
-  "output price per million tokens USD, cached input price, context window in tokens (e.g. 128000), " +
-  "max output tokens, capabilities (reasoning/thinking, function calling, vision, code). Note cache discounts.";
-
+/**
+ * DeepSeek pricing scraper — parses clean HTML table from API docs.
+ * Table has: MODEL | deepseek-chat | deepseek-reasoner
+ * Pricing rows: 1M INPUT TOKENS (CACHE HIT/MISS) | $X.XX
+ */
 export class DeepSeekScraper extends BaseCollector {
   readonly collectorId = "deepseek-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
     try {
-      const extracted = await extractModelsWithFirecrawl(
-        SOURCE_URL,
-        "deepseek",
-        PROMPT,
-        8000,
-        120000
-      );
+      const html = await fetchHTML(SOURCE_URL);
 
-      const models: RawModel[] = extracted.map(m => ({
+      const table = html.match(/<table[\s\S]*?<\/table>/)?.[0];
+      if (!table) {
+        throw new Error("HTML parse broken for DeepSeek: no pricing table found");
+      }
+
+      const rows = table.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
+
+      // Extract model names from the MODEL row
+      let modelNames: string[] = [];
+      let cacheMissPrice: string | null = null;
+      let cacheHitPrice: string | null = null;
+      let outputPrice: string | null = null;
+      let contextLength: number | undefined;
+      for (const row of rows) {
+        const cells = (row.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g) ?? [])
+          .map(c => c.replace(/<[^>]+>/g, "").trim());
+
+        if (cells.some(c => c === "MODEL")) {
+          modelNames = cells.filter(c => c.startsWith("deepseek-"));
+        }
+        if (cells.some(c => c.includes("CACHE MISS"))) {
+          cacheMissPrice = cells.find(c => c.startsWith("$"))?.replace("$", "") ?? null;
+        }
+        if (cells.some(c => c.includes("CACHE HIT"))) {
+          cacheHitPrice = cells.find(c => c.startsWith("$"))?.replace("$", "") ?? null;
+        }
+        if (cells.some(c => c.includes("OUTPUT TOKENS"))) {
+          outputPrice = cells.find(c => c.startsWith("$"))?.replace("$", "") ?? null;
+        }
+        if (cells.some(c => c.includes("CONTEXT LENGTH"))) {
+          const ctxStr = cells.find(c => c.match(/\d+K/i));
+          if (ctxStr) contextLength = parseInt(ctxStr) * 1000;
+        }
+      }
+
+      if (modelNames.length === 0) {
+        throw new Error("HTML parse broken for DeepSeek: no model names in table");
+      }
+
+      const models: RawModel[] = modelNames.map(name => ({
         collectorId: this.collectorId,
-        confidence: "scrape_unverified" as const,
+        confidence: "scrape_verified" as const,
         sourceUrl: SOURCE_URL,
-        externalId: m.modelId,
-        canonicalId: m.modelId,
-        displayName: m.displayName ?? m.modelId,
+        externalId: name,
+        canonicalId: name,
+        displayName: name,
         provider: "deepseek",
-        pricing:
-          m.inputPerMTok !== undefined && m.outputPerMTok !== undefined
-            ? {
-                input: m.inputPerMTok,
-                output: m.outputPerMTok,
-                ...(m.cacheReadPerMTok !== undefined ? { cachedRead: m.cacheReadPerMTok } : {}),
-                ...(m.cacheWritePerMTok !== undefined ? { cachedWrite: m.cacheWritePerMTok } : {}),
-              }
-            : undefined,
-        contextWindow: m.contextWindow,
-        maxOutputTokens: m.maxOutputTokens,
+        pricing: {
+          input: parseFloat(cacheMissPrice ?? "0"),
+          output: parseFloat(outputPrice ?? "0"),
+          ...(cacheHitPrice ? { cachedRead: parseFloat(cacheHitPrice) } : {}),
+        },
+        contextWindow: contextLength,
         capabilities: {
-          vision: m.supportsVision ?? false,
-          thinking: m.supportsThinking ?? false,
-          tools: m.supportsTools ?? false,
-          streaming: m.supportsStreaming ?? true,
-          jsonMode: m.supportsJsonMode ?? false,
+          thinking: name.includes("reasoner"),
+          tools: true,
+          streaming: true,
+          vision: false,
+          jsonMode: true,
           batchApi: false,
           structuredOutput: false,
           citations: false,
@@ -54,14 +82,10 @@ export class DeepSeekScraper extends BaseCollector {
           pdfInput: false,
           fineTuning: false,
         },
-        status:
-          m.status === "deprecated"
-            ? "deprecated"
-            : m.status === "preview" || m.status === "beta"
-            ? "preview"
-            : "active",
+        status: "active",
       }));
 
+      validateParseResults("DeepSeek", models, 1);
       return this.makeResult(models);
     } catch (err) {
       return this.makeResult([], String(err));

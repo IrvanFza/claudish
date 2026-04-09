@@ -308,22 +308,14 @@ export async function runWithGrid(
       // Interactive mode: full Claude Code TUI sessions.
       // -i forces interactive (TUI) mode even with a prompt argument.
       // --dangerously-skip-permissions skips the consent prompt.
-      // Include _update_bar + IPC tint so status bar and pane tints work.
+      // Static status bar — interactive sessions don't have "done" state until user quits.
+      const modelList = Object.values(manifest.models).map((m) => m.model).join(", ");
+      const interactiveStatus = `C: claudish team\tD: ${modelList}\tD: ctrl-g Tab switch\tD: ctrl-g q quit`;
+      const interactiveStatusEsc = interactiveStatus.replace(/\t/g, "\\\\t");
       return [
-        `${statusFunc}`,
-        `if [ -n "$MAGMUX_SOCK" ]; then _update_bar; fi;`,
+        `if [ -n "$MAGMUX_SOCK" ]; then printf '{\"cmd\":\"status\",\"text\":\"%s\"}' '${interactiveStatusEsc}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null; fi;`,
         `claudish --model ${model} -i --dangerously-skip-permissions '${prompt}' 2>${errorLog};`,
-        `_ec=$?; echo $_ec > ${exitCodeFile};`,
-        `if [ -n "$MAGMUX_SOCK" ]; then`,
-        `  _update_bar;`,
-        `  if [ $_ec -eq 0 ]; then`,
-        `    echo '{"cmd":"tint","pane":${paneIndex},"color":"green"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-        `    echo '{"cmd":"overlay","pane":${paneIndex},"text":"DONE","color":"green"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-        `  else`,
-        `    echo '{"cmd":"tint","pane":${paneIndex},"color":"red"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-        `    echo '{"cmd":"overlay","pane":${paneIndex},"text":"FAIL","color":"red"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-        `  fi;`,
-        `fi`,
+        `_ec=$?; echo $_ec > ${exitCodeFile}`,
       ].join(" ");
     }
 

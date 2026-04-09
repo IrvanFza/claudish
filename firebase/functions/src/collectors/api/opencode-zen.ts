@@ -59,10 +59,13 @@ export class OpenCodeZenCollector extends BaseCollector {
           ? new Date(m.created * 1000).toISOString().split("T")[0]
           : undefined;
 
-        // Derive provider from owned_by or model ID prefix
+        // Derive provider from model ID prefix (NOT owned_by — Zen always returns "opencode")
         const slashIdx = m.id.indexOf("/");
         const providerFromId = slashIdx > 0 ? m.id.slice(0, slashIdx) : undefined;
-        const provider = m.owned_by ?? providerFromId ?? "opencode-zen";
+        // Only use owned_by if it's an actual vendor, not a gateway name
+        const GATEWAY_NAMES = new Set(["opencode", "opencode-zen", "system"]);
+        const ownedByProvider = m.owned_by && !GATEWAY_NAMES.has(m.owned_by) ? m.owned_by : undefined;
+        const provider = ownedByProvider ?? providerFromId;
 
         // Detect thinking models by ID heuristics
         const modelIdLower = m.id.toLowerCase();

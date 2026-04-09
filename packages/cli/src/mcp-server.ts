@@ -782,7 +782,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         ? "\n\n**Suggestion:** Enable automatic error reporting so future errors are sent without asking. Run `claudish config` → Privacy → toggle Telemetry, or set `CLAUDISH_TELEMETRY=1`."
         : "";
 
-      const REPORT_URL = "https://api.claudish.com/v1/error-reports";
+      const REPORT_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/errorReportIngest";
 
       try {
         const response = await fetch(REPORT_URL, {

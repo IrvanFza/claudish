@@ -1,70 +1,85 @@
 import { BaseCollector } from "../base-collector.js";
-import { extractModelsWithFirecrawl } from "./firecrawl.js";
+import { fetchHTML, validateParseResults } from "./html-parse.js";
 import type { CollectorResult, RawModel } from "../../schema.js";
 
-// Docs page returns excellent capability data (29 models) even when pricing is empty.
-// OpenRouter fills the pricing gap.
 const SOURCE_URL = "https://docs.mistral.ai/getting-started/models/models_overview/";
 
-const PROMPT =
-  "Extract ALL Mistral AI models. For each: API model ID (like mistral-large-3, mistral-small-4, " +
-  "codestral, pixtral-large, ministral-3-8b, etc.), display name, context window in tokens, " +
-  "max output tokens, capabilities (vision, function calling/tools, thinking/reasoning, code). " +
-  "Also get pricing if shown (prices in USD PER MILLION TOKENS).";
-
+/**
+ * Mistral pricing scraper — parses Next.js RSC JSON embedded in the HTML.
+ * The page has model data in script tags with escaped JSON containing
+ * apiNames and pricing blocks.
+ */
 export class MistralPricingScraper extends BaseCollector {
   readonly collectorId = "mistral-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
     try {
-      const extracted = await extractModelsWithFirecrawl(
-        SOURCE_URL,
-        "mistral",
-        PROMPT,
-        8000,
-        120000
+      const html = await fetchHTML(SOURCE_URL, 20000);
+
+      // Find the script tag containing model data
+      const scripts = html.match(/<script[^>]*>[\s\S]*?<\/script>/gi) ?? [];
+      const dataScript = scripts.find(s =>
+        s.includes("pricing") && s.includes("M Token")
       );
+      if (!dataScript) {
+        throw new Error("HTML parse broken for Mistral: no data script found with pricing");
+      }
 
-      const models: RawModel[] = extracted.map(m => ({
-        collectorId: this.collectorId,
-        confidence: "scrape_unverified" as const,
-        sourceUrl: SOURCE_URL,
-        externalId: m.modelId,
-        canonicalId: m.modelId,
-        displayName: m.displayName ?? m.modelId,
-        provider: "mistral",
-        pricing:
-          m.inputPerMTok !== undefined && m.outputPerMTok !== undefined
-            ? {
-                input: m.inputPerMTok,
-                output: m.outputPerMTok,
-                ...(m.cacheReadPerMTok !== undefined ? { cachedRead: m.cacheReadPerMTok } : {}),
-                ...(m.cacheWritePerMTok !== undefined ? { cachedWrite: m.cacheWritePerMTok } : {}),
-              }
-            : undefined,
-        contextWindow: m.contextWindow,
-        maxOutputTokens: m.maxOutputTokens,
-        capabilities: {
-          vision: m.supportsVision ?? false,
-          thinking: m.supportsThinking ?? false,
-          tools: m.supportsTools ?? false,
-          streaming: m.supportsStreaming ?? true,
-          jsonMode: m.supportsJsonMode ?? false,
-          fineTuning: false,
-          batchApi: false,
-          structuredOutput: false,
-          citations: false,
-          codeExecution: false,
-          pdfInput: false,
-        },
-        status:
-          m.status === "deprecated"
-            ? "deprecated"
-            : m.status === "preview" || m.status === "beta"
-            ? "preview"
-            : "active",
-      }));
+      // Unescape the Next.js RSC serialized JSON
+      // Raw text has literal \" sequences that need to become actual quotes
+      let content = dataScript.replace(/<\/?script[^>]*>/gi, "");
+      content = content.replace(/\\"/g, '"');
 
+      // Find all apiNames and their preceding pricing blocks
+      const models: RawModel[] = [];
+      const apiRe = /"apiNames":\["([^"]+)"\]/g;
+      let m;
+
+      while ((m = apiRe.exec(content)) !== null) {
+        const apiName = m[1];
+        const pos = m.index;
+
+        // Look backwards up to 1500 chars for pricing
+        const before = content.slice(Math.max(0, pos - 1500), pos);
+        const inputMatch = before.match(/"input":\[\{"type":"range","price":([\d.]+)/);
+        const outputMatch = before.match(/"output":\[\{"type":"range","price":([\d.]+)/);
+
+        if (!inputMatch || !outputMatch) continue;
+
+        // Check if this is a free model
+        const freeMatch = before.match(/"free":(true|false)/);
+        const isFree = freeMatch?.[1] === "true";
+
+        models.push({
+          collectorId: this.collectorId,
+          confidence: "scrape_verified",
+          sourceUrl: SOURCE_URL,
+          externalId: apiName,
+          canonicalId: apiName,
+          displayName: apiName,
+          provider: "mistral",
+          pricing: {
+            input: isFree ? 0 : parseFloat(inputMatch[1]),
+            output: isFree ? 0 : parseFloat(outputMatch[1]),
+          },
+          capabilities: {
+            vision: apiName.includes("pixtral") || apiName.includes("ocr"),
+            tools: true,
+            streaming: true,
+            thinking: apiName.includes("magistral"),
+            batchApi: false,
+            jsonMode: true,
+            structuredOutput: true,
+            citations: false,
+            codeExecution: apiName.includes("codestral") || apiName.includes("devstral"),
+            pdfInput: false,
+            fineTuning: false,
+          },
+          status: "active",
+        });
+      }
+
+      validateParseResults("Mistral", models, 5);
       return this.makeResult(models);
     } catch (err) {
       return this.makeResult([], String(err));

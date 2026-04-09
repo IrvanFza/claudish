@@ -9,16 +9,20 @@ import { MistralCollector } from "./collectors/api/mistral.js";
 import { DeepSeekCollector } from "./collectors/api/deepseek.js";
 import { FireworksCollector } from "./collectors/api/fireworks.js";
 import { OpenCodeZenCollector } from "./collectors/api/opencode-zen.js";
+import { XAICollector } from "./collectors/api/xai.js";
+import { MoonshotCollector } from "./collectors/api/moonshot.js";
+import { ZhipuCollector } from "./collectors/api/zhipu.js";
+import { DashScopeCollector } from "./collectors/api/dashscope.js";
 import { AnthropicPricingScraper } from "./collectors/scraper/anthropic-pricing.js";
 import { OpenAIPricingScraper } from "./collectors/scraper/openai-pricing.js";
 import { GooglePricingScraper } from "./collectors/scraper/google-pricing.js";
 import { GLMScraper } from "./collectors/scraper/glm.js";
 import { DeepSeekScraper } from "./collectors/scraper/deepseek.js";
-import { XAIScraper } from "./collectors/scraper/xai.js";
+// XAIScraper removed — xai-api collector returns pricing natively
 import { MistralPricingScraper } from "./collectors/scraper/mistral-pricing.js";
 
 export class CollectorOrchestrator {
-  // API collectors — no external rate limits, safe to run fully in parallel
+  // API collectors — run fully in parallel
   private apiCollectors: BaseCollector[] = [
     new AnthropicCollector(),
     new OpenAICollector(),
@@ -29,47 +33,39 @@ export class CollectorOrchestrator {
     new DeepSeekCollector(),
     new FireworksCollector(),
     new OpenCodeZenCollector(),
+    new XAICollector(),
+    new MoonshotCollector(),
+    new ZhipuCollector(),
+    new DashScopeCollector(),
   ];
 
-  // Firecrawl scrapers — share a single Firecrawl API key with concurrency limits.
-  // Run in batches of 3 to avoid queueing timeouts.
+  // Pricing scrapers — HTML-based (no Firecrawl dependency).
+  // Anthropic pricing still uses Firecrawl; the rest parse HTML directly.
+  // All can run in parallel since they're just HTTP fetches.
   private scraperCollectors: BaseCollector[] = [
-    new AnthropicPricingScraper(),
-    new OpenAIPricingScraper(),
-    new GooglePricingScraper(),
-    new GLMScraper(),
-    new DeepSeekScraper(),
-    new XAIScraper(),
-    new MistralPricingScraper(),
+    new AnthropicPricingScraper(),   // Firecrawl (only remaining)
+    new OpenAIPricingScraper(),      // HTML parse: developers.openai.com
+    new GooglePricingScraper(),      // HTML parse: ai.google.dev/pricing
+    new GLMScraper(),                // HTML parse: docs.z.ai/pricing
+    new DeepSeekScraper(),           // HTML parse: api-docs.deepseek.com
+    // xAI scraper removed — xai-api collector returns pricing natively
+    new MistralPricingScraper(),     // HTML parse: docs.mistral.ai (Next.js RSC)
   ];
-
-  private static readonly SCRAPER_BATCH_SIZE = 3;
 
   async runAll(): Promise<CollectorResult[]> {
     const start = Date.now();
     const totalCount = this.apiCollectors.length + this.scraperCollectors.length;
     console.log(
       `[catalog] running ${totalCount} collectors ` +
-      `(${this.apiCollectors.length} API parallel + ${this.scraperCollectors.length} scrapers in batches of ${CollectorOrchestrator.SCRAPER_BATCH_SIZE})`
+      `(${this.apiCollectors.length} API + ${this.scraperCollectors.length} scrapers, all parallel)`
     );
 
-    // Run API collectors fully in parallel (no shared rate limits)
-    const apiPromise = Promise.allSettled(
-      this.apiCollectors.map(c => c.collect())
-    );
+    // Run everything in parallel — no more Firecrawl batching needed
+    const allResults = await Promise.allSettled([
+      ...this.apiCollectors.map(c => c.collect()),
+      ...this.scraperCollectors.map(c => c.collect()),
+    ]);
 
-    // Run Firecrawl scrapers in batches to respect concurrency limits
-    const scraperResults: PromiseSettledResult<CollectorResult>[] = [];
-    for (let i = 0; i < this.scraperCollectors.length; i += CollectorOrchestrator.SCRAPER_BATCH_SIZE) {
-      const batch = this.scraperCollectors.slice(i, i + CollectorOrchestrator.SCRAPER_BATCH_SIZE);
-      const batchResults = await Promise.allSettled(batch.map(c => c.collect()));
-      scraperResults.push(...batchResults);
-    }
-
-    // Wait for API collectors (likely already done by now)
-    const apiResults = await apiPromise;
-
-    const allResults = [...apiResults, ...scraperResults];
     const collected: CollectorResult[] = [];
     let successCount = 0;
     let errorCount = 0;
