@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.12.0] - 2026-04-09
+
+### Documentation
+
+- update CHANGELOG.md for v6.11.1([`d89cddd`](https://github.com/MadAppGang/claudish/commit/d89cdddd5ad2004356e7727ad0898e7ef39bc0e7))
+
+### New Features
+
+- v6.12.0 — new API collectors, error report ingest, auto-recommender, team timeout fix([`e940c79`](https://github.com/MadAppGang/claudish/commit/e940c79a60fa3ab74dbf98ac6e0f657b6f9063ef))
+
 ## [6.11.1] - 2026-04-08
 
 ### Bug Fixes
