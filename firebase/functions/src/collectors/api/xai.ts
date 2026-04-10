@@ -41,15 +41,17 @@ export class XAICollector extends BaseCollector {
       const data = await resp.json() as XAIListResponse;
 
       for (const m of data.models ?? []) {
-        // Convert nano-dollars per token → USD per million tokens
+        // Convert xAI price units to USD per million tokens.
+        // xAI API returns prices in units where value / 10000 = USD per 1M tokens.
+        // e.g. 20000 → $2.00/1M, 60000 → $6.00/1M, 2000 → $0.20/1M
         const inputPrice = m.prompt_text_token_price != null
-          ? m.prompt_text_token_price / 1e6
+          ? m.prompt_text_token_price / 10000
           : undefined;
         const outputPrice = m.completion_text_token_price != null
-          ? m.completion_text_token_price / 1e6
+          ? m.completion_text_token_price / 10000
           : undefined;
         const cachedRead = m.cached_prompt_text_token_price != null
-          ? m.cached_prompt_text_token_price / 1e6
+          ? m.cached_prompt_text_token_price / 10000
           : undefined;
 
         const releaseDate = m.created
