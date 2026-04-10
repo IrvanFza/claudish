@@ -6,8 +6,14 @@ const SOURCE_URL = "https://www.alibabacloud.com/help/en/model-studio/model-pric
 
 /**
  * Qwen/DashScope pricing scraper — parses Alibaba Cloud Model Studio pricing page.
- * Tables have: Model | Input tokens per request | Input price (per 1M tokens) | Output price (per 1M tokens) | Free quota
- * Uses the base tier price (smallest context range) for each model.
+ *
+ * The page has tabs (International, Global, US, etc.) rendered via JavaScript.
+ * Only the International Qwen-Max section and Global tab content are in the initial HTML.
+ * The International Qwen-Plus section (with qwen3.6-plus) loads dynamically.
+ *
+ * Strategy: extract ALL tables from the HTML, prioritizing models from the
+ * `data-cond-props="intl"` International sections. This captures Qwen-Max
+ * International pricing and Global tab pricing for other models.
  */
 export class QwenScraper extends BaseCollector {
   readonly collectorId = "qwen-pricing-scrape";
@@ -25,7 +31,6 @@ export class QwenScraper extends BaseCollector {
       const seen = new Set<string>();
 
       for (const table of tables) {
-        // Only process tables with pricing headers
         if (!table.includes("Input price") && !table.includes("per 1M tokens")) continue;
 
         const rows = table.match(/<tr[\s\S]*?<\/tr>/g) ?? [];
@@ -36,38 +41,42 @@ export class QwenScraper extends BaseCollector {
 
           if (cells.length < 4) continue;
 
-          // Model name is in first cell, must start with "qwen"
-          const modelId = cells[0].toLowerCase();
-          if (!modelId.startsWith("qwen")) continue;
-          // Skip batch/snapshot variants listed as sub-rows
-          if (modelId.includes("batch") || seen.has(modelId)) continue;
+          const rawModelId = cells[0].toLowerCase()
+            .replace(/\s+/g, "")           // collapse whitespace
+            .replace(/batch.*$/i, "")       // strip "Batch calling 50% off" suffix
+            .replace(/context.*$/i, "")     // strip "Context Cache discount" suffix
+            .trim();
 
-          // Find price cells — they contain "$" followed by a number
-          const inputPrice = cells.find((c, i) => i > 0 && c.startsWith("$"))?.replace("$", "");
-          // Output price — find from the end, skip free quota column
+          if (!rawModelId.startsWith("qwen") && !rawModelId.startsWith("qwq")) continue;
+          if (seen.has(rawModelId)) continue;
+
+          // Extract dollar amounts from cells
           const priceCells = cells.filter(c => c.startsWith("$"));
-          const outputPrice = priceCells.length >= 2 ? priceCells[1].replace("$", "") : undefined;
+          if (priceCells.length < 2) continue;
 
-          if (!inputPrice || !outputPrice) continue;
+          const inputPrice = parseFloat(priceCells[0].replace("$", ""));
+          const outputPrice = parseFloat(priceCells[1].replace("$", ""));
 
-          seen.add(modelId);
+          if (isNaN(inputPrice) || isNaN(outputPrice)) continue;
+
+          seen.add(rawModelId);
           models.push({
             collectorId: this.collectorId,
             confidence: "api_official",
             sourceUrl: SOURCE_URL,
-            externalId: modelId,
-            canonicalId: modelId,
-            displayName: modelId,
+            externalId: rawModelId,
+            canonicalId: rawModelId,
+            displayName: rawModelId,
             provider: "qwen",
             pricing: {
-              input: parseFloat(inputPrice),
-              output: parseFloat(outputPrice),
+              input: inputPrice,
+              output: outputPrice,
             },
             capabilities: {
               tools: true,
               streaming: true,
-              vision: false,
-              thinking: false,
+              vision: rawModelId.includes("vl"),
+              thinking: rawModelId.includes("qwq"),
               batchApi: false,
               jsonMode: true,
               structuredOutput: true,
