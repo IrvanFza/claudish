@@ -20,6 +20,7 @@ import { GLMScraper } from "./collectors/scraper/glm.js";
 import { DeepSeekScraper } from "./collectors/scraper/deepseek.js";
 // XAIScraper removed — xai-api collector returns pricing natively
 import { MistralPricingScraper } from "./collectors/scraper/mistral-pricing.js";
+import { QwenScraper } from "./collectors/scraper/qwen.js";
 
 export class CollectorOrchestrator {
   // API collectors — run fully in parallel
@@ -50,6 +51,7 @@ export class CollectorOrchestrator {
     new DeepSeekScraper(),           // HTML parse: api-docs.deepseek.com
     // xAI scraper removed — xai-api collector returns pricing natively
     new MistralPricingScraper(),     // HTML parse: docs.mistral.ai (Next.js RSC)
+    new QwenScraper(),               // HTML parse: alibabacloud.com model-pricing
   ];
 
   async runAll(): Promise<CollectorResult[]> {
