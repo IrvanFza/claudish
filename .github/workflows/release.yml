@@ -47,21 +47,23 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-
-      - name: Build magmux
+      - name: Download magmux from latest release
         run: |
-          cd packages/cli/native/magmux
-          # Build with Go's arch names
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o magmux-build .
+          # Fetch latest magmux release from MadAppGang/magmux
+          MAGMUX_TAG=$(gh release view --repo MadAppGang/magmux --json tagName -q .tagName)
+          echo "Using magmux ${MAGMUX_TAG}"
+          ASSET="magmux_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz"
+          gh release download "${MAGMUX_TAG}" --repo MadAppGang/magmux --pattern "${ASSET}" --dir /tmp
+          tar xzf "/tmp/${ASSET}" -C /tmp
           # Rename to Node.js platform-arch convention (amd64 → x64)
           NODE_ARCH="${{ matrix.goarch }}"
           if [ "$NODE_ARCH" = "amd64" ]; then NODE_ARCH="x64"; fi
-          mv magmux-build "magmux-${{ matrix.goos }}-${NODE_ARCH}"
-          ls -la magmux-*
+          mkdir -p packages/cli/native
+          mv /tmp/magmux "packages/cli/native/magmux-${{ matrix.goos }}-${NODE_ARCH}"
+          chmod +x "packages/cli/native/magmux-${{ matrix.goos }}-${NODE_ARCH}"
+          ls -la packages/cli/native/magmux-*
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Install dependencies
         run: bun install
@@ -93,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: magmux-${{ matrix.artifact }}
-          path: packages/cli/native/magmux/magmux-*
+          path: packages/cli/native/magmux-*
 
   release:
     needs: build
@@ -239,13 +241,13 @@ jobs:
 
       - name: Install magmux binaries
         run: |
-          mkdir -p packages/cli/native/magmux
+          mkdir -p packages/cli/native
           for dir in magmux-artifacts/*/; do
-            cp "$dir"/magmux-* packages/cli/native/magmux/ 2>/dev/null || true
+            cp "$dir"/magmux-* packages/cli/native/ 2>/dev/null || true
           done
-          chmod +x packages/cli/native/magmux/magmux-* 2>/dev/null || true
+          chmod +x packages/cli/native/magmux-* 2>/dev/null || true
           echo "Magmux binaries:"
-          ls -la packages/cli/native/magmux/
+          ls -la packages/cli/native/magmux-*
 
       - name: Publish magmux platform packages
         run: |
@@ -256,7 +258,7 @@ jobs:
 
             # Copy the correct binary
             mkdir -p "${pkg}bin"
-            cp "packages/cli/native/magmux/magmux-${platform_arch}" "${pkg}bin/magmux"
+            cp "packages/cli/native/magmux-${platform_arch}" "${pkg}bin/magmux"
             chmod +x "${pkg}bin/magmux"
 
             # Update version

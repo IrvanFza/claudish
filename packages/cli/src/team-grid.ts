@@ -150,10 +150,9 @@ function buildPaneHeader(model: string, prompt: string): string {
 
 /**
  * Find the magmux binary. Priority:
- * 1. Dev-built magmux (native/magmux/magmux — freshest, has latest features)
- * 2. Bundled magmux (native/magmux/magmux-<platform>-<arch>)
- * 3. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
- * 4. magmux in PATH
+ * 1. Bundled magmux (native/magmux-<platform>-<arch>)
+ * 2. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
+ * 3. magmux in PATH (e.g. via Homebrew)
  */
 function findMagmuxBinary(): string {
   const thisFile = fileURLToPath(import.meta.url);
@@ -162,15 +161,11 @@ function findMagmuxBinary(): string {
   const platform = process.platform;
   const arch = process.arch;
 
-  // 1. Dev-built magmux (native/magmux/magmux — freshest, has latest features)
-  const builtMagmux = join(pkgRoot, "native", "magmux", "magmux");
-  if (existsSync(builtMagmux)) return builtMagmux;
-
-  // 2. Bundled magmux (native/magmux/magmux-<platform>-<arch>)
-  const bundledMagmux = join(pkgRoot, "native", "magmux", `magmux-${platform}-${arch}`);
+  // 1. Bundled magmux (native/magmux-<platform>-<arch>)
+  const bundledMagmux = join(pkgRoot, "native", `magmux-${platform}-${arch}`);
   if (existsSync(bundledMagmux)) return bundledMagmux;
 
-  // 3. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
+  // 2. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
   //    npm installs only the matching platform's optional dep
   try {
     const pkgName = `@claudish/magmux-${platform}-${arch}`;
@@ -185,7 +180,7 @@ function findMagmuxBinary(): string {
     }
   } catch { /* not installed */ }
 
-  // 4. magmux in PATH
+  // 3. magmux in PATH
   try {
     const result = execSync("which magmux", { encoding: "utf-8" }).trim();
     if (result) return result;
@@ -201,7 +196,7 @@ function findMagmuxBinary(): string {
 /**
  * Read exit-code files and update status.json (called once after magmux exits).
  */
-function finalizeStatus(statusPath: string, sessionPath: string, anonIds: string[]): void {
+function finalizeStatus(statusPath: string, sessionPath: string, anonIds: string[], mode: "default" | "interactive"): void {
   const statusCache: TeamStatus = JSON.parse(readFileSync(statusPath, "utf-8"));
 
   for (const anonId of anonIds) {
@@ -215,6 +210,16 @@ function finalizeStatus(statusPath: string, sessionPath: string, anonIds: string
         ...current,
         state: code === 0 ? "COMPLETED" : "FAILED",
         exitCode: code,
+        startedAt: current.startedAt ?? statusCache.startedAt,
+        completedAt: new Date().toISOString(),
+      };
+    } else if (mode === "interactive") {
+      // Interactive mode: processes are killed when user quits (Ctrl-G q),
+      // so no .exit-code file is written. Treat as completed.
+      statusCache.models[anonId] = {
+        ...current,
+        state: "COMPLETED",
+        exitCode: 0,
         startedAt: current.startedAt ?? statusCache.startedAt,
         completedAt: new Date().toISOString(),
       };
@@ -273,6 +278,28 @@ export async function runWithGrid(
   // magmux handles {"cmd":"status","text":"..."} and renders it directly — no file needed.
   const totalPanes = Object.keys(manifest.models).length;
   const workDir = join(sessionPath, "work");
+  // Build status bar JSON in TypeScript. JSON.stringify handles tab escaping.
+  // Shell variables (__D__, __R__, __F__, __TS__) are placeholders replaced at runtime via sed.
+  const statusJsonAllDone = JSON.stringify({
+    cmd: "status",
+    text: `C: claudish team\tG: ${totalPanes} done\tG: complete\tD: __TS__\tD: ctrl-g q to quit`,
+  });
+  const statusJsonWithFails = JSON.stringify({
+    cmd: "status",
+    text: `C: claudish team\tG: __D__ done\tR: __F__ failed\tD: __TS__\tD: ctrl-g q to quit`,
+  });
+  const statusJsonRunning = JSON.stringify({
+    cmd: "status",
+    text: `C: claudish team\tG: __D__ done\tC: __R__ running\tR: __F__ failed\tD: __TS__`,
+  });
+
+  // Write pre-built JSON templates to files so shell just reads + sed-replaces placeholders
+  const tplDir = join(sessionPath, "status-tpl");
+  mkdirSync(tplDir, { recursive: true });
+  writeFileSync(join(tplDir, "all-done.json"), statusJsonAllDone);
+  writeFileSync(join(tplDir, "with-fails.json"), statusJsonWithFails);
+  writeFileSync(join(tplDir, "running.json"), statusJsonRunning);
+
   const statusFunc = [
     `_update_bar() {`,
     `_d=0; _f=0;`,
@@ -284,14 +311,12 @@ export async function runWithGrid(
     `_e=$SECONDS;`,
     `if [ $_e -ge 60 ]; then _ts="$((_e/60))m $((_e%60))s"; else _ts="\${_e}s"; fi;`,
     `if [ $_r -eq 0 ] && [ $_f -eq 0 ]; then`,
-    `_t="C: claudish team\tG: ${totalPanes} done\tG: complete\tD: \${_ts}\tD: ctrl-g q to quit";`,
+    `sed "s/__TS__/\${_ts}/" ${tplDir}/all-done.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
     `elif [ $_r -eq 0 ] && [ $_f -gt 0 ]; then`,
-    `_t="C: claudish team\tG: \${_d} done\tR: \${_f} failed\tD: \${_ts}\tD: ctrl-g q to quit";`,
+    `sed -e "s/__D__/\${_d}/" -e "s/__F__/\${_f}/" -e "s/__TS__/\${_ts}/" ${tplDir}/with-fails.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
     `else`,
-    `_t="C: claudish team\tG: \${_d} done\tC: \${_r} running\tR: \${_f} failed\tD: \${_ts}";`,
+    `sed -e "s/__D__/\${_d}/" -e "s/__R__/\${_r}/" -e "s/__F__/\${_f}/" -e "s/__TS__/\${_ts}/" ${tplDir}/running.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
     `fi;`,
-    `_j=$(printf '%s' "$_t" | sed 's/\t/\\\\t/g');`,
-    `printf '{\"cmd\":\"status\",\"text\":\"%s\"}' "$_j" | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
     `};`,
   ].join(" ");
 
@@ -306,14 +331,16 @@ export async function runWithGrid(
 
     if (mode === "interactive") {
       // Interactive mode: full Claude Code TUI sessions.
-      // -i forces interactive (TUI) mode even with a prompt argument.
-      // --dangerously-skip-permissions skips the consent prompt.
-      // Static status bar — interactive sessions don't have "done" state until user quits.
+      // Build status bar JSON fully in TypeScript — no shell escaping issues.
       const modelList = Object.values(manifest.models).map((m) => m.model).join(", ");
-      const interactiveStatus = `C: claudish team\tD: ${modelList}\tD: ctrl-g Tab switch\tD: ctrl-g q quit`;
-      const interactiveStatusEsc = interactiveStatus.replace(/\t/g, "\\\\t");
+      const interactiveJson = JSON.stringify({
+        cmd: "status",
+        text: `C: claudish team\tW: ${modelList}\tD: ctrl-g Tab switch\tD: ctrl-g q quit`,
+      });
+      const interactiveJsonFile = join(tplDir, "interactive.json");
+      writeFileSync(interactiveJsonFile, interactiveJson);
       return [
-        `if [ -n "$MAGMUX_SOCK" ]; then printf '{\"cmd\":\"status\",\"text\":\"%s\"}' '${interactiveStatusEsc}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null; fi;`,
+        `if [ -n "$MAGMUX_SOCK" ]; then cat ${interactiveJsonFile} | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null; fi;`,
         `claudish --model ${model} -i --dangerously-skip-permissions '${prompt}' 2>${errorLog};`,
         `_ec=$?; echo $_ec > ${exitCodeFile}`,
       ].join(" ");
@@ -365,7 +392,7 @@ export async function runWithGrid(
   });
 
   // 7. Final status.json update from exit-code files
-  finalizeStatus(statusPath, sessionPath, anonIds);
+  finalizeStatus(statusPath, sessionPath, anonIds, mode);
 
   return JSON.parse(readFileSync(statusPath, "utf-8")) as TeamStatus;
 }
