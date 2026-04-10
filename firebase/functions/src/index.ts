@@ -241,6 +241,8 @@ const MOONSHOT_API_KEY = defineSecret("MOONSHOT_API_KEY");
 const MINIMAX_API_KEY = defineSecret("MINIMAX_API_KEY");
 const ZHIPU_API_KEY = defineSecret("ZHIPU_API_KEY");
 const DASHSCOPE_API_KEY = defineSecret("DASHSCOPE_API_KEY");
+const BROWSERBASE_API_KEY = defineSecret("BROWSERBASE_API_KEY");
+const BROWSERBASE_PROJECT_ID = defineSecret("BROWSERBASE_PROJECT_ID");
 
 const CATALOG_SECRETS = [
   ANTHROPIC_API_KEY,
@@ -258,6 +260,8 @@ const CATALOG_SECRETS = [
   MINIMAX_API_KEY,
   ZHIPU_API_KEY,
   DASHSCOPE_API_KEY,
+  BROWSERBASE_API_KEY,
+  BROWSERBASE_PROJECT_ID,
 ];
 
 // ─────────────────────────────────────────────────────────────
