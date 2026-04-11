@@ -2,6 +2,31 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.12.3] - 2026-04-11
+
+### Bug Fixes
+
+- make codesign verification non-fatal for Bun binaries([`2cfbccb`](https://github.com/MadAppGang/claudish/commit/2cfbccb727058b7b55119daf7945242f743e0bc9))
+- Qwen pricing scraper, stale doc cleanup, xAI alias fix([`0468eae`](https://github.com/MadAppGang/claudish/commit/0468eaed19fa57e62f30ba66debc080a9f832144))
+- stale doc cleanup + xAI alias resolution for correct model IDs([`343e619`](https://github.com/MadAppGang/claudish/commit/343e61952b26ba5e23accac5a61a98b4a811ea8e))
+
+### Documentation
+
+- update CHANGELOG.md for v6.12.2([`9e89555`](https://github.com/MadAppGang/claudish/commit/9e895558e81449660f096c47d0d35e9f195f60c2))
+
+### New Features
+
+- v6.12.3 — Browserbase integration for JS-rendered pricing pages([`b2e2ccc`](https://github.com/MadAppGang/claudish/commit/b2e2ccc01a841320955f2c0ae78b86f8211d8b68))
+- add Qwen pricing scraper from Alibaba Cloud Model Studio docs([`f9fe44d`](https://github.com/MadAppGang/claudish/commit/f9fe44d3e7054847696759953ed456380a52eeea))
+
+### Other Changes
+
+- add gitignore for magmux binaries and team session dirs([`89291a3`](https://github.com/MadAppGang/claudish/commit/89291a31cb1785bdc9e4d7d4db1f3722c7efad61))
+
+### Refactoring
+
+- remove local magmux source, use upstream releases([`e1f8dd1`](https://github.com/MadAppGang/claudish/commit/e1f8dd1556d33d220385dfb4df2ff2894178f386))
+
 ## [6.12.2] - 2026-04-10
 
 ### Bug Fixes
