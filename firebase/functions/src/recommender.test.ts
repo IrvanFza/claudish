@@ -236,6 +236,82 @@ describe("pickBest — version-aware selection (replaces llmRefine)", () => {
     const { flagships } = selectByProvider(models);
     expect(flagships.some(m => m.modelId === "grok-4.20")).toBe(true);
   });
+
+  it("does NOT mistake parameter counts for versions (qwq-32b)", () => {
+    // Regression: qwq-32b was parsing as version [32] and beating qwen3-max ([3]).
+    // The "32b" is the parameter count (32 billion), not a version number.
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "qwen3-max",
+        provider: "qwen",
+        pricing: { input: 0.78, output: 3.9 },
+        releaseDate: "2025-10-27",
+      }),
+      makeModelDoc({
+        modelId: "qwq-32b",
+        provider: "qwen",
+        pricing: { input: 0.5, output: 2.0 },
+        releaseDate: "2025-08-01",
+      }),
+      makeModelDoc({
+        modelId: "qwen-max-2025-01-25",
+        provider: "qwen",
+        pricing: { input: 1.6, output: 6.4 },
+        releaseDate: "2026-02-02",
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "qwen3-max")).toBe(true);
+    expect(flagships.some(m => m.modelId === "qwq-32b")).toBe(false);
+    expect(flagships.some(m => m.modelId === "qwen-max-2025-01-25")).toBe(false);
+  });
+
+  it("handles MoE parameter notation (qwen3-coder-30b-a3b)", () => {
+    // qwen3-coder-30b-a3b should parse as version [3] (the qwen3 prefix),
+    // not [30] (the param count) or [3] from a3b.
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "qwen3-coder-30b-a3b",
+        provider: "qwen",
+        pricing: { input: 0.5, output: 2.0 },
+      }),
+      makeModelDoc({
+        modelId: "qwen2-coder-32b",
+        provider: "qwen",
+        pricing: { input: 0.4, output: 1.6 },
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "qwen3-coder-30b-a3b")).toBe(true);
+  });
+
+  it("does NOT mistake parameter counts in qwen-coder models", () => {
+    // Regression: qwen-coder-32b would parse as [32], beating qwen3-coder ([3]).
+    // After the fix, parameter-count tokens are stripped before version parsing.
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "qwen3-coder-30b",
+        provider: "qwen",
+        pricing: { input: 0.5, output: 1.5 },
+      }),
+      makeModelDoc({
+        modelId: "qwen3-coder-480b",
+        provider: "qwen",
+        pricing: { input: 2.0, output: 6.0 },
+      }),
+      makeModelDoc({
+        modelId: "qwen-coder-32b",
+        provider: "qwen",
+        pricing: { input: 0.3, output: 1.0 },
+      }),
+    ];
+    // qwen3-coder-30b and qwen3-coder-480b both parse to [3]. qwen-coder-32b
+    // parses to null (no version). The qwen3-* variants beat the unversioned one.
+    // Between the two qwen3-coder variants, shorter id wins: 30b is shorter than 480b.
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "qwen3-coder-30b")).toBe(true);
+    expect(flagships.some(m => m.modelId === "qwen-coder-32b")).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────

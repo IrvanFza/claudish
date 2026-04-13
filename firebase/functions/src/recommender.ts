@@ -503,29 +503,54 @@ function pickBest(models: ModelDoc[]): ModelDoc | null {
  *   glm-5.1                  → [5, 1]
  *   grok-4.20                → [4, 20]    (numeric, beats [4, 3])
  *   qwen3-max-2026-01-23     → [3]        (strip trailing date suffix)
+ *   qwen3-max                → [3]
  *   qwen-max-2025-01-25      → null       (date is not a version)
  *   qwen-plus-2025-07-28     → null       (date is not a version)
+ *   qwq-32b                  → null       (parameter count, not a version)
+ *   llama-70b                → null       (parameter count)
+ *   qwen3-coder-30b-a3b      → [3]        (strip param counts, parse `qwen3`)
  *
- * Date-like trailing suffixes (`-YYYY-MM-DD`, `-YYYY-MM`, `-YYYYMMDD`) are
- * stripped BEFORE parsing so they don't get mistaken for version numbers.
+ * Pre-processing strips:
+ *   1. Trailing date stamps (-YYYY-MM-DD, -YYYY-MM, -YYYYMMDD)
+ *   2. Parameter-count tokens (-Nb, -Nm, NbN, etc.) — these are model size,
+ *      not version. Without this strip, qwq-32b would parse as [32] and beat
+ *      qwen3-max ([3]) in the version comparison.
  */
 function parseVersion(modelId: string): { version: number[] } | null {
-  // Strip trailing date stamps so they don't pollute the version parse.
-  // Matches -YYYY-MM-DD, -YYYY-MM, -YYYYMMDD, -YYYY-MM-DD-us, -YYYY-MM-DD:thinking, etc.
-  const dateStripped = modelId
+  // 1. Strip trailing date stamps so they don't pollute the version parse.
+  let stripped = modelId
     .replace(/-\d{4}-\d{2}-\d{2}(-[a-z]+)?(:[a-z]+)?$/i, "")
     .replace(/-\d{4}\d{2}\d{2}$/i, "")
     .replace(/-\d{4}-\d{2}$/i, "");
 
-  // Match the first run of digits optionally followed by .N.N... groups
-  const match = dateStripped.match(/(\d+(?:\.\d+)*)/);
+  // 2. Strip parameter-count tokens. These look like:
+  //    -32b, -7b, -70b, -405b, -1.5b, -3b, -32b-a3b (MoE notation), -8x7b
+  //    Always at a token boundary (-) and end with `b` (billion) or `m` (million).
+  //    Repeat the strip in case of multiple param tokens like -30b-a3b.
+  for (let i = 0; i < 4; i++) {
+    const before = stripped;
+    stripped = stripped.replace(/-\d+(?:\.\d+)?[bm](?=$|-)/gi, "");
+    stripped = stripped.replace(/-\d+x\d+[bm](?=$|-)/gi, ""); // -8x7b mixture-of-experts
+    stripped = stripped.replace(/-a\d+[bm](?=$|-)/gi, "");    // -a3b (active params in MoE)
+    if (stripped === before) break;
+  }
+
+  // 3. Match the first run of digits optionally followed by .N.N... groups
+  const match = stripped.match(/(\d+(?:\.\d+)*)/);
   if (!match) return null;
   const version = match[1].split(".").map(Number).filter(n => !Number.isNaN(n));
   if (version.length === 0) return null;
-  // Sanity: reject anything where the first component looks like a year (≥ 1900).
+
+  // 4. Sanity: reject anything where the first component looks like a year (≥ 1900).
   // That means the "version" we parsed is actually a standalone date with no
   // real version, like "qwen-plus-2025-12-01" → [2025, 12, 1]. Treat as no version.
   if (version[0] >= 1900) return null;
+
+  // 5. Sanity: reject anything where the first component is unreasonably large
+  // for a version number (>99). Real version numbers don't go that high; if we
+  // see one, it's almost certainly a parameter count we missed (e.g. `model-128k`).
+  if (version[0] > 99) return null;
+
   return { version };
 }
 
