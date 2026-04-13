@@ -1,8 +1,11 @@
 import { describe, it, expect } from "bun:test";
 import { selectByProvider, toEntry, PROVIDERS, ACCESS_METHODS } from "./recommender.js";
-import { normalizeCanonicalKey } from "./merger.js";
+import { canonicalizeModelId } from "./schema-runtime.js";
 import type { ModelDoc } from "./schema.js";
 import { Timestamp } from "firebase-admin/firestore";
+
+// Legacy test alias — tests exercised a normalizer that moved to schema-runtime.
+const normalizeCanonicalKey = canonicalizeModelId;
 
 // ─────────────────────────────────────────────────────────────
 // Helpers — minimal ModelDoc factory
@@ -56,38 +59,36 @@ describe("normalizeCanonicalKey — vendor prefix stripping (Fix F)", () => {
 // Fix B: ACCESS_METHODS slug normalization (minimaxai → minimax)
 // ─────────────────────────────────────────────────────────────
 
-describe("ACCESS_METHODS slug resolution (Fix B)", () => {
-  it("resolves minimaxai to minimax ACCESS_METHODS via PROVIDERS slugs", () => {
-    const providerLower = "minimaxai";
-    const providerDef = PROVIDERS.find(p => p.slugs.includes(providerLower));
-    expect(providerDef).toBeDefined();
-    const canonicalSlug = providerDef!.slugs[0];
-    expect(canonicalSlug).toBe("minimax");
-    const methods = ACCESS_METHODS[canonicalSlug];
+describe("Provider alias canonicalization (Fix B) — via schema-runtime", () => {
+  // Post-refactor, aliases are resolved at the schema gate in
+  // canonicalizeProviderSlug (schema-runtime.ts), so by the time models
+  // reach the recommender, their `provider` field is already canonical.
+  // PROVIDERS.slugs therefore only lists canonical slugs.
+
+  it("minimaxai aliases to minimax and has MiniMax Coding access", () => {
+    const { canonicalizeProviderSlug } = require("./schema-runtime.js");
+    expect(canonicalizeProviderSlug("minimaxai")).toBe("minimax");
+    const methods = ACCESS_METHODS["minimax"];
     expect(methods).toBeDefined();
     expect(methods.length).toBeGreaterThan(0);
     expect(methods[0].prefix).toBe("mmc");
   });
 
-  it("resolves moonshot to moonshotai ACCESS_METHODS", () => {
-    const providerLower = "moonshot";
-    const providerDef = PROVIDERS.find(p => p.slugs.includes(providerLower));
+  it("moonshot aliases to moonshotai and has Kimi Coding access", () => {
+    const { canonicalizeProviderSlug } = require("./schema-runtime.js");
+    expect(canonicalizeProviderSlug("moonshot")).toBe("moonshotai");
+    const providerDef = PROVIDERS.find(p => p.slugs.includes("moonshotai"));
     expect(providerDef).toBeDefined();
-    const canonicalSlug = providerDef!.slugs[0];
-    expect(canonicalSlug).toBe("moonshotai");
-    const methods = ACCESS_METHODS[canonicalSlug];
+    const methods = ACCESS_METHODS["moonshotai"];
     expect(methods).toBeDefined();
     expect(methods.length).toBeGreaterThan(0);
   });
 
-  it("resolves xai to x-ai ACCESS_METHODS", () => {
-    const providerLower = "xai";
-    const providerDef = PROVIDERS.find(p => p.slugs.includes(providerLower));
+  it("xai aliases to x-ai", () => {
+    const { canonicalizeProviderSlug } = require("./schema-runtime.js");
+    expect(canonicalizeProviderSlug("xai")).toBe("x-ai");
+    const providerDef = PROVIDERS.find(p => p.slugs.includes("x-ai"));
     expect(providerDef).toBeDefined();
-    const canonicalSlug = providerDef!.slugs[0];
-    expect(canonicalSlug).toBe("x-ai");
-    const methods = ACCESS_METHODS[canonicalSlug];
-    expect(methods).toBeDefined();
   });
 });
 
@@ -133,33 +134,41 @@ describe("OpenAI nano exclusion (Fix C)", () => {
 // Fix D: Qwen omni/audio/vl models excluded by obsoleteIndicators
 // ─────────────────────────────────────────────────────────────
 
-describe("Qwen omni/audio exclusion (Fix D)", () => {
-  it("excludes qwen3.5-omni-flash from recommendations", () => {
+describe("Qwen omni/audio exclusion (Fix D) — now via capability flags", () => {
+  it("excludes non-text modality models via isCodingCandidate", () => {
     const models: ModelDoc[] = [
       makeModelDoc({
         modelId: "qwen3.5-coder",
         provider: "qwen",
         pricing: { input: 2.0, output: 8.0 },
+        capabilities: { tools: true, streaming: true },
       }),
       makeModelDoc({
         modelId: "qwen3.5-flash-02-23",
         provider: "qwen",
         pricing: { input: 0.3, output: 1.2 },
+        capabilities: { tools: true, streaming: true },
       }),
+      // Omni model: accepts audio + video (non-coding modality)
       makeModelDoc({
         modelId: "qwen3.5-omni-flash",
         provider: "qwen",
         pricing: { input: 0.5, output: 2.0 },
+        capabilities: { tools: true, streaming: true, audioInput: true, videoInput: true },
       }),
+      // Audio-only model
       makeModelDoc({
         modelId: "qwen3.5-audio",
         provider: "qwen",
         pricing: { input: 0.5, output: 2.0 },
+        capabilities: { tools: true, streaming: true, audioInput: true },
       }),
+      // Vision-language model — no tools (pure VL, not a coding model)
       makeModelDoc({
         modelId: "qwen3.5-vl-72b",
         provider: "qwen",
         pricing: { input: 2.0, output: 8.0 },
+        capabilities: { tools: false, streaming: true, vision: true },
       }),
     ];
 

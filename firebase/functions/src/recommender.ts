@@ -25,18 +25,28 @@ export const PROVIDERS: ProviderDef[] = [
     slugs: ["openai"],
     display: "OpenAI",
     fastIndicators: [/mini/i],
-    // Exclude non-chat models and old codex line
-    obsoleteIndicators: [/codex/i, /^realtime/i, /^audio/i, /^tts/i, /^dall-e/i, /^whisper/i, /image/i, /^gpt-oss/i, /^computer-use/i, /^embedding/i, /^chatgpt-image/i, /^davinci/i, /^babbage/i, /nano/i],
+    // Modality exclusions (/audio/, /tts/, /dall-e/, /whisper/, /image/, /realtime/)
+    // now handled by isCodingCandidate via capability flags. Entries below are
+    // legacy/discontinued model LINES, not modalities:
+    //   - codex:           old codex-* line, superseded by general gpt-* chat
+    //   - gpt-oss:         OpenAI open-source weights, not the API line
+    //   - computer-use:    agent-preview lineage, not general coding
+    //   - embedding:       embedding models (not chat)
+    //   - davinci / babbage: legacy instruct lineage
+    //   - nano:            degraded sub-tier below mini — explicitly not recommended
+    obsoleteIndicators: [/^codex/i, /^gpt-oss/i, /^computer-use/i, /^embedding/i, /^davinci/i, /^babbage/i, /nano/i],
   },
   {
     slugs: ["google"],
     display: "Google",
-    // Exclude Gemma (open-weight, not Gemini API), and non-chat models
+    // Gemma = open-weight (not Gemini API). deep-research / gemini-robotics
+    // are research-preview lineages, not the coding API. Modality exclusions
+    // (image/tts/audio) are handled by isCodingCandidate.
     fastIndicators: [/flash/i, /lite/i],
-    obsoleteIndicators: [/^gemma/i, /^deep-research/i, /^gemini-robotics/i, /image/i, /tts/i, /audio/i],
+    obsoleteIndicators: [/^gemma/i, /^deep-research/i, /^gemini-robotics/i],
   },
   {
-    slugs: ["x-ai", "xai"],
+    slugs: ["x-ai"],
     display: "xAI",
     fastIndicators: [/fast/i],
     // Old coding-specific grok models superseded by general models
@@ -46,24 +56,54 @@ export const PROVIDERS: ProviderDef[] = [
     slugs: ["qwen"],
     display: "Qwen",
     fastIndicators: [/turbo/i, /lite/i, /flash/i],
-    obsoleteIndicators: [/omni/i, /audio/i, /vl/i, /ocr/i, /speech/i, /mt$/i],
+    // omni / audio / vl / ocr / speech exclusions are handled by isCodingCandidate
+    // (capability flags). `mt$` stays because it marks machine-translation
+    // checkpoints that are text->text with tools but NOT general coding models.
+    obsoleteIndicators: [/mt$/i],
   },
   {
-    slugs: ["z-ai", "zhipu", "zai", "glm"],
+    slugs: ["z-ai"],
     display: "Z.ai",
     fastIndicators: [/turbo/i, /flash/i],
   },
   {
-    slugs: ["moonshotai", "moonshot", "kimi"],
+    slugs: ["moonshotai"],
     display: "Moonshot",
     fastIndicators: [/turbo/i],
   },
   {
-    slugs: ["minimax", "minimaxai"],
+    slugs: ["minimax"],
     display: "MiniMax",
     fastIndicators: [], // No fast variant exists
   },
 ];
+
+// ─────────────────────────────────────────────────────────────
+// Positive coding-candidate predicate
+//
+// A model is a coding candidate iff:
+//   - it supports tool calling (function calling)
+//   - it does NOT accept audio/video input (non-coding modality)
+//   - it does NOT emit image output (non-coding modality)
+//   - it has real pricing (not free-tier-only)
+//
+// This replaces modality-based regex denylists with capability-flag checks.
+// If the flags are wrong in Firestore, fix the COLLECTOR that wrote them —
+// don't add a regex here.
+// ─────────────────────────────────────────────────────────────
+export function isCodingCandidate(doc: ModelDoc): boolean {
+  const caps = doc.capabilities ?? {};
+  // Positive: must support tools
+  if (!caps.tools) return false;
+  // Negative: modality exclusions
+  if (caps.audioInput) return false;
+  if (caps.videoInput) return false;
+  if (caps.imageOutput) return false;
+  // Pricing must be real (not free-tier-only / missing)
+  if (!doc.pricing) return false;
+  if (doc.pricing.input <= 0 && doc.pricing.output <= 0) return false;
+  return true;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Subscription alternatives — maps provider slug to subscription plan.
@@ -126,11 +166,8 @@ const W_CONFIDENCE = 0.15;  // higher confidence data is better
 /**
  * Generate recommended models from Firestore catalog.
  *
- * Two-stage pipeline:
- * 1. Algorithmic: For each provider, find the best flagship and fast model
- *    using scoring (no hardcoded model names).
- * 2. LLM fine-tuning: Send candidates to Gemini Flash for review.
- *    If LLM fails, algorithmic picks are used as-is.
+ * Fully deterministic algorithmic pipeline: for each provider, find the best
+ * flagship and fast model using scoring (no hardcoded model names, no LLM).
  */
 export async function generateRecommendedModels(): Promise<RecommendedModelEntry[]> {
   const db = getFirestore();
@@ -142,29 +179,15 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
   const allModels: ModelDoc[] = snap.docs.map(d => d.data() as ModelDoc);
   console.log(`[recommender] ${allModels.length} active/preview models in catalog`);
 
-  // Stage 1: Algorithmic selection
+  // Algorithmic selection — deterministic, no LLM step
   const { flagships, fastModels } = selectByProvider(allModels);
   console.log(
-    `[recommender] algorithmic: ${flagships.length} flagships, ${fastModels.length} fast — ` +
+    `[recommender] selected: ${flagships.length} flagships, ${fastModels.length} fast — ` +
     `flagships=[${flagships.map(m => m.modelId).join(", ")}] fast=[${fastModels.map(m => m.modelId).join(", ")}]`
   );
 
-  // Stage 2: LLM fine-tuning
-  let finalFlagships = flagships;
-  let finalFast = fastModels;
-  try {
-    const refined = await llmRefine(flagships, fastModels, allModels);
-    if (refined) {
-      finalFlagships = refined.flagships;
-      finalFast = refined.fast;
-      console.log(
-        `[recommender] LLM refined: flagships=[${finalFlagships.map(m => m.modelId).join(", ")}] ` +
-        `fast=[${finalFast.map(m => m.modelId).join(", ")}]`
-      );
-    }
-  } catch (err) {
-    console.warn(`[recommender] LLM fine-tuning failed, using algorithmic picks:`, err);
-  }
+  const finalFlagships = flagships;
+  const finalFast = fastModels;
 
   // Build final entries: flagships, subscription picks, fast variants
   const entries: RecommendedModelEntry[] = [];
@@ -226,45 +249,42 @@ export function selectByProvider(allModels: ModelDoc[]): {
   const fastModels: ModelDoc[] = [];
 
   for (const prov of PROVIDERS) {
-    // Find all models for this provider
-    const provModels = allModels.filter(m => {
-      const p = m.provider.toLowerCase();
-      return prov.slugs.some(s => p === s);
-    });
+    // Find all models for this provider. ModelDoc.provider is always a
+    // CanonicalProviderSlug post-S1, so compare directly.
+    const provModels = allModels.filter(m =>
+      prov.slugs.some(s => m.provider === s),
+    );
 
     if (provModels.length === 0) {
       console.log(`[recommender] no models for ${prov.display}`);
       continue;
     }
 
-    // Filter out obsolete models (match against bare ID, stripping vendor prefix)
-    const viable = provModels.filter(m => {
-      if (!prov.obsoleteIndicators) return true;
-      const bareId = m.modelId.includes("/") ? m.modelId.split("/").pop()! : m.modelId;
-      return !prov.obsoleteIndicators.some(re => re.test(bareId));
-    });
+    // Positive predicate + obsolete lineage filter. modelIds are canonical
+    // (no vendor prefix) post-S1, so regexes can run directly against modelId.
+    const candidates = provModels
+      .filter(isCodingCandidate)
+      .filter(m =>
+        !prov.obsoleteIndicators?.some(re => re.test(m.modelId)),
+      );
 
-    // Must support tool calling and have real pricing (skip free-only/stale models)
-    const withTools = viable.filter(m =>
-      m.capabilities?.tools &&
-      m.pricing && (m.pricing.input > 0 || m.pricing.output > 0)
-    );
-    if (withTools.length === 0) {
-      console.log(`[recommender] no tool-capable models for ${prov.display}`);
+    if (candidates.length === 0) {
+      console.log(`[recommender] no coding-candidate models for ${prov.display}`);
       continue;
     }
 
     // Split into "fast" candidates and "flagship" candidates
-    const bareModelId = (m: ModelDoc) => m.modelId.includes("/") ? m.modelId.split("/").pop()! : m.modelId;
-    const fastCandidates = withTools.filter(m =>
-      prov.fastIndicators.some(re => re.test(bareModelId(m)))
+    const fastCandidates = candidates.filter(m =>
+      prov.fastIndicators.some(re => re.test(m.modelId)),
     );
-    const flagshipCandidates = withTools.filter(m =>
-      !prov.fastIndicators.some(re => re.test(bareModelId(m)))
+    const flagshipCandidates = candidates.filter(m =>
+      !prov.fastIndicators.some(re => re.test(m.modelId)),
     );
 
     // Pick best flagship by score
-    const bestFlagship = pickBest(flagshipCandidates.length > 0 ? flagshipCandidates : withTools);
+    const bestFlagship = pickBest(
+      flagshipCandidates.length > 0 ? flagshipCandidates : candidates,
+    );
     if (bestFlagship) flagships.push(bestFlagship);
 
     // Pick best fast model (if distinct from flagship)
@@ -285,192 +305,6 @@ function pickBest(models: ModelDoc[]): ModelDoc | null {
   return models
     .map(m => ({ doc: m, score: scoreModel(m) }))
     .sort((a, b) => b.score - a.score)[0].doc;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Stage 2: LLM fine-tuning with Gemini Flash
-// ─────────────────────────────────────────────────────────────
-
-interface LLMRefinement {
-  flagships: ModelDoc[];
-  fast: ModelDoc[];
-}
-
-async function llmRefine(
-  flagships: ModelDoc[],
-  fastModels: ModelDoc[],
-  allModels: ModelDoc[],
-): Promise<LLMRefinement | null> {
-  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
-  if (!apiKey) {
-    console.log("[recommender] no GOOGLE_GEMINI_API_KEY, skipping LLM refinement");
-    return null;
-  }
-
-  // Build alternatives pool — top 10 per provider so the LLM sees newer versions
-  const pickedIds = new Set([...flagships, ...fastModels].map(m => m.modelId));
-  const targetProviderSlugs = new Set(PROVIDERS.flatMap(p => p.slugs));
-  // Build per-provider obsolete filters for alternatives
-  const providerObsolete = new Map<string, RegExp[]>();
-  for (const p of PROVIDERS) {
-    if (p.obsoleteIndicators) {
-      for (const slug of p.slugs) providerObsolete.set(slug, p.obsoleteIndicators);
-    }
-  }
-
-  const allAlts = allModels
-    .filter(m => !pickedIds.has(m.modelId) && m.capabilities?.tools)
-    .filter(m => m.pricing && (m.pricing.input > 0 || m.pricing.output > 0))
-    .filter(m => targetProviderSlugs.has((m.provider ?? "").toLowerCase()))
-    .filter(m => {
-      const bareId = m.modelId.includes("/") ? m.modelId.split("/").pop()! : m.modelId;
-      const obs = providerObsolete.get((m.provider ?? "").toLowerCase());
-      return !obs || !obs.some(re => re.test(bareId));
-    })
-    .map(m => ({ id: m.modelId, provider: m.provider, score: scoreModel(m), released: m.releaseDate }));
-
-  // Take top 10 per provider to ensure each provider's models are visible
-  const altsByProvider = new Map<string, typeof allAlts>();
-  for (const a of allAlts) {
-    const key = (a.provider ?? "").toLowerCase();
-    const list = altsByProvider.get(key) ?? [];
-    list.push(a);
-    altsByProvider.set(key, list);
-  }
-  const alternatives: typeof allAlts = [];
-  for (const [, list] of altsByProvider) {
-    list.sort((a, b) => b.score - a.score);
-    alternatives.push(...list.slice(0, 15));
-  }
-  alternatives.sort((a, b) => b.score - a.score);
-
-  const prompt = buildLLMPrompt(flagships, fastModels, alternatives);
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 4096,
-            responseMimeType: "application/json",
-            thinkingConfig: { thinkingBudget: 0 },
-          },
-        }),
-        signal: AbortSignal.timeout(15000),
-      },
-    );
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      console.warn(`[recommender] Gemini returned ${response.status}: ${body.slice(0, 200)}`);
-      return null;
-    }
-
-    const data = await response.json() as any;
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      console.warn(`[recommender] Gemini returned no text. Finish reason: ${data?.candidates?.[0]?.finishReason}`);
-      return null;
-    }
-
-    let result: { flagships: string[]; fast: string[]; reasoning?: string };
-    try {
-      result = JSON.parse(text);
-    } catch (parseErr) {
-      console.warn(`[recommender] Failed to parse Gemini JSON: ${text.slice(0, 300)}`);
-      return null;
-    }
-
-    if (result.reasoning) {
-      console.log(`[recommender] LLM reasoning: ${result.reasoning}`);
-    }
-
-    const modelMap = new Map(allModels.map(m => [m.modelId, m]));
-
-    const refinedFlagships = result.flagships
-      .map(id => modelMap.get(id))
-      .filter((m): m is ModelDoc => m !== undefined);
-
-    const refinedFast = result.fast
-      .map(id => modelMap.get(id))
-      .filter((m): m is ModelDoc => m !== undefined);
-
-    // Sanity: at least 3 flagships
-    if (refinedFlagships.length < 3) {
-      console.warn(`[recommender] LLM returned too few flagships (${refinedFlagships.length}), keeping algorithmic`);
-      return null;
-    }
-
-    return { flagships: refinedFlagships, fast: refinedFast };
-  } catch (err) {
-    console.warn(`[recommender] LLM error:`, err);
-    return null;
-  }
-}
-
-function buildLLMPrompt(
-  flagships: ModelDoc[],
-  fastModels: ModelDoc[],
-  alternatives: Array<{ id: string; provider: string; score: number; released?: string }>,
-): string {
-  const formatModel = (m: ModelDoc) =>
-    `  - ${m.modelId} (${m.provider}) — released:${m.releaseDate ?? "unknown"}, ctx:${m.contextWindow ? formatContext(m.contextWindow) : "?"}, ` +
-    `$${m.pricing?.input?.toFixed(2) ?? "?"}/$${m.pricing?.output?.toFixed(2) ?? "?"}/MTok, ` +
-    `tools:${m.capabilities?.tools ? "Y" : "N"} reason:${m.capabilities?.thinking ? "Y" : "N"} vision:${m.capabilities?.vision ? "Y" : "N"}`;
-
-  const flagshipSummary = flagships.map(formatModel).join("\n");
-  const fastSummary = fastModels.map(formatModel).join("\n");
-  const altSummary = alternatives.map(a => `  - ${a.id} (${a.provider}) released:${a.released ?? "?"} score:${a.score.toFixed(3)}`).join("\n");
-
-  return `You are a model catalog curator for Claudish, a CLI proxy for Claude Code that routes to external AI models.
-
-You make the FINAL DECISION on which models to recommend. The algorithm is just a starting point — you must validate and fix its choices.
-
-## Rules (MUST follow)
-1. Models are for CODING and AGENTIC tasks (tool calling mandatory)
-2. EXACTLY one flagship per provider: OpenAI, Google, xAI/Grok, Qwen, Z.ai/GLM, Moonshot/Kimi, MiniMax
-3. Fast variants (turbo/flash/mini/lite) where available
-4. Do NOT include Anthropic/Claude (native in Claude Code)
-5. Do NOT include free-tier-only models
-6. CRITICAL: Always pick the NEWEST version. Higher version numbers = newer:
-   - gpt-5.4 > gpt-5.3 > gpt-5.1 (pick gpt-5.4 as flagship)
-   - gemini-3.1-pro > gemini-2.5-pro (pick 3.1)
-   - kimi-k2.5 > kimi-k2 (pick k2.5)
-   - minimax-m2.7 > minimax-m2.5 (pick m2.7)
-   - glm-5.1 > glm-5 > glm-4.7 (pick 5.1 if available)
-7. The algorithm often picks WRONG due to pricing bias. CHECK version numbers carefully.
-8. Flagship = the FULL/LARGEST model (e.g. gpt-5.4, NOT gpt-5.4-mini or gpt-5.4-nano). Mini/nano/lite variants are FAST models, not flagships.
-9. Fast = mini/nano/lite/flash/turbo variants of the SAME version as the flagship.
-10. For fast variants: prefer mini over nano (nano is a degraded sub-tier, not recommended). If both exist, pick mini.
-11. NEVER pick omni/audio/speech/VL/multimodal-only models. These are NOT coding models. Only pick text->text or text+image->text models with tool calling.
-
-## Algorithm picks (REVIEW CRITICALLY — likely has version errors)
-
-Flagships:
-${flagshipSummary || "  (none)"}
-
-Fast models:
-${fastSummary || "  (none)"}
-
-## All alternatives (model IDs not picked — check for NEWER versions here)
-${altSummary || "  (none)"}
-
-## Your task
-For EACH provider: check if a newer version exists in the alternatives. Swap if so.
-
-CRITICAL: Use EXACT model IDs from the lists above. Do NOT invent or modify IDs. If an ID is "gpt-5.4", use "gpt-5.4" — NOT "gpt-5.4-chat" or any other variation.
-
-Return JSON:
-{
-  "flagships": ["model-id-1", "model-id-2", ...],
-  "fast": ["model-id-1", ...],
-  "reasoning": "Explain each swap you made"
-}`;
 }
 
 // ─────────────────────────────────────────────────────────────

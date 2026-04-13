@@ -3,6 +3,7 @@ import type {
   RawModel, ModelDoc, CollectorResult, PricingData, CapabilityFlags, FieldSource,
 } from "./schema.js";
 import { CONFIDENCE_RANK } from "./schema.js";
+import { canonicalizeModelId } from "./schema-runtime.js";
 
 // Sanity bounds for pricing (USD per million tokens)
 // min: 0 allows free-tier models (Gemini Flash free, GLM-4-Flash, etc.)
@@ -19,11 +20,13 @@ export function mergeResults(results: CollectorResult[]): ModelDoc[] {
   // Step 1: Flatten all raw models
   const allRaw: RawModel[] = results.flatMap(r => r.models);
 
-  // Step 2: Group by canonical ID (case-insensitive, strip :free suffix)
+  // Step 2: Group by canonical ID.
+  // Collectors that went through the schema gate already have canonicalId set
+  // to the clean form. Legacy/untrusted callers may pass through here too,
+  // so we defensively re-canonicalize.
   const byId = new Map<string, RawModel[]>();
   for (const raw of allRaw) {
-    const rawKey = raw.canonicalId ?? normalizeId(raw.externalId);
-    const key = normalizeCanonicalKey(rawKey);
+    const key = canonicalizeModelId(raw.canonicalId ?? raw.externalId);
     const existing = byId.get(key) ?? [];
     existing.push(raw);
     byId.set(key, existing);
@@ -229,23 +232,6 @@ function buildSourcesMap(raws: RawModel[]): ModelDoc["sources"] {
     }
   }
   return sources;
-}
-
-function normalizeId(id: string): string {
-  // Strip common vendor prefixes: "anthropic/", "openai/", etc.
-  return id.replace(/^[a-z-]+\//, "").toLowerCase();
-}
-
-/**
- * Normalize a canonical key for grouping:
- * - lowercase
- * - strip :free suffix (OpenRouter free-tier duplicates)
- */
-export function normalizeCanonicalKey(key: string): string {
-  let k = key.toLowerCase().replace(/:free$/, "");
-  const slashIdx = k.indexOf("/");
-  if (slashIdx > 0) k = k.slice(slashIdx + 1);
-  return k;
 }
 
 function roundPrice(n: number): number {

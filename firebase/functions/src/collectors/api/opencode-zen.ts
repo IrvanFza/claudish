@@ -81,7 +81,9 @@ export class OpenCodeZenCollector extends BaseCollector {
           confidence: "gateway_official",
           sourceUrl: "https://opencode.ai/zen/v1/models",
           externalId: m.id,
-          canonicalId: slashIdx > 0 ? m.id.slice(slashIdx + 1) : m.id,
+          // Schema gate (BaseCollector.makeResult) canonicalizes this —
+          // vendor prefix stripping happens there, not here.
+          canonicalId: m.id,
           provider,
           contextWindow: m.context_length,
           pricing,

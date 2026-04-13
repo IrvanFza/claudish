@@ -72,8 +72,9 @@ export class OpenRouterCollector extends BaseCollector {
         // Determine provider from model ID prefix (e.g., "anthropic/claude-3" -> "anthropic")
         const slashIdx = m.id.indexOf("/");
         const providerSlug = slashIdx > 0 ? m.id.slice(0, slashIdx) : undefined;
-        // Canonical ID: strip provider prefix for well-known providers
-        const canonicalId = slashIdx > 0 ? m.id.slice(slashIdx + 1) : m.id;
+        // Canonical ID: the schema gate (BaseCollector.makeResult) strips
+        // the vendor prefix and `:free` suffix — pass the raw id through.
+        const canonicalId = m.id;
 
         // Vision: modality field contains "image" or "vision"
         const isVision = m.architecture?.modality?.includes("image") ||

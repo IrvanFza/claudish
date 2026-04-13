@@ -10,8 +10,17 @@ export class FirestoreWriter {
     const newModelIds: string[] = [];
 
     for (const doc of docs) {
-      // Firestore doc IDs cannot contain slashes — replace with double underscore
-      const docId = doc.modelId.replace(/\//g, "__");
+      // Post-refactor, modelId is always canonical (lowercase, no `/`, no `:free`)
+      // because the schema gate in BaseCollector.makeResult enforces it.
+      // This assertion is a paranoid regression check — if it ever fires, a
+      // collector bypassed makeResult or the schema was loosened.
+      if (doc.modelId.includes("/")) {
+        throw new Error(
+          `[writer] non-canonical modelId reached writer: "${doc.modelId}" — ` +
+          `contains "/". Schema gate bypassed?`,
+        );
+      }
+      const docId = doc.modelId;
       const ref = this.db.collection("models").doc(docId);
 
       // Read existing doc to detect changes (individual reads, not in bulkWriter)
