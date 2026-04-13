@@ -54,14 +54,17 @@ export const ProviderSlugEnum = z.enum(KNOWN_PROVIDER_SLUGS);
 export const PROVIDER_ALIAS_MAP: Record<string, CanonicalProviderSlug> = {
   minimaxai: "minimax",
   moonshot: "moonshotai",
+  "moonshot-ai": "moonshotai",
   kimi: "moonshotai",
   xai: "x-ai",
   zhipu: "z-ai",
   zai: "z-ai",
+  "zai-org": "z-ai",
   glm: "z-ai",
   "together-ai": "togethercomputer",
   together: "togethercomputer",
   mistral: "mistralai",
+  meta: "meta-llama",
 };
 
 const KNOWN_PROVIDER_SET: Set<string> = new Set(KNOWN_PROVIDER_SLUGS);

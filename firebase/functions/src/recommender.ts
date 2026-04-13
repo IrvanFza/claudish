@@ -495,20 +495,37 @@ function pickBest(models: ModelDoc[]): ModelDoc | null {
  * Parse a version tuple out of a model id. Returns null if no version-like
  * substring is present. Used to sort siblings like `gpt-5.4 > gpt-5.2 > gpt-5-image`.
  *
- *   gpt-5.4              → [5, 4]
- *   gpt-5.4-mini         → [5, 4]
- *   gpt-5-image          → [5]        (loses to [5, 4])
- *   qwen3.6-plus         → [3, 6]
- *   minimax-m2.7         → [2, 7]
- *   glm-5.1              → [5, 1]
- *   grok-4.20            → [4, 20]    (numeric, beats [4, 3])
+ *   gpt-5.4                  → [5, 4]
+ *   gpt-5.4-mini             → [5, 4]
+ *   gpt-5-image              → [5]        (loses to [5, 4])
+ *   qwen3.6-plus             → [3, 6]
+ *   minimax-m2.7             → [2, 7]
+ *   glm-5.1                  → [5, 1]
+ *   grok-4.20                → [4, 20]    (numeric, beats [4, 3])
+ *   qwen3-max-2026-01-23     → [3]        (strip trailing date suffix)
+ *   qwen-max-2025-01-25      → null       (date is not a version)
+ *   qwen-plus-2025-07-28     → null       (date is not a version)
+ *
+ * Date-like trailing suffixes (`-YYYY-MM-DD`, `-YYYY-MM`, `-YYYYMMDD`) are
+ * stripped BEFORE parsing so they don't get mistaken for version numbers.
  */
 function parseVersion(modelId: string): { version: number[] } | null {
+  // Strip trailing date stamps so they don't pollute the version parse.
+  // Matches -YYYY-MM-DD, -YYYY-MM, -YYYYMMDD, -YYYY-MM-DD-us, -YYYY-MM-DD:thinking, etc.
+  const dateStripped = modelId
+    .replace(/-\d{4}-\d{2}-\d{2}(-[a-z]+)?(:[a-z]+)?$/i, "")
+    .replace(/-\d{4}\d{2}\d{2}$/i, "")
+    .replace(/-\d{4}-\d{2}$/i, "");
+
   // Match the first run of digits optionally followed by .N.N... groups
-  const match = modelId.match(/(\d+(?:\.\d+)*)/);
+  const match = dateStripped.match(/(\d+(?:\.\d+)*)/);
   if (!match) return null;
   const version = match[1].split(".").map(Number).filter(n => !Number.isNaN(n));
   if (version.length === 0) return null;
+  // Sanity: reject anything where the first component looks like a year (≥ 1900).
+  // That means the "version" we parsed is actually a standalone date with no
+  // real version, like "qwen-plus-2025-12-01" → [2025, 12, 1]. Treat as no version.
+  if (version[0] >= 1900) return null;
   return { version };
 }
 
