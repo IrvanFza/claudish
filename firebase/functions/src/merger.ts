@@ -143,18 +143,6 @@ function pickProvider(raws: RawModel[]): string | undefined {
   return undefined;
 }
 
-/** Pick the first non-null/undefined value from the sorted (highest confidence first) list. */
-function pickBest<T>(
-  sorted: RawModel[],
-  getter: (r: RawModel) => T | undefined
-): T | undefined {
-  for (const raw of sorted) {
-    const val = getter(raw);
-    if (val !== undefined && val !== null) return val;
-  }
-  return undefined;
-}
-
 interface PickResult<T> {
   value: T;
   source: FieldSource;

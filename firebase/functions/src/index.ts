@@ -414,7 +414,7 @@ export const collectModelCatalogManual = onRequest(
 
       // Clean up stale docs
       const currentIds = new Set(merged.map(m => m.modelId));
-      const staleCount = await writer.cleanupStale(currentIds);
+      await writer.cleanupStale(currentIds);
 
       // Auto-generate recommended models
       const recommended = await generateRecommendedModels();

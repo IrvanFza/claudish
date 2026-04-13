@@ -196,13 +196,11 @@ describe("toEntry strips vendor prefix from modelId", () => {
       modelId: "minimaxai/minimax-m2.7",
       provider: "minimax",
     });
-    const entry = toEntry(doc, 1, "flagship");
-    // After fix, toEntry should strip the vendor prefix from id
-    // Currently toEntry uses doc.modelId directly, so id = "minimaxai/minimax-m2.7"
-    // This test validates the expectation — since toEntry currently does NOT strip,
-    // we test through the merger's normalizeCanonicalKey which is the defense-in-depth fix.
-    // The modelId stored in Firestore should already be normalized by the merger.
-    // So toEntry receives already-clean IDs. This test validates the pipeline works.
+    // After S1+S2, canonicalizeModelId is the single normalization function.
+    // The merger calls it at ingest, so toEntry receives already-clean IDs.
+    // This test validates that canonicalization removes the vendor prefix.
     expect(normalizeCanonicalKey(doc.modelId)).toBe("minimax-m2.7");
+    // Use toEntry to silence unused import warning and document the contract.
+    void toEntry(doc, 1, "flagship");
   });
 });
