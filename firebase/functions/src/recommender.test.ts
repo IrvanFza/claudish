@@ -131,6 +131,114 @@ describe("OpenAI nano exclusion (Fix C)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// Version-aware picker (replaces llmRefine's "pick newest version" role)
+// ─────────────────────────────────────────────────────────────
+
+describe("pickBest — version-aware selection (replaces llmRefine)", () => {
+  it("picks gpt-5.4 over gpt-5-image even though image has better pricing score", () => {
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "gpt-5-image",
+        provider: "openai",
+        pricing: { input: 0.5, output: 1.5 }, // cheap → high pricing score
+      }),
+      makeModelDoc({
+        modelId: "gpt-5.4",
+        provider: "openai",
+        pricing: { input: 5.0, output: 15.0 }, // expensive flagship
+      }),
+      makeModelDoc({
+        modelId: "gpt-5.2",
+        provider: "openai",
+        pricing: { input: 3.0, output: 9.0 },
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "gpt-5.4")).toBe(true);
+    expect(flagships.some(m => m.modelId === "gpt-5-image")).toBe(false);
+  });
+
+  it("picks minimax-m2.7 over minimax-m2.5 (newer version wins)", () => {
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "minimax-m2.5",
+        provider: "minimax",
+        pricing: { input: 0.3, output: 1.3 },
+      }),
+      makeModelDoc({
+        modelId: "minimax-m2.7",
+        provider: "minimax",
+        pricing: { input: 0.3, output: 1.3 },
+      }),
+      makeModelDoc({
+        modelId: "minimax-m2.6",
+        provider: "minimax",
+        pricing: { input: 0.3, output: 1.3 },
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "minimax-m2.7")).toBe(true);
+  });
+
+  it("picks glm-5.1 over glm-4.9 and glm-ocr (newer numeric, and glm-ocr has no version)", () => {
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "glm-4.9",
+        provider: "z-ai",
+        pricing: { input: 0.5, output: 1.5 },
+      }),
+      makeModelDoc({
+        modelId: "glm-5.1",
+        provider: "z-ai",
+        pricing: { input: 1.0, output: 3.0 },
+      }),
+      makeModelDoc({
+        modelId: "glm-ocr",
+        provider: "z-ai",
+        pricing: { input: 0.1, output: 0.3 }, // very cheap → high pricing score
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "glm-5.1")).toBe(true);
+  });
+
+  it("prefers shorter id when version tuples are equal (gpt-5.4 over gpt-5.4-preview)", () => {
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "gpt-5.4-preview",
+        provider: "openai",
+        pricing: { input: 2.0, output: 6.0 },
+      }),
+      makeModelDoc({
+        modelId: "gpt-5.4",
+        provider: "openai",
+        pricing: { input: 5.0, output: 15.0 },
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "gpt-5.4")).toBe(true);
+    expect(flagships.some(m => m.modelId === "gpt-5.4-preview")).toBe(false);
+  });
+
+  it("compares versions numerically (grok-4.20 > grok-4.3)", () => {
+    const models: ModelDoc[] = [
+      makeModelDoc({
+        modelId: "grok-4.3",
+        provider: "x-ai",
+        pricing: { input: 1.0, output: 3.0 },
+      }),
+      makeModelDoc({
+        modelId: "grok-4.20",
+        provider: "x-ai",
+        pricing: { input: 1.0, output: 3.0 },
+      }),
+    ];
+    const { flagships } = selectByProvider(models);
+    expect(flagships.some(m => m.modelId === "grok-4.20")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // Fix D: Qwen omni/audio/vl models excluded by obsoleteIndicators
 // ─────────────────────────────────────────────────────────────
 

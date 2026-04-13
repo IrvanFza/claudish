@@ -429,9 +429,75 @@ export function selectByProvider(allModels: ModelDoc[]): {
 function pickBest(models: ModelDoc[]): ModelDoc | null {
   if (models.length === 0) return null;
   if (models.length === 1) return models[0];
-  return models
-    .map(m => ({ doc: m, score: scoreModel(m) }))
-    .sort((a, b) => b.score - a.score)[0].doc;
+  // Deterministic picker that replaces the former llmRefine stage.
+  //
+  // The scoring formula alone is not enough — it weights pricing and caps,
+  // so it picks gpt-5-image (cheap, capable) over gpt-5.4 (the real flagship).
+  // The llmRefine stage used to fix this by instructing Gemini "prefer the
+  // newest version number" and "prefer the bare canonical form over suffix
+  // variants". We rebuild that deterministically here.
+  //
+  // Order:
+  //   1. Sort by score descending
+  //   2. Collapse the top-K to their prefix trunk (before any suffix word)
+  //      and return the one whose version tuple is highest
+  //   3. Among equal versions, prefer the model with the SHORTER id
+  //      (i.e. "gpt-5.4" over "gpt-5.4-preview")
+  const scored = models
+    .map(m => ({ doc: m, score: scoreModel(m), ver: parseVersion(m.modelId) }))
+    .sort((a, b) => {
+      // Primary: numeric version (descending)
+      const av = a.ver?.version ?? [];
+      const bv = b.ver?.version ?? [];
+      const versionCmp = compareVersions(bv, av);
+      if (versionCmp !== 0) return versionCmp;
+      // Secondary: shorter id wins (bare canonical over suffix variant)
+      if (a.doc.modelId.length !== b.doc.modelId.length) {
+        return a.doc.modelId.length - b.doc.modelId.length;
+      }
+      // Tertiary: scoring formula
+      return b.score - a.score;
+    });
+  return scored[0].doc;
+}
+
+/**
+ * Parse a version tuple out of a model id. Returns null if no version-like
+ * substring is present. Used to sort siblings like `gpt-5.4 > gpt-5.2 > gpt-5-image`.
+ *
+ *   gpt-5.4              → [5, 4]
+ *   gpt-5.4-mini         → [5, 4]
+ *   gpt-5-image          → [5]        (loses to [5, 4])
+ *   qwen3.6-plus         → [3, 6]
+ *   minimax-m2.7         → [2, 7]
+ *   glm-5.1              → [5, 1]
+ *   grok-4.20            → [4, 20]    (numeric, beats [4, 3])
+ */
+function parseVersion(modelId: string): { version: number[] } | null {
+  // Match the first run of digits optionally followed by .N.N... groups
+  const match = modelId.match(/(\d+(?:\.\d+)*)/);
+  if (!match) return null;
+  const version = match[1].split(".").map(Number).filter(n => !Number.isNaN(n));
+  if (version.length === 0) return null;
+  return { version };
+}
+
+/**
+ * Compare two version arrays element-wise. Returns >0 if a is newer, <0 if
+ * b is newer, 0 if equal. Shorter arrays are padded with 0s.
+ *
+ *   [5, 4]  vs [5, 1]  →  3 (a wins)
+ *   [5, 4]  vs [5]     →  4 (a wins — longer beats shorter when prefix equal)
+ *   [4, 20] vs [4, 3]  → 17 (a wins — numeric, not lexicographic!)
+ */
+function compareVersions(a: number[], b: number[]): number {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av !== bv) return av - bv;
+  }
+  return 0;
 }
 
 // ─────────────────────────────────────────────────────────────
