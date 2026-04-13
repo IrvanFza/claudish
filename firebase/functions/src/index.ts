@@ -8,7 +8,7 @@ import { mergeResults } from "./merger.js";
 import { FirestoreWriter } from "./writer.js";
 import { handleQueryModels } from "./query-handler.js";
 import { handlePluginDefaults } from "./plugin-defaults-handler.js";
-import { alertCatalogResults, alertNewModels } from "./slack-alert.js";
+import { alertCatalogResults, alertNewModels, alertProviderDrop } from "./slack-alert.js";
 import { generateRecommendedModels } from "./recommender.js";
 
 initializeApp();
@@ -316,6 +316,46 @@ export const collectModelCatalog = onSchedule(
         providerMap[doc.modelId] = doc.provider;
       }
       await alertNewModels(webhook, newModelIds, providerMap);
+    }
+
+    // ── Provider drop detection ─────────────────────────────────────
+    // Compare per-provider counts vs the previous run and alert on
+    // catastrophic drops. Uses config/provider-counts-history as a
+    // single-doc snapshot (overwritten each run).
+    try {
+      const histRef = db.collection("config").doc("provider-counts-history");
+      const prevSnap = await histRef.get();
+      const prev = prevSnap.exists
+        ? ((prevSnap.data() ?? {}) as { counts?: Record<string, number> }).counts ?? {}
+        : {};
+
+      const current: Record<string, number> = {};
+      for (const doc of merged) {
+        const p = (doc.provider ?? "").toLowerCase();
+        if (!p) continue;
+        current[p] = (current[p] ?? 0) + 1;
+      }
+
+      const drops: Array<{ provider: string; before: number; after: number }> = [];
+      for (const [provider, before] of Object.entries(prev)) {
+        const after = current[provider] ?? 0;
+        // Fire alert when a provider with >=5 models yesterday has 0 today,
+        // OR when any provider drops by 50% or more.
+        if (before >= 5 && after === 0) {
+          drops.push({ provider, before, after });
+        } else if (before > 0 && after <= before * 0.5) {
+          drops.push({ provider, before, after });
+        }
+      }
+
+      if (drops.length > 0) {
+        await alertProviderDrop(webhook, drops);
+      }
+
+      // Persist today's counts for tomorrow's comparison
+      await histRef.set({ counts: current, updatedAt: Timestamp.now() });
+    } catch (err) {
+      console.warn("[catalog] provider-drop check failed:", err);
     }
   }
 );

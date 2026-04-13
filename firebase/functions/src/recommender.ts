@@ -1,6 +1,11 @@
 import { getFirestore } from "firebase-admin/firestore";
 import type { ModelDoc, RecommendedModelEntry, RecommendedModelsDoc } from "./schema.js";
 import { CONFIDENCE_RANK } from "./schema.js";
+import {
+  KNOWN_PROVIDER_SLUGS,
+  validateRecommendedDoc,
+} from "./schema-runtime.js";
+import { alertRecommendationDiff } from "./slack-alert.js";
 
 // ─────────────────────────────────────────────────────────────
 // Provider definitions — ONLY provider identity, no model IDs
@@ -219,7 +224,7 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
 
   for (const doc of finalFast) entries.push(toEntry(doc, priority++, "fast"));
 
-  // Write to Firestore
+  // Build the doc
   const recDoc: RecommendedModelsDoc = {
     version: "2.0.0",
     lastUpdated: new Date().toISOString().split("T")[0],
@@ -228,6 +233,39 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
     models: entries,
   };
 
+  // ── Pre-publish gate: schema validation ────────────────────────────
+  const schemaResult = validateRecommendedDoc(recDoc);
+  if (!schemaResult.ok) {
+    console.error(
+      `[recommender] schema validation failed, writing to pending: ${schemaResult.errors.join("; ")}`,
+    );
+    await db.collection("config").doc("recommended-models-pending").set(recDoc);
+    const webhook = process.env.SLACK_WEBHOOK_URL ?? "";
+    await alertRecommendationDiff(
+      webhook,
+      schemaResult.errors.map((e) => `schema: ${e}`),
+    );
+    return entries;
+  }
+
+  // ── Pre-publish gate: diff vs previously published doc ─────────────
+  const prevSnap = await db.collection("config").doc("recommended-models").get();
+  const prevDoc = prevSnap.exists
+    ? (prevSnap.data() as RecommendedModelsDoc)
+    : null;
+
+  const diffResult = diffRecommendations(prevDoc, recDoc);
+  if (!diffResult.ok) {
+    console.error(
+      `[recommender] diff gate rejected ${diffResult.violations.length} violation(s): ${diffResult.violations.join("; ")}`,
+    );
+    await db.collection("config").doc("recommended-models-pending").set(recDoc);
+    const webhook = process.env.SLACK_WEBHOOK_URL ?? "";
+    await alertRecommendationDiff(webhook, diffResult.violations);
+    return entries;
+  }
+
+  // ── Gate clean → publish ───────────────────────────────────────────
   await db.collection("config").doc("recommended-models").set(recDoc);
   console.log(
     `[recommender] wrote ${entries.length} recommended: ` +
@@ -235,6 +273,95 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
   );
 
   return entries;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pre-publish diff gate
+//
+// Compares the new recommended-models doc to the currently published
+// one. Flags drastic regressions that almost certainly indicate a
+// broken upstream collector rather than a legitimate model-catalog
+// change.
+// ─────────────────────────────────────────────────────────────
+
+const KNOWN_PROVIDER_SET: Set<string> = new Set(KNOWN_PROVIDER_SLUGS);
+
+export interface DiffResult {
+  ok: boolean;
+  violations: string[];
+}
+
+export function diffRecommendations(
+  previous: RecommendedModelsDoc | null,
+  next: RecommendedModelsDoc,
+): DiffResult {
+  const violations: string[] = [];
+
+  // Cheap paranoid checks on NEXT doc — these should be impossible
+  // post-S1/S2 but catch regressions if the schema loosens.
+  for (const entry of next.models) {
+    if (entry.id.includes("/")) {
+      violations.push(`entry.id "${entry.id}" contains "/" (should be canonical)`);
+    }
+    // entry.provider is the DISPLAY provider ("OpenAI", "Google", etc.).
+    // Compare the lowercased form against KNOWN_PROVIDER_SLUGS.
+    const providerLower = (entry.provider ?? "").toLowerCase();
+    if (providerLower && !KNOWN_PROVIDER_SET.has(providerLower)) {
+      violations.push(
+        `entry "${entry.id}" has unknown provider "${entry.provider}" (not in KNOWN_PROVIDER_SLUGS)`,
+      );
+    }
+  }
+
+  // Can't diff against nothing — first publish always succeeds
+  if (!previous) {
+    return { ok: violations.length === 0, violations };
+  }
+
+  // Provider set today vs yesterday (using display provider, lowercased)
+  const prevProviders = new Set(
+    previous.models.map((m) => (m.provider ?? "").toLowerCase()).filter(Boolean),
+  );
+  const nextProviders = new Set(
+    next.models.map((m) => (m.provider ?? "").toLowerCase()).filter(Boolean),
+  );
+  for (const p of prevProviders) {
+    if (!nextProviders.has(p)) {
+      violations.push(`provider "${p}" disappeared entirely (had entries yesterday)`);
+    }
+  }
+
+  // Per-category count drop >30%
+  const countByCategory = (doc: RecommendedModelsDoc): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const m of doc.models) {
+      counts[m.category] = (counts[m.category] ?? 0) + 1;
+    }
+    return counts;
+  };
+  const prevCats = countByCategory(previous);
+  const nextCats = countByCategory(next);
+  const allCats = new Set([...Object.keys(prevCats), ...Object.keys(nextCats)]);
+  for (const cat of allCats) {
+    const before = prevCats[cat] ?? 0;
+    const after = nextCats[cat] ?? 0;
+    if (before >= 3 && after < before * 0.7) {
+      violations.push(
+        `category "${cat}" dropped ${before} → ${after} entries (>30% loss)`,
+      );
+    }
+  }
+
+  // Total entry count drop >20%
+  const prevTotal = previous.models.length;
+  const nextTotal = next.models.length;
+  if (prevTotal >= 5 && nextTotal < prevTotal * 0.8) {
+    violations.push(
+      `total entries dropped ${prevTotal} → ${nextTotal} (>20% loss)`,
+    );
+  }
+
+  return { ok: violations.length === 0, violations };
 }
 
 // ─────────────────────────────────────────────────────────────

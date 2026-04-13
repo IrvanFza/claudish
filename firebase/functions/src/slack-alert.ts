@@ -65,6 +65,53 @@ export async function alertNewModels(
   await sendSlack(webhookUrl, text);
 }
 
+/**
+ * Send a Slack alert when the pre-publish diff gate rejects a new
+ * recommended-models doc. Violations are emitted in the order the gate
+ * produced them. The doc will have been written to
+ * `config/recommended-models-pending` by the caller.
+ */
+export async function alertRecommendationDiff(
+  webhookUrl: string,
+  violations: string[],
+): Promise<void> {
+  if (!webhookUrl) return;
+  if (violations.length === 0) return;
+
+  const lines = violations
+    .map((v) => `• ${truncate(v, 200)}`)
+    .join("\n");
+
+  const text =
+    `:rotating_light: *Recommended models — diff gate rejected ${violations.length} violation${violations.length > 1 ? "s" : ""}*\n` +
+    `New doc written to \`config/recommended-models-pending\` (live doc unchanged)\n\n` +
+    `${lines}`;
+
+  await sendSlack(webhookUrl, text);
+}
+
+/**
+ * Send a Slack alert when a provider's model count drops drastically
+ * between runs. Fired from the scheduled collector cron.
+ */
+export async function alertProviderDrop(
+  webhookUrl: string,
+  drops: Array<{ provider: string; before: number; after: number }>,
+): Promise<void> {
+  if (!webhookUrl) return;
+  if (drops.length === 0) return;
+
+  const lines = drops
+    .map((d) => `• \`${d.provider}\`: ${d.before} → ${d.after} models`)
+    .join("\n");
+
+  const text =
+    `:warning: *Provider model-count drop detected (${drops.length} provider${drops.length > 1 ? "s" : ""})*\n\n` +
+    `${lines}`;
+
+  await sendSlack(webhookUrl, text);
+}
+
 async function sendSlack(webhookUrl: string, text: string): Promise<void> {
   try {
     const resp = await fetch(webhookUrl, {
