@@ -32,6 +32,13 @@ import {
   formatProvenanceProbe,
   type KeyProvenance,
 } from "./providers/api-key-provenance.js";
+import {
+  probeLink,
+  describeProbeState,
+  isReadyState,
+  isFailureState,
+  type ProbeResult,
+} from "./providers/probe-live.js";
 // Re-export from centralized provider-resolver for backwards compatibility
 export {
   resolveModelProvider,
@@ -280,7 +287,20 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       const hasJsonFlag = args.includes("--json");
-      await probeModelRouting(expandedModels, hasJsonFlag);
+      const noProbeFlag = args.includes("--no-probe");
+      let probeTimeoutMs = 15000;
+      const probeTimeoutIdx = args.indexOf("--probe-timeout");
+      if (probeTimeoutIdx !== -1 && probeTimeoutIdx + 1 < args.length) {
+        const raw = args[probeTimeoutIdx + 1];
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          probeTimeoutMs = parsed * 1000;
+        }
+      }
+      await probeModelRouting(expandedModels, hasJsonFlag, {
+        live: !noProbeFlag,
+        timeoutMs: probeTimeoutMs,
+      });
       process.exit(0);
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated list)
@@ -1262,7 +1282,11 @@ function printVersion(): void {
  * Probe model routing — show the fallback chain for each model.
  * Warm caches first, then display a table of how each model would be routed.
  */
-async function probeModelRouting(models: string[], jsonOutput: boolean): Promise<void> {
+async function probeModelRouting(
+  models: string[],
+  jsonOutput: boolean,
+  options: { live: boolean; timeoutMs: number } = { live: true, timeoutMs: 15000 }
+): Promise<void> {
   // ANSI color codes
   const GREEN = "\x1b[32m";
   const RED = "\x1b[31m";
@@ -1281,11 +1305,43 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
     // LiteLLM cache is disk-based and already populated by proxy start; just ensure it's loaded
   ]);
 
+  // Live probing: spin up the real proxy so probes exercise the full
+  // runtime path (key resolution → routing → transport → adapter → fetch).
+  // The proxy is started once here and shared across all models + chain links,
+  // then shut down in the finally block below.
+  type LiveProxy = { url: string; shutdown: () => Promise<void> };
+  let liveProxy: LiveProxy | null = null;
+  if (options.live) {
+    try {
+      const { findAvailablePort } = await import("./port-manager.js");
+      const { createProxyServer } = await import("./proxy-server.js");
+      const probePort = await findAvailablePort(47600);
+      console.error(
+        `${DIM}Probing providers via live requests (may incur small cost, use --no-probe to skip)...${RESET}`
+      );
+      liveProxy = await createProxyServer(
+        probePort,
+        process.env.OPENROUTER_API_KEY,
+        undefined,
+        false,
+        process.env.ANTHROPIC_API_KEY,
+        undefined,
+        { quiet: true }
+      );
+    } catch (e: any) {
+      console.error(
+        `${YELLOW}Failed to start probe proxy (${String(e?.message || e)}). Falling back to static probe.${RESET}`
+      );
+      liveProxy = null;
+    }
+  }
+
+  try {
   // Load routing rules (from config files)
   const routingRules = loadRoutingRules();
 
   // Collect probe results
-  interface ProbeResult {
+  interface ChainProbe {
     model: string;
     nativeProvider: string;
     isExplicit: boolean;
@@ -1297,7 +1353,10 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       modelSpec: string;
       hasCredentials: boolean;
       credentialHint?: string;
+      provenance?: KeyProvenance;
+      probe?: ProbeResult;
     }>;
+    directProbe?: ProbeResult;
     wiring?: {
       formatAdapter: string;
       declaredStreamFormat: string;
@@ -1309,7 +1368,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
     };
   }
 
-  const results: ProbeResult[] = [];
+  const results: ChainProbe[] = [];
 
   const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }> = {
     litellm: { envVar: "LITELLM_API_KEY" },
@@ -1399,11 +1458,69 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
         hasCredentials,
         credentialHint,
         provenance,
+        probe: undefined as ProbeResult | undefined,
       };
     });
 
+    // Live probe for direct (explicit-provider) models: single-link probe.
+    let directProbeResult: ProbeResult | undefined;
+    if (liveProxy && chain.source === "direct") {
+      const directKeyInfo = API_KEY_MAP[parsed.provider];
+      const directHasCreds = directKeyInfo?.envVar
+        ? !!process.env[directKeyInfo.envVar] ||
+          (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
+        : true;
+      directProbeResult = await probeLink(
+        liveProxy.url,
+        {
+          provider: parsed.provider,
+          modelSpec: modelInput,
+          hasCredentials: directHasCreds,
+          credentialHint: directKeyInfo?.envVar,
+        },
+        options.timeoutMs
+      ).catch((e) => ({
+        state: "error" as const,
+        latencyMs: 0,
+        errorMessage: String(e?.message || e),
+      }));
+    }
+
+    // Live probe: send a real 1-token request per chain link via the proxy.
+    // Pins each link with an explicit `provider@model` spec so the runtime
+    // router skips fallback (proxy-server.ts only builds fallback chains for
+    // non-explicit specs). OpenRouter chain entries are stored as raw
+    // vendor-prefixed IDs (e.g. "x-ai/grok-code-fast-1"), which the router
+    // would re-fallback — prepend "openrouter@" to force direct routing.
+    if (liveProxy) {
+      const probes = await Promise.all(
+        chainDetails.map((link) => {
+          const pinnedSpec = link.modelSpec.includes("@")
+            ? link.modelSpec
+            : `${link.provider}@${link.modelSpec}`;
+          return probeLink(
+            liveProxy!.url,
+            {
+              provider: link.provider,
+              modelSpec: pinnedSpec,
+              hasCredentials: link.hasCredentials,
+              credentialHint: link.credentialHint,
+            },
+            options.timeoutMs
+          ).catch((e) => ({
+            state: "error" as const,
+            latencyMs: 0,
+            errorMessage: String(e?.message || e),
+          }));
+        })
+      );
+      for (let i = 0; i < chainDetails.length; i++) {
+        chainDetails[i].probe = probes[i];
+      }
+    }
+
     // Compute adapter wiring for the first-ready provider
-    let wiring: ProbeResult["wiring"] = undefined;
+    let wiring: ChainProbe["wiring"] = undefined;
     const firstReadyRoute = chainDetails.find((c) => c.hasCredentials);
     if (firstReadyRoute) {
       const providerName = firstReadyRoute.provider;
@@ -1482,6 +1599,7 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
       routingSource: chain.source,
       matchedPattern: chain.matchedPattern,
       chain: chainDetails,
+      directProbe: directProbeResult,
       wiring,
     });
   }
@@ -1518,9 +1636,26 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
     console.log(`  ${DIM}${line}${RESET}`);
 
     if (result.routingSource === "direct") {
+      let liveBadge = "";
+      if (result.directProbe) {
+        const label = describeProbeState(result.directProbe);
+        if (result.directProbe.state === "live") {
+          liveBadge = `  ${GREEN}✓ ${label}${RESET}`;
+        } else if (isFailureState(result.directProbe.state)) {
+          liveBadge = `  ${RED}⊗ ${label}${RESET}`;
+        }
+      }
       console.log(
-        `  ${GREEN}  Direct → ${result.nativeProvider}${RESET}  (explicit provider prefix, no fallback chain)`
+        `  ${GREEN}  Direct → ${result.nativeProvider}${RESET}  (explicit provider prefix, no fallback chain)${liveBadge}`
       );
+      if (result.directProbe && isFailureState(result.directProbe.state)) {
+        if (result.directProbe.errorMessage) {
+          console.log(`    ${DIM}${result.directProbe.errorMessage}${RESET}`);
+        }
+        if (result.directProbe.actionHint) {
+          console.log(`    ${YELLOW}${result.directProbe.actionHint}${RESET}`);
+        }
+      }
 
       // Show API key provenance layers for explicit provider routing
       const directKeyInfo = API_KEY_MAP[result.nativeProvider];
@@ -1558,37 +1693,80 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
         const provider = entry.displayName.padEnd(maxProviderLen);
         const spec = entry.modelSpec.padEnd(maxSpecLen);
 
+        // When live probing is on, the probe result is the source of truth:
+        // live → ready, any failure → not ready. Static credential check only
+        // determines readiness when probing is disabled (--no-probe).
         let status: string;
-        if (entry.hasCredentials) {
+        if (entry.probe) {
+          if (entry.probe.state === "live") {
+            status = `${GREEN}● ready${RESET}  ${GREEN}✓ ${describeProbeState(entry.probe)}${RESET}`;
+          } else if (entry.probe.state === "key-missing") {
+            status = `${RED}○ missing ${DIM}(${entry.credentialHint})${RESET}`;
+          } else {
+            status = `${RED}○ not ready${RESET}  ${RED}⊗ ${describeProbeState(entry.probe)}${RESET}`;
+          }
+        } else if (entry.hasCredentials) {
           status = `${GREEN}● ready${RESET}`;
         } else {
           status = `${RED}○ missing ${DIM}(${entry.credentialHint})${RESET}`;
         }
 
-        // Highlight first ready provider
-        const isFirstReady =
-          entry.hasCredentials && !result.chain.slice(0, i).some((c) => c.hasCredentials);
-        const prefix = isFirstReady ? `${BG_DIM}` : "";
-        const suffix = isFirstReady ? `${RESET}` : "";
+        // Highlight first provider that is live (or first with credentials if no probing)
+        const isFirstLive = liveProxy
+          ? !!entry.probe &&
+            isReadyState(entry.probe.state) &&
+            !result.chain.slice(0, i).some((c) => c.probe && isReadyState(c.probe.state))
+          : entry.hasCredentials && !result.chain.slice(0, i).some((c) => c.hasCredentials);
+        const prefix = isFirstLive ? `${BG_DIM}` : "";
+        const suffix = isFirstLive ? `${RESET}` : "";
 
         console.log(`${prefix}  ${num}  ${provider}  ${DIM}${spec}${RESET}  ${status}${suffix}`);
+
+        // Show error detail indented under the row on failure
+        if (entry.probe && isFailureState(entry.probe.state)) {
+          const indent = " ".repeat(4 + 2 + 2 + maxProviderLen + 2 + maxSpecLen + 2);
+          if (entry.probe.errorMessage) {
+            console.log(`${indent}${DIM}${entry.probe.errorMessage}${RESET}`);
+          }
+          if (entry.probe.actionHint) {
+            console.log(`${indent}${YELLOW}${entry.probe.actionHint}${RESET}`);
+          }
+        }
       }
 
       // Summary
       const readyCount = result.chain.filter((c) => c.hasCredentials).length;
+      const liveCount = result.chain.filter((c) => c.probe?.state === "live").length;
+      const failedCount = result.chain.filter(
+        (c) => c.probe && isFailureState(c.probe.state)
+      ).length;
       const firstReady = result.chain.find((c) => c.hasCredentials);
+      const firstLive = result.chain.find((c) => c.probe?.state === "live");
       if (readyCount === 0) {
         console.log(`\n  ${RED}  No providers have credentials — this model will fail${RESET}`);
+      } else if (liveProxy && liveCount === 0) {
+        console.log(
+          `\n  ${RED}  No providers responded successfully right now${RESET} ${DIM}(${readyCount} configured, ${failedCount} failed)${RESET}`
+        );
+      } else if (firstLive) {
+        console.log(
+          `\n  ${DIM}  Live now: ${RESET}${GREEN}${firstLive.displayName}${RESET}${DIM} (${liveCount}/${result.chain.length} live · ${readyCount} configured · ${failedCount} failed)${RESET}`
+        );
       } else if (firstReady) {
         console.log(
           `\n  ${DIM}  Will use: ${RESET}${GREEN}${firstReady.displayName}${RESET}${DIM} (${readyCount}/${result.chain.length} providers available)${RESET}`
         );
+      }
 
+      // Active link = the one we render provenance + wiring for.
+      // Prefer a live provider when probing, else first-with-credentials.
+      const activeLink = firstLive ?? firstReady;
+      if (activeLink) {
         // Show API key provenance for the active provider
-        if (firstReady.provenance?.effectiveValue) {
+        if (activeLink.provenance?.effectiveValue) {
           console.log("");
           console.log(`  ${DIM}  API Key Resolution:${RESET}`);
-          for (const line of formatProvenanceProbe(firstReady.provenance, "    ")) {
+          for (const line of formatProvenanceProbe(activeLink.provenance!, "    ")) {
             if (line.includes(">>>")) {
               console.log(`  ${GREEN}${line}${RESET}`);
             } else {
@@ -1638,9 +1816,13 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
 
   // Legend
   console.log(`  ${DIM}${line}${RESET}`);
-  console.log(`  ${GREEN}●${RESET} ready    API key found, provider will be attempted`);
+  console.log(`  ${GREEN}●${RESET} ready    API key found, provider configured`);
   console.log(`  ${RED}○${RESET} missing  API key not set, provider skipped`);
-  console.log(`  ${BG_DIM}  highlighted  ${RESET} = first provider that will handle the request`);
+  if (liveProxy) {
+    console.log(`  ${GREEN}✓ live${RESET}    real request succeeded right now`);
+    console.log(`  ${RED}⊗ failed${RESET}  real request failed (auth/404/timeout/5xx)`);
+  }
+  console.log(`  ${BG_DIM}  highlighted  ${RESET} = first provider currently responding${liveProxy ? "" : " (by credentials)"}`);
   console.log("");
   console.log(
     `  ${DIM}Chain order: LiteLLM → Zen Go → Subscription → Native API → OpenRouter${RESET}`
@@ -1656,6 +1838,15 @@ async function probeModelRouting(models: string[], jsonOutput: boolean): Promise
     `  ${DIM}Override occurs when aggregators (LiteLLM, OpenRouter) normalize response format${RESET}`
   );
   console.log("");
+  } finally {
+    if (liveProxy) {
+      try {
+        await liveProxy.shutdown();
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 /**
@@ -1746,7 +1937,10 @@ OPTIONS:
                            Example: --team minimax-m2.5,kimi-k2.5 "prompt"
   --mode <mode>            Team mode: default (grid), interactive, json
   -f, --file <path>        Read prompt from file (use with --team or single-shot)
-  --probe <models...>      Show fallback chain for each model (diagnostic)
+  --probe <models...>      Probe each provider in the fallback chain with a real
+                           1-token request (diagnostic, may incur tiny cost)
+  --no-probe               Skip live requests, show static chain only
+  --probe-timeout <secs>   Per-link timeout for live probes (default: 15)
   --json                   Output in JSON format (use with --models, --top-models, --probe)
   --force-update           Force refresh model cache from OpenRouter API
   --version                Show version information
