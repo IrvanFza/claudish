@@ -20,44 +20,20 @@ export class QwenScraper extends BaseCollector {
 
   async collect(): Promise<CollectorResult> {
     try {
-      // The Alibaba Cloud pricing page has a region tab bar:
-      //   [International] [Global] [US] [Chinese Mainland] [China (Hong Kong)] [EU]
+      // The Alibaba Cloud pricing page contains ~200 pricing tables including
+      // qwen3.6-plus and other Singapore-region models. Key detail: the page
+      // served to datacenter IPs defaults to Chinese Mainland content (~240KB
+      // shell), but with `Accept-Language: en-US` and a US Chrome user agent
+      // (set in browserbase.ts) Alibaba returns the full International page
+      // with all pricing tables already rendered (~2.4MB).
       //
-      // qwen3.6-plus and other Singapore-region pricing live inside the
-      // International tab. The tables are rendered by client-side JS when
-      // the tab is active — they are NOT in the initial server HTML. Without
-      // the click + JS render, Browserbase returns ~240KB of shell with
-      // 0 parseable tables.
-      //
-      // Strategy: click the International tab in afterLoad, then ASK
-      // BROWSERBASE TO WAIT FOR THE JS-RENDERED CONTENT via waitForFunction.
-      // The wait is the authoritative signal that we can capture HTML —
-      // no blind setTimeout.
+      // waitForFunction blocks until a <table> containing our target strings
+      // exists — the authoritative signal that JS render is complete, no
+      // blind setTimeout needed.
       let html = await fetchRenderedHTML(SOURCE_URL, {
         timeoutMs: 60000,
         waitUntil: "networkidle0",
-        waitForTimeoutMs: 20000,
-        // Click the International tab so its content starts rendering
-        afterLoad: async (page) => {
-          await page.evaluate(() => {
-            // Alibaba uses Ant Design Tabs; the accessible name is
-            // "International". Search any clickable element whose text
-            // matches exactly.
-            const nodes = Array.from(
-              document.querySelectorAll<HTMLElement>(
-                "[role='tab'], .ant-tabs-tab, button, a",
-              ),
-            );
-            for (const el of nodes) {
-              if ((el.textContent ?? "").trim() === "International") {
-                el.click();
-                return;
-              }
-            }
-          });
-        },
-        // Block until a <table> containing our target strings actually
-        // exists in the DOM. This is the JS-render readiness signal.
+        waitForTimeoutMs: 25000,
         waitForFunction: () => {
           const tables = document.querySelectorAll("table");
           for (const t of Array.from(tables)) {
