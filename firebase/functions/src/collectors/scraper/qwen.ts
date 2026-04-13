@@ -20,8 +20,67 @@ export class QwenScraper extends BaseCollector {
 
   async collect(): Promise<CollectorResult> {
     try {
-      // Try Browserbase first for full JS-rendered content
-      let html = await fetchRenderedHTML(SOURCE_URL, 15000, 60000);
+      // Try Browserbase first for full JS-rendered content.
+      //
+      // The Alibaba Cloud pricing page has a region tab bar:
+      //   [International] [Global] [US] [Chinese Mainland] [China (Hong Kong)] [EU]
+      //
+      // The International tab contains `qwen3.6-plus` and other Singapore-region
+      // pricing tables. These tables are NOT in the initial server-rendered HTML —
+      // they are lazy-loaded when the tab is clicked. Without the click, we get
+      // ~240KB of shell content and the parser finds 0 tables.
+      //
+      // So: navigate → click the International tab → wait for the tables to
+      // appear → capture HTML.
+      let html = await fetchRenderedHTML(SOURCE_URL, {
+        waitMs: 8000,
+        timeoutMs: 60000,
+        afterLoad: async (page) => {
+          // Click the International tab. Try several selectors because Alibaba
+          // uses Ant Design Tabs whose selectors change between versions.
+          const clicked = await page.evaluate(() => {
+            const candidates = Array.from(
+              document.querySelectorAll<HTMLElement>(
+                // Common Ant Design Tabs selectors + fallbacks
+                "[role='tab'], .ant-tabs-tab, button, a, span, div",
+              ),
+            );
+            for (const el of candidates) {
+              const text = (el.textContent ?? "").trim();
+              if (text === "International") {
+                el.click();
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (clicked) {
+            // Wait for the International tables to render. Look for a <table>
+            // whose first <th> row mentions "Input price" (a string unique to
+            // these pricing tables).
+            try {
+              await page.waitForFunction(
+                () => {
+                  const tables = document.querySelectorAll("table");
+                  for (const t of Array.from(tables)) {
+                    const txt = t.textContent ?? "";
+                    if (txt.includes("Input price") || txt.includes("per 1M tokens")) {
+                      return true;
+                    }
+                  }
+                  return false;
+                },
+                { timeout: 15000 },
+              );
+            } catch {
+              // Fall through — we'll capture whatever is there and let the
+              // parser decide. If the tables never appeared, parseQwenPricing
+              // will still throw "no tables found" and we fall back to static.
+            }
+          }
+        },
+      });
 
       // Fall back to static HTML if Browserbase unavailable
       if (!html) {
