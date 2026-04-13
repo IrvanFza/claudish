@@ -1,0 +1,381 @@
+{
+  "_comment": "Golden fixture for recommender integration test. Represents a realistic CollectorResult[] snapshot. 'fetchedAt' is an ISO string; the test parses it to Date. All RawModels pass through BaseCollector.makeResult / validateRawModel in the test, which canonicalizes ids and providers.",
+  "results": [
+    {
+      "collectorId": "openai-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "openai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.openai.com/v1/models",
+          "externalId": "gpt-5.4",
+          "canonicalId": "gpt-5.4",
+          "displayName": "GPT-5.4",
+          "provider": "openai",
+          "pricing": { "input": 5.0, "output": 15.0 },
+          "contextWindow": 400000,
+          "maxOutputTokens": 16000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "vision": true,
+            "thinking": true,
+            "structuredOutput": true,
+            "jsonMode": true,
+            "pdfInput": false
+          },
+          "status": "active",
+          "releaseDate": "2026-03-15"
+        },
+        {
+          "collectorId": "openai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.openai.com/v1/models",
+          "externalId": "gpt-5.4-mini",
+          "canonicalId": "gpt-5.4-mini",
+          "displayName": "GPT-5.4 Mini",
+          "provider": "openai",
+          "pricing": { "input": 0.4, "output": 1.6 },
+          "contextWindow": 200000,
+          "maxOutputTokens": 16000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "vision": true,
+            "thinking": false,
+            "structuredOutput": true,
+            "jsonMode": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-15"
+        },
+        {
+          "collectorId": "openai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.openai.com/v1/models",
+          "externalId": "gpt-5.4-nano",
+          "canonicalId": "gpt-5.4-nano",
+          "displayName": "GPT-5.4 Nano",
+          "provider": "openai",
+          "pricing": { "input": 0.1, "output": 0.4 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-15"
+        },
+        {
+          "collectorId": "openai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.openai.com/v1/models",
+          "externalId": "gpt-realtime-preview",
+          "canonicalId": "gpt-realtime-preview",
+          "displayName": "GPT Realtime Preview",
+          "provider": "openai",
+          "pricing": { "input": 5.0, "output": 20.0 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "audioInput": true
+          },
+          "status": "active",
+          "releaseDate": "2026-02-01"
+        },
+        {
+          "collectorId": "openai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.openai.com/v1/models",
+          "externalId": "tts-1-hd",
+          "canonicalId": "tts-1-hd",
+          "displayName": "TTS-1 HD",
+          "provider": "openai",
+          "pricing": { "input": 0, "output": 30.0 },
+          "contextWindow": 4000,
+          "capabilities": {
+            "tools": false,
+            "streaming": true,
+            "imageOutput": false
+          },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "collectorId": "dashscope-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "dashscope-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://dashscope.aliyuncs.com/v1/models",
+          "externalId": "qwen3.6-plus",
+          "canonicalId": "qwen3.6-plus",
+          "displayName": "Qwen 3.6 Plus",
+          "provider": "qwen",
+          "pricing": { "input": 2.0, "output": 8.0 },
+          "contextWindow": 256000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true,
+            "structuredOutput": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-20"
+        },
+        {
+          "collectorId": "dashscope-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://dashscope.aliyuncs.com/v1/models",
+          "externalId": "qwen3.5-flash-02-23",
+          "canonicalId": "qwen3.5-flash-02-23",
+          "displayName": "Qwen 3.5 Flash",
+          "provider": "qwen",
+          "pricing": { "input": 0.3, "output": 1.2 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": false
+          },
+          "status": "active",
+          "releaseDate": "2026-02-23"
+        },
+        {
+          "collectorId": "dashscope-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://dashscope.aliyuncs.com/v1/models",
+          "externalId": "qwen3.5-omni-flash",
+          "canonicalId": "qwen3.5-omni-flash",
+          "displayName": "Qwen 3.5 Omni Flash",
+          "provider": "qwen",
+          "pricing": { "input": 0.5, "output": 2.0 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "audioInput": true,
+            "videoInput": true
+          },
+          "status": "active",
+          "releaseDate": "2026-02-15"
+        }
+      ]
+    },
+    {
+      "collectorId": "opencode-zen-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "opencode-zen-api",
+          "confidence": "gateway_official",
+          "sourceUrl": "https://opencode.ai/zen/v1/models",
+          "externalId": "minimaxai/minimax-m2.7",
+          "canonicalId": "minimaxai/minimax-m2.7",
+          "displayName": "MiniMax M2.7",
+          "provider": "minimaxai",
+          "pricing": { "input": 0.3, "output": 1.2 },
+          "contextWindow": 196000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true
+          },
+          "status": "active",
+          "releaseDate": "2026-04-01"
+        },
+        {
+          "collectorId": "opencode-zen-api",
+          "confidence": "gateway_official",
+          "sourceUrl": "https://opencode.ai/zen/v1/models",
+          "externalId": "minimaxai/minimax-m2.5",
+          "canonicalId": "minimaxai/minimax-m2.5",
+          "displayName": "MiniMax M2.5",
+          "provider": "minimaxai",
+          "pricing": { "input": 0.3, "output": 1.2 },
+          "contextWindow": 196000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true
+          },
+          "status": "active",
+          "releaseDate": "2026-01-20"
+        }
+      ]
+    },
+    {
+      "collectorId": "google-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "google-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://generativelanguage.googleapis.com/v1beta/models",
+          "externalId": "gemini-3.1-pro",
+          "canonicalId": "gemini-3.1-pro",
+          "displayName": "Gemini 3.1 Pro",
+          "provider": "google",
+          "pricing": { "input": 2.5, "output": 10.0 },
+          "contextWindow": 2000000,
+          "maxOutputTokens": 8192,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "vision": true,
+            "thinking": true,
+            "structuredOutput": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-25"
+        },
+        {
+          "collectorId": "google-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://generativelanguage.googleapis.com/v1beta/models",
+          "externalId": "gemini-3.1-flash",
+          "canonicalId": "gemini-3.1-flash",
+          "displayName": "Gemini 3.1 Flash",
+          "provider": "google",
+          "pricing": { "input": 0.2, "output": 0.8 },
+          "contextWindow": 1000000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "vision": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-25"
+        }
+      ]
+    },
+    {
+      "collectorId": "xai-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "xai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.x.ai/v1/models",
+          "externalId": "grok-5-latest",
+          "canonicalId": "grok-5-latest",
+          "displayName": "Grok 5",
+          "provider": "x-ai",
+          "pricing": { "input": 3.0, "output": 12.0 },
+          "contextWindow": 256000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true,
+            "vision": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-10"
+        },
+        {
+          "collectorId": "xai-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.x.ai/v1/models",
+          "externalId": "grok-5-fast",
+          "canonicalId": "grok-5-fast",
+          "displayName": "Grok 5 Fast",
+          "provider": "xai",
+          "pricing": { "input": 0.5, "output": 2.0 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-10"
+        }
+      ]
+    },
+    {
+      "collectorId": "zhipu-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "zhipu-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://open.bigmodel.cn/api/paas/v4/models",
+          "externalId": "glm-5.1",
+          "canonicalId": "glm-5.1",
+          "displayName": "GLM 5.1",
+          "provider": "zhipu",
+          "pricing": { "input": 0.6, "output": 2.4 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-05"
+        },
+        {
+          "collectorId": "zhipu-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://open.bigmodel.cn/api/paas/v4/models",
+          "externalId": "glm-5.1-flash",
+          "canonicalId": "glm-5.1-flash",
+          "displayName": "GLM 5.1 Flash",
+          "provider": "zhipu",
+          "pricing": { "input": 0.1, "output": 0.4 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-05"
+        }
+      ]
+    },
+    {
+      "collectorId": "moonshot-api",
+      "fetchedAt": "2026-04-13T03:00:00.000Z",
+      "models": [
+        {
+          "collectorId": "moonshot-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.moonshot.ai/v1/models",
+          "externalId": "kimi-k2.5",
+          "canonicalId": "kimi-k2.5",
+          "displayName": "Kimi K2.5",
+          "provider": "moonshot",
+          "pricing": { "input": 1.0, "output": 3.0 },
+          "contextWindow": 256000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true,
+            "thinking": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-18"
+        },
+        {
+          "collectorId": "moonshot-api",
+          "confidence": "api_official",
+          "sourceUrl": "https://api.moonshot.ai/v1/models",
+          "externalId": "kimi-k2.5-turbo",
+          "canonicalId": "kimi-k2.5-turbo",
+          "displayName": "Kimi K2.5 Turbo",
+          "provider": "moonshot",
+          "pricing": { "input": 0.3, "output": 1.0 },
+          "contextWindow": 128000,
+          "capabilities": {
+            "tools": true,
+            "streaming": true
+          },
+          "status": "active",
+          "releaseDate": "2026-03-18"
+        }
+      ]
+    }
+  ]
+}
