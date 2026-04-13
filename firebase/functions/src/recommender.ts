@@ -96,14 +96,44 @@ export const PROVIDERS: ProviderDef[] = [
 // If the flags are wrong in Firestore, fix the COLLECTOR that wrote them —
 // don't add a regex here.
 // ─────────────────────────────────────────────────────────────
+/**
+ * Lexical modality fallback: catch image/audio/speech/tts models when their
+ * capability flags are incomplete (upstream data quality issue). These
+ * substrings in the model id are a strong signal that the model is not a
+ * coding tool, even if `imageOutput` / `audioInput` are unset.
+ *
+ * Intentionally narrow — only substrings that are unambiguous modality
+ * markers. Does NOT include "flash" (that's a speed tier, not a modality)
+ * or "vision" (vision-capable coding models are fine).
+ */
+const MODALITY_ID_MARKERS = [
+  /-image-/i,   // gemini-3.1-flash-image-preview
+  /-image$/i,   // gpt-5-image
+  /^image-/i,   // image-gen-1
+  /-audio-/i,
+  /-audio$/i,
+  /-tts-/i,
+  /-tts$/i,
+  /-speech-/i,
+  /-speech$/i,
+  /-omni-/i,    // qwen3-omni-flash (multimodal, not coding)
+  /-omni$/i,
+  /-realtime/i, // realtime audio endpoints
+  /-whisper/i,
+  /-embedding/i, // embedding models don't have tool calling anyway, defense in depth
+  /-dall-e/i,
+];
+
 export function isCodingCandidate(doc: ModelDoc): boolean {
   const caps = doc.capabilities ?? {};
   // Positive: must support tools
   if (!caps.tools) return false;
-  // Negative: modality exclusions
+  // Negative: modality exclusions (capability flags — primary signal)
   if (caps.audioInput) return false;
   if (caps.videoInput) return false;
   if (caps.imageOutput) return false;
+  // Lexical modality fallback (for collectors with incomplete capability flags)
+  if (MODALITY_ID_MARKERS.some(re => re.test(doc.modelId))) return false;
   // Pricing must be real (not free-tier-only / missing)
   if (!doc.pricing) return false;
   if (doc.pricing.input <= 0 && doc.pricing.output <= 0) return false;
