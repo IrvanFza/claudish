@@ -21,7 +21,7 @@ export class QwenScraper extends BaseCollector {
   async collect(): Promise<CollectorResult> {
     try {
       // Try Browserbase first for full JS-rendered content
-      let html = await fetchRenderedHTML(SOURCE_URL, 5000, 30000);
+      let html = await fetchRenderedHTML(SOURCE_URL, 15000, 60000);
 
       // Fall back to static HTML if Browserbase unavailable
       if (!html) {

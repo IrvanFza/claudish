@@ -20,13 +20,13 @@ interface ProviderDef {
   obsoleteIndicators?: RegExp[];
 }
 
-const PROVIDERS: ProviderDef[] = [
+export const PROVIDERS: ProviderDef[] = [
   {
     slugs: ["openai"],
     display: "OpenAI",
-    fastIndicators: [/mini/i, /nano/i],
+    fastIndicators: [/mini/i],
     // Exclude non-chat models and old codex line
-    obsoleteIndicators: [/codex/i, /^realtime/i, /^audio/i, /^tts/i, /^dall-e/i, /^whisper/i, /image/i, /^gpt-oss/i, /^computer-use/i, /^embedding/i, /^chatgpt-image/i, /^davinci/i, /^babbage/i],
+    obsoleteIndicators: [/codex/i, /^realtime/i, /^audio/i, /^tts/i, /^dall-e/i, /^whisper/i, /image/i, /^gpt-oss/i, /^computer-use/i, /^embedding/i, /^chatgpt-image/i, /^davinci/i, /^babbage/i, /nano/i],
   },
   {
     slugs: ["google"],
@@ -46,6 +46,7 @@ const PROVIDERS: ProviderDef[] = [
     slugs: ["qwen"],
     display: "Qwen",
     fastIndicators: [/turbo/i, /lite/i, /flash/i],
+    obsoleteIndicators: [/omni/i, /audio/i, /vl/i, /ocr/i, /speech/i, /mt$/i],
   },
   {
     slugs: ["z-ai", "zhipu", "zai", "glm"],
@@ -84,7 +85,7 @@ interface AccessMethod {
   modelOverride?: string; // different model name on this endpoint
 }
 
-const ACCESS_METHODS: Record<string, AccessMethod[]> = {
+export const ACCESS_METHODS: Record<string, AccessMethod[]> = {
   openai: [
     { prefix: "cx",  plan: "OpenAI Codex",         type: "subscription" },
   ],
@@ -173,7 +174,9 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
   // Subscription/access method picks: same flagship model via alternative endpoints
   for (const doc of finalFlagships) {
     const providerLower = (doc.provider ?? "").toLowerCase();
-    const methods = ACCESS_METHODS[providerLower];
+    const providerDef = PROVIDERS.find(p => p.slugs.includes(providerLower));
+    const canonicalSlug = providerDef?.slugs[0];
+    const methods = canonicalSlug ? ACCESS_METHODS[canonicalSlug] : undefined;
     if (!methods || methods.length === 0) continue;
 
     for (const method of methods) {
@@ -215,7 +218,7 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
 // Stage 1: Algorithmic selection — score-based, no hardcoded models
 // ─────────────────────────────────────────────────────────────
 
-function selectByProvider(allModels: ModelDoc[]): {
+export function selectByProvider(allModels: ModelDoc[]): {
   flagships: ModelDoc[];
   fastModels: ModelDoc[];
 } {
@@ -443,6 +446,8 @@ You make the FINAL DECISION on which models to recommend. The algorithm is just 
 7. The algorithm often picks WRONG due to pricing bias. CHECK version numbers carefully.
 8. Flagship = the FULL/LARGEST model (e.g. gpt-5.4, NOT gpt-5.4-mini or gpt-5.4-nano). Mini/nano/lite variants are FAST models, not flagships.
 9. Fast = mini/nano/lite/flash/turbo variants of the SAME version as the flagship.
+10. For fast variants: prefer mini over nano (nano is a degraded sub-tier, not recommended). If both exist, pick mini.
+11. NEVER pick omni/audio/speech/VL/multimodal-only models. These are NOT coding models. Only pick text->text or text+image->text models with tool calling.
 
 ## Algorithm picks (REVIEW CRITICALLY — likely has version errors)
 
@@ -548,7 +553,7 @@ function scoreConfidence(doc: ModelDoc): number {
 // Conversion helpers
 // ─────────────────────────────────────────────────────────────
 
-function toEntry(doc: ModelDoc, priority: number, tier: "flagship" | "fast" | "subscription"): RecommendedModelEntry {
+export function toEntry(doc: ModelDoc, priority: number, tier: "flagship" | "fast" | "subscription"): RecommendedModelEntry {
   const orSource = doc.sources?.["openrouter-api"];
   const openrouterId = orSource?.externalId ?? `${doc.provider}/${doc.modelId}`;
 

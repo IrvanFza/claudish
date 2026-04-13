@@ -7,8 +7,8 @@ import puppeteer from "puppeteer-core";
  */
 export async function fetchRenderedHTML(
   url: string,
-  waitMs = 5000,
-  timeoutMs = 30000,
+  waitMs = 12000,
+  timeoutMs = 60000,
 ): Promise<string | null> {
   const apiKey = process.env.BROWSERBASE_API_KEY;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;

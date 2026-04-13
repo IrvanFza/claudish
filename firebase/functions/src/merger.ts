@@ -241,8 +241,11 @@ function normalizeId(id: string): string {
  * - lowercase
  * - strip :free suffix (OpenRouter free-tier duplicates)
  */
-function normalizeCanonicalKey(key: string): string {
-  return key.toLowerCase().replace(/:free$/, "");
+export function normalizeCanonicalKey(key: string): string {
+  let k = key.toLowerCase().replace(/:free$/, "");
+  const slashIdx = k.indexOf("/");
+  if (slashIdx > 0) k = k.slice(slashIdx + 1);
+  return k;
 }
 
 function roundPrice(n: number): number {
