@@ -361,23 +361,33 @@ export function diffRecommendations(
     }
   }
 
-  // Per-category count drop >30%
-  const countByCategory = (doc: RecommendedModelsDoc): Record<string, number> => {
-    const counts: Record<string, number> = {};
+  // Per-category count drop >30% — but ignore reshuffles where models are
+  // simply being recategorized (e.g. capability flags improved and a model
+  // moves from "vision" to "programming"). Only count the drop if the missing
+  // models from this category aren't present in some OTHER category.
+  const idsByCategory = (doc: RecommendedModelsDoc): Record<string, Set<string>> => {
+    const buckets: Record<string, Set<string>> = {};
     for (const m of doc.models) {
-      counts[m.category] = (counts[m.category] ?? 0) + 1;
+      (buckets[m.category] ??= new Set()).add(m.id);
     }
-    return counts;
+    return buckets;
   };
-  const prevCats = countByCategory(previous);
-  const nextCats = countByCategory(next);
-  const allCats = new Set([...Object.keys(prevCats), ...Object.keys(nextCats)]);
-  for (const cat of allCats) {
-    const before = prevCats[cat] ?? 0;
-    const after = nextCats[cat] ?? 0;
-    if (before >= 3 && after < before * 0.7) {
+  const prevByCat = idsByCategory(previous);
+  const nextByCat = idsByCategory(next);
+  const allNextIds = new Set(next.models.map((m) => m.id));
+  for (const [cat, prevIds] of Object.entries(prevByCat)) {
+    if (prevIds.size < 3) continue;
+    const nextIds = nextByCat[cat] ?? new Set();
+    if (nextIds.size >= prevIds.size * 0.7) continue;
+    // Drop is large enough on paper. But: only count IDs that DISAPPEARED
+    // from the doc entirely, not ones that just moved to another category.
+    const trulyMissing: string[] = [];
+    for (const id of prevIds) {
+      if (!allNextIds.has(id)) trulyMissing.push(id);
+    }
+    if (trulyMissing.length > prevIds.size * 0.3) {
       violations.push(
-        `category "${cat}" dropped ${before} → ${after} entries (>30% loss)`,
+        `category "${cat}" lost ${trulyMissing.length} of ${prevIds.size} models entirely (not just recategorized): ${trulyMissing.slice(0, 3).join(", ")}${trulyMissing.length > 3 ? "..." : ""}`,
       );
     }
   }
