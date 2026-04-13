@@ -400,3 +400,47 @@ export const collectModelCatalogManual = onRequest(
     }
   }
 );
+
+// ─────────────────────────────────────────────────────────────
+// One-off migration: delete stale vendor-prefixed model docs
+// These are duplicates of cleanly-named docs created by Fix F.
+// ─────────────────────────────────────────────────────────────
+export const cleanupStalePrefixedDocs = onRequest(
+  {
+    region: "us-central1",
+    maxInstances: 1,
+    timeoutSeconds: 120,
+    cors: true,
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed — use POST" });
+      return;
+    }
+
+    try {
+      const snap = await db.collection("models").get();
+      const toDelete: string[] = [];
+
+      for (const doc of snap.docs) {
+        const data = doc.data() as { modelId?: string };
+        // Firestore doc IDs have "/" replaced with "__", check both the doc ID and the modelId field
+        if (doc.id.includes("__") || (data.modelId && data.modelId.includes("/"))) {
+          toDelete.push(doc.id);
+        }
+      }
+
+      const writer = db.bulkWriter();
+      for (const id of toDelete) {
+        writer.delete(db.collection("models").doc(id));
+      }
+      await writer.close();
+
+      console.log(`[cleanup] deleted ${toDelete.length} stale prefixed docs`);
+      res.status(200).json({ ok: true, deleted: toDelete.length, ids: toDelete });
+    } catch (err) {
+      console.error("[cleanup] failed:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
