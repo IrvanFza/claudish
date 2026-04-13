@@ -20,65 +20,53 @@ export class QwenScraper extends BaseCollector {
 
   async collect(): Promise<CollectorResult> {
     try {
-      // Try Browserbase first for full JS-rendered content.
-      //
       // The Alibaba Cloud pricing page has a region tab bar:
       //   [International] [Global] [US] [Chinese Mainland] [China (Hong Kong)] [EU]
       //
-      // The International tab contains `qwen3.6-plus` and other Singapore-region
-      // pricing tables. These tables are NOT in the initial server-rendered HTML —
-      // they are lazy-loaded when the tab is clicked. Without the click, we get
-      // ~240KB of shell content and the parser finds 0 tables.
+      // qwen3.6-plus and other Singapore-region pricing live inside the
+      // International tab. The tables are rendered by client-side JS when
+      // the tab is active — they are NOT in the initial server HTML. Without
+      // the click + JS render, Browserbase returns ~240KB of shell with
+      // 0 parseable tables.
       //
-      // So: navigate → click the International tab → wait for the tables to
-      // appear → capture HTML.
+      // Strategy: click the International tab in afterLoad, then ASK
+      // BROWSERBASE TO WAIT FOR THE JS-RENDERED CONTENT via waitForFunction.
+      // The wait is the authoritative signal that we can capture HTML —
+      // no blind setTimeout.
       let html = await fetchRenderedHTML(SOURCE_URL, {
-        waitMs: 8000,
         timeoutMs: 60000,
+        waitUntil: "networkidle0",
+        waitForTimeoutMs: 20000,
+        // Click the International tab so its content starts rendering
         afterLoad: async (page) => {
-          // Click the International tab. Try several selectors because Alibaba
-          // uses Ant Design Tabs whose selectors change between versions.
-          const clicked = await page.evaluate(() => {
-            const candidates = Array.from(
+          await page.evaluate(() => {
+            // Alibaba uses Ant Design Tabs; the accessible name is
+            // "International". Search any clickable element whose text
+            // matches exactly.
+            const nodes = Array.from(
               document.querySelectorAll<HTMLElement>(
-                // Common Ant Design Tabs selectors + fallbacks
-                "[role='tab'], .ant-tabs-tab, button, a, span, div",
+                "[role='tab'], .ant-tabs-tab, button, a",
               ),
             );
-            for (const el of candidates) {
-              const text = (el.textContent ?? "").trim();
-              if (text === "International") {
+            for (const el of nodes) {
+              if ((el.textContent ?? "").trim() === "International") {
                 el.click();
-                return true;
+                return;
               }
             }
-            return false;
           });
-
-          if (clicked) {
-            // Wait for the International tables to render. Look for a <table>
-            // whose first <th> row mentions "Input price" (a string unique to
-            // these pricing tables).
-            try {
-              await page.waitForFunction(
-                () => {
-                  const tables = document.querySelectorAll("table");
-                  for (const t of Array.from(tables)) {
-                    const txt = t.textContent ?? "";
-                    if (txt.includes("Input price") || txt.includes("per 1M tokens")) {
-                      return true;
-                    }
-                  }
-                  return false;
-                },
-                { timeout: 15000 },
-              );
-            } catch {
-              // Fall through — we'll capture whatever is there and let the
-              // parser decide. If the tables never appeared, parseQwenPricing
-              // will still throw "no tables found" and we fall back to static.
+        },
+        // Block until a <table> containing our target strings actually
+        // exists in the DOM. This is the JS-render readiness signal.
+        waitForFunction: () => {
+          const tables = document.querySelectorAll("table");
+          for (const t of Array.from(tables)) {
+            const txt = t.textContent ?? "";
+            if (txt.includes("Input price") || txt.includes("per 1M tokens")) {
+              return true;
             }
           }
+          return false;
         },
       });
 

@@ -2,15 +2,46 @@ import puppeteer from "puppeteer-core";
 import type { Page } from "puppeteer-core";
 
 export interface FetchRenderedOptions {
-  /** Ms to wait after networkidle2 fires (lets deferred JS run). */
+  /**
+   * Fallback ms to wait after the page loads, used only when no
+   * waitForSelector / waitForFunction is provided. Prefer an explicit
+   * readiness predicate over a blind timeout.
+   */
   waitMs?: number;
   /** Page navigation timeout. */
   timeoutMs?: number;
   /**
-   * Optional hook called AFTER initial navigation + waitMs. Use this to click
-   * a specific tab / expand an accordion / scroll, then wait for the dynamic
-   * content to appear. Return value ignored. Thrown errors are logged and
-   * swallowed (we fall back to whatever HTML is rendered at that point).
+   * Which navigation event to wait for. Defaults to "networkidle0" which
+   * waits until there have been zero network requests for 500ms — the
+   * strongest signal that client-side JS has finished making XHR/fetch
+   * calls. "networkidle2" is looser (≤2 in-flight requests) and is only
+   * appropriate for pages with long-poll connections.
+   */
+  waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
+  /**
+   * Wait for a CSS selector to appear in the DOM before capturing HTML.
+   * This is the CORRECT way to wait for JS-rendered content on SPAs — the
+   * selector appearing is a direct signal that the content we care about
+   * has been rendered. Far better than a blind setTimeout.
+   *
+   * If both waitForSelector and waitForFunction are set, both must succeed.
+   */
+  waitForSelector?: string;
+  /**
+   * Wait for a JS predicate to return truthy before capturing HTML. Use
+   * when a single CSS selector is not specific enough — e.g. "wait for a
+   * <table> whose text contains 'Input price'".
+   */
+  waitForFunction?: () => boolean | Promise<boolean>;
+  /**
+   * Timeout for waitForSelector / waitForFunction. Default: 20s.
+   */
+  waitForTimeoutMs?: number;
+  /**
+   * Optional hook called AFTER initial navigation but BEFORE waitForSelector
+   * / waitForFunction. Use this to click a tab, expand an accordion, scroll,
+   * etc. — actions that trigger the JS rendering we're then waiting for.
+   * Thrown errors are logged and swallowed.
    */
   afterLoad?: (page: Page) => Promise<void>;
 }
@@ -40,9 +71,14 @@ export async function fetchRenderedHTML(
     typeof waitMsOrOpts === "number"
       ? { waitMs: waitMsOrOpts, timeoutMs: timeoutMsLegacy }
       : waitMsOrOpts;
-  const waitMs = opts.waitMs ?? 12000;
+  const waitMs = opts.waitMs ?? 8000;
   const timeoutMs = opts.timeoutMs ?? 60000;
+  const waitUntil = opts.waitUntil ?? "networkidle0";
+  const waitForSelector = opts.waitForSelector;
+  const waitForFunction = opts.waitForFunction;
+  const waitForTimeoutMs = opts.waitForTimeoutMs ?? 20000;
   const afterLoad = opts.afterLoad;
+  const hasExplicitWait = Boolean(waitForSelector || waitForFunction);
 
   const apiKey = process.env.BROWSERBASE_API_KEY;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;
@@ -85,16 +121,47 @@ export async function fetchRenderedHTML(
       return null;
     }
 
-    await page.goto(url, { waitUntil: "networkidle2", timeout: timeoutMs });
-    await new Promise(r => setTimeout(r, waitMs));
+    await page.goto(url, { waitUntil, timeout: timeoutMs });
 
-    // Optional post-load hook (e.g. click a tab, expand an accordion).
+    // Optional post-load hook (click a tab, expand an accordion, scroll, etc.)
+    // Runs BEFORE the explicit wait — the hook is what triggers the JS work
+    // we're then waiting for.
     if (afterLoad) {
       try {
         await afterLoad(page);
       } catch (err) {
         console.warn(`[browserbase] afterLoad hook failed for ${url}:`, err);
       }
+    }
+
+    // Wait for a specific DOM signal instead of a blind setTimeout. This is
+    // the correct way to handle JS-rendered pages: block until the content
+    // we care about exists, not until some arbitrary timer fires.
+    if (waitForSelector) {
+      try {
+        await page.waitForSelector(waitForSelector, { timeout: waitForTimeoutMs });
+      } catch (err) {
+        console.warn(
+          `[browserbase] waitForSelector "${waitForSelector}" timed out for ${url}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    if (waitForFunction) {
+      try {
+        await page.waitForFunction(waitForFunction, { timeout: waitForTimeoutMs });
+      } catch (err) {
+        console.warn(
+          `[browserbase] waitForFunction timed out for ${url}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // Fallback: if no explicit wait was provided, honor the legacy waitMs.
+    // Prefer an explicit predicate over this blind wait whenever possible.
+    if (!hasExplicitWait) {
+      await new Promise(r => setTimeout(r, waitMs));
     }
 
     const html = await page.content();
