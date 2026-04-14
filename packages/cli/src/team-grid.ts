@@ -1,18 +1,19 @@
 import { spawn } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
+import { connect as netConnect, type Socket } from "node:net";
+import { setTimeout as wait } from "node:timers/promises";
 import {
   setupSession,
   type TeamManifest,
   type TeamStatus,
+  type ModelStatus,
 } from "./team-orchestrator.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { matchRoutingRule, buildRoutingChain } from "./providers/routing-rules.js";
@@ -99,24 +100,39 @@ function resolveRouteInfo(modelId: string): RouteInfo {
  *   │  ──────────────────────────────────── │  (dim line)
  *   └──────────────────────────────────────┘
  */
-function buildPaneHeader(model: string, prompt: string): string {
+// Palette for model name backgrounds. Index is passed around between panes
+// via pickBannerColor() so visually-adjacent panes never share a color.
+const BANNER_BG_COLORS = [
+  "48;2;40;90;180",   // blue
+  "48;2;140;60;160",  // purple
+  "48;2;30;130;100",  // teal
+  "48;2;160;80;40",   // orange
+  "48;2;60;120;60",   // green
+  "48;2;160;50;70",   // red
+];
+
+// Deterministic-first color assignment with collision avoidance.
+// Uses the hashed slot as the starting point, then linear-probes forward until
+// a free slot is found. Mutates `used` by inserting the chosen index.
+// If every slot is taken (more models than palette colors), reuses the
+// hashed slot so coloring stays deterministic.
+function pickBannerColor(model: string, used: Set<number>): string {
+  let hash = 0;
+  for (let i = 0; i < model.length; i++) hash = ((hash << 5) - hash + model.charCodeAt(i)) | 0;
+  const start = Math.abs(hash) % BANNER_BG_COLORS.length;
+  let idx = start;
+  if (used.size < BANNER_BG_COLORS.length) {
+    while (used.has(idx)) idx = (idx + 1) % BANNER_BG_COLORS.length;
+  }
+  used.add(idx);
+  return BANNER_BG_COLORS[idx];
+}
+
+function buildPaneHeader(model: string, prompt: string, bg: string): string {
   const route = resolveRouteInfo(model);
 
   // Shell-escape single quotes in model name and route strings
   const esc = (s: string) => s.replace(/'/g, "'\\''");
-
-  // Color palette for model name background (rotate by hash)
-  const bgColors = [
-    "48;2;40;90;180",   // blue
-    "48;2;140;60;160",  // purple
-    "48;2;30;130;100",  // teal
-    "48;2;160;80;40",   // orange
-    "48;2;60;120;60",   // green
-    "48;2;160;50;70",   // red
-  ];
-  let hash = 0;
-  for (let i = 0; i < model.length; i++) hash = ((hash << 5) - hash + model.charCodeAt(i)) | 0;
-  const bg = bgColors[Math.abs(hash) % bgColors.length];
 
   // Route chain string: "LiteLLM → OpenRouter"
   const chainStr = route.chain.join(" → ");
@@ -193,42 +209,157 @@ function findMagmuxBinary(): string {
   );
 }
 
+// ─── Magmux Event Protocol ───────────────────────────────────────────────────
+//
+// magmux pushes events over its Unix socket. We care about:
+//   {"type":"snapshot", pane, state, response, tool, startedAt, completedAt}
+//   {"type":"exit",     pane, exitCode, duration, response, prompt, tool, model}
+//   {"type":"results",  panes:[{pane, state, exitCode, response, ...}], endedAt}
+//   {"type":"shutdown"}
+//
+// Claudish subscribes as a client, tracks events in real time, and uses the
+// final "results" event as the authoritative per-pane state.
+//
+// Magmux handles: idle detection, DONE/FAIL overlays, green/red tints,
+// status bar updates, auto-exit. Claudish does NOT need to duplicate any of it.
+
+interface PaneResult {
+  pane: number;
+  state: string;       // "completed" | "failed" | "awaiting_input" | "running"
+  exitCode: number;
+  dead: boolean;
+  controller?: string;
+  model?: string;
+  project?: string;
+  prompt?: string;
+  response?: string;
+  tool?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+interface MagmuxResultsEvent {
+  type: "results";
+  panes: PaneResult[];
+  endedAt: string;
+}
+
 /**
- * Read exit-code files and update status.json (called once after magmux exits).
+ * Connect to magmux's IPC socket and collect events. Resolves with the final
+ * "results" payload (or null if the session died before sending one).
+ *
+ * Uses a retry loop for the initial connect because magmux creates the socket
+ * asynchronously after spawn.
  */
-function finalizeStatus(statusPath: string, sessionPath: string, anonIds: string[], mode: "default" | "interactive"): void {
-  const statusCache: TeamStatus = JSON.parse(readFileSync(statusPath, "utf-8"));
-
-  for (const anonId of anonIds) {
-    const current = statusCache.models[anonId];
-    if (current.state === "COMPLETED" || current.state === "FAILED") continue;
-
-    const exitCodePath = join(sessionPath, "work", anonId, ".exit-code");
-    if (existsSync(exitCodePath)) {
-      const code = parseInt(readFileSync(exitCodePath, "utf-8").trim(), 10);
-      statusCache.models[anonId] = {
-        ...current,
-        state: code === 0 ? "COMPLETED" : "FAILED",
-        exitCode: code,
-        startedAt: current.startedAt ?? statusCache.startedAt,
-        completedAt: new Date().toISOString(),
-      };
-    } else if (mode === "interactive") {
-      // Interactive mode: processes are killed when user quits (Ctrl-G q),
-      // so no .exit-code file is written. Treat as completed.
-      statusCache.models[anonId] = {
-        ...current,
-        state: "COMPLETED",
-        exitCode: 0,
-        startedAt: current.startedAt ?? statusCache.startedAt,
-        completedAt: new Date().toISOString(),
-      };
-    } else {
-      statusCache.models[anonId] = { ...current, state: "TIMEOUT" };
+async function subscribeToMagmux(
+  sockPath: string,
+  onEvent?: (event: Record<string, unknown>) => void
+): Promise<{ results: MagmuxResultsEvent | null; client: Socket | null }> {
+  // Retry connect up to ~2s — magmux may not have created the socket yet.
+  let client: Socket | null = null;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    if (existsSync(sockPath)) {
+      try {
+        client = await new Promise<Socket>((resolve, reject) => {
+          const s = netConnect(sockPath);
+          s.once("connect", () => resolve(s));
+          s.once("error", reject);
+        });
+        break;
+      } catch {
+        /* socket not ready, retry */
+      }
     }
+    await wait(50);
   }
 
-  writeFileSync(statusPath, JSON.stringify(statusCache, null, 2), "utf-8");
+  if (!client) {
+    return { results: null, client: null };
+  }
+
+  return await new Promise((resolve) => {
+    let buf = "";
+    let finalResults: MagmuxResultsEvent | null = null;
+
+    client!.on("data", (chunk: Buffer) => {
+      buf += chunk.toString("utf-8");
+      // Split on newlines — magmux writes one JSON event per line.
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf("\n");
+        if (!line) continue;
+        try {
+          const evt = JSON.parse(line) as Record<string, unknown>;
+          onEvent?.(evt);
+          if (evt.type === "results") {
+            finalResults = evt as unknown as MagmuxResultsEvent;
+          }
+        } catch {
+          /* ignore malformed events */
+        }
+      }
+    });
+
+    const done = () => resolve({ results: finalResults, client });
+    client!.once("end", done);
+    client!.once("close", done);
+    client!.once("error", done);
+  });
+}
+
+/**
+ * Translate magmux's PaneResult[] into claudish's TeamStatus.
+ * Pane indices map to anonIds via insertion order in the manifest.
+ */
+function buildTeamStatus(
+  manifest: TeamManifest,
+  startedAt: string,
+  results: PaneResult[] | null
+): TeamStatus {
+  const anonIds = Object.keys(manifest.models);
+  const models: Record<string, ModelStatus> = {};
+
+  for (let i = 0; i < anonIds.length; i++) {
+    const anonId = anonIds[i];
+    const result = results?.find((r) => r.pane === i);
+
+    if (!result) {
+      // No data from magmux — session likely died before finishing.
+      models[anonId] = {
+        state: "TIMEOUT",
+        exitCode: null,
+        startedAt,
+        completedAt: null,
+        outputSize: 0,
+      };
+      continue;
+    }
+
+    let state: ModelStatus["state"];
+    switch (result.state) {
+      case "completed":
+      case "awaiting_input": // interactive mode: user quit while TUI was idle
+        state = "COMPLETED";
+        break;
+      case "failed":
+        state = "FAILED";
+        break;
+      default:
+        state = "TIMEOUT";
+    }
+
+    models[anonId] = {
+      state,
+      exitCode: result.exitCode,
+      startedAt: result.startedAt ?? startedAt,
+      completedAt: result.completedAt ?? new Date().toISOString(),
+      outputSize: result.response?.length ?? 0,
+    };
+  }
+
+  return { startedAt, models };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -236,13 +367,25 @@ function finalizeStatus(statusPath: string, sessionPath: string, anonIds: string
 /**
  * Run multiple models in grid mode using magmux.
  *
- * Sets up the session directory, writes a gridfile with one claudish command
- * per line, launches magmux with the grid, and polls for completion.
+ * Magmux handles every piece of lifecycle management:
+ *   - Idle / completion detection (via ClaudeCodeController JSONL parsing,
+ *     OSC notifications, bracketed paste, text-idle fallback)
+ *   - DONE/FAIL overlays + green/red pane tints
+ *   - Status bar with per-pane counts and timing
+ *   - Auto-exit when all panes are done (-w flag)
+ *   - Final state broadcast via IPC socket
+ *
+ * Claudish only:
+ *   1. Generates a gridfile with one shell command per pane (prompt header +
+ *      `claudish --model X ...`).
+ *   2. Spawns magmux with `-g gridfile`.
+ *   3. Subscribes to magmux's Unix socket and collects events.
+ *   4. Returns TeamStatus built from the final `results` event.
  *
  * @param sessionPath  Absolute path to the session directory
  * @param models       Model IDs to run in parallel
  * @param input        Task prompt text
- * @param opts         Optional timeout (seconds, default 300)
+ * @param opts         Optional keep (don't auto-exit) and mode (default/interactive)
  */
 export async function runWithGrid(
   sessionPath: string,
@@ -253,146 +396,73 @@ export async function runWithGrid(
   const mode = opts?.mode ?? "default";
   const keep = opts?.keep ?? false;
 
-  // 1. Set up session directory (manifest.json, status.json, work dirs, input.md)
+  // 1. Set up session directory (manifest.json, status.json, input.md)
   const manifest: TeamManifest = setupSession(sessionPath, models, input);
+  const startedAt = new Date().toISOString();
 
-  // 2. Ensure errors directory exists and clean stale .exit-code files from previous runs
-  mkdirSync(join(sessionPath, "errors"), { recursive: true });
-  for (const anonId of Object.keys(manifest.models)) {
-    const stale = join(sessionPath, "work", anonId, ".exit-code");
-    try {
-      unlinkSync(stale);
-    } catch {
-      /* doesn't exist — fine */
-    }
-  }
-
-  // 3. Generate gridfile — one shell command per pane
+  // 2. Build gridfile — one command per pane, no IPC plumbing.
+  //    Magmux attaches ClaudeCodeController automatically by detecting
+  //    `claude` / `claudish` in the command args.
   const gridfilePath = join(sessionPath, "gridfile.txt");
-  // Read prompt once, shell-escape single quotes
   const prompt = readFileSync(join(sessionPath, "input.md"), "utf-8")
     .replace(/'/g, "'\\''")
-    .replace(/\n/g, " ");  // Flatten newlines — gridfile is one command per line
+    .replace(/\n/g, " "); // Flatten — gridfile is one command per line
 
-  // Shell function: count .exit-code files, derive done/running/failed, send status IPC.
-  // magmux handles {"cmd":"status","text":"..."} and renders it directly — no file needed.
-  const totalPanes = Object.keys(manifest.models).length;
-  const workDir = join(sessionPath, "work");
-  // Build status bar JSON in TypeScript. JSON.stringify handles tab escaping.
-  // Shell variables (__D__, __R__, __F__, __TS__) are placeholders replaced at runtime via sed.
-  const statusJsonAllDone = JSON.stringify({
-    cmd: "status",
-    text: `C: claudish team\tG: ${totalPanes} done\tG: complete\tD: __TS__\tD: ctrl-g q to quit`,
-  });
-  const statusJsonWithFails = JSON.stringify({
-    cmd: "status",
-    text: `C: claudish team\tG: __D__ done\tR: __F__ failed\tD: __TS__\tD: ctrl-g q to quit`,
-  });
-  const statusJsonRunning = JSON.stringify({
-    cmd: "status",
-    text: `C: claudish team\tG: __D__ done\tC: __R__ running\tR: __F__ failed\tD: __TS__`,
-  });
-
-  // Write pre-built JSON templates to files so shell just reads + sed-replaces placeholders
-  const tplDir = join(sessionPath, "status-tpl");
-  mkdirSync(tplDir, { recursive: true });
-  writeFileSync(join(tplDir, "all-done.json"), statusJsonAllDone);
-  writeFileSync(join(tplDir, "with-fails.json"), statusJsonWithFails);
-  writeFileSync(join(tplDir, "running.json"), statusJsonRunning);
-
-  const statusFunc = [
-    `_update_bar() {`,
-    `_d=0; _f=0;`,
-    `for _ecf in $(find ${workDir} -name .exit-code 2>/dev/null); do`,
-    `_c=$(cat "$_ecf" 2>/dev/null);`,
-    `if [ "$_c" = "0" ]; then _d=$((_d+1)); else _f=$((_f+1)); fi;`,
-    `done;`,
-    `_r=$((${totalPanes}-_d-_f));`,
-    `_e=$SECONDS;`,
-    `if [ $_e -ge 60 ]; then _ts="$((_e/60))m $((_e%60))s"; else _ts="\${_e}s"; fi;`,
-    `if [ $_r -eq 0 ] && [ $_f -eq 0 ]; then`,
-    `sed "s/__TS__/\${_ts}/" ${tplDir}/all-done.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-    `elif [ $_r -eq 0 ] && [ $_f -gt 0 ]; then`,
-    `sed -e "s/__D__/\${_d}/" -e "s/__F__/\${_f}/" -e "s/__TS__/\${_ts}/" ${tplDir}/with-fails.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-    `else`,
-    `sed -e "s/__D__/\${_d}/" -e "s/__R__/\${_r}/" -e "s/__F__/\${_f}/" -e "s/__TS__/\${_ts}/" ${tplDir}/running.json | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-    `fi;`,
-    `};`,
-  ].join(" ");
-
-  // Read raw prompt (preserving newlines) for the pane header display
   const rawPrompt = readFileSync(join(sessionPath, "input.md"), "utf-8");
+  const usedBannerColors = new Set<number>();
 
   const gridLines = Object.entries(manifest.models).map(([anonId]) => {
-    const errorLog = join(sessionPath, "errors", `${anonId}.log`);
-    const exitCodeFile = join(sessionPath, "work", anonId, ".exit-code");
     const model = manifest.models[anonId].model;
-    const paneIndex = Object.keys(manifest.models).indexOf(anonId);
 
     if (mode === "interactive") {
-      // Interactive mode: full Claude Code TUI sessions.
-      // Build status bar JSON fully in TypeScript — no shell escaping issues.
-      const modelList = Object.values(manifest.models).map((m) => m.model).join(", ");
-      const interactiveJson = JSON.stringify({
-        cmd: "status",
-        text: `C: claudish team\tW: ${modelList}\tD: ctrl-g Tab switch\tD: ctrl-g q quit`,
-      });
-      const interactiveJsonFile = join(tplDir, "interactive.json");
-      writeFileSync(interactiveJsonFile, interactiveJson);
-      return [
-        `if [ -n "$MAGMUX_SOCK" ]; then cat ${interactiveJsonFile} | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null; fi;`,
-        `claudish --model ${model} -i --dangerously-skip-permissions '${prompt}' 2>${errorLog};`,
-        `_ec=$?; echo $_ec > ${exitCodeFile}`,
-      ].join(" ");
+      // Interactive: full Claude Code TUI — just launch claudish -i.
+      // Magmux's ClaudeCodeController watches the JSONL transcript and
+      // produces live snapshots via the IPC socket.
+      return `claudish --model ${model} -i --dangerously-skip-permissions '${prompt}'`;
     }
 
-    // Default mode: header + quiet output + IPC updates + sleep to keep pane alive
-    const header = buildPaneHeader(model, rawPrompt);
-
-    return [
-      `${statusFunc}`,
-      `if [ -n "$MAGMUX_SOCK" ]; then _update_bar; fi;`,
-      `${header}`,
-      `claudish --model ${model} -y --quiet '${prompt}' 2>${errorLog};`,
-      `_ec=$?; echo $_ec > ${exitCodeFile};`,
-      `if [ -n "$MAGMUX_SOCK" ]; then`,
-      `  _update_bar;`,
-      `  if [ $_ec -eq 0 ]; then`,
-      `    echo '{"cmd":"tint","pane":${paneIndex},"color":"green"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-      `    echo '{"cmd":"overlay","pane":${paneIndex},"text":"DONE","color":"green"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-      `  else`,
-      `    echo '{"cmd":"tint","pane":${paneIndex},"color":"red"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-      `    echo '{"cmd":"overlay","pane":${paneIndex},"text":"FAIL","color":"red"}' | nc -U "$MAGMUX_SOCK" -w 1 2>/dev/null;`,
-      `  fi;`,
-      `fi;`,
-      `exec sleep 86400`,
-    ].join(" ");
+    // Default: render a pane header banner, then run claudish headlessly.
+    // Magmux auto-applies DONE/FAIL overlay and green/red tint when the
+    // child exits, so no shell-level IPC is needed.
+    const bg = pickBannerColor(model, usedBannerColors);
+    const header = buildPaneHeader(model, rawPrompt, bg);
+    return `${header} claudish --model ${model} -y --quiet '${prompt}'`;
   });
   writeFileSync(gridfilePath, gridLines.join("\n") + "\n", "utf-8");
 
-  // 4. Find magmux binary
+  // 3. Spawn magmux with grid mode.
   const magmuxPath = findMagmuxBinary();
-
-  // 5. Spawn magmux — status bar updated by panes via IPC (no file needed)
-  const statusPath = join(sessionPath, "status.json");
-  const anonIds = Object.keys(manifest.models);
   const spawnArgs = ["-g", gridfilePath];
   if (!keep && mode === "default") {
-    spawnArgs.push("-w"); // auto-exit when all panes complete (default mode only)
+    spawnArgs.push("-w"); // auto-exit when all panes complete
   }
+
   const proc = spawn(magmuxPath, spawnArgs, {
     stdio: "inherit",
     env: { ...process.env },
   });
 
-  // 6. Wait for multiplexer to exit
-  await new Promise<void>((resolve) => {
+  // 4. Subscribe to magmux's Unix socket for live events + final results.
+  //    magmux names its socket /tmp/magmux-<pid>.sock.
+  const sockPath = `/tmp/magmux-${proc.pid}.sock`;
+  const subscription = subscribeToMagmux(sockPath);
+
+  // 5. Wait for magmux process to exit.
+  const procExit = new Promise<void>((resolve) => {
     proc.on("exit", () => resolve());
     proc.on("error", () => resolve());
   });
 
-  // 7. Final status.json update from exit-code files
-  finalizeStatus(statusPath, sessionPath, anonIds, mode);
+  // Race: whichever finishes first. In practice the socket closes just
+  // before the process exits (magmux pushes shutdown, then closes).
+  const [{ results }] = await Promise.all([subscription, procExit]);
 
-  return JSON.parse(readFileSync(statusPath, "utf-8")) as TeamStatus;
+  // 6. Build TeamStatus from magmux's final results payload.
+  const status = buildTeamStatus(manifest, startedAt, results?.panes ?? null);
+
+  // Persist status.json for downstream tools that read the session directory.
+  const statusPath = join(sessionPath, "status.json");
+  writeFileSync(statusPath, JSON.stringify(status, null, 2), "utf-8");
+
+  return status;
 }
