@@ -20,20 +20,40 @@ export class QwenScraper extends BaseCollector {
 
   async collect(): Promise<CollectorResult> {
     try {
-      // The Alibaba Cloud pricing page contains ~200 pricing tables including
-      // qwen3.6-plus and other Singapore-region models. Key detail: the page
-      // served to datacenter IPs defaults to Chinese Mainland content (~240KB
-      // shell), but with `Accept-Language: en-US` and a US Chrome user agent
-      // (set in browserbase.ts) Alibaba returns the full International page
-      // with all pricing tables already rendered (~2.4MB).
+      // The Alibaba Cloud pricing page is a SPA. The page shell loads
+      // (~240KB) but the ~200 pricing tables are only rendered by JS after
+      // a region tab is clicked. The "International" tab contains
+      // qwen3.6-plus and other Singapore-region models.
       //
-      // waitForFunction blocks until a <table> containing our target strings
-      // exists — the authoritative signal that JS render is complete, no
-      // blind setTimeout needed.
+      // Required sequence:
+      //   1. Navigate with en-US locale (set in browserbase.ts)
+      //   2. Scroll the viewport so the tab bar is actually on screen
+      //      (some SPAs refuse to render off-screen content)
+      //   3. Click the "International" tab label
+      //   4. Wait until a <table> containing "Input price" appears in the DOM
+      //
+      // The scroll + click in afterLoad is what triggers the JS render. The
+      // waitForFunction is the authoritative signal that rendering finished.
       let html = await fetchRenderedHTML(SOURCE_URL, {
         timeoutMs: 60000,
         waitUntil: "networkidle0",
         waitForTimeoutMs: 25000,
+        afterLoad: async (page) => {
+          // Scroll into the pricing section so the tab bar is visible.
+          await page.evaluate(() => window.scrollTo(0, 400));
+          // Click any clickable element whose text is exactly "International".
+          // Prefer leaf-most matches (elements with ≤ 2 children) to avoid
+          // clicking a large container.
+          await page.evaluate(() => {
+            const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+            for (const el of all) {
+              if ((el.textContent ?? "").trim() !== "International") continue;
+              if (el.children.length > 2) continue;
+              el.click();
+              return;
+            }
+          });
+        },
         waitForFunction: () => {
           const tables = document.querySelectorAll("table");
           for (const t of Array.from(tables)) {
