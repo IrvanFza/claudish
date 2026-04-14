@@ -122,6 +122,7 @@ const MODALITY_ID_MARKERS = [
   /-whisper/i,
   /-embedding/i, // embedding models don't have tool calling anyway, defense in depth
   /-dall-e/i,
+  /-models$/i,  // category heading scraped as model ID (e.g. "gemini-2.0-models")
 ];
 
 export function isCodingCandidate(doc: ModelDoc): boolean {

@@ -28,6 +28,8 @@ export class GooglePricingScraper extends BaseCollector {
         const modelId = modelMatch[1].toLowerCase();
         if (seen.has(modelId)) continue;
         if (modelId.includes("tts") || modelId.includes("audio")) continue;
+        // Reject category headings scraped as model IDs (e.g. "gemini-2.0-models")
+        if (modelId.endsWith("-models") || modelId.endsWith("-model")) continue;
 
         // Find dollar amounts in the next ~1500 chars
         const chunk = section.slice(0, 1500);
