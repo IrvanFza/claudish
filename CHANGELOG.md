@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.13.1] - 2026-04-14
+
+### Bug Fixes
+
+- reject category headings as model IDs *(google-scraper)* ([`0582413`](https://github.com/MadAppGang/claudish/commit/058241372fe2263654ad9f165ceb9ed523cf5613))
+- set en-US locale headers on every page *(browserbase)* ([`ed93c11`](https://github.com/MadAppGang/claudish/commit/ed93c1180f22aa6a1484c3905aa1cb3b1eac4f50))
+- retry up to 3 times on empty response *(qwen-scraper)* ([`4fb6716`](https://github.com/MadAppGang/claudish/commit/4fb6716d87a87ee80fb51f4cd80be646184df682))
+
+### Documentation
+
+- update CHANGELOG.md for v6.13.0([`f66d397`](https://github.com/MadAppGang/claudish/commit/f66d397fcc69d7f014e4b7b78c7d4c23b935b23b))
+
+### New Features
+
+- v6.13.1 — magmux IPC integration + e2e tests([`26c7a29`](https://github.com/MadAppGang/claudish/commit/26c7a29efda8c1171c36abeae93ef84627bb825e))
+
+### Other Changes
+
+- gitignore local dev test scripts in firebase/functions([`a0776f0`](https://github.com/MadAppGang/claudish/commit/a0776f0490246829791d80636e1b7fb3b52ded23))
+
+### Refactoring
+
+- delegate all lifecycle tracking to magmux *(team-grid)* ([`168c814`](https://github.com/MadAppGang/claudish/commit/168c814db601da2976b48dd752dea5a319bd2bba))
+
 ## [6.13.0] - 2026-04-14
 
 ### Bug Fixes
