@@ -1,19 +1,22 @@
 /**
  * End-to-end tests for the claudish + magmux integration.
  *
- * These tests spawn real processes (magmux and optionally claudish) under a
- * PTY and validate the full lifecycle: socket protocol, controller snapshots,
+ * Spawns real processes (magmux, claudish, Claude Code) under a PTY and
+ * validates the full lifecycle: socket protocol, controller snapshots,
  * final results aggregation.
  *
- * Two tiers:
- *   1. Fast tier — uses shell commands instead of real models. Runs by
- *      default. Exercises the magmux side of the protocol.
- *   2. Real-model tier — calls actual LLMs via claudish. Opt-in via
- *      CLAUDISH_E2E_REAL_MODELS=1 because they cost money and need a valid
- *      provider key. Exercises the full claudish → magmux → Claude Code
- *      → ClaudeCodeController → socket pipeline.
+ * Two describe blocks, both run on every invocation:
+ *   1. Socket protocol — shell commands only. Fast, no API keys needed.
+ *   2. Real models + Claude Code — calls actual LLMs (glm-5-turbo) and
+ *      launches Claude Code interactive so ClaudeCodeController attaches
+ *      and reports snapshots. Requires a working model config and the
+ *      `claude` CLI on PATH.
  *
- * Both tiers require a working `script(1)` on PATH (macOS + util-linux).
+ * Preqs (all must be on PATH):
+ *   - expect(1)          — real PTY allocator
+ *   - magmux             — via @claudish/magmux-*  npm package or Homebrew
+ *   - claude             — Claude Code CLI
+ *   - bun                — runs the dev claudish via `bun run src/index.ts`
  */
 
 import { describe, it, expect, beforeAll } from "bun:test";
@@ -27,8 +30,7 @@ import {
   type MagmuxSubscription,
 } from "./team-grid.e2e-helpers.js";
 
-const REAL_MODELS = process.env.CLAUDISH_E2E_REAL_MODELS === "1";
-const E2E_TIMEOUT = 120_000; // 2 minutes per real-model test
+const E2E_TIMEOUT = 150_000; // per real-model test (includes cold-start slack)
 
 let magmuxPath = "";
 
@@ -242,8 +244,6 @@ describe("magmux crash fallback", () => {
 
 // ─── Real-model tier: claudish happy paths ───────────────────────────────────
 
-const realDescribe = REAL_MODELS ? describe : describe.skip;
-
 // For real-model tests we drive magmux directly with a gridfile that runs the
 // dev-build claudish (via `bun run src/index.ts --model ...`). This avoids
 // version skew between the outer test harness and whatever `claudish` happens
@@ -254,7 +254,7 @@ function devClaudishCommand(model: string, prompt: string): string {
   return `bun run ${entry} --model ${model} -y --quiet '${escPrompt}'`;
 }
 
-realDescribe("claudish team with real models (CLAUDISH_E2E_REAL_MODELS=1)", () => {
+describe("claudish team with real models and Claude Code", () => {
   it(
     "default mode: pane runs a real model, magmux emits completed results",
     async () => {
