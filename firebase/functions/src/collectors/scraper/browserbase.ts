@@ -121,6 +121,16 @@ export async function fetchRenderedHTML(
       return null;
     }
 
+    // Advertise as a standard US desktop browser. Some pages (like Alibaba
+    // Cloud's pricing docs) serve different default tab content based on
+    // locale hints; en-US should get us the International/Global views.
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9",
+    });
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    );
+
     await page.goto(url, { waitUntil, timeout: timeoutMs });
 
     // Optional post-load hook (click a tab, expand an accordion, scroll, etc.)
