@@ -100,17 +100,23 @@ export const MODEL_CATALOG: ModelEntry[] = [
 /**
  * Look up model info from the catalog.
  *
- * Matches against the lowercased model ID. Also handles vendor-prefixed IDs
- * like "x-ai/grok-beta" by checking the segment after the last "/".
+ * Matches against the lowercased model ID. Handles vendor-prefixed IDs like
+ * "x-ai/grok-beta" by checking the segment after the last "/".
+ *
+ * Accepts: bare model IDs ("glm-4.7") and vendor-prefixed IDs ("x-ai/grok-beta").
+ * Does NOT accept provider-routed IDs ("zai@glm-4.7") — callers must strip the
+ * provider prefix before calling. This is an invariant, not a defensive normalization:
+ * accepting routed strings here invited #102, where the "@" separator was conflated
+ * with the "/" vendor separator in matchesModelFamily() and caused silent failures.
  *
  * Returns the first matching entry, or undefined if no match.
  */
 export function lookupModel(modelId: string): ModelEntry | undefined {
   const lower = modelId.toLowerCase();
-  // Handle vendor-prefixed IDs like "x-ai/grok-beta" or provider@model like "zen@qwen3.6-plus-free"
-  let unprefixed = lower;
-  if (lower.includes("@")) unprefixed = lower.substring(lower.indexOf("@") + 1);
-  else if (lower.includes("/")) unprefixed = lower.substring(lower.lastIndexOf("/") + 1);
+  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on the segment after "/".
+  const unprefixed = lower.includes("/")
+    ? lower.substring(lower.lastIndexOf("/") + 1)
+    : lower;
 
   for (const entry of MODEL_CATALOG) {
     if (unprefixed.includes(entry.pattern) || lower.includes(entry.pattern)) {

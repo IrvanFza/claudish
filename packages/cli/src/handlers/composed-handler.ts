@@ -75,7 +75,14 @@ export class ComposedHandler implements ModelHandler {
   private modelAdapter?: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
   private tokenTracker: TokenTracker;
+  /** Full routed model string (e.g. "zai@glm-4.7"). Used for provider routing and display echo. */
   private targetModel: string;
+  /**
+   * Bare model name (e.g. "glm-4.7"), provider prefix stripped. Used for model identity:
+   * dialect selection, catalog lookup, middleware routing, context tracking. Never contains '@'.
+   * @invariant !bareModelName.includes("@")
+   */
+  private readonly bareModelName: string;
   private options: ComposedHandlerOptions;
   private isInteractive: boolean;
   /** Fallback metadata set by FallbackHandler before calling handle() */
@@ -88,14 +95,29 @@ export class ComposedHandler implements ModelHandler {
     port: number,
     options: ComposedHandlerOptions = {}
   ) {
+    // Enforce the bare-name invariant — modelName must not contain provider routing
+    // syntax. This prevents #102-class bugs where a routed string leaks into dialect
+    // selection (e.g. "zai@glm-4.7" falsely matching GLMModelDialect via the "@glm"
+    // substring). Callers must strip the provider prefix before passing modelName.
+    if (modelName.includes("@")) {
+      throw new Error(
+        `ComposedHandler: modelName must not contain '@' (got "${modelName}"). ` +
+          `Strip the provider routing prefix before passing modelName. ` +
+          `If you need the full routed form, pass it as targetModel.`
+      );
+    }
+
     this.provider = provider;
     this.targetModel = targetModel;
+    this.bareModelName = modelName;
     this.options = options;
     this.explicitAdapter = options.adapter;
     this.isInteractive = options.isInteractive ?? false;
 
-    // Initialize dialect manager for automatic dialect/format selection
-    this.adapterManager = new DialectManager(targetModel);
+    // Initialize dialect manager for automatic dialect/format selection.
+    // Always pass the bare modelName — passing routed strings here was the root
+    // cause of #102 (zai@glm-4.7 false-matching GLMModelDialect).
+    this.adapterManager = new DialectManager(this.bareModelName);
 
     // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
@@ -104,20 +126,24 @@ export class ComposedHandler implements ModelHandler {
       this.modelAdapter = resolvedModelAdapter;
     }
 
-    // Initialize middleware (only register model-specific middleware when applicable)
+    // Initialize middleware (only register model-specific middleware when applicable).
+    // Use bareModelName for the middleware gate — .includes() works identically for
+    // "google@gemini-2.5-flash" and "gemini-2.5-flash", and bare form is the invariant.
     this.middlewareManager = new MiddlewareManager();
-    if (targetModel.includes("gemini") || targetModel.includes("google/")) {
+    if (this.bareModelName.includes("gemini") || this.bareModelName.includes("google/")) {
       this.middlewareManager.register(new GeminiThoughtSignatureMiddleware());
     }
     this.middlewareManager
       .initialize()
-      .catch((err) => log(`[ComposedHandler:${targetModel}] Middleware init error: ${err}`));
+      .catch((err) =>
+        log(`[ComposedHandler:${this.bareModelName}] Middleware init error: ${err}`)
+      );
 
     // Initialize token tracker — model adapter knows the real context window
     this.tokenTracker = new TokenTracker(port, {
       contextWindow: this.getModelContextWindow(),
       providerName: provider.name,
-      modelName,
+      modelName: this.bareModelName,
       providerDisplayName: provider.displayName,
     });
   }
@@ -164,11 +190,12 @@ export class ComposedHandler implements ModelHandler {
     const messages = adapter.convertMessages(claudeRequest, filterIdentity);
     let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
-    // Enforce per-model tool count limits (e.g., OpenAI max 128)
-    const maxToolCount = lookupModel(this.targetModel)?.maxToolCount;
+    // Enforce per-model tool count limits (e.g., OpenAI max 128).
+    // Use bareModelName — catalog patterns match on bare model IDs.
+    const maxToolCount = lookupModel(this.bareModelName)?.maxToolCount;
     if (maxToolCount && tools.length > maxToolCount) {
       log(
-        `[ComposedHandler] Truncating tools from ${tools.length} to ${maxToolCount} (model limit for ${this.targetModel})`
+        `[ComposedHandler] Truncating tools from ${tools.length} to ${maxToolCount} (model limit for ${this.bareModelName})`
       );
       tools = tools.slice(0, maxToolCount);
     }
@@ -347,9 +374,11 @@ export class ComposedHandler implements ModelHandler {
       requestPayload = this.provider.transformPayload(requestPayload);
     }
 
-    // 6. Middleware before request
+    // 6. Middleware before request.
+    // Use bareModelName — must match the key used by getActiveNames() and
+    // afterStreamComplete() so the same set of middlewares is selected at both ends.
     await this.middlewareManager.beforeRequest({
-      modelId: this.targetModel,
+      modelId: this.bareModelName,
       messages,
       tools,
       stream: true,
@@ -406,7 +435,7 @@ export class ComposedHandler implements ModelHandler {
             error_code,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
             fallback_used: fallbackMeta !== undefined,
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
@@ -480,7 +509,7 @@ export class ComposedHandler implements ModelHandler {
                 error_code,
                 token_strategy: this.options.tokenStrategy ?? "standard",
                 adapter_name: this.getActiveAdapterName(),
-                middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+                middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
                 fallback_used: fallbackMeta !== undefined,
                 fallback_chain: fallbackMeta?.chain,
                 fallback_attempts: fallbackMeta?.attempts,
@@ -521,7 +550,7 @@ export class ComposedHandler implements ModelHandler {
               error_code,
               token_strategy: this.options.tokenStrategy ?? "standard",
               adapter_name: this.getActiveAdapterName(),
-              middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+              middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
               fallback_used: fallbackMeta !== undefined,
               fallback_chain: fallbackMeta?.chain,
               fallback_attempts: fallbackMeta?.attempts,
@@ -583,7 +612,7 @@ export class ComposedHandler implements ModelHandler {
             error_code,
             token_strategy: this.options.tokenStrategy ?? "standard",
             adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
             fallback_used: fallbackMeta !== undefined,
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
@@ -633,7 +662,7 @@ export class ComposedHandler implements ModelHandler {
           is_free_model: isFreeModel,
           token_strategy: this.options.tokenStrategy ?? "standard",
           adapter_name: this.getActiveAdapterName(),
-          middleware_names: this.middlewareManager.getActiveNames(this.targetModel),
+          middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
           fallback_used: fallbackMeta !== undefined,
           fallback_chain: fallbackMeta?.chain,
           fallback_attempts: fallbackMeta?.attempts,
@@ -693,13 +722,18 @@ export class ComposedHandler implements ModelHandler {
       this.provider.overrideStreamFormat?.() ??
       this.modelAdapter?.getStreamFormat() ??
       this.getAdapter().getStreamFormat();
+    // Stream parsers receive bareModelName: it is used both as the middleware-identity
+    // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
+    // `message_start.message.model` for display. Passing the routed form here was the
+    // latent second part of #102 — the parameter was named `modelName` but received
+    // the full routed string.
     switch (streamFormat) {
       case "openai-sse":
         return createStreamingResponseHandler(
           c,
           response,
           adapter,
-          this.targetModel,
+          this.bareModelName,
           this.middlewareManager,
           onTokenUpdate,
           claudeRequest.tools,
@@ -708,14 +742,14 @@ export class ComposedHandler implements ModelHandler {
 
       case "openai-responses-sse":
         return createResponsesStreamHandler(c, response, {
-          modelName: this.targetModel,
+          modelName: this.bareModelName,
           onTokenUpdate,
           toolNameMap: adapter.getToolNameMap(),
         });
 
       case "anthropic-sse":
         return createAnthropicPassthroughStream(c, response, {
-          modelName: this.targetModel,
+          modelName: this.bareModelName,
           onTokenUpdate,
         });
 
@@ -727,7 +761,7 @@ export class ComposedHandler implements ModelHandler {
           }
         };
         return createGeminiSseStream(c, response, {
-          modelName: this.targetModel,
+          modelName: this.bareModelName,
           adapter,
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
@@ -738,7 +772,7 @@ export class ComposedHandler implements ModelHandler {
 
       case "ollama-jsonl":
         return createOllamaJsonlStream(c, response, {
-          modelName: this.targetModel,
+          modelName: this.bareModelName,
           onTokenUpdate,
         });
 
@@ -757,11 +791,9 @@ export class ComposedHandler implements ModelHandler {
     try {
       const fn = (this.provider as any).getQuotaRemaining;
       if (typeof fn !== "function") return;
-      // Strip provider prefix (go@gemini-2.5-flash → gemini-2.5-flash)
-      const bareModel = this.targetModel.includes("@")
-        ? this.targetModel.split("@")[1]
-        : this.targetModel;
-      const remaining = await fn.call(this.provider, bareModel);
+      // bareModelName is already the provider-stripped form (invariant enforced
+      // in constructor), so pass it directly instead of re-parsing targetModel.
+      const remaining = await fn.call(this.provider, this.bareModelName);
       if (typeof remaining === "number") {
         this.tokenTracker.setQuotaRemaining(remaining);
         this.tokenTracker.rewrite();

@@ -407,6 +407,18 @@ async function runCli() {
       }
     }
 
+    // Clean up stdin after interactive prompts (readline, @inquirer/prompts).
+    // These leave lingering data/keypress listeners and raw mode state that interfere
+    // with Claude Code's TTY handling when spawned with stdio: "inherit". (#85, #88, #99)
+    if (cliConfig.interactive && !cliConfig.monitor && process.stdin.isTTY) {
+      if (typeof process.stdin.setRawMode === "function") {
+        process.stdin.setRawMode(false);
+      }
+      process.stdin.pause();
+      process.stdin.removeAllListeners("data");
+      process.stdin.removeAllListeners("keypress");
+    }
+
     // Show deprecation warnings for legacy syntax
     if (!cliConfig.quiet) {
       const modelsToCheck = [

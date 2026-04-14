@@ -28,7 +28,7 @@ import { lookupModel } from "./model-catalog.js";
 export function matchesModelFamily(modelId: string, family: string): boolean {
   const lower = modelId.toLowerCase();
   const fam = family.toLowerCase();
-  return lower.startsWith(fam) || lower.includes(`/${fam}`) || lower.includes(`@${fam}`);
+  return lower.startsWith(fam) || lower.includes(`/${fam}`);
 }
 import { convertMessagesToOpenAI } from "../handlers/shared/format/openai-messages.js";
 import { convertToolsToOpenAI } from "../handlers/shared/format/openai-tools.js";

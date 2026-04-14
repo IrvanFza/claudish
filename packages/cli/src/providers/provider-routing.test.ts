@@ -284,6 +284,14 @@ describe("DialectManager — false positive prevention", () => {
     const adapter = new DialectManager("openrouter/x-ai/grok-beta").getAdapter();
     expect(adapter).toBeInstanceOf(GrokModelDialect);
   });
+
+  test("provider-prefixed glm-4.7 → DefaultAPIFormat (regression #102: zai@glm matched GLMModelDialect)", () => {
+    // The DialectManager should receive bare model names, not provider-prefixed strings.
+    // But even if it does, the @ separator must not trigger a family match.
+    const adapter = new DialectManager("zai@glm-4.7").getAdapter();
+    expect(adapter).not.toBeInstanceOf(GLMModelDialect);
+    expect(adapter).toBeInstanceOf(DefaultAPIFormat);
+  });
 });
 
 // ---------------------------------------------------------------------------
