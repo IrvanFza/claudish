@@ -1,36 +1,17 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import type { ModelCatalogResolver } from "../model-catalog-resolver.js";
 import { staticOpenRouterFallback } from "./static-fallback.js";
-
-/**
- * Slim catalog entry from the Firebase queryModels?catalog=slim endpoint.
- * Contains only what's needed for model name resolution.
- */
-interface SlimModelEntry {
-  modelId: string;
-  aliases: string[];
-  sources: Record<string, { externalId: string }>;
-}
-
-/**
- * Disk cache format (version 2).
- * Contains both the slim Firebase data (for resolver) and a backward-compatible
- * models array (for existing consumers in cli.ts/mcp-server.ts that expect {id: string}).
- */
-interface DiskCache {
-  version: 2;
-  lastUpdated: string;
-  entries: SlimModelEntry[];
-  /** Backward-compatible: [{id: "vendor/model"}] for consumers that read all-models.json */
-  models: Array<{ id: string }>;
-}
+import {
+  readAllModelsCache,
+  writeAllModelsCache,
+  type SlimModelEntry,
+  type DiskCacheV2,
+} from "../all-models-cache.js";
 
 const FIREBASE_CATALOG_URL =
   "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=1000";
 
-const DISK_CACHE_PATH = join(homedir(), ".claudish", "all-models.json");
+// Re-export so existing imports of DiskCache type from this module continue to work.
+export type DiskCache = DiskCacheV2;
 
 /**
  * Module-level memory cache of slim catalog entries.
@@ -161,30 +142,23 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
   private _getEntries(): SlimModelEntry[] | null {
     if (_memCache) return _memCache;
 
-    // Disk fallback
-    if (existsSync(DISK_CACHE_PATH)) {
-      try {
-        const data = JSON.parse(readFileSync(DISK_CACHE_PATH, "utf-8"));
+    const cache = readAllModelsCache();
+    if (!cache) return null;
 
-        // Version 2 format (Firebase catalog)
-        if (data.version === 2 && Array.isArray(data.entries) && data.entries.length > 0) {
-          _memCache = data.entries;
-          return _memCache;
-        }
+    // Prefer Firebase slim entries when present
+    if (cache.entries.length > 0) {
+      _memCache = cache.entries;
+      return _memCache;
+    }
 
-        // Version 1 format (legacy OpenRouter — backward compat read)
-        if (Array.isArray(data.models) && data.models.length > 0) {
-          // Convert legacy {id: "vendor/model"} to slim entries for resolution
-          _memCache = data.models.map((m: { id: string }) => ({
-            modelId: m.id.includes("/") ? m.id.split("/").slice(1).join("/") : m.id,
-            aliases: [],
-            sources: { "openrouter-api": { externalId: m.id } },
-          }));
-          return _memCache;
-        }
-      } catch {
-        // Ignore
-      }
+    // Backward-compat: synthesize entries from a legacy v1 models array
+    if (cache.models.length > 0) {
+      _memCache = cache.models.map((m) => ({
+        modelId: m.id.includes("/") ? m.id.split("/").slice(1).join("/") : m.id,
+        aliases: [],
+        sources: { "openrouter-api": { externalId: m.id } },
+      }));
+      return _memCache;
     }
 
     return null;
@@ -213,15 +187,10 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
         }
       }
 
-      const cacheDir = join(homedir(), ".claudish");
-      mkdirSync(cacheDir, { recursive: true });
-      const diskData: DiskCache = {
-        version: 2,
-        lastUpdated: new Date().toISOString(),
+      writeAllModelsCache({
         entries: data.models,
         models: backwardCompatModels,
-      };
-      writeFileSync(DISK_CACHE_PATH, JSON.stringify(diskData), "utf-8");
+      });
     } catch {
       // Silent — fall back to disk read in resolveSync
     }
