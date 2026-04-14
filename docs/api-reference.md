@@ -77,7 +77,14 @@ curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=
 
 #### Recommended models
 
-`?catalog=recommended` -- algorithmically scored top picks, auto-generated daily by the recommender pipeline.
+`?catalog=recommended` -- fully deterministic, algorithmically scored top picks, auto-generated daily by the recommender pipeline (v2.0+, no LLM step).
+
+The recommender selects one flagship and one fast model per provider (OpenAI, Google, xAI, Qwen, Z.ai, Moonshot, MiniMax), plus subscription/gateway access variants. Selection uses a version-aware scoring formula (newest version wins, then capabilities, pricing, context, confidence). A pre-publish diff gate blocks anomalous outputs (provider disappearing, >20% total drop) and writes to `config/recommended-models-pending` with a Slack alert instead.
+
+Three entry categories:
+- **flagship** -- `category: "programming"` or `"vision"` or `"reasoning"`, the best general-purpose model per provider
+- **subscription** -- `category: "subscription"`, same flagship model accessible via a dedicated endpoint (coding plan, gateway)
+- **fast** -- `category: "fast"`, cheaper/faster variant of the flagship (mini, flash, turbo, lite)
 
 ```bash
 curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=recommended"
@@ -85,26 +92,44 @@ curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=
 
 ```json
 {
-  "version": "2026-04-06",
-  "lastUpdated": "2026-04-06",
-  "generatedAt": "2026-04-06T03:05:12Z",
+  "version": "2.0.0",
+  "lastUpdated": "2026-04-14",
+  "generatedAt": "2026-04-14T03:00:42.942Z",
   "source": "firebase-auto",
   "models": [
     {
       "id": "gpt-5.4",
       "openrouterId": "openai/gpt-5.4",
-      "name": "GPT-5.4",
-      "description": "OpenAI's flagship coding model",
-      "provider": "OpenAI",
+      "name": "gpt-5.4",
+      "description": "GPT-5.4 is OpenAI's latest frontier model...",
+      "provider": "Openai",
       "category": "programming",
       "priority": 1,
-      "pricing": { "input": "$2.50/1M", "output": "$10.00/1M", "average": "$6.25/1M" },
-      "context": "131K",
-      "maxOutputTokens": 16384,
-      "modality": "text+image->text",
+      "pricing": { "input": "$2.50/1M", "output": "$15.00/1M", "average": "$8.75/1M" },
+      "context": "1.1M",
+      "maxOutputTokens": 128000,
+      "modality": "text->text",
       "supportsTools": true,
-      "supportsReasoning": true,
-      "supportsVision": true,
+      "supportsReasoning": false,
+      "supportsVision": false,
+      "isModerated": false,
+      "recommended": true
+    },
+    {
+      "id": "gpt-5.4",
+      "openrouterId": "openai/gpt-5.4",
+      "name": "gpt-5.4",
+      "description": "...",
+      "provider": "Openai",
+      "category": "subscription",
+      "priority": 8,
+      "pricing": { "input": "$2.50/1M", "output": "$15.00/1M", "average": "$8.75/1M" },
+      "context": "1.1M",
+      "maxOutputTokens": 128000,
+      "modality": "text->text",
+      "supportsTools": true,
+      "supportsReasoning": false,
+      "supportsVision": false,
       "isModerated": false,
       "recommended": true,
       "subscription": {
@@ -491,24 +516,27 @@ Full model document stored in Firestore `models/{id}` collection.
 
 ### RecommendedModelEntry
 
-Auto-generated recommended model entry.
+Auto-generated recommended model entry. One per flagship, fast variant, and subscription/gateway access method.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Canonical short ID (e.g., `"minimax-m2.7"`) |
-| `openrouterId` | string | Vendor-prefixed ID (e.g., `"minimax/minimax-m2.7"`) |
+| `id` | string | Canonical short ID (e.g., `"minimax-m2.7"`). Never contains `/` (vendor prefix stripped at ingress) |
+| `openrouterId` | string | Vendor-prefixed ID for OpenRouter routing (e.g., `"minimax/minimax-m2.7"`) |
 | `name` | string | Display name |
-| `description` | string | Model description |
-| `provider` | string | Capitalized provider name |
-| `category` | string | `"programming"`, `"vision"`, `"reasoning"` |
-| `priority` | number | 1-indexed rank |
-| `pricing` | object | `{ input: "$0.30/1M", output: "$1.20/1M", average: "$0.75/1M" }` |
-| `context` | string | e.g., `"196K"` |
-| `maxOutputTokens` | number? | Max output tokens |
-| `supportsTools` | boolean | Function calling support |
+| `description` | string | Model description from provider API |
+| `provider` | string | Capitalized provider name (e.g., `"Openai"`, `"Google"`, `"Qwen"`) |
+| `category` | string | `"programming"`, `"vision"`, `"reasoning"`, `"fast"`, or `"subscription"` |
+| `priority` | number | 1-indexed rank (flagships first, then subscriptions, then fast) |
+| `pricing` | object | `{ input: "$0.50/1M", output: "$3.00/1M", average: "$1.75/1M" }` -- formatted strings |
+| `context` | string | Human-readable context window (e.g., `"1.1M"`, `"196K"`) |
+| `maxOutputTokens` | number \| null | Max output tokens |
+| `modality` | string | IO modality (e.g., `"text->text"`, `"text+image->text"`) |
+| `supportsTools` | boolean | Function calling support (always `true` for recommended models) |
 | `supportsReasoning` | boolean | Extended thinking support |
 | `supportsVision` | boolean | Image input support |
-| `subscription` | object? | `{ prefix, plan, command }` -- for subscription-gated models (e.g., `{ prefix: "cx", plan: "OpenAI Codex", command: "cx@gpt-5.4" }`) |
+| `isModerated` | boolean | Content moderation applied |
+| `recommended` | `true` | Always `true` |
+| `subscription` | object? | Present only for `category: "subscription"`. `{ prefix, plan, command }` (e.g., `{ prefix: "cx", plan: "OpenAI Codex", command: "cx@gpt-5.4" }`) |
 
 ### PluginDefaultsDoc
 
@@ -540,14 +568,22 @@ Data provenance tiers, highest trust wins during merge.
 The model catalog is built by 20 collectors running in parallel:
 
 - **13 API collectors** -- direct provider model list APIs (OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, Together, Fireworks, MiniMax, Kimi/Moonshot, Zhipu/GLM, Qwen/DashScope, OpenRouter)
-- **7 HTML scrapers** -- pricing pages and docs (zero Firecrawl dependency). Uses Browserbase for JS-rendered pages (Alibaba/Qwen)
+- **7 HTML scrapers** -- pricing pages and docs (zero Firecrawl dependency). Uses Browserbase for JS-rendered pages (Alibaba/Qwen pricing)
 
 **Pipeline stages:**
-1. **Collect** -- all 20 collectors run in parallel (9-minute timeout)
-2. **Merge** -- deduplicate by canonical ID, resolve field conflicts by confidence tier, strip `:free` suffixes
-3. **Write** -- upsert to Firestore, detect and log field-level changes to changelog subcollections
+1. **Collect** -- all 20 collectors run in parallel (9-minute timeout). Every raw model is validated through a Zod schema gate at `BaseCollector.makeResult()` — bad data (unknown providers, invalid IDs, out-of-bounds pricing) is dropped with the collectorId in the warning log
+2. **Merge** -- deduplicate by canonical ID (single `canonicalizeModelId()` — lowercase, strip vendor prefixes, strip `:free`), resolve field conflicts by confidence tier
+3. **Write** -- upsert to Firestore with `modelId` as doc key (asserts no `/` in ID), detect and log field-level changes to changelog subcollections
 4. **Cleanup** -- mark documents not seen in current merge and older than 48 hours as deprecated
-5. **Recommend** -- algorithmic scoring + Gemini Flash LLM final decision to generate the recommended list
-6. **Alert** -- Slack notifications for collection results and newly discovered models
+5. **Recommend** -- fully deterministic scoring pipeline (no LLM step). Per provider: filter by `isCodingCandidate()` predicate (tools required, no audio/video/image-output), apply version-aware `pickBest()` (newest version number wins, then shortest ID, then scoring formula), split into flagship + fast
+6. **Diff gate** -- compare new recommendations against previous day. Block publish if: any provider disappeared, any category lost >30% of its models entirely (not just recategorized), total entries dropped >20%, any ID contains `/`. Blocked outputs go to `config/recommended-models-pending` with a Slack alert
+7. **Alert** -- Slack notifications for: collection results, newly discovered models, provider count drops (≥50% or to zero from ≥5)
 
 **Schedule:** Daily at 03:00 UTC + manual trigger via `POST /collectModelCatalogManual`.
+
+**Invariants enforced by the contract layer (S1-S7 refactor):**
+- `modelId` matches `^[a-z0-9][a-z0-9._-]*$` — no uppercase, no vendor prefix, no slashes
+- `provider` is a canonical slug from `KNOWN_PROVIDER_SLUGS` — aliases resolved at ingress via `PROVIDER_ALIAS_MAP`
+- Recommended models pass `isCodingCandidate()` — tools=true, no audioInput/videoInput/imageOutput, no modality markers in ID (-image-, -audio-, -omni-, -tts-, -embedding-)
+- Parameter-count suffixes (-32b, -70b, -405b, -8x7b, -a3b) are stripped before version parsing — prevents `qwq-32b` from outranking `qwen3-max`
+- Trailing date stamps (-YYYY-MM-DD) are stripped before version parsing — prevents `qwen-max-2025-01-25` from outranking `qwen3.6-plus`
