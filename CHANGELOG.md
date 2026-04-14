@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.13.0] - 2026-04-14
+
+### Bug Fixes
+
+- restore scroll+click that actually triggers render *(qwen-scraper)* ([`42a17d8`](https://github.com/MadAppGang/claudish/commit/42a17d8c24be0d220c20637ca6b2a883f2aa2cfe))
+- wait for JS-rendered content, not a blind setTimeout *(browserbase)* ([`8e273f6`](https://github.com/MadAppGang/claudish/commit/8e273f6a715ea95d2e39d2bf7026d48e98ce08df))
+- click International tab before scraping *(qwen-scraper)* ([`b04861e`](https://github.com/MadAppGang/claudish/commit/b04861e48adf7b967a6fa23b215af705120b6180))
+- diff gate ignores category recategorization *(recommender)* ([`c174797`](https://github.com/MadAppGang/claudish/commit/c17479761e10d3f33b564c3e567cc337cd25baa0))
+- parseVersion strips parameter-count suffixes *(recommender)* ([`32d3307`](https://github.com/MadAppGang/claudish/commit/32d33072f753e11d891ac4214cdff407d4772443))
+- date-stamp handling + missing provider aliases *(firebase/recommender)* ([`760b6db`](https://github.com/MadAppGang/claudish/commit/760b6dbd45ff9be8052734db4ef9fcfe841e3798))
+- fix 6 cron output issues — vendor prefix, model selection, timeouts *(recommender)* ([`6ba9043`](https://github.com/MadAppGang/claudish/commit/6ba90430281193bfadf991f43cf4408621064511))
+
+### Documentation
+
+- add API reference for Firebase endpoints, MCP tools, and schemas([`5f38f08`](https://github.com/MadAppGang/claudish/commit/5f38f08ceeb5182a6dcec23ecbc8c0fd8e20c322))
+- update CHANGELOG.md for v6.12.3([`a39970f`](https://github.com/MadAppGang/claudish/commit/a39970fae6f188df954542730bf533abf522c00e))
+
+### New Features
+
+- interactive TUI with bordered result cards *(probe)* ([`22865e7`](https://github.com/MadAppGang/claudish/commit/22865e77be0c65a1b8f9a97b84c33ff84f74340a))
+- lexical modality fallback in isCodingCandidate *(firebase/recommender)* ([`cdcafc6`](https://github.com/MadAppGang/claudish/commit/cdcafc6733a86cb0046fe2990483e08dd900dfa6))
+- deterministic version-aware picker *(firebase/recommender)* ([`1eb5808`](https://github.com/MadAppGang/claudish/commit/1eb580831785283dab5e12d3d2c8bd20f8cda891))
+- pre-publish diff gate and provider-drop alerts *(firebase/recommender)* ([`42c2b82`](https://github.com/MadAppGang/claudish/commit/42c2b825fe5d8e33936aa104e36c82ce76ecaf9d))
+- add one-off cleanupStalePrefixedDocs migration endpoint *(cleanup)* ([`a6fdbbf`](https://github.com/MadAppGang/claudish/commit/a6fdbbf7f1ca3bb4b64f0fc5f733aff2c2a61982))
+- --probe sends real 1-token requests to validate each provider([`f843f3e`](https://github.com/MadAppGang/claudish/commit/f843f3e1ed0e553e9303e9bb2f44ae459436dcf4))
+
+### Other Changes
+
+- clean up unused symbols after S1-S7 refactor *(firebase)* ([`be07e5a`](https://github.com/MadAppGang/claudish/commit/be07e5ac3f26e9a33a6ff0fc6ac70f271cc41a16))
+
+### Refactoring
+
+- remove tab-click, rely on en-US locale *(qwen-scraper)* ([`00b2bc1`](https://github.com/MadAppGang/claudish/commit/00b2bc147d2a0333f648f1e65a87c84fa3d5e998))
+- install schema gate at RawModel ingress *(firebase/recommender)* ([`656e37a`](https://github.com/MadAppGang/claudish/commit/656e37a5a156ab061a8627aea77d84156c3a5164))
+
 ## [6.12.3] - 2026-04-11
 
 ### Bug Fixes
