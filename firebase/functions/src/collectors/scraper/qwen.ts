@@ -19,66 +19,89 @@ export class QwenScraper extends BaseCollector {
   readonly collectorId = "qwen-pricing-scrape";
 
   async collect(): Promise<CollectorResult> {
-    try {
-      // The Alibaba Cloud pricing page is a SPA. The page shell loads
-      // (~240KB) but the ~200 pricing tables are only rendered by JS after
-      // a region tab is clicked. The "International" tab contains
-      // qwen3.6-plus and other Singapore-region models.
-      //
-      // Required sequence:
-      //   1. Navigate with en-US locale (set in browserbase.ts)
-      //   2. Scroll the viewport so the tab bar is actually on screen
-      //      (some SPAs refuse to render off-screen content)
-      //   3. Click the "International" tab label
-      //   4. Wait until a <table> containing "Input price" appears in the DOM
-      //
-      // The scroll + click in afterLoad is what triggers the JS render. The
-      // waitForFunction is the authoritative signal that rendering finished.
-      let html = await fetchRenderedHTML(SOURCE_URL, {
-        timeoutMs: 60000,
-        waitUntil: "networkidle0",
-        waitForTimeoutMs: 25000,
-        afterLoad: async (page) => {
-          // Scroll into the pricing section so the tab bar is visible.
-          await page.evaluate(() => window.scrollTo(0, 400));
-          // Click any clickable element whose text is exactly "International".
-          // Prefer leaf-most matches (elements with ≤ 2 children) to avoid
-          // clicking a large container.
-          await page.evaluate(() => {
-            const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
-            for (const el of all) {
-              if ((el.textContent ?? "").trim() !== "International") continue;
-              if (el.children.length > 2) continue;
-              el.click();
-              return;
-            }
-          });
-        },
-        waitForFunction: () => {
-          const tables = document.querySelectorAll("table");
-          for (const t of Array.from(tables)) {
-            const txt = t.textContent ?? "";
-            if (txt.includes("Input price") || txt.includes("per 1M tokens")) {
-              return true;
-            }
-          }
-          return false;
-        },
-      });
+    // Alibaba's CDN serves different response bodies to our Browserbase
+    // session depending on edge cache / geo / A-B state: sometimes ~240KB
+    // shell HTML (no pricing tables), sometimes ~2.4MB fully-rendered.
+    // Two requests seconds apart can differ.
+    //
+    // Strategy: retry up to 3 times with a fresh Browserbase session each
+    // attempt. Each retry hits a different edge / cache variant, which
+    // usually converges on the 2.4MB response within 3 attempts.
+    const MAX_ATTEMPTS = 3;
+    let lastErr: string = "no attempts ran";
 
-      // Fall back to static HTML if Browserbase unavailable
-      if (!html) {
-        html = await fetchHTML(SOURCE_URL, 20000);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const html = await fetchQwenPage();
+        if (!html) {
+          lastErr = "browserbase returned null";
+          console.warn(`[qwen-scraper] attempt ${attempt}/${MAX_ATTEMPTS}: ${lastErr}`);
+          continue;
+        }
+
+        const models = parseQwenPricing(html);
+        if (models.length < 3) {
+          lastErr = `only parsed ${models.length} models`;
+          console.warn(
+            `[qwen-scraper] attempt ${attempt}/${MAX_ATTEMPTS}: ${lastErr}, retrying`,
+          );
+          continue;
+        }
+
+        validateParseResults("Qwen", models, 3);
+        if (attempt > 1) {
+          console.log(
+            `[qwen-scraper] succeeded on attempt ${attempt}/${MAX_ATTEMPTS} with ${models.length} models`,
+          );
+        }
+        return this.makeResult(models);
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[qwen-scraper] attempt ${attempt}/${MAX_ATTEMPTS} threw: ${lastErr}`,
+        );
       }
+    }
 
-      const models = parseQwenPricing(html);
-
+    // All browserbase retries exhausted — fall back to static HTML fetch
+    try {
+      const staticHtml = await fetchHTML(SOURCE_URL, 20000);
+      const models = parseQwenPricing(staticHtml);
       validateParseResults("Qwen", models, 3);
+      console.log(
+        `[qwen-scraper] recovered via static HTML fallback with ${models.length} models`,
+      );
       return this.makeResult(models);
     } catch (err) {
-      return this.makeResult([], String(err));
+      return this.makeResult(
+        [],
+        `all ${MAX_ATTEMPTS} browserbase attempts failed (${lastErr}); static fallback also failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
+}
+
+async function fetchQwenPage(): Promise<string | null> {
+  return fetchRenderedHTML(SOURCE_URL, {
+    timeoutMs: 60000,
+    waitUntil: "networkidle0",
+    waitForTimeoutMs: 25000,
+    afterLoad: async (page) => {
+      // Scroll into the pricing section — tells virtualized/lazy containers
+      // to render this region.
+      await page.evaluate(() => window.scrollTo(0, 400));
+    },
+    waitForFunction: () => {
+      const tables = document.querySelectorAll("table");
+      for (const t of Array.from(tables)) {
+        const txt = t.textContent ?? "";
+        if (txt.includes("Input price") || txt.includes("per 1M tokens")) {
+          return true;
+        }
+      }
+      return false;
+    },
+  });
 }
 
 function parseQwenPricing(html: string): RawModel[] {
