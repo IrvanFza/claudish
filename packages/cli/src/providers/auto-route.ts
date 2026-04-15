@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { resolveModelNameSync } from "./model-catalog-resolver.js";
 import { getApiKeyEnvVars } from "./provider-definitions.js";
+import { resolveDefaultProvider } from "../default-provider.js";
 
 export interface AutoRouteResult {
   provider: string;
@@ -145,20 +146,25 @@ export function getAutoRouteHint(modelName: string, nativeProvider: string): str
 }
 
 export function autoRoute(modelName: string, nativeProvider: string): AutoRouteResult | null {
-  // Step 1: LiteLLM cache check
-  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
-  if (litellmBaseUrl) {
-    const models = readLiteLLMCacheSync(litellmBaseUrl);
-    if (models !== null) {
-      const match = models.find((m) => m.name === modelName || m.id === `litellm@${modelName}`);
-      if (match) {
-        return {
-          provider: "litellm",
-          resolvedModelId: `litellm@${modelName}`,
-          modelName,
-          reason: "litellm-cache",
-          displayMessage: `Auto-routed: ${modelName} -> litellm`,
-        };
+  // Step 1: LiteLLM cache check (only when LiteLLM is the effective default provider)
+  const effectiveDefault = resolveDefaultProvider({
+    config: { version: "", defaultProfile: "", profiles: {} },
+  }).provider;
+  if (effectiveDefault === "litellm") {
+    const litellmBaseUrl = process.env.LITELLM_BASE_URL;
+    if (litellmBaseUrl) {
+      const models = readLiteLLMCacheSync(litellmBaseUrl);
+      if (models !== null) {
+        const match = models.find((m) => m.name === modelName || m.id === `litellm@${modelName}`);
+        if (match) {
+          return {
+            provider: "litellm",
+            resolvedModelId: `litellm@${modelName}`,
+            modelName,
+            reason: "litellm-cache",
+            displayMessage: `Auto-routed: ${modelName} -> litellm`,
+          };
+        }
       }
     }
   }
@@ -400,52 +406,128 @@ function hasProviderCredentials(provider: string): boolean {
 }
 
 /**
+ * Build the FallbackRoute for the user's effective default provider, if any.
+ * Returns null when no default provider has credentials configured, or when
+ * the default provider is one whose route is handled by a downstream step
+ * (e.g., native-API providers — openai/anthropic/google — have their own
+ * native-API step in {@link getFallbackChain} that handles them).
+ *
+ * Phase 2 supports the builtin defaults: litellm, openrouter.
+ * Custom endpoint defaults are wired in Phase 3.
+ */
+export function getDefaultProviderRoute(
+  modelName: string,
+  defaultProvider: string
+): FallbackRoute | null {
+  switch (defaultProvider) {
+    case "litellm": {
+      // Preserves the current implicit behavior — only emits a route when
+      // both LITELLM env vars are set.
+      if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
+        return {
+          provider: "litellm",
+          modelSpec: `litellm@${modelName}`,
+          displayName: "LiteLLM",
+        };
+      }
+      return null;
+    }
+    case "openrouter": {
+      if (process.env.OPENROUTER_API_KEY) {
+        const resolution = resolveModelNameSync(modelName, "openrouter");
+        return {
+          provider: "openrouter",
+          modelSpec: resolution.resolvedId,
+          displayName: "OpenRouter",
+        };
+      }
+      return null;
+    }
+    case "openai":
+    case "anthropic":
+    case "google": {
+      // Native-API providers — the downstream native-API step in
+      // getFallbackChain will surface them when credentials are present.
+      // Don't double-add here.
+      return null;
+    }
+    default:
+      // Custom endpoint name — Phase 3 territory. Return null for now.
+      return null;
+  }
+}
+
+/**
  * Generate an ordered list of provider fallback candidates for a bare model name.
  *
- * Priority: LiteLLM → Subscription (Zen Go) → Provider Subscription Plan → Native API → OpenRouter
+ * Priority: Default Provider → Subscription (Zen Go) → Provider Subscription Plan → Native API → OpenRouter
+ *
+ * The "default provider" slot replaces the old hardcoded LiteLLM-first priority.
+ * Callers may pass an explicit `defaultProvider` (typically resolved via
+ * {@link resolveDefaultProvider} from ~/.claudish/config.json); when omitted,
+ * this function resolves it itself via env vars as a fallback.
  *
  * Only includes providers that have credentials configured.
  * Used for auto-routed models (no explicit provider@ prefix).
  */
-export function getFallbackChain(modelName: string, nativeProvider: string): FallbackRoute[] {
+export function getFallbackChain(
+  modelName: string,
+  nativeProvider: string,
+  defaultProvider?: string
+): FallbackRoute[] {
   const routes: FallbackRoute[] = [];
+  const seenProviders = new Set<string>();
 
-  // 1. LiteLLM (always try if configured — cache may be stale or model may
-  //    exist under a vendor-prefixed name that the proxy resolves dynamically)
-  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
-  if (litellmBaseUrl && process.env.LITELLM_API_KEY) {
-    routes.push({
-      provider: "litellm",
-      modelSpec: `litellm@${modelName}`,
-      displayName: "LiteLLM",
-    });
+  // Compute effective default provider (caller-supplied or env-resolved)
+  const effectiveDefault =
+    defaultProvider ??
+    resolveDefaultProvider({
+      config: { version: "", defaultProfile: "", profiles: {} },
+    }).provider;
+
+  // 1. Default provider (replaces the old hardcoded LiteLLM step)
+  const defaultRoute = getDefaultProviderRoute(modelName, effectiveDefault);
+  if (defaultRoute) {
+    routes.push(defaultRoute);
+    seenProviders.add(defaultRoute.provider);
   }
 
   // 2. Subscription aggregator (OpenCode Zen Go — only for model families it actually serves)
-  if (process.env.OPENCODE_API_KEY && isZenGoCompatibleModel(modelName)) {
+  if (
+    process.env.OPENCODE_API_KEY &&
+    isZenGoCompatibleModel(modelName) &&
+    !seenProviders.has("opencode-zen-go")
+  ) {
     routes.push({
       provider: "opencode-zen-go",
       modelSpec: `zengo@${modelName}`,
       displayName: "OpenCode Zen Go",
     });
+    seenProviders.add("opencode-zen-go");
   }
 
   // 3. Provider-specific subscription/coding plan (tried before per-usage native API)
   const sub = SUBSCRIPTION_ALTERNATIVES[nativeProvider];
-  if (sub && hasProviderCredentials(sub.subscriptionProvider)) {
+  if (
+    sub &&
+    hasProviderCredentials(sub.subscriptionProvider) &&
+    !seenProviders.has(sub.subscriptionProvider)
+  ) {
     const subModelName = sub.modelName || modelName;
     routes.push({
       provider: sub.subscriptionProvider,
       modelSpec: `${sub.prefix}@${subModelName}`,
       displayName: sub.displayName,
     });
+    seenProviders.add(sub.subscriptionProvider);
   }
 
   // 4. Native API (per-usage, provider-specific OAuth or API key)
   if (
     nativeProvider !== "unknown" &&
     nativeProvider !== "qwen" &&
-    nativeProvider !== "native-anthropic"
+    nativeProvider !== "native-anthropic" &&
+    !seenProviders.has(nativeProvider)
   ) {
     if (hasProviderCredentials(nativeProvider)) {
       const prefix = PROVIDER_TO_PREFIX[nativeProvider] || nativeProvider;
@@ -454,17 +536,19 @@ export function getFallbackChain(modelName: string, nativeProvider: string): Fal
         modelSpec: `${prefix}@${modelName}`,
         displayName: DISPLAY_NAMES[nativeProvider] || nativeProvider,
       });
+      seenProviders.add(nativeProvider);
     }
   }
 
-  // 5. OpenRouter (universal fallback)
-  if (process.env.OPENROUTER_API_KEY) {
+  // 5. OpenRouter (universal fallback — skipped if already seeded by default provider)
+  if (process.env.OPENROUTER_API_KEY && !seenProviders.has("openrouter")) {
     const resolution = resolveModelNameSync(modelName, "openrouter");
     routes.push({
       provider: "openrouter",
       modelSpec: resolution.resolvedId, // vendor-prefixed (e.g., "minimax/minimax-m2.5")
       displayName: "OpenRouter",
     });
+    seenProviders.add("openrouter");
   }
 
   return routes;

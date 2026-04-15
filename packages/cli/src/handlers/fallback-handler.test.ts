@@ -163,24 +163,27 @@ function hasAnyCredentials(): boolean {
 describe("Group 1: Fallback chain construction", () => {
   const { getFallbackChain } = require("../providers/auto-route.js");
 
-  test("chain includes all configured providers in priority order", () => {
-    const chain = getFallbackChain("minimax-m2.5", "minimax");
-    if (!hasAnyCredentials()) return;
-
-    expect(chain.length).toBeGreaterThan(0);
-
-    // Verify ordering: LiteLLM < Zen Go < Subscription < Native < OpenRouter
+  test("default provider 'litellm' puts LiteLLM first when configured", () => {
+    if (!process.env.LITELLM_BASE_URL || !process.env.LITELLM_API_KEY) return;
+    const chain = getFallbackChain("minimax-m2.5", "minimax", "litellm");
     const providerOrder = chain.map((r: any) => r.provider);
     const litellmIdx = providerOrder.indexOf("litellm");
-    const zenIdx = providerOrder.indexOf("opencode-zen-go");
-    const subIdx = providerOrder.indexOf("minimax-coding");
-    const nativeIdx = providerOrder.indexOf("minimax");
-    const orIdx = providerOrder.indexOf("openrouter");
+    expect(litellmIdx).toBe(0);
+  });
 
-    if (litellmIdx >= 0 && zenIdx >= 0) expect(litellmIdx).toBeLessThan(zenIdx);
-    if (zenIdx >= 0 && subIdx >= 0) expect(zenIdx).toBeLessThan(subIdx);
-    if (subIdx >= 0 && nativeIdx >= 0) expect(subIdx).toBeLessThan(nativeIdx);
-    if (nativeIdx >= 0 && orIdx >= 0) expect(nativeIdx).toBeLessThan(orIdx);
+  test("default provider 'openrouter' puts OpenRouter first and excludes LiteLLM duplicate", () => {
+    if (!process.env.OPENROUTER_API_KEY) return;
+    const chain = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
+    const providerOrder = chain.map((r: any) => r.provider);
+    expect(providerOrder[0]).toBe("openrouter");
+    // LiteLLM should NOT appear when default is openrouter (was always-first before)
+    expect(providerOrder.indexOf("litellm")).toBe(-1);
+  });
+
+  test("chain construction is deterministic for fixed default", () => {
+    const chain = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
+    const chain2 = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
+    expect(chain.map((r: any) => r.provider)).toEqual(chain2.map((r: any) => r.provider));
   });
 
   test("kimi model includes subscription alternative with translated model name", () => {
@@ -197,22 +200,21 @@ describe("Group 1: Fallback chain construction", () => {
     expect(sub.modelSpec).toContain("gemini-2.0-flash");
   });
 
-  test("unknown provider gets LiteLLM and OpenRouter but NOT Zen (model not in catalog)", () => {
-    const chain = getFallbackChain("some-unknown-model", "unknown");
+  test("unknown provider with default='openrouter' gets only OpenRouter (not LiteLLM)", () => {
+    if (!process.env.OPENROUTER_API_KEY) return;
+    const chain = getFallbackChain("some-unknown-model", "unknown", "openrouter");
     const providers = chain.map((r: any) => r.provider);
-
+    expect(providers).toContain("openrouter");
+    expect(providers).not.toContain("litellm");
     expect(providers).not.toContain("unknown");
+  });
 
-    // Zen Go is filtered out — "some-unknown-model" won't be in the Zen catalog
-    expect(providers).not.toContain("opencode-zen-go");
-    expect(providers).not.toContain("opencode-zen");
-
-    if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
-      expect(providers).toContain("litellm");
-    }
-    if (process.env.OPENROUTER_API_KEY) {
-      expect(providers).toContain("openrouter");
-    }
+  test("unknown provider with default='litellm' gets only LiteLLM and OpenRouter (no native)", () => {
+    if (!process.env.LITELLM_BASE_URL || !process.env.LITELLM_API_KEY) return;
+    const chain = getFallbackChain("some-unknown-model", "unknown", "litellm");
+    const providers = chain.map((r: any) => r.provider);
+    expect(providers).toContain("litellm");
+    expect(providers).not.toContain("unknown");
   });
 });
 

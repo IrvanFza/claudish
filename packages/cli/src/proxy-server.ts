@@ -59,6 +59,24 @@ import {
   buildRoutingChain,
 } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
+import { resolveDefaultProvider } from "./default-provider.js";
+import { loadConfig } from "./profile-config.js";
+
+/**
+ * Memoized lookup of the effective default provider (resolved once per process).
+ * Used to seed the routing fallback chain so LiteLLM is no longer the hardcoded
+ * #1 priority — users can now set `defaultProvider` in ~/.claudish/config.json.
+ */
+let _resolvedDefaultProviderCache: string | null = null;
+function getEffectiveDefaultProvider(): string {
+  if (_resolvedDefaultProviderCache) return _resolvedDefaultProviderCache;
+  try {
+    _resolvedDefaultProviderCache = resolveDefaultProvider({ config: loadConfig() }).provider;
+  } catch {
+    _resolvedDefaultProviderCache = "openrouter";
+  }
+  return _resolvedDefaultProviderCache;
+}
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -394,7 +412,11 @@ export async function createProxyServer(
           : null;
         const chain = matchedEntries
           ? buildRoutingChain(matchedEntries, parsedForFallback.model)
-          : getFallbackChain(parsedForFallback.model, parsedForFallback.provider);
+          : getFallbackChain(
+              parsedForFallback.model,
+              parsedForFallback.provider,
+              getEffectiveDefaultProvider()
+            );
         if (chain.length > 0) {
           const candidates: FallbackCandidate[] = [];
           for (const route of chain) {
