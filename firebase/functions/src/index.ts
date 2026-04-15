@@ -407,22 +407,73 @@ export const collectModelCatalogManual = onRequest(
 
     console.log("[catalog] manual collection triggered");
 
+    const start = Date.now();
+
     try {
       const orchestrator = new CollectorOrchestrator();
       const results = await orchestrator.runAll();
 
       const merged = mergeResults(results);
       const writer = new FirestoreWriter();
-      await writer.write(merged);
+      const newModelIds = await writer.write(merged);
 
       // Clean up stale docs
       const currentIds = new Set(merged.map(m => m.modelId));
       await writer.cleanupStale(currentIds);
 
+      const webhook = SLACK_WEBHOOK_URL.value();
+
       // Auto-generate recommended models (pass Slack webhook so diff-gate
       // rejections alert correctly).
-      const webhook = SLACK_WEBHOOK_URL.value();
       const recommended = await generateRecommendedModels(webhook);
+
+      const duration = Date.now() - start;
+
+      // Run the SAME Slack alert blocks as the scheduled cron so this
+      // manual trigger can be used to verify the full notification path.
+      await alertCatalogResults(webhook, results, merged.length, duration);
+
+      if (newModelIds.length > 0) {
+        const providerMap: Record<string, string> = {};
+        for (const doc of merged) {
+          providerMap[doc.modelId] = doc.provider;
+        }
+        await alertNewModels(webhook, newModelIds, providerMap);
+      }
+
+      // Provider drop detection — same logic as scheduled cron
+      try {
+        const histRef = db.collection("config").doc("provider-counts-history");
+        const prevSnap = await histRef.get();
+        const prev = prevSnap.exists
+          ? ((prevSnap.data() ?? {}) as { counts?: Record<string, number> }).counts ?? {}
+          : {};
+
+        const current: Record<string, number> = {};
+        for (const doc of merged) {
+          const p = (doc.provider ?? "").toLowerCase();
+          if (!p) continue;
+          current[p] = (current[p] ?? 0) + 1;
+        }
+
+        const drops: Array<{ provider: string; before: number; after: number }> = [];
+        for (const [provider, before] of Object.entries(prev)) {
+          const after = current[provider] ?? 0;
+          if (before >= 5 && after === 0) {
+            drops.push({ provider, before, after });
+          } else if (before > 0 && after <= before * 0.5) {
+            drops.push({ provider, before, after });
+          }
+        }
+
+        if (drops.length > 0) {
+          await alertProviderDrop(webhook, drops);
+        }
+
+        await histRef.set({ counts: current, updatedAt: Timestamp.now() });
+      } catch (err) {
+        console.warn("[catalog] provider-drop check failed:", err);
+      }
 
       const successCount = results.filter(r => !r.error).length;
       const failureCount = results.filter(r => r.error).length;
@@ -432,8 +483,10 @@ export const collectModelCatalogManual = onRequest(
         modelsCollected: results.reduce((s, r) => s + r.models.length, 0),
         modelsMerged: merged.length,
         recommendedModels: recommended.length,
+        newModelIds: newModelIds.length,
         collectorsOk: successCount,
         collectorsFailed: failureCount,
+        durationMs: duration,
         errors: results.filter(r => r.error).map(r => ({
           collectorId: r.collectorId,
           error: r.error,
