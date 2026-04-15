@@ -619,3 +619,130 @@ describe("edge cases", () => {
     expect(body.poolSize).toBe(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Suite 7: Public projection — internal provenance fields stripped
+//
+// The Firestore ModelDoc carries collector-tracking fields (sources,
+// fieldSources, lastUpdated, lastChecked) that are useful internally
+// but MUST NOT leak into public API responses. This suite locks that
+// contract in — if anyone accidentally returns raw ModelDocs, these
+// tests fail.
+// ─────────────────────────────────────────────────────────────
+
+const INTERNAL_FIELDS = [
+  "sources",
+  "fieldSources",
+  "lastUpdated",
+  "lastChecked",
+  "dataFreshnessWarning",
+  "deprecatedAt",
+  "successorId",
+] as const;
+
+function expectNoInternalFields(model: Record<string, unknown>): void {
+  for (const field of INTERNAL_FIELDS) {
+    expect(model[field]).toBeUndefined();
+  }
+}
+
+describe("public projection — internal fields stripped", () => {
+  it("top100 models omit sources, fieldSources, lastUpdated, lastChecked", async () => {
+    seedModels([
+      makeDoc({ modelId: "claude-opus-4-6", provider: "anthropic", family: "claude-opus" }),
+      makeDoc({ modelId: "gpt-5-4", provider: "openai" }),
+    ]);
+    const { body } = await callHandler({ catalog: "top100" });
+    expect(body.models.length).toBeGreaterThan(0);
+    for (const m of body.models) {
+      expectNoInternalFields(m);
+    }
+  });
+
+  it("top100 models keep the public fields users need", async () => {
+    seedModels([
+      makeDoc({
+        modelId: "claude-opus-4-6",
+        provider: "anthropic",
+        family: "claude-opus",
+        description: "Anthropic flagship",
+        releaseDate: "2026-03-01",
+      }),
+    ]);
+    const { body } = await callHandler({ catalog: "top100", includeScores: "1" });
+    const m = body.models[0];
+    expect(m.modelId).toBe("claude-opus-4-6");
+    expect(m.displayName).toBeDefined();
+    expect(m.description).toBe("Anthropic flagship");
+    expect(m.provider).toBe("anthropic");
+    expect(m.family).toBe("claude-opus");
+    expect(m.releaseDate).toBe("2026-03-01");
+    expect(m.pricing).toBeDefined();
+    expect(m.contextWindow).toBeDefined();
+    expect(m.capabilities).toBeDefined();
+    expect(m.aliases).toBeDefined();
+    expect(m.status).toBe("active");
+    // Ranking metadata is top100-specific — preserved on top of the projection
+    expect(m.rank).toBe(1);
+    expect(typeof m.score).toBe("number");
+    expect(m.scoreBreakdown).toBeDefined();
+  });
+
+  it("standard list query models omit internal provenance fields", async () => {
+    seedModels([
+      makeDoc({ modelId: "m1", provider: "anthropic" }),
+      makeDoc({ modelId: "m2", provider: "openai" }),
+    ]);
+    const { body } = await callHandler({});
+    expect(body.models.length).toBe(2);
+    for (const m of body.models) {
+      expectNoInternalFields(m);
+    }
+  });
+
+  it("search results omit internal provenance fields", async () => {
+    seedModels([
+      makeDoc({ modelId: "gpt-5", provider: "openai" }),
+      makeDoc({ modelId: "claude", provider: "anthropic" }),
+    ]);
+    const { body } = await callHandler({ search: "gpt" });
+    expect(body.models.length).toBeGreaterThan(0);
+    for (const m of body.models) {
+      expectNoInternalFields(m);
+    }
+  });
+
+  it("projection drops internal fields even when the underlying doc has them populated", async () => {
+    // Seed with a model that has ALL internal fields set (worst case for leakage).
+    const now = Timestamp.now();
+    seedModels([
+      {
+        ...makeDoc({ modelId: "leaky", provider: "anthropic" }),
+        sources: {
+          "anthropic-api": {
+            confidence: "api_official",
+            externalId: "leaky-v1",
+            lastSeen: now,
+            sourceUrl: "https://internal.example.com",
+          },
+        },
+        fieldSources: {
+          pricing: {
+            collectorId: "anthropic-api",
+            confidence: "api_official",
+            sourceUrl: "https://internal.example.com",
+            fetchedAt: now.toDate().toISOString(),
+          },
+        },
+        dataFreshnessWarning: true,
+      } as ModelDoc,
+    ]);
+    const { body } = await callHandler({ catalog: "top100" });
+    expect(body.models.length).toBe(1);
+    const m = body.models[0];
+    expectNoInternalFields(m);
+    // Negative control: ensure no stray internal URL appears anywhere in the JSON.
+    expect(JSON.stringify(m)).not.toContain("internal.example.com");
+    expect(JSON.stringify(m)).not.toContain("anthropic-api");
+  });
+});

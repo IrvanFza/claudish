@@ -5,6 +5,57 @@ import type { CollectionReference, Query } from "firebase-admin/firestore";
 import type { ModelDoc, ModelChangeDoc, RecommendedModelsDoc } from "./schema.js";
 import { computeGenerationScores, scoreForTop100 } from "./popularity-scores.js";
 
+// ─────────────────────────────────────────────────────────────
+// Public model projection
+//
+// The full ModelDoc stored in Firestore carries internal provenance
+// tracking (sources, fieldSources, lastUpdated, lastChecked, staleness
+// flags) that's relevant to the data pipeline but NOT to API consumers.
+// Exposing those fields creates a leaky contract — clients may start
+// depending on collector IDs and source URLs, blocking any future
+// refactor of the ingestion layer.
+//
+// toPublicModel() is the ONE place that shapes model objects for
+// public list endpoints (top100, standard list, search). The /?catalog=slim
+// endpoint has its own contract used by the CLI catalog resolver and is
+// unaffected. /?catalog=recommended also has its own slim shape.
+// ─────────────────────────────────────────────────────────────
+
+interface PublicModel {
+  modelId: string;
+  displayName: string;
+  description?: string;
+  provider: string;
+  family?: string;
+  releaseDate?: string;
+
+  pricing?: ModelDoc["pricing"];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities: ModelDoc["capabilities"];
+
+  aliases: string[];
+  status: ModelDoc["status"];
+}
+
+function toPublicModel(doc: ModelDoc): PublicModel {
+  const out: PublicModel = {
+    modelId: doc.modelId,
+    displayName: doc.displayName,
+    provider: doc.provider,
+    aliases: doc.aliases,
+    status: doc.status,
+    capabilities: doc.capabilities,
+  };
+  if (doc.description !== undefined) out.description = doc.description;
+  if (doc.family !== undefined) out.family = doc.family;
+  if (doc.releaseDate !== undefined) out.releaseDate = doc.releaseDate;
+  if (doc.pricing !== undefined) out.pricing = doc.pricing;
+  if (doc.contextWindow !== undefined) out.contextWindow = doc.contextWindow;
+  if (doc.maxOutputTokens !== undefined) out.maxOutputTokens = doc.maxOutputTokens;
+  return out;
+}
+
 export async function handleQueryModels(req: Request, res: Response): Promise<void> {
   if (req.method !== "GET") {
     res.status(405).json({ error: "Method not allowed" });
@@ -134,7 +185,7 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
 
       const models = ranked.map((entry, idx) => {
         const base: Record<string, unknown> = {
-          ...entry.model,
+          ...toPublicModel(entry.model),
           rank: idx + 1,
           score: entry.score.total,
         };
@@ -208,11 +259,11 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
 
   try {
     const snap = await query.get();
-    let models = snap.docs.map(d => d.data() as ModelDoc);
+    let docs = snap.docs.map(d => d.data() as ModelDoc);
 
     // Apply client-side search filter, then trim to the user's requested limit.
     if (searchTerm) {
-      models = models
+      docs = docs
         .filter(m =>
           m.modelId.toLowerCase().includes(searchTerm) ||
           m.displayName.toLowerCase().includes(searchTerm) ||
@@ -221,6 +272,7 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
         .slice(0, requestedLimit);
     }
 
+    const models = docs.map(toPublicModel);
     res.status(200).json({ models, total: models.length });
   } catch (err) {
     console.error("[catalog] Firestore query failed:", err);
