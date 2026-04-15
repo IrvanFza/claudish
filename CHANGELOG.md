@@ -4,34 +4,33 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [6.14.0] - 2026-04-15
 
-### Features
+### New Features
 
-- **Firebase-only model catalog** — claudish now relies exclusively on the Firebase `queryModels` Cloud Function. Removed all direct OpenRouter `/api/v1/models` callers, deleted the `~/.claudish/all-models.json` cache, and dropped third-party `models.dev` aggregator fetches (OpenCode Zen, GLM Coding, OllamaCloud, OpenAI, GLM direct, Zen Free/Go listings). Routing prefixes (`zen@`, `oai@`, `glm@`, `oc@`, `gc@`, etc.) still work — only catalog discovery moved to Firebase.
-- **`?catalog=top100` Firebase endpoint** — returns top 100 ranked coding-candidate models from the `models` collection, scored by release date / capabilities / pricing / context / confidence. Powers the new `claudish --list-models` default.
-- **Semantic search via LLM-generated bags** — every `ModelDoc` carries a server-side `searchBag[]` populated once by `gemini-3.1-flash-lite-preview` and cached by hash. `?search=` now matches brand synonyms (`chatgpt` → GPT family, `claude` → Anthropic, `grok` → xAI, `glm`/`zai` → Z.AI), gateway names (`zen` → all OpenCode Zen models, `oc` → OllamaCloud, `gc` → GLM Coding, `cx` → OpenAI Codex, `go` → Gemini Code Assist), capability words (`reasoning`, `vision`, `tools`, `free`), family colloquialisms (`sonnet`, `opus`, `haiku`, `flash`, `pro`, `mini`, `nano`, `turbo`). Bag fields are stripped from every endpoint response.
-- **`?catalog=providers` Firebase endpoint** — returns distinct provider slugs with active-model counts.
-- **`claudish --list-providers`** — discover every provider slug (qwen, openai, mistralai, google, meta-llama, anthropic, deepseek, z-ai, x-ai, moonshotai, minimax, etc.) with active-model counts. Use the slug with `--list-models --provider <slug>`.
-- **`claudish --list-models --provider <slug>`** — filter the Firebase catalog to one provider.
-- **`claudish --top-models` rendering rewrite** — groups by category (Flagship vs Fast variants), deduplicates entries by id, collapses subscription/gateway routes into a single `via:` sub-line per model. Same logic powers the MCP `list_models` tool's Markdown output.
-- **Search overfetch fix** — `?search=` previously capped the Firestore query at 50 docs *before* the substring filter, so most matches were lost. Now overfetches up to 1000 docs and trims after scoring. `claudish -s gemini` returns 33 results instead of 1.
-
-### Removed
-
-- `updateModelsFromOpenRouter`, `checkAndUpdateModelsCache`, `isCacheStale`, `fetchModelContextWindow`, `ensureOpenRouterModelsLoaded`, `loadRecommendedModelsJSON`, three duplicate `loadRecommendedModels` copies, both incompatible `ModelInfo` interfaces, the `openrouterId` field on bundled `recommended-models.json`, and 5 direct OpenRouter `/api/v1/models` call sites. Net deletion: ~1,920 lines across two refactor passes.
-
-### Migration notes
-
-- `claudish --list-models` (no query) no longer dumps 400+ OpenRouter models. It now shows top-100 ranked from Firebase plus a local-providers footer (Ollama / LiteLLM if configured). For full search use `claudish -s <query>`.
-- `search_models` MCP tool requires Firebase reachability — no offline fallback. Acceptable degradation for the Firebase-only design.
-- Firebase deploy required: `?catalog=top100`, `?catalog=providers`, search-bag-aware `?search=`, and the `backfillSearchBags` callable function. Already deployed to `claudish-6da10`.
+- v6.14.0 — Firebase-only catalog, semantic search, --list-providers([`95684ae`](https://github.com/MadAppGang/claudish/commit/95684ae540a4cdc049a7a6cee19dfa41d6790cf7))
 
 ## [6.13.3] - 2026-04-15
 
 ### Bug Fixes
 
-- gate telemetry consent prompt while Claude Code owns TTY *(#85, #88, #99)* ([`72f4460`](https://github.com/MadAppGang/claudish/commit/72f446095))
+- gate consent prompt while Claude Code owns TTY (#85, #88, #99) *(telemetry)* ([`72f4460`](https://github.com/MadAppGang/claudish/commit/72f4460958a85a4c2c85179b3bfbed8013aecd15))
 
-  Fixes keystrokes being dropped in interactive mode since v6.0.0. Root cause: telemetry consent prompt attached a readline to `process.stdin` mid-session, racing the Claude Code child process (spawned with `stdio: "inherit"`) for each keystroke. Adds a `claudeCodeRunning` flag in `telemetry.ts` that suppresses the prompt while the session owns the TTY. Regression test added.
+### Documentation
+
+- reflect ?catalog=top100, slim PublicModel projection, search fix *(api)* ([`bdcef63`](https://github.com/MadAppGang/claudish/commit/bdcef63d9f5444753c34cd0af3ce1f979ba76298))
+- update CHANGELOG.md for v6.13.2([`688e483`](https://github.com/MadAppGang/claudish/commit/688e4833774e2cb5efc37ea7e12800e1b8d1bec7))
+
+### New Features
+
+- slim public API — strip internal provenance from responses *(firebase)* ([`d21c2c9`](https://github.com/MadAppGang/claudish/commit/d21c2c9f4f1002fc321a83e4401506f77acf94ce))
+- add ?catalog=top100 endpoint + fix search ordering bug *(firebase)* ([`f71f9ef`](https://github.com/MadAppGang/claudish/commit/f71f9eff6eaf0f308980ef947bb0977332eb99ef))
+
+### Other Changes
+
+- v6.13.3 — fix interactive stdin race (#85, #88, #99) *(release)* ([`ec01715`](https://github.com/MadAppGang/claudish/commit/ec0171581b09fe3cf33362c7a5e7fa4c43b57020))
+
+### Refactoring
+
+- align manual trigger alert paths with scheduled cron *(catalog)* ([`16379d9`](https://github.com/MadAppGang/claudish/commit/16379d9941844b80c3593b6b8ff7d8efb53d1475))
 
 ## [6.13.2] - 2026-04-15
 
