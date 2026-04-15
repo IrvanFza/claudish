@@ -204,8 +204,16 @@ const W_CONFIDENCE = 0.15;  // higher confidence data is better
  *
  * Fully deterministic algorithmic pipeline: for each provider, find the best
  * flagship and fast model using scoring (no hardcoded model names, no LLM).
+ *
+ * @param slackWebhookUrl Slack webhook URL for diff-gate rejection alerts.
+ *   Pass the value resolved from `SLACK_WEBHOOK_URL.value()` at the cron
+ *   call site — do NOT rely on `process.env` here because Firebase secret
+ *   binding to process.env is not always reliable across function invocation
+ *   boundaries.
  */
-export async function generateRecommendedModels(): Promise<RecommendedModelEntry[]> {
+export async function generateRecommendedModels(
+  slackWebhookUrl = "",
+): Promise<RecommendedModelEntry[]> {
   const db = getFirestore();
 
   const snap = await db.collection("models")
@@ -264,6 +272,14 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
     models: entries,
   };
 
+  // Log whether we have a webhook available — helps debug cases where the
+  // diff gate rejects but no Slack message appears.
+  if (!slackWebhookUrl) {
+    console.warn(
+      "[recommender] no Slack webhook provided — diff-gate rejections will not alert",
+    );
+  }
+
   // ── Pre-publish gate: schema validation ────────────────────────────
   const schemaResult = validateRecommendedDoc(recDoc);
   if (!schemaResult.ok) {
@@ -271,9 +287,8 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
       `[recommender] schema validation failed, writing to pending: ${schemaResult.errors.join("; ")}`,
     );
     await db.collection("config").doc("recommended-models-pending").set(recDoc);
-    const webhook = process.env.SLACK_WEBHOOK_URL ?? "";
     await alertRecommendationDiff(
-      webhook,
+      slackWebhookUrl,
       schemaResult.errors.map((e) => `schema: ${e}`),
     );
     return entries;
@@ -291,8 +306,7 @@ export async function generateRecommendedModels(): Promise<RecommendedModelEntry
       `[recommender] diff gate rejected ${diffResult.violations.length} violation(s): ${diffResult.violations.join("; ")}`,
     );
     await db.collection("config").doc("recommended-models-pending").set(recDoc);
-    const webhook = process.env.SLACK_WEBHOOK_URL ?? "";
-    await alertRecommendationDiff(webhook, diffResult.violations);
+    await alertRecommendationDiff(slackWebhookUrl, diffResult.violations);
     return entries;
   }
 

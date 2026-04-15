@@ -298,15 +298,18 @@ export const collectModelCatalog = onSchedule(
     const currentIds = new Set(merged.map(m => m.modelId));
     await writer.cleanupStale(currentIds);
 
+    // Resolve Slack webhook early so we can pass it into the recommender's
+    // internal diff-gate alert as well as the post-run alerts below.
+    const webhook = SLACK_WEBHOOK_URL.value();
+
     // Auto-generate recommended models from scored catalog
-    const recommended = await generateRecommendedModels();
+    const recommended = await generateRecommendedModels(webhook);
     console.log(`[catalog] recommended models updated: ${recommended.length} picks`);
 
     const duration = Date.now() - start;
     console.log(`[catalog] write complete — ${newModelIds.length} new models — total duration: ${duration}ms`);
 
     // Slack alerts
-    const webhook = SLACK_WEBHOOK_URL.value();
     await alertCatalogResults(webhook, results, merged.length, duration);
 
     // Alert for newly discovered models from major providers
@@ -416,8 +419,10 @@ export const collectModelCatalogManual = onRequest(
       const currentIds = new Set(merged.map(m => m.modelId));
       await writer.cleanupStale(currentIds);
 
-      // Auto-generate recommended models
-      const recommended = await generateRecommendedModels();
+      // Auto-generate recommended models (pass Slack webhook so diff-gate
+      // rejections alert correctly).
+      const webhook = SLACK_WEBHOOK_URL.value();
+      const recommended = await generateRecommendedModels(webhook);
 
       const successCount = results.filter(r => !r.error).length;
       const failureCount = results.filter(r => r.error).length;
