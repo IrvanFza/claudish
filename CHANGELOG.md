@@ -2,6 +2,14 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.13.3] - 2026-04-15
+
+### Bug Fixes
+
+- gate telemetry consent prompt while Claude Code owns TTY *(#85, #88, #99)* ([`72f4460`](https://github.com/MadAppGang/claudish/commit/72f446095))
+
+  Fixes keystrokes being dropped in interactive mode since v6.0.0. Root cause: telemetry consent prompt attached a readline to `process.stdin` mid-session, racing the Claude Code child process (spawned with `stdio: "inherit"`) for each keystroke. Adds a `claudeCodeRunning` flag in `telemetry.ts` that suppresses the prompt while the session owns the TTY. Regression test added.
+
 ## [6.13.2] - 2026-04-15
 
 ### Bug Fixes
