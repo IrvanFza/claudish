@@ -1,9 +1,37 @@
 import { Timestamp } from "firebase-admin/firestore";
 import type {
   RawModel, ModelDoc, CollectorResult, PricingData, CapabilityFlags, FieldSource,
+  AggregatorEntry,
 } from "./schema.js";
 import { CONFIDENCE_RANK } from "./schema.js";
 import { canonicalizeModelId } from "./schema-runtime.js";
+
+/**
+ * Mapping from collectorId (used as the key in `sources`) to the canonical CLI
+ * provider name used by `aggregators[]` and the routing layer.
+ *
+ * Only collectors that represent ROUTABLE aggregators are listed. Pricing scrapers
+ * and other non-routable collectors are intentionally absent — they contribute to
+ * `sources` (for provenance) but not to `aggregators` (which is a CLI routing index).
+ *
+ * To add a new aggregator: add the collectorId here AND add a provider entry to the
+ * CLI's BUILTIN_PROVIDERS array (with matching `name`).
+ */
+export const COLLECTOR_TO_PROVIDER: Record<string, string> = {
+  "openrouter-api": "openrouter",
+  "openai-api": "openai",
+  "anthropic-api": "anthropic",
+  "google-api": "google",
+  "xai-api": "xai",
+  "mistral-api": "mistral",
+  "moonshot-api": "moonshot",
+  "deepseek-api": "deepseek",
+  "dashscope-api": "qwen",
+  "zhipu-api": "glm",
+  "fireworks-api": "fireworks",
+  "together-ai-api": "together-ai",
+  "opencode-zen-api": "opencode-zen",
+};
 
 // Sanity bounds for pricing (USD per million tokens)
 // min: 0 allows free-tier models (Gemini Flash free, GLM-4-Flash, etc.)
@@ -88,6 +116,10 @@ function mergeGroup(modelId: string, raws: RawModel[]): ModelDoc {
   // For capabilities: highest-confidence source that provides any capabilities
   const capsSource = sorted.find(r => r.capabilities && Object.keys(r.capabilities).length > 0);
 
+  // Pre-compute sources + aggregators together so the doc builder stays a pure literal.
+  const sourcesMap = buildSourcesMap(raws);
+  const aggregatorsList = buildAggregatorsList(sourcesMap);
+
   const doc: ModelDoc = {
     modelId,
     displayName: displayResult?.value ?? modelId,
@@ -110,7 +142,8 @@ function mergeGroup(modelId: string, raws: RawModel[]): ModelDoc {
       ...(statusResult ? { status: statusResult.source } : {}),
       ...(releaseDateSource ? { releaseDate: releaseDateSource } : {}),
     },
-    sources: buildSourcesMap(raws),
+    sources: sourcesMap,
+    ...(aggregatorsList.length > 0 ? { aggregators: aggregatorsList } : {}),
     lastUpdated: now,
     lastChecked: now,
   };
@@ -201,7 +234,7 @@ function collectAliases(canonicalId: string, raws: RawModel[]): string[] {
   return [...aliases];
 }
 
-function buildSourcesMap(raws: RawModel[]): ModelDoc["sources"] {
+export function buildSourcesMap(raws: RawModel[]): ModelDoc["sources"] {
   const sources: ModelDoc["sources"] = {};
   for (const raw of raws) {
     const providerKey = raw.collectorId;
@@ -220,6 +253,30 @@ function buildSourcesMap(raws: RawModel[]): ModelDoc["sources"] {
     }
   }
   return sources;
+}
+
+/**
+ * Build a CLI-friendly aggregator list from a merged `sources` map.
+ *
+ * Walks the `sources` map, skips non-routable collectors (e.g. pricing scrapers)
+ * by filtering through `COLLECTOR_TO_PROVIDER`, and returns one `AggregatorEntry`
+ * per routable collector. The resulting list is the multi-aggregator routing
+ * index consumed by CLI catalog resolvers.
+ */
+export function buildAggregatorsList(
+  sources: ModelDoc["sources"],
+): AggregatorEntry[] {
+  const aggregators: AggregatorEntry[] = [];
+  for (const [collectorId, record] of Object.entries(sources)) {
+    const provider = COLLECTOR_TO_PROVIDER[collectorId];
+    if (!provider) continue; // non-routable collector (e.g. pricing scraper)
+    aggregators.push({
+      provider,
+      externalId: record.externalId,
+      confidence: record.confidence,
+    });
+  }
+  return aggregators;
 }
 
 function roundPrice(n: number): number {

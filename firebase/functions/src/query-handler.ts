@@ -58,6 +58,9 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
           modelId: data.modelId,
           aliases: data.aliases,
           sources: data.sources,
+          ...(data.aggregators && data.aggregators.length > 0
+            ? { aggregators: data.aggregators }
+            : {}),
         };
       });
       res.status(200).json({ models, total: models.length });

@@ -76,6 +76,23 @@ export interface SourceRecord {
 }
 
 // ─────────────────────────────────────────────────────────────
+// CLI-friendly aggregator entry — a flattened view of `sources` keyed by the
+// canonical CLI provider name (without the "-api" or "-scrape" suffix).
+//
+// This is derived from `sources` at merge time. CLI consumers should prefer
+// reading this field over walking `sources` directly so they don't have to
+// encode the `collectorId → provider` mapping client-side.
+// ─────────────────────────────────────────────────────────────
+export interface AggregatorEntry {
+  /** Canonical CLI provider name (e.g. "openrouter", "fireworks", "together-ai") */
+  provider: string;
+  /** The model ID this aggregator uses (vendor-qualified, e.g. "qwen/qwen3-coder") */
+  externalId: string;
+  /** Confidence tier, copied from the underlying SourceRecord */
+  confidence: ConfidenceTier;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Changelog subcollection documents (models/{id}/changelog)
 // ─────────────────────────────────────────────────────────────
 
@@ -141,6 +158,13 @@ export interface ModelDoc {
   // Multi-source tracking
   // key = provider slug (e.g. "anthropic", "openrouter", "together-ai")
   sources: Record<string, SourceRecord>;
+
+  /**
+   * Multi-aggregator routing index. Optional, additive.
+   * Derived from `sources` at merge time. Field is omitted (not empty) when no
+   * aggregator collectors contributed data for this model.
+   */
+  aggregators?: AggregatorEntry[];
 
   // Freshness
   lastUpdated: Timestamp;
