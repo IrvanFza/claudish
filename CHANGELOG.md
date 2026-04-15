@@ -2,6 +2,19 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.13.2] - 2026-04-15
+
+### Bug Fixes
+
+- **[CRITICAL] #102** — GLM models produced 0 output bytes via `zai@` provider since v6.11.1. Root cause: `ComposedHandler`'s stream format priority gave `GLMModelDialect`'s inherited `"openai-sse"` default precedence over `AnthropicAPIFormat`'s explicit `"anthropic-sse"`, feeding real Anthropic SSE from Z.AI through the wrong parser and silently dropping all text. Fix: explicit format adapters now take priority over model dialects in stream format selection. ([`a0b15a9`](https://github.com/MadAppGang/claudish/commit/a0b15a9))
+- **#85, #88, #99** — keyboard input broken in claudish since ~v6.0. `@inquirer/prompts` and `readline.createInterface` left lingering `data`/`keypress` listeners on `process.stdin` that interfered with Claude Code's TTY handling when spawned with `stdio: "inherit"`. Fix: clean up stdin (setRawMode(false), pause, removeAllListeners) after all interactive prompts complete. ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
+- **Structural prevention for #102-class bugs** — `ComposedHandler` now holds a readonly `bareModelName` field with unconditional constructor invariant (throws if `modelName` contains `@`). Every model-identity consumer (`DialectManager`, `lookupModel`, middleware gate + routing, all 5 stream parsers, `TokenTracker`, `fetchQuotaForStatusLine`) now receives the bare form. `matchesModelFamily` no longer matches `@family` substrings (false-positive source). `lookupModel` no longer defensively strips `@` prefixes (its doc comment now states the input contract explicitly). ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
+
+### Tests
+
+- Added `packages/cli/src/zai-glm.e2e.test.ts` — real-API regression guard that exercises the full claudish proxy pipeline for `zai@glm-4.6`, `gc@glm-4.6`, and `glm@glm-4.6`. Gated on `ZAI_API_KEY` / `GLM_CODING_API_KEY` / `ZHIPU_API_KEY` env vars. This test would have caught #102 at commit time — the earlier unit-level DialectManager tests (all 195 passing) did not. ([`a0b15a9`](https://github.com/MadAppGang/claudish/commit/a0b15a9))
+- Added `packages/cli/src/handlers/composed-handler.test.ts` — 4 tests pinning the constructor invariant across all input branches (routed-in-bare rejected, routed-in-target accepted, bare-in-both accepted, vendor-slash-prefix accepted). ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
+
 ## [6.13.1] - 2026-04-14
 
 ### Bug Fixes
