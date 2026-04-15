@@ -6,14 +6,19 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
-- **[CRITICAL] #102** — GLM models produced 0 output bytes via `zai@` provider since v6.11.1. Root cause: `ComposedHandler`'s stream format priority gave `GLMModelDialect`'s inherited `"openai-sse"` default precedence over `AnthropicAPIFormat`'s explicit `"anthropic-sse"`, feeding real Anthropic SSE from Z.AI through the wrong parser and silently dropping all text. Fix: explicit format adapters now take priority over model dialects in stream format selection. ([`a0b15a9`](https://github.com/MadAppGang/claudish/commit/a0b15a9))
-- **#85, #88, #99** — keyboard input broken in claudish since ~v6.0. `@inquirer/prompts` and `readline.createInterface` left lingering `data`/`keypress` listeners on `process.stdin` that interfered with Claude Code's TTY handling when spawned with `stdio: "inherit"`. Fix: clean up stdin (setRawMode(false), pause, removeAllListeners) after all interactive prompts complete. ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
-- **Structural prevention for #102-class bugs** — `ComposedHandler` now holds a readonly `bareModelName` field with unconditional constructor invariant (throws if `modelName` contains `@`). Every model-identity consumer (`DialectManager`, `lookupModel`, middleware gate + routing, all 5 stream parsers, `TokenTracker`, `fetchQuotaForStatusLine`) now receives the bare form. `matchesModelFamily` no longer matches `@family` substrings (false-positive source). `lookupModel` no longer defensively strips `@` prefixes (its doc comment now states the input contract explicitly). ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
+- stream format priority — explicit adapter wins over model dialect *(#102)* ([`a0b15a9`](https://github.com/MadAppGang/claudish/commit/a0b15a97e0586d2fea09c98bdf7fb4591ee6fd82))
+- thread Slack webhook as parameter, not process.env *(recommender)* ([`0fddebd`](https://github.com/MadAppGang/claudish/commit/0fddebd69db249bb627be2d34d0eb6370d3ac677))
+- centralize all-models.json through v2 helpers *(cache)* ([`157c580`](https://github.com/MadAppGang/claudish/commit/157c580e46f9ec144eecea2721a182b1ce29a736))
+- #102 GLM stream parser + structural prevention + #85/88/99 stdin cleanup([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e7916979cbae1db7ba5bdf57f19d4b37ebb3))
 
-### Tests
+### Documentation
 
-- Added `packages/cli/src/zai-glm.e2e.test.ts` — real-API regression guard that exercises the full claudish proxy pipeline for `zai@glm-4.6`, `gc@glm-4.6`, and `glm@glm-4.6`. Gated on `ZAI_API_KEY` / `GLM_CODING_API_KEY` / `ZHIPU_API_KEY` env vars. This test would have caught #102 at commit time — the earlier unit-level DialectManager tests (all 195 passing) did not. ([`a0b15a9`](https://github.com/MadAppGang/claudish/commit/a0b15a9))
-- Added `packages/cli/src/handlers/composed-handler.test.ts` — 4 tests pinning the constructor invariant across all input branches (routed-in-bare rejected, routed-in-target accepted, bare-in-both accepted, vendor-slash-prefix accepted). ([`f876e79`](https://github.com/MadAppGang/claudish/commit/f876e79))
+- update API reference for recommender v2.0 (S1-S7 refactor)([`a68735f`](https://github.com/MadAppGang/claudish/commit/a68735f5b12ef09c2790ecae29a8d80bea563cbe))
+- update CHANGELOG.md for v6.13.1([`ae86f4f`](https://github.com/MadAppGang/claudish/commit/ae86f4f0f18b2f1d16a577ef6b413228e3a162f4))
+
+### New Features
+
+- v6.13.2 — fix #102 GLM/Z.AI 0-byte output + #85/88/99 stdin cleanup([`c959d0e`](https://github.com/MadAppGang/claudish/commit/c959d0e37dce1ce9d7317bcdfaafcdd4d6ade419))
 
 ## [6.13.1] - 2026-04-14
 
