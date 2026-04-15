@@ -1,44 +1,26 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import { log, logStderr, isLoggingEnabled } from "./logger.js";
+import { log, logStderr } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { GeminiProviderTransport } from "./providers/transport/gemini-apikey.js";
-import { GeminiCodeAssistProviderTransport } from "./providers/transport/gemini-codeassist.js";
-import { GeminiAPIFormat } from "./adapters/gemini-api-format.js";
-import { VertexProviderTransport, parseVertexModel } from "./providers/transport/vertex-oauth.js";
-import { DefaultAPIFormat } from "./adapters/base-api-format.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ModelHandler } from "./handlers/types.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
-import { LiteLLMProviderTransport } from "./providers/transport/litellm.js";
-import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
-import { OpenAIProviderTransport } from "./providers/transport/openai.js";
-import { OpenAIAPIFormat } from "./adapters/openai-api-format.js";
-import { AnthropicProviderTransport } from "./providers/transport/anthropic-compat.js";
-import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
-import { OllamaProviderTransport } from "./providers/transport/ollamacloud.js";
-import { OllamaAPIFormat } from "./adapters/ollama-api-format.js";
 import {
   resolveProvider,
   parseUrlModel,
   createUrlProvider,
 } from "./providers/provider-registry.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import {
-  resolveRemoteProvider,
-  validateRemoteProviderApiKey,
-  getRegisteredRemoteProviders,
-} from "./providers/remote-provider-registry.js";
-import { getVertexConfig, validateVertexOAuthConfig } from "./auth/vertex-auth.js";
+import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
-import { fetchLiteLLMModels } from "./model-loader.js";
+import { fetchLiteLLMModels, warmRecommendedModels } from "./model-loader.js";
 import {
   resolveModelNameSync,
   logResolution,
@@ -525,6 +507,9 @@ export async function createProxyServer(
   // Warm pricing cache in background (non-blocking)
   warmPricingCache().catch(() => {});
 
+  // Warm recommended models from Firebase in background (non-blocking)
+  warmRecommendedModels().catch(() => {});
+
   // Warm model catalog resolvers in background (non-blocking)
   // OpenRouter always warms; LiteLLM only if configured.
   const catalogProvidersToWarm = ["openrouter"];
@@ -537,7 +522,7 @@ export async function createProxyServer(
     port,
     url: `http://127.0.0.1:${port}`,
     shutdown: async () => {
-      return new Promise<void>((resolve) => server.close((e) => resolve()));
+      return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }

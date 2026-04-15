@@ -746,3 +746,283 @@ describe("public projection — internal fields stripped", () => {
     expect(JSON.stringify(m)).not.toContain("anthropic-api");
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// Suite 8: searchBag must never leak
+//
+// Verifies that internal LLM-generated search fields (searchBag,
+// searchBagHash, searchBagGeneratedAt, searchBagModel) are stripped
+// from every response path: recommended, top100, standard list,
+// search. Regression guard.
+// ─────────────────────────────────────────────────────────────
+
+const SEARCH_BAG_FIELDS = [
+  "searchBag",
+  "searchBagHash",
+  "searchBagGeneratedAt",
+  "searchBagModel",
+] as const;
+
+function expectNoSearchBagFields(obj: Record<string, unknown>): void {
+  for (const field of SEARCH_BAG_FIELDS) {
+    expect(obj[field]).toBeUndefined();
+  }
+  // Also make sure the field names don't appear as substrings of the
+  // JSON payload — catches the case where they leak through nested maps.
+  const json = JSON.stringify(obj);
+  for (const field of SEARCH_BAG_FIELDS) {
+    expect(json).not.toContain(field);
+  }
+}
+
+function makeDocWithBag(overrides: Partial<ModelDoc> & Pick<ModelDoc, "modelId" | "provider">): ModelDoc {
+  return {
+    ...makeDoc(overrides),
+    searchBag: ["chatgpt", "gpt", "openai", "claude", "sonnet", "opus", "gemini"],
+    searchBagHash: "abc123",
+    searchBagGeneratedAt: Timestamp.now(),
+    searchBagModel: "gemini-3.1-flash-lite-preview",
+  } as ModelDoc;
+}
+
+describe("searchBag — never leaks to API consumers", () => {
+  it("search results strip searchBag + siblings", async () => {
+    seedModels([
+      makeDocWithBag({ modelId: "gpt-5", provider: "openai" }),
+      makeDocWithBag({ modelId: "claude-opus", provider: "anthropic" }),
+    ]);
+    const { body } = await callHandler({ search: "gpt" });
+    expect(body.models.length).toBeGreaterThan(0);
+    for (const m of body.models) {
+      expectNoSearchBagFields(m);
+    }
+  });
+
+  it("standard list strips searchBag + siblings", async () => {
+    seedModels([
+      makeDocWithBag({ modelId: "m1", provider: "openai" }),
+      makeDocWithBag({ modelId: "m2", provider: "anthropic" }),
+    ]);
+    const { body } = await callHandler({});
+    expect(body.models.length).toBe(2);
+    for (const m of body.models) {
+      expectNoSearchBagFields(m);
+    }
+  });
+
+  it("top100 strips searchBag + siblings", async () => {
+    seedModels([
+      makeDocWithBag({ modelId: "m1", provider: "openai" }),
+      makeDocWithBag({ modelId: "m2", provider: "anthropic" }),
+    ]);
+    const { body } = await callHandler({ catalog: "top100" });
+    for (const m of body.models) {
+      expectNoSearchBagFields(m);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Suite 9: ?catalog=providers
+// ─────────────────────────────────────────────────────────────
+
+describe("GET ?catalog=providers", () => {
+  it("returns slug+count array sorted desc by count", async () => {
+    seedModels([
+      makeDoc({ modelId: "m1", provider: "openai" }),
+      makeDoc({ modelId: "m2", provider: "openai" }),
+      makeDoc({ modelId: "m3", provider: "openai" }),
+      makeDoc({ modelId: "m4", provider: "anthropic" }),
+      makeDoc({ modelId: "m5", provider: "anthropic" }),
+      makeDoc({ modelId: "m6", provider: "google" }),
+    ]);
+    const { status, body } = await callHandler({ catalog: "providers" });
+    expect(status).toBe(200);
+    expect(body.providers).toEqual([
+      { slug: "openai", count: 3 },
+      { slug: "anthropic", count: 2 },
+      { slug: "google", count: 1 },
+    ]);
+    expect(body.total).toBe(3);
+  });
+
+  it("excludes deprecated models from counts", async () => {
+    seedModels([
+      makeDoc({ modelId: "live-1", provider: "openai" }),
+      makeDoc({ modelId: "live-2", provider: "openai" }),
+      makeDoc({ modelId: "dead-1", provider: "openai", status: "deprecated" }),
+    ]);
+    const { body } = await callHandler({ catalog: "providers" });
+    const openai = body.providers.find((p: any) => p.slug === "openai");
+    expect(openai.count).toBe(2);
+  });
+
+  it("returns empty providers array when no models", async () => {
+    seedModels([]);
+    const { status, body } = await callHandler({ catalog: "providers" });
+    expect(status).toBe(200);
+    expect(body.providers).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Suite 10: semantic search via searchBag
+// ─────────────────────────────────────────────────────────────
+
+describe("GET ?search=<term> — semantic via searchBag", () => {
+  function seedSemanticPool(): void {
+    seedModels([
+      {
+        ...makeDoc({
+          modelId: "gpt-5",
+          provider: "openai",
+          displayName: "GPT-5",
+          pricing: { input: 10, output: 40 },
+        }),
+        searchBag: [
+          "gpt", "gpt-5", "chatgpt", "openai", "codex",
+          "reasoning", "thinking", "flagship", "tools", "coding",
+          "premium", "or", "openrouter",
+        ],
+      } as ModelDoc,
+      {
+        ...makeDoc({
+          modelId: "gpt-4o-mini",
+          provider: "openai",
+          displayName: "GPT-4o mini",
+          pricing: { input: 0.15, output: 0.6 },
+        }),
+        searchBag: [
+          "gpt", "gpt-4o", "chatgpt", "openai",
+          "mini", "fast", "cheap", "coding", "or", "openrouter",
+        ],
+      } as ModelDoc,
+      {
+        ...makeDoc({
+          modelId: "claude-sonnet-4-6",
+          provider: "anthropic",
+          displayName: "Claude Sonnet 4.6",
+          pricing: { input: 3, output: 15 },
+        }),
+        searchBag: [
+          "claude", "sonnet", "anthropic", "opus", "haiku",
+          "4-6", "reasoning", "thinking", "coding", "or", "openrouter",
+        ],
+      } as ModelDoc,
+      {
+        ...makeDoc({
+          modelId: "claude-opus-4-6",
+          provider: "anthropic",
+          displayName: "Claude Opus 4.6",
+          pricing: { input: 15, output: 75 },
+        }),
+        searchBag: [
+          "claude", "opus", "anthropic", "sonnet",
+          "4-6", "flagship", "premium", "reasoning", "coding",
+          "or", "openrouter",
+        ],
+      } as ModelDoc,
+      {
+        ...makeDoc({
+          modelId: "glm-4.6",
+          provider: "z-ai",
+          displayName: "GLM 4.6",
+          pricing: { input: 0.5, output: 1.5 },
+        }),
+        searchBag: [
+          "glm", "z-ai", "zai", "zhipu", "4-6",
+          "zen", "opencode", "oc", "ollamacloud",
+          "gc", "coding", "reasoning", "cheap",
+          "or", "openrouter",
+        ],
+      } as ModelDoc,
+      {
+        ...makeDoc({
+          modelId: "qwen-3-coder",
+          provider: "qwen",
+          displayName: "Qwen 3 Coder",
+          pricing: { input: 0, output: 0 },
+        }),
+        searchBag: [
+          "qwen", "dashscope", "3", "coder", "coding",
+          "zen", "opencode", "oc", "ollamacloud",
+          "free", "or", "openrouter",
+        ],
+      } as ModelDoc,
+    ]);
+  }
+
+  it("?search=chatgpt finds GPT models via brand synonym token", async () => {
+    seedSemanticPool();
+    const { status, body } = await callHandler({ search: "chatgpt" });
+    expect(status).toBe(200);
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids).toContain("gpt-5");
+    expect(ids).toContain("gpt-4o-mini");
+    expect(ids).not.toContain("claude-opus-4-6");
+    expect(ids).not.toContain("claude-sonnet-4-6");
+  });
+
+  it("?search=zen finds gateway-reachable models (z-ai, qwen)", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "zen" });
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids).toContain("glm-4.6");
+    expect(ids).toContain("qwen-3-coder");
+    // Anthropic / OpenAI are NOT reachable via OpenCode Zen
+    expect(ids).not.toContain("gpt-5");
+    expect(ids).not.toContain("claude-opus-4-6");
+  });
+
+  it("?search=claude finds all Claude variants", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "claude" });
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids).toContain("claude-opus-4-6");
+    expect(ids).toContain("claude-sonnet-4-6");
+    expect(ids).not.toContain("gpt-5");
+  });
+
+  it("?search=sonnet finds Claude Sonnet (family colloquialism)", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "sonnet" });
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids).toContain("claude-sonnet-4-6");
+    // Opus also has "sonnet" in its bag (as a sibling reference)
+    // which is fine — Claude family co-mentions are expected
+  });
+
+  it("?search=free finds zero-priced models via 'free' token", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "free" });
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids).toContain("qwen-3-coder");
+    expect(ids).not.toContain("gpt-5");
+    expect(ids).not.toContain("claude-opus-4-6");
+  });
+
+  it("exact-match ranking — typing 'gpt-5' ranks gpt-5 above gpt-4o-mini", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "gpt-5" });
+    const ids = body.models.map((m: any) => m.modelId);
+    expect(ids[0]).toBe("gpt-5");
+  });
+
+  it("unknown token returns empty list, no crash", async () => {
+    seedSemanticPool();
+    const { status, body } = await callHandler({ search: "xyznonsense-abc-def" });
+    expect(status).toBe(200);
+    expect(body.models).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+
+  it("search response strips searchBag + siblings from every returned doc", async () => {
+    seedSemanticPool();
+    const { body } = await callHandler({ search: "gpt" });
+    expect(body.models.length).toBeGreaterThan(0);
+    for (const m of body.models) {
+      expectNoSearchBagFields(m);
+    }
+  });
+});

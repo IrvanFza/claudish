@@ -566,6 +566,34 @@ export async function getTop100Models(): Promise<Top100Response> {
 }
 
 /**
+ * Response from Firebase `?catalog=providers`. Each entry is a provider
+ * slug and the number of active models attributed to that provider.
+ * Sorted by count desc.
+ */
+export interface ProviderListEntry {
+  slug: string;
+  count: number;
+}
+
+/**
+ * Fetch the list of active providers and their model counts.
+ * Powers the CLI `--list-providers` command.
+ */
+export async function getProviderList(): Promise<ProviderListEntry[]> {
+  const url = `${FIREBASE_BASE_URL}?catalog=providers`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Firebase providers fetch failed: ${response.status} ${response.statusText}`,
+    );
+  }
+  const data = (await response.json()) as { providers?: ProviderListEntry[] };
+  return data.providers ?? [];
+}
+
+/**
  * Fetch active models for a given provider.
  */
 export async function getModelsByProvider(provider: string, limit = 200): Promise<ModelDoc[]> {

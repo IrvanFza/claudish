@@ -30,6 +30,16 @@ import { SessionManager } from "./channel/index.js";
 import { createProxyServer } from "./proxy-server.js";
 import { findAvailablePort } from "./port-manager.js";
 import type { ProxyServer } from "./types.js";
+import {
+  getRecommendedModelsSync,
+  groupRecommendedModels,
+  collectRoutingPrefixes,
+  computeQuickPicks,
+  normalizePricingDisplay,
+  FIREBASE_SLUG_TO_PROVIDER_NAME,
+  type RecommendedModelGroup,
+} from "./model-loader.js";
+import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 
 // Load environment variables
 config();
@@ -40,7 +50,6 @@ const __dirname = dirname(__filename);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const RECOMMENDED_MODELS_PATH = join(__dirname, "../recommended-models.json");
 const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
 const ALL_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
@@ -91,60 +100,7 @@ interface ToolDefinition {
   }>;
 }
 
-interface ModelInfo {
-  id: string;
-  name: string;
-  description: string;
-  provider: string;
-  pricing?: { input: string; output: string; average: string };
-  context?: string;
-  supportsTools?: boolean;
-  supportsReasoning?: boolean;
-  supportsVision?: boolean;
-}
-
 // ─── Helper Functions ────────────────────────────────────────────────────────
-
-function loadRecommendedModels(): ModelInfo[] {
-  // Try Firebase-cached version first (auto-generated, more current)
-  const cachedPath = join(CLAUDISH_CACHE_DIR, "recommended-models-cache.json");
-  if (existsSync(cachedPath)) {
-    try {
-      const data = JSON.parse(readFileSync(cachedPath, "utf-8"));
-      if (data.models && data.models.length > 0) return data.models;
-    } catch {
-      // Fall through to bundled
-    }
-  }
-
-  // Fall back to bundled JSON
-  if (existsSync(RECOMMENDED_MODELS_PATH)) {
-    try {
-      const data = JSON.parse(readFileSync(RECOMMENDED_MODELS_PATH, "utf-8"));
-      return data.models || [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-/** Parse "$1.32/1M" → 1.32, "FREE" → 0, "N/A" → Infinity */
-function parsePriceAvg(s?: string): number {
-  if (!s || s === "N/A") return Infinity;
-  if (s === "FREE") return 0;
-  const m = s.match(/\$([\d.]+)/);
-  return m ? parseFloat(m[1]) : Infinity;
-}
-
-/** Parse "196K" → 196000, "1M" → 1000000, "1048K" → 1048000 */
-function parseCtx(s?: string): number {
-  if (!s || s === "N/A") return 0;
-  const upper = s.toUpperCase();
-  if (upper.includes("M")) return parseFloat(upper) * 1_000_000;
-  if (upper.includes("K")) return parseFloat(upper) * 1_000;
-  return parseInt(s) || 0;
-}
 
 async function loadAllModels(forceRefresh = false): Promise<any[]> {
   if (!forceRefresh && existsSync(ALL_MODELS_CACHE_PATH)) {
@@ -416,8 +372,10 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
-      const models = loadRecommendedModels();
-      if (models.length === 0) {
+      let doc;
+      try {
+        doc = getRecommendedModelsSync();
+      } catch {
         return {
           content: [
             {
@@ -427,27 +385,95 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
           ],
         };
       }
-      let output = "# Recommended Models\n\n";
-      output += "| Model | Provider | Pricing | Context | Tools | Reasoning | Vision |\n";
-      output += "|-------|----------|---------|---------|-------|-----------|--------|\n";
-      for (const model of models) {
-        const t = model.supportsTools ? "✓" : "·";
-        const r = model.supportsReasoning ? "✓" : "·";
-        const v = model.supportsVision ? "✓" : "·";
-        output += `| ${model.id} | ${model.provider} | ${model.pricing?.average || "N/A"} | ${model.context || "N/A"} | ${t} | ${r} | ${v} |\n`;
+      if (!doc.models || doc.models.length === 0) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "No recommended models found. Try search_models instead.",
+            },
+          ],
+        };
       }
-      // Generate Quick Picks from loaded data (no more hardcoded drift)
-      output += "\n## Quick Picks\n";
-      const cheapest = [...models].sort((a, b) => parsePriceAvg(a.pricing?.average) - parsePriceAvg(b.pricing?.average))[0];
-      const bigCtx = [...models].sort((a, b) => parseCtx(b.context) - parseCtx(a.context))[0];
-      const priciest = [...models].sort((a, b) => parsePriceAvg(b.pricing?.average) - parsePriceAvg(a.pricing?.average))[0];
-      const vision = models.find(m => m.supportsVision);
-      const reasoning = models.find(m => m.supportsReasoning && m.id !== priciest?.id);
-      if (cheapest) output += `- **Budget**: \`${cheapest.id}\` (${cheapest.pricing?.average || "N/A"})\n`;
-      if (bigCtx && bigCtx.id !== cheapest?.id) output += `- **Large context**: \`${bigCtx.id}\` (${bigCtx.context || "N/A"} tokens)\n`;
-      if (priciest && priciest.id !== cheapest?.id) output += `- **Most advanced**: \`${priciest.id}\` (${priciest.pricing?.average || "N/A"})\n`;
-      if (vision && vision.id !== cheapest?.id && vision.id !== priciest?.id) output += `- **Vision + coding**: \`${vision.id}\` (${vision.pricing?.average || "N/A"})\n`;
-      if (reasoning && reasoning.id !== cheapest?.id) output += `- **Agentic**: \`${reasoning.id}\` (${reasoning.pricing?.average || "N/A"})\n`;
+
+      const { flagship, fast } = groupRecommendedModels(doc.models);
+
+      // Native-prefix lookup: Firebase slug → shortcuts[0] from provider defs.
+      const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
+      const getNativePrefix = (firebaseSlug: string): string | null => {
+        const canonical = FIREBASE_SLUG_TO_PROVIDER_NAME[firebaseSlug];
+        if (!canonical) return null;
+        const def = providerByName.get(canonical);
+        if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
+        return def.shortcuts[0];
+      };
+
+      const renderGroup = (group: RecommendedModelGroup): string => {
+        const m = group.primary;
+        const pricing = normalizePricingDisplay(m.pricing?.average);
+        const ctx = m.context || "N/A";
+        const caps: string[] = [];
+        if (m.supportsTools) caps.push("tools");
+        if (m.supportsReasoning) caps.push("reasoning");
+        if (m.supportsVision) caps.push("vision");
+        const capsLine = caps.length > 0 ? caps.join(", ") : "none";
+
+        const prefixes = collectRoutingPrefixes(group, getNativePrefix);
+        const accessLine =
+          prefixes.length > 0
+            ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ")
+            : `\`${m.id}\``;
+
+        return [
+          `### ${m.id}`,
+          `- **Pricing**: ${pricing} avg · ${ctx} context`,
+          `- **Capabilities**: ${capsLine}`,
+          `- **Access**: ${accessLine}`,
+          "",
+        ].join("\n");
+      };
+
+      let output = "# Recommended Models\n\n";
+      output += `_Last updated: ${doc.lastUpdated || "unknown"}_\n\n`;
+
+      if (flagship.length > 0) {
+        output += "## Flagship models\n\n";
+        for (const group of flagship) output += renderGroup(group);
+      }
+
+      if (fast.length > 0) {
+        output += "## Fast variants\n\n";
+        for (const group of fast) output += renderGroup(group);
+      }
+
+      // Quick picks — over the deduped primaries
+      const primaries = [...flagship, ...fast].map((g) => g.primary);
+      const picks = computeQuickPicks(primaries);
+      const pickLines: string[] = [];
+      if (picks.budget)
+        pickLines.push(
+          `- **Budget**: \`${picks.budget.id}\` (${normalizePricingDisplay(
+            picks.budget.pricing?.average
+          )})`
+        );
+      if (picks.largeContext)
+        pickLines.push(
+          `- **Large context**: \`${picks.largeContext.id}\` (${
+            picks.largeContext.context || "N/A"
+          })`
+        );
+      if (picks.mostCapable)
+        pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
+      if (picks.visionCoding)
+        pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
+      if (picks.agentic)
+        pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
+
+      if (pickLines.length > 0) {
+        output += "## Quick picks\n\n";
+        output += pickLines.join("\n") + "\n";
+      }
+
       return { content: [{ type: "text" as const, text: output }] };
     },
   });

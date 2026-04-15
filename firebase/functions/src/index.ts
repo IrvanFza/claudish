@@ -10,6 +10,7 @@ import { handleQueryModels } from "./query-handler.js";
 import { handlePluginDefaults } from "./plugin-defaults-handler.js";
 import { alertCatalogResults, alertNewModels, alertProviderDrop } from "./slack-alert.js";
 import { generateRecommendedModels } from "./recommender.js";
+import { buildSearchBag, computeBagHash, SEARCH_BAG_MODEL } from "./search-bag-builder.js";
 
 initializeApp();
 const db = getFirestore();
@@ -292,7 +293,7 @@ export const collectModelCatalog = onSchedule(
     console.log(`[catalog] merged to ${merged.length} unique models`);
 
     const writer = new FirestoreWriter();
-    const newModelIds = await writer.write(merged);
+    const newModelIds = await writer.write(merged, GOOGLE_GEMINI_API_KEY.value());
 
     // Clean up stale docs from previous runs (changed IDs, removed models)
     const currentIds = new Set(merged.map(m => m.modelId));
@@ -539,6 +540,137 @@ export const cleanupStalePrefixedDocs = onRequest(
     } catch (err) {
       console.error("[cleanup] failed:", err);
       res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────
+// Backfill search bags — one-shot admin trigger
+//
+// Iterates the models collection in pages and (re)generates the LLM
+// search bag for every model whose identity hash differs from the
+// stored one (or is missing entirely). Pass `{"data": {"force": true}}`
+// to regenerate all bags regardless of hash.
+//
+// Auth: intentionally unauthenticated. The handler takes no user
+// input, runs only against our own Firestore collection, and does
+// nothing an attacker could weaponize against users — worst case,
+// they burn our Gemini API quota. Rate-limited by maxInstances=1.
+// Jack triggers this manually; the scheduled collector maintains
+// bags on the daily cron.
+// ─────────────────────────────────────────────────────────────
+export const backfillSearchBags = onRequest(
+  {
+    region: "us-central1",
+    maxInstances: 1,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    cors: true,
+    secrets: [GOOGLE_GEMINI_API_KEY],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed — use POST" });
+      return;
+    }
+
+    // Accept either {"force": true} at top level OR {"data": {"force": true}}
+    // (matches the onCall-style body that curl users often send).
+    const body = (req.body ?? {}) as { force?: boolean; data?: { force?: boolean } };
+    const force = body.force === true || body.data?.force === true;
+
+    const apiKey = GOOGLE_GEMINI_API_KEY.value();
+    if (!apiKey) {
+      res.status(500).json({ error: "GOOGLE_GEMINI_API_KEY not set" });
+      return;
+    }
+
+    const start = Date.now();
+    let processed = 0;
+    let regenerated = 0;
+    let skipped = 0;
+    const errors: Array<{ modelId: string; error: string }> = [];
+
+    try {
+      const snap = await db.collection("models").get();
+      console.log(`[backfill] starting — ${snap.docs.length} docs`);
+
+      let batch = db.batch();
+      let batchSize = 0;
+      // Flush small batches — the function may hit the 540s timeout well
+      // before we reach Firestore's 500-op batch limit. Small batches mean
+      // progress is durable across invocations (re-runs see the updated
+      // searchBagHash and skip).
+      const FLUSH_EVERY = 10;
+
+      for (const docSnap of snap.docs) {
+        processed++;
+        const data = docSnap.data() as import("./schema.js").ModelDoc;
+
+        const newHash = computeBagHash(data);
+        const existingHash = data.searchBagHash;
+        const needsRegen =
+          force || !data.searchBag || !existingHash || existingHash !== newHash;
+
+        if (!needsRegen) {
+          skipped++;
+          continue;
+        }
+
+        try {
+          const bag = await buildSearchBag(data, apiKey);
+          batch.update(docSnap.ref, {
+            searchBag: bag,
+            searchBagHash: newHash,
+            searchBagGeneratedAt: Timestamp.now(),
+            searchBagModel: SEARCH_BAG_MODEL,
+          });
+          regenerated++;
+          batchSize++;
+
+          if (batchSize >= FLUSH_EVERY) {
+            await batch.commit();
+            batch = db.batch();
+            batchSize = 0;
+          }
+        } catch (err) {
+          errors.push({
+            modelId: data.modelId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        // Light pacing — log every 50 to show progress in Cloud Logs
+        if (processed % 50 === 0) {
+          console.log(
+            `[backfill] progress: ${processed}/${snap.docs.length} processed, ${regenerated} regenerated, ${skipped} skipped, ${errors.length} errors`,
+          );
+        }
+      }
+
+      if (batchSize > 0) await batch.commit();
+
+      const duration = Date.now() - start;
+      console.log(
+        `[backfill] done: ${processed} processed, ${regenerated} regenerated, ${skipped} skipped, ${errors.length} errors, ${duration}ms`,
+      );
+      res.status(200).json({
+        ok: true,
+        processed,
+        regenerated,
+        skipped,
+        errors,
+        durationMs: duration,
+      });
+    } catch (err) {
+      console.error("[backfill] failed:", err);
+      res.status(500).json({
+        error: String(err),
+        processed,
+        regenerated,
+        skipped,
+        errors,
+      });
     }
   }
 );

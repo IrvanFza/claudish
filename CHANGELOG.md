@@ -2,6 +2,29 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [6.14.0] - 2026-04-15
+
+### Features
+
+- **Firebase-only model catalog** — claudish now relies exclusively on the Firebase `queryModels` Cloud Function. Removed all direct OpenRouter `/api/v1/models` callers, deleted the `~/.claudish/all-models.json` cache, and dropped third-party `models.dev` aggregator fetches (OpenCode Zen, GLM Coding, OllamaCloud, OpenAI, GLM direct, Zen Free/Go listings). Routing prefixes (`zen@`, `oai@`, `glm@`, `oc@`, `gc@`, etc.) still work — only catalog discovery moved to Firebase.
+- **`?catalog=top100` Firebase endpoint** — returns top 100 ranked coding-candidate models from the `models` collection, scored by release date / capabilities / pricing / context / confidence. Powers the new `claudish --list-models` default.
+- **Semantic search via LLM-generated bags** — every `ModelDoc` carries a server-side `searchBag[]` populated once by `gemini-3.1-flash-lite-preview` and cached by hash. `?search=` now matches brand synonyms (`chatgpt` → GPT family, `claude` → Anthropic, `grok` → xAI, `glm`/`zai` → Z.AI), gateway names (`zen` → all OpenCode Zen models, `oc` → OllamaCloud, `gc` → GLM Coding, `cx` → OpenAI Codex, `go` → Gemini Code Assist), capability words (`reasoning`, `vision`, `tools`, `free`), family colloquialisms (`sonnet`, `opus`, `haiku`, `flash`, `pro`, `mini`, `nano`, `turbo`). Bag fields are stripped from every endpoint response.
+- **`?catalog=providers` Firebase endpoint** — returns distinct provider slugs with active-model counts.
+- **`claudish --list-providers`** — discover every provider slug (qwen, openai, mistralai, google, meta-llama, anthropic, deepseek, z-ai, x-ai, moonshotai, minimax, etc.) with active-model counts. Use the slug with `--list-models --provider <slug>`.
+- **`claudish --list-models --provider <slug>`** — filter the Firebase catalog to one provider.
+- **`claudish --top-models` rendering rewrite** — groups by category (Flagship vs Fast variants), deduplicates entries by id, collapses subscription/gateway routes into a single `via:` sub-line per model. Same logic powers the MCP `list_models` tool's Markdown output.
+- **Search overfetch fix** — `?search=` previously capped the Firestore query at 50 docs *before* the substring filter, so most matches were lost. Now overfetches up to 1000 docs and trims after scoring. `claudish -s gemini` returns 33 results instead of 1.
+
+### Removed
+
+- `updateModelsFromOpenRouter`, `checkAndUpdateModelsCache`, `isCacheStale`, `fetchModelContextWindow`, `ensureOpenRouterModelsLoaded`, `loadRecommendedModelsJSON`, three duplicate `loadRecommendedModels` copies, both incompatible `ModelInfo` interfaces, the `openrouterId` field on bundled `recommended-models.json`, and 5 direct OpenRouter `/api/v1/models` call sites. Net deletion: ~1,920 lines across two refactor passes.
+
+### Migration notes
+
+- `claudish --list-models` (no query) no longer dumps 400+ OpenRouter models. It now shows top-100 ranked from Firebase plus a local-providers footer (Ollama / LiteLLM if configured). For full search use `claudish -s <query>`.
+- `search_models` MCP tool requires Firebase reachability — no offline fallback. Acceptable degradation for the Firebase-only design.
+- Firebase deploy required: `?catalog=top100`, `?catalog=providers`, search-bag-aware `?search=`, and the `backfillSearchBags` callable function. Already deployed to `claudish-6da10`.
+
 ## [6.13.3] - 2026-04-15
 
 ### Bug Fixes

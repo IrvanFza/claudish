@@ -6,12 +6,14 @@
  * - OpenRouter-specific headers (HTTP-Referer, X-Title)
  * - OpenRouterRequestQueue for rate limiting
  * - openai-sse stream format
- * - Context window lookup from cached OpenRouter model catalog
+ *
+ * Context window is looked up via model translators in the composed handler,
+ * not via the transport. Claudish no longer fetches the full OpenRouter catalog
+ * for metadata — model info comes from Firebase.
  */
 
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import { OpenRouterRequestQueue } from "../../handlers/shared/openrouter-queue.js";
-import { getCachedOpenRouterModels } from "../../model-loader.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -22,11 +24,9 @@ export class OpenRouterProviderTransport implements ProviderTransport {
 
   private apiKey: string;
   private queue: OpenRouterRequestQueue;
-  private modelId: string;
 
-  constructor(apiKey: string, modelId?: string) {
+  constructor(apiKey: string, _modelId?: string) {
     this.apiKey = apiKey;
-    this.modelId = modelId || "";
     this.queue = OpenRouterRequestQueue.getInstance();
   }
 
@@ -55,13 +55,12 @@ export class OpenRouterProviderTransport implements ProviderTransport {
   }
 
   /**
-   * Look up context window from the cached OpenRouter model catalog.
-   * The catalog is pre-warmed at startup via warmAllCatalogs().
+   * Transport-level context window is unknown in the Firebase model. The
+   * ComposedHandler resolves context windows via model translators (which
+   * know per-model defaults), so returning 0 here is the correct fallback.
    */
   getContextWindow(): number {
-    const models = this.modelId ? getCachedOpenRouterModels() : null;
-    const model = models?.find((m: any) => m.id === this.modelId);
-    return model?.context_length || model?.top_provider?.context_length || 0;
+    return 0;
   }
 }
 

@@ -8,6 +8,7 @@ import {
   getRecommendedModels,
   searchModels,
   getModelsByProvider,
+  getProviderList,
   getTop100Models,
   groupRecommendedModels,
   collectRoutingPrefixes,
@@ -337,6 +338,30 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
       await printRecommendedModels(hasJsonFlag, forceUpdate);
       process.exit(0);
+    } else if (arg === "--list-providers") {
+      // List every provider in the Firebase catalog + active-model count.
+      const hasJsonFlag = args.includes("--json");
+      try {
+        const providers = await getProviderList();
+        if (hasJsonFlag) {
+          console.log(JSON.stringify({ providers, total: providers.length }, null, 2));
+        } else {
+          console.log("\nProviders in Firebase catalog:\n");
+          console.log("  Slug                 Active models");
+          console.log("  " + "─".repeat(40));
+          for (const { slug, count } of providers) {
+            console.log(`  ${slug.padEnd(20)} ${String(count).padStart(5)}`);
+          }
+          console.log("\nUsage:  claudish --list-models --provider <slug>");
+          console.log("        claudish -s <query>                    (fuzzy search)\n");
+        }
+        process.exit(0);
+      } catch (err) {
+        console.error(
+          `Failed to fetch providers: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exit(1);
+      }
     } else if (
       arg === "--models" ||
       arg === "--list-models" ||
@@ -783,6 +808,7 @@ async function printTop100(jsonOutput: boolean): Promise<void> {
   console.log("");
   console.log("Filter by provider: claudish --list-models --provider <slug>");
   console.log("                    (e.g. opencode-zen, anthropic, openai, google, x-ai)");
+  console.log("All providers:      claudish --list-providers");
   console.log("Search by keyword:  claudish -s <query>");
   console.log("Top recommended:    claudish --top-models");
   console.log("");
@@ -947,6 +973,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
   console.log("                 or:  claudish --model <model> ...");
   console.log("");
   console.log("  For more: claudish --list-models                (browse full catalog)");
+  console.log("            claudish --list-providers              (list all providers + counts)");
   console.log("            claudish -s <query>                    (search by keyword)");
   console.log("            claudish --top-models --force-update   (refresh from Firebase)");
   console.log("");
@@ -1583,7 +1610,10 @@ OPTIONS:
   --list-models --provider <slug>
                            Filter Firebase catalog to one provider
                            (e.g. --provider opencode-zen, --provider anthropic)
-  -s, --search <query>     Search Firebase catalog by keyword (id/name/alias)
+  --list-providers         List every provider + active-model count
+  -s, --search <query>     Search Firebase catalog by keyword — matches model ID,
+                           brand synonyms (chatgpt, claude, grok), gateway names
+                           (zen, oc, codex), or capabilities (reasoning, vision, free)
   --top-models             List the curated recommended models (flagship + fast)
   --team <models>          Run multiple models in parallel (comma-separated)
                            Example: --team minimax-m2.5,kimi-k2.5 "prompt"
@@ -1812,7 +1842,8 @@ LOCAL MODELS (Ollama, LM Studio, vLLM):
 AVAILABLE MODELS:
   Top 100 ranked:      claudish --list-models                 (Firebase-ranked list + local providers)
   By provider:         claudish --list-models --provider <slug>  (e.g. opencode-zen, anthropic, openai, google, x-ai)
-  Search models:       claudish -s <query>                    (substring match on id / name / aliases)
+  All providers:       claudish --list-providers              (every provider + active-model count)
+  Search models:       claudish -s <query>                    (fuzzy: id, brand synonyms, gateways, capabilities)
   Top recommended:     claudish --top-models                  (curated flagship + fast)
   Probe routing:       claudish --probe minimax-m2.5 kimi-k2.5 gemini-3.1-pro-preview
   Free models only:    claudish --free                        (interactive selector with free models)

@@ -56,6 +56,22 @@ function toPublicModel(doc: ModelDoc): PublicModel {
   return out;
 }
 
+/**
+ * Defense-in-depth — strips internal search-bag fields from any object
+ * before it's serialized to an API consumer. toPublicModel() already
+ * uses a whitelist, but this is called on EVERY returned shape
+ * (top100 entries, search results, raw ModelDocs) in case anyone
+ * accidentally spreads a full doc into a response.
+ */
+function stripInternalFields<T extends object>(doc: T): T {
+  const clone = { ...doc } as Record<string, unknown>;
+  delete clone.searchBag;
+  delete clone.searchBagHash;
+  delete clone.searchBagGeneratedAt;
+  delete clone.searchBagModel;
+  return clone as T;
+}
+
 export async function handleQueryModels(req: Request, res: Response): Promise<void> {
   if (req.method !== "GET") {
     res.status(405).json({ error: "Method not allowed" });
@@ -104,6 +120,8 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
 
     try {
       const snap = await catalogQuery.get();
+      // Slim projection is a whitelist — searchBag can't leak here by
+      // construction, but the explicit field pick keeps it that way.
       const models = snap.docs.map(d => {
         const data = d.data() as ModelDoc;
         return {
@@ -135,9 +153,45 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
         return;
       }
       const recDoc = recSnap.data() as RecommendedModelsDoc;
-      res.status(200).json(recDoc);
+      // Defense-in-depth — recommended entries don't carry searchBag fields
+      // today, but strip anyway so a future regression can't leak them.
+      const sanitized = {
+        ...recDoc,
+        models: (recDoc.models ?? []).map(m =>
+          stripInternalFields(m as unknown as Record<string, unknown>)
+        ),
+      };
+      res.status(200).json(sanitized);
     } catch (err) {
       console.error("[catalog] Recommended models query failed:", err);
+      res.status(500).json({ error: "Internal error" });
+    }
+    return;
+  }
+
+  // ── Providers catalog: ?catalog=providers ────────────────────────────────
+  // Returns every provider slug in the catalog with its active-model count,
+  // sorted desc by count. Powers the CLI `--list-providers` command.
+  if (req.query.catalog === "providers") {
+    try {
+      const snap = await db
+        .collection("models")
+        .where("status", "==", "active")
+        .get();
+
+      const counts = new Map<string, number>();
+      for (const d of snap.docs) {
+        const p = (d.data() as ModelDoc).provider;
+        if (!p) continue;
+        counts.set(p, (counts.get(p) ?? 0) + 1);
+      }
+      const providers = Array.from(counts.entries())
+        .map(([slug, count]) => ({ slug, count }))
+        .sort((a, b) => b.count - a.count);
+
+      res.status(200).json({ providers, total: providers.length });
+    } catch (err) {
+      console.error("[catalog] Providers query failed:", err);
       res.status(500).json({ error: "Internal error" });
     }
     return;
@@ -192,7 +246,7 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
         if (includeScores) {
           base.scoreBreakdown = entry.score;
         }
-        return base;
+        return stripInternalFields(base);
       });
 
       res.status(200).json({
@@ -247,32 +301,75 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
     }
   }
 
-  // Filter: ?search=gpt (case-insensitive substring match on modelId / displayName)
-  // Firestore doesn't support native substring search — handled client-side after fetch.
-  // When search is present, fetch a wider pool (up to 500) before the substring filter
-  // so narrow searches don't miss matches that fall outside the user's requested limit.
   const searchTerm = req.query.search ? String(req.query.search).toLowerCase() : null;
-
   const requestedLimit = Math.min(parseInt(String(req.query.limit ?? "50"), 10), 200);
-  const fetchLimit = searchTerm ? 500 : requestedLimit;
-  query = query.limit(fetchLimit);
+
+  // ── Search: token-based scoring against LLM-generated searchBag ──────────
+  // On ?search=<q>:
+  //   1. Tokenize the query (lowercase, split on whitespace)
+  //   2. Fetch a wide pool (500) using the filters already applied above
+  //   3. Score each doc in-memory (modelId exact/prefix, alias match,
+  //      searchBag token hits, substring match on id/displayName)
+  //   4. Return the top N by score, stripped of internal fields
+  //
+  // The search bag is populated by the writer at ingest time (see
+  // writer.ts / search-bag-builder.ts). Docs without a bag fall back to
+  // substring matches only — so the new path never regresses vs. the
+  // old substring-only implementation.
+  if (searchTerm) {
+    const queryTokens = searchTerm.split(/\s+/).filter(Boolean);
+    const fetchLimit = 500;
+    query = query.limit(fetchLimit);
+
+    try {
+      const snap = await query.get();
+      const docs = snap.docs.map(d => d.data() as ModelDoc);
+
+      const scored = docs.map(m => {
+        let score = 0;
+        const bag = new Set((m.searchBag ?? []).map(t => t.toLowerCase()));
+        const idLower = m.modelId.toLowerCase();
+        const nameLower = (m.displayName ?? "").toLowerCase();
+
+        // Exact match on modelId or alias — strongest signal
+        if (idLower === searchTerm) score += 100;
+        if (idLower.startsWith(searchTerm)) score += 30;
+        if ((m.aliases ?? []).some(a => a.toLowerCase() === searchTerm)) score += 30;
+
+        // Per-token contributions
+        for (const tok of queryTokens) {
+          if (bag.has(tok)) score += 10;
+          if (idLower.includes(tok)) score += 3;
+          if (nameLower.includes(tok)) score += 2;
+          if ((m.aliases ?? []).some(a => a.toLowerCase().includes(tok))) score += 2;
+        }
+
+        return { doc: m, score };
+      });
+
+      const results = scored
+        .filter(s => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, requestedLimit)
+        .map(s => stripInternalFields(toPublicModel(s.doc) as unknown as Record<string, unknown>));
+
+      res.status(200).json({ models: results, total: results.length });
+    } catch (err) {
+      console.error("[catalog] Search query failed:", err);
+      res.status(500).json({ error: "Internal error" });
+    }
+    return;
+  }
+
+  // Non-search path — apply the caller's requested limit directly.
+  query = query.limit(requestedLimit);
 
   try {
     const snap = await query.get();
-    let docs = snap.docs.map(d => d.data() as ModelDoc);
-
-    // Apply client-side search filter, then trim to the user's requested limit.
-    if (searchTerm) {
-      docs = docs
-        .filter(m =>
-          m.modelId.toLowerCase().includes(searchTerm) ||
-          m.displayName.toLowerCase().includes(searchTerm) ||
-          m.aliases.some(a => a.toLowerCase().includes(searchTerm))
-        )
-        .slice(0, requestedLimit);
-    }
-
-    const models = docs.map(toPublicModel);
+    const docs = snap.docs.map(d => d.data() as ModelDoc);
+    const models = docs.map(d =>
+      stripInternalFields(toPublicModel(d) as unknown as Record<string, unknown>)
+    );
     res.status(200).json({ models, total: models.length });
   } catch (err) {
     console.error("[catalog] Firestore query failed:", err);
