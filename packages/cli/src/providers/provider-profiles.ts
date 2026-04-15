@@ -37,6 +37,7 @@ import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oa
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
 import { OpenRouterProvider } from "./transport/openrouter.js";
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
+import { getRuntimeProfiles } from "./runtime-providers.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
 import { log, logStderr } from "../logger.js";
 import { resolveApiKeyProvenance, formatProvenanceLog } from "./api-key-provenance.js";
@@ -379,7 +380,8 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
  * - The profile's createHandler() returns null (e.g. missing config)
  */
 export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
-  const profile = PROVIDER_PROFILES[ctx.provider.name];
+  const profile =
+    PROVIDER_PROFILES[ctx.provider.name] ?? getRuntimeProfiles().get(ctx.provider.name);
   if (!profile) {
     return null; // Unknown provider — caller should fall through to OpenRouter or return null
   }

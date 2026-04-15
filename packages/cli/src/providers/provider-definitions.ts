@@ -10,6 +10,7 @@
  */
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import { getRuntimeProviders } from "./runtime-providers.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -673,6 +674,10 @@ function ensureProviderByNameCache(): Map<string, ProviderDefinition> {
 /**
  * Get the shortcuts → canonical provider name mapping.
  * Replaces PROVIDER_SHORTCUTS in model-parser.ts.
+ *
+ * Builtin shortcuts are cached on first access. Runtime providers merge their
+ * shortcuts fresh each call (the registry is small and startup-only, so the
+ * extra allocation is negligible and avoids cache-invalidation complexity).
  */
 export function getShortcuts(): Record<string, string> {
   if (!_shortcutsCache) {
@@ -683,7 +688,15 @@ export function getShortcuts(): Record<string, string> {
       }
     }
   }
-  return _shortcutsCache;
+  const runtime = getRuntimeProviders();
+  if (runtime.size === 0) return _shortcutsCache;
+  const merged: Record<string, string> = { ..._shortcutsCache };
+  for (const def of runtime.values()) {
+    for (const shortcut of def.shortcuts) {
+      merged[shortcut] = def.name;
+    }
+  }
+  return merged;
 }
 
 /**
@@ -737,9 +750,13 @@ export function getNativeModelPatterns(): Array<{ pattern: RegExp; provider: str
 
 /**
  * Get a provider definition by canonical name.
+ * Consults the builtin cache first, then the runtime registry for custom
+ * endpoints registered at startup via `custom-endpoints-loader.ts`.
  */
 export function getProviderByName(name: string): ProviderDefinition | undefined {
-  return ensureProviderByNameCache().get(name);
+  const builtin = ensureProviderByNameCache().get(name);
+  if (builtin) return builtin;
+  return getRuntimeProviders().get(name);
 }
 
 /**
@@ -799,7 +816,11 @@ export function isLocalTransport(providerName: string): boolean {
       }
     }
   }
-  return _localProvidersCache.has(providerName.toLowerCase());
+  const lower = providerName.toLowerCase();
+  if (_localProvidersCache.has(lower)) return true;
+  // Runtime fallback — custom endpoints may declare isLocal
+  const runtimeDef = getRuntimeProviders().get(providerName);
+  return !!runtimeDef?.isLocal;
 }
 
 /**
@@ -815,7 +836,11 @@ export function isDirectApiProvider(providerName: string): boolean {
       }
     }
   }
-  return _directApiProvidersCache.has(providerName.toLowerCase());
+  const lower = providerName.toLowerCase();
+  if (_directApiProvidersCache.has(lower)) return true;
+  // Runtime fallback — custom endpoints are direct API by default
+  const runtimeDef = getRuntimeProviders().get(providerName);
+  return !!runtimeDef?.isDirectApi;
 }
 
 /**
@@ -845,10 +870,16 @@ export function toRemoteProvider(def: ProviderDefinition): RemoteProvider {
 }
 
 /**
- * Get all provider definitions.
+ * Get all provider definitions (builtin + runtime-registered).
+ *
+ * Fast path: when no runtime providers are registered, returns BUILTIN_PROVIDERS
+ * directly (no allocation). Once any custom endpoint is loaded, returns a fresh
+ * array that concatenates builtin and runtime definitions.
  */
 export function getAllProviders(): ProviderDefinition[] {
-  return BUILTIN_PROVIDERS;
+  const runtime = getRuntimeProviders();
+  if (runtime.size === 0) return BUILTIN_PROVIDERS;
+  return [...BUILTIN_PROVIDERS, ...runtime.values()];
 }
 
 /**

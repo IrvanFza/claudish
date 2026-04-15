@@ -59,6 +59,7 @@ import {
   buildRoutingChain,
 } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
+import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { resolveDefaultProvider } from "./default-provider.js";
 import { loadConfig } from "./profile-config.js";
 
@@ -93,6 +94,27 @@ export async function createProxyServer(
   modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
   options: ProxyServerOptions = {}
 ): Promise<ProxyServer> {
+  // Load user-declared custom endpoints from ~/.claudish/config.json and
+  // register them in the runtime provider registry so they appear in lookups
+  // and handler creation. Runs once per proxy lifetime; idempotent.
+  try {
+    const customEpResult = loadCustomEndpoints(loadConfig());
+    if (customEpResult.registered > 0) {
+      log(
+        `[Proxy] Registered ${customEpResult.registered} custom endpoint(s) from config`
+      );
+    }
+    for (const err of customEpResult.errors) {
+      console.error(
+        `[claudish] customEndpoints['${err.name}'] failed validation: ${err.message}`
+      );
+    }
+  } catch (err) {
+    // Config read failure should not crash the proxy — the rest of startup
+    // continues and users get the default (builtin-only) set of providers.
+    log(`[Proxy] customEndpoints load skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // Define handlers for different roles
   const nativeHandler = new NativeHandler(anthropicApiKey);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
