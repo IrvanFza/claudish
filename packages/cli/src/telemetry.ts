@@ -83,6 +83,14 @@ let installMethod = "unknown";
 /** Guards against multiple simultaneous consent prompts. */
 let consentPromptActive = false;
 
+/**
+ * True while Claude Code child process owns the TTY (spawned with stdio: "inherit").
+ * While true, the telemetry consent prompt MUST NOT attach a readline to process.stdin:
+ * the parent and child would race for every keystroke (#85, #88, #99).
+ * Flipped on/off around the spawn in claude-runner.ts.
+ */
+let claudeCodeRunning = false;
+
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
 export interface TelemetryConsent {
@@ -516,6 +524,7 @@ async function sendReport(report: TelemetryReport): Promise<void> {
  */
 function showConsentPromptAsync(ctx: ErrorContext): void {
   if (consentPromptActive) return;
+  if (claudeCodeRunning) return;
 
   // Check config: if askedAt is already set, never prompt again
   try {
@@ -637,6 +646,15 @@ export function initTelemetry(config: ClaudishConfig): void {
 }
 
 /**
+ * Signal whether the Claude Code child process currently owns the TTY.
+ * Call with `true` immediately before spawning, and with `false` on child exit.
+ * While true, the consent prompt is suppressed to avoid racing the child for stdin.
+ */
+export function setClaudeCodeRunning(running: boolean): void {
+  claudeCodeRunning = running;
+}
+
+/**
  * Report an error to the telemetry backend. Non-blocking: returns void
  * immediately. The HTTP send (if it happens) runs asynchronously after
  * this function returns.
@@ -648,8 +666,15 @@ export function initTelemetry(config: ClaudishConfig): void {
 export function reportError(ctx: ErrorContext): void {
   // Fast exit: telemetry not initialized or disabled
   if (!initialized || !consentEnabled) {
-    // Check if we should show the consent prompt (first-time, interactive only)
-    if (initialized && !consentEnabled && ctx.isInteractive && process.stderr.isTTY) {
+    // Check if we should show the consent prompt (first-time, interactive only).
+    // Suppressed while Claude Code owns the TTY — see claudeCodeRunning docs.
+    if (
+      initialized &&
+      !consentEnabled &&
+      ctx.isInteractive &&
+      process.stderr.isTTY &&
+      !claudeCodeRunning
+    ) {
       // Show consent prompt asynchronously — does not block the caller
       showConsentPromptAsync(ctx);
     }
