@@ -3,6 +3,7 @@
 Claudish exposes a Firebase Cloud Functions HTTP API for model catalog data and telemetry, plus an MCP server with 11 tools for AI model interaction from Claude Code.
 
 **Base URL:** `https://us-central1-claudish-6da10.cloudfunctions.net`
+**Last Updated:** 2026-04-15 — added `?catalog=top100`, slimmed public responses to the `PublicModel` projection, documented search-then-filter behavior.
 
 ---
 
@@ -27,31 +28,75 @@ Filter the full model catalog by provider, pricing, context window, or name.
 | `search` | string | — | Case-insensitive substring match on modelId, displayName, or aliases |
 | `limit` | number | `50` | Max results (capped at 200) |
 
+> **Note**: when `search` is present, the handler fetches up to 500 models from Firestore, applies the substring filter, then trims to `limit`. This ensures narrow searches don't miss matches that fall outside the first N rows.
+
 ```bash
-curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?provider=openai&maxPriceInput=5.0&minContext=100000&search=gpt&limit=10"
+curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?provider=anthropic&limit=2"
 ```
 
 ```json
 {
-  "models": [
-    {
-      "modelId": "gpt-5.4",
-      "displayName": "GPT-5.4",
-      "provider": "openai",
-      "pricing": { "input": 2.5, "output": 10.0 },
-      "contextWindow": 131072,
-      "maxOutputTokens": 16384,
-      "capabilities": { "vision": true, "thinking": true, "tools": true, "streaming": true },
-      "aliases": ["gpt5.4", "gpt-5-4"],
-      "status": "active",
-      "fieldSources": { "pricing": { "collectorId": "openai-api", "confidence": "api_official" } },
-      "sources": { "openai": { "confidence": "api_official", "externalId": "gpt-5.4" } },
-      "lastUpdated": "2026-04-06T03:00:00Z"
-    }
-  ],
-  "total": 1
+    "models": [
+        {
+            "modelId": "claude-3-haiku",
+            "displayName": "Anthropic: Claude 3 Haiku",
+            "provider": "anthropic",
+            "aliases": [
+                "anthropic/claude-3-haiku"
+            ],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": false,
+                "pdfInput": false,
+                "vision": true,
+                "streaming": true,
+                "citations": false,
+                "batchApi": false,
+                "codeExecution": false,
+                "fineTuning": false,
+                "promptCaching": false,
+                "thinking": false,
+                "tools": true,
+                "jsonMode": false
+            },
+            "description": "Claude 3 Haiku is Anthropic's fastest and most compact model for\nnear-instant responsiveness. Quick and accurate targeted performance.\n\nSee the launch announcement and benchmark results [here](https://www.anthropic.com/news/claude-3-haiku)\n\n#multimodal",
+            "pricing": {
+                "output": 1.25,
+                "input": 0.25
+            },
+            "contextWindow": 200000,
+            "maxOutputTokens": 4096
+        },
+        {
+            "modelId": "claude-3-haiku-20240307",
+            "displayName": "Claude Haiku 3",
+            "provider": "anthropic",
+            "aliases": [],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": false,
+                "pdfInput": false,
+                "batchApi": true,
+                "contextManagement": false,
+                "codeExecution": false,
+                "fineTuning": false,
+                "thinking": false,
+                "tools": true,
+                "jsonMode": false,
+                "vision": true,
+                "adaptiveThinking": false,
+                "streaming": true,
+                "citations": false
+            },
+            "releaseDate": "2024-03-07",
+            "contextWindow": 200000
+        }
+    ],
+    "total": 2
 }
 ```
+
+List-returning endpoints return `PublicModel` — internal provenance fields (`sources`, `fieldSources`, `lastUpdated`, `lastChecked`) are stripped. See [PublicModel](#publicmodel) in the Schemas section.
 
 #### Slim catalog
 
@@ -68,10 +113,252 @@ curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=
 
 ```json
 {
-  "models": [
-    { "modelId": "gpt-5.4", "aliases": ["gpt5.4"], "sources": { "openai": { "confidence": "api_official", "externalId": "gpt-5.4" } } }
-  ],
-  "total": 1
+    "models": [
+        {
+            "modelId": "aion-1.0",
+            "aliases": [
+                "aion-labs/aion-1.0"
+            ],
+            "sources": {
+                "openrouter-api": {
+                    "sourceUrl": "https://openrouter.ai/api/v1/models",
+                    "confidence": "aggregator_reported",
+                    "externalId": "aion-labs/aion-1.0",
+                    "lastSeen": {
+                        "_seconds": 1776055174,
+                        "_nanoseconds": 29000000
+                    }
+                }
+            }
+        }
+    ],
+    "total": 1
+}
+```
+
+Unlike other list endpoints, slim keeps `sources` — the CLI catalog resolver needs provider attribution to find the correct vendor prefix for aggregators like OpenRouter.
+
+#### Top 100 ranked
+
+`?catalog=top100` — returns models ranked by a composite score combining provider popularity, release recency, generation freshness, capabilities, context window, and data confidence. Eligibility: `status=active` AND has numeric `pricing.input`/`pricing.output`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `catalog` | `"top100"` | — | Required to select this mode |
+| `limit` | number | `100` | Max results (capped at 200) |
+| `includeScores` | `"1"` or `"true"` | — | When set, each model includes a `scoreBreakdown` object |
+
+Scoring weights:
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| popularity | 25% | Static provider reputation (table in `firebase/functions/src/popularity-scores.ts`) |
+| recency | 30% | Proximity of `releaseDate` to now |
+| generation | 20% | Latest version in its family (e.g. `claude-opus-4-6` beats `claude-opus-4-1`) |
+| capabilities | 10% | thinking, vision, tools, structuredOutput, promptCaching |
+| context | 10% | Log-scaled context window |
+| confidence | 5% | Data source confidence tier |
+
+```bash
+curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=top100&limit=3"
+```
+
+```json
+{
+    "models": [
+        {
+            "modelId": "claude-haiku-4.5",
+            "displayName": "Anthropic: Claude Haiku 4.5",
+            "provider": "anthropic",
+            "aliases": [
+                "anthropic/claude-haiku-4.5"
+            ],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": true,
+                "vision": true,
+                "streaming": true,
+                "citations": false,
+                "codeExecution": false,
+                "fineTuning": false,
+                "promptCaching": false,
+                "thinking": true,
+                "tools": true,
+                "jsonMode": true,
+                "pdfInput": false,
+                "batchApi": false
+            },
+            "description": "Claude Haiku 4.5 is Anthropic\u2019s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4\u2019s performance...",
+            "releaseDate": "2026-04-10",
+            "pricing": {
+                "output": 5,
+                "input": 1,
+                "cachedRead": 0.1
+            },
+            "contextWindow": 200000,
+            "maxOutputTokens": 64000,
+            "rank": 1,
+            "score": 94.87
+        },
+        {
+            "modelId": "claude-opus-4-6",
+            "displayName": "Claude Opus 4.6",
+            "provider": "anthropic",
+            "aliases": [],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": true,
+                "pdfInput": true,
+                "batchApi": true,
+                "contextManagement": true,
+                "codeExecution": true,
+                "fineTuning": false,
+                "thinking": true,
+                "tools": true,
+                "jsonMode": false,
+                "effortLevels": [
+                    "low",
+                    "medium",
+                    "high",
+                    "max"
+                ],
+                "vision": true,
+                "adaptiveThinking": true,
+                "streaming": true,
+                "citations": true
+            },
+            "releaseDate": "2026-02-04",
+            "pricing": {
+                "output": 25,
+                "input": 5,
+                "cachedWrite": 0,
+                "cachedRead": 0.5
+            },
+            "contextWindow": 1000000,
+            "maxOutputTokens": 128000,
+            "rank": 2,
+            "score": 93.37
+        },
+        {
+            "modelId": "claude-sonnet-4-6",
+            "displayName": "Claude Sonnet 4.6",
+            "provider": "anthropic",
+            "aliases": [],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": true,
+                "pdfInput": true,
+                "batchApi": true,
+                "contextManagement": true,
+                "codeExecution": true,
+                "fineTuning": false,
+                "thinking": true,
+                "tools": true,
+                "jsonMode": false,
+                "effortLevels": [
+                    "low",
+                    "medium",
+                    "high",
+                    "max"
+                ],
+                "vision": true,
+                "adaptiveThinking": true,
+                "streaming": true,
+                "citations": true
+            },
+            "releaseDate": "2026-02-17",
+            "pricing": {
+                "output": 15,
+                "input": 3,
+                "cachedWrite": 0,
+                "cachedRead": 0.3
+            },
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "rank": 3,
+            "score": 93.37
+        }
+    ],
+    "total": 3,
+    "poolSize": 373,
+    "scoring": {
+        "weights": {
+            "popularity": 0.25,
+            "recency": 0.3,
+            "generation": 0.2,
+            "capabilities": 0.1,
+            "context": 0.1,
+            "confidence": 0.05
+        }
+    }
+}
+```
+
+With `includeScores=1` each model gains a `scoreBreakdown`:
+
+```bash
+curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=top100&limit=2&includeScores=1"
+```
+
+```json
+{
+    "models": [
+        {
+            "modelId": "claude-haiku-4.5",
+            "displayName": "Anthropic: Claude Haiku 4.5",
+            "provider": "anthropic",
+            "aliases": [
+                "anthropic/claude-haiku-4.5"
+            ],
+            "status": "active",
+            "capabilities": {
+                "structuredOutput": true,
+                "vision": true,
+                "streaming": true,
+                "citations": false,
+                "codeExecution": false,
+                "fineTuning": false,
+                "promptCaching": false,
+                "thinking": true,
+                "tools": true,
+                "jsonMode": true,
+                "pdfInput": false,
+                "batchApi": false
+            },
+            "description": "Claude Haiku 4.5 is Anthropic\u2019s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4\u2019s performance...",
+            "releaseDate": "2026-04-10",
+            "pricing": {
+                "output": 5,
+                "input": 1,
+                "cachedRead": 0.1
+            },
+            "contextWindow": 200000,
+            "maxOutputTokens": 64000,
+            "rank": 1,
+            "score": 94.87,
+            "scoreBreakdown": {
+                "total": 94.87,
+                "popularity": 100,
+                "recency": 1,
+                "generation": 1,
+                "capabilities": 0.9299999999999999,
+                "context": 0.7572899993805687,
+                "confidence": 0.6
+            }
+        }
+    ],
+    "total": 2,
+    "poolSize": 373,
+    "scoring": {
+        "weights": {
+            "popularity": 0.25,
+            "recency": 0.3,
+            "generation": 0.2,
+            "capabilities": 0.1,
+            "context": 0.1,
+            "confidence": 0.05
+        }
+    }
 }
 ```
 
@@ -491,7 +778,32 @@ List all active channel sessions.
 
 ## Schemas
 
+### PublicModel
+
+This is the shape returned by all list endpoints (`top100`, standard list, search). Internal provenance fields (`sources`, `fieldSources`, `lastUpdated`, `lastChecked`) are intentionally stripped — clients should never depend on them.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `modelId` | string | Canonical model ID |
+| `displayName` | string | Human-readable name |
+| `description?` | string | Provider-supplied description |
+| `provider` | string | Canonical provider slug |
+| `family?` | string | Model family (e.g. `claude-opus`) |
+| `releaseDate?` | string (ISO date) | Release date |
+| `pricing?` | object | `{ input, output, cachedRead?, cachedWrite?, imageInput?, audioInput?, batchDiscountPct? }` (USD per million tokens) |
+| `contextWindow?` | number | Max input tokens |
+| `maxOutputTokens?` | number | Max output tokens |
+| `capabilities` | object | See below |
+| `aliases` | string[] | Alternative model IDs |
+| `status` | string | `"active"` / `"deprecated"` / `"preview"` / `"unknown"` |
+
+Capabilities sub-shape (all optional booleans unless noted): `vision`, `thinking`, `tools`, `streaming`, `batchApi`, `jsonMode`, `structuredOutput`, `citations`, `codeExecution`, `pdfInput`, `fineTuning`, `audioInput`, `videoInput`, `imageOutput`, `promptCaching`, `contextManagement`, `effortLevels` (string[]), `adaptiveThinking`.
+
+The `top100` catalog adds `rank` (1-indexed), `score` (0-100), and optionally `scoreBreakdown` (when `includeScores=1`).
+
 ### ModelDoc
+
+This is the internal Firestore document shape. It is NOT what public endpoints return — see [PublicModel](#publicmodel) above. The `slim` catalog endpoint (`?catalog=slim`) returns a minimal projection of `modelId`, `aliases`, and `sources` used by the CLI catalog resolver.
 
 Full model document stored in Firestore `models/{id}` collection.
 

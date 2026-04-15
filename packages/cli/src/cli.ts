@@ -1,10 +1,25 @@
 import { VERSION } from "./version.js";
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
-import { loadModelInfo, getAvailableModels, fetchLiteLLMModels } from "./model-loader.js";
+import {
+  loadModelInfo,
+  getAvailableModels,
+  fetchLiteLLMModels,
+  getRecommendedModels,
+  searchModels,
+  getModelsByProvider,
+  getTop100Models,
+  groupRecommendedModels,
+  collectRoutingPrefixes,
+  computeQuickPicks,
+  normalizePricingDisplay,
+  FIREBASE_SLUG_TO_PROVIDER_NAME,
+  type RecommendedModelGroup,
+  type ModelDoc,
+} from "./model-loader.js";
+import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   mkdirSync,
   copyFileSync,
@@ -14,7 +29,6 @@ import {
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { fuzzyScore } from "./utils.js";
 import { getModelMapping, loadConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
@@ -71,14 +85,18 @@ export function getVersion(): string {
 }
 
 /**
- * Clear all model caches (OpenRouter, LiteLLM, pricing)
- * Called when --force-update flag is used
+ * Clear writable claudish caches (pricing, LiteLLM, recommended models).
+ * Called when --force-update flag is used.
+ *
+ * NOTE: We intentionally do NOT delete `all-models.json` — that file is the
+ * OpenRouter catalog resolver's slim-catalog cache, sourced from Firebase.
+ * Deleting it would force a cold re-warm on every --force-update call.
  */
 function clearAllModelCaches(): void {
   const cacheDir = join(homedir(), ".claudish");
   if (!existsSync(cacheDir)) return;
 
-  const cachePatterns = ["all-models.json", "pricing-cache.json"];
+  const cachePatterns = ["pricing-cache.json", "recommended-models-cache.json"];
   let cleared = 0;
 
   try {
@@ -311,20 +329,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       });
       process.exit(0);
     } else if (arg === "--top-models") {
-      // Show recommended/top models (curated list)
+      // Show recommended/top models (curated Firebase catalog)
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
       if (forceUpdate) clearAllModelCaches();
 
-      // Auto-update if cache is stale (>2 days) or if --force-update is specified
-      await checkAndUpdateModelsCache(forceUpdate);
-
-      if (hasJsonFlag) {
-        printAvailableModelsJSON();
-      } else {
-        printAvailableModels();
-      }
+      await printRecommendedModels(hasJsonFlag, forceUpdate);
       process.exit(0);
     } else if (
       arg === "--models" ||
@@ -340,14 +351,36 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const hasJsonFlag = args.includes("--json");
       const forceUpdate = args.includes("--force-update");
 
+      // Pick up --provider <slug> anywhere in the argv. We DON'T consume it
+      // from the loop — it's read-once here and harmless to let the outer
+      // passthrough swallow it later because we exit before that.
+      const providerIdx = args.indexOf("--provider");
+      const providerSlug =
+        providerIdx !== -1 && providerIdx + 1 < args.length
+          ? args[providerIdx + 1]
+          : null;
+
       if (forceUpdate) clearAllModelCaches();
 
+      if (query && providerSlug) {
+        // --provider is a filter for the catalog browser; searches are
+        // already Firebase-scoped and don't take a provider slug.
+        console.error(
+          "Use --provider together with --list-models (without a query) to filter the catalog."
+        );
+        console.error("For keyword search, drop --provider: claudish -s <query>");
+        process.exit(1);
+      }
+
       if (query) {
-        // Search mode: fuzzy search all models
-        await searchAndPrintModels(query, forceUpdate);
+        // Search mode: on-demand Firebase substring search
+        await searchAndPrintModels(query, hasJsonFlag);
+      } else if (providerSlug) {
+        // Provider filter: Firebase catalog trimmed to one provider
+        await printByProvider(providerSlug, hasJsonFlag);
       } else {
-        // List mode: show all models grouped by provider
-        await printAllModels(hasJsonFlag, forceUpdate);
+        // Default --list-models = top100 ranked Firebase catalog + local footer
+        await printTop100(hasJsonFlag);
       }
       process.exit(0);
     } else if (arg === "--summarize-tools") {
@@ -475,16 +508,6 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 }
 
 /**
- * Cache Management Constants
- */
-const CACHE_MAX_AGE_DAYS = 2;
-// Use ~/.claudish/ for writable cache (binaries can't write to __dirname)
-const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
-const BUNDLED_MODELS_PATH = join(__dirname, "../recommended-models.json");
-const CACHED_MODELS_PATH = join(CLAUDISH_CACHE_DIR, "recommended-models.json");
-const ALL_MODELS_JSON_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
-
-/**
  * Fetch locally available Ollama models
  * Returns empty array if Ollama is not running
  */
@@ -552,342 +575,77 @@ async function fetchOllamaModels(): Promise<any[]> {
   }
 }
 
-/**
- * Search all available models and print results
- */
-async function searchAndPrintModels(query: string, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
+/** Format a ModelDoc numeric pricing block for display. */
+function formatModelDocPricing(pricing: ModelDoc["pricing"]): string {
+  if (!pricing) return "N/A";
+  const input = typeof pricing.input === "number" ? pricing.input : undefined;
+  const output = typeof pricing.output === "number" ? pricing.output : undefined;
+  if (input === undefined && output === undefined) return "N/A";
+  if ((input ?? 0) === 0 && (output ?? 0) === 0) return "FREE";
+  const avg = ((input ?? 0) + (output ?? 0)) / 2;
+  return `$${avg.toFixed(2)}/1M`;
+}
 
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
+/** Format a ModelDoc contextWindow (tokens) for display. */
+function formatModelDocContext(ctx?: number): string {
+  if (!ctx || ctx <= 0) return "N/A";
+  if (ctx >= 1_000_000) return `${Math.round(ctx / 1_000_000)}M`;
+  return `${Math.round(ctx / 1000)}K`;
+}
 
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-      }
-    } catch (e) {
-      // Ignore cache error
-    }
-  }
-
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter (this may take a moment)...");
-    try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = (await response.json()) as { data: any[] };
-      models = data.data;
-
-      // Cache result - ensure directory exists
-      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-      writeFileSync(
-        ALL_MODELS_JSON_PATH,
-        JSON.stringify({
-          lastUpdated: new Date().toISOString(),
-          models,
-        }),
-        "utf-8"
-      );
-
-      console.error(`✅ Cached ${models.length} models`);
-    } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
-    }
-  }
-
-  // Fetch local Ollama models and add to search
-  const ollamaModels = await fetchOllamaModels();
-  if (ollamaModels.length > 0) {
-    console.error(`🏠 Found ${ollamaModels.length} local Ollama models`);
-    models = [...ollamaModels, ...models];
-  }
-
-  // Fetch OpenAI direct models from models.dev if OPENAI_API_KEY is set
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const modelsDevResponse = await fetch("https://models.dev/api.json", {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (modelsDevResponse.ok) {
-        const modelsDevData = await modelsDevResponse.json();
-        const openaiData = modelsDevData.openai;
-        if (openaiData?.models) {
-          const openaiModels = Object.entries(openaiData.models)
-            .filter(([id, _]: [string, any]) => {
-              const lowerId = id.toLowerCase();
-              return (
-                lowerId.startsWith("gpt-") ||
-                lowerId.startsWith("o1-") ||
-                lowerId.startsWith("o3-") ||
-                lowerId.startsWith("o4-") ||
-                lowerId.startsWith("chatgpt-")
-              );
-            })
-            .map(([id, m]: [string, any]) => {
-              const inputCost = m.cost?.input || 2;
-              const outputCost = m.cost?.output || 8;
-              const contextLen = m.limit?.context || 128000;
-              const inputModalities = m.modalities?.input || [];
-              return {
-                id: `oai/${id}`,
-                name: m.name || id,
-                description: `OpenAI direct model`,
-                context_length: contextLen,
-                pricing: {
-                  prompt: String(inputCost / 1000000),
-                  completion: String(outputCost / 1000000),
-                },
-                isOAIDirect: true,
-                supportsTools: m.tool_call === true,
-                supportsReasoning: m.reasoning === true,
-                supportsVision:
-                  inputModalities.includes("image") || inputModalities.includes("video"),
-              };
-            });
-          console.error(`🔑 Found ${openaiModels.length} OpenAI direct models`);
-          models = [...openaiModels, ...models];
-        }
-      }
-    } catch {
-      // Ignore models.dev fetch errors
-    }
-  }
-
-  // Fetch GLM Coding Plan models from models.dev if GLM_CODING_API_KEY is set
-  if (process.env.GLM_CODING_API_KEY) {
-    try {
-      const glmCodingModels = await fetchGLMCodingModels();
-      if (glmCodingModels.length > 0) {
-        console.error(`🔑 Found ${glmCodingModels.length} GLM Coding Plan models`);
-        models = [...glmCodingModels, ...models];
-      }
-    } catch {
-      // Ignore fetch errors
-    }
-  }
-
-  // Fetch LiteLLM models if configured
-  if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
-    try {
-      const litellmModels = await fetchLiteLLMModels(
-        process.env.LITELLM_BASE_URL,
-        process.env.LITELLM_API_KEY,
-        forceUpdate
-      );
-      if (litellmModels.length > 0) {
-        console.error(`🔗 Found ${litellmModels.length} LiteLLM models`);
-        models = [...litellmModels, ...models];
-      }
-    } catch {
-      // Ignore fetch errors
-    }
-  }
-
-  // Perform fuzzy search
-  const results = models
-    .map((model) => {
-      const nameScore = fuzzyScore(model.name || "", query);
-      const idScore = fuzzyScore(model.id || "", query);
-      const descScore = fuzzyScore(model.description || "", query) * 0.5; // Lower weight for description
-
-      return {
-        model,
-        score: Math.max(nameScore, idScore, descScore),
-      };
-    })
-    .filter((item) => item.score > 0.2) // Filter low relevance
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 20); // Top 20 results
-
-  if (results.length === 0) {
-    console.log(`No models found matching "${query}"`);
-    return;
-  }
-
-  // ANSI color codes
-  const RED = "\x1b[31m";
-  const GREEN = "\x1b[32m";
-  const RESET = "\x1b[0m";
-  const DIM = "\x1b[2m";
-
-  console.log(`\nFound ${results.length} matching models:\n`);
-  console.log("  Model                          Provider    Pricing     Context  Score");
-  console.log("  " + "─".repeat(80));
-
-  for (const { model, score } of results) {
-    // Format model ID with proper prefix for explicit routing
-    // Local models (ollama/) get ollama@ prefix, OpenRouter models get openrouter@ prefix
-    let fullModelId: string;
-    if (model.isLocal) {
-      // Convert ollama/model-name to ollama@model-name
-      fullModelId = model.id.replace("ollama/", "ollama@");
-    } else if (model.id.startsWith("zen/")) {
-      // Already has zen/ prefix, convert to zen@
-      fullModelId = model.id.replace("zen/", "zen@");
-    } else if (model.id.startsWith("oai/") || model.isOAIDirect) {
-      // OAI direct model - convert oai/model to oai@model
-      fullModelId = model.id.replace("oai/", "oai@");
-    } else if (model.source === "LiteLLM" || model.id.startsWith("litellm@")) {
-      // LiteLLM model - already has litellm@ prefix
-      fullModelId = model.id;
-    } else {
-      // OpenRouter model - add openrouter@ prefix
-      fullModelId = `openrouter@${model.id}`;
-    }
-    const modelId = fullModelId.length > 30 ? fullModelId.substring(0, 27) + "..." : fullModelId;
-    const modelIdPadded = modelId.padEnd(30);
-
-    // Determine provider from original ID
-    const providerName = model.id.split("/")[0];
-    const provider = providerName.length > 10 ? providerName.substring(0, 7) + "..." : providerName;
-    const providerPadded = provider.padEnd(10);
-
-    // Format pricing (handle special cases: local, negative = varies, 0 = free)
-    let pricing: string;
-    if (model.isLocal) {
-      pricing = "LOCAL";
-    } else {
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-      const avg = (promptPrice + completionPrice) / 2;
-      if (avg < 0) {
-        pricing = "varies"; // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
-      } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
-      }
-    }
-    const pricingPadded = pricing.padEnd(10);
-
-    // Context
-    const contextLen = model.context_length || model.top_provider?.context_length || 0;
-    const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
-    const contextPadded = context.padEnd(7);
-
-    // Color code local models based on tool support
-    if (model.isLocal && model.supportsTools === false) {
-      console.log(
-        `  ${RED}${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}% ✗ no tools${RESET}`
-      );
-    } else if (model.isLocal && model.supportsTools === true) {
-      console.log(
-        `  ${GREEN}${modelIdPadded}${RESET} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
-      );
-    } else {
-      console.log(
-        `  ${modelIdPadded} ${providerPadded} ${pricingPadded} ${contextPadded} ${(score * 100).toFixed(0)}%`
-      );
-    }
-  }
-  console.log("");
-  console.log(
-    `${DIM}Local models: ${RED}red${RESET}${DIM} = no tool support (incompatible), ${GREEN}green${RESET}${DIM} = compatible${RESET}`
-  );
-  console.log("");
-  console.log("Use OpenRouter model: claudish --model openrouter@<provider/model-id>");
-  console.log("OpenAI direct model:  claudish --model oai@<model-name>");
-  console.log("Local Ollama model:   claudish --model ollama@<model-name>");
-  console.log("OpenCode Zen model:   claudish --model zen@<model-id>");
-  console.log("LiteLLM proxy model:  claudish --model litellm@<model-group>");
+/** Short capability badges for a ModelDoc. */
+function formatModelDocCaps(caps?: ModelDoc["capabilities"]): string {
+  if (!caps) return "·";
+  const parts: string[] = [];
+  if (caps.tools) parts.push("T");
+  if (caps.thinking) parts.push("R");
+  if (caps.vision) parts.push("V");
+  return parts.length > 0 ? parts.join("") : "·";
 }
 
 /**
- * Print ALL available models from OpenRouter and local Ollama
+ * Search Firebase's model catalog and print results.
+ * No local full-catalog cache — every call hits the network.
  */
-async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
-  let models: any[] = [];
-
-  // Fetch local Ollama models and OpenCode Zen models in parallel
-  const [ollamaModels, zenModels] = await Promise.all([fetchOllamaModels(), fetchZenModels()]);
-
-  // Check cache for all models
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        models = cacheData.models;
-        if (!jsonOutput) {
-          console.error(
-            `✓ Using cached models (last updated: ${cacheData.lastUpdated.split("T")[0]})`
-          );
-        }
-      }
-    } catch (e) {
-      // Ignore cache error
-    }
+async function searchAndPrintModels(query: string, jsonOutput: boolean): Promise<void> {
+  let results: ModelDoc[];
+  try {
+    console.error(`🔄 Searching Firebase catalog for "${query}"...`);
+    results = await searchModels(query, 50);
+  } catch (error) {
+    console.error(
+      `❌ Failed to reach Firebase model catalog: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    console.error("   Check your network connection.");
+    process.exit(1);
   }
 
-  // Fetch if no cache or stale
-  if (models.length === 0) {
-    console.error("🔄 Fetching all models from OpenRouter...");
-    try {
-      const response = await fetch("https://openrouter.ai/api/v1/models");
-      if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-      const data = (await response.json()) as { data: any[] };
-      models = data.data;
-
-      // Cache result - ensure directory exists
-      mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-      writeFileSync(
-        ALL_MODELS_JSON_PATH,
-        JSON.stringify({
-          lastUpdated: new Date().toISOString(),
-          models,
-        }),
-        "utf-8"
-      );
-
-      console.error(`✅ Cached ${models.length} models`);
-    } catch (error) {
-      console.error(`❌ Failed to fetch models: ${error}`);
-      process.exit(1);
+  if (results.length === 0) {
+    if (jsonOutput) {
+      console.log(JSON.stringify({ query, count: 0, models: [] }, null, 2));
+    } else {
+      console.log(`No models found matching "${query}"`);
     }
+    return;
   }
 
-  // JSON output
   if (jsonOutput) {
-    const allModels = [...ollamaModels, ...zenModels, ...models];
     console.log(
       JSON.stringify(
         {
-          count: allModels.length,
-          localCount: ollamaModels.length,
-          zenCount: zenModels.length,
-          lastUpdated: new Date().toISOString().split("T")[0],
-          models: allModels.map((m) => {
-            // Add proper prefix for explicit routing
-            let id: string;
-            if (m.isLocal) {
-              id = m.id.replace("ollama/", "ollama@");
-            } else if (m.isZen || m.id.startsWith("zen/")) {
-              id = m.id.replace("zen/", "zen@");
-            } else if (m.source === "LiteLLM" || m.id.startsWith("litellm@")) {
-              id = m.id;
-            } else {
-              id = `openrouter@${m.id}`;
-            }
-            return {
-              id,
-              name: m.name,
-              context: m.context_length || m.top_provider?.context_length,
-              pricing: m.pricing,
-              isLocal: m.isLocal || false,
-              isZen: m.isZen || false,
-            };
-          }),
+          query,
+          count: results.length,
+          models: results.map((m) => ({
+            id: m.modelId,
+            provider: m.provider,
+            contextWindow: m.contextWindow,
+            pricing: m.pricing,
+            capabilities: m.capabilities,
+            aliases: m.aliases,
+            status: m.status,
+          })),
         },
         null,
         2
@@ -896,388 +654,307 @@ async function printAllModels(jsonOutput: boolean, forceUpdate: boolean): Promis
     return;
   }
 
-  // ANSI color codes
-  const RED = "\x1b[31m";
-  const GREEN = "\x1b[32m";
-  const RESET = "\x1b[0m";
-  const DIM = "\x1b[2m";
+  console.log(`\nFound ${results.length} matching models:\n`);
+  console.log("  Model                          Provider    Pricing     Context  Caps");
+  console.log("  " + "─".repeat(80));
 
-  // Print local Ollama models first if available
-  if (ollamaModels.length > 0) {
-    const toolCapableCount = ollamaModels.filter((m: any) => m.supportsTools).length;
-    console.log(
-      `\n🏠 LOCAL OLLAMA MODELS (${ollamaModels.length} installed, ${toolCapableCount} with tool support):\n`
-    );
-    console.log("    Model                                     Size         Params    Tools");
-    console.log("  " + "─".repeat(76));
-
-    for (const model of ollamaModels) {
-      // Convert ollama/model-name to ollama@model-name for explicit routing
-      const fullId = model.id.replace("ollama/", "ollama@");
-      const modelId = fullId.length > 35 ? fullId.substring(0, 32) + "..." : fullId;
-      const modelIdPadded = modelId.padEnd(38);
-      const size = model.size ? `${(model.size / 1e9).toFixed(1)}GB` : "N/A";
-      const sizePadded = size.padEnd(12);
-      const params = model.details?.parameter_size || "N/A";
-      const paramsPadded = params.padEnd(8);
-
-      if (model.supportsTools) {
-        console.log(`    ${modelIdPadded} ${sizePadded} ${paramsPadded}  ${GREEN}✓${RESET}`);
-      } else {
-        console.log(`    ${RED}${modelIdPadded} ${sizePadded} ${paramsPadded}  ✗ no tools${RESET}`);
-      }
-    }
-    console.log("");
-    console.log(`  ${GREEN}✓${RESET} = Compatible with Claude Code (supports tool calling)`);
-    console.log(
-      `  ${RED}✗${RESET} = Not compatible ${DIM}(Claude Code requires tool support)${RESET}`
-    );
-    console.log("");
-    console.log("  Use: claudish --model ollama@<model-name>");
-    console.log("  Pull a compatible model: ollama pull llama3.2");
-  } else {
-    console.log("\n🏠 LOCAL OLLAMA: Not running or no models installed");
-    console.log("   Start Ollama: ollama serve");
-    console.log("   Pull a model: ollama pull llama3.2");
+  for (const m of results) {
+    const id = m.modelId.length > 30 ? m.modelId.substring(0, 27) + "..." : m.modelId;
+    const idPadded = id.padEnd(30);
+    const prov = (m.provider || "").padEnd(10);
+    const price = formatModelDocPricing(m.pricing).padEnd(10);
+    const ctx = formatModelDocContext(m.contextWindow).padEnd(7);
+    const caps = formatModelDocCaps(m.capabilities);
+    console.log(`  ${idPadded} ${prov} ${price} ${ctx} ${caps}`);
   }
+  console.log("");
+  console.log("Caps: T = tools  R = reasoning  V = vision");
+  console.log("");
+  console.log("Use any model by its ID: claudish --model <model-id>");
+  console.log("Provider shortcuts:      claudish --model or@<id> | google@<id> | oai@<id>");
+}
 
-  // Print OpenCode Zen models (free ones don't need API key)
-  if (zenModels.length > 0) {
-    const freeCount = zenModels.filter((m: any) => m.isFree).length;
-    console.log(
-      `\n🔮 OPENCODE ZEN (${zenModels.length} models, ${freeCount} FREE - no API key needed):\n`
-    );
-    console.log("    Model                          Context    Pricing      Tools");
-    console.log("  " + "─".repeat(68));
-
-    // Sort: free models first, then by context size
-    const sortedModels = [...zenModels].sort((a, b) => {
-      if (a.isFree && !b.isFree) return -1;
-      if (!a.isFree && b.isFree) return 1;
-      return (b.context_length || 0) - (a.context_length || 0);
-    });
-
-    for (const model of sortedModels) {
-      // Convert zen/model-id to zen@model-id for explicit routing
-      const fullId = model.id.replace("zen/", "zen@");
-      const modelId = fullId.length > 30 ? fullId.substring(0, 27) + "..." : fullId;
-      const modelIdPadded = modelId.padEnd(32);
-      const contextLen = model.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
-      const contextPadded = context.padEnd(10);
-      const pricing = model.isFree
-        ? `${GREEN}FREE${RESET}`
-        : `$${(parseFloat(model.pricing?.prompt || "0") + parseFloat(model.pricing?.completion || "0")).toFixed(1)}/M`;
-      const pricingPadded = model.isFree ? "FREE        " : pricing.padEnd(12);
-      const tools = model.supportsTools ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
-
-      console.log(`    ${modelIdPadded} ${contextPadded} ${pricingPadded} ${tools}`);
-    }
-    console.log("");
-    console.log(`  ${DIM}FREE models work without API key!${RESET}`);
-    console.log("  Use: claudish --model zen@<model-id>");
+/**
+ * Render a flat list of `ModelDoc`s as an indented ranked table using the
+ * existing `formatModelDoc*` helpers. Shared between `printTop100` and
+ * `printByProvider`.
+ */
+function renderModelDocTable(models: Array<ModelDoc & { rank?: number }>, showRank: boolean): void {
+  const header = showRank
+    ? "  #    Model                          Provider    Pricing     Context  Caps"
+    : "       Model                          Provider    Pricing     Context  Caps";
+  console.log(header);
+  console.log("  " + "─".repeat(80));
+  for (const m of models) {
+    const rankCell = showRank
+      ? String(m.rank ?? "").padStart(3) + "  "
+      : "     ";
+    const rawId = m.modelId;
+    const id = rawId.length > 30 ? rawId.substring(0, 27) + "..." : rawId;
+    const idPadded = id.padEnd(30);
+    const prov = (m.provider || "").padEnd(10);
+    const price = formatModelDocPricing(m.pricing).padEnd(10);
+    const ctx = formatModelDocContext(m.contextWindow).padEnd(7);
+    const caps = formatModelDocCaps(m.capabilities);
+    console.log(`  ${rankCell}${idPadded} ${prov} ${price} ${ctx} ${caps}`);
   }
+}
 
-  // Print LiteLLM models if configured
+/**
+ * Probe local providers (Ollama daemon, LiteLLM proxy) and print a compact
+ * footer. Best-effort — silent on network errors, never throws.
+ */
+async function printLocalProvidersFooter(): Promise<void> {
+  console.log("\nLocal providers");
+  console.log("  " + "─".repeat(70));
+
+  // Ollama probe
+  let ollamaLine = "  Ollama:    not running";
+  try {
+    const ollamaModels = await fetchOllamaModels();
+    if (ollamaModels.length > 0) {
+      const toolCount = ollamaModels.filter((m: any) => m.supportsTools).length;
+      ollamaLine = `  Ollama:    ${ollamaModels.length} models installed (${toolCount} with tools) — use: claudish --model ollama@<name>`;
+    }
+  } catch {
+    // Leave the default "not running" line.
+  }
+  console.log(ollamaLine);
+
+  // LiteLLM probe — only meaningful if env is configured
+  let litellmLine = "  LiteLLM:   not configured (set LITELLM_BASE_URL + LITELLM_API_KEY)";
   if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
     try {
       const litellmModels = await fetchLiteLLMModels(
         process.env.LITELLM_BASE_URL,
         process.env.LITELLM_API_KEY,
-        forceUpdate
+        false
       );
       if (litellmModels.length > 0) {
-        console.log(`\n🔗 LITELLM PROXY (${litellmModels.length} model groups):\n`);
-        console.log("    Model                          Context    Pricing      Tools");
-        console.log("  " + "─".repeat(68));
-
-        for (const model of litellmModels) {
-          const modelId = model.id.length > 30 ? model.id.substring(0, 27) + "..." : model.id;
-          const modelIdPadded = modelId.padEnd(32);
-          const contextPadded = (model.context || "N/A").padEnd(10);
-          const pricingStr = model.isFree
-            ? `${GREEN}FREE${RESET}`
-            : model.pricing?.average || "N/A";
-          const pricingPadded = model.isFree ? "FREE        " : pricingStr.padEnd(12);
-          const tools = model.supportsTools ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
-
-          console.log(`    ${modelIdPadded} ${contextPadded} ${pricingPadded} ${tools}`);
-        }
-        console.log("");
-        console.log("  Use: claudish --model litellm@<model-group>");
+        litellmLine = `  LiteLLM:   ${litellmModels.length} model groups configured — use: claudish --model litellm@<group>`;
+      } else {
+        litellmLine = "  LiteLLM:   reachable but no model groups returned";
       }
     } catch {
-      // Ignore fetch errors
+      litellmLine = "  LiteLLM:   configured but unreachable";
     }
   }
-
-  // Group by provider
-  const byProvider = new Map<string, any[]>();
-  for (const model of models) {
-    const provider = model.id.split("/")[0];
-    if (!byProvider.has(provider)) {
-      byProvider.set(provider, []);
-    }
-    byProvider.get(provider)!.push(model);
-  }
-
-  // Sort providers alphabetically
-  const sortedProviders = [...byProvider.keys()].sort();
-
-  console.log(`\n☁️  OPENROUTER MODELS (${models.length} total):\n`);
-
-  for (const provider of sortedProviders) {
-    const providerModels = byProvider.get(provider)!;
-    console.log(`\n  ${provider.toUpperCase()} (${providerModels.length} models)`);
-    console.log("  " + "─".repeat(70));
-
-    for (const model of providerModels) {
-      // Format model ID with openrouter@ prefix for explicit routing
-      const fullId = `openrouter@${model.id}`;
-      const modelId = fullId.length > 40 ? fullId.substring(0, 37) + "..." : fullId;
-      const modelIdPadded = modelId.padEnd(42);
-
-      // Format pricing (handle special cases: negative = varies, 0 = free)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-      const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
-      const avg = (promptPrice + completionPrice) / 2;
-      let pricing: string;
-      if (avg < 0) {
-        pricing = "varies"; // Auto-router or dynamic pricing
-      } else if (avg === 0) {
-        pricing = "FREE";
-      } else {
-        pricing = `$${avg.toFixed(2)}/1M`;
-      }
-      const pricingPadded = pricing.padEnd(12);
-
-      // Context
-      const contextLen = model.context_length || model.top_provider?.context_length || 0;
-      const context = contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A";
-      const contextPadded = context.padEnd(8);
-
-      console.log(`    ${modelIdPadded} ${pricingPadded} ${contextPadded}`);
-    }
-  }
-
-  console.log("\n");
-  console.log("Use OpenRouter model:  claudish --model openrouter@<provider/model-id>");
-  console.log(
-    "  Example:             claudish --model openrouter@google/gemini-2.0-flash-exp:free"
-  );
-  console.log("Local Ollama model:    claudish --model ollama@<model-name>");
-  console.log("OpenCode Zen model:    claudish --model zen@<model-id>");
-  console.log("LiteLLM proxy model:   claudish --model litellm@<model-group>");
-  console.log("Search:                claudish --search <query>");
-  console.log("Top models:            claudish --top-models");
+  console.log(litellmLine);
 }
 
 /**
- * Check if models cache is stale (older than CACHE_MAX_AGE_DAYS)
+ * Print the top-100 Firebase-ranked catalog plus a local-providers footer.
+ * Replaces the legacy `printAllModels` which mixed Ollama + LiteLLM + the
+ * curated recommended list in one wall of text.
  */
-function isCacheStale(): boolean {
-  // Check writable cache first, then bundled fallback
-  const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
-  if (!existsSync(cachePath)) {
-    return true; // No cache file = stale
-  }
-
+async function printTop100(jsonOutput: boolean): Promise<void> {
+  let response: Awaited<ReturnType<typeof getTop100Models>>;
   try {
-    const jsonContent = readFileSync(cachePath, "utf-8");
-    const data = JSON.parse(jsonContent);
-
-    if (!data.lastUpdated) {
-      return true; // No timestamp = stale
-    }
-
-    const lastUpdated = new Date(data.lastUpdated);
-    const now = new Date();
-    const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-    return ageInDays > CACHE_MAX_AGE_DAYS;
-  } catch (error) {
-    // If we can't read/parse, consider it stale
-    return true;
-  }
-}
-
-/**
- * Fetch models from OpenRouter and update recommended-models.json
- *
- * Dynamically fetches the top weekly programming models from OpenRouter's API:
- * GET /api/v1/models?category=programming&order=top-weekly
- *
- * **Filtering rules:**
- * 1. Skip Anthropic models (redundant — Claudish already proxies to Claude)
- * 2. Skip OpenRouter meta-routing models (e.g. hunter-alpha, healer-alpha)
- * 3. Take only ONE model per provider (the highest-ranked one)
- */
-async function updateModelsFromOpenRouter(): Promise<void> {
-  console.error("🔄 Updating model recommendations from OpenRouter...");
-
-  try {
-    // Fetch top weekly programming models directly from the API
-    const apiResponse = await fetch(
-      "https://openrouter.ai/api/v1/models?category=programming&order=top-weekly"
-    );
-    if (!apiResponse.ok) {
-      throw new Error(`OpenRouter API returned ${apiResponse.status}`);
-    }
-
-    const openrouterData = (await apiResponse.json()) as { data: any[] };
-    const topModels = openrouterData.data;
-
-    // Build recommendations list from the API's ranking order
-    const recommendations: any[] = [];
-    const providers = new Set<string>();
-
-    for (const model of topModels) {
-      const modelId = model.id; // e.g. "openai/gpt-5.4"
-      const provider = modelId.split("/")[0];
-
-      // Filter 1: Skip Anthropic models (not needed in Claudish)
-      if (provider === "anthropic") {
-        continue;
-      }
-
-      // Filter 2: Skip OpenRouter meta-routing models
-      if (provider === "openrouter") {
-        continue;
-      }
-
-      // Filter 3: Only ONE model per provider (take the first/top-ranked)
-      if (providers.has(provider)) {
-        continue;
-      }
-
-      const name = model.name || modelId;
-      const description = model.description || `${name} model`;
-      const architecture = model.architecture || {};
-      const topProvider = model.top_provider || {};
-      const supportedParams = model.supported_parameters || [];
-
-      // Calculate pricing (handle both per-token and per-million formats)
-      const promptPrice = parseFloat(model.pricing?.prompt || "0");
-      const completionPrice = parseFloat(model.pricing?.completion || "0");
-
-      const inputPrice = promptPrice > 0 ? `$${(promptPrice * 1000000).toFixed(2)}/1M` : "FREE";
-      const outputPrice =
-        completionPrice > 0 ? `$${(completionPrice * 1000000).toFixed(2)}/1M` : "FREE";
-      const avgPrice =
-        promptPrice > 0 || completionPrice > 0
-          ? `$${(((promptPrice + completionPrice) / 2) * 1000000).toFixed(2)}/1M`
-          : "FREE";
-
-      // Determine category based on description and capabilities
-      let category = "programming"; // default since we're filtering programming models
-      const lowerDesc = description.toLowerCase() + " " + name.toLowerCase();
-
-      if (
-        lowerDesc.includes("vision") ||
-        lowerDesc.includes("vl-") ||
-        lowerDesc.includes("multimodal")
-      ) {
-        category = "vision";
-      } else if (lowerDesc.includes("reason")) {
-        category = "reasoning";
-      }
-
-      // Bare model name (strip vendor prefix, strip :free suffix)
-      const bareId = modelId
-        .split("/")
-        .pop()!
-        .replace(/:free$/, "");
-
-      recommendations.push({
-        id: bareId,
-        openrouterId: modelId,
-        name,
-        description,
-        provider: provider.charAt(0).toUpperCase() + provider.slice(1),
-        category,
-        priority: recommendations.length + 1,
-        pricing: {
-          input: inputPrice,
-          output: outputPrice,
-          average: avgPrice,
-        },
-        context: topProvider.context_length
-          ? `${Math.floor(topProvider.context_length / 1000)}K`
-          : "N/A",
-        maxOutputTokens: topProvider.max_completion_tokens || null,
-        modality: architecture.modality || "text->text",
-        supportsTools: supportedParams.includes("tools") || supportedParams.includes("tool_choice"),
-        supportsReasoning:
-          supportedParams.includes("reasoning") || supportedParams.includes("include_reasoning"),
-        supportsVision:
-          (architecture.input_modalities || []).includes("image") ||
-          (architecture.input_modalities || []).includes("video"),
-        isModerated: topProvider.is_moderated || false,
-        recommended: true,
-      });
-
-      providers.add(provider);
-    }
-
-    // Read existing version if available
-    let version = "1.2.0"; // default
-    const existingPath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
-    if (existsSync(existingPath)) {
-      try {
-        const existing = JSON.parse(readFileSync(existingPath, "utf-8"));
-        version = existing.version || version;
-      } catch {
-        // Use default version
-      }
-    }
-
-    // Create new JSON structure
-    const updatedData = {
-      version,
-      lastUpdated: new Date().toISOString().split("T")[0], // YYYY-MM-DD format
-      source: "https://openrouter.ai/models?categories=programming&fmt=cards&order=top-weekly",
-      models: recommendations,
-    };
-
-    // Write to writable cache dir (not bundled path, which may be read-only)
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(CACHED_MODELS_PATH, JSON.stringify(updatedData, null, 2), "utf-8");
-
-    console.error(
-      `✅ Updated ${recommendations.length} models (last updated: ${updatedData.lastUpdated})`
-    );
+    response = await getTop100Models();
   } catch (error) {
     console.error(
-      `❌ Failed to update models: ${error instanceof Error ? error.message : String(error)}`
+      `❌ Failed to load top-100 models from Firebase: ${
+        error instanceof Error ? error.message : String(error)
+      }`
     );
-    console.error("   Using cached models (if available)");
+    console.error("   Check your network connection.");
+    process.exit(1);
   }
-}
 
-/**
- * Check cache staleness and update if needed
- */
-async function checkAndUpdateModelsCache(forceUpdate: boolean = false): Promise<void> {
-  if (forceUpdate) {
-    console.error("🔄 Force update requested...");
-    await updateModelsFromOpenRouter();
+  if (jsonOutput) {
+    console.log(JSON.stringify(response, null, 2));
     return;
   }
 
-  if (isCacheStale()) {
-    console.error("⚠️  Model cache is stale (>2 days old), updating...");
-    await updateModelsFromOpenRouter();
+  console.log(
+    `\nTop ${response.total} models from Firebase (pool: ${response.poolSize} eligible)\n`
+  );
+
+  if (response.models.length === 0) {
+    console.log("  No eligible models in the catalog.");
   } else {
-    // Cache is fresh, show timestamp in stderr (won't affect JSON output)
-    try {
-      const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
-      const data = JSON.parse(readFileSync(cachePath, "utf-8"));
-      console.error(`✓ Using cached models (last updated: ${data.lastUpdated})`);
-    } catch {
-      // Silently fallthrough if can't read
+    renderModelDocTable(response.models, /* showRank */ true);
+    console.log("");
+    console.log("  Caps: T = tools  R = reasoning  V = vision");
+  }
+
+  await printLocalProvidersFooter();
+
+  console.log("");
+  console.log("Filter by provider: claudish --list-models --provider <slug>");
+  console.log("                    (e.g. opencode-zen, anthropic, openai, google, x-ai)");
+  console.log("Search by keyword:  claudish -s <query>");
+  console.log("Top recommended:    claudish --top-models");
+  console.log("");
+}
+
+/**
+ * Print the Firebase catalog filtered to a single provider slug. No local
+ * footer — this view is explicitly scoped by the user and cross-cutting
+ * probes would be noise.
+ */
+async function printByProvider(providerSlug: string, jsonOutput: boolean): Promise<void> {
+  let models: ModelDoc[];
+  try {
+    models = await getModelsByProvider(providerSlug, 200);
+  } catch (error) {
+    console.error(
+      `❌ Failed to load provider catalog from Firebase: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    console.error("   Check your network connection.");
+    process.exit(1);
+  }
+
+  if (jsonOutput) {
+    console.log(JSON.stringify({ provider: providerSlug, count: models.length, models }, null, 2));
+    return;
+  }
+
+  if (models.length === 0) {
+    console.log(
+      `\nNo active models found for provider "${providerSlug}". Try \`claudish -s <query>\` to search the full catalog.\n`
+    );
+    return;
+  }
+
+  console.log(`\nProvider: ${providerSlug} (${models.length} active models)\n`);
+  renderModelDocTable(models, /* showRank */ false);
+  console.log("");
+  console.log("  Caps: T = tools  R = reasoning  V = vision");
+  console.log("");
+  console.log("Use any model:      claudish --model <model-id>");
+  console.log("Provider shortcuts: claudish --model or@<id> | google@<id> | oai@<id>");
+  console.log("");
+}
+
+/**
+ * Print the Firebase-backed recommended models list (used by --top-models).
+ */
+async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean): Promise<void> {
+  let doc: Awaited<ReturnType<typeof getRecommendedModels>>;
+  try {
+    doc = await getRecommendedModels({ forceRefresh: forceUpdate });
+  } catch (error) {
+    console.error(
+      `❌ Failed to load recommended models: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    process.exit(1);
+  }
+
+  if (jsonOutput) {
+    console.log(JSON.stringify(doc, null, 2));
+    return;
+  }
+
+  const lastUpdated = doc.lastUpdated || "unknown";
+  const { flagship, fast } = groupRecommendedModels(doc.models);
+
+  // Build a native-prefix lookup: Firebase slug → shortcuts[0] from provider defs.
+  const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
+  const getNativePrefix = (firebaseSlug: string): string | null => {
+    const canonical = FIREBASE_SLUG_TO_PROVIDER_NAME[firebaseSlug];
+    if (!canonical) return null;
+    const def = providerByName.get(canonical);
+    if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;
+    return def.shortcuts[0];
+  };
+
+  const renderGroup = (group: RecommendedModelGroup): void => {
+    const m = group.primary;
+    const rawId = m.id;
+    const modelId = rawId.length > 28 ? rawId.substring(0, 25) + "..." : rawId;
+    const modelIdPadded = modelId.padEnd(28);
+
+    const pricing = normalizePricingDisplay(m.pricing?.average);
+    const pricingPadded = pricing.padEnd(10);
+
+    const context = m.context || "N/A";
+    const contextPadded = context.padEnd(6);
+
+    // Capability glyphs — omit (not blank) when false so the caps column
+    // naturally narrows for models without reasoning/vision.
+    const caps: string[] = [];
+    if (m.supportsTools) caps.push("🔧");
+    if (m.supportsReasoning) caps.push("🧠");
+    if (m.supportsVision) caps.push("👁️");
+    const capabilities = caps.join(" ");
+
+    console.log(`  ${modelIdPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
+
+    const prefixes = collectRoutingPrefixes(group, getNativePrefix);
+    if (prefixes.length > 0) {
+      const viaLine = prefixes.map((p) => `${p}@`).join(" · ");
+      console.log(`      via: ${viaLine}`);
+    }
+  };
+
+  console.log(`\nRecommended Models (last updated: ${lastUpdated}):\n`);
+
+  if (flagship.length > 0) {
+    console.log("Flagship models");
+    console.log("  " + "─".repeat(70));
+    for (let i = 0; i < flagship.length; i++) {
+      renderGroup(flagship[i]);
+      if (i < flagship.length - 1) console.log("");
     }
   }
+
+  if (fast.length > 0) {
+    if (flagship.length > 0) console.log("");
+    console.log("Fast variants");
+    console.log("  " + "─".repeat(70));
+    for (let i = 0; i < fast.length; i++) {
+      renderGroup(fast[i]);
+      if (i < fast.length - 1) console.log("");
+    }
+  }
+
+  console.log("");
+  console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
+
+  // Quick picks — compute over the deduped primaries across both buckets.
+  const primaries = [...flagship, ...fast].map((g) => g.primary);
+  const picks = computeQuickPicks(primaries);
+  const pickLines: string[] = [];
+  if (picks.budget)
+    pickLines.push(
+      `    Budget       → ${picks.budget.id} (${normalizePricingDisplay(
+        picks.budget.pricing?.average
+      )})`
+    );
+  if (picks.largeContext)
+    pickLines.push(
+      `    Large ctx    → ${picks.largeContext.id} (${picks.largeContext.context || "N/A"})`
+    );
+  if (picks.mostCapable)
+    pickLines.push(`    Most capable → ${picks.mostCapable.id}`);
+  if (picks.visionCoding)
+    pickLines.push(`    Vision+code  → ${picks.visionCoding.id}`);
+  if (picks.agentic) pickLines.push(`    Agentic      → ${picks.agentic.id}`);
+
+  if (pickLines.length > 0) {
+    console.log("");
+    console.log("  Quick picks:");
+    for (const line of pickLines) console.log(line);
+  }
+
+  console.log("");
+  console.log("  Set default:  export CLAUDISH_MODEL=<model>");
+  console.log("                 or:  claudish --model <model> ...");
+  console.log("");
+  console.log("  For more: claudish --list-models                (browse full catalog)");
+  console.log("            claudish -s <query>                    (search by keyword)");
+  console.log("            claudish --top-models --force-update   (refresh from Firebase)");
+  console.log("");
 }
+
+// Legacy OpenRouter catalog updater was removed when claudish switched to
+// Firebase for model information. The --top-models and --list-models commands
+// now go directly through `getRecommendedModels()` in model-loader.ts.
 
 /**
  * Print version information
@@ -1902,9 +1579,12 @@ OPTIONS:
   --cost-tracker           Enable cost tracking for API usage (NB!)
   --audit-costs            Show cost analysis report
   --reset-costs            Reset accumulated cost statistics
-  --models                 List ALL models (OpenRouter + OpenCode Zen + Ollama)
-  --models <query>         Fuzzy search all models by name, ID, or description
-  --top-models             List recommended/top programming models (curated)
+  --list-models            Top 100 ranked models from Firebase + local providers
+  --list-models --provider <slug>
+                           Filter Firebase catalog to one provider
+                           (e.g. --provider opencode-zen, --provider anthropic)
+  -s, --search <query>     Search Firebase catalog by keyword (id/name/alias)
+  --top-models             List the curated recommended models (flagship + fast)
   --team <models>          Run multiple models in parallel (comma-separated)
                            Example: --team minimax-m2.5,kimi-k2.5 "prompt"
   --mode <mode>            Team mode: default (grid), interactive, json
@@ -1913,7 +1593,7 @@ OPTIONS:
                            1-token request (diagnostic, may incur tiny cost)
   --no-probe               Skip live requests, show static chain only
   --probe-timeout <secs>   Per-link timeout for live probes (default: 40)
-  --json                   Output in JSON format (use with --models, --top-models, --probe)
+  --json                   Output in JSON format (use with --list-models, --top-models, --probe)
   --force-update           Force refresh model cache from OpenRouter API
   --version                Show version information
   -h, --help               Show this help message
@@ -1962,7 +1642,7 @@ MODEL MAPPING (per-role override):
   --model-subagent <model> Model for sub-agents (Task tool)
 
 CUSTOM MODELS:
-  Claudish accepts ANY valid OpenRouter model ID, even if not in --list-models
+  Claudish accepts ANY valid model ID from the Firebase catalog, even if not in --list-models
   Example: claudish --model openrouter@your_provider/custom-model-123 "task"
 
 MODES:
@@ -2130,14 +1810,13 @@ LOCAL MODELS (Ollama, LM Studio, vLLM):
   OLLAMA_HOST=http://192.168.1.50:11434 claudish --model ollama/llama3.2 "task"
 
 AVAILABLE MODELS:
-  List all models:     claudish --models  (includes OpenRouter, OpenCode Zen, Ollama)
-  Search models:       claudish --models <query>
-  Top recommended:     claudish --top-models
+  Top 100 ranked:      claudish --list-models                 (Firebase-ranked list + local providers)
+  By provider:         claudish --list-models --provider <slug>  (e.g. opencode-zen, anthropic, openai, google, x-ai)
+  Search models:       claudish -s <query>                    (substring match on id / name / aliases)
+  Top recommended:     claudish --top-models                  (curated flagship + fast)
   Probe routing:       claudish --probe minimax-m2.5 kimi-k2.5 gemini-3.1-pro-preview
-  Free models only:    claudish --free  (interactive selector with free models)
-  JSON output:         claudish --models --json
-  Force cache update:  claudish --models --force-update
-  (Cache auto-updates every 2 days)
+  Free models only:    claudish --free                        (interactive selector with free models)
+  JSON output:         claudish --list-models --json | claudish --top-models --json
 
 MORE INFO:
   GitHub: https://github.com/MadAppGang/claude-code
@@ -2244,193 +1923,27 @@ async function initializeClaudishSkill(): Promise<void> {
 }
 
 /**
- * Print available models in enhanced table format
+ * Print a terse model hint when `--model` is passed without a value.
+ * Backed by the sync recommended-models loader — no network calls here.
  */
 function printAvailableModels(): void {
-  // Try to read enhanced model data from JSON file
-  let lastUpdated = "unknown";
-  let models: any[] = [];
-
   try {
-    // Check writable cache first, then bundled fallback
-    const cachePath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
-    if (existsSync(cachePath)) {
-      const data = JSON.parse(readFileSync(cachePath, "utf-8"));
-      lastUpdated = data.lastUpdated || "unknown";
-      models = data.models || [];
-    }
-  } catch {
-    // Fallback to basic model list
     const basicModels = getAvailableModels();
     const modelInfo = loadModelInfo();
+    console.log("\nAvailable models (type `claudish --top-models` for full table):\n");
     for (const model of basicModels) {
       const info = modelInfo[model];
+      if (!info) continue;
       console.log(`  ${model}`);
       console.log(`    ${info.name} - ${info.description}`);
-      console.log("");
     }
-    return;
-  }
-
-  console.log(`\nRecommended Models (last updated: ${lastUpdated}):\n`);
-
-  // Table header
-  console.log("  Model                        Pricing     Context  Capabilities");
-  console.log("  " + "─".repeat(66));
-
-  // Table rows
-  for (const model of models) {
-    const modelId = model.id.length > 28 ? model.id.substring(0, 25) + "..." : model.id;
-    const modelIdPadded = modelId.padEnd(28);
-
-    // Format pricing (average) - handle special cases
-    let pricing = model.pricing?.average || "N/A";
-
-    // Handle special pricing cases
-    if (pricing.includes("-1000000")) {
-      pricing = "varies"; // Auto-router pricing varies by routed model
-    } else if (pricing === "$0.00/1M" || pricing === "FREE") {
-      pricing = "FREE";
-    }
-
-    const pricingPadded = pricing.padEnd(10);
-
-    // Format context
-    const context = model.context || "N/A";
-    const contextPadded = context.padEnd(7);
-
-    // Capabilities emojis
-    const tools = model.supportsTools ? "🔧" : "  ";
-    const reasoning = model.supportsReasoning ? "🧠" : "  ";
-    const vision = model.supportsVision ? "👁️ " : "  ";
-    const capabilities = `${tools} ${reasoning} ${vision}`;
-
-    console.log(`  ${modelIdPadded} ${pricingPadded} ${contextPadded} ${capabilities}`);
-  }
-
-  console.log("");
-  console.log("  Capabilities: 🔧 Tools  🧠 Reasoning  👁️  Vision");
-  console.log("");
-  console.log("Set default with: export CLAUDISH_MODEL=<model>");
-  console.log("               or: export ANTHROPIC_MODEL=<model>");
-  console.log("Or use: claudish --model <model> ...");
-  console.log("\nForce update: claudish --list-models --force-update\n");
-}
-
-/**
- * Print available models in JSON format
- */
-function printAvailableModelsJSON(): void {
-  // Check writable cache first, then bundled fallback
-  const jsonPath = existsSync(CACHED_MODELS_PATH) ? CACHED_MODELS_PATH : BUNDLED_MODELS_PATH;
-
-  try {
-    const jsonContent = readFileSync(jsonPath, "utf-8");
-    const data = JSON.parse(jsonContent);
-
-    // Output clean JSON to stdout — IDs are provider-agnostic
-    console.log(JSON.stringify(data, null, 2));
+    console.log("");
   } catch (error) {
-    // If JSON file doesn't exist, construct from model info
-    const models = getAvailableModels();
-    const modelInfo = loadModelInfo();
-
-    const output = {
-      version: VERSION,
-      lastUpdated: new Date().toISOString().split("T")[0],
-      source: "runtime",
-      models: models
-        .filter((m) => m !== "custom")
-        .map((modelId) => {
-          const info = modelInfo[modelId];
-          return {
-            id: modelId,
-            name: info.name,
-            description: info.description,
-            provider: info.provider,
-            priority: info.priority,
-          };
-        }),
-    };
-
-    console.log(JSON.stringify(output, null, 2));
+    console.error(
+      `Failed to load available models: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   }
 }
 
-/**
- * Fetch ALL OpenCode Zen models from models.dev API
- * Returns all models with full metadata, marks free ones
- */
-async function fetchZenModels(): Promise<any[]> {
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const opencode = data.opencode;
-    if (!opencode?.models) return [];
-
-    // Get all models with metadata
-    return Object.entries(opencode.models).map(([id, m]: [string, any]) => {
-      const isFree = m.cost?.input === 0 && m.cost?.output === 0;
-      return {
-        id: `zen/${id}`,
-        name: m.name || id,
-        context_length: m.limit?.context || 128000,
-        max_output: m.limit?.output || 32000,
-        pricing: isFree
-          ? { prompt: "0", completion: "0" }
-          : { prompt: String(m.cost?.input || 0), completion: String(m.cost?.output || 0) },
-        isZen: true,
-        isFree,
-        supportsTools: m.tool_call || false,
-        supportsReasoning: m.reasoning || false,
-      };
-    });
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Fetch GLM Coding Plan models from models.dev API
- * Returns all models with full metadata (subscription-based, all free)
- */
-async function fetchGLMCodingModels(): Promise<any[]> {
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const codingPlan = data["zai-coding-plan"];
-    if (!codingPlan?.models) return [];
-
-    return Object.entries(codingPlan.models).map(([id, m]: [string, any]) => {
-      const inputModalities = m.modalities?.input || [];
-      return {
-        id: `gc/${id}`,
-        name: m.name || id,
-        description: `GLM Coding Plan model (subscription)`,
-        context_length: m.limit?.context || 131072,
-        pricing: { prompt: "0", completion: "0" },
-        isGLMCoding: true,
-        isSubscription: true,
-        supportsTools: m.tool_call || false,
-        supportsReasoning: m.reasoning || false,
-        supportsVision: inputModalities.includes("image") || inputModalities.includes("video"),
-      };
-    });
-  } catch {
-    return [];
-  }
-}

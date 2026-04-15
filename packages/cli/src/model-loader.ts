@@ -9,6 +9,91 @@ import type { OpenRouterModel } from "./types.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ─── Firebase Model Catalog Types ────────────────────────────────────────────
+// These mirror `firebase/functions/src/schema.ts` but are defined locally so we
+// don't cross the monorepo tsconfig boundary.
+
+/**
+ * Single recommended model entry from Firebase `?catalog=recommended`.
+ * Matches `RecommendedModelEntry` in firebase/functions/src/schema.ts.
+ */
+export interface RecommendedModelEntry {
+  id: string;
+  name: string;
+  description: string;
+  provider: string;
+  category: string;
+  priority: number;
+  pricing: {
+    input: string;
+    output: string;
+    average: string;
+  };
+  context: string;
+  maxOutputTokens?: number | null;
+  modality?: string;
+  supportsTools?: boolean;
+  supportsReasoning?: boolean;
+  supportsVision?: boolean;
+  isModerated?: boolean;
+  recommended?: boolean;
+  subscription?: {
+    prefix: string;
+    plan: string;
+    command: string;
+  };
+}
+
+/**
+ * Response from Firebase `?catalog=recommended`.
+ * Matches `RecommendedModelsDoc` in firebase/functions/src/schema.ts.
+ */
+export interface RecommendedModelsDoc {
+  version: string;
+  lastUpdated: string;
+  generatedAt?: string;
+  source?: string;
+  models: RecommendedModelEntry[];
+}
+
+/**
+ * Full model document from Firebase `?search=...` or `?provider=...`.
+ * Matches `ModelDoc` in firebase/functions/src/schema.ts.
+ */
+export interface ModelDoc {
+  modelId: string;
+  displayName?: string;
+  provider: string;
+  family?: string;
+  description?: string;
+  releaseDate?: string;
+  pricing?: {
+    input?: number;
+    output?: number;
+    inputCacheRead?: number;
+    inputCacheWrite?: number;
+    currency?: string;
+    unit?: string;
+  };
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: {
+    vision?: boolean;
+    thinking?: boolean;
+    tools?: boolean;
+    streaming?: boolean;
+    jsonMode?: boolean;
+    embedding?: boolean;
+    imageGeneration?: boolean;
+    audioInput?: boolean;
+    audioOutput?: boolean;
+  };
+  aliases?: string[];
+  status?: "active" | "deprecated" | "preview" | "unknown";
+}
+
+// ─── Legacy ModelMetadata (used by --model flag resolution) ──────────────────
+
 interface ModelMetadata {
   name: string;
   description: string;
@@ -16,144 +101,500 @@ interface ModelMetadata {
   provider: string;
 }
 
-interface RecommendedModelsJSON {
-  version: string;
-  lastUpdated: string;
-  source: string;
-  models: Array<{
-    id: string;
-    name: string;
-    description: string;
-    provider: string;
-    category: string;
-    priority: number;
-    pricing: {
-      input: string;
-      output: string;
-      average: string;
-    };
-    context: string;
-    recommended: boolean;
-  }>;
-}
+// ─── Module caches ───────────────────────────────────────────────────────────
 
-// Cache loaded data to avoid reading file multiple times
 let _cachedModelInfo: Record<string, ModelMetadata> | null = null;
 let _cachedModelIds: string[] | null = null;
-let _cachedRecommendedModels: RecommendedModelsJSON | null = null;
+let _cachedRecommendedModels: RecommendedModelsDoc | null = null;
 
-/**
- * Firebase endpoint for auto-generated recommended models.
- * Falls back to bundled JSON when unreachable.
- */
-const FIREBASE_RECOMMENDED_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=recommended";
+// ─── Firebase config ─────────────────────────────────────────────────────────
 
-const RECOMMENDED_CACHE_PATH = join(homedir(), ".claudish", "recommended-models-cache.json");
+const FIREBASE_BASE_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels";
+const FIREBASE_RECOMMENDED_URL = `${FIREBASE_BASE_URL}?catalog=recommended`;
+
+export const RECOMMENDED_MODELS_CACHE_PATH = join(
+  homedir(),
+  ".claudish",
+  "recommended-models-cache.json"
+);
 const RECOMMENDED_CACHE_MAX_AGE_HOURS = 12;
+const RECOMMENDED_FETCH_TIMEOUT_MS = 5000;
+const SEARCH_FETCH_TIMEOUT_MS = 10000;
 
 /**
- * Get the path to the bundled recommended-models.json (compile-time fallback)
+ * Absolute path to the bundled recommended-models.json fallback.
+ * Used as the last-resort source when Firebase and disk cache are unavailable.
  */
-function getRecommendedModelsPath(): string {
+export function getBundledRecommendedModelsPath(): string {
   return join(__dirname, "../recommended-models.json");
 }
 
+// ─── Recommended models grouping + formatting helpers ───────────────────────
+
 /**
- * Fetch recommended models from Firebase and cache to disk.
- * Called at startup to ensure the latest recommendations are available.
- * Returns the fetched data or null on failure (callers use sync fallback).
+ * Map from Firebase provider slug (as it appears in `RecommendedModelEntry.provider`
+ * after the recommender capitalizes it, e.g. "Openai", "X-ai", "Moonshotai") to
+ * the canonical `name` used in `providers/provider-definitions.ts`. This lets
+ * both the CLI and MCP renderers look up the native routing prefix from the
+ * provider shortcuts.
+ *
+ * The lookup key is the lower-cased provider field from the Firebase entry,
+ * which matches the slug the recommender started from (see
+ * `firebase/functions/src/recommender.ts` PROVIDERS table).
  */
-export async function warmRecommendedModels(): Promise<RecommendedModelsJSON | null> {
+export const FIREBASE_SLUG_TO_PROVIDER_NAME: Record<string, string> = {
+  openai: "openai",
+  google: "google",
+  "x-ai": "xai",
+  "z-ai": "zai",
+  moonshotai: "kimi",
+  minimax: "minimax",
+  qwen: "qwen",
+};
+
+/**
+ * A group of recommended-model entries that all share the same `id`. The
+ * `primary` is the non-subscription entry (programming/vision/reasoning/fast);
+ * `subscriptions` is every `category:"subscription"` entry in the group, in the
+ * order they appeared in the source doc (which reflects access-method order).
+ */
+export interface RecommendedModelGroup {
+  id: string;
+  primary: RecommendedModelEntry;
+  subscriptions: RecommendedModelEntry[];
+  /** Category bucket for display: "flagship" = programming/vision/reasoning; "fast" = fast variants. */
+  bucket: "flagship" | "fast";
+}
+
+/**
+ * Group `entries` by `id`, preserving priority order. Each returned group's
+ * bucket is derived from the primary entry's `category`:
+ *   - "programming" | "vision" | "reasoning" → "flagship"
+ *   - "fast"                                  → "fast"
+ * Subscription-only groups (no non-subscription primary) are defensively
+ * classified as "fast" — shouldn't happen in practice but keeps them visible.
+ */
+export function groupRecommendedModels(
+  entries: RecommendedModelEntry[]
+): { flagship: RecommendedModelGroup[]; fast: RecommendedModelGroup[] } {
+  const byId = new Map<string, RecommendedModelEntry[]>();
+  for (const entry of entries) {
+    const list = byId.get(entry.id);
+    if (list) list.push(entry);
+    else byId.set(entry.id, [entry]);
+  }
+
+  const flagship: RecommendedModelGroup[] = [];
+  const fast: RecommendedModelGroup[] = [];
+
+  for (const [id, members] of byId.entries()) {
+    const primary =
+      members.find((m) => m.category !== "subscription") ?? members[0];
+    const subscriptions = members.filter((m) => m.category === "subscription");
+    const bucket: "flagship" | "fast" =
+      primary.category === "programming" ||
+      primary.category === "vision" ||
+      primary.category === "reasoning"
+        ? "flagship"
+        : "fast";
+    const group: RecommendedModelGroup = { id, primary, subscriptions, bucket };
+    if (bucket === "flagship") flagship.push(group);
+    else fast.push(group);
+  }
+
+  return { flagship, fast };
+}
+
+/**
+ * Compute the ordered, deduped list of routing prefixes for a group:
+ *   [native-provider-prefix, ...subscription-prefixes]
+ * Each prefix is bare (no `@`). `getNativePrefix` receives the lower-cased
+ * Firebase slug and returns the native shortcut or null if the provider is
+ * unknown / has no shortcut.
+ */
+export function collectRoutingPrefixes(
+  group: RecommendedModelGroup,
+  getNativePrefix: (firebaseSlug: string) => string | null
+): string[] {
+  const slug = (group.primary.provider || "").toLowerCase();
+  const native = getNativePrefix(slug);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  if (native) {
+    out.push(native);
+    seen.add(native);
+  }
+  for (const sub of group.subscriptions) {
+    const p = sub.subscription?.prefix;
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+/** Parse "$1.32/1M" → 1.32, "FREE" → 0, "N/A"/"varies"/undefined → Infinity */
+export function parsePriceAvg(s?: string): number {
+  if (!s || s === "N/A") return Infinity;
+  if (s === "FREE") return 0;
+  const m = s.match(/\$([\d.]+)/);
+  return m ? parseFloat(m[1]) : Infinity;
+}
+
+/** Parse "196K" → 196000, "1M" → 1000000, "1048K" → 1048000 */
+export function parseCtx(s?: string): number {
+  if (!s || s === "N/A") return 0;
+  const upper = s.toUpperCase();
+  if (upper.includes("M")) return parseFloat(upper) * 1_000_000;
+  if (upper.includes("K")) return parseFloat(upper) * 1_000;
+  return parseInt(s, 10) || 0;
+}
+
+/**
+ * Normalize a raw pricing string from Firebase to what the renderers display.
+ * - "$0.00/1M" or "FREE" → "FREE"
+ * - strings containing "-1000000" (legacy-bug pattern) → "varies"
+ * - otherwise returned unchanged (falling back to "N/A")
+ */
+export function normalizePricingDisplay(raw?: string): string {
+  const pricing = raw || "N/A";
+  if (pricing.includes("-1000000")) return "varies";
+  if (pricing === "$0.00/1M" || pricing === "FREE") return "FREE";
+  return pricing;
+}
+
+/**
+ * Pick highlights from a deduped list of primary entries. Any field that can't
+ * be computed is returned as null so callers can skip the line.
+ */
+export interface QuickPicks {
+  budget: RecommendedModelEntry | null;
+  largeContext: RecommendedModelEntry | null;
+  mostCapable: RecommendedModelEntry | null;
+  visionCoding: RecommendedModelEntry | null;
+  agentic: RecommendedModelEntry | null;
+}
+
+export function computeQuickPicks(primaries: RecommendedModelEntry[]): QuickPicks {
+  if (primaries.length === 0) {
+    return {
+      budget: null,
+      largeContext: null,
+      mostCapable: null,
+      visionCoding: null,
+      agentic: null,
+    };
+  }
+
+  // Budget: cheapest non-FREE (skip FREE because they're typically gateways)
+  const priced = primaries
+    .filter((m) => {
+      const p = parsePriceAvg(m.pricing?.average);
+      return p > 0 && p !== Infinity;
+    })
+    .sort(
+      (a, b) =>
+        parsePriceAvg(a.pricing?.average) - parsePriceAvg(b.pricing?.average)
+    );
+  const budget = priced[0] ?? null;
+
+  // Large context: max parseCtx
+  const byCtx = [...primaries].sort(
+    (a, b) => parseCtx(b.context) - parseCtx(a.context)
+  );
+  const largeContext = byCtx[0] ?? null;
+
+  // Most capable: priciest
+  const byPrice = [...primaries].sort(
+    (a, b) =>
+      parsePriceAvg(b.pricing?.average) - parsePriceAvg(a.pricing?.average)
+  );
+  const mostCapable = byPrice.find((m) => parsePriceAvg(m.pricing?.average) !== Infinity) ?? null;
+
+  // Vision + code: first with vision, excluding budget/priciest
+  const visionCoding =
+    primaries.find(
+      (m) =>
+        m.supportsVision === true &&
+        m.id !== budget?.id &&
+        m.id !== mostCapable?.id
+    ) ?? null;
+
+  // Agentic: first with reasoning, excluding priciest
+  const agentic =
+    primaries.find(
+      (m) => m.supportsReasoning === true && m.id !== mostCapable?.id
+    ) ?? null;
+
+  return { budget, largeContext, mostCapable, visionCoding, agentic };
+}
+
+// ─── Recommended models loader ───────────────────────────────────────────────
+
+/**
+ * Load the recommended models doc asynchronously, with Firebase as the primary source.
+ *
+ * Resolution order:
+ *   1. In-memory cache (unless forceRefresh)
+ *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH if <12h old (unless forceRefresh)
+ *   3. Firebase ?catalog=recommended (writes disk cache on success)
+ *   4. Bundled recommended-models.json fallback
+ *
+ * Throws only when all four tiers fail.
+ */
+export async function getRecommendedModels(
+  opts: { forceRefresh?: boolean } = {}
+): Promise<RecommendedModelsDoc> {
+  const { forceRefresh = false } = opts;
+
+  // Tier 1: in-memory cache
+  if (!forceRefresh && _cachedRecommendedModels) {
+    return _cachedRecommendedModels;
+  }
+
+  // Tier 2: disk cache (if fresh)
+  if (!forceRefresh && existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
+    try {
+      const cacheData = JSON.parse(
+        readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
+      ) as RecommendedModelsDoc;
+      if (cacheData.models && cacheData.models.length > 0 && isFreshEnough(cacheData)) {
+        _cachedRecommendedModels = cacheData;
+        return cacheData;
+      }
+    } catch {
+      // Corrupt disk cache — fall through to Firebase
+    }
+  }
+
+  // Tier 3: Firebase fetch
   try {
     const response = await fetch(FIREBASE_RECOMMENDED_URL, {
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(RECOMMENDED_FETCH_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
-
-    const data = (await response.json()) as RecommendedModelsJSON;
-    if (!data.models || data.models.length === 0) return null;
-
-    // Cache to memory
-    _cachedRecommendedModels = data;
-
-    // Cache to disk
-    const cacheDir = join(homedir(), ".claudish");
-    mkdirSync(cacheDir, { recursive: true });
-    writeFileSync(RECOMMENDED_CACHE_PATH, JSON.stringify(data), "utf-8");
-
-    return data;
+    if (response.ok) {
+      const data = (await response.json()) as RecommendedModelsDoc;
+      if (data.models && data.models.length > 0) {
+        _cachedRecommendedModels = data;
+        // Write disk cache (best-effort)
+        try {
+          const cacheDir = join(homedir(), ".claudish");
+          mkdirSync(cacheDir, { recursive: true });
+          writeFileSync(RECOMMENDED_MODELS_CACHE_PATH, JSON.stringify(data), "utf-8");
+        } catch {
+          // Don't fail the call if we can't write the cache
+        }
+        return data;
+      }
+    }
   } catch {
-    // Silent — sync fallback will handle it
+    // Silent — fall through to bundled fallback
+  }
+
+  // Tier 4: bundled fallback
+  return loadBundledRecommendedModels();
+}
+
+/**
+ * Synchronous accessor for the recommended models doc.
+ *
+ * Tiers (no network):
+ *   1. In-memory cache
+ *   2. Disk cache (no freshness check — best-effort)
+ *   3. Bundled recommended-models.json
+ *
+ * Throws only if every source fails.
+ */
+export function getRecommendedModelsSync(): RecommendedModelsDoc {
+  if (_cachedRecommendedModels) return _cachedRecommendedModels;
+
+  if (existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
+    try {
+      const cacheData = JSON.parse(
+        readFileSync(RECOMMENDED_MODELS_CACHE_PATH, "utf-8")
+      ) as RecommendedModelsDoc;
+      if (cacheData.models && cacheData.models.length > 0) {
+        _cachedRecommendedModels = cacheData;
+        return cacheData;
+      }
+    } catch {
+      // Fall through to bundled
+    }
+  }
+
+  return loadBundledRecommendedModels();
+}
+
+/**
+ * Thin backward-compatible wrapper — fetches the Firebase catalog and warms caches.
+ * Used by proxy-server.ts to kick off the background warm on startup.
+ */
+export async function warmRecommendedModels(): Promise<RecommendedModelsDoc | null> {
+  try {
+    return await getRecommendedModels({ forceRefresh: true });
+  } catch {
     return null;
   }
 }
 
-/**
- * Load the raw recommended-models.json data.
- *
- * Resolution order:
- * 1. In-memory cache (already fetched this session)
- * 2. Disk cache (~/.claudish/recommended-models-cache.json) if fresh enough
- * 3. Bundled recommended-models.json (compile-time fallback)
- */
-function loadRecommendedModelsJSON(): RecommendedModelsJSON {
-  if (_cachedRecommendedModels) {
-    return _cachedRecommendedModels;
-  }
+function isFreshEnough(doc: RecommendedModelsDoc): boolean {
+  const generatedAt = doc.generatedAt;
+  if (!generatedAt) return true; // No timestamp — treat as usable
+  const ageHours = (Date.now() - new Date(generatedAt).getTime()) / (1000 * 60 * 60);
+  return ageHours <= RECOMMENDED_CACHE_MAX_AGE_HOURS;
+}
 
-  // Try disk cache (from Firebase fetch)
-  if (existsSync(RECOMMENDED_CACHE_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(RECOMMENDED_CACHE_PATH, "utf-8")) as RecommendedModelsJSON;
-      // Check freshness — use cache if less than 12 hours old
-      if (cacheData.models && cacheData.models.length > 0) {
-        const generatedAt = (cacheData as any).generatedAt;
-        if (generatedAt) {
-          const ageHours = (Date.now() - new Date(generatedAt).getTime()) / (1000 * 60 * 60);
-          if (ageHours <= RECOMMENDED_CACHE_MAX_AGE_HOURS) {
-            _cachedRecommendedModels = cacheData;
-            return cacheData;
-          }
-        } else {
-          // No generatedAt field — still use it (better than bundled)
-          _cachedRecommendedModels = cacheData;
-          return cacheData;
-        }
-      }
-    } catch {
-      // Disk cache invalid — fall through to bundled
-    }
-  }
-
-  // Fall back to bundled JSON
-  const jsonPath = getRecommendedModelsPath();
-
+function loadBundledRecommendedModels(): RecommendedModelsDoc {
+  const jsonPath = getBundledRecommendedModelsPath();
   if (!existsSync(jsonPath)) {
     throw new Error(
       `recommended-models.json not found at ${jsonPath}. ` +
-        `Run 'claudish --update-models' to fetch the latest model list.`
+        `Run 'claudish --top-models --force-update' to refresh from Firebase.`
     );
   }
-
   try {
-    const jsonContent = readFileSync(jsonPath, "utf-8");
-    _cachedRecommendedModels = JSON.parse(jsonContent);
-    return _cachedRecommendedModels!;
+    const doc = JSON.parse(readFileSync(jsonPath, "utf-8")) as RecommendedModelsDoc;
+    _cachedRecommendedModels = doc;
+    return doc;
   } catch (error) {
-    throw new Error(`Failed to parse recommended-models.json: ${error}`);
+    throw new Error(`Failed to parse bundled recommended-models.json: ${error}`);
   }
 }
 
+// ─── On-demand Firebase search API ───────────────────────────────────────────
+
 /**
- * Load model metadata from recommended-models.json
+ * Substring search across Firebase's model catalog (modelId, displayName, aliases).
+ * Network-only — no local caching. Callers handle error UX.
+ */
+export async function searchModels(query: string, limit = 50): Promise<ModelDoc[]> {
+  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(
+    query
+  )}&limit=${limit}&status=active`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Firebase search returned ${response.status} ${response.statusText}`);
+  }
+  const data = (await response.json()) as { models?: ModelDoc[]; total?: number };
+  return data.models ?? [];
+}
+
+/**
+ * Look up a single model by its canonical ID (or alias) via Firebase search.
+ * Returns null if not found, throws on network error.
+ */
+export async function getModelByIdFromFirebase(modelId: string): Promise<ModelDoc | null> {
+  const url = `${FIREBASE_BASE_URL}?search=${encodeURIComponent(modelId)}&limit=5`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Firebase lookup returned ${response.status} ${response.statusText}`);
+  }
+  const data = (await response.json()) as { models?: ModelDoc[] };
+  const models = data.models ?? [];
+  // Exact match on modelId or aliases
+  for (const m of models) {
+    if (m.modelId === modelId) return m;
+    if (m.aliases?.includes(modelId)) return m;
+  }
+  return null;
+}
+
+/**
+ * A ranked entry from `?catalog=top100` — a full `ModelDoc` augmented with
+ * a 1-indexed `rank` and composite `score`. Shape mirrors the JSON response
+ * emitted by `firebase/functions/src/query-handler.ts`.
+ */
+export interface Top100Entry extends ModelDoc {
+  rank: number;
+  score: number;
+  /** Populated only when `?includeScores=1` is passed. */
+  scoreBreakdown?: {
+    total: number;
+    popularity: number;
+    recency: number;
+    generation: number;
+    capabilities: number;
+    context: number;
+    confidence: number;
+  };
+}
+
+/**
+ * Full response envelope for `?catalog=top100`. Unlike the
+ * `?catalog=recommended` endpoint this is a flat ranked list of raw
+ * `ModelDoc`s — it is NOT compatible with `RecommendedModelsDoc` or the
+ * grouping helpers (groupRecommendedModels, collectRoutingPrefixes,
+ * computeQuickPicks) which all expect `RecommendedModelEntry`.
+ */
+export interface Top100Response {
+  models: Top100Entry[];
+  total: number;
+  poolSize: number;
+  scoring: {
+    weights: {
+      popularity: number;
+      recency: number;
+      generation: number;
+      capabilities: number;
+      context: number;
+      confidence: number;
+    };
+  };
+}
+
+/**
+ * Fetch the top-100 ranked models from Firebase. Network-only — meant to be
+ * fresh on every `--list-models` call; response is small (~50KB) so no disk
+ * cache is maintained.
+ */
+export async function getTop100Models(): Promise<Top100Response> {
+  const url = `${FIREBASE_BASE_URL}?catalog=top100`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Firebase top100 fetch failed: ${response.status} ${response.statusText}`
+    );
+  }
+  const data = (await response.json()) as Top100Response;
+  return data;
+}
+
+/**
+ * Fetch active models for a given provider.
+ */
+export async function getModelsByProvider(provider: string, limit = 200): Promise<ModelDoc[]> {
+  const url = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(
+    provider
+  )}&status=active&limit=${limit}`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Firebase provider query returned ${response.status} ${response.statusText}`);
+  }
+  const data = (await response.json()) as ModelDoc[] | { models?: ModelDoc[] };
+  if (Array.isArray(data)) return data;
+  return data.models ?? [];
+}
+
+// ─── Legacy loaders retained for cli.ts --model flag validation ──────────────
+
+/**
+ * Load ModelMetadata keyed by model ID for the --model flag help text.
+ * Backed by the same sync recommended-models doc.
  */
 export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
   if (_cachedModelInfo) {
     return _cachedModelInfo as Record<OpenRouterModel, ModelMetadata>;
   }
 
-  const data = loadRecommendedModelsJSON();
+  const data = getRecommendedModelsSync();
   const modelInfo: Record<string, ModelMetadata> = {};
 
   for (const model of data.models) {
@@ -165,10 +606,10 @@ export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
     };
   }
 
-  // Add custom option
+  // Custom option for the interactive picker
   modelInfo.custom = {
     name: "Custom Model",
-    description: "Enter any OpenRouter model ID manually",
+    description: "Enter any model ID manually",
     priority: 999,
     provider: "Custom",
   };
@@ -178,14 +619,14 @@ export function loadModelInfo(): Record<OpenRouterModel, ModelMetadata> {
 }
 
 /**
- * Get list of available model IDs from recommended-models.json
+ * Get list of available model IDs (sorted by priority) from the recommended doc.
  */
 export function getAvailableModels(): OpenRouterModel[] {
   if (_cachedModelIds) {
     return _cachedModelIds as OpenRouterModel[];
   }
 
-  const data = loadRecommendedModelsJSON();
+  const data = getRecommendedModelsSync();
   const modelIds = data.models.sort((a, b) => a.priority - b.priority).map((m) => m.id);
 
   const result = [...modelIds, "custom"];
@@ -193,118 +634,7 @@ export function getAvailableModels(): OpenRouterModel[] {
   return result as OpenRouterModel[];
 }
 
-// Cache for OpenRouter API response
-let _cachedOpenRouterModels: any[] | null = null;
-
-/**
- * Get the cached OpenRouter models list (if already fetched)
- * Returns null if not yet fetched
- */
-export function getCachedOpenRouterModels(): any[] | null {
-  return _cachedOpenRouterModels;
-}
-
-/**
- * Ensure the OpenRouter models list is loaded (fetches if not cached)
- * Returns the models array or empty array on failure
- */
-export async function ensureOpenRouterModelsLoaded(): Promise<any[]> {
-  if (_cachedOpenRouterModels) return _cachedOpenRouterModels;
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/models");
-    if (response.ok) {
-      const data: any = await response.json();
-      _cachedOpenRouterModels = data.data || [];
-      return _cachedOpenRouterModels!;
-    }
-  } catch {
-    // Silent fail — caller handles null/empty
-  }
-  return [];
-}
-
-/**
- * Fetch exact context window size from OpenRouter API
- * @param modelId The full OpenRouter model ID (e.g. "anthropic/claude-3-sonnet")
- * @returns Context window size in tokens (default: 200000)
- */
-export async function fetchModelContextWindow(modelId: string): Promise<number> {
-  // 1. Use cached API data if available
-  if (_cachedOpenRouterModels) {
-    const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
-    if (model) {
-      return model.context_length || model.top_provider?.context_length || 200000;
-    }
-  }
-
-  // 2. Try to fetch from OpenRouter API
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/models");
-    if (response.ok) {
-      const data: any = await response.json();
-      _cachedOpenRouterModels = data.data;
-
-      const model = _cachedOpenRouterModels?.find((m: any) => m.id === modelId);
-      if (model) {
-        return model.context_length || model.top_provider?.context_length || 200000;
-      }
-    }
-  } catch (error) {
-    // Silent fail on network error - will use fallback
-  }
-
-  // 3. Fallback to recommended-models.json
-  try {
-    const data = loadRecommendedModelsJSON();
-    const model = data.models.find((m) => m.id === modelId);
-    if (model && model.context) {
-      // Parse "200K" -> 200000, "1M" -> 1000000
-      const ctxStr = model.context.toUpperCase();
-      if (ctxStr.includes("K")) {
-        return parseFloat(ctxStr.replace("K", "")) * 1000;
-      }
-      if (ctxStr.includes("M")) {
-        return parseFloat(ctxStr.replace("M", "")) * 1000000;
-      }
-      const val = parseInt(ctxStr);
-      if (!isNaN(val)) return val;
-    }
-  } catch (e) {
-    // Ignore errors, use default
-  }
-
-  // 4. Default fallback
-  return 200000;
-}
-
-/**
- * Check if a model supports reasoning capabilities based on OpenRouter metadata
- * @param modelId The full OpenRouter model ID
- * @returns True if model supports reasoning/thinking
- */
-export async function doesModelSupportReasoning(modelId: string): Promise<boolean> {
-  // Ensure cache is populated
-  if (!_cachedOpenRouterModels) {
-    await fetchModelContextWindow(modelId); // This side-effect populates the cache
-  }
-
-  if (_cachedOpenRouterModels) {
-    const model = _cachedOpenRouterModels.find((m: any) => m.id === modelId);
-    if (model && model.supported_parameters) {
-      return (
-        model.supported_parameters.includes("include_reasoning") ||
-        model.supported_parameters.includes("reasoning") ||
-        // Fallback for models we know support it but metadata might lag
-        model.id.includes("o1") ||
-        model.id.includes("o3") ||
-        model.id.includes("r1")
-      );
-    }
-  }
-
-  // Default to false if no metadata available (safe default)
-  return false;
-}
+// ─── LiteLLM model fetch (unchanged — not OpenRouter) ────────────────────────
 
 /**
  * LiteLLM model structure from /public/model_hub API
@@ -322,9 +652,6 @@ interface LiteLLMModel {
   mode?: string;
 }
 
-/**
- * Cache structure for LiteLLM models
- */
 interface LiteLLMCache {
   timestamp: string;
   models: any[];
@@ -333,23 +660,17 @@ interface LiteLLMCache {
 const LITELLM_CACHE_MAX_AGE_HOURS = 24;
 
 /**
- * Fetch models from LiteLLM instance with caching
- * @param baseUrl LiteLLM instance base URL
- * @param apiKey LiteLLM API key
- * @param forceUpdate Skip cache and fetch fresh data
- * @returns Array of transformed models compatible with model selector
+ * Fetch models from LiteLLM instance with caching.
  */
 export async function fetchLiteLLMModels(
   baseUrl: string,
   apiKey: string,
   forceUpdate = false
 ): Promise<any[]> {
-  // Create cache key from baseUrl hash
   const hash = createHash("sha256").update(baseUrl).digest("hex").substring(0, 16);
   const cacheDir = join(homedir(), ".claudish");
   const cachePath = join(cacheDir, `litellm-models-${hash}.json`);
 
-  // Check cache
   if (!forceUpdate && existsSync(cachePath)) {
     try {
       const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
@@ -365,7 +686,6 @@ export async function fetchLiteLLMModels(
     }
   }
 
-  // Fetch from LiteLLM API
   try {
     const url = `${baseUrl.replace(/\/$/, "")}/model_group/info`;
     const response = await fetch(url, {
@@ -377,7 +697,6 @@ export async function fetchLiteLLMModels(
 
     if (!response.ok) {
       console.error(`Failed to fetch LiteLLM models: ${response.status} ${response.statusText}`);
-      // Return cached data if available, even if stale
       if (existsSync(cachePath)) {
         try {
           const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
@@ -389,12 +708,13 @@ export async function fetchLiteLLMModels(
       return [];
     }
 
-    const responseData = await response.json();
-    const rawModels: LiteLLMModel[] = responseData.data || responseData;
+    const responseData = (await response.json()) as { data?: LiteLLMModel[] } | LiteLLMModel[];
+    const rawModels: LiteLLMModel[] = Array.isArray(responseData)
+      ? responseData
+      : responseData.data || [];
 
-    // Transform to model selector format
     const transformedModels = rawModels
-      .filter((m) => m.mode === "chat" && m.supports_function_calling) // Only chat models with tool support
+      .filter((m) => m.mode === "chat" && m.supports_function_calling)
       .map((m) => {
         const inputCostPerM = (m.input_cost_per_token || 0) * 1_000_000;
         const outputCostPerM = (m.output_cost_per_token || 0) * 1_000_000;
@@ -427,7 +747,6 @@ export async function fetchLiteLLMModels(
         };
       });
 
-    // Cache results - ensure directory exists
     mkdirSync(cacheDir, { recursive: true });
     const cacheData: LiteLLMCache = {
       timestamp: new Date().toISOString(),
@@ -438,7 +757,6 @@ export async function fetchLiteLLMModels(
     return transformedModels;
   } catch (error) {
     console.error(`Failed to fetch LiteLLM models: ${error}`);
-    // Return cached data if available, even if stale
     if (existsSync(cachePath)) {
       try {
         const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
