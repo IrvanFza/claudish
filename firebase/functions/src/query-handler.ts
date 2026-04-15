@@ -3,6 +3,7 @@ import type { Response } from "express";
 import { getFirestore } from "firebase-admin/firestore";
 import type { CollectionReference, Query } from "firebase-admin/firestore";
 import type { ModelDoc, ModelChangeDoc, RecommendedModelsDoc } from "./schema.js";
+import { computeGenerationScores, scoreForTop100 } from "./popularity-scores.js";
 
 export async function handleQueryModels(req: Request, res: Response): Promise<void> {
   if (req.method !== "GET") {
@@ -91,6 +92,80 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
     return;
   }
 
+  // ── Top 100 ranked catalog: ?catalog=top100 ──────────────────────────────
+  // Returns models ranked by a composite score combining provider popularity,
+  // release recency, generation freshness, capabilities, context, and data
+  // confidence. Eligibility: status=active AND has pricing.
+  //
+  // Query params:
+  //   ?limit=<n>         — override result count (default 100, max 200)
+  //   ?includeScores=1   — include per-model score breakdown
+  if (req.query.catalog === "top100") {
+    const top100Limit = Math.min(parseInt(String(req.query.limit ?? "100"), 10), 200);
+    const includeScores = req.query.includeScores === "1" || req.query.includeScores === "true";
+
+    try {
+      // Eligibility: active + pricing present.
+      // Firestore can only filter `pricing.input` server-side (the `!= null`
+      // check is cheap and uses the existing pricing index). We fetch a wider
+      // pool (500) so the in-memory ranking has enough signal to pick 100.
+      const snap = await db
+        .collection("models")
+        .where("status", "==", "active")
+        .limit(500)
+        .get();
+
+      const eligible = snap.docs
+        .map(d => d.data() as ModelDoc)
+        .filter(m => m.pricing && typeof m.pricing.input === "number" && typeof m.pricing.output === "number");
+
+      // Compute generation scores across the whole eligible pool so every
+      // model knows where it sits in its family.
+      const generationScores = computeGenerationScores(eligible);
+
+      const ranked = eligible
+        .map(m => {
+          const genScore = generationScores.get(m.modelId) ?? 0.5;
+          const score = scoreForTop100(m, genScore);
+          return { model: m, score };
+        })
+        .sort((a, b) => b.score.total - a.score.total)
+        .slice(0, top100Limit);
+
+      const models = ranked.map((entry, idx) => {
+        const base: Record<string, unknown> = {
+          ...entry.model,
+          rank: idx + 1,
+          score: entry.score.total,
+        };
+        if (includeScores) {
+          base.scoreBreakdown = entry.score;
+        }
+        return base;
+      });
+
+      res.status(200).json({
+        models,
+        total: models.length,
+        poolSize: eligible.length,
+        scoring: {
+          weights: {
+            popularity: 0.25,
+            recency: 0.30,
+            generation: 0.20,
+            capabilities: 0.10,
+            context: 0.10,
+            confidence: 0.05,
+          },
+        },
+      });
+    } catch (err) {
+      console.error("[catalog] Top100 query failed:", err);
+      res.status(500).json({ error: "Internal error" });
+    }
+    return;
+  }
+
   // ── Standard model list query ────────────────────────────────────────────
   let query: Query = db.collection("models") as CollectionReference;
 
@@ -122,24 +197,28 @@ export async function handleQueryModels(req: Request, res: Response): Promise<vo
   }
 
   // Filter: ?search=gpt (case-insensitive substring match on modelId / displayName)
-  // Firestore doesn't support native substring search — handled client-side after fetch
+  // Firestore doesn't support native substring search — handled client-side after fetch.
+  // When search is present, fetch a wider pool (up to 500) before the substring filter
+  // so narrow searches don't miss matches that fall outside the user's requested limit.
   const searchTerm = req.query.search ? String(req.query.search).toLowerCase() : null;
 
-  // Limit (max 200)
-  const limit = Math.min(parseInt(String(req.query.limit ?? "50"), 10), 200);
-  query = query.limit(limit);
+  const requestedLimit = Math.min(parseInt(String(req.query.limit ?? "50"), 10), 200);
+  const fetchLimit = searchTerm ? 500 : requestedLimit;
+  query = query.limit(fetchLimit);
 
   try {
     const snap = await query.get();
     let models = snap.docs.map(d => d.data() as ModelDoc);
 
-    // Apply client-side search filter if specified
+    // Apply client-side search filter, then trim to the user's requested limit.
     if (searchTerm) {
-      models = models.filter(m =>
-        m.modelId.toLowerCase().includes(searchTerm) ||
-        m.displayName.toLowerCase().includes(searchTerm) ||
-        m.aliases.some(a => a.toLowerCase().includes(searchTerm))
-      );
+      models = models
+        .filter(m =>
+          m.modelId.toLowerCase().includes(searchTerm) ||
+          m.displayName.toLowerCase().includes(searchTerm) ||
+          m.aliases.some(a => a.toLowerCase().includes(searchTerm))
+        )
+        .slice(0, requestedLimit);
     }
 
     res.status(200).json({ models, total: models.length });
