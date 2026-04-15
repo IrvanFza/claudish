@@ -716,11 +716,20 @@ export class ComposedHandler implements ModelHandler {
 
     // Stream format priority:
     //   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
-    //   2. Model dialect (CodexAPIFormat → openai-responses-sse; overrides format adapter)
-    //   3. Provider adapter (explicit adapter passed to ComposedHandler)
+    //   2. Explicit format adapter (provider profile passes it, e.g. AnthropicAPIFormat
+    //      for Z.AI, CodexAPIFormat for OpenAI Codex) — this is the layer that KNOWS
+    //      the wire protocol.
+    //   3. Model dialect — only reached if no explicit adapter was passed. Dialects like
+    //      GLMModelDialect/GrokModelDialect handle model quirks (context window, thinking
+    //      block stripping), NOT wire format. Their inherited default "openai-sse" must
+    //      NOT override the explicit adapter — that was #102.
+    //
+    // Previous ordering (pre-fix) put modelAdapter at tier 2, causing GLMModelDialect's
+    // inherited "openai-sse" to silently override AnthropicAPIFormat's "anthropic-sse"
+    // for zai@glm-* — the Anthropic SSE was then fed to the OpenAI parser and dropped.
     const streamFormat =
       this.provider.overrideStreamFormat?.() ??
-      this.modelAdapter?.getStreamFormat() ??
+      (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
       this.getAdapter().getStreamFormat();
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in

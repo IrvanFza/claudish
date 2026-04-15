@@ -212,7 +212,7 @@ async function getProxy(): Promise<ProxyServer> {
 }
 
 /** Parse Anthropic SSE stream and extract text content + usage */
-function parseAnthropicSse(raw: string): {
+export function parseAnthropicSse(raw: string): {
   text: string;
   usage?: { input: number; output: number };
 } {
@@ -249,7 +249,7 @@ function parseAnthropicSse(raw: string): {
   return { text, usage: hasUsage ? { input: inputTokens, output: outputTokens } : undefined };
 }
 
-async function runPromptViaProxy(
+export async function runPromptViaProxy(
   model: string,
   prompt: string,
   systemPrompt?: string,
