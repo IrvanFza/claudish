@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fuzzyScore } from "./utils.js";
 import { getModelMapping, loadConfig } from "./profile-config.js";
+import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
   getFallbackChain,
@@ -250,6 +251,13 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.profile = profileArg;
+    } else if (arg === "--default-provider") {
+      const dpArg = args[++i];
+      if (!dpArg) {
+        console.error("--default-provider requires a provider name");
+        process.exit(1);
+      }
+      config.defaultProvider = dpArg;
     } else if (arg === "--cost-tracker") {
       // Enable cost tracking for this session
       config.costTracking = true;
@@ -470,6 +478,34 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.modelSubagent = profileModels.subagent;
     }
   }
+
+  // Phase 1 (LiteLLM-demotion refactor): resolve the effective default provider
+  // and emit a one-shot stderr hint when legacy LITELLM auto-promotion kicks in.
+  // This currently has no routing effect — Phase 2 wires it into auto-route.
+  try {
+    const fileConfigForResolver = loadConfig();
+    const resolved = resolveDefaultProvider({
+      cliFlag: config.defaultProvider,
+      config: fileConfigForResolver,
+      env: process.env,
+    });
+    config.resolvedDefaultProvider = resolved;
+
+    if (resolved.legacyAutoPromoted && !config.quiet) {
+      const markerFile = join(homedir(), ".claudish", ".legacy-litellm-hint-shown");
+      if (!existsSync(markerFile)) {
+        const hint = buildLegacyHint(resolved);
+        if (hint) {
+          console.error(hint);
+        }
+        try {
+          // Touch the marker so we don't show it again. Best-effort — failure is OK.
+          mkdirSync(dirname(markerFile), { recursive: true });
+          writeFileSync(markerFile, new Date().toISOString(), "utf-8");
+        } catch {}
+      }
+    }
+  } catch {}
 
   return config as ClaudishConfig;
 }
@@ -1884,6 +1920,8 @@ OPTIONS:
   -i, --interactive        Run in interactive mode (default when no prompt given)
   -m, --model <model>      OpenRouter model to use (required for single-shot mode)
   -p, --profile <name>     Use named profile for model mapping (default: uses default profile)
+  --default-provider <name> Default provider for bare model names (builtin or customEndpoints key)
+                           Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json
   --port <port>            Proxy server port (default: random)
   -d, --debug              Enable debug logging to file (logs/claudish_*.log)
   --no-logs                Disable always-on structural logging (~/.claudish/logs/)

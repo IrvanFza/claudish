@@ -125,6 +125,23 @@ export interface ClaudishProfileConfig {
   autoApproveConfirmedAt?: string;
   /** Diagnostic output mode: auto (default), logfile, off */
   diagMode?: "auto" | "logfile" | "off";
+
+  /**
+   * Default provider for bare model names. One of the builtin names
+   * (openrouter, litellm, openai, anthropic, google) or a key from `customEndpoints`.
+   * Precedence: --default-provider flag > CLAUDISH_DEFAULT_PROVIDER env > this field.
+   * Phase 2 wires this into the routing fallback chain.
+   */
+  defaultProvider?: string;
+
+  /**
+   * Named custom endpoints. Each entry is either a "simple" config
+   * (URL + format + key) or a "complex" config (full provider profile).
+   * NOTE: This is distinct from the legacy `endpoints?: Record<string, string>` field
+   * which is just an env-var → URL map for builtin providers.
+   * Validation of entries happens at the consumption site (Phase 3) via Zod, not here.
+   */
+  customEndpoints?: Record<string, unknown>;
 }
 
 /**
@@ -196,6 +213,12 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.autoApproveConfirmedAt !== undefined) {
       merged.autoApproveConfirmedAt = config.autoApproveConfirmedAt;
+    }
+    if (config.defaultProvider !== undefined) {
+      merged.defaultProvider = config.defaultProvider;
+    }
+    if (config.customEndpoints !== undefined) {
+      merged.customEndpoints = config.customEndpoints;
     }
     return merged;
   } catch (error) {
