@@ -5,24 +5,12 @@
  */
 
 import { search, select, input, confirm } from "@inquirer/prompts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import type { OpenRouterModel } from "./types.js";
-import { getAvailableModels, fetchLiteLLMModels } from "./model-loader.js";
+import {
+  fetchLiteLLMModels,
+  getRecommendedModelsSync,
+  type RecommendedModelEntry,
+} from "./model-loader.js";
 import { getProviderByName, isProviderAvailable } from "./providers/provider-definitions.js";
-
-// Get __dirname equivalent in ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Cache paths - use ~/.claudish/ for writable cache (binaries can't write to __dirname)
-const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
-const ALL_MODELS_JSON_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
-const RECOMMENDED_MODELS_JSON_PATH = join(__dirname, "../recommended-models.json");
-const CACHE_MAX_AGE_DAYS = 2;
-const FREE_MODELS_CACHE_MAX_AGE_HOURS = 3; // Free models change frequently, refresh every 3 hours
 
 /**
  * Model data structure
@@ -49,6 +37,7 @@ export interface ModelInfo {
     | "xAI"
     | "Gemini"
     | "OpenAI"
+    | "OpenAI Codex"
     | "GLM"
     | "GLM Coding"
     | "MiniMax"
@@ -62,285 +51,38 @@ export interface ModelInfo {
 }
 
 /**
- * Load recommended models from JSON
- * IDs are provider-agnostic — auto-routing decides the provider
+ * Load recommended models from the Firebase-backed loader.
+ * Entries are stamped with source "Recommended" for the interactive picker.
  */
 function loadRecommendedModels(): ModelInfo[] {
-  // Try Firebase-cached version first (auto-generated, more current)
-  const cachedPath = join(CLAUDISH_CACHE_DIR, "recommended-models-cache.json");
-  if (existsSync(cachedPath)) {
-    try {
-      const data = JSON.parse(readFileSync(cachedPath, "utf-8"));
-      if (data.models && data.models.length > 0) {
-        return data.models.map((model: ModelInfo) => ({
-          ...model,
-          source: "Recommended" as const,
-        }));
-      }
-    } catch {
-      // Fall through to bundled
-    }
-  }
-
-  // Fall back to bundled JSON
-  if (existsSync(RECOMMENDED_MODELS_JSON_PATH)) {
-    try {
-      const content = readFileSync(RECOMMENDED_MODELS_JSON_PATH, "utf-8");
-      const data = JSON.parse(content);
-      return (data.models || []).map((model: ModelInfo) => ({
-        ...model,
-        source: "Recommended" as const,
-      }));
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-/**
- * Fetch all models from OpenRouter API
- */
-async function fetchAllModels(forceUpdate = false): Promise<any[]> {
-  // Check cache
-  if (!forceUpdate && existsSync(ALL_MODELS_JSON_PATH)) {
-    try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-      const lastUpdated = new Date(cacheData.lastUpdated);
-      const now = new Date();
-      const ageInDays = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (ageInDays <= CACHE_MAX_AGE_DAYS) {
-        return cacheData.models;
-      }
-    } catch {
-      // Cache error, will fetch
-    }
-  }
-
-  // Fetch from API
-  console.log("Fetching models from OpenRouter...");
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/models");
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-
-    const data = await response.json();
-    const models = data.data;
-
-    // Cache result - ensure directory exists
-    mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
-    writeFileSync(
-      ALL_MODELS_JSON_PATH,
-      JSON.stringify({
-        lastUpdated: new Date().toISOString(),
-        models,
-      }),
-      "utf-8"
-    );
-
-    console.log(`Cached ${models.length} models`);
-    return models;
-  } catch (error) {
-    console.error(`Failed to fetch models: ${error}`);
-    return [];
-  }
-}
-
-/**
- * Convert raw OpenRouter model to ModelInfo
- */
-function toModelInfo(model: any): ModelInfo {
-  const provider = model.id.split("/")[0];
-  const contextLen = model.context_length || model.top_provider?.context_length || 0;
-  const promptPrice = parseFloat(model.pricing?.prompt || "0");
-  const completionPrice = parseFloat(model.pricing?.completion || "0");
-  const isFree = promptPrice === 0 && completionPrice === 0;
-
-  // Format pricing
-  let pricingStr = "N/A";
-  if (isFree) {
-    pricingStr = "FREE";
-  } else if (model.pricing) {
-    const avgPrice = (promptPrice + completionPrice) / 2;
-    if (avgPrice < 0.001) {
-      pricingStr = `$${(avgPrice * 1000000).toFixed(2)}/1M`;
-    } else {
-      pricingStr = `$${avgPrice.toFixed(4)}/1K`;
-    }
-  }
-
-  return {
-    // Add openrouter@ prefix for explicit routing
-    id: `openrouter@${model.id}`,
-    name: model.name || model.id,
-    description: model.description || "",
-    provider: provider.charAt(0).toUpperCase() + provider.slice(1),
-    pricing: {
-      input: model.pricing?.prompt || "N/A",
-      output: model.pricing?.completion || "N/A",
-      average: pricingStr,
-    },
-    context: contextLen > 0 ? `${Math.round(contextLen / 1000)}K` : "N/A",
-    contextLength: contextLen,
-    supportsTools: (model.supported_parameters || []).includes("tools"),
-    supportsReasoning: (model.supported_parameters || []).includes("reasoning"),
-    supportsVision: (model.architecture?.input_modalities || []).includes("image"),
-    isFree,
-    source: "OpenRouter",
-  };
-}
-
-/**
- * Fetch Zen Go plan models (glm-5, minimax-m2.5, kimi-k2.5).
- * Probes zen/go/v1/ to discover which models the key has go-plan access to,
- * then enriches with models.dev metadata.
- */
-async function fetchZenGoModels(): Promise<ModelInfo[]> {
-  const apiKey = process.env.OPENCODE_API_KEY;
-  if (!apiKey) return [];
-
-  const ZEN_GO_BASE = process.env.OPENCODE_BASE_URL
-    ? process.env.OPENCODE_BASE_URL.replace("/zen", "/zen/go")
-    : "https://opencode.ai/zen/go";
-
-  try {
-    // Fetch models.dev for metadata
-    const mdevResp = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!mdevResp.ok) return [];
-    const mdevData = await mdevResp.json();
-    const ocModels: Record<string, any> = mdevData?.opencode?.models ?? {};
-
-    // Probe candidate models against zen/go/v1/ to discover which ones actually work.
-    // Only probe models that appear in models.dev opencode catalog (so we have metadata).
-    // We check for actual success (choices in response) rather than inferring from error type,
-    // because different backends (Kimi, MiniMax) use non-standard error schemas that make
-    // the "not ModelError" heuristic unreliable.
-    const candidateIds = Object.keys(ocModels);
-    const fallbackIds = ["glm-5"]; // confirmed working as of investigation
-
-    // Probe each candidate in parallel — include only if we get a real choices response
-    const probeResults = await Promise.all(
-      candidateIds.map(async (modelId) => {
-        try {
-          const r = await fetch(`${ZEN_GO_BASE}/v1/chat/completions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-              model: modelId,
-              messages: [{ role: "user", content: "hi" }],
-              max_tokens: 1,
-            }),
-            signal: AbortSignal.timeout(8000),
-          });
-          if (!r.ok) return null;
-          const body = await r.json().catch(() => ({}));
-          // Only include if we got actual completion choices back
-          return Array.isArray(body?.choices) && body.choices.length > 0 ? modelId : null;
-        } catch {
-          return null;
-        }
-      })
-    );
-
-    // If probing fails entirely (network error, all timeouts), fall back to known list
-    const discoveredIds = probeResults.filter(Boolean) as string[];
-    const goModelIds = discoveredIds.length > 0 ? discoveredIds : fallbackIds;
-
-    return goModelIds
-      .map((id) => {
-        const m = ocModels[id];
-        if (!m) return null;
-        const inputModalities = m.modalities?.input ?? [];
-        return {
-          id: `zgo@${id}`,
-          name: m.name || id,
-          description: `OpenCode Zen Go plan model`,
-          provider: "Zen Go",
-          pricing: { input: "PLAN", output: "PLAN", average: "PLAN" },
-          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
-          contextLength: m.limit?.context || 128000,
-          supportsTools: m.tool_call === true,
-          supportsReasoning: m.reasoning || false,
-          supportsVision: inputModalities.includes("image") || inputModalities.includes("video"),
-          isFree: false,
-          source: "Zen" as const,
-        };
-      })
-      .filter(Boolean) as ModelInfo[];
+    const doc = getRecommendedModelsSync();
+    return doc.models.map((model: RecommendedModelEntry) => ({
+      id: model.id,
+      name: model.name,
+      description: model.description,
+      provider: model.provider,
+      pricing: model.pricing,
+      context: model.context,
+      contextLength: parseContextString(model.context),
+      supportsTools: model.supportsTools,
+      supportsReasoning: model.supportsReasoning,
+      supportsVision: model.supportsVision,
+      source: "Recommended" as const,
+    }));
   } catch {
     return [];
   }
 }
 
-/**
- * Fetch free models from OpenCode Zen.
- * Cross-references models.dev catalog (cost/capabilities) with the live Zen
- * /v1/models endpoint so we only surface models that are actually deployed.
- */
-async function fetchZenFreeModels(): Promise<ModelInfo[]> {
-  try {
-    const ZEN_BASE = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen";
-    const ZEN_API_KEY = process.env.OPENCODE_API_KEY || "public";
-
-    // Fetch models.dev catalog and live Zen model list in parallel
-    const [mdevResp, liveResp] = await Promise.all([
-      fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(5000) }),
-      fetch(`${ZEN_BASE}/v1/models`, {
-        headers: { Authorization: `Bearer ${ZEN_API_KEY}` },
-        signal: AbortSignal.timeout(5000),
-      }),
-    ]);
-
-    if (!mdevResp.ok) return [];
-
-    const mdevData = await mdevResp.json();
-    const opencode = mdevData.opencode;
-    if (!opencode?.models) return [];
-
-    // Build set of model IDs actually deployed on Zen
-    const liveIds = new Set<string>();
-    if (liveResp.ok) {
-      const liveData = await liveResp.json();
-      for (const m of liveData.data ?? []) liveIds.add(m.id);
-    }
-
-    return Object.entries(opencode.models)
-      .filter(([id, m]: [string, any]) => {
-        const isFree = m.cost?.input === 0 && m.cost?.output === 0;
-        const supportsTools = m.tool_call === true;
-        // Only include models that are actually live on the Zen API
-        const isLive = liveIds.size === 0 || liveIds.has(id);
-        return isFree && supportsTools && isLive;
-      })
-      .map(([id, m]: [string, any]) => {
-        const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
-
-        return {
-          id: `zen@${id}`,
-          name: m.name || id,
-          description: `OpenCode Zen free model`,
-          provider: "Zen",
-          pricing: {
-            input: "FREE",
-            output: "FREE",
-            average: "FREE",
-          },
-          context: m.limit?.context ? `${Math.round(m.limit.context / 1000)}K` : "128K",
-          contextLength: m.limit?.context || 128000,
-          supportsTools: true,
-          supportsReasoning: m.reasoning || false,
-          supportsVision,
-          isFree: true,
-          source: "Zen" as const,
-        };
-      });
-  } catch {
-    return [];
-  }
+/** Parse "196K" → 196000, "1M" → 1000000. */
+function parseContextString(ctx?: string): number {
+  if (!ctx || ctx === "N/A") return 0;
+  const upper = ctx.toUpperCase();
+  if (upper.endsWith("M")) return parseFloat(upper) * 1_000_000;
+  if (upper.endsWith("K")) return parseFloat(upper) * 1000;
+  const n = parseInt(upper, 10);
+  return isNaN(n) ? 0 : n;
 }
 
 /**
@@ -392,7 +134,7 @@ async function fetchXAIModels(): Promise<ModelInfo[]> {
       return [];
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { models?: Array<Record<string, any>> };
     if (!data.models || !Array.isArray(data.models)) {
       return [];
     }
@@ -511,7 +253,7 @@ async function fetchGeminiModels(): Promise<ModelInfo[]> {
       return [];
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { models?: Array<Record<string, any>> };
     if (!data.models || !Array.isArray(data.models)) {
       return [];
     }
@@ -546,342 +288,37 @@ async function fetchGeminiModels(): Promise<ModelInfo[]> {
 }
 
 /**
- * Fetch models from OpenAI using models.dev API for accurate context windows and pricing
- */
-async function fetchOpenAIModels(): Promise<ModelInfo[]> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return [];
-  }
-
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const openaiData = data.openai;
-    if (!openaiData?.models) return [];
-
-    // Filter for chat models (GPT, o1, o3, chatgpt)
-    return Object.entries(openaiData.models)
-      .filter(([id, _]: [string, any]) => {
-        const lowerId = id.toLowerCase();
-        return (
-          lowerId.startsWith("gpt-") ||
-          lowerId.startsWith("o1-") ||
-          lowerId.startsWith("o3-") ||
-          lowerId.startsWith("o4-") ||
-          lowerId.startsWith("chatgpt-")
-        );
-      })
-      .map(([id, m]: [string, any]) => {
-        // Calculate average price from input/output costs
-        const inputCost = m.cost?.input || 2;
-        const outputCost = m.cost?.output || 8;
-        const avgCost = (inputCost + outputCost) / 2;
-
-        // Get context window from models.dev data
-        const contextLength = m.limit?.context || 128000;
-        const contextStr =
-          contextLength >= 1000000
-            ? `${Math.round(contextLength / 1000000)}M`
-            : `${Math.round(contextLength / 1000)}K`;
-
-        // Check vision support from modalities
-        const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
-
-        return {
-          id: `oai@${id}`,
-          name: m.name || id,
-          description: `OpenAI model`,
-          provider: "OpenAI",
-          pricing: {
-            input: `$${inputCost.toFixed(2)}`,
-            output: `$${outputCost.toFixed(2)}`,
-            average: `$${avgCost.toFixed(2)}/1M`,
-          },
-          context: contextStr,
-          contextLength,
-          supportsTools: m.tool_call === true,
-          supportsReasoning: m.reasoning === true,
-          supportsVision,
-          isFree: false,
-          source: "OpenAI" as const,
-        };
-      });
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Fetch GLM Coding Plan models from models.dev
- */
-async function fetchGLMCodingModels(): Promise<ModelInfo[]> {
-  const apiKey = process.env.GLM_CODING_API_KEY;
-  if (!apiKey) {
-    return [];
-  }
-
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const codingPlan = data["zai-coding-plan"];
-    if (!codingPlan?.models) return [];
-
-    return Object.entries(codingPlan.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
-      .map(([id, m]: [string, any]) => {
-        const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
-        const contextLength = m.limit?.context || 131072;
-
-        return {
-          id: `gc@${id}`,
-          name: m.name || id,
-          description: `GLM Coding Plan (subscription)`,
-          provider: "GLM Coding",
-          pricing: {
-            input: "SUB",
-            output: "SUB",
-            average: "SUB",
-          },
-          context:
-            contextLength >= 1000000
-              ? `${Math.round(contextLength / 1000000)}M`
-              : `${Math.round(contextLength / 1000)}K`,
-          contextLength,
-          supportsTools: true,
-          supportsReasoning: m.reasoning || false,
-          supportsVision,
-          isFree: false,
-          source: "GLM Coding" as const,
-        };
-      });
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Fetch GLM/Zhipu direct API models from models.dev
- * Uses the zai-coding-plan data (same models, different API endpoint)
- * No API key needed to browse - models.dev is a public catalog
- */
-async function fetchGLMDirectModels(): Promise<ModelInfo[]> {
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const codingPlan = data["zai-coding-plan"];
-    if (!codingPlan?.models) return [];
-
-    return Object.entries(codingPlan.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
-      .map(([id, m]: [string, any]) => {
-        const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
-        const contextLength = m.limit?.context || 131072;
-        const inputCost = m.cost?.input || 0;
-        const outputCost = m.cost?.output || 0;
-        const isFree = inputCost === 0 && outputCost === 0;
-
-        return {
-          id: `glm@${id}`,
-          name: m.name || id,
-          description: `GLM/Zhipu direct API`,
-          provider: "GLM",
-          pricing: {
-            input: isFree ? "FREE" : `$${inputCost.toFixed(2)}`,
-            output: isFree ? "FREE" : `$${outputCost.toFixed(2)}`,
-            average: isFree ? "FREE" : `$${((inputCost + outputCost) / 2).toFixed(2)}/1M`,
-          },
-          context:
-            contextLength >= 1000000
-              ? `${Math.round(contextLength / 1000000)}M`
-              : `${Math.round(contextLength / 1000)}K`,
-          contextLength,
-          supportsTools: true,
-          supportsReasoning: m.reasoning || false,
-          supportsVision,
-          isFree,
-          source: "GLM" as const,
-        };
-      });
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Fetch OllamaCloud models from models.dev
- * Cloud-hosted models accessible with OLLAMA_API_KEY
- * No API key needed to browse - models.dev is a public catalog
- */
-async function fetchOllamaCloudModels(): Promise<ModelInfo[]> {
-  try {
-    const response = await fetch("https://models.dev/api.json", {
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      return [];
-    }
-
-    const data = await response.json();
-    const ollamaCloud = data["ollama-cloud"];
-    if (!ollamaCloud?.models) return [];
-
-    return Object.entries(ollamaCloud.models)
-      .filter(([_, m]: [string, any]) => m.tool_call === true)
-      .map(([id, m]: [string, any]) => {
-        const inputModalities = m.modalities?.input || [];
-        const supportsVision =
-          inputModalities.includes("image") || inputModalities.includes("video");
-        const contextLength = m.limit?.context || 131072;
-
-        return {
-          id: `oc@${id}`,
-          name: m.name || id,
-          description: `OllamaCloud`,
-          provider: "OllamaCloud",
-          pricing: {
-            input: "N/A",
-            output: "N/A",
-            average: "N/A",
-          },
-          context:
-            contextLength >= 1000000
-              ? `${Math.round(contextLength / 1000000)}M`
-              : `${Math.round(contextLength / 1000)}K`,
-          contextLength,
-          supportsTools: true,
-          supportsReasoning: m.reasoning || false,
-          supportsVision,
-          source: "OllamaCloud" as const,
-        };
-      });
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Check if cache needs refresh for free models (more frequent updates)
- */
-function shouldRefreshForFreeModels(): boolean {
-  if (!existsSync(ALL_MODELS_JSON_PATH)) {
-    return true;
-  }
-  try {
-    const cacheData = JSON.parse(readFileSync(ALL_MODELS_JSON_PATH, "utf-8"));
-    const lastUpdated = new Date(cacheData.lastUpdated);
-    const now = new Date();
-    const ageInHours = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60);
-    return ageInHours > FREE_MODELS_CACHE_MAX_AGE_HOURS;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * Get free models from OpenRouter API + Zen
- * Uses 3-hour cache refresh for free models since they change frequently
+ * Get free models. Free model discovery used to come from OpenCode Zen
+ * (via models.dev), which has been removed. Free models now live in the
+ * Firebase recommended catalog; this stub returns [] so `selectModel` can
+ * surface the "no free models available" UX when `--free` is used.
  */
 async function getFreeModels(): Promise<ModelInfo[]> {
-  // Fetch OpenRouter models and Zen models in parallel
-  const forceUpdate = shouldRefreshForFreeModels();
-  const [allModels, zenModels] = await Promise.all([
-    fetchAllModels(forceUpdate),
-    fetchZenFreeModels(),
-  ]);
-
-  // Filter OpenRouter for FREE models with :free suffix and TOOL SUPPORT
-  const openRouterFreeModels = allModels.filter((model) => {
-    // Must have :free suffix (these are the actual free tier models)
-    if (!model.id?.endsWith(":free")) return false;
-
-    // Must support tool calling (required by Claude Code)
-    const supportsTools = (model.supported_parameters || []).includes("tools");
-    if (!supportsTools) return false;
-
-    return true;
-  });
-
-  // Sort by context window (largest first)
-  openRouterFreeModels.sort((a, b) => {
-    const contextA = a.context_length || a.top_provider?.context_length || 0;
-    const contextB = b.context_length || b.top_provider?.context_length || 0;
-    return contextB - contextA;
-  });
-
-  // Convert to ModelInfo (adds openrouter@ prefix for explicit routing)
-  const openRouterModels = openRouterFreeModels.slice(0, 20).map(toModelInfo);
-
-  // Combine: Zen models first (most reliable), then OpenRouter
-  const combined = [...zenModels, ...openRouterModels];
-
-  // Sort: Zen first, then by context window
-  combined.sort((a, b) => {
-    if (a.source === "Zen" && b.source !== "Zen") return -1;
-    if (a.source !== "Zen" && b.source === "Zen") return 1;
-    return (b.contextLength || 0) - (a.contextLength || 0);
-  });
-
-  return combined;
+  return [];
 }
 
 /**
- * Get all models for search
- * Fetches from all available providers in parallel
+ * Gather models for the interactive picker. Fetches from direct-provider
+ * catalogs and subscription/known-model lists. OpenRouter's full catalog is
+ * NOT fetched — use `claudish -s <query>` to hit Firebase search.
  */
 async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> {
   // Check for LiteLLM configuration
   const litellmBaseUrl = process.env.LITELLM_BASE_URL;
   const litellmApiKey = process.env.LITELLM_API_KEY;
 
-  // Build named fetch entries — each entry maps to a ProviderDefinition by name.
-  // Only fetch from providers that are available (have API keys / credentials configured).
-  // OpenRouter is always fetched (it's the fallback aggregator).
   const allEntries: Array<{
     name: string;
-    provider?: string; // ProviderDefinition.name — if set, availability is checked
+    provider?: string;
     promise: () => Promise<ModelInfo[]>;
   }> = [
-    {
-      name: "OpenRouter",
-      promise: () => fetchAllModels(forceUpdate).then((models) => models.map(toModelInfo)),
-    },
     { name: "xAI", provider: "xai", promise: () => fetchXAIModels() },
     { name: "Gemini", provider: "google", promise: () => fetchGeminiModels() },
-    { name: "OpenAI", provider: "openai", promise: () => fetchOpenAIModels() },
-    { name: "GLM", provider: "glm", promise: () => fetchGLMDirectModels() },
-    { name: "GLM Coding", provider: "glm-coding", promise: () => fetchGLMCodingModels() },
-    { name: "OllamaCloud", provider: "ollamacloud", promise: () => fetchOllamaCloudModels() },
-    { name: "Zen", provider: "opencode-zen", promise: () => fetchZenFreeModels() },
-    { name: "Zen Go", provider: "opencode-zen-go", promise: () => fetchZenGoModels() },
+    // OpenAI / GLM / GLM Coding / OllamaCloud / Zen / Zen Go catalog discovery
+    // removed — these used models.dev which is no longer queried. The model
+    // IDs still route via `--model oai@<id>`, `--model glm@<id>`, etc.; they
+    // just don't appear in the picker. OpenAI lives in the Firebase recommended
+    // catalog; OpenAI Codex still ships via getKnownModels below.
     // Subscription/direct-API providers without catalog APIs — use known models
     {
       name: "MiniMax",
@@ -936,25 +373,20 @@ async function getAllModelsForSearch(forceUpdate = false): Promise<ModelInfo[]> 
   // Helper: get results for a provider (empty array if filtered out or failed)
   const r = (name: string) => fetchResults[name] || [];
 
-  // Combine results: Zen first (free), then OllamaCloud, then direct providers,
-  // then subscription providers, then LiteLLM, then OpenRouter
+  // Combine results: direct providers first, then subscription providers,
+  // then LiteLLM. (OpenRouter's full catalog is NOT aggregated here — use
+  // `claudish -s`. Zen / GLM / OllamaCloud catalogs are no longer fetched
+  // — those models live in the Firebase recommended catalog now.)
   const allModels = [
-    ...r("Zen"),
-    ...r("Zen Go"),
-    ...r("OllamaCloud"),
     ...r("xAI"),
     ...r("Gemini"),
-    ...r("OpenAI"),
     ...r("OpenAI Codex"),
-    ...r("GLM"),
-    ...r("GLM Coding"),
     ...r("MiniMax"),
     ...r("MiniMax Coding"),
     ...r("Kimi"),
     ...r("Kimi Coding"),
     ...r("Z.AI"),
     ...r("LiteLLM"),
-    ...r("OpenRouter"),
   ];
 
   return allModels;
@@ -1139,25 +571,17 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       throw new Error("No free models available");
     }
   } else {
-    // Fetch all models from all providers (Zen, xAI, Gemini, OpenAI, OpenRouter)
+    // Fetch all models from all providers (xAI, Gemini, OpenAI, LiteLLM, etc.)
     const [allModels, recommendedModels] = await Promise.all([
       getAllModelsForSearch(forceUpdate),
       Promise.resolve(recommended ? loadRecommendedModels() : []),
     ]);
 
-    // Build prioritized list: Zen (free) -> Recommended -> All others
+    // Build prioritized list: Recommended (Firebase) -> direct API -> OpenRouter
     const seenIds = new Set<string>();
     models = [];
 
-    // 1. Add Zen models first (they're free)
-    for (const m of allModels.filter((m) => m.source === "Zen")) {
-      if (!seenIds.has(m.id)) {
-        seenIds.add(m.id);
-        models.push(m);
-      }
-    }
-
-    // 2. Add recommended models
+    // 1. Add recommended models first (Firebase curated catalog)
     for (const m of recommendedModels) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
@@ -1165,10 +589,8 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       }
     }
 
-    // 3. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
-    for (const m of allModels.filter(
-      (m) => m.source && m.source !== "Zen" && m.source !== "OpenRouter"
-    )) {
+    // 2. Add direct API models (xAI, Gemini, OpenAI, LiteLLM) - user has keys for these
+    for (const m of allModels.filter((m) => m.source && m.source !== "OpenRouter")) {
       if (!seenIds.has(m.id)) {
         seenIds.add(m.id);
         models.push(m);

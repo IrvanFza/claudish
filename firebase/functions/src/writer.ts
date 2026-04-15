@@ -1,11 +1,20 @@
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { ModelDoc, FieldChange, ModelChangeDoc } from "./schema.js";
+import { buildSearchBag, computeBagHash, SEARCH_BAG_MODEL } from "./search-bag-builder.js";
 
 export class FirestoreWriter {
   private db = getFirestore();
 
-  /** Write merged docs to Firestore. Returns IDs of newly created models. */
-  async write(docs: ModelDoc[]): Promise<string[]> {
+  /**
+   * Write merged docs to Firestore. Returns IDs of newly created models.
+   *
+   * @param docs   The merged model docs to write.
+   * @param apiKey Optional Gemini API key. When provided, each doc's
+   *               identity is hashed and a search bag is (re)generated
+   *               iff the hash changed since the last write. Pass ""
+   *               to skip search-bag maintenance entirely (tests, etc).
+   */
+  async write(docs: ModelDoc[], apiKey = ""): Promise<string[]> {
     const writer = this.db.bulkWriter();
     const newModelIds: string[] = [];
 
@@ -26,6 +35,41 @@ export class FirestoreWriter {
       // Read existing doc to detect changes (individual reads, not in bulkWriter)
       const existing = await ref.get();
       const existingData = existing.data() as ModelDoc | undefined;
+
+      // ── Search bag maintenance ──────────────────────────────────────
+      // Regenerate only when identity hash changed (or bag is missing).
+      // Skip entirely if apiKey is empty — the LLM call is optional here.
+      if (apiKey) {
+        const newHash = computeBagHash(doc);
+        const existingHash = existingData?.searchBagHash;
+        if (newHash !== existingHash || !existingData?.searchBag) {
+          try {
+            const bag = await buildSearchBag(doc, apiKey);
+            doc.searchBag = bag;
+            doc.searchBagHash = newHash;
+            doc.searchBagGeneratedAt = Timestamp.now();
+            doc.searchBagModel = SEARCH_BAG_MODEL;
+          } catch (err) {
+            // buildSearchBag shouldn't throw (it has its own fallback) —
+            // but if it somehow does, keep existing bag and log.
+            console.warn(
+              `[writer] search bag regeneration failed for ${doc.modelId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            if (existingData?.searchBag) {
+              doc.searchBag = existingData.searchBag;
+              doc.searchBagHash = existingData.searchBagHash;
+              doc.searchBagGeneratedAt = existingData.searchBagGeneratedAt;
+              doc.searchBagModel = existingData.searchBagModel;
+            }
+          }
+        } else {
+          // Preserve existing bag (merge:true would anyway, but be explicit)
+          doc.searchBag = existingData.searchBag;
+          doc.searchBagHash = existingData.searchBagHash;
+          doc.searchBagGeneratedAt = existingData.searchBagGeneratedAt;
+          doc.searchBagModel = existingData.searchBagModel;
+        }
+      }
 
       // Upsert main document
       writer.set(ref, doc, { merge: true });

@@ -6,6 +6,7 @@ import { join, basename } from "node:path";
 import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { setClaudeCodeRunning } from "./telemetry.js";
 
 /**
  * Check if any resolved model mapping targets a native Anthropic model (claude-*).
@@ -423,6 +424,10 @@ export async function runClaudeWithProxy(
   const needsShell = isWindows() && claudeBinary.endsWith(".cmd");
   const spawnCommand = needsShell ? `"${claudeBinary}"` : claudeBinary;
 
+  // Signal telemetry that the child now owns the TTY — suppresses the consent
+  // prompt readline that would otherwise race the child for stdin (#85/88/99).
+  setClaudeCodeRunning(true);
+
   const proc = spawn(spawnCommand, claudeArgs, {
     env,
     stdio: "inherit",
@@ -435,6 +440,7 @@ export async function runClaudeWithProxy(
   // Wait for claude to exit
   const exitCode = await new Promise<number>((resolve) => {
     proc.on("exit", (code) => {
+      setClaudeCodeRunning(false);
       resolve(code ?? 1);
     });
   });

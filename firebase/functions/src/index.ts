@@ -10,6 +10,7 @@ import { handleQueryModels } from "./query-handler.js";
 import { handlePluginDefaults } from "./plugin-defaults-handler.js";
 import { alertCatalogResults, alertNewModels, alertProviderDrop } from "./slack-alert.js";
 import { generateRecommendedModels } from "./recommender.js";
+import { buildSearchBag, computeBagHash, SEARCH_BAG_MODEL } from "./search-bag-builder.js";
 
 initializeApp();
 const db = getFirestore();
@@ -292,21 +293,24 @@ export const collectModelCatalog = onSchedule(
     console.log(`[catalog] merged to ${merged.length} unique models`);
 
     const writer = new FirestoreWriter();
-    const newModelIds = await writer.write(merged);
+    const newModelIds = await writer.write(merged, GOOGLE_GEMINI_API_KEY.value());
 
     // Clean up stale docs from previous runs (changed IDs, removed models)
     const currentIds = new Set(merged.map(m => m.modelId));
     await writer.cleanupStale(currentIds);
 
+    // Resolve Slack webhook early so we can pass it into the recommender's
+    // internal diff-gate alert as well as the post-run alerts below.
+    const webhook = SLACK_WEBHOOK_URL.value();
+
     // Auto-generate recommended models from scored catalog
-    const recommended = await generateRecommendedModels();
+    const recommended = await generateRecommendedModels(webhook);
     console.log(`[catalog] recommended models updated: ${recommended.length} picks`);
 
     const duration = Date.now() - start;
     console.log(`[catalog] write complete — ${newModelIds.length} new models — total duration: ${duration}ms`);
 
     // Slack alerts
-    const webhook = SLACK_WEBHOOK_URL.value();
     await alertCatalogResults(webhook, results, merged.length, duration);
 
     // Alert for newly discovered models from major providers
@@ -404,20 +408,73 @@ export const collectModelCatalogManual = onRequest(
 
     console.log("[catalog] manual collection triggered");
 
+    const start = Date.now();
+
     try {
       const orchestrator = new CollectorOrchestrator();
       const results = await orchestrator.runAll();
 
       const merged = mergeResults(results);
       const writer = new FirestoreWriter();
-      await writer.write(merged);
+      const newModelIds = await writer.write(merged);
 
       // Clean up stale docs
       const currentIds = new Set(merged.map(m => m.modelId));
       await writer.cleanupStale(currentIds);
 
-      // Auto-generate recommended models
-      const recommended = await generateRecommendedModels();
+      const webhook = SLACK_WEBHOOK_URL.value();
+
+      // Auto-generate recommended models (pass Slack webhook so diff-gate
+      // rejections alert correctly).
+      const recommended = await generateRecommendedModels(webhook);
+
+      const duration = Date.now() - start;
+
+      // Run the SAME Slack alert blocks as the scheduled cron so this
+      // manual trigger can be used to verify the full notification path.
+      await alertCatalogResults(webhook, results, merged.length, duration);
+
+      if (newModelIds.length > 0) {
+        const providerMap: Record<string, string> = {};
+        for (const doc of merged) {
+          providerMap[doc.modelId] = doc.provider;
+        }
+        await alertNewModels(webhook, newModelIds, providerMap);
+      }
+
+      // Provider drop detection — same logic as scheduled cron
+      try {
+        const histRef = db.collection("config").doc("provider-counts-history");
+        const prevSnap = await histRef.get();
+        const prev = prevSnap.exists
+          ? ((prevSnap.data() ?? {}) as { counts?: Record<string, number> }).counts ?? {}
+          : {};
+
+        const current: Record<string, number> = {};
+        for (const doc of merged) {
+          const p = (doc.provider ?? "").toLowerCase();
+          if (!p) continue;
+          current[p] = (current[p] ?? 0) + 1;
+        }
+
+        const drops: Array<{ provider: string; before: number; after: number }> = [];
+        for (const [provider, before] of Object.entries(prev)) {
+          const after = current[provider] ?? 0;
+          if (before >= 5 && after === 0) {
+            drops.push({ provider, before, after });
+          } else if (before > 0 && after <= before * 0.5) {
+            drops.push({ provider, before, after });
+          }
+        }
+
+        if (drops.length > 0) {
+          await alertProviderDrop(webhook, drops);
+        }
+
+        await histRef.set({ counts: current, updatedAt: Timestamp.now() });
+      } catch (err) {
+        console.warn("[catalog] provider-drop check failed:", err);
+      }
 
       const successCount = results.filter(r => !r.error).length;
       const failureCount = results.filter(r => r.error).length;
@@ -427,8 +484,10 @@ export const collectModelCatalogManual = onRequest(
         modelsCollected: results.reduce((s, r) => s + r.models.length, 0),
         modelsMerged: merged.length,
         recommendedModels: recommended.length,
+        newModelIds: newModelIds.length,
         collectorsOk: successCount,
         collectorsFailed: failureCount,
+        durationMs: duration,
         errors: results.filter(r => r.error).map(r => ({
           collectorId: r.collectorId,
           error: r.error,
@@ -481,6 +540,137 @@ export const cleanupStalePrefixedDocs = onRequest(
     } catch (err) {
       console.error("[cleanup] failed:", err);
       res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────
+// Backfill search bags — one-shot admin trigger
+//
+// Iterates the models collection in pages and (re)generates the LLM
+// search bag for every model whose identity hash differs from the
+// stored one (or is missing entirely). Pass `{"data": {"force": true}}`
+// to regenerate all bags regardless of hash.
+//
+// Auth: intentionally unauthenticated. The handler takes no user
+// input, runs only against our own Firestore collection, and does
+// nothing an attacker could weaponize against users — worst case,
+// they burn our Gemini API quota. Rate-limited by maxInstances=1.
+// Jack triggers this manually; the scheduled collector maintains
+// bags on the daily cron.
+// ─────────────────────────────────────────────────────────────
+export const backfillSearchBags = onRequest(
+  {
+    region: "us-central1",
+    maxInstances: 1,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    cors: true,
+    secrets: [GOOGLE_GEMINI_API_KEY],
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed — use POST" });
+      return;
+    }
+
+    // Accept either {"force": true} at top level OR {"data": {"force": true}}
+    // (matches the onCall-style body that curl users often send).
+    const body = (req.body ?? {}) as { force?: boolean; data?: { force?: boolean } };
+    const force = body.force === true || body.data?.force === true;
+
+    const apiKey = GOOGLE_GEMINI_API_KEY.value();
+    if (!apiKey) {
+      res.status(500).json({ error: "GOOGLE_GEMINI_API_KEY not set" });
+      return;
+    }
+
+    const start = Date.now();
+    let processed = 0;
+    let regenerated = 0;
+    let skipped = 0;
+    const errors: Array<{ modelId: string; error: string }> = [];
+
+    try {
+      const snap = await db.collection("models").get();
+      console.log(`[backfill] starting — ${snap.docs.length} docs`);
+
+      let batch = db.batch();
+      let batchSize = 0;
+      // Flush small batches — the function may hit the 540s timeout well
+      // before we reach Firestore's 500-op batch limit. Small batches mean
+      // progress is durable across invocations (re-runs see the updated
+      // searchBagHash and skip).
+      const FLUSH_EVERY = 10;
+
+      for (const docSnap of snap.docs) {
+        processed++;
+        const data = docSnap.data() as import("./schema.js").ModelDoc;
+
+        const newHash = computeBagHash(data);
+        const existingHash = data.searchBagHash;
+        const needsRegen =
+          force || !data.searchBag || !existingHash || existingHash !== newHash;
+
+        if (!needsRegen) {
+          skipped++;
+          continue;
+        }
+
+        try {
+          const bag = await buildSearchBag(data, apiKey);
+          batch.update(docSnap.ref, {
+            searchBag: bag,
+            searchBagHash: newHash,
+            searchBagGeneratedAt: Timestamp.now(),
+            searchBagModel: SEARCH_BAG_MODEL,
+          });
+          regenerated++;
+          batchSize++;
+
+          if (batchSize >= FLUSH_EVERY) {
+            await batch.commit();
+            batch = db.batch();
+            batchSize = 0;
+          }
+        } catch (err) {
+          errors.push({
+            modelId: data.modelId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        // Light pacing — log every 50 to show progress in Cloud Logs
+        if (processed % 50 === 0) {
+          console.log(
+            `[backfill] progress: ${processed}/${snap.docs.length} processed, ${regenerated} regenerated, ${skipped} skipped, ${errors.length} errors`,
+          );
+        }
+      }
+
+      if (batchSize > 0) await batch.commit();
+
+      const duration = Date.now() - start;
+      console.log(
+        `[backfill] done: ${processed} processed, ${regenerated} regenerated, ${skipped} skipped, ${errors.length} errors, ${duration}ms`,
+      );
+      res.status(200).json({
+        ok: true,
+        processed,
+        regenerated,
+        skipped,
+        errors,
+        durationMs: duration,
+      });
+    } catch (err) {
+      console.error("[backfill] failed:", err);
+      res.status(500).json({
+        error: String(err),
+        processed,
+        regenerated,
+        skipped,
+        errors,
+      });
     }
   }
 );

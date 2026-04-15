@@ -172,6 +172,16 @@ export interface ModelDoc {
 
   // Staleness flag (set when a provider API fails but data is retained)
   dataFreshnessWarning?: boolean;
+
+  // ── Search bag — internal-only, LLM-generated search tokens ─────────────
+  // Generated once per model by Gemini Flash Lite from identity fields
+  // (modelId, displayName, family, provider, description). Re-derived only
+  // when identity changes (hash-based cache key). MUST NEVER leak into any
+  // public endpoint response — see stripInternalFields() in query-handler.ts.
+  searchBag?: string[];            // tokens for search matching
+  searchBagHash?: string;          // sha256 of identity fields used to generate
+  searchBagGeneratedAt?: Timestamp;
+  searchBagModel?: string;         // e.g. "gemini-3.1-flash-lite-preview"
 }
 
 // ─────────────────────────────────────────────────────────────
