@@ -252,3 +252,38 @@ describe("Regression: -p flag is not consumed by claudish (#76)", () => {
     expect(config.profile).toBe("myprofile");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Interactive mode detection (PR #103)
+// ---------------------------------------------------------------------------
+
+describe("Interactive mode detection with flag-only args", () => {
+  test("flags with values but no prompt → interactive", async () => {
+    const config = await parseArgs([
+      "--model", "grok",
+      "--session-id", "abc-123",
+      "--dangerously-skip-permissions",
+    ]);
+    expect(config.interactive).toBe(true);
+  });
+
+  test("positional prompt → single-shot (not interactive)", async () => {
+    const config = await parseArgs(["--model", "grok", "hello world"]);
+    expect(config.interactive).toBe(false);
+  });
+
+  test("prompt after -- separator → single-shot (not interactive)", async () => {
+    const config = await parseArgs(["--model", "grok", "--", "hello world"]);
+    expect(config.interactive).toBe(false);
+  });
+
+  test("no args at all → interactive", async () => {
+    const config = await parseArgs(["--model", "grok"]);
+    expect(config.interactive).toBe(true);
+  });
+
+  test("--stdin → not interactive (reads from stdin)", async () => {
+    const config = await parseArgs(["--model", "grok", "--stdin"]);
+    expect(config.interactive).toBe(false);
+  });
+});

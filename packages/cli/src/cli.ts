@@ -446,7 +446,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Explicit separator: everything after -- passes directly to Claude Code.
       // This handles edge cases where a value starts with '-' (e.g. a system prompt
       // that begins with a dash, or a flag value that looks like a flag).
-      config.claudeArgs.push(...args.slice(i + 1));
+      const rest = args.slice(i + 1);
+      config.claudeArgs.push(...rest);
+      if (rest.length > 0) config._hasPositionalPrompt = true;
       break;
     } else if (arg.startsWith("-")) {
       // Unknown flag: pass through to Claude Code with value consumed if present.
@@ -460,9 +462,6 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.claudeArgs.push(arg);
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
         config.claudeArgs.push(args[++i]);
-        // The consumed value is a flag argument, not a positional prompt.
-        // Mark it so the interactive-mode detection below doesn't mistake it for one.
-        config._hasFlagValue = true;
       }
     } else {
       // Positional argument (prompt text): pass through to Claude Code in order.
