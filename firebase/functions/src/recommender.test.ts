@@ -374,6 +374,132 @@ describe("Qwen omni/audio exclusion (Fix D) — now via capability flags", () =>
 // toEntry: vendor prefix stripping in output
 // ─────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────
+// New providers: Anthropic, DeepSeek, Mistral, Meta, NVIDIA
+// ─────────────────────────────────────────────────────────────
+
+describe("selectByProvider — new providers (Anthropic, DeepSeek, Mistral, Meta, NVIDIA)", () => {
+  const newProviderModels: ModelDoc[] = [
+    // Anthropic
+    makeModelDoc({ modelId: "claude-opus-4-6", provider: "anthropic", pricing: { input: 15.0, output: 75.0 } }),
+    makeModelDoc({ modelId: "claude-sonnet-4-6", provider: "anthropic", pricing: { input: 3.0, output: 15.0 } }),
+    makeModelDoc({ modelId: "claude-haiku-3.5", provider: "anthropic", pricing: { input: 0.25, output: 1.25 } }),
+    makeModelDoc({ modelId: "claude-2.1", provider: "anthropic", pricing: { input: 8.0, output: 24.0 } }),
+    // DeepSeek
+    makeModelDoc({ modelId: "deepseek-r1", provider: "deepseek", pricing: { input: 0.55, output: 2.19 } }),
+    makeModelDoc({ modelId: "deepseek-chat", provider: "deepseek", pricing: { input: 0.14, output: 0.28 } }),
+    // Mistral
+    makeModelDoc({ modelId: "mistral-large-2", provider: "mistralai", pricing: { input: 2.0, output: 6.0 } }),
+    makeModelDoc({ modelId: "mistral-small-3.2", provider: "mistralai", pricing: { input: 0.1, output: 0.3 } }),
+    makeModelDoc({ modelId: "mistral-embed-1.0", provider: "mistralai", pricing: { input: 0.1, output: 0.1 } }),
+    // Meta
+    makeModelDoc({ modelId: "llama-4-maverick", provider: "meta-llama", pricing: { input: 0.5, output: 1.5 } }),
+    makeModelDoc({ modelId: "llama-4-scout", provider: "meta-llama", pricing: { input: 0.15, output: 0.45 } }),
+    makeModelDoc({ modelId: "llama-guard-4", provider: "meta-llama", pricing: { input: 0.2, output: 0.6 } }),
+    makeModelDoc({ modelId: "llama-2-70b", provider: "meta-llama", pricing: { input: 0.9, output: 2.7 } }),
+    // NVIDIA
+    makeModelDoc({ modelId: "nemotron-5-49b", provider: "nvidia", pricing: { input: 0.6, output: 1.8 } }),
+    makeModelDoc({ modelId: "nemotron-nano-8b", provider: "nvidia", pricing: { input: 0.1, output: 0.3 } }),
+  ];
+
+  it("returns Anthropic flagship (not obsolete claude-2.x)", () => {
+    const { flagships } = selectByProvider(newProviderModels);
+    expect(flagships.some(m => m.provider === "anthropic")).toBe(true);
+    expect(flagships.some(m => m.modelId === "claude-2.1")).toBe(false);
+  });
+
+  it("returns Anthropic haiku as fast variant", () => {
+    const { fastModels } = selectByProvider(newProviderModels);
+    expect(fastModels.some(m => m.modelId === "claude-haiku-3.5")).toBe(true);
+  });
+
+  it("returns DeepSeek flagship", () => {
+    const { flagships } = selectByProvider(newProviderModels);
+    expect(flagships.some(m => m.provider === "deepseek")).toBe(true);
+  });
+
+  it("returns DeepSeek chat as fast variant", () => {
+    const { fastModels } = selectByProvider(newProviderModels);
+    expect(fastModels.some(m => m.modelId === "deepseek-chat")).toBe(true);
+  });
+
+  it("returns Mistral flagship (not embed)", () => {
+    const { flagships } = selectByProvider(newProviderModels);
+    expect(flagships.some(m => m.provider === "mistralai")).toBe(true);
+    const allPicked = [...selectByProvider(newProviderModels).flagships, ...selectByProvider(newProviderModels).fastModels];
+    expect(allPicked.some(m => m.modelId === "mistral-embed-1.0")).toBe(false);
+  });
+
+  it("returns Mistral small as fast variant", () => {
+    const { fastModels } = selectByProvider(newProviderModels);
+    expect(fastModels.some(m => m.modelId === "mistral-small-3.2")).toBe(true);
+  });
+
+  it("returns Meta flagship (not guard or llama-2)", () => {
+    const { flagships } = selectByProvider(newProviderModels);
+    expect(flagships.some(m => m.provider === "meta-llama")).toBe(true);
+    const allPicked = [...selectByProvider(newProviderModels).flagships, ...selectByProvider(newProviderModels).fastModels];
+    expect(allPicked.some(m => m.modelId === "llama-guard-4")).toBe(false);
+    expect(allPicked.some(m => m.modelId === "llama-2-70b")).toBe(false);
+  });
+
+  it("returns Meta scout as fast variant", () => {
+    const { fastModels } = selectByProvider(newProviderModels);
+    expect(fastModels.some(m => m.modelId === "llama-4-scout")).toBe(true);
+  });
+
+  it("returns NVIDIA flagship", () => {
+    const { flagships } = selectByProvider(newProviderModels);
+    expect(flagships.some(m => m.provider === "nvidia")).toBe(true);
+  });
+
+  it("returns NVIDIA nano as fast variant", () => {
+    const { fastModels } = selectByProvider(newProviderModels);
+    expect(fastModels.some(m => m.modelId === "nemotron-nano-8b")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// kimi-for-coding: subscription entry.id preserves parent modelId
+// ─────────────────────────────────────────────────────────────
+
+describe("kimi-for-coding subscription entry.id stays as parent modelId", () => {
+  it("does not override entry.id with modelOverride", () => {
+    const doc = makeModelDoc({
+      modelId: "kimi-k2.5",
+      provider: "moonshotai",
+      pricing: { input: 0.5, output: 2.0 },
+    });
+
+    // Simulate the subscription expansion loop from generateRecommendedModels
+    const providerDef = PROVIDERS.find(p => p.slugs.includes("moonshotai"));
+    const canonicalSlug = providerDef?.slugs[0];
+    const methods = canonicalSlug ? ACCESS_METHODS[canonicalSlug] : undefined;
+    expect(methods).toBeDefined();
+    expect(methods!.length).toBeGreaterThan(0);
+
+    // Find the Kimi Coding method with modelOverride
+    const kcMethod = methods!.find(m => m.prefix === "kc");
+    expect(kcMethod).toBeDefined();
+    expect(kcMethod!.modelOverride).toBe("kimi-for-coding");
+
+    // Build entry the way generateRecommendedModels does (post-fix)
+    const modelName = kcMethod!.modelOverride ?? doc.modelId;
+    const entry = toEntry(doc, 1, "subscription");
+    entry.subscription = {
+      prefix: kcMethod!.prefix,
+      plan: kcMethod!.plan,
+      command: `${kcMethod!.prefix}@${modelName}`,
+    };
+    // Post-fix: we do NOT override entry.id with modelOverride
+
+    // entry.id should remain the parent model's id
+    expect(entry.id).toBe("kimi-k2.5");
+    // subscription.command should carry the override
+    expect(entry.subscription!.command).toBe("kc@kimi-for-coding");
+  });
+});
+
 describe("toEntry strips vendor prefix from modelId", () => {
   it("strips minimaxai/ prefix from entry id", () => {
     const doc = makeModelDoc({

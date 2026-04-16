@@ -81,6 +81,36 @@ export const PROVIDERS: ProviderDef[] = [
     display: "MiniMax",
     fastIndicators: [], // No fast variant exists
   },
+  {
+    slugs: ["anthropic"],
+    display: "Anthropic",
+    fastIndicators: [/haiku/i],
+    obsoleteIndicators: [/^claude-instant/i, /^claude-2/i],
+  },
+  {
+    slugs: ["deepseek"],
+    display: "DeepSeek",
+    fastIndicators: [/chat/i, /lite/i],
+    obsoleteIndicators: [],
+  },
+  {
+    slugs: ["mistralai"],
+    display: "Mistral",
+    fastIndicators: [/small/i, /tiny/i, /nemo/i],
+    obsoleteIndicators: [/^mistral-embed/i, /^codestral-mamba/i],
+  },
+  {
+    slugs: ["meta-llama"],
+    display: "Meta",
+    fastIndicators: [/scout/i],
+    obsoleteIndicators: [/guard/i, /^llama-2/i],
+  },
+  {
+    slugs: ["nvidia"],
+    display: "NVIDIA",
+    fastIndicators: [/nano/i, /lite/i],
+    obsoleteIndicators: [],
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -188,6 +218,20 @@ export const ACCESS_METHODS: Record<string, AccessMethod[]> = {
   "x-ai": [
     // xAI has no subscription plan or gateway — direct API only
   ],
+  deepseek: [
+    { prefix: "oc",  plan: "OllamaCloud",          type: "gateway" },
+    { prefix: "zen", plan: "OpenCode Zen",          type: "gateway" },
+  ],
+  mistralai: [
+    { prefix: "zen", plan: "OpenCode Zen",          type: "gateway" },
+  ],
+  "meta-llama": [
+    { prefix: "oc",  plan: "OllamaCloud",          type: "gateway" },
+    { prefix: "zen", plan: "OpenCode Zen",          type: "gateway" },
+  ],
+  nvidia: [
+    { prefix: "oc",  plan: "OllamaCloud",          type: "gateway" },
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -254,9 +298,9 @@ export async function generateRecommendedModels(
         plan: method.plan,
         command: `${method.prefix}@${modelName}`,
       };
-      if (method.modelOverride) {
-        entry.id = method.modelOverride;
-      }
+      // Don't override entry.id — keep the parent model's canonical ID
+      // so the CLI renderer can group subscription entries with their parent.
+      // The subscription.command already carries the actual model name to use.
       entries.push(entry);
     }
   }

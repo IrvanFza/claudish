@@ -4,9 +4,13 @@ import type { CollectorResult, RawModel } from "../../schema.js";
 
 const SOURCE_URL = "https://ai.google.dev/pricing";
 
+const EXCLUDED_SUFFIXES = ["-models", "-model"];
+const EXCLUDED_KEYWORDS = ["tts", "audio", "embedding", "robotics", "image"];
+
 /**
  * Google Gemini pricing scraper — parses ai.google.dev/pricing (SSR HTML).
- * The page has model sections with dollar amounts near model names.
+ * Splits on <h2 id="gemini-*"> section boundaries and extracts pricing
+ * from the Standard tier <table> within each section.
  */
 export class GooglePricingScraper extends BaseCollector {
   readonly collectorId = "google-pricing-scrape";
@@ -18,26 +22,52 @@ export class GooglePricingScraper extends BaseCollector {
       const models: RawModel[] = [];
       const seen = new Set<string>();
 
-      // Split page by gemini model ID patterns
-      const sections = html.split(/(?=gemini-[\d][\w.-]*)/gi);
+      // Split on <h2 id="gemini-..."> section boundaries
+      const sections = html.split(/<h2\s+id="(gemini-[^"]+)"/i);
+      // After split: [preamble, id1, content1, id2, content2, ...]
 
-      for (const section of sections) {
-        const modelMatch = section.match(/^(gemini-[\d][\w.-]*)/i);
-        if (!modelMatch) continue;
+      for (let i = 1; i < sections.length; i += 2) {
+        const modelId = sections[i].toLowerCase();
+        const content = sections[i + 1] ?? "";
 
-        const modelId = modelMatch[1].toLowerCase();
         if (seen.has(modelId)) continue;
-        if (modelId.includes("tts") || modelId.includes("audio")) continue;
-        // Reject category headings scraped as model IDs (e.g. "gemini-2.0-models")
-        if (modelId.endsWith("-models") || modelId.endsWith("-model")) continue;
+        if (EXCLUDED_SUFFIXES.some(s => modelId.endsWith(s))) continue;
+        if (EXCLUDED_KEYWORDS.some(k => modelId.includes(k))) continue;
 
-        // Find dollar amounts in the next ~1500 chars
-        const chunk = section.slice(0, 1500);
-        const prices = chunk.match(/\$([\d.]+)/g)?.map(p => parseFloat(p.replace("$", "")));
-        if (!prices || prices.length < 2) continue;
+        // Extract pricing from the Standard tier table (first pricing-table)
+        const tableMatch = content.match(/<table class="pricing-table">([\s\S]*?)<\/table>/i);
+        if (!tableMatch) continue;
 
-        const inputPrice = prices[0];
-        const outputPrice = prices[1];
+        const table = tableMatch[1];
+
+        // Find "Paid Tier" column pricing — dollar amounts in <td> cells
+        // The table has: [label, Free Tier, Paid Tier] columns
+        // Extract all <td> contents
+        const rows = table.match(/<tr>[\s\S]*?<\/tr>/gi) ?? [];
+
+        let inputPrice: number | null = null;
+        let outputPrice: number | null = null;
+
+        for (const row of rows) {
+          const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) ?? [];
+          if (cells.length < 3) continue;
+
+          const label = cells[0]!.toLowerCase();
+          // Paid tier is the last column
+          const paidCell = cells[cells.length - 1]!;
+
+          const priceMatch = paidCell.match(/\$([\d.]+)/);
+          if (!priceMatch) continue;
+          const price = parseFloat(priceMatch[1]);
+
+          if (label.includes("input") && inputPrice === null) {
+            inputPrice = price;
+          } else if (label.includes("output") && outputPrice === null) {
+            outputPrice = price;
+          }
+        }
+
+        if (inputPrice === null || outputPrice === null) continue;
         if (inputPrice > 20 || outputPrice > 50) continue;
 
         seen.add(modelId);
