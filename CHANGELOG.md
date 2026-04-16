@@ -2,6 +2,23 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.0.0] - 2026-04-16
+
+### Breaking Changes
+
+- **Default provider is now configurable** — LiteLLM is no longer the hardcoded first-priority fallback when `LITELLM_BASE_URL` is set. The fallback chain order is driven by the new `defaultProvider` config key. Existing users with `LITELLM_BASE_URL` + `LITELLM_API_KEY` env vars and no explicit config get preserved behavior via legacy auto-promotion, plus a one-shot stderr migration hint.
+
+### New Features
+
+- **`defaultProvider` config key** — set in `~/.claudish/config.json`, `CLAUDISH_DEFAULT_PROVIDER` env var, or `--default-provider` CLI flag. Precedence: CLI flag > env var > config file > legacy LITELLM auto-promotion > OPENROUTER_API_KEY > hardcoded openrouter.
+- **Custom endpoints** — declare OpenAI- or Anthropic-compatible endpoints under `customEndpoints` in config. Two flavors: simple (`{kind, url, format, apiKey}`) and complex (full provider profile with transport, headers, authScheme). Validated via Zod at startup, invalid entries warned and skipped.
+- **Firebase `aggregators[]` field** — the slim catalog (`?catalog=slim`) now includes a typed multi-provider routing index on each model, mapping `{provider, externalId, confidence}` for CLI bare-model resolution. Derived from `sources` at merge time via `COLLECTOR_TO_PROVIDER` table (13 aggregators).
+- **Centralized all-models.json cache** — new `readAllModelsCache()` / `writeAllModelsCache()` helpers prevent the v1/v2 clobber bug where 4 independent writers fought over `~/.claudish/all-models.json`.
+
+### Tests
+
+- 13 real-API e2e tests with flagship models (gpt-5.4, gemini-3.1-pro-preview, minimax-m2.5, grok-4.20). No mocks, no free models. Tests skip when env vars are missing.
+
 ## [6.14.0] - 2026-04-15
 
 ### New Features
