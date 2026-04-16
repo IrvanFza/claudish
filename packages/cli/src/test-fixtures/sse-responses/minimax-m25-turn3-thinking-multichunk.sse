@@ -1,0 +1,36 @@
+event: ping
+data: {"type": "ping"}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "ef972aa6df4285df005ff0fc4be936d540b4ed8af89656d76128719b623ae224"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 1}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "call_function_ylu028jn5xmc_1", "name": "Grep", "input": {}}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"pattern\": \"api\\\\.responses\\\\.write\", \"path\": \"/Users/jack/mag/claudish\", \"output_mode\": \"content\"}"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 2}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"input_tokens": 100090, "output_tokens": 405, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+
+event: message_stop
+data: {"type": "message_stop"}
+

@@ -1,0 +1,33 @@
+event: ping
+data: {"type": "ping"}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Now let me examine the Codex OAuth implementation to understand how the token is obtained and used. Let me look at the key files.\n"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "44088560411ca3c07f9ec61136633e03b609312492c06e49808d96aa0c3cb5e2"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "call_function_wui29eqxxnun_1", "name": "Read", "input": {}}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"file_path\": \"/Users/jack/mag/claudish/packages/cli/src/auth/codex-oauth.ts\"}"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 1}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"input_tokens": 71911, "output_tokens": 69, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 17280}}
+
+event: message_stop
+data: {"type": "message_stop"}
+

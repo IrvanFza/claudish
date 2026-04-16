@@ -66,6 +66,14 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
     return lookupModel(this.modelId)?.supportsVision ?? false;
   }
 
+  /**
+   * MiniMax's Anthropic-compatible endpoint returns thinking blocks that leak
+   * to the user when passed through. Filter them from the SSE stream.
+   */
+  override shouldFilterThinking(): boolean {
+    return true;
+  }
+
   shouldHandle(modelId: string): boolean {
     return matchesModelFamily(modelId, "minimax");
   }

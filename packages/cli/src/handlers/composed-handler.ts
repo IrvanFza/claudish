@@ -760,6 +760,7 @@ export class ComposedHandler implements ModelHandler {
         return createAnthropicPassthroughStream(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
+          adapter: adapter as BaseAPIFormat,
         });
 
       case "gemini-sse": {

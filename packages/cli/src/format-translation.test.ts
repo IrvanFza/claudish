@@ -1163,3 +1163,366 @@ describe("Regression: Z.AI GLM-5 input_tokens in final usage event (#74)", () =>
     expect(tokenOutput).toBe(125);
   });
 });
+
+// ─── Anthropic SSE: Thinking Block Filtering Tests ──────────────────────────
+
+describe("Anthropic SSE: thinking block filtering", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    return mod.createAnthropicPassthroughStream;
+  }
+
+  test("without adapter, thinking passes through (backward compat)", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-anthropic-thinking.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "test-model",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Thinking block start should be present
+    const thinkingStart = events.find(
+      (e) =>
+        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+    );
+    expect(thinkingStart).toBeDefined();
+
+    // Thinking delta should be present
+    const thinkingDelta = events.find(
+      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "thinking_delta"
+    );
+    expect(thinkingDelta).toBeDefined();
+
+    // Text content should still be there
+    const text = extractText(events);
+    expect(text).toContain("Visible response");
+
+    // Tool use should still be there
+    const tools = extractToolNames(events);
+    expect(tools).toContain("Bash");
+  });
+
+  test("with adapter shouldFilterThinking=true, thinking is stripped", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
+    const adapter = new MiniMaxModelDialect("minimax-m2.5");
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-anthropic-thinking.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // No thinking block start should be present
+    const thinkingStart = events.find(
+      (e) =>
+        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+    );
+    expect(thinkingStart).toBeUndefined();
+
+    // No thinking_delta should be present
+    const thinkingDelta = events.find(
+      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "thinking_delta"
+    );
+    expect(thinkingDelta).toBeUndefined();
+
+    // No signature_delta should be present
+    const signatureDelta = events.find(
+      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "signature_delta"
+    );
+    expect(signatureDelta).toBeUndefined();
+
+    // Text content should still be there
+    const text = extractText(events);
+    expect(text).toContain("Visible response");
+
+    // Tool use should still be there
+    const tools = extractToolNames(events);
+    expect(tools).toContain("Bash");
+  });
+
+  test("with adapter shouldFilterThinking=false, thinking passes through", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const { DefaultAPIFormat } = await import("./adapters/base-api-format.js");
+    const adapter = new DefaultAPIFormat("test-model");
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-anthropic-thinking.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "test-model",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Thinking block start should be present (DefaultAPIFormat doesn't filter)
+    const thinkingStart = events.find(
+      (e) =>
+        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+    );
+    expect(thinkingStart).toBeDefined();
+  });
+
+  test("content block indices are re-indexed after filtering", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
+    const adapter = new MiniMaxModelDialect("minimax-m2.5");
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-anthropic-thinking.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // The fixture has: thinking(index 0), text(index 1), tool_use(index 2)
+    // After filtering thinking, text should be index 0, tool_use should be index 1
+
+    const textStart = events.find(
+      (e) =>
+        e.data?.type === "content_block_start" && e.data?.content_block?.type === "text"
+    );
+    expect(textStart?.data?.index).toBe(0);
+
+    const toolStart = events.find(
+      (e) =>
+        e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(toolStart?.data?.index).toBe(1);
+
+    // text_delta should also have re-indexed index
+    const textDelta = events.find(
+      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "text_delta"
+    );
+    expect(textDelta?.data?.index).toBe(0);
+
+    // input_json_delta should be index 1
+    const toolDelta = events.find(
+      (e) => e.data?.type === "content_block_delta" && e.data?.delta?.type === "input_json_delta"
+    );
+    expect(toolDelta?.data?.index).toBe(1);
+
+    // content_block_stop for text should be index 0
+    const textStop = events.find(
+      (e) =>
+        e.data?.type === "content_block_stop" && e.data?.index === 0
+    );
+    // Note: there will be a content_block_stop with index 0 for text (the thinking one was filtered)
+    expect(textStop).toBeDefined();
+
+    // content_block_stop for tool_use should be index 1
+    const toolStop = events.find(
+      (e) =>
+        e.data?.type === "content_block_stop" && e.data?.index === 1
+    );
+    expect(toolStop).toBeDefined();
+  });
+});
+
+// ─── Integration Tests: Real MiniMax M2.5 Captures ───────────────────────────
+//
+// Fixtures extracted from logs/claudish_2026-04-16_12-24-09.log — real production
+// SSE from MiniMax's Anthropic-compatible endpoint. Every MiniMax response includes
+// thinking blocks that must be filtered to prevent leaking internal reasoning.
+
+describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    return mod.createAnthropicPassthroughStream;
+  }
+
+  async function makeMiniMaxAdapter() {
+    const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
+    return new MiniMaxModelDialect("minimax-m2.5");
+  }
+
+  test("Turn 1: thinking+text+tool_use — thinking stripped, text and tool preserved with correct indices", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const adapter = await makeMiniMaxAdapter();
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // NO thinking blocks should appear
+    const thinkingEvents = events.filter(
+      (e) => e.data?.content_block?.type === "thinking" || e.data?.delta?.type === "thinking_delta"
+    );
+    expect(thinkingEvents.length).toBe(0);
+
+    // NO signature_delta events should appear
+    const signatureEvents = events.filter(
+      (e) => e.data?.delta?.type === "signature_delta"
+    );
+    expect(signatureEvents.length).toBe(0);
+
+    // Text block should be at index 0 (was index 1 before filtering thinking at index 0)
+    const textStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "text"
+    );
+    expect(textStart).toBeDefined();
+    expect(textStart?.data?.index).toBe(0);
+
+    // Text content should be the real MiniMax response
+    const text = extractText(events);
+    expect(text).toContain("investigate the OAuth token handling");
+
+    // Tool_use block should be at index 1 (was index 2)
+    const toolStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(toolStart).toBeDefined();
+    expect(toolStart?.data?.index).toBe(1);
+    expect(toolStart?.data?.content_block?.name).toBe("Grep");
+
+    // Tool input should be preserved with real data
+    const toolDeltas = events.filter(
+      (e) => e.data?.delta?.type === "input_json_delta" && e.data?.index === 1
+    );
+    expect(toolDeltas.length).toBeGreaterThan(0);
+
+    // message_delta with stop_reason should survive
+    const stopReason = extractStopReason(events);
+    expect(stopReason).toBe("tool_use");
+
+    // message_stop should survive
+    const msgStop = events.find((e) => e.data?.type === "message_stop");
+    expect(msgStop).toBeDefined();
+  });
+
+  test("Turn 2: thinking+tool_only (no text) — tool_use re-indexed from 1 to 0", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const adapter = await makeMiniMaxAdapter();
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn2-thinking-tool-only.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // NO thinking blocks
+    const thinkingStarts = events.filter(
+      (e) => e.data?.content_block?.type === "thinking"
+    );
+    expect(thinkingStarts.length).toBe(0);
+
+    // NO text blocks (this turn had none)
+    const textStarts = events.filter(
+      (e) => e.data?.content_block?.type === "text"
+    );
+    expect(textStarts.length).toBe(0);
+
+    // Tool_use should be at index 0 (was index 1 after thinking at index 0)
+    const toolStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(toolStart?.data?.index).toBe(0);
+    expect(toolStart?.data?.content_block?.name).toBe("Read");
+
+    // Tool input contains real file path
+    const toolInput = events
+      .filter((e) => e.data?.delta?.type === "input_json_delta" && e.data?.index === 0)
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(toolInput).toContain("codex-oauth.ts");
+
+    // Token tracking still works with real usage data
+    const stopReason = extractStopReason(events);
+    expect(stopReason).toBe("tool_use");
+  });
+
+  test("Turn 3: thinking with multi-chunk deltas — all thinking content stripped", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const adapter = await makeMiniMaxAdapter();
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn3-thinking-multichunk.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // NO thinking or signature deltas at all
+    const thinkingRelated = events.filter(
+      (e) =>
+        e.data?.content_block?.type === "thinking" ||
+        e.data?.delta?.type === "thinking_delta" ||
+        e.data?.delta?.type === "signature_delta"
+    );
+    expect(thinkingRelated.length).toBe(0);
+
+    // This fixture has: thinking(0), text(1), tool_use(2) with real escaped regex
+    const toolStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(toolStart?.data?.index).toBe(1); // re-indexed from 2
+
+    // Tool input has real escaped regex pattern from production
+    const toolInput = events
+      .filter((e) => e.data?.delta?.type === "input_json_delta" && e.data?.index === 1)
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    expect(toolInput).toContain("api");
+  });
+
+  test("Without adapter, real MiniMax thinking blocks pass through (backward compat)", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      // No adapter passed — backward compat mode
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Thinking blocks SHOULD be present (no filtering without adapter)
+    const thinkingStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+    );
+    expect(thinkingStart).toBeDefined();
+
+    // Thinking deltas with real content should be present
+    const thinkingDeltas = events.filter(
+      (e) => e.data?.delta?.type === "thinking_delta"
+    );
+    expect(thinkingDeltas.length).toBeGreaterThan(0);
+
+    // Original indices preserved (thinking=0, text=1, tool=2)
+    const textStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "text"
+    );
+    expect(textStart?.data?.index).toBe(1);
+
+    const toolStart = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(toolStart?.data?.index).toBe(2);
+  });
+});

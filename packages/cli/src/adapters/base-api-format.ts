@@ -197,6 +197,14 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * Whether thinking blocks should be filtered from the SSE response.
+   * Override to return true for providers whose thinking blocks leak to the user.
+   */
+  shouldFilterThinking(): boolean {
+    return false;
+  }
+
+  /**
    * Truncate tool names in the request payload if the model has a name length limit.
    * Handles both Chat Completions format ({type:"function", function:{name}})
    * and Responses API format ({type:"function", name}).

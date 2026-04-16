@@ -1,0 +1,42 @@
+event: ping
+data: {"type": "ping"}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "is more appropriate than a formal research pipeline for this technical question.\n"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "7caa0d3cc2a449ac1cc68507504693f566245c7b5db3558f6041585e15a848f8"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "\n\nLet me investigate the OAuth token handling for Codex directly in the codebase.\n"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 1}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "call_function_xn4s30x6s9af_1", "name": "Grep", "input": {}}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"pattern\": \"oauth.*codex|codex.*oauth\", \"path\": \"/Users/jack/mag/claudish\", \"-i\": true}"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 2}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"input_tokens": 94803, "output_tokens": 307, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}
+
+event: message_stop
+data: {"type": "message_stop"}
+
