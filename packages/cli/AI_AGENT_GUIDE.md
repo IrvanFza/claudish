@@ -1,6 +1,6 @@
 # Claudish AI Agent Usage Guide
 
-**Version:** 2.2.0
+**Version:** 7.0.0
 **Target Audience:** AI Agents running within Claude Code
 **Purpose:** Quick reference for using Claudish CLI and MCP server in agentic workflows
 
@@ -64,6 +64,18 @@ claudish --model vertex/deepseek/deepseek-v3-2-maas "analyze"
 claudish --model vertex/qwen/qwen3-coder-480b-a35b-instruct-maas "implement"
 claudish --model vertex/openai/gpt-oss-120b-maas "reason"
 ```
+
+### Default provider (v7.0.0+)
+
+Bare model names (no `provider@` prefix) route through the configured default provider. Override per-invocation:
+
+```bash
+claudish --default-provider litellm --model minimax-m2.5 "task"
+```
+
+Explicit `provider@model` syntax always bypasses `defaultProvider` and routes directly to the named provider.
+
+Custom endpoints can be registered in `~/.claudish/config.json`. See [docs/settings-reference.md](../../docs/settings-reference.md) for the full schema.
 
 ## Prerequisites
 
@@ -251,6 +263,7 @@ for (const model of models) {
 
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--default-provider <name>` | Override default provider for bare model routing (v7.0.0+) | Auto-detected |
 | `--quiet` / `-q` | Suppress logs | Enabled in single-shot |
 | `--verbose` / `-v` | Show logs | Enabled in interactive |
 | `--debug` / `-d` | Debug logging to file | Disabled |
@@ -731,6 +744,6 @@ claudish --help-ai > claudish-agent-guide.md
 
 ---
 
-**Version:** 2.2.0
-**Last Updated:** January 22, 2026
+**Version:** 7.0.0
+**Last Updated:** April 14, 2026
 **Maintained by:** MadAppGang

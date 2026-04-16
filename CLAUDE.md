@@ -48,6 +48,37 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
+- Custom endpoint names also work as provider prefixes (e.g., `my-vllm@model-name`) — see "Custom Endpoints" below
+
+### Default Provider Configuration (v7.0.0+)
+
+The default provider for auto-routing is configurable. Set it via:
+
+- **Config file**: `"defaultProvider": "openrouter"` in `~/.claudish/config.json`
+- **Env var**: `CLAUDISH_DEFAULT_PROVIDER=litellm`
+- **CLI flag**: `claudish --default-provider google "task"`
+
+**Precedence** (highest to lowest):
+1. CLI flag `--default-provider`
+2. `CLAUDISH_DEFAULT_PROVIDER` env var
+3. `defaultProvider` in config file
+4. Legacy LITELLM auto-promotion (if `LITELLM_BASE_URL` + `LITELLM_API_KEY` set without explicit `defaultProvider`)
+5. `OPENROUTER_API_KEY` present → OpenRouter
+6. Hardcoded `"openrouter"`
+
+**Example config**:
+```json
+{
+  "defaultProvider": "litellm",
+  "customEndpoints": { ... }
+}
+```
+
+Valid values: any built-in provider name (`"openrouter"`, `"litellm"`, `"openai"`, `"anthropic"`, `"google"`) or a custom endpoint name defined in `customEndpoints`.
+
+**Interaction with routing rules**: When `defaultProvider` is set and no explicit `routing["*"]` catch-all exists, Claudish synthesizes `routing["*"] = [defaultProvider]` at config load time. An explicit `routing["*"]` always wins.
+
+**Legacy behavior**: If `LITELLM_BASE_URL` and `LITELLM_API_KEY` are set but `defaultProvider` is absent, LiteLLM is still promoted to first in the fallback chain. Claudish emits a one-shot stderr hint suggesting you set `defaultProvider` explicitly.
 
 ### Vendor Prefix Auto-Resolution (ModelCatalogResolver)
 
@@ -66,6 +97,8 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 - Resolution happens BEFORE handler construction (in `proxy-server.ts`), not inside adapters.
 - Sync entry point (`resolveModelNameSync()`) — uses in-memory caches + `readFileSync`, no async propagation.
 
+**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. CLI consumers can look up `provider → externalId` directly instead of walking the `sources` array. Populated at merge time via the `COLLECTOR_TO_PROVIDER` table in `firebase/functions/src/merger.ts`.
+
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`
@@ -80,6 +113,59 @@ Claudish supports local models via:
 ### Context Tracking for Local Models
 
 Local model APIs (LM Studio, Ollama) report `prompt_tokens` as the **full conversation context** each request, not incremental tokens. The `writeTokenFile` function uses assignment (`=`) not accumulation (`+=`) for input tokens to handle this correctly.
+
+## Custom Endpoints (v7.0.0+)
+
+Define named custom endpoints in `~/.claudish/config.json` under the `customEndpoints` key. Each endpoint registers as a provider prefix usable with `@` syntax.
+
+### Config schema
+
+**Simple endpoint** (most common):
+```json
+{
+  "customEndpoints": {
+    "my-vllm": {
+      "kind": "simple",
+      "url": "http://gpu-box:8000",
+      "format": "openai",
+      "apiKey": "${VLLM_API_KEY}",
+      "modelPrefix": "my-org/",
+      "models": ["llama3.1-70b", "qwen2.5-72b"]
+    }
+  }
+}
+```
+
+**Complex endpoint** (full control):
+```json
+{
+  "customEndpoints": {
+    "corp-proxy": {
+      "kind": "complex",
+      "displayName": "Corporate LLM Proxy",
+      "transport": "openai",
+      "baseUrl": "https://llm.corp.internal",
+      "apiPath": "/api/v2/chat/completions",
+      "apiKey": "${CORP_LLM_KEY}",
+      "authScheme": "X-Api-Key",
+      "headers": { "X-Team": "platform" },
+      "streamFormat": "openai-sse",
+      "modelPrefix": "",
+      "models": ["gpt-4o", "claude-sonnet"]
+    }
+  }
+}
+```
+
+Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp-proxy@gpt-4o "task"`.
+
+### Key details
+
+- **`${VAR_NAME}` expansion**: The `apiKey` field expands environment variables at startup. Use this instead of hardcoding secrets in config.
+- **Zod validation**: Claudish validates all custom endpoints at proxy startup. Invalid entries emit a stderr warning and are skipped — they don't crash the proxy.
+- **Runtime registration**: Endpoints call `registerRuntimeProvider()` and `registerRuntimeProfile()` to inject themselves into the provider resolver and transport layers.
+- **`models` field** (optional): When present, limits the endpoint to listed models. Omit to allow any model name.
+- **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
 
 ## Three-Layer Adapter Architecture (v5.14.0+)
 
@@ -236,9 +322,9 @@ E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for is
 When releasing a new version, update ALL of these locations:
 1. `package.json` (root monorepo version)
 2. `packages/cli/package.json` (npm-published package - **CI/CD publishes from here**)
-3. `packages/cli/src/cli.ts` (fallback VERSION constant, line ~27)
+3. `packages/cli/src/version.ts` (fallback VERSION constant — moved from cli.ts in v7.0.0)
 
-The fallback VERSION in cli.ts ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
+The fallback VERSION in version.ts ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
 
 ## Learned Preferences
 
@@ -247,6 +333,9 @@ The fallback VERSION in cli.ts ensures compiled binaries (Homebrew, standalone) 
 - Use `bun` for all package management and scripts (`bun run build`, `bun test`, etc.) — not npm or yarn
 <!-- learned: 2026-04-06 session: df311293 source: repeated_pattern -->
 - Use Grep/grep tool for code investigation instead of mnemex — prefer built-in search tools during investigation phases
+
+### Firebase / Data Pipeline
+- `COLLECTOR_TO_PROVIDER` table in `firebase/functions/src/merger.ts` maps collector source names (13 entries) to canonical provider IDs. This drives the `aggregators[]` field on model documents in the slim catalog.
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->

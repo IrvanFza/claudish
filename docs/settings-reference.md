@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Claudish is a proxy tool that wraps Claude Code with support for non-Anthropic AI providers. It intercepts Claude Code's API calls and reroutes them to providers like OpenRouter, Google Gemini, OpenAI, MiniMax, Kimi, GLM, and local models (Ollama, LM Studio, vLLM, MLX). Configuration is layered: CLI flags override environment variables, which override profile settings from config files. The routing syntax uses `provider@model[:concurrency]` (v4.0+, preferred) or the legacy `prefix/model` format (still supported, deprecated). Auto-routing selects a provider automatically based on available credentials, using the priority chain: LiteLLM → OpenCode Zen → provider subscription plan → native API → OpenRouter fallback. Configuration files live at `~/.claudish/config.json` (global) and `.claudish.json` (local/project); local always takes precedence.
+Claudish is a proxy tool that wraps Claude Code with support for non-Anthropic AI providers. It intercepts Claude Code's API calls and reroutes them to providers like OpenRouter, Google Gemini, OpenAI, MiniMax, Kimi, GLM, and local models (Ollama, LM Studio, vLLM, MLX). Configuration is layered: CLI flags override environment variables, which override profile settings from config files. The routing syntax uses `provider@model[:concurrency]` (v4.0+, preferred) or the legacy `prefix/model` format (still supported, deprecated). Auto-routing selects a provider automatically based on available credentials. The priority chain is configurable via `defaultProvider` (v7.0.0+). The default chain (when no `defaultProvider` is set and only `OPENROUTER_API_KEY` is present) is: OpenCode Zen → provider subscription plan → native API → OpenRouter fallback. When `LITELLM_BASE_URL` + `LITELLM_API_KEY` are set without explicit `defaultProvider`, legacy auto-promotion puts LiteLLM first. Configuration files live at `~/.claudish/config.json` (global) and `.claudish.json` (local/project); local always takes precedence.
 
 ---
 
@@ -20,6 +20,7 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--model` | `-m` | string | none (prompts interactively) | Model to use. Accepts `provider@model` syntax, legacy `prefix/model`, or bare model name for auto-detection |
+| `--default-provider` | | string | none | Default provider for auto-routing (v7.0.0+). Overrides env var and config file. Valid: built-in provider names or custom endpoint names |
 | `--model-opus` | | string | none | Model for Opus role (planning, complex tasks) |
 | `--model-sonnet` | | string | none | Model for Sonnet role (default coding) |
 | `--model-haiku` | | string | none | Model for Haiku role (fast tasks, background) |
@@ -102,6 +103,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `CLAUDISH_DEFAULT_PROVIDER` | Default provider for auto-routing (v7.0.0+); overrides config file `defaultProvider` | none |
 | `CLAUDISH_MODEL` | Default model (higher priority than `ANTHROPIC_MODEL`) | none |
 | `CLAUDISH_PORT` | Default proxy port | random (3000–9000) |
 | `CLAUDISH_CONTEXT_WINDOW` | Override context window size for local models (integer) | auto-detected |
@@ -217,6 +219,7 @@ These are only needed if you want to use your own Google Cloud OAuth application
 {
   "version": "1.0.0",
   "defaultProfile": "default",
+  "defaultProvider": "openrouter",
   "profiles": {
     "default": {
       "name": "default",
@@ -240,6 +243,14 @@ These are only needed if you want to use your own Google Cloud OAuth application
     "kimi-*": ["kc", "kimi", "openrouter"],
     "glm-*": ["gc", "glm", "openrouter"],
     "*": ["litellm", "openrouter"]
+  },
+  "customEndpoints": {
+    "my-vllm": {
+      "kind": "simple",
+      "url": "http://gpu-box:8000",
+      "format": "openai",
+      "apiKey": "${VLLM_API_KEY}"
+    }
   }
 }
 ```
@@ -248,6 +259,8 @@ These are only needed if you want to use your own Google Cloud OAuth application
 
 - **`version`**: Config schema version string (currently `"1.0.0"`).
 - **`defaultProfile`**: Name of the profile to use when `--profile` is not specified.
+- **`defaultProvider`** (v7.0.0+): Default provider for auto-routing. Accepts built-in provider names (`"openrouter"`, `"litellm"`, `"openai"`, `"anthropic"`, `"google"`) or a custom endpoint name. See Section 6.1 for precedence. Absent means use legacy auto-detection.
+- **`customEndpoints`** (v7.0.0+): Named map of custom endpoint definitions. See Section 7.5 for schema.
 - **`profiles`**: Map of profile name to profile object. Each profile has:
   - **`name`**: Profile identifier (matches the map key).
   - **`description`**: Optional human-readable description.
@@ -397,19 +410,46 @@ https://localhost:8080/model
 
 ## 6. Auto-Routing Priority Chain
 
-When a model name has no explicit provider prefix and does not match a native pattern that maps to a provider with credentials, Claudish uses this priority chain (implemented in `auto-route.ts` / `getFallbackChain()`):
+When a model name has no explicit provider prefix and does not match a native pattern that maps to a provider with credentials, Claudish builds a fallback chain (implemented in `auto-route.ts` / `getFallbackChain()`).
 
-1. **LiteLLM** — if `LITELLM_BASE_URL` and `LITELLM_API_KEY` are set, always added to chain first (cache may be stale; proxy resolves dynamically).
-2. **OpenCode Zen** — if `OPENCODE_API_KEY` is set.
-3. **Provider subscription/coding plan** — if the native provider has a subscription alternative and credentials exist:
+### 6.1 Default Provider (v7.0.0+)
+
+The fallback chain is **configurable** via the `defaultProvider` setting. Set it in any of these locations:
+
+| Method | Example |
+|--------|---------|
+| Config file | `"defaultProvider": "litellm"` in `~/.claudish/config.json` |
+| Env var | `CLAUDISH_DEFAULT_PROVIDER=openrouter` |
+| CLI flag | `claudish --default-provider google "task"` |
+
+**Precedence** (highest to lowest):
+1. CLI flag `--default-provider`
+2. `CLAUDISH_DEFAULT_PROVIDER` env var
+3. `defaultProvider` in config file
+4. Legacy LITELLM auto-promotion (if `LITELLM_BASE_URL` + `LITELLM_API_KEY` set without explicit `defaultProvider`)
+5. `OPENROUTER_API_KEY` present → OpenRouter
+6. Hardcoded `"openrouter"`
+
+Valid values: any built-in provider name (`"openrouter"`, `"litellm"`, `"openai"`, `"anthropic"`, `"google"`) or a custom endpoint name from `customEndpoints`.
+
+### 6.2 Default chain (no `defaultProvider` set)
+
+When `defaultProvider` is absent and only `OPENROUTER_API_KEY` is present:
+
+1. **OpenCode Zen** — if `OPENCODE_API_KEY` is set.
+2. **Provider subscription/coding plan** — if the native provider has a subscription alternative and credentials exist:
    - `kimi` → Kimi Coding Plan (`kc@kimi-for-coding`) if `KIMI_CODING_API_KEY` or OAuth present.
    - `minimax` → MiniMax Coding Plan (`mmc@`) if `MINIMAX_CODING_API_KEY` present.
    - `glm` → GLM Coding Plan at Z.AI (`gc@`) if `GLM_CODING_API_KEY` or `ZAI_CODING_API_KEY` present.
    - `google` → Gemini Code Assist (`go@`) if OAuth credentials present.
-4. **Native provider API** — if the detected native provider has an API key or OAuth credentials.
-5. **OpenRouter** — if `OPENROUTER_API_KEY` is set (universal fallback).
+3. **Native provider API** — if the detected native provider has an API key or OAuth credentials.
+4. **OpenRouter** — if `OPENROUTER_API_KEY` is set (universal fallback).
 
-If none of the above applies, Claudish returns an error with instructions on how to authenticate.
+### 6.3 Legacy LiteLLM auto-promotion
+
+When `LITELLM_BASE_URL` and `LITELLM_API_KEY` are set but `defaultProvider` is absent, LiteLLM is added to the chain first (before OpenCode Zen). Claudish emits a one-shot stderr hint recommending you set `defaultProvider: "litellm"` explicitly. This preserves backward compatibility with pre-v7.0.0 behavior.
+
+If none of the chain entries have valid credentials, Claudish returns an error with instructions on how to authenticate.
 
 ---
 
@@ -443,11 +483,128 @@ Each entry in the routing chain array is a string. Format options:
 
 Provider shortcuts (same as `@` syntax) are resolved in entries. LiteLLM entries automatically use the model catalog resolver to find the vendor-prefixed model name.
 
+### Catch-All Synthesis from `defaultProvider` (v7.0.0+)
+
+When `defaultProvider` is set and no explicit `routing["*"]` catch-all exists in the config, Claudish synthesizes `routing["*"] = [<defaultProvider>]` at config load time. An explicit `routing["*"]` always takes precedence over the synthesized one.
+
+```json
+{
+  "defaultProvider": "litellm",
+  "routing": {
+    "kimi-*": ["kc", "kimi", "or"]
+  }
+}
+```
+
+The above is equivalent to:
+
+```json
+{
+  "routing": {
+    "kimi-*": ["kc", "kimi", "or"],
+    "*": ["litellm"]
+  }
+}
+```
+
 ### Validation
 
 Claudish warns at load time if:
 - A pattern has multiple `*` wildcards (only single `*` is supported).
 - A rule's entry list is empty (the pattern would have no fallback).
+
+---
+
+## 7.5 Custom Endpoints (v7.0.0+)
+
+Define named custom endpoints in `~/.claudish/config.json` (or `.claudish.json`) under the `customEndpoints` key. Each endpoint becomes a provider prefix usable with `@` syntax.
+
+### Simple endpoint
+
+For OpenAI- or Anthropic-compatible servers:
+
+```json
+{
+  "customEndpoints": {
+    "my-vllm": {
+      "kind": "simple",
+      "url": "http://gpu-box:8000",
+      "format": "openai",
+      "apiKey": "${VLLM_API_KEY}",
+      "modelPrefix": "my-org/",
+      "models": ["llama3.1-70b", "qwen2.5-72b"]
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `kind` | `"simple"` | yes | Discriminator |
+| `url` | string | yes | Base URL of the server |
+| `format` | `"openai"` or `"anthropic"` | yes | Wire format |
+| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
+| `modelPrefix` | string | no | Prepended to model name before sending to API |
+| `models` | string[] | no | Restrict to listed models; omit to allow any |
+
+Usage: `claudish --model my-vllm@llama3.1-70b "task"`
+
+### Complex endpoint
+
+Full control over transport, auth, headers, and stream format:
+
+```json
+{
+  "customEndpoints": {
+    "corp-proxy": {
+      "kind": "complex",
+      "displayName": "Corporate LLM Proxy",
+      "transport": "openai",
+      "baseUrl": "https://llm.corp.internal",
+      "apiPath": "/api/v2/chat/completions",
+      "apiKey": "${CORP_LLM_KEY}",
+      "authScheme": "X-Api-Key",
+      "headers": { "X-Team": "platform" },
+      "streamFormat": "openai-sse",
+      "modelPrefix": "",
+      "models": ["gpt-4o", "claude-sonnet"]
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `kind` | `"complex"` | yes | Discriminator |
+| `displayName` | string | no | Human-readable name (shown in logs) |
+| `transport` | string | yes | Transport type (e.g., `"openai"`, `"anthropic"`) |
+| `baseUrl` | string | yes | Server base URL |
+| `apiPath` | string | no | Custom API path (overrides default for transport) |
+| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
+| `authScheme` | string | no | Auth header scheme (default: `Bearer`; use `X-Api-Key` for header-name auth) |
+| `headers` | object | no | Additional HTTP headers |
+| `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
+| `modelPrefix` | string | no | Prepended to model name |
+| `models` | string[] | no | Restrict to listed models |
+
+### Environment variable expansion
+
+The `apiKey` field supports `${VAR_NAME}` syntax. Claudish expands it from `process.env` at startup. This avoids hardcoding secrets in config files:
+
+```json
+"apiKey": "${MY_CUSTOM_API_KEY}"
+```
+
+### Validation
+
+Claudish validates all `customEndpoints` entries with Zod at proxy startup. Invalid entries:
+- Emit a warning to stderr with the validation error
+- Are skipped (not registered)
+- Do not prevent the proxy from starting
+
+### Runtime registration
+
+Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the provider resolver) and `registerRuntimeProfile()` (injects into the transport layer). The endpoint name becomes a valid provider shortcut immediately.
 
 ---
 
@@ -603,4 +760,4 @@ claudish telemetry off
 
 ---
 
-*This document was generated from direct codebase analysis of Claudish v5.10.0 source at `packages/cli/src/`. Key files: `cli.ts`, `config.ts`, `model-parser.ts`, `provider-resolver.ts`, `auto-route.ts`, `remote-provider-registry.ts`, `profile-config.ts`, `routing-rules.ts`.*
+*This document was generated from direct codebase analysis of Claudish source at `packages/cli/src/`. Last updated for v7.0.0 (default provider, custom endpoints, routing rules catch-all synthesis). Key files: `cli.ts`, `config.ts`, `model-parser.ts`, `provider-resolver.ts`, `auto-route.ts`, `remote-provider-registry.ts`, `profile-config.ts`, `routing-rules.ts`.*

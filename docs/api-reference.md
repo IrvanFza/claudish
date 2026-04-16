@@ -138,6 +138,64 @@ curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=
 
 Unlike other list endpoints, slim keeps `sources` — the CLI catalog resolver needs provider attribution to find the correct vendor prefix for aggregators like OpenRouter.
 
+##### `aggregators` field (v7.0.0+)
+
+Each slim model may include an `aggregators` array listing every routable provider that carries the model. The CLI uses this for multi-provider bare-model routing (e.g., resolving `minimax-m2.5` to the correct vendor-prefixed ID on whichever aggregator the user's `defaultProvider` points to).
+
+**Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `provider` | string | Canonical CLI provider name (e.g., `"openrouter"`, `"fireworks"`, `"together-ai"`) |
+| `externalId` | string | Vendor-prefixed model ID the aggregator uses (e.g., `"qwen/qwen3-coder"`) |
+| `confidence` | ConfidenceTier | Data confidence tier copied from the underlying source record |
+
+The field is absent (not an empty array) for models with no routable aggregator sources. The mapping from collector IDs to provider names uses the `COLLECTOR_TO_PROVIDER` table (13 entries) in `firebase/functions/src/merger.ts`.
+
+**Example response with aggregators:**
+
+```bash
+curl "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?catalog=slim&search=minimax-m2"
+```
+
+```json
+{
+    "models": [
+        {
+            "modelId": "minimax-m2",
+            "aliases": [
+                "minimax/minimax-m2"
+            ],
+            "sources": {
+                "openrouter-api": {
+                    "sourceUrl": "https://openrouter.ai/api/v1/models",
+                    "confidence": "aggregator_reported",
+                    "externalId": "minimax/minimax-m2",
+                    "lastSeen": { "_seconds": 1776055174, "_nanoseconds": 0 }
+                }
+            },
+            "aggregators": [
+                {
+                    "provider": "openrouter",
+                    "externalId": "minimax/minimax-m2",
+                    "confidence": "aggregator_reported"
+                }
+            ]
+        }
+    ],
+    "total": 1
+}
+```
+
+Models collected from multiple aggregators have multiple entries:
+
+```json
+"aggregators": [
+    { "provider": "openrouter", "externalId": "qwen/qwen3-coder", "confidence": "aggregator_reported" },
+    { "provider": "fireworks", "externalId": "accounts/fireworks/models/qwen3-coder", "confidence": "aggregator_reported" }
+]
+```
+
 #### Top 100 ranked
 
 `?catalog=top100` — returns models ranked by a composite score combining provider popularity, release recency, generation freshness, capabilities, context window, and data confidence. Eligibility: `status=active` AND has numeric `pricing.input`/`pricing.output`.
@@ -803,7 +861,7 @@ The `top100` catalog adds `rank` (1-indexed), `score` (0-100), and optionally `s
 
 ### ModelDoc
 
-This is the internal Firestore document shape. It is NOT what public endpoints return — see [PublicModel](#publicmodel) above. The `slim` catalog endpoint (`?catalog=slim`) returns a minimal projection of `modelId`, `aliases`, and `sources` used by the CLI catalog resolver.
+This is the internal Firestore document shape. It is NOT what public endpoints return — see [PublicModel](#publicmodel) above. The `slim` catalog endpoint (`?catalog=slim`) returns a minimal projection of `modelId`, `aliases`, `sources`, and `aggregators` used by the CLI catalog resolver.
 
 Full model document stored in Firestore `models/{id}` collection.
 
@@ -823,6 +881,7 @@ Full model document stored in Firestore `models/{id}` collection.
 | `status` | string | `"active"`, `"deprecated"`, `"preview"`, or `"unknown"` |
 | `fieldSources` | object | Per-field provenance tracking (which collector, confidence tier, timestamp) |
 | `sources` | Record<string, SourceRecord> | Per-provider attribution: `{ confidence, externalId, lastSeen, sourceUrl? }` |
+| `aggregators` | AggregatorEntry[]? | Routable aggregator index (v7.0.0+). See [AggregatorEntry](#aggregatorentry). Absent when no routable sources exist |
 | `lastUpdated` | Timestamp | Last data update |
 | `lastChecked` | Timestamp | Last collection check |
 
@@ -872,6 +931,16 @@ Data provenance tiers, highest trust wins during merge.
 | `aggregator_reported` | 3 | OpenRouter, Fireworks (not billing-authoritative) |
 | `gateway_official` | 4 | Gateway billing-authoritative (e.g., OpenCode Zen) |
 | `api_official` | 5 | Direct provider `/v1/models` API |
+
+### AggregatorEntry
+
+Represents one routable aggregator source for a model (v7.0.0+). Built by `buildAggregatorsList()` in `firebase/functions/src/merger.ts` from the model's `sources` map, filtered through the `COLLECTOR_TO_PROVIDER` table (13 entries).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `provider` | string | Canonical CLI provider name (e.g., `"openrouter"`, `"fireworks"`, `"together-ai"`) |
+| `externalId` | string | Vendor-prefixed model ID the aggregator uses (e.g., `"qwen/qwen3-coder"`) |
+| `confidence` | ConfidenceTier | Data confidence tier from the underlying source record |
 
 ---
 

@@ -272,6 +272,7 @@ claudish [OPTIONS] <claude-args...>
 | Flag | Short | Description | Default |
 |------|-------|-------------|---------|
 | `--model <model>` | `-m` | Model to use (`provider@model` syntax) | Interactive selector |
+| `--default-provider <name>` | | Default provider for bare model routing (v7.0.0+) | Auto-detected |
 | `--model-opus <model>` | | Model for Opus role (planning, complex tasks) | |
 | `--model-sonnet <model>` | | Model for Sonnet role (default coding) | |
 | `--model-haiku <model>` | | Model for Haiku role (fast tasks) | |
@@ -351,6 +352,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `CLAUDISH_TELEMETRY` | Override telemetry (`0`/`false`/`off` to disable) | From config |
 | `CLAUDISH_LOCAL_MAX_PARALLEL` | Max concurrent local model requests (1-8) | `1` |
 | `CLAUDISH_LOCAL_QUEUE_ENABLED` | Enable/disable local model queue | `true` |
+| `CLAUDISH_DEFAULT_PROVIDER` | Default provider for bare model routing (v7.0.0+) | Auto-detected |
 | `CLAUDISH_QWEN_NO_THINK` | Disable thinking for Qwen models (`1`) | |
 
 #### Claude Code Compatibility
@@ -520,6 +522,45 @@ claudish --model ollama@llama3.2:0 "fast"       # No limit (bypass queue)
 claudish --model openrouter@qwen/qwen-2.5 "task"
 claudish --model or@mistralai/mistral-large "analysis"
 ```
+
+### Default provider (v7.0.0+)
+
+The routing priority for bare model names (no `provider@` prefix) is configurable. By default, Claudish tries LiteLLM (if configured), then OpenRouter. Override this with `defaultProvider`:
+
+```bash
+# Set default provider globally
+claudish config set defaultProvider openrouter
+
+# Or via env var
+export CLAUDISH_DEFAULT_PROVIDER=openrouter
+
+# Or per-invocation
+claudish --default-provider litellm --model minimax-m2.5 "task"
+```
+
+Precedence: `--default-provider` flag > `CLAUDISH_DEFAULT_PROVIDER` env var > config file `defaultProvider` > legacy LiteLLM auto-promotion > `OPENROUTER_API_KEY` detection > hardcoded `"openrouter"`.
+
+Explicit `provider@model` syntax always bypasses `defaultProvider` and routes directly.
+
+### Custom endpoints (v7.0.0+)
+
+Register your own OpenAI-compatible endpoints in `~/.claudish/config.json`. See [Settings Reference](docs/settings-reference.md) for the full schema.
+
+```json
+{
+  "customEndpoints": {
+    "my-vllm": {
+      "kind": "simple",
+      "url": "http://gpu-box:8000/v1",
+      "format": "openai",
+      "apiKey": "none"
+    }
+  },
+  "defaultProvider": "my-vllm"
+}
+```
+
+Then route to it with: `claudish --model my-vllm@llama3 "task"`
 
 ### Legacy Syntax (Deprecated)
 
