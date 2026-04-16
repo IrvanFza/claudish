@@ -4,20 +4,17 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.0.0] - 2026-04-16
 
-### Breaking Changes
+### Documentation
 
-- **Default provider is now configurable** — LiteLLM is no longer the hardcoded first-priority fallback when `LITELLM_BASE_URL` is set. The fallback chain order is driven by the new `defaultProvider` config key. Existing users with `LITELLM_BASE_URL` + `LITELLM_API_KEY` env vars and no explicit config get preserved behavior via legacy auto-promotion, plus a one-shot stderr migration hint.
+- update CHANGELOG.md for v6.14.0([`8f18ec2`](https://github.com/MadAppGang/claudish/commit/8f18ec21e67babcebab862f49e2dade859d1f44c))
 
 ### New Features
 
-- **`defaultProvider` config key** — set in `~/.claudish/config.json`, `CLAUDISH_DEFAULT_PROVIDER` env var, or `--default-provider` CLI flag. Precedence: CLI flag > env var > config file > legacy LITELLM auto-promotion > OPENROUTER_API_KEY > hardcoded openrouter.
-- **Custom endpoints** — declare OpenAI- or Anthropic-compatible endpoints under `customEndpoints` in config. Two flavors: simple (`{kind, url, format, apiKey}`) and complex (full provider profile with transport, headers, authScheme). Validated via Zod at startup, invalid entries warned and skipped.
-- **Firebase `aggregators[]` field** — the slim catalog (`?catalog=slim`) now includes a typed multi-provider routing index on each model, mapping `{provider, externalId, confidence}` for CLI bare-model resolution. Derived from `sources` at merge time via `COLLECTOR_TO_PROVIDER` table (13 aggregators).
-- **Centralized all-models.json cache** — new `readAllModelsCache()` / `writeAllModelsCache()` helpers prevent the v1/v2 clobber bug where 4 independent writers fought over `~/.claudish/all-models.json`.
+- v7.0.0 — configurable default provider, custom endpoints([`c5ae212`](https://github.com/MadAppGang/claudish/commit/c5ae2127aee0f27d3d226958490741460f7a88e2))
 
-### Tests
+### Other Changes
 
-- 13 real-API e2e tests with flagship models (gpt-5.4, gemini-3.1-pro-preview, minimax-m2.5, grok-4.20). No mocks, no free models. Tests skip when env vars are missing.
+- add opt-in advisor-tool swap module *(experiment)* ([`fda7852`](https://github.com/MadAppGang/claudish/commit/fda78525727262baf75e5a99f298e77244915ebc))
 
 ## [6.14.0] - 2026-04-15
 
@@ -66,6 +63,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v6.13.2 — fix #102 GLM/Z.AI 0-byte output + #85/88/99 stdin cleanup([`c959d0e`](https://github.com/MadAppGang/claudish/commit/c959d0e37dce1ce9d7317bcdfaafcdd4d6ade419))
+- add aggregators[] field to ModelDoc and slim catalog *(firebase)* ([`8a08535`](https://github.com/MadAppGang/claudish/commit/8a08535ceb3fa941e9859adea0926e804728425b))
+- runtime-registered custom endpoints *(providers)* ([`1451aea`](https://github.com/MadAppGang/claudish/commit/1451aea57448417e44d64e1a7d2ccf2d7a8ee789))
+- demote LiteLLM from hardcoded priority *(routing)* ([`5a0d294`](https://github.com/MadAppGang/claudish/commit/5a0d294f63203e068da5e4e241dd56d9ea509964))
+- add defaultProvider key + customEndpoints schemas *(config)* ([`12ff0b1`](https://github.com/MadAppGang/claudish/commit/12ff0b110cedef365dd6146550f0afb2f3af573c))
 
 ## [6.13.1] - 2026-04-14
 
