@@ -97,7 +97,7 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 - Resolution happens BEFORE handler construction (in `proxy-server.ts`), not inside adapters.
 - Sync entry point (`resolveModelNameSync()`) — uses in-memory caches + `readFileSync`, no async propagation.
 
-**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. CLI consumers can look up `provider → externalId` directly instead of walking the `sources` array. Populated at merge time via the `COLLECTOR_TO_PROVIDER` table in `firebase/functions/src/merger.ts`.
+**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. CLI consumers can look up `provider → externalId` directly instead of walking the `sources` array. The catalog backend lives in the [models-index](https://github.com/MadAppGang/models-index) repo.
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
@@ -333,9 +333,6 @@ The fallback VERSION in version.ts ensures compiled binaries (Homebrew, standalo
 - Use `bun` for all package management and scripts (`bun run build`, `bun test`, etc.) — not npm or yarn
 <!-- learned: 2026-04-06 session: df311293 source: repeated_pattern -->
 - Use Grep/grep tool for code investigation instead of mnemex — prefer built-in search tools during investigation phases
-
-### Firebase / Data Pipeline
-- `COLLECTOR_TO_PROVIDER` table in `firebase/functions/src/merger.ts` maps collector source names (13 entries) to canonical provider IDs. This drives the `aggregators[]` field on model documents in the slim catalog.
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->

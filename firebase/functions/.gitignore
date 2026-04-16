@@ -1,6 +1,0 @@
-node_modules/
-lib/
-
-# Local dev/test scripts (not part of deployed functions)
-src/test-recommender.ts
-src/test-local.ts
