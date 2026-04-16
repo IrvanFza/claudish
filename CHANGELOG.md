@@ -2,6 +2,24 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.0.1] - 2026-04-16
+
+### Bug Fixes
+
+- filter thinking blocks from MiniMax SSE to prevent leaking internal reasoning *(minimax)* ([`bd9bd85`](https://github.com/MadAppGang/claudish/commit/bd9bd85b122c5fbade05b619e5571cc5109a96fa))
+- address edge cases in PR #103 interactive-mode detection([`8932edf`](https://github.com/MadAppGang/claudish/commit/8932edfb733ebcd602154d3487db142804cc5e1e))
+- default to interactive mode when only flags are passed (no prompt) (#103)([`cba30c9`](https://github.com/MadAppGang/claudish/commit/cba30c936b0afa82920b9e1e8c05a61dbaad0842))
+- rewrite parser for restructured pricing page *(google-scraper)* ([`473d539`](https://github.com/MadAppGang/claudish/commit/473d539bb3ffa954735ccfb7e9e8bafe9fc29fda))
+
+### Documentation
+
+- update all documentation for v7.0.0 release([`297a797`](https://github.com/MadAppGang/claudish/commit/297a797d70bfb8b2f4bd90e77beeb71d9ef67911))
+- update CHANGELOG.md for v7.0.0([`75fce0a`](https://github.com/MadAppGang/claudish/commit/75fce0a2d54e5a12b6ee6b992d59dad2b4bfa36a))
+
+### Refactoring
+
+- move model catalog system to models-index repo([`cb75290`](https://github.com/MadAppGang/claudish/commit/cb75290e836acc0059b13ee69ab7c177dc553e3e))
+
 ## [7.0.0] - 2026-04-16
 
 ### Documentation
