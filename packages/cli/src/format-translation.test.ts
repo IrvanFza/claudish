@@ -1526,3 +1526,63 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     expect(toolStart?.data?.index).toBe(2);
   });
 });
+
+// ─── Regression: Z.AI in-stream error handling (GitHub #106) ─────────────────
+
+describe("Regression: Anthropic SSE in-stream error handling (#106)", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    return mod.createAnthropicPassthroughStream;
+  }
+
+  test("in-stream error payload emits proper error event instead of crashing (non-filtering path)", async () => {
+    // REGRESSION: Z.AI returns HTTP 200 with {"error":{"code":"1305","message":"..."}} in-stream.
+    // Before fix: raw error payload passed through, Claude Code crashes with "undefined is not an object"
+    // because it expects a `type` field. Fixed in /dev:fix session dev-fix-20260417-224919-72cb371e
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-glm5-instream-error.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "glm-5.1",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Should have received text content before the error
+    const text = extractText(events);
+    expect(text).toContain("Hello");
+
+    // Should have an error event with proper structure
+    const errorEvent = events.find((e) => e.data?.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent?.data?.error?.type).toBe("api_error");
+    expect(errorEvent?.data?.error?.message).toContain("temporarily overloaded");
+
+    // Should NOT have a message_stop (stream was terminated by error)
+    const msgStop = events.find((e) => e.data?.type === "message_stop");
+    expect(msgStop).toBeUndefined();
+  });
+
+  test("in-stream error payload handled in filtering path (adapter present)", async () => {
+    // Same scenario but with filterThinking enabled (MiniMax, Kimi)
+    const createAnthropicPassthroughStream = await getParser();
+    const { MiniMaxModelDialect } = await import("./adapters/minimax-model-dialect.js");
+    const adapter = new MiniMaxModelDialect("minimax-m2.5");
+
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "regression-zai-glm5-instream-error.sse"));
+    const ctx = createMockContext();
+
+    const response = createAnthropicPassthroughStream(ctx, fixture, {
+      modelName: "minimax-m2.5",
+      adapter,
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    // Should have an error event
+    const errorEvent = events.find((e) => e.data?.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent?.data?.error?.message).toContain("temporarily overloaded");
+  });
+});

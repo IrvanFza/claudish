@@ -90,6 +90,30 @@ export function createAnthropicPassthroughStream(
                 try {
                   const data = JSON.parse(line.slice(6));
 
+                  // ── In-stream error detection (GitHub #106) ──
+                  // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return
+                  // HTTP 200 with {"error":{...}} embedded in the SSE payload.
+                  // Detect and surface as a proper error event.
+                  if (data.error) {
+                    const errMsg = data.error.message || JSON.stringify(data.error);
+                    log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
+                    if (!isClosed) {
+                      controller.enqueue(encoder.encode(
+                        `event: error\ndata: ${JSON.stringify({
+                          type: "error",
+                          error: { type: "api_error", message: errMsg },
+                        })}\n\n`
+                      ));
+                      isClosed = true;
+                      if (pingInterval) {
+                        clearInterval(pingInterval);
+                        pingInterval = null;
+                      }
+                      controller.close();
+                    }
+                    return; // stop processing further lines
+                  }
+
                   // Track: entering a thinking block
                   if (
                     data.type === "content_block_start" &&
@@ -139,15 +163,38 @@ export function createAnthropicPassthroughStream(
                 }
               } else {
                 // Non-data lines (event: lines, blank lines) or no filtering
-                if (!isClosed) {
-                  controller.enqueue(encoder.encode(line + "\n"));
-                }
-
-                // Still parse data lines for usage/debug tracking even when
-                // not filtering
                 if (!filterThinking && line.startsWith("data: ")) {
+                  // Parse data lines BEFORE enqueuing to detect in-stream errors
                   try {
                     const data = JSON.parse(line.slice(6));
+
+                    // ── In-stream error detection (GitHub #106) ──
+                    if (data.error) {
+                      const errMsg = data.error.message || JSON.stringify(data.error);
+                      log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
+                      if (!isClosed) {
+                        controller.enqueue(encoder.encode(
+                          `event: error\ndata: ${JSON.stringify({
+                            type: "error",
+                            error: { type: "api_error", message: errMsg },
+                          })}\n\n`
+                        ));
+                        isClosed = true;
+                        if (pingInterval) {
+                          clearInterval(pingInterval);
+                          pingInterval = null;
+                        }
+                        controller.close();
+                      }
+                      return; // stop processing further lines
+                    }
+
+                    // No error — pass through the line
+                    if (!isClosed) {
+                      controller.enqueue(encoder.encode(line + "\n"));
+                    }
+
+                    // Usage/debug tracking
                     if (data.message?.usage) {
                       inputTokens = data.message.usage.input_tokens || inputTokens;
                       outputTokens = data.message.usage.output_tokens || outputTokens;
@@ -173,7 +220,17 @@ export function createAnthropicPassthroughStream(
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
                       stopReason = data.delta.stop_reason;
                     }
-                  } catch {}
+                  } catch {
+                    // Unparseable data line — pass through
+                    if (!isClosed) {
+                      controller.enqueue(encoder.encode(line + "\n"));
+                    }
+                  }
+                } else {
+                  // Non-data lines (event: lines, blank lines) — pass through
+                  if (!isClosed) {
+                    controller.enqueue(encoder.encode(line + "\n"));
+                  }
                 }
               }
 
