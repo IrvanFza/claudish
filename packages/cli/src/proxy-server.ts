@@ -65,6 +65,8 @@ export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
   quiet?: boolean; // Suppress informational stderr output (e.g., [Auto-route])
   isInteractive?: boolean; // Whether the current session is interactive (gates consent prompt)
+  advisorModels?: string[]; // Advisor models from --advisor flag
+  advisorCollector?: string | null; // Collector model (null = no synthesis)
 }
 
 export async function createProxyServer(
@@ -98,7 +100,7 @@ export async function createProxyServer(
   }
 
   // Define handlers for different roles
-  const nativeHandler = new NativeHandler(anthropicApiKey);
+  const nativeHandler = new NativeHandler(anthropicApiKey, options.advisorModels, options.advisorCollector);
   const openRouterHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> OpenRouter Handler
   const localProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Local Provider Handler
   const remoteProviderHandlers = new Map<string, ModelHandler>(); // Map from Target Model ID -> Gemini/OpenAI Handler

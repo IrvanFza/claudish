@@ -49,6 +49,10 @@ export interface ClaudishConfig {
   teamMode?: "default" | "interactive" | "json"; // Team execution mode
   teamKeep?: boolean; // Keep magmux open after all panes finish (--keep)
   inputFile?: string; // File path for prompt input (-f / --file)
+
+  // Advisor mode
+  advisorModels?: string[];        // Advisor models from --advisor flag
+  advisorCollector?: string | null; // Collector model (null = no synthesis)
 }
 
 // Anthropic API Types

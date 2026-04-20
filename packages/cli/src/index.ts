@@ -473,6 +473,8 @@ async function runCli() {
         summarizeTools: cliConfig.summarizeTools,
         quiet: cliConfig.quiet,
         isInteractive: cliConfig.interactive,
+        advisorModels: cliConfig.advisorModels,
+        advisorCollector: cliConfig.advisorCollector,
       }
     );
 

@@ -1,0 +1,1098 @@
+{"event":"message_start","data":{"type":"message_start","message":{"model":"claude-sonnet-4-6","id":"msg_01Ez6qHzzSBGx1Ta2LRgfgjg","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":3,"cache_creation_input_tokens":67870,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":67870,"ephemeral_1h_input_tokens":0},"output_tokens":35,"service_tier":"standard","inference_geo":"global"}}}}
+{"event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_019idpVqAVhFMnan6w84AHaW","name":"advisor","input":{}}}}
+{"event":"ping","data":{"type":"ping"}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}}
+{"event":"content_block_stop","data":{"type":"content_block_stop","index":0}}
+{"event":"ping","data":{"type":"ping"}}
+{"event":"content_block_start","data":{"type":"content_block_start","index":1,"content_block":{"type":"advisor_tool_result","tool_use_id":"srvtoolu_019idpVqAVhFMnan6w84AHaW","content":{"type":"advisor_result","text":"This is a design task in a POC directory, with learning/explanatory mode active. Here's how to approach it:\n\n**Structure the design around these decision points, in order:**\n\n1. **Algorithm selection** — Token bucket vs. sliding window log vs. sliding window counter vs. fixed window. This is the first meaningful user-contribution point: each has different memory/accuracy/burst tradeoffs. Don't just pick one; lay out the tradeoffs and ask.\n\n2. **The actual hard problem: distributed consistency.** A single-node rate limiter is trivial. The distributed part is where \"think carefully\" matters. Cover:\n   - Redis + Lua script (atomic increment + TTL) — the standard production answer\n   - Why naive GET-then-SET races under concurrency (the TOCTOU gap)\n   - The consistency vs. availability tradeoff: do you allow slight over-limit during partitions, or do you reject requests when you can't reach the store?\n\n3. **Failure modes** — What happens when Redis is down? This is the second meaningful user-contribution point: fail-open (allow all traffic, risk abuse) vs. fail-closed (reject all, risk availability). There's no universal right answer.\n\n4. **Implementation** — Since you're in a POC directory, write actual code. A Redis-backed sliding window counter in TypeScript or Python would be concrete. Use Lua scripting for atomicity — this is the non-obvious part most designs get wrong.\n\n**What to avoid:**\n- Don't present 6 algorithms with equal weight. The practical choice is almost always token bucket (simple, efficient) or sliding window counter (accurate, slightly more complex). Cover the others briefly.\n- Don't hand-wave the race condition. Show the broken version (read-then-write) and then the correct version (atomic Lua script or Redis MULTI). This is the educational core.\n- Don't skip the distributed clock/sync problem. Nodes disagree on time. Mention why the counter store (Redis) is the single source of truth, not node-local clocks.\n\n**For the learning mode contributions, request user input on:**\n1. Algorithm choice (after presenting tradeoffs)\n2. Fail-open vs. fail-closed policy\n3. Optionally: the rate limit key design (per-user? per-IP? per-endpoint? compound?)\n\nThese are genuine design decisions with no single right answer — good fit for the learning format."}}}}
+{"event":"content_block_stop","data":{"type":"content_block_stop","index":1}}
+{"event":"content_block_start","data":{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Good"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" framing from the advisor. Let me structure this as a genuine design exploration where your"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" choices shape the outcome.\n\n---\n\n## Distributed Rate Limiter Design\n\nA distributed rate limiter has"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" three genuinely hard problems: **algorithm selection**, **distributed atomicity**, and **failure policy**. Let's"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" tackle them in order.\n\n---\n\n### Problem 1: Algorithm Selection\n\nThe four main algorithms,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" ranked by practical tradeoff:\n\n| Algorithm | Memory | Accuracy | Burst Control | Notes |\n|-----------|--------|----------|---------------|-------|\n| **Fixed"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" Window Counter** | O(1) | Low | Poor | Edge-of-window burst"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":": 2x traffic slips through"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" |\n| **Token Bucket** | O(1) | Good | Excellent | Allows burst up to bucket"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" size; refills at steady rate |\n| **Sliding Window Log** | O(requests) | Perfect | Good"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" | Stores every request timestamp — expensive at scale |\n| **Sliding Window Counter** | O(1"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":") | Good (99%+) | Good | Interpolates between windows; best accuracy/cost tradeoff |\n\nThe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" **sliding window counter** is the standard production choice. Here's the intuition:\n\n```\nPrevious"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" window: 80 requests (last 60s)\nCurrent window: 30 requests (first"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" 30s into window)\n\nEstimated count = 80 * (30/60) +"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" 30 = 40 + 30 = 70\n```\n\nIt approximates traffic without storing"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" every timestamp.\n\n`★ Insight ─────────────────────────────────────`\nThe fixed-window edge"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" case is subtle: if your limit is 100/minute, a client"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" can send 100 at 11:59 and 100 at 12:00 "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"— 200 requests in 2 seconds, yet never \"viol"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"ating\" the limit. Sliding window closes this gap with O(1) memory.\n`─────────────────────────────────────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"────────`\n\n**Your turn on this decision:**\n\nI've"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" set up the structure in `rate_limiter.ts` with the sliding window counter approach, but the"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" **algorithm core** is where your input shapes the behavior. I'll"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" build the surrounding infrastructure.\n\n---\n\n### Problem 2: Distributed Atomicity (The Real"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" Hard Part)\n\nHere's the broken version most people write first:\n\n```typescript\n//"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" BROKEN — race condition between GET and SET\nconst count = await redis.get(key);\nif (count >="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" limit) return reject();\nawait redis.set(key, count + 1);\n```\n\nUnder concurrent requests, two threads can"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" both read `count = 99`, both see `99 < 100`, and both increment"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" — allowing `101` requests. This is a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" classic TOCTOU (Time Of Check, Time Of Use) race.\n\nThe correct approach: **atomic Lua script in"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" Redis**. Lua scripts execute atomically in Redis — no other command runs"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" between steps.\n\n`★ Insight ─────────────────────────────────────`\nRedis's single-thre"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"aded execution model means Lua scripts are the standard solution for distributed atomic operations without transactions"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":". The script runs entirely on the Redis side —"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" no network round trips between read and write, so the TOCTOU window is literally"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":" zero.\n`─────────────────────────────────────────────────`\n\nLet me build the POC structure:"}}}
+{"event":"content_block_stop","data":{"type":"content_block_stop","index":2}}
+{"event":"content_block_start","data":{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_01RgcYSGYBDZFjVfTDMZB5BH","name":"Write","input":{},"caller":{"type":"direct"}}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"file_p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ath\""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\"/Users"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/j"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ack/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mag/magus/ma"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"gus-src/a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"i-docs/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sessions/d"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ev-resea"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rch-a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dvis"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"or-proxy"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"-repl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ac"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ement-20260"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"410-124"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"844-e0f3"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"253"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"9/p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"oc/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rate_limi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ter.ts\""}}}
+{"event":"ping","data":{"type":"ping"}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", \"content\":"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" \"impor"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t Red"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is from \\\""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ioredis"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\";\\n\\n// ─"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"── "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Types"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" ───────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\ninterface"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Rat"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eLimit"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Conf"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ig "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\\n  li"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t: numbe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r; "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"       // m"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ax"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" requ"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"est"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s per window"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n  windowM"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s: numb"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"er;   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  // wind"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" size in mil"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"liseconds\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n  keyPrefix"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"?: stri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ng;   // "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"namesp"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ace "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"for Re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dis keys"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n}\\n\\ninte"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rface RateL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imitResul"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t {\\n  al"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lowed"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": boolean;\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"em"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"aining: num"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ber;  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" // reque"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sts l"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eft"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" in current"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" window\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" rese"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tMs: number;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" /"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ms until w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indow r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"esets\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n  total"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": number;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"       /"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ total r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"equests "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"in this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" window\\n}\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n\\nt"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ype"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" FailPolicy"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" = \\\"open\\\""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" | "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\"closed\\\""}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\n\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n// ─── R"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"edis Lua"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Script (Ato"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mic Sl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"iding Win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dow Counter"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":") ──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/\\n// This"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pt ru"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ns"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" ato"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mically in "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Red"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is. No othe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r Redi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s command e"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"xecut"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"es betw"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"een\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ any t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"wo lin"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"es here — el"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"iminating "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"the "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"TOCTOU r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ace o"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"f r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ead-"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"then-wr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ite pa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ttern"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.\\n//\\n// "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Algori"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"thm: sliding"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" window coun"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ter\\n//   1."}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Com"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"put"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ent window "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"y "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(floo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"red"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" to windowM"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s boundary)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n//"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   2. C"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ompute pr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"evi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ous window k"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ey ("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"one window "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"back)\\n//"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   3. E"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"stimate "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"weighted c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ount: prev"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_count * ("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ela"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pse"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"d/window"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":") "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"+ c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"urr_count"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n//   4"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":". I"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"f under l"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imit, inc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rement cur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rent window "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"count"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"er + set T"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"TL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n//\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"KEYS[1] = cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rren"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t wind"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow key"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n// KEYS[2]"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" = p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"revious wind"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"key\\n// AR"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"GV[1] ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" lim"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"it\\n// AR"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"GV[2] = cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rrent tim"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"estamp ("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ms)\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n// AR"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"GV[3] ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" window si"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ze (ms"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":")\\n// AR"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"GV[4] = "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"TTL for cur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rent windo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w key ("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"seco"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nds)\\n\\nco"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nst SLIDIN"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"G_WIN"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"DOW_SCRI"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"PT = `"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\nlo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cal "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"curr_key "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= KE"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"YS[1"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"]\\nl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ocal "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"prev"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_k"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ey = KEY"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"S["}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"2]\\nlocal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" limit "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= tonum"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ber(ARGV[1])"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\nloc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"al now = "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tonu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mb"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"er(ARGV[2]"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":")\\nlo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cal win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"do"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w_ms = t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onumber(ARG"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"V["}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"3])\\nlocal t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tl = tonumbe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r(ARGV["}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"4])\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n\\n-- How"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" far into"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" the current"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" window are"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e? (0.0 to 1"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".0)\\nloca"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l window_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"start"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" = now - (no"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w % wind"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow_ms)\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nlocal ela"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"psed_fracti"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"on = (n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow - win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dow_sta"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rt) "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indow_ms\\n\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n-- Get"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" counts "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"fr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"om b"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"oth "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"window"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s\\nloca"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l pre"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"v_cou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt = tonumb"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"er(redis.ca"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ll('GE"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"T', "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"prev_key)) "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"or 0\\nl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ocal curr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"unt = tonu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mber(redis"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".call('GET"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"', cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rr_ke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"y)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":") or 0\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n\\n--"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Weighted "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"estimat"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e: p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"revious wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndow's co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ntri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"butio"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n decay"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s we "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"move"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" forward"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\nlocal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" esti"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ma"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ted "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= math"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".floor(prev"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_count * (1"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" - elapsed_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"fraction)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":") + curr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_count"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n\\ni"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"f est"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imated >= "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"limit then"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n  -- Rejec"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t: retu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rn"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" cur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt st"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ate wit"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"hout in"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"crementing\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  local "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"set_ms = w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ind"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow_m"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s - "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(now % win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dow_ms)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n  r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eturn {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"0, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rr_co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"unt, res"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"et_ms, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"estimated"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"}\\nend"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n\\n-"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"- Allow: at"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"om"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ically "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"increme"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt and set "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"TTL\\nl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ocal new_c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ount "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= redi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.call('I"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"NCR', curr_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"y)\\ni"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"f new_c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ount == 1 "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"the"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n\\n  --"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" F"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"irst"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" request in "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"thi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s window "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"— set expi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ry\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  redis.cal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l('PE"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"XPIRE', "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"curr_key"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", tt"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l * 1000)\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nen"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"d\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"local remai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ning = limi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t - (estimat"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ed + 1)\\nl"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"oc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"al re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"set_ms = wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndow_ms -"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" (now % wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndow_ms)\\nr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eturn"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" {1, new_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"count, rese"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t_ms, esti"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mated + 1}"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n`"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n// ─── "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Rate L"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"im"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"iter "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n\\nex"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"port class"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Distributed"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"RateLi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"miter {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" pr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ivate "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"redis:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" R"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"edis;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"privat"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e config: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"RateLi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mitC"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onfig;\\n  p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rivate fa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ilPo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lic"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"y:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" FailP"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"olicy;\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n  priva"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"te scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pt:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" string;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" priva"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"te scrip"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tSha: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"string | "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"null = n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ull;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n\\n  constr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"uctor("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"redis: Redi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s, co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nfig: RateL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imitConfig,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" fai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lPolicy: Fa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ilPolicy "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= \\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\"op"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"en\\\")"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" {\\n    th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is.redis = "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"redis;"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n    t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"his.config "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= { keyPref"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ix: \\\"r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l\\\","}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" ...c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onfig"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" };\\n  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"this.failPo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"licy = "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"failPo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"li"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cy;\\n    thi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pt = SL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"IDING_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"WINDOW_"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"SCRIPT;\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  }\\n\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" // Load "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ript into R"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"edis script "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cac"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"he "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(EVALSHA"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" is faster"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" than E"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"VAL on repe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"at cal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ls)\\n  as"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ync init"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ialize(): P"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"romise<void"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"> {\\n    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"this.scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ptSha ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" awai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is.redis.scr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ipt(\\\"L"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"OAD\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\", "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"this.s"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cript)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s stri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ng;\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  }\\n\\n  asy"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nc check(id"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"entifier:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" string): Pr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"omi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"se<RateLimit"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sult>"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" {\\n    c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onst now = D"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"at"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e.no"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w();\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n    c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onst "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dowMs = t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"his.c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"onfig.win"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dow"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Ms;\\n    co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nst windowS"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ec ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Math.ceil(w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indowMs / "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"1000);\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n    // "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Key"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" design: {pr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"efix}:{ide"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ntifier}:{"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndow_bucket}"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n    // w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indow_buc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t floors to "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e curre"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indow bou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nd"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ary — all "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"requ"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ests in"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" the\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    //"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" s"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ame windo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w share t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"he same"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" key, mak"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ing the"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" counte"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r window-sc"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"oped.\\n    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"const windo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"wBucke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= Math.flo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"or(now / w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"wMs);\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   con"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"st "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"currKey ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" `${th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is.config.k"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eyPrefix}:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"${identifie"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r}:${windo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"wBucket}`;\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n    const p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"revKey "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= `${this.co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nfig.k"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eyPrefix"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"}:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"${id"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"entifier}"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":":$"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndowBucke"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t - 1}`;\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n    // TT"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"L: cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rrent windo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w TT"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"L + one fu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ll window (k"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eeps previou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s w"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"indow"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" alive fo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r slid"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ing c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"alc)\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   const"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" ttl "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= wi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ndowSec * 2"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\n\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   try"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n      let"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" result: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"unknown[];"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"if (this."}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"scr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"iptSha) {\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  // Use cac"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"hed scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pt"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" SHA (prefer"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"red — av"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"oids "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"re-sending s"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cript body"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":")\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   try {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n        "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  res"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ult = awai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"hi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dis.eva"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lsha(\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"       this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".scriptSha,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" 2, cur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rKey,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" pr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"evKey,\\n   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"     St"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rin"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"g(this.confi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"g.limit), "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"String(no"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"w), String("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"windowM"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s), String"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(ttl)\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    ) "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"as "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"un"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"know"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n[];\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" } catch (er"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r: unk"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nown) {\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  if (err i"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ns"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tanceof E"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rro"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r &&"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" err.messa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ge.includ"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"es(\\\"N"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"OSCRIP"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"T\\\")) {\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    // Scri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pt was evic"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ted "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"from cache "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"— fal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l b"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ack to"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" EVAL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"reload"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" SH"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"A\\n       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  result ="}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" await"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" this.redis."}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eval"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is.scr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ipt, 2, cu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rrKey, pre"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"vKey,\\n   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"        "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   St"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ring(t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"his.config"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".l"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imit), S"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ng(now), "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Str"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ing(windowM"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s), String(t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tl)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"     ) as "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"unkn"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n[];\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"this.scrip"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tSha "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= await"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".redi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.s"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"cript(\\\"LOAD"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\", this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".script) "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"as stri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ng;\\n    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   }"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" else {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"        "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   thr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow er"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r;\\n       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   }\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" }\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"} el"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"se"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" {\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   resu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lt = await"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" this.r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"edis.eval"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(\\n    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      thi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s.script"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"2, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"curr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Key"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", prevKe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"y,\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"     St"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ri"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ng"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(this.co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nfig.limi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t), String(n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow), St"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ring(window"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Ms),"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" S"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"trin"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"g(tt"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l)\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  ) a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s u"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nkn"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"own[];"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   }\\n\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  const [a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"llowe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"d, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"curre"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ntCou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt, re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"setMs,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" estimated] "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"= result"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" as number"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"[];\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n {\\n  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      allo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"we"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"d: all"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ow"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ed"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" === 1,\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n       "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" rema"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ining:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Math.m"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ax(0, this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".co"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nfig.lim"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"it - esti"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mate"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"d),\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   resetMs: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Number(res"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"etM"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":",\\n        t"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"otal"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Num"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ber(cur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ren"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tCou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":",\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n      };\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n    } "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"catch (err"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":") {\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"// ── Fa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ilure Po"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"licy ─────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"// Red"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"is is "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"unreachab"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"le. Th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e fail p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"olicy determ"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ines behavi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"or:\\n     "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" //   \\\"op"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"en\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\"   → al"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"low all tr"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"affic (avai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"la"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"bi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lity-fi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rst, r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"isk: abuse d"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"uring ou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"tage"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":")\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"     // "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  \\\"c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"los"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ed\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\" → re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ject all "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"traffic (saf"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ety-fi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rst, risk: a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"vailabili"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ty"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" impa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ct)\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"      //\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  // TODO"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": Implem"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"en"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t the fail p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"olicy "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"deci"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sion below.\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"    "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" /"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Whic"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"h shou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ld we use, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"and "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"what cont"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ext "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"shou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ld inform th"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"at"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" choice"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"?\\n      "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"turn "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"this"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".hand"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"leRedis"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Failur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e(err as Err"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"or"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":");\\n    }"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  }\\n\\n  /"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ TODO: You'"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ll implemen"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t this — se"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e the c"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ontribution "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"re"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"quest "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"below\\n "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" priva"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"te han"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"dleR"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"edi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"sFailure(er"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Error)"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": Rat"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eL"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"imitResult {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"   "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" throw"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" new Error(\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\"N"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ot imple"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mented — see"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" contrib"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ution "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"req"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"uest in rate"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"_limiter."}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ts\\\")"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n  }\\n}\\n\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n// "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Key Desig"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n Helper ─"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"─────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"────"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"──"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"───\\n//\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ R"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ate limit"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" ident"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ifiers can "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"be"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" compo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"site. A "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"key "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"like:\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"//   \\\"r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l:user:42:P"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"OST:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/api/upload\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\"\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/ lets yo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"u a"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"pply differe"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nt limits p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"er u"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ser, per m"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"eth"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"od, "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"per endpoin"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"t."}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"//\\n// Y"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ou can also "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"im"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"plement "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\"tiered"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\" limit"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"s by"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" checking mu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"lti"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ple identifi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ers:\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"//   -"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" Per-IP: 10"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"00/hou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r (globa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"l "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"abus"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e protectio"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n)\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"//   - Per"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"-user"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": 1"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"00/ho"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ur (fai"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rness)\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"//   - "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"Per-"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"endpoint:"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" 10/minut"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"e "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"(r"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"esou"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rce prote"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ction)\\n/"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"/\\"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nexport fu"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"nction "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"buildRateLi"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"mitKey(par"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ts: {\\n  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"userId?: "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"string;\\n  i"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"p?"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": string;\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  endpo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"int"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"?: string"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\n"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  method?"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": string"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":";\\n})"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":": string {"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n  retur"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"n [parts"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":".userId, pa"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rts.ip, par"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ts.method,"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" p"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"arts.end"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"point]\\n  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  .f"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"ilte"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"r(Boolean"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":")\\n  "}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"  .jo"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"in("}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\\":\\\");"}}}
+{"event":"content_block_delta","data":{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\n}\\n\"}"}}}
+{"event":"content_block_stop","data":{"type":"content_block_stop","index":3}}
+{"event":"message_delta","data":{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":4,"cache_creation_input_tokens":68464,"cache_read_input_tokens":67870,"output_tokens":2952,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"iterations":[{"input_tokens":3,"output_tokens":35,"cache_read_input_tokens":0,"cache_creation_input_tokens":67870,"cache_creation":{"ephemeral_5m_input_tokens":67870,"ephemeral_1h_input_tokens":0},"type":"message"},{"input_tokens":68736,"output_tokens":1008,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"advisor_message","model":"claude-opus-4-6"},{"input_tokens":1,"output_tokens":2917,"cache_read_input_tokens":67870,"cache_creation_input_tokens":594,"cache_creation":{"ephemeral_5m_input_tokens":594,"ephemeral_1h_input_tokens":0},"type":"message"}]},"context_management":{"applied_edits":[]}}}
+{"event":"message_stop","data":{"type":"message_stop"}}

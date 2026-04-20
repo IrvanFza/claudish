@@ -118,6 +118,46 @@ function clearAllModelCaches(): void {
 }
 
 /**
+ * Parse the --advisor flag value.
+ * Format: "model1,model2,model3:collector"
+ *   - Split on last ":" → advisors | collector
+ *   - No ":" → default collector = "haiku"
+ *   - Trailing ":" → no collector (raw concat)
+ *   - Single advisor → no collector (passthrough)
+ */
+export function parseAdvisorFlag(value: string): {
+  models: string[];
+  collector: string | null;
+} {
+  const colonIdx = value.lastIndexOf(":");
+  let advisorPart: string;
+  let collectorPart: string | undefined;
+
+  if (colonIdx >= 0) {
+    advisorPart = value.slice(0, colonIdx);
+    collectorPart = value.slice(colonIdx + 1).trim();
+  } else {
+    advisorPart = value;
+    collectorPart = undefined;
+  }
+
+  const models = advisorPart.split(",").map(s => s.trim()).filter(Boolean);
+
+  let collector: string | null;
+  if (models.length <= 1) {
+    collector = null;
+  } else if (collectorPart === undefined) {
+    collector = "haiku";
+  } else if (collectorPart === "") {
+    collector = null;
+  } else {
+    collector = collectorPart;
+  }
+
+  return { models, collector };
+}
+
+/**
  * Parse CLI arguments and environment variables
  */
 export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
@@ -258,6 +298,16 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--json") {
       config.jsonOutput = true;
     } else if (arg === "--monitor") {
+      config.monitor = true;
+    } else if (arg === "--advisor") {
+      const modelsArg = args[++i];
+      if (!modelsArg) {
+        console.error("--advisor requires a comma-separated list of models (e.g., 'gemini-3-pro,grok-3')");
+        process.exit(1);
+      }
+      const parsed = parseAdvisorFlag(modelsArg);
+      config.advisorModels = parsed.models;
+      config.advisorCollector = parsed.collector;
       config.monitor = true;
     } else if (arg === "--stdin") {
       config.stdin = true;
@@ -1644,6 +1694,7 @@ OPTIONS:
   --stdin                  Read prompt from stdin (useful for large prompts or piping)
   --free                   Show only FREE models in the interactive selector
   --monitor                Monitor mode - proxy to REAL Anthropic API and log all traffic
+  --advisor "m1,m2[:collector]"  Multi-model advisor replacement (implies --monitor)
   -y, --auto-approve       Skip permission prompts (--dangerously-skip-permissions)
   --no-auto-approve        Explicitly enable permission prompts (default)
   --dangerous              Pass --dangerouslyDisableSandbox to Claude Code

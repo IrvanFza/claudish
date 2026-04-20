@@ -1,0 +1,426 @@
+  Failure modes:
+
+  ┌──────────────┬─────────────────────────────────────┬─────────────────────────────────────┐
+  │   Failure    │              Behavior               │             Mitigation              │
+  ├──────────────┼─────────────────────────────────────┼─────────────────────────────────────┤
+  │ Coordinator  │ Regions operate on remaining local  │ Each region keeps a "emergency      │
+  │ down         │ quota, then fall back to a          │ budget" (e.g., limit/N_regions)     │
+  │              │ conservative local-only limit       │                                     │
+  ├──────────────┼─────────────────────────────────────┼─────────────────────────────────────┤
+  │ Network      │ Same as above — region can't        │ Time-bounded local budget prevents  │
+  │ partition    │ refill, degrades gracefully         │ unlimited pass-through              │
+  ├──────────────┼─────────────────────────────────────┼─────────────────────────────────────┤
+  │ Region       │ One region gets a traffic spike,    │ Adaptive rebalancing: coordinator   │
+  │ asymmetry    │ exhausts its slice quickly          │ can redistribute unused quota from  │
+  │              │                                     │ quiet regions                       │
+  ├──────────────┼─────────────────────────────────────┼─────────────────────────────────────┤
+  │              │ Window boundaries differ across     │ Use window IDs (epoch /             │
+  │ Clock skew   │ regions                             │ window_size) instead of absolute    │
+  │              │                                     │ timestamps                          │
+  └──────────────┴─────────────────────────────────────┴─────────────────────────────────────┘
+
+  ★ Insight ─────────────────────────────────────
+  Why local reservations beat synchronized counters: Cross-region latency (50-200ms) on every
+  request is a non-starter for a rate limiter in the hot path. The reservation model amortizes
+  that cost — you pay one cross-region call per ~100 local decisions. This is the same pattern
+  Redis Cluster uses for slot migration and how Google's Chubby lock service handles lock
+  renewals.
+
+  The 80% refill threshold matters: If you wait until 100% exhausted, you'll have a gap where
+  requests are rejected while the refill round-trip completes. 80% gives you a buffer. In
+  practice, tune this based on (refill_latency / average_inter-request_time).
+  ─────────────────────────────────────────────────
+
+  ---
+  Design 2: Sliding Window with Gossip (Eventually Consistent)
+
+  Idea: No central coordinator. Each region maintains a full counter and periodically gossips its
+  local count to peers. The global estimate is sum(all regional counts).
+
+  Tradeoffs vs. Design 1:
+  - Pro: No single point of failure, no coordinator bottleneck
+  - Con: During gossip propagation delay (~1-5s), the global estimate is stale. A burst across all
+   regions simultaneously could exceed the limit by up to N_regions × gossip_delay × request_rate
+  - Con: More complex consistency reasoning
+
+  When to pick this: When you have >5 regions and the coordinator becomes a bottleneck, or when
+  your limits are "soft" (e.g., fair-use throttling where 10% overshoot is fine).
+
+  ---
+  Design 3: Strongly Consistent (Synchronized)
+
+  Idea: Every rate limit check goes through a global store (e.g., Redis with cross-region
+  replication using WAIT).
+
+  When to pick this: Almost never for a rate limiter. The latency cost is too high. The only case
+  is billing-critical limits where exceeding the limit costs real money (e.g., "customer paid for
+  exactly 10,000 API calls/month"). Even then, consider Design 1 with very small reservation
+  slices.
+
+  ---
+  Practical Implementation Choices
+
+  Data structure: Sliding window log (sorted set of timestamps) is most accurate but memory-heavy.
+   Fixed window counters are simpler and good enough — the edge case where a user sends all
+  requests at the boundary of two windows (getting 2x the limit) is usually acceptable. If it's
+  not, use a sliding window counter (weighted average of current and previous window).
+
+  Key schema: rate:{user_id}:{endpoint}:{window_id} — keeping the window ID in the key means old
+  windows expire naturally via TTL.
+
+  Storage:
+  - Redis for the coordinator (Design 1) or single-region setups
+  - DynamoDB with on-demand capacity for serverless setups (higher latency but zero-ops)
+  - Don't use a relational database — the write volume is too high and you don't need ACID
+
+  Response headers (always include these — they're part of the contract):
+  X-RateLimit-Limit: 1000
+  X-RateLimit-Remaining: 742
+  X-RateLimit-Reset: 1713225600
+  Retry-After: 47        # only on 429 responses
+
+  ---
+  Decision Framework
+
+  ┌───────────────────────────────┬───────────────────────────────────────────────────────┐
+  │        Your situation         │                         Pick                          │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ 1-2 regions, simple setup     │ Single Redis, no distribution needed                  │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ 2-5 regions, hard limits      │ Design 1 (local reservations)                         │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ 5+ regions, soft limits       │ Design 2 (gossip)                                     │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ Billing-critical exact limits │ Design 3 (synchronized), or Design 1 with tiny slices │
+  ├───────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ Serverless / no Redis         │ Per-region DynamoDB counters + periodic sync          │
+  └───────────────────────────────┴───────────────────────────────────────────────────────┘
+
+  ★ Insight ─────────────────────────────────────
+  The dirty secret: Most production rate limiters use Design 1 or even simpler per-region counters
+   with no coordination at all. The overshoot from not synchronizing is typically <20%, and the
+  operational simplicity of "each region has its own Redis" far outweighs the cost of a
+  distributed coordination layer. Cloudflare's rate limiting, for example, operates per-datacenter
+   with asynchronous aggregation — they accept the inaccuracy in exchange for zero-latency
+  decisions.
+
+  Rate limiting is a best-effort mechanism, not a security boundary. If you need hard enforcement
+  (e.g., preventing abuse), pair it with a secondary system that audits usage after the fact and
+  takes corrective action (account suspension, billing adjustment).
+  ─────────────────────────────────────────────────
+
+  ---
+  My recommendation: Start with Design 1 (token bucket with local reservations) unless you have a
+  specific reason not to. It gives you sub-millisecond hot-path latency, graceful degradation on
+  coordinator failure, and accuracy within ~5% of the true limit. Implement the coordinator as a
+  single Redis instance with a standby — rate limiter state is ephemeral (windows expire in
+  seconds/minutes), so you don't need durable storage or complex failover.
+
+✻ Cogitated for 1m 9s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────
+  Press Ctrl-C again to exit                                                       114385 tokens
+
+Resume this session with:
+claude --resume 1a65fdd4-fba0-4477-8d8a-2045b3ed7c75
+
+[claudish] Shutting down proxy server...
+[claudish] Done
+
+❯
+❯ export CLAUDISH_SWAP_ADVISOR_DUMP=1
+❯ bun run packages/cli/src/index.ts --monitor
+[claudish] Monitor mode enabled - proxying to real Anthropic API
+[claudish] Using Claude Code's native authentication
+[claudish] Tip: Run with --debug to see request/response details
+
+[claudish] Model: default
+
+ ▐▛███▜▌   Claude Code v2.1.108
+▝▜█████▛▘  Opus 4.6 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    ~/mag/claudish
+
+❯ Design a sharded counter service. Think carefully and consult the advisor before committing to
+  an approach.
+
+⏺ ★ Coaching ────────────────────────────────────
+  Session 48131178...
+
+  - Avoid running claudish commands from main project directory
+
+  ─────────────────────────────────────────────────
+
+  ★ Learning Review ──────────────────────────────
+  1 learnings pending approval:
+
+  1. [HIGH] Use bunx with timeout for claudish commands to prevent hanging
+  Evidence: Multiple failed sequences: bunx->timeout pattern repeated 3+ times
+  → Add to: ## Learned Preferences > Tools & Commands
+
+  Reply /dev:learn --apply to add all, or /dev:learn to review individually.
+  ────────────────────────────────────────────────
+
+  ---
+  I'll design a sharded counter service. Before committing to an approach, let me consult the
+  advisor for strategic guidance on the architecture.
+
+⏺ The advisor tool isn't available in this session. Let me think through the design carefully and
+  present it directly.
+
+  ★ Insight ─────────────────────────────────────
+  Why sharded counters? A naive single-document counter creates a write hotspot — Firestore,
+  DynamoDB, and most distributed databases limit write throughput per key (e.g., Firestore: ~1
+  write/sec per document). Sharding distributes writes across N sub-documents, trading read
+  complexity for write scalability.
+  ─────────────────────────────────────────────────
+
+  Before I design this in detail, I have a few questions to make sure the design fits your needs:
+
+⏺ User declined to answer questions
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                   112814 tokens
+                                                              current: 2.1.108 · latest: 2.1.109
+  Press Ctrl-C again to exit                              new task? /clear to save 113.3k tokens
+
+Resume this session with:
+claude --resume 36e7350b-e482-40b0-b8c4-8e2d3ed3625f
+bun run packages/cli/src/index.ts --monitor
+
+[claudish] Shutting down proxy server...
+[claudish] Done
+
+❯ export CLAUDISH_SWAP_ADVISOR=1 CLAUDISH_SWAP_ADVISOR_LOG=/tmp/advisor-swap/stage1.ndjson CLAUDIS
+H_SWAP_ADVISOR_DUMP=1
+❯ bun run packages/cli/src/index.ts --monitor
+[claudish] Monitor mode enabled - proxying to real Anthropic API
+[claudish] Using Claude Code's native authentication
+[claudish] Tip: Run with --debug to see request/response details
+
+[claudish] Model: default
+
+ ▐▛███▜▌   Claude Code v2.1.109
+▝▜█████▛▘  Opus 4.6 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    ~/mag/claudish
+
+❯ Design a distributed rate limiter for a global API. Consult the advisor before proposing an
+  approach.
+
+⏺ ★ Coaching ────────────────────────────────────
+  Session 9081c2ea...
+
+  - Reduce tool switching between bun/bunx/git commands
+
+  ─────────────────────────────────────────────────
+
+  ★ Learning Review ──────────────────────────────
+  3 learnings pending approval:
+
+  1. [HIGH] Use bunx with timeout for claudish commands to prevent hanging
+  Evidence: Multiple failed sequences: bunx->timeout pattern repeated 3+ times
+  → Add to: ## Learned Preferences > Tools & Commands
+  2. [HIGH] Use claudish command for project tasks instead of bash grep/find
+  Evidence: Signal: claudish-in-main-bash, excessive bash tool usage (164 calls)
+  → Add to: ## Learned Preferences > Tools & Commands
+  3. [HIGH] Avoid grep when Mnemex search tools are available
+  Evidence: Signal: grep-instead-of-mnemex, multiple failed sequences
+  → Add to: ## Learned Preferences > Tools & Commands
+
+  Reply /dev:learn --apply to add all, or /dev:learn to review individually.
+  ────────────────────────────────────────────────
+
+  ---
+  Good question — this is a pure design task, not tied to the claudish codebase. Let me consult
+  the advisor before proposing anything, since distributed rate limiting has several valid
+  architectures with meaningful trade-offs.
+
+⏺ ★ Insight ─────────────────────────────────────
+  The advisor highlights a critical framing: the failure mode (fail-open vs fail-closed) is the
+  single most important decision. This is because in a distributed system, the central coordinator
+   will become temporarily unreachable — and your choice here defines whether you prioritize
+  availability (allow requests through, risking over-limit) or accuracy (reject requests, risking
+  false denials).
+  ─────────────────────────────────────────────────
+
+  ---
+  Distributed Rate Limiter — Design Proposal
+
+  Architecture: Hybrid Local + Central
+
+  ┌─────────────────────────────────────────────────────────┐
+  │                    Global API Gateway                    │
+  ├─────────┬─────────┬─────────┬─────────┬─────────────────┤
+  │  Edge   │  Edge   │  Edge   │  Edge   │                 │
+  │  US-E   │  US-W   │  EU-W   │  AP-SE  │  ... more PoPs  │
+  │         │         │         │         │                 │
+  │ ┌─────┐ │ ┌─────┐ │ ┌─────┐ │ ┌─────┐ │                 │
+  │ │Local│ │ │Local│ │ │Local│ │ │Local│ │  Layer 1:       │
+  │ │Token│ │ │Token│ │ │Token│ │ │Token│ │  Per-node burst │
+  │ │Bucket│ │ │Bucket│ │ │Bucket│ │ │Bucket│ │  control       │
+  │ └──┬──┘ │ └──┬──┘ │ └──┬──┘ │ └──┬──┘ │                 │
+  │    │    │    │    │    │    │    │    │                 │
+  │    └────┴────┴────┴────┴────┘    │                     │
+  │              ▼                                         │
+  │     ┌────────────────┐           Layer 2:              │
+  │     │  Quota Sync    │           Central coordination  │
+  │     │  (Redis Cluster│           via async sync        │
+  │     │   per region)  │                                 │
+  │     └───────┬────────┘                                 │
+  │             ▼                                          │
+  │     ┌────────────────┐           Layer 3:              │
+  │     │  Cross-Region  │           Global fairness       │
+  │     │  Gossip / CRDT │           (eventually           │
+  │     │  Reconciliation│            consistent)          │
+  │     └────────────────┘                                 │
+  └─────────────────────────────────────────────────────────┘
+
+  Three Layers, Three Concerns
+
+  Layer 1 — Local Token Bucket (per node)
+  - In-memory token bucket at each edge node
+  - Handles burst tolerance with zero network latency
+  - Each node gets a lease of N tokens from the central store
+  - When the lease runs low, requests a new batch asynchronously
+
+  Layer 2 — Regional Quota Coordinator (Redis Cluster)
+  - One Redis cluster per region (us-east, eu-west, ap-southeast)
+  - Lua script for atomic DECR + EXPIRE — single roundtrip
+  - Nodes sync consumed tokens here every ~100ms or when lease depletes
+  - This is where most rate limiting decisions are made
+
+  Layer 3 — Cross-Region Reconciliation
+  - Gossip protocol or CRDT counters propagated between regional Redis clusters
+  - Eventually consistent — accepts a small over-count window (~1-2% of limit)
+  - Reconciliation interval: 1-5 seconds depending on tier
+
+  ---
+  The Critical Decision: Failure Mode
+
+  This is where your domain knowledge matters most.
+
+  ┌───────────────┬────────────────────────────────────────┬──────────────────────────────────┐
+  │     Mode      │   Behavior when coordinator is down    │             Best for             │
+  ├───────────────┼────────────────────────────────────────┼──────────────────────────────────┤
+  │ Fail-open     │ Allow requests using last-known quota  │ Revenue-critical APIs,           │
+  │               │                                        │ e-commerce                       │
+  ├───────────────┼────────────────────────────────────────┼──────────────────────────────────┤
+  │ Fail-closed   │ Reject requests (429)                  │ Security-sensitive, billing,     │
+  │               │                                        │ auth                             │
+  ├───────────────┼────────────────────────────────────────┼──────────────────────────────────┤
+  │ Fail-degraded │ Fall back to local-only limits         │ Balanced — most common choice    │
+  │               │ (generous)                             │                                  │
+  └───────────────┴────────────────────────────────────────┴──────────────────────────────────┘
+
+  Recommendation: Fail-degraded, configurable per tenant/tier.
+
+  When Redis is unreachable, each node enforces a local-only limit calculated as:
+
+  local_limit = global_limit / expected_node_count * safety_factor
+
+  The safety_factor (e.g., 1.5x) accounts for uneven traffic distribution. This means during an
+  outage you allow slightly more than intended, but never unlimited.
+
+  ---
+  Key Design Decisions
+
+  1. Algorithm: Sliding Window Log vs Token Bucket
+
+  ┌────────────────┬─────────────────┬─────────────────────────────┐
+  │                │ Sliding Window  │        Token Bucket         │
+  ├────────────────┼─────────────────┼─────────────────────────────┤
+  │ Accuracy       │ Exact           │ Approximate (allows bursts) │
+  ├────────────────┼─────────────────┼─────────────────────────────┤
+  │ Memory         │ O(requests)     │ O(1)                        │
+  ├────────────────┼─────────────────┼─────────────────────────────┤
+  │ Burst handling │ No bursts       │ Configurable burst          │
+  ├────────────────┼─────────────────┼─────────────────────────────┤
+  │ Recommendation │ Use for billing │ Use for throughput          │
+  └────────────────┴─────────────────┴─────────────────────────────┘
+
+  → Hybrid: Token bucket for throughput limits, sliding window for hard billing caps.
+
+  2. Granularity
+
+  Per-key limits:     api_key:plan:endpoint → 1000 req/min
+  Per-IP limits:      ip:region             → 100 req/min  (abuse prevention)
+  Global limits:      service:endpoint      → 50000 req/min (capacity protection)
+
+  All three evaluated in parallel; first rejection wins.
+
+  3. Client-Facing Headers (RFC 6585 + draft-ietf-httpapi-ratelimit-headers)
+
+  RateLimit-Limit: 1000
+  RateLimit-Remaining: 742
+  RateLimit-Reset: 1718234400
+  Retry-After: 30
+
+  4. Redis Key Schema
+
+  rl:{tenant}:{endpoint}:{window_start}
+  TTL = window_size + buffer
+
+  Window start is quantized to the window size (e.g., minute boundaries) to enable efficient
+  cleanup.
+
+  ---
+  Consistency vs Availability Knobs
+
+  The system exposes per-tenant configuration:
+
+  interface RateLimitPolicy {
+    limit: number;
+    window: "second" | "minute" | "hour" | "day";
+    algorithm: "token_bucket" | "sliding_window";
+    failureMode: "open" | "closed" | "degraded";
+    syncInterval: number;        // ms between node→Redis syncs
+    crossRegionSync: boolean;    // enable Layer 3
+    burstMultiplier: number;     // 1.0 = no burst, 2.0 = 2x burst
+  }
+
+  Enterprise tenants get crossRegionSync: true + sliding_window for exact counts.
+  Free tier gets token_bucket + regional-only sync — cheaper, good enough.
+
+  ---
+  What This Doesn't Cover (Intentionally)
+
+  - Specific Redis deployment (Elasticache, Dragonfly, KeyDB) — depends on cloud provider
+  - Service mesh integration — if you're on Istio/Envoy, the local bucket moves to sidecar
+  - DDoS — rate limiting is not DDoS protection; use Cloudflare/Shield upstream
+
+  ★ Insight ─────────────────────────────────────
+  Why not just use a central Redis counter? A single INCR per request works at small scale, but at
+   50K+ req/s globally, every request adds ~1-5ms of network latency to Redis. The local token
+  bucket with lease-based refills reduces Redis traffic by 10-100x while keeping accuracy within
+  ~1-2% of the true count. The trade-off: you accept a small over-count window in exchange for p99
+   latency staying under 1ms at the edge.
+
+  Why CRDTs for cross-region? G-Counters (grow-only counters) are a natural fit — each region
+  increments its own counter, and the global total is the sum. No conflict resolution needed,
+  merge is commutative, and temporary network partitions between regions resolve automatically.
+  ─────────────────────────────────────────────────
+
+  ---
+  Summary
+
+  The core insight is that a distributed rate limiter is really three problems at different time
+  scales: sub-millisecond burst control (local), millisecond-scale quota coordination (regional
+  Redis), and second-scale global fairness (cross-region sync). Layering them lets you tune the
+  accuracy/latency/cost trade-off per tenant rather than making a single system-wide choice.
+
+  Want me to dive deeper into any layer, sketch the Redis Lua scripts, or design the API surface
+  for this?
+
+✻ Baked for 1m 4s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────
+  Press Ctrl-C again to exit                                                       114449 tokens
+
+Resume this session with:
+claude --resume f0c588de-7b6b-45f2-9f5c-6039db8603a2
+
