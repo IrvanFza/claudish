@@ -56,8 +56,6 @@ const OAUTH_CONFIG = {
     "profile",
     "email",
     "offline_access",
-    "api.connectors.read",
-    "api.connectors.invoke",
   ],
 };
 
@@ -386,9 +384,8 @@ export class CodexOAuth {
    * OpenAI PKCE flow — no access_type or prompt params (unlike Google OAuth).
    */
   private buildAuthUrl(codeChallenge: string, state: string, redirectUri: string): string {
-    // Build URL manually to use %20 for scope separators (not +)
-    // OpenAI's auth server is sensitive to encoding
-    const scope = OAUTH_CONFIG.scopes.map(encodeURIComponent).join("%20");
+    // Use + for scope separators (matching working opencode implementation)
+    const scope = OAUTH_CONFIG.scopes.join("+");
     const params = [
       `response_type=code`,
       `client_id=${encodeURIComponent(OAUTH_CONFIG.clientId)}`,
@@ -399,7 +396,7 @@ export class CodexOAuth {
       `id_token_add_organizations=true`,
       `codex_cli_simplified_flow=true`,
       `state=${encodeURIComponent(state)}`,
-      `originator=codex_cli_rs`,
+      `originator=opencode`,
     ].join("&");
 
     return `${OAUTH_CONFIG.authUrl}?${params}`;
@@ -492,8 +489,8 @@ export class CodexOAuth {
         }
       });
 
-      // Listen on port 0 to get a random available port
-      server.listen(0, () => {
+      // Use port 1455 (matching working opencode implementation)
+      server.listen(1455, () => {
         const address = server.address();
         if (!address || typeof address === "string") {
           reject(new Error("Failed to get server port"));
