@@ -2,6 +2,28 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.0.3] - 2026-04-21
+
+### Bug Fixes
+
+- inherit parent CWD so models can access the repo *(team)* ([`00a692a`](https://github.com/MadAppGang/claudish/commit/00a692a7c698cbd09a0320df65123d771d73fbf5))
+- align OAuth flow with opencode for successful ChatGPT login *(codex)* ([`ceb5074`](https://github.com/MadAppGang/claudish/commit/ceb50743981b026c01e621649c71e9170c305041))
+- detect in-stream error payloads from anthropic-compat providers (#106) *(anthropic-sse)* ([`9deb528`](https://github.com/MadAppGang/claudish/commit/9deb5286ecf0829e71a5d1de149dcc83a4b3ab8d))
+- back interactive model picker with Firebase catalog([`b5f0e49`](https://github.com/MadAppGang/claudish/commit/b5f0e49caba6740367bc345346e31b08cf4d6bbe))
+
+### Documentation
+
+- update CHANGELOG.md for v7.0.1([`0ee1c1e`](https://github.com/MadAppGang/claudish/commit/0ee1c1e66c16149ebd202f5723a0ae160d748f6b))
+
+### New Features
+
+- --advisor flag for multi-model advisor tool replacement *(advisor)* ([`460bfd0`](https://github.com/MadAppGang/claudish/commit/460bfd01e166392e9b1693678b469735302d5068))
+- enable OAuth authentication for ChatGPT Plus/Pro subscriptions *(codex)* ([`7098992`](https://github.com/MadAppGang/claudish/commit/709899215ba16afaa296fca2eb37afbad159b6b3))
+
+### Other Changes
+
+- release v7.0.3([`e898715`](https://github.com/MadAppGang/claudish/commit/e8987155ea634ddb84505832bfe9592c1316ddb3))
+
 ## [7.0.1] - 2026-04-16
 
 ### Bug Fixes
