@@ -231,7 +231,6 @@ export async function runModels(
   for (const [anonId, entry] of Object.entries(manifest.models)) {
     const outputPath = join(sessionPath, `response-${anonId}.md`);
     const errorLogPath = join(sessionPath, "errors", `${anonId}.log`);
-    const workDir = join(sessionPath, "work", anonId);
 
     // CRITICAL FIX: do NOT use -p flag (-p means --profile in claudish)
     // --stdin triggers non-interactive single-shot mode
@@ -243,7 +242,6 @@ export async function runModels(
     });
 
     const proc = spawn("claudish", args, {
-      cwd: workDir,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
     });
