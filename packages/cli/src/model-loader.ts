@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import type { OpenRouterModel } from "./types.js";
+import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -180,7 +181,6 @@ export const RECOMMENDED_MODELS_CACHE_PATH = join(
   ".claudish",
   "recommended-models-cache.json"
 );
-const RECOMMENDED_CACHE_MAX_AGE_HOURS = 12;
 const RECOMMENDED_FETCH_TIMEOUT_MS = 5000;
 const SEARCH_FETCH_TIMEOUT_MS = 10000;
 
@@ -416,6 +416,8 @@ export async function getRecommendedModels(
   }
 
   // Tier 2: disk cache (if fresh)
+  // Firebase-derived data — OK to cache locally per the catalog policy.
+  // TTL shared with all other Firebase caches via FIREBASE_CACHE_TTL_HOURS.
   if (!forceRefresh && existsSync(RECOMMENDED_MODELS_CACHE_PATH)) {
     try {
       const cacheData = JSON.parse(
@@ -504,7 +506,7 @@ function isFreshEnough(doc: RecommendedModelsDoc): boolean {
   const generatedAt = doc.generatedAt;
   if (!generatedAt) return true; // No timestamp — treat as usable
   const ageHours = (Date.now() - new Date(generatedAt).getTime()) / (1000 * 60 * 60);
-  return ageHours <= RECOMMENDED_CACHE_MAX_AGE_HOURS;
+  return ageHours <= FIREBASE_CACHE_TTL_HOURS;
 }
 
 function loadBundledRecommendedModels(): RecommendedModelsDoc {

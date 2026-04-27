@@ -19,10 +19,16 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import type { AggregatorEntry } from "../model-loader.js";
 
 /**
  * Slim catalog entry from the Firebase queryModels?catalog=slim endpoint.
  * Contains model name resolution data plus optional model metadata.
+ *
+ * The slim catalog includes `aggregators` per entry — verified live against
+ * `?catalog=slim` (see `models-index/functions/src/query-handler.ts:267-269`).
+ * This is the multi-aggregator routing index used by `CatalogClient` to
+ * answer "which vendors serve model X?" without a Firebase round-trip.
  */
 export interface SlimModelEntry {
   modelId: string;
@@ -32,6 +38,12 @@ export interface SlimModelEntry {
   contextWindow?: number;
   /** Whether model supports vision/image input (present when Firebase has it) */
   supportsVision?: boolean;
+  /**
+   * Multi-aggregator routing index. Each entry is `{provider, externalId, confidence}`.
+   * Populated by Firebase ingest from per-source data. Optional — older cache
+   * files may not include this field.
+   */
+  aggregators?: AggregatorEntry[];
 }
 
 /**
