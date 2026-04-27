@@ -57,8 +57,58 @@ export interface RecommendedModelsDoc {
 }
 
 /**
+ * Confidence tier for source provenance — mirrors `ConfidenceTier` in
+ * models-index/functions/src/schema.ts.
+ */
+export type ConfidenceTier =
+  | "scrape_unverified"
+  | "scrape_verified"
+  | "aggregator_reported"
+  | "gateway_official"
+  | "api_official";
+
+/**
+ * CLI-friendly aggregator entry — flattened view of `sources` keyed by the
+ * canonical CLI provider name. Mirrors `AggregatorEntry` in
+ * models-index/functions/src/schema.ts. Routing consults this to learn which
+ * aggregators (OpenRouter, Fireworks, etc.) serve a given model.
+ */
+export interface AggregatorEntry {
+  provider: string;
+  externalId: string;
+  confidence: ConfidenceTier;
+}
+
+/**
+ * Per-vendor availability row. Distinguishes the model OWNER from the
+ * vendor that SERVES the model. Mirrors `VendorRecord` in
+ * models-index/functions/src/schema.ts. The Firestore `Timestamp` is
+ * degraded to `string | unknown` here so we don't pull firebase-admin into
+ * the CLI bundle.
+ */
+export interface VendorRecord {
+  vendor: string;
+  role: "owner" | "gateway" | "aggregator";
+  externalId: string;
+  confidence: ConfidenceTier;
+  lastSeen: string | unknown;
+  sourceUrl?: string;
+  pricing?: {
+    input?: number;
+    output?: number;
+    cachedRead?: number;
+    cachedWrite?: number;
+    imageInput?: number;
+    audioInput?: number;
+    batchDiscountPct?: number;
+  };
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+/**
  * Full model document from Firebase `?search=...` or `?provider=...`.
- * Matches `ModelDoc` in firebase/functions/src/schema.ts.
+ * Matches `ModelDoc` in models-index/functions/src/schema.ts.
  */
 export interface ModelDoc {
   modelId: string;
@@ -77,6 +127,8 @@ export interface ModelDoc {
   };
   contextWindow?: number;
   maxOutputTokens?: number;
+  /** IDs of subscription plans (e.g. "openai-codex", "kimi-coding") that include this model. */
+  availableInPlans?: string[];
   capabilities?: {
     vision?: boolean;
     thinking?: boolean;
@@ -90,6 +142,17 @@ export interface ModelDoc {
   };
   aliases?: string[];
   status?: "active" | "deprecated" | "preview" | "unknown";
+  /**
+   * Multi-aggregator routing index. Optional, additive. Derived server-side
+   * from `sources` at merge time. Field is omitted when no aggregators
+   * contributed data for this model.
+   */
+  aggregators?: AggregatorEntry[];
+  /**
+   * Per-vendor availability rows used by routing logic. Optional and
+   * additive — omitted when no vendor rows can be derived.
+   */
+  vendors?: VendorRecord[];
 }
 
 // ─── Legacy ModelMetadata (used by --model flag resolution) ──────────────────
