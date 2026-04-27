@@ -13,7 +13,6 @@
 
 import { BaseAPIFormat, type AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
-import { lookupModel } from "./model-catalog.js";
 
 /**
  * Normalize model name for ChatGPT backend API.
@@ -61,10 +60,6 @@ export class CodexAPIFormat extends BaseAPIFormat {
 
   override getStreamFormat(): StreamFormat {
     return "openai-responses-sse";
-  }
-
-  override getContextWindow(): number {
-    return lookupModel(this.modelId)?.contextWindow ?? 0;
   }
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {

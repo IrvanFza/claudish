@@ -40,7 +40,6 @@ import {
 } from "../services/vision-proxy.js";
 import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
-import { lookupModel } from "../adapters/model-catalog.js";
 import { wrapAnthropicError, ensureAnthropicErrorFormat } from "./shared/anthropic-error.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
@@ -188,17 +187,11 @@ export class ComposedHandler implements ModelHandler {
 
     // 3. Convert messages and tools
     const messages = adapter.convertMessages(claudeRequest, filterIdentity);
-    let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
+    const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
-    // Enforce per-model tool count limits (e.g., OpenAI max 128).
-    // Use bareModelName — catalog patterns match on bare model IDs.
-    const maxToolCount = lookupModel(this.bareModelName)?.maxToolCount;
-    if (maxToolCount && tools.length > maxToolCount) {
-      log(
-        `[ComposedHandler] Truncating tools from ${tools.length} to ${maxToolCount} (model limit for ${this.bareModelName})`
-      );
-      tools = tools.slice(0, maxToolCount);
-    }
+    // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced
+    // by the transport's transformPayload() hook, which runs later in the
+    // pipeline with full knowledge of the target API.
 
     // Handle image content for models that don't support vision
     if (!this.getModelSupportsVision()) {

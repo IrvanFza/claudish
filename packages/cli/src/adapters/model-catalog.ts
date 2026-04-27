@@ -1,128 +1,78 @@
 /**
- * Centralized model metadata catalog.
+ * Model metadata catalog — Firebase slim cache is the sole source of truth.
  *
- * Eliminates scattered hardcoded model metadata across adapter files.
- * All dialects look up context windows, vision support, and other
- * model-specific metadata from this single source of truth.
+ * All model facts (contextWindow, supportsVision) come from the slim catalog
+ * at ~/.claudish/all-models.json, populated at proxy startup by the OpenRouter
+ * catalog resolver.
+ *
+ * Adapter-specific behavior (temperature ranges, tool name limits, max tool
+ * counts) lives in the dialect/format classes themselves — those are CLI
+ * constraints, not model metadata.
  */
 
+import { readAllModelsCache } from "../providers/all-models-cache.js";
+
 export interface ModelEntry {
-  /** Model family pattern — checked with string.includes() against lowercased modelId */
-  pattern: string;
+  /** Model ID as stored in the slim catalog (not lowercased) */
+  modelId: string;
   /** Context window in tokens */
   contextWindow: number;
-  /** Whether model supports vision/image input */
-  supportsVision?: boolean; // default: true (from BaseAPIFormat)
-  /** Temperature range constraint */
-  temperatureRange?: { min: number; max: number };
-  /** Tool name length limit */
-  toolNameLimit?: number;
-  /** Maximum number of tools allowed per request */
-  maxToolCount?: number;
+  /** Whether model supports vision/image input (may be undefined if Firebase didn't specify) */
+  supportsVision?: boolean;
 }
 
 /**
- * Static model catalog — ordered by specificity (most-specific patterns first).
- * Checked in order; first match wins.
+ * Look up model metadata from the Firebase slim catalog cache.
+ *
+ * Accepts:
+ *   - Bare model IDs ("glm-5", "minimax-m2.7")
+ *   - Vendor-prefixed IDs ("x-ai/grok-4")
+ *
+ * Throws if `modelId` contains "@" — callers must strip the provider prefix
+ * before calling (contract enforcement).
+ *
+ * Returns undefined when:
+ *   - The cache file doesn't exist (cold start)
+ *   - modelId isn't in the cache
+ *   - The entry exists but has no `contextWindow`
+ *
+ * @param cachePath Override cache path. Defaults to `~/.claudish/all-models.json`.
+ *                  Only tests should pass this.
  */
-export const MODEL_CATALOG: ModelEntry[] = [
-  // ── Grok ────────────────────────────────────────────
-  { pattern: "grok-4.20", contextWindow: 2_000_000 },
-  { pattern: "grok-4-20", contextWindow: 2_000_000 },
-  { pattern: "grok-4.1-fast", contextWindow: 2_000_000 },
-  { pattern: "grok-4-1-fast", contextWindow: 2_000_000 },
-  { pattern: "grok-4-fast", contextWindow: 2_000_000 },
-  { pattern: "grok-code-fast", contextWindow: 256_000 },
-  { pattern: "grok-4", contextWindow: 256_000 },
-  { pattern: "grok-3", contextWindow: 131_072 },
-  { pattern: "grok-2", contextWindow: 131_072 },
+export function lookupModel(modelId: string, cachePath?: string): ModelEntry | undefined {
+  if (modelId.includes("@")) {
+    throw new Error(
+      `lookupModel() received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
+    );
+  }
 
-  // ── GLM ─────────────────────────────────────────────
-  { pattern: "glm-5-turbo", contextWindow: 202_752 },
-  { pattern: "glm-5", contextWindow: 80_000, supportsVision: true },
-  { pattern: "glm-4.7-flash", contextWindow: 202_752 },
-  { pattern: "glm-4.7", contextWindow: 202_752 },
-  { pattern: "glm-4.6v", contextWindow: 131_072, supportsVision: true },
-  { pattern: "glm-4.6", contextWindow: 204_800 },
-  { pattern: "glm-4.5v", contextWindow: 65_536, supportsVision: true },
-  { pattern: "glm-4.5-flash", contextWindow: 131_072 },
-  { pattern: "glm-4.5-air", contextWindow: 131_072 },
-  { pattern: "glm-4.5", contextWindow: 131_072 },
-  { pattern: "glm-4v-plus", contextWindow: 128_000, supportsVision: true },
-  { pattern: "glm-4v", contextWindow: 128_000, supportsVision: true },
-  { pattern: "glm-4-long", contextWindow: 1_000_000 },
-  { pattern: "glm-4-plus", contextWindow: 128_000 },
-  { pattern: "glm-4-flash", contextWindow: 128_000 },
-  { pattern: "glm-4-32b", contextWindow: 128_000 },
-  { pattern: "glm-4", contextWindow: 128_000 },
-  { pattern: "glm-3-turbo", contextWindow: 128_000 },
+  const cache = readAllModelsCache(cachePath);
+  if (!cache || cache.entries.length === 0) return undefined;
 
-  // ── MiniMax ─────────────────────────────────────────
-  { pattern: "minimax-01", contextWindow: 1_000_000, supportsVision: false },
-  { pattern: "minimax-m1", contextWindow: 1_000_000, supportsVision: false },
-  {
-    pattern: "minimax",
-    contextWindow: 0,
-    supportsVision: false,
-    temperatureRange: { min: 0.01, max: 1.0 },
-  },
-
-  // ── OpenAI ──────────────────────────────────────────
-  { pattern: "gpt-5.4", contextWindow: 1_050_000, maxToolCount: 128 },
-  { pattern: "gpt-5", contextWindow: 400_000, maxToolCount: 128 },
-  { pattern: "o1", contextWindow: 200_000, maxToolCount: 128 },
-  { pattern: "o3", contextWindow: 200_000, maxToolCount: 128 },
-  { pattern: "o4", contextWindow: 200_000, maxToolCount: 128 },
-  { pattern: "gpt-4o", contextWindow: 128_000, maxToolCount: 128 },
-  { pattern: "gpt-4-turbo", contextWindow: 128_000, maxToolCount: 128 },
-  { pattern: "gpt-3.5", contextWindow: 16_385, maxToolCount: 128 },
-
-  // ── Kimi ────────────────────────────────────────────
-  { pattern: "kimi-k2.5", contextWindow: 262_144 },
-  { pattern: "kimi-k2-5", contextWindow: 262_144 },
-  { pattern: "kimi-k2", contextWindow: 131_000 },
-
-  // ── Qwen ────────────────────────────────────────────
-  { pattern: "qwen3.6", contextWindow: 1_048_576 },
-  { pattern: "qwen3-6", contextWindow: 1_048_576 },
-  { pattern: "qwen3.5", contextWindow: 262_144 },
-  { pattern: "qwen3-5", contextWindow: 262_144 },
-  { pattern: "qwen3-coder", contextWindow: 262_144 },
-  { pattern: "qwen3", contextWindow: 131_072 },
-  { pattern: "qwen2.5", contextWindow: 131_072 },
-  { pattern: "qwen2-5", contextWindow: 131_072 },
-
-  // ── Xiaomi/MiMo ─────────────────────────────────────
-  { pattern: "xiaomi", contextWindow: 0, toolNameLimit: 64 },
-  { pattern: "mimo", contextWindow: 0, toolNameLimit: 64 },
-];
-
-/**
- * Look up model info from the catalog.
- *
- * Matches against the lowercased model ID. Handles vendor-prefixed IDs like
- * "x-ai/grok-beta" by checking the segment after the last "/".
- *
- * Accepts: bare model IDs ("glm-4.7") and vendor-prefixed IDs ("x-ai/grok-beta").
- * Does NOT accept provider-routed IDs ("zai@glm-4.7") — callers must strip the
- * provider prefix before calling. This is an invariant, not a defensive normalization:
- * accepting routed strings here invited #102, where the "@" separator was conflated
- * with the "/" vendor separator in matchesModelFamily() and caused silent failures.
- *
- * Returns the first matching entry, or undefined if no match.
- */
-export function lookupModel(modelId: string): ModelEntry | undefined {
   const lower = modelId.toLowerCase();
-  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on the segment after "/".
+  // Vendor-prefixed IDs like "x-ai/grok-beta" — match on segment after "/"
   const unprefixed = lower.includes("/")
     ? lower.substring(lower.lastIndexOf("/") + 1)
     : lower;
 
-  for (const entry of MODEL_CATALOG) {
-    if (unprefixed.includes(entry.pattern) || lower.includes(entry.pattern)) {
-      return entry;
+  for (const entry of cache.entries) {
+    const entryId = entry.modelId.toLowerCase();
+
+    const exactMatch = entryId === unprefixed || entryId === lower;
+    const aliasMatch = entry.aliases?.some(
+      (a) => a.toLowerCase() === unprefixed || a.toLowerCase() === lower
+    );
+
+    if (exactMatch || aliasMatch) {
+      if (entry.contextWindow === undefined) return undefined;
+      return {
+        modelId: entry.modelId,
+        contextWindow: entry.contextWindow,
+        supportsVision: entry.supportsVision,
+      };
     }
   }
+
   return undefined;
 }
 

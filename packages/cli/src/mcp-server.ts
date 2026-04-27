@@ -31,7 +31,7 @@ import { createProxyServer } from "./proxy-server.js";
 import { findAvailablePort } from "./port-manager.js";
 import type { ProxyServer } from "./types.js";
 import {
-  getRecommendedModelsSync,
+  getRecommendedModels,
   groupRecommendedModels,
   collectRoutingPrefixes,
   computeQuickPicks,
@@ -374,7 +374,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
     handler: async () => {
       let doc;
       try {
-        doc = getRecommendedModelsSync();
+        doc = await getRecommendedModels();
       } catch {
         return {
           content: [

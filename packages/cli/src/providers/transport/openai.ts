@@ -15,7 +15,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
   readonly displayName: string;
   readonly streamFormat: StreamFormat;
 
-  private provider: RemoteProvider;
+  protected provider: RemoteProvider;
   private apiKey: string;
   private modelName: string;
 

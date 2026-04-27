@@ -14,7 +14,6 @@
 import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
-import { lookupModel } from "./model-catalog.js";
 
 export class OpenAIAPIFormat extends BaseAPIFormat {
   constructor(modelId: string) {
@@ -68,10 +67,6 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
   }
 
   // ─── ComposedHandler integration ───────────────────────────────────
-
-  override getContextWindow(): number {
-    return lookupModel(this.modelId)?.contextWindow ?? 0;
-  }
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
     return this.buildChatCompletionsPayload(claudeRequest, messages, tools);

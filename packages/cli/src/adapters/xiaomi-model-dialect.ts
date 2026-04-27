@@ -9,7 +9,6 @@
 
 import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import { log } from "../logger.js";
-import { lookupModel } from "./model-catalog.js";
 
 export class XiaomiModelDialect extends BaseAPIFormat {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
@@ -20,8 +19,8 @@ export class XiaomiModelDialect extends BaseAPIFormat {
     };
   }
 
-  override getToolNameLimit(): number | null {
-    return lookupModel(this.modelId)?.toolNameLimit ?? null;
+  override getToolNameLimit(): number {
+    return 64;
   }
 
   override prepareRequest(request: any, originalRequest: any): any {

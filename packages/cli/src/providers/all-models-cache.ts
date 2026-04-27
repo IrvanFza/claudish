@@ -22,12 +22,16 @@ import { homedir } from "node:os";
 
 /**
  * Slim catalog entry from the Firebase queryModels?catalog=slim endpoint.
- * Contains only what's needed for model name resolution.
+ * Contains model name resolution data plus optional model metadata.
  */
 export interface SlimModelEntry {
   modelId: string;
   aliases: string[];
   sources: Record<string, { externalId: string }>;
+  /** Context window in tokens (present when Firebase has it) */
+  contextWindow?: number;
+  /** Whether model supports vision/image input (present when Firebase has it) */
+  supportsVision?: boolean;
 }
 
 /**

@@ -12,6 +12,9 @@ import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-for
 import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
+/** MiniMax API requires temperature in (0.0, 1.0]. Sourced from MiniMax's published API docs, not per-model. */
+const TEMPERATURE_RANGE = { min: 0.01, max: 1.0 } as const;
+
 export class MiniMaxModelDialect extends BaseAPIFormat {
   processTextContent(textContent: string, accumulatedText: string): AdapterResult {
     // MiniMax interleaved thinking is handled by the model
@@ -24,25 +27,22 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
 
   /**
    * Handle request preparation — clamp temperature to MiniMax's accepted range.
-   * The valid range is sourced from the model catalog (temperatureRange field).
+   * The valid range is the TEMPERATURE_RANGE constant sourced from MiniMax's published API docs.
    * The standard `thinking` parameter is supported natively by MiniMax's Anthropic-compatible
    * endpoint, so no conversion is needed here.
    */
   override prepareRequest(request: any, originalRequest: any): any {
-    const entry = lookupModel(this.modelId);
-    const tempRange = entry?.temperatureRange;
-
-    if (request.temperature !== undefined && tempRange) {
-      if (request.temperature < tempRange.min) {
+    if (request.temperature !== undefined) {
+      if (request.temperature < TEMPERATURE_RANGE.min) {
         log(
-          `[MiniMaxModelDialect] Clamping temperature ${request.temperature} → ${tempRange.min} (MiniMax requires >= ${tempRange.min})`
+          `[MiniMaxModelDialect] Clamping temperature ${request.temperature} → ${TEMPERATURE_RANGE.min} (MiniMax requires >= ${TEMPERATURE_RANGE.min})`
         );
-        request.temperature = tempRange.min;
-      } else if (request.temperature > tempRange.max) {
+        request.temperature = TEMPERATURE_RANGE.min;
+      } else if (request.temperature > TEMPERATURE_RANGE.max) {
         log(
-          `[MiniMaxModelDialect] Clamping temperature ${request.temperature} → ${tempRange.max} (MiniMax requires <= ${tempRange.max})`
+          `[MiniMaxModelDialect] Clamping temperature ${request.temperature} → ${TEMPERATURE_RANGE.max} (MiniMax requires <= ${TEMPERATURE_RANGE.max})`
         );
-        request.temperature = tempRange.max;
+        request.temperature = TEMPERATURE_RANGE.max;
       }
     }
 

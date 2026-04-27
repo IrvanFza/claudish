@@ -13,7 +13,6 @@ import { describe, test, expect } from "bun:test";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { DialectManager } from "./adapters/dialect-manager.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
-import { DefaultAPIFormat } from "./adapters/base-api-format.js";
 
 // ─── Group 1: GLMModelDialect unit tests ─────────────────────────────────────
 
@@ -53,50 +52,6 @@ describe("GLMModelDialect — Model Detection", () => {
 
   test("should return correct adapter name", () => {
     expect(adapter.getName()).toBe("GLMModelDialect");
-  });
-});
-
-describe("GLMModelDialect — Context Windows", () => {
-  test("glm-5 → 80K", () => {
-    expect(new GLMModelDialect("glm-5").getContextWindow()).toBe(80_000);
-  });
-
-  test("glm-4-plus → 128K", () => {
-    expect(new GLMModelDialect("glm-4-plus").getContextWindow()).toBe(128_000);
-  });
-
-  test("glm-4-long → 1M", () => {
-    expect(new GLMModelDialect("glm-4-long").getContextWindow()).toBe(1_000_000);
-  });
-
-  test("glm-4-flash → 128K", () => {
-    expect(new GLMModelDialect("glm-4-flash").getContextWindow()).toBe(128_000);
-  });
-
-  test("unknown glm variant → 0 (no catch-all)", () => {
-    expect(new GLMModelDialect("glm-99").getContextWindow()).toBe(0);
-  });
-});
-
-describe("GLMModelDialect — Vision Support", () => {
-  test("glm-5 supports vision", () => {
-    expect(new GLMModelDialect("glm-5").supportsVision()).toBe(true);
-  });
-
-  test("glm-4v supports vision", () => {
-    expect(new GLMModelDialect("glm-4v").supportsVision()).toBe(true);
-  });
-
-  test("glm-4v-plus supports vision", () => {
-    expect(new GLMModelDialect("glm-4v-plus").supportsVision()).toBe(true);
-  });
-
-  test("glm-4-flash does NOT support vision", () => {
-    expect(new GLMModelDialect("glm-4-flash").supportsVision()).toBe(false);
-  });
-
-  test("glm-3-turbo does NOT support vision", () => {
-    expect(new GLMModelDialect("glm-3-turbo").supportsVision()).toBe(false);
   });
 });
 
@@ -184,31 +139,20 @@ describe("Three-layer adapter — model dialect overrides format adapter", () =>
 
     // Model dialect handles model-specific concerns
     expect(modelAdapter.getName()).toBe("GLMModelDialect");
-    expect(modelAdapter.getContextWindow()).toBe(80_000);
-    expect(modelAdapter.supportsVision()).toBe(true);
   });
 
-  test("LiteLLMAPIFormat uses catalog lookup for context window", () => {
-    const litellmAdapter = new LiteLLMAPIFormat("glm-5", "https://example.com");
-
-    // LiteLLMAPIFormat now does catalog lookup — glm-5 has 80K context
-    expect(litellmAdapter.getContextWindow()).toBe(80_000);
-  });
-
-  test("model dialect provides correct context window for glm-4-long via LiteLLM", () => {
+  test("model dialect resolves GLMModelDialect for glm-4-long via LiteLLM", () => {
     const adapterManager = new DialectManager("glm-4-long");
     const modelAdapter = adapterManager.getAdapter();
 
     expect(modelAdapter.getName()).toBe("GLMModelDialect");
-    expect(modelAdapter.getContextWindow()).toBe(1_000_000);
   });
 
-  test("model dialect correctly reports no vision for glm-4-flash via LiteLLM", () => {
+  test("model dialect resolves GLMModelDialect for glm-4-flash via LiteLLM", () => {
     const adapterManager = new DialectManager("glm-4-flash");
     const modelAdapter = adapterManager.getAdapter();
 
     expect(modelAdapter.getName()).toBe("GLMModelDialect");
-    expect(modelAdapter.supportsVision()).toBe(false);
   });
 
   test("non-GLM model via LiteLLM falls back to DefaultAPIFormat", () => {

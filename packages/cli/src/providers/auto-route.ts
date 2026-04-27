@@ -295,7 +295,7 @@ const SUBSCRIPTION_ALTERNATIVES: Record<string, SubscriptionAlternative> = {
  * Read the cached Zen model list from disk (written by warmZenModelCache).
  * Returns a Set of model IDs that Zen serves, or null if cache not available.
  */
-function readZenModelCacheSync(): Set<string> | null {
+export function readZenModelCacheSync(): Set<string> | null {
   const cachePath = join(homedir(), ".claudish", "zen-models.json");
   if (!existsSync(cachePath)) return null;
   try {
@@ -348,7 +348,7 @@ export async function warmZenModelCache(): Promise<void> {
  * Returns a Set of model IDs that Zen Go serves, or null if cache not available.
  * Zen Go only serves a small set of models (GLM-5, Kimi K2.5, MiniMax M2.5, MiniMax M2.7).
  */
-function readZenGoModelCacheSync(): Set<string> | null {
+export function readZenGoModelCacheSync(): Set<string> | null {
   const cachePath = join(homedir(), ".claudish", "zen-go-models.json");
   if (!existsSync(cachePath)) return null;
   try {
