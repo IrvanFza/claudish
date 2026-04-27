@@ -15,6 +15,7 @@ import {
   setupGeminiUser,
   retrieveUserQuota,
   getGeminiTierFullName,
+  CODE_ASSIST_FALLBACK_CHAIN,
 } from "./gemini-oauth.js";
 
 // ANSI
@@ -29,15 +30,6 @@ const MAG = "\x1b[35m";
 const CYN = "\x1b[36m";
 const WHT = "\x1b[37m";
 const GRY = "\x1b[90m";
-
-/** Capacity fallback chain (mirrors gemini-codeassist.ts) */
-const FALLBACK_CHAIN = [
-  "gemini-3.1-pro-preview",
-  "gemini-3-pro-preview",
-  "gemini-3-flash-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-];
 
 // ---------------------------------------------------------------------------
 // Quota Adapter Registry
@@ -175,12 +167,12 @@ async function geminiQuotaHandler(): Promise<void> {
 
     // Fallback chain with live quota status
     console.log(`  ${B}${CYN}Fallback Chain${R} ${D}(on capacity exhaustion)${R}`);
-    for (let i = 0; i < FALLBACK_CHAIN.length; i++) {
-      const model = FALLBACK_CHAIN[i];
+    for (let i = 0; i < CODE_ASSIST_FALLBACK_CHAIN.length; i++) {
+      const model = CODE_ASSIST_FALLBACK_CHAIN[i];
       const rem = remainingByModel.get(model);
       const pct = rem !== undefined ? `${((1 - rem) * 100).toFixed(0)}%` : "?";
       const color = rem === undefined ? GRY : rem > 0.5 ? GRN : rem > 0.2 ? YEL : RED;
-      const arrow = i < FALLBACK_CHAIN.length - 1 ? ` ${GRY}\u2192${R}` : "";
+      const arrow = i < CODE_ASSIST_FALLBACK_CHAIN.length - 1 ? ` ${GRY}\u2192${R}` : "";
       const marker = i === 0 ? `${CYN}\u25b8${R} ` : `  `;
       console.log(`  ${marker}${WHT}${model}${R} ${color}${pct}${R}${arrow}`);
     }

@@ -20,22 +20,11 @@ import {
   setupGeminiUser,
   getGeminiTierDisplayName,
   retrieveUserQuota,
+  CODE_ASSIST_FALLBACK_CHAIN,
 } from "../../auth/gemini-oauth.js";
 
 const CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_ENDPOINT = `${CODE_ASSIST_BASE}/v1internal:streamGenerateContent?alt=sse`;
-
-/**
- * Model fallback chain for capacity exhaustion (matches gemini-cli behavior).
- * When a model returns MODEL_CAPACITY_EXHAUSTED, try the next model in the chain.
- */
-const CODE_ASSIST_FALLBACK_CHAIN = [
-  "gemini-3.1-pro-preview",
-  "gemini-3-pro-preview",
-  "gemini-3-flash-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-] as const;
 
 /** Max retry attempts for retryable 429s (RATE_LIMIT_EXCEEDED) */
 const MAX_RETRY_ATTEMPTS = 3;
@@ -179,7 +168,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
     this.modelName = modelName;
     // Find the requested model's position in the fallback chain.
     // If the model isn't in the chain, fallback is disabled (startIndex = chain length).
-    const idx = CODE_ASSIST_FALLBACK_CHAIN.indexOf(modelName as any);
+    const idx = (CODE_ASSIST_FALLBACK_CHAIN as readonly string[]).indexOf(modelName);
     this.fallbackStartIndex = idx >= 0 ? idx : CODE_ASSIST_FALLBACK_CHAIN.length;
   }
 

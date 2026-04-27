@@ -575,6 +575,23 @@ export function getGeminiOAuth(): GeminiOAuth {
 
 const CODE_ASSIST_API_BASE = "https://cloudcode-pa.googleapis.com/v1internal";
 
+/**
+ * Gemini Code Assist capacity-fallback chain (matches gemini-cli behavior).
+ * When a model returns MODEL_CAPACITY_EXHAUSTED, try the next model in the chain.
+ *
+ * Shared between the transport (gemini-codeassist.ts, runtime fallback) and
+ * the quota CLI (quota-command.ts, display ordering).
+ */
+export const CODE_ASSIST_FALLBACK_CHAIN = [
+  "gemini-3.1-pro-preview",
+  "gemini-3-pro-preview",
+  "gemini-3-flash-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+] as const;
+
+export type CodeAssistFallbackModel = typeof CODE_ASSIST_FALLBACK_CHAIN[number];
+
 interface ClientMetadata {
   pluginType: string;
   ideType: string;
