@@ -1,14 +1,25 @@
 /**
  * Unit tests for providers/routing-rules.ts
  *
- * Tests matchRoutingRule, buildRoutingChain, and loadRoutingRules
- * without hitting any real APIs or file system config.
+ * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, mergeRoutingRules,
+ * and route() without hitting any real APIs (file-system config is unavoidable
+ * for loadRoutingRules itself, so we assert weakly there).
  *
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
-import { matchRoutingRule, buildRoutingChain, loadRoutingRules } from "./routing-rules.js";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import {
+  matchRoutingRule,
+  buildRoutingChain,
+  loadRoutingRules,
+  mergeRoutingRules,
+  route,
+} from "./routing-rules.js";
+import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { PROVIDER_TO_PREFIX, DISPLAY_NAMES } from "./auto-route.js";
 import type { RoutingRules } from "../profile-config.js";
@@ -280,20 +291,229 @@ describe("buildRoutingChain", () => {
 });
 
 // ---------------------------------------------------------------------------
-// loadRoutingRules — smoke test (no config file in test environment)
+// loadRoutingRules — smoke test (always returns RoutingRules now)
 // ---------------------------------------------------------------------------
 
 describe("loadRoutingRules", () => {
-  test("returns null or a RoutingRules object (never throws)", () => {
-    // In CI/test environment without a ~/.claudish/config.json, this should be null.
-    // In a dev environment with routing configured, it may return an object.
+  test("always returns a non-null RoutingRules object", () => {
     const result = loadRoutingRules();
+    // After commit 4, defaults are merged in — result is never null.
+    expect(typeof result).toBe("object");
+    expect(result).not.toBeNull();
+    expect(Object.keys(result).length).toBeGreaterThan(0);
+  });
 
-    // Result is either null or a non-empty RoutingRules object
-    if (result !== null) {
-      expect(typeof result).toBe("object");
-      expect(Object.keys(result).length).toBeGreaterThan(0);
+  test("includes the default catch-all (unless overridden by user config)", () => {
+    const result = loadRoutingRules();
+    // User config could override "*" but the key must exist (defaults ship one).
+    expect(result["*"]).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergeRoutingRules — pure merge semantics (testable without disk I/O)
+// ---------------------------------------------------------------------------
+
+describe("loadRoutingRules merges defaults", () => {
+  test("with no user rules: merge returns defaults exactly", () => {
+    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, {}, {});
+    expect(merged).toEqual(DEFAULT_ROUTING_RULES);
+  });
+
+  test("user rule that overrides 'claude-*' wins; defaults still cover other patterns", () => {
+    const userGlobal: RoutingRules = {
+      "claude-*": ["openrouter"],
+    };
+    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
+    expect(merged["claude-*"]).toEqual(["openrouter"]);
+    // Defaults still apply to unrelated patterns
+    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
+    expect(merged["*"]).toEqual(DEFAULT_ROUTING_RULES["*"]);
+  });
+
+  test("user '*' = [] removes the catch-all (verify match returns empty)", () => {
+    const userGlobal: RoutingRules = {
+      "*": [],
+    };
+    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
+    expect(merged["*"]).toEqual([]);
+    // Other defaults still apply
+    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
+    // matchRoutingRule on a pattern only the catch-all would have caught
+    // returns the empty array (caller treats as "no route").
+    const m = matchRoutingRule("totally-unknown-model-xyz", merged);
+    expect(m).toEqual([]);
+  });
+
+  test("local overrides global; defaults still cover untouched patterns", () => {
+    const userGlobal: RoutingRules = { "claude-*": ["openrouter"] };
+    const userLocal: RoutingRules = { "claude-*": ["native-anthropic"] };
+    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
+    // Local wins
+    expect(merged["claude-*"]).toEqual(["native-anthropic"]);
+    // Defaults still cover unrelated patterns
+    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
+  });
+
+  test("local + global add new patterns without disturbing defaults", () => {
+    const userGlobal: RoutingRules = { "my-custom-*": ["openrouter"] };
+    const userLocal: RoutingRules = { "my-other-*": ["openai"] };
+    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
+    expect(merged["my-custom-*"]).toEqual(["openrouter"]);
+    expect(merged["my-other-*"]).toEqual(["openai"]);
+    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// route() — credential-aware single entry point
+// ---------------------------------------------------------------------------
+
+const ENV_KEYS_TO_CLEAR = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_CODEX_API_KEY",
+  "GEMINI_API_KEY",
+  "MOONSHOT_API_KEY",
+  "KIMI_API_KEY",
+  "KIMI_CODING_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CODING_API_KEY",
+  "ZHIPU_API_KEY",
+  "GLM_API_KEY",
+  "GLM_CODING_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "XAI_API_KEY",
+  "ZAI_API_KEY",
+  "OLLAMA_API_KEY",
+  "OPENCODE_API_KEY",
+];
+
+const savedEnv: Record<string, string | undefined> = {};
+
+describe("route()", () => {
+  beforeEach(() => {
+    // Snapshot and clear credential env vars so each test starts clean.
+    for (const key of ENV_KEYS_TO_CLEAR) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
     }
+  });
+
+  afterEach(() => {
+    // Restore env vars (preserves the host's actual config for other tests).
+    for (const key of ENV_KEYS_TO_CLEAR) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const plan = route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("native-anthropic");
+  });
+
+  test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", () => {
+    process.env.OPENROUTER_API_KEY = "or-test";
+    const plan = route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openrouter");
+  });
+
+  test("claude-opus-4-7 with no credentials → no-route, hint mentions both providers", () => {
+    const plan = route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("no-route");
+    if (plan.kind !== "no-route") return;
+    expect(plan.hint).toBeDefined();
+    // Both native-anthropic (ANTHROPIC_API_KEY) and openrouter (OPENROUTER_API_KEY)
+    // should be in the hint.
+    expect(plan.hint).toContain("ANTHROPIC_API_KEY");
+    expect(plan.hint).toContain("OPENROUTER_API_KEY");
+  });
+
+  test("explicit prefix native-anthropic@claude-opus-4-7 with ANTHROPIC_API_KEY → ok", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const plan = route("native-anthropic@claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("native-anthropic");
+    expect(plan.fallbacks).toHaveLength(0);
+  });
+
+  test("explicit prefix openai@gpt-5 with no OPENAI_API_KEY → no-route, NO silent OR fallback", () => {
+    // Even with OPENROUTER_API_KEY set, an explicit openai@ prefix must NOT
+    // silently reroute to OpenRouter.
+    process.env.OPENROUTER_API_KEY = "or-test";
+    const plan = route("openai@gpt-5", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("no-route");
+    if (plan.kind !== "no-route") return;
+    // Hint should mention the missing OpenAI key, not OpenRouter
+    expect(plan.hint).toContain("OPENAI_API_KEY");
+  });
+
+  test("gpt-5 (bare) with only OPENAI_API_KEY → openai-codex skipped if no codex creds", () => {
+    // OPENAI_API_KEY is listed as an alias on openai-codex in provider-definitions.ts,
+    // but routing requires the codex-specific credential (OPENAI_CODEX_API_KEY or
+    // ~/.claudish/codex-oauth.json) — without that the codex /v1/responses
+    // endpoint 400s with "instructions required" before the chain falls
+    // through. See hasCredentialsForProvider() in routing-rules.ts.
+    //
+    // In a dev environment where codex-oauth.json exists, codex is genuinely
+    // credentialed — the chain stays codex-first. Skip the strict assertion
+    // there; the predicate is exercised by the next test plus the explicit-
+    // prefix coverage above.
+    const codexOauth = join(homedir(), ".claudish", "codex-oauth.json");
+    if (existsSync(codexOauth)) return;
+
+    process.env.OPENAI_API_KEY = "sk-openai-test";
+    const plan = route("gpt-5", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai");
+  });
+
+  test("gpt-5 (bare) with OPENAI_CODEX_API_KEY → primary openai-codex", () => {
+    process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
+    const plan = route("gpt-5", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai-codex");
+  });
+
+  test("kimi-k2.5 (bare) with KIMI_CODING_API_KEY → primary kimi-coding with rewritten model", () => {
+    process.env.KIMI_CODING_API_KEY = "kc-test";
+    const plan = route("kimi-k2.5", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("kimi-coding");
+    expect(plan.primary.modelSpec).toBe("kc@kimi-for-coding");
+  });
+
+  test("user disables catch-all with '*' = [] → no-route for unknown bare names", () => {
+    const userRules: RoutingRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, { "*": [] }, {});
+    process.env.OPENROUTER_API_KEY = "or-test";
+    const plan = route("totally-unknown-xyz", userRules);
+    expect(plan.kind).toBe("no-route");
+  });
+
+  test("ok plan returns primary plus fallbacks in order", () => {
+    process.env.OPENAI_CODEX_API_KEY = "cx-test";
+    process.env.OPENAI_API_KEY = "oai-test";
+    process.env.OPENROUTER_API_KEY = "or-test";
+    const plan = route("gpt-5", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai-codex");
+    expect(plan.fallbacks.map((r) => r.provider)).toEqual(["openai", "openrouter"]);
   });
 });
 

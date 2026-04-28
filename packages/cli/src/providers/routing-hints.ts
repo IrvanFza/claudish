@@ -1,0 +1,86 @@
+/**
+ * Provider hint information for credential-missing error messages.
+ *
+ * Sibling of `routing-rules.ts` — extracted from `auto-route.ts` so the
+ * routing engine can build no-route hints without depending on the legacy
+ * file. Kept tiny and pure.
+ *
+ * Migration plan §B.4 — Commit 4 of the model-catalog and routing redesign.
+ */
+
+interface ProviderHintInfo {
+  /** Subcommand args to trigger OAuth login, if available (e.g. "login kimi"). */
+  loginFlag?: string;
+  /** Primary API key environment variable name. */
+  apiKeyEnvVar?: string;
+}
+
+const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
+  "kimi-coding": { loginFlag: "login kimi", apiKeyEnvVar: "KIMI_CODING_API_KEY" },
+  kimi: { loginFlag: "login kimi", apiKeyEnvVar: "MOONSHOT_API_KEY" },
+  google: { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
+  "gemini-codeassist": { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
+  openai: { apiKeyEnvVar: "OPENAI_API_KEY" },
+  "openai-codex": { loginFlag: "login codex", apiKeyEnvVar: "OPENAI_CODEX_API_KEY" },
+  minimax: { apiKeyEnvVar: "MINIMAX_API_KEY" },
+  "minimax-coding": { apiKeyEnvVar: "MINIMAX_CODING_API_KEY" },
+  glm: { apiKeyEnvVar: "ZHIPU_API_KEY" },
+  "glm-coding": { apiKeyEnvVar: "GLM_CODING_API_KEY" },
+  deepseek: { apiKeyEnvVar: "DEEPSEEK_API_KEY" },
+  ollamacloud: { apiKeyEnvVar: "OLLAMA_API_KEY" },
+  "native-anthropic": { apiKeyEnvVar: "ANTHROPIC_API_KEY" },
+  openrouter: { apiKeyEnvVar: "OPENROUTER_API_KEY" },
+  xai: { apiKeyEnvVar: "XAI_API_KEY" },
+  zai: { apiKeyEnvVar: "ZAI_API_KEY" },
+  "opencode-zen": { apiKeyEnvVar: "OPENCODE_API_KEY" },
+};
+
+/**
+ * Build a multi-line hint listing the credentials the user could set to make
+ * a chain succeed.
+ *
+ * @param modelName    Bare model name the user asked for.
+ * @param providers    Canonical provider names that would have been tried but
+ *                     lacked credentials. Order is preserved in the output.
+ * @returns Hint string, or null if no provider in the chain has a known hint.
+ */
+export function buildCredentialHint(modelName: string, providers: string[]): string | null {
+  const seen = new Set<string>();
+  const lines: string[] = [`No credentials found for "${modelName}". Options:`];
+  let hasOption = false;
+
+  for (const provider of providers) {
+    if (seen.has(provider)) continue;
+    seen.add(provider);
+
+    const hint = PROVIDER_HINT_MAP[provider];
+    if (!hint) continue;
+
+    if (hint.loginFlag) {
+      lines.push(`  Run:  claudish ${hint.loginFlag}  (authenticate via OAuth)`);
+      hasOption = true;
+    }
+    if (hint.apiKeyEnvVar) {
+      lines.push(`  Set:  export ${hint.apiKeyEnvVar}=your-key  (for ${provider})`);
+      hasOption = true;
+    }
+  }
+
+  // Always suggest OpenRouter as the catch-all unless OpenRouter itself was
+  // already in the failed chain (which means OPENROUTER_API_KEY is missing).
+  if (!seen.has("openrouter")) {
+    lines.push(`  Use:  claudish --model or@${modelName}  (route via OpenRouter)`);
+    hasOption = true;
+  }
+
+  if (!hasOption) return null;
+  return lines.join("\n");
+}
+
+/**
+ * Get the env var name a provider uses for credentials. Used by callers that
+ * want to surface a single env var hint (rather than a full multi-line message).
+ */
+export function getProviderApiKeyEnv(provider: string): string | undefined {
+  return PROVIDER_HINT_MAP[provider]?.apiKeyEnvVar;
+}

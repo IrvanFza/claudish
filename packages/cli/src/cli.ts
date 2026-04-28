@@ -30,13 +30,13 @@ import {
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { getModelMapping, loadConfig } from "./profile-config.js";
+import { getModelMapping, loadConfig, loadLocalConfig } from "./profile-config.js";
 import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
-  getFallbackChain,
   warmZenModelCache,
   warmZenGoModelCache,
+  type FallbackRoute,
 } from "./providers/auto-route.js";
 import {
   loadRoutingRules,
@@ -1125,40 +1125,53 @@ async function probeModelRouting(
 
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
 
+  // Snapshot user-defined routing keys so we can label matches as
+  // "custom-rules" vs "auto-chain" (default rules) in --probe output.
+  // Defaults are merged INSIDE loadRoutingRules() but are not returned
+  // from loadConfig/loadLocalConfig directly — those reads see only user
+  // overrides, which is exactly the discriminator we need here.
+  const userRoutingKeys = new Set<string>([
+    ...Object.keys(loadConfig().routing ?? {}),
+    ...Object.keys(loadLocalConfig()?.routing ?? {}),
+  ]);
+
   /** Build chain + credential data for a single model (shared by both paths) */
   function buildModelChain(modelInput: string) {
     const parsed = parseModelSpec(modelInput);
     const chain = (() => {
       if (parsed.isExplicitProvider) {
         return {
-          routes: [] as ReturnType<typeof getFallbackChain>,
+          routes: [] as FallbackRoute[],
           source: "direct" as const,
           matchedPattern: undefined,
         };
       }
+      // Routing rules now always include DEFAULT_ROUTING_RULES merged with
+      // user overrides — see loadRoutingRules() in providers/routing-rules.ts.
       const routingRules = loadRoutingRules();
-      if (routingRules) {
-        const matched = matchRoutingRule(parsed.model, routingRules);
-        if (matched) {
-          const matchedPattern = Object.keys(routingRules).find((k) => {
-            if (k === parsed.model) return true;
-            if (k.includes("*")) {
-              const star = k.indexOf("*");
-              const prefix = k.slice(0, star);
-              const suffix = k.slice(star + 1);
-              return parsed.model.startsWith(prefix) && parsed.model.endsWith(suffix);
-            }
-            return false;
-          });
-          return {
-            routes: buildRoutingChain(matched, parsed.model),
-            source: "custom-rules" as const,
-            matchedPattern,
-          };
-        }
+      const matched = matchRoutingRule(parsed.model, routingRules);
+      if (matched) {
+        const matchedPattern = Object.keys(routingRules).find((k) => {
+          if (k === parsed.model) return true;
+          if (k.includes("*")) {
+            const star = k.indexOf("*");
+            const prefix = k.slice(0, star);
+            const suffix = k.slice(star + 1);
+            return parsed.model.startsWith(prefix) && parsed.model.endsWith(suffix);
+          }
+          return false;
+        });
+        // Distinguish user overrides from shipped defaults so --probe can show
+        // "custom-rules" vs "auto-chain" exactly as before.
+        const isUserKey = !!matchedPattern && userRoutingKeys.has(matchedPattern);
+        return {
+          routes: buildRoutingChain(matched, parsed.model),
+          source: isUserKey ? ("custom-rules" as const) : ("auto-chain" as const),
+          matchedPattern,
+        };
       }
       return {
-        routes: getFallbackChain(parsed.model, parsed.provider),
+        routes: [] as FallbackRoute[],
         source: "auto-chain" as const,
         matchedPattern: undefined,
       };

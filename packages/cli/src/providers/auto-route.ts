@@ -145,6 +145,12 @@ export function getAutoRouteHint(modelName: string, nativeProvider: string): str
   return lines.join("\n");
 }
 
+/**
+ * @deprecated Use `route()` from `providers/routing-rules.ts`. The new entry
+ * point consults `DEFAULT_ROUTING_RULES` merged with user config, providing the
+ * same routing surface as a single user-rewritable data table. Will be removed
+ * in a future release (commit 5 of the model-catalog and routing redesign).
+ */
 export function autoRoute(modelName: string, nativeProvider: string): AutoRouteResult | null {
   // Step 1: LiteLLM cache check (only when LiteLLM is the effective default provider)
   const effectiveDefault = resolveDefaultProvider({
@@ -469,6 +475,11 @@ export function getDefaultProviderRoute(
  *
  * Only includes providers that have credentials configured.
  * Used for auto-routed models (no explicit provider@ prefix).
+ *
+ * @deprecated Use `route()` from `providers/routing-rules.ts`. Routing now
+ * lives in `DEFAULT_ROUTING_RULES` (data) merged with user config — same
+ * surface, simpler model. Will be removed in a future release (commit 5 of
+ * the model-catalog and routing redesign).
  */
 export function getFallbackChain(
   modelName: string,

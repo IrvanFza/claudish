@@ -31,35 +31,13 @@ import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import {
-  getFallbackChain,
   warmZenModelCache,
   warmZenGoModelCache,
 } from "./providers/auto-route.js";
-import {
-  loadRoutingRules,
-  matchRoutingRule,
-  buildRoutingChain,
-} from "./providers/routing-rules.js";
+import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
-import { resolveDefaultProvider } from "./default-provider.js";
 import { loadConfig } from "./profile-config.js";
-
-/**
- * Memoized lookup of the effective default provider (resolved once per process).
- * Used to seed the routing fallback chain so LiteLLM is no longer the hardcoded
- * #1 priority — users can now set `defaultProvider` in ~/.claudish/config.json.
- */
-let _resolvedDefaultProviderCache: string | null = null;
-function getEffectiveDefaultProvider(): string {
-  if (_resolvedDefaultProviderCache) return _resolvedDefaultProviderCache;
-  try {
-    _resolvedDefaultProviderCache = resolveDefaultProvider({ config: loadConfig() }).provider;
-  } catch {
-    _resolvedDefaultProviderCache = "openrouter";
-  }
-  return _resolvedDefaultProviderCache;
-}
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -318,8 +296,10 @@ export async function createProxyServer(
     .then(() => log("[Proxy] Zen Go model cache pre-warmed for fallback filtering"))
     .catch(() => {});
 
-  // Load custom routing rules once at startup (local .claudish.json takes priority over global)
-  const customRoutingRules = loadRoutingRules();
+  // Load effective routing rules once at startup. Returns a merged view of
+  // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
+  // routing engine consults these via route() for every bare-name request.
+  const effectiveRoutingRules = loadRoutingRules();
 
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
@@ -396,8 +376,9 @@ export async function createProxyServer(
     }
 
     // 2c. Provider fallback chain for auto-routed models
-    // When no explicit provider@ prefix is given, build a priority chain of providers
-    // and wrap them in a FallbackHandler that tries each in order on retryable errors.
+    // When no explicit provider@ prefix is given, consult the routing engine
+    // (defaults + user overrides merged in loadRoutingRules), filter to
+    // credentialed providers, and wrap them in a FallbackHandler.
     {
       const parsedForFallback = parseModelSpec(target);
       if (
@@ -410,30 +391,22 @@ export async function createProxyServer(
           return fallbackHandlerCache.get(cacheKey)!;
         }
 
-        // Ensure catalog is warm before fallback chain builds OpenRouter routes
+        // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady("openrouter", 5000);
 
-        const matchedEntries = customRoutingRules
-          ? matchRoutingRule(parsedForFallback.model, customRoutingRules)
-          : null;
-        const chain = matchedEntries
-          ? buildRoutingChain(matchedEntries, parsedForFallback.model)
-          : getFallbackChain(
-              parsedForFallback.model,
-              parsedForFallback.provider,
-              getEffectiveDefaultProvider()
-            );
-        if (chain.length > 0) {
+        const plan = route(parsedForFallback.model, effectiveRoutingRules);
+        if (plan.kind === "ok") {
+          const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
-          for (const route of chain) {
+          for (const candidate of chain) {
             let handler: ModelHandler | null = null;
-            if (route.provider === "openrouter") {
-              handler = getOpenRouterHandler(route.modelSpec, invocationMode);
+            if (candidate.provider === "openrouter") {
+              handler = getOpenRouterHandler(candidate.modelSpec, invocationMode);
             } else {
-              handler = getRemoteProviderHandler(route.modelSpec, invocationMode);
+              handler = getRemoteProviderHandler(candidate.modelSpec, invocationMode);
             }
             if (handler) {
-              candidates.push({ name: route.displayName, handler });
+              candidates.push({ name: candidate.displayName, handler });
             }
           }
 
@@ -444,13 +417,19 @@ export async function createProxyServer(
             fallbackHandlerCache.set(cacheKey, resultHandler);
 
             if (!options.quiet && candidates.length > 1) {
-              const source = matchedEntries ? "[Custom]" : "[Fallback]";
               logStderr(
-                `${source} ${candidates.length} providers for ${parsedForFallback.model}: ${candidates.map((c) => c.name).join(" → ")}`
+                `[Route] ${candidates.length} providers for ${parsedForFallback.model}: ${candidates.map((c) => c.name).join(" → ")}`
               );
             }
             return resultHandler;
           }
+        } else if (!options.quiet) {
+          // No routable provider — log the reason/hint but fall through to
+          // legacy step 7 (OpenRouter handler) so existing flows still
+          // surface a clear error from that handler. Strict no-route
+          // enforcement lands in commit 5.
+          logStderr(`[Route] ${plan.reason}`);
+          if (plan.hint) logStderr(plan.hint);
         }
       }
     }

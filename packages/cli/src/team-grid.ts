@@ -16,8 +16,11 @@ import {
   type ModelStatus,
 } from "./team-orchestrator.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import { matchRoutingRule, buildRoutingChain } from "./providers/routing-rules.js";
-import { getFallbackChain } from "./providers/auto-route.js";
+import {
+  matchRoutingRule,
+  buildRoutingChain,
+  loadRoutingRules,
+} from "./providers/routing-rules.js";
 import { loadConfig, loadLocalConfig } from "./profile-config.js";
 
 // ─── Routing Resolution ──────────────────────────────────────────────────────
@@ -80,10 +83,20 @@ function resolveRouteInfo(modelId: string): RouteInfo {
     }
   }
 
-  // Default auto-routing
-  const routes = getFallbackChain(parsed.model, parsed.provider);
+  // Default auto-routing — consult merged routing rules (defaults + user
+  // config). Returns an empty chain only if the catch-all "*" was deliberately
+  // disabled by the user.
+  const merged = loadRoutingRules();
+  const matched = matchRoutingRule(parsed.model, merged);
+  if (matched) {
+    const routes = buildRoutingChain(matched, parsed.model);
+    return {
+      chain: routes.map((r) => r.displayName),
+      source: "auto",
+    };
+  }
   return {
-    chain: routes.map((r) => r.displayName),
+    chain: [],
     source: "auto",
   };
 }
