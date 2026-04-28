@@ -3,29 +3,25 @@
  *
  * Handles LiteLLM-specific model transforms:
  * - Inline image conversion for MiniMax (LiteLLM doesn't forward image_url properly)
- * - Vision support detection from cached model discovery data
  * - OpenAI-compatible payload with stream_options and tool_choice
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { DefaultAPIFormat } from "./base-api-format.js";
-import type { AdapterResult, ToolCall } from "./base-api-format.js";
 import { log } from "../logger.js";
+import { DefaultAPIFormat } from "./base-api-format.js";
 
 /** Models needing image_url → inline base64 conversion */
 const INLINE_IMAGE_MODEL_PATTERNS = ["minimax"];
 
 export class LiteLLMAPIFormat extends DefaultAPIFormat {
-  private baseUrl: string;
   private visionSupported: boolean;
   private needsInlineImages: boolean;
 
-  constructor(modelId: string, baseUrl: string) {
+  // baseUrl is accepted for backwards-compatible call sites (provider-profiles,
+  // custom-endpoints-loader, tests) but no longer consulted — the cached
+  // catalog read this fed has been removed.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(modelId: string, _baseUrl: string) {
     super(modelId);
-    this.baseUrl = baseUrl;
     this.visionSupported = this.checkVisionSupport();
     this.needsInlineImages = INLINE_IMAGE_MODEL_PATTERNS.some((p) =>
       modelId.toLowerCase().includes(p)
@@ -36,7 +32,7 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
     return "LiteLLMAPIFormat";
   }
 
-  shouldHandle(modelId: string): boolean {
+  shouldHandle(_modelId: string): boolean {
     return false; // Always used explicitly, not via DialectManager matching
   }
 
@@ -126,25 +122,12 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
     return payload;
   }
 
-  /**
-   * Look up vision support from cached LiteLLM model discovery data.
-   */
   private checkVisionSupport(): boolean {
-    try {
-      const hash = createHash("sha256").update(this.baseUrl).digest("hex").substring(0, 16);
-      const cachePath = join(homedir(), ".claudish", `litellm-models-${hash}.json`);
-      if (!existsSync(cachePath)) return true;
-
-      const cacheData = JSON.parse(readFileSync(cachePath, "utf-8"));
-      const model = cacheData.models?.find((m: any) => m.name === this.modelId);
-      if (model && model.supportsVision === false) {
-        log(`[LiteLLMAPIFormat] Model ${this.modelId} does not support vision`);
-        return false;
-      }
-      return true;
-    } catch {
-      return true;
-    }
+    // Vision support data is no longer cached locally — claudish doesn't fetch
+    // LiteLLM's catalog (per the Firebase-only catalog rule). Default to true
+    // and let LiteLLM 4xx if the model can't actually do vision; a server-side
+    // error is more informative than a stale local guess.
+    return true;
   }
 }
 

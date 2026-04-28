@@ -20,7 +20,7 @@ import { parseModelSpec } from "./providers/model-parser.js";
 import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
-import { fetchLiteLLMModels, warmRecommendedModels } from "./model-loader.js";
+import { warmRecommendedModels } from "./model-loader.js";
 import {
   resolveModelNameSync,
   logResolution,
@@ -30,10 +30,6 @@ import {
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
-import {
-  warmZenModelCache,
-  warmZenGoModelCache,
-} from "./providers/auto-route.js";
 import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
@@ -277,24 +273,10 @@ export async function createProxyServer(
     return null;
   };
 
-  // Pre-warm LiteLLM model cache for auto-routing (non-blocking)
-  if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
-    fetchLiteLLMModels(process.env.LITELLM_BASE_URL, process.env.LITELLM_API_KEY)
-      .then(() => {
-        log("[Proxy] LiteLLM model cache pre-warmed for auto-routing");
-      })
-      .catch(() => {});
-  }
-
-  // Pre-warm Zen model cache for fallback chain filtering (non-blocking)
-  warmZenModelCache()
-    .then(() => log("[Proxy] Zen model cache pre-warmed for fallback filtering"))
-    .catch(() => {});
-
-  // Pre-warm Zen Go model cache separately (Zen Go serves only 4 models via /go endpoint)
-  warmZenGoModelCache()
-    .then(() => log("[Proxy] Zen Go model cache pre-warmed for fallback filtering"))
-    .catch(() => {});
+  // Direct-provider catalog warmup (LiteLLM, Zen, Zen Go) was removed in
+  // commit 5 of the model-catalog and routing redesign. claudish only fetches
+  // Firebase catalogs now. The OpenRouter catalog is still warmed below via
+  // warmAllCatalogs() since it backs vendor-prefix resolution.
 
   // Load effective routing rules once at startup. Returns a merged view of
   // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
@@ -357,13 +339,15 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
-    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter and LiteLLM
+    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter.
     // This must happen after target is determined but before handler construction.
     // ensureCatalogReady awaits the catalog if not yet warm (with 5s timeout).
     // resolveModelNameSync then reads from the in-memory cache synchronously.
+    // (LiteLLM catalog resolution was removed in commit 5 — users type the
+    // exact LiteLLM model_group name now; see plan §D.)
     {
       const parsedTarget = parseModelSpec(target);
-      if (parsedTarget.provider === "openrouter" || parsedTarget.provider === "litellm") {
+      if (parsedTarget.provider === "openrouter") {
         await ensureCatalogReady(parsedTarget.provider, 5000);
         const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
         logResolution(parsedTarget.model, resolution, options.quiet);
@@ -423,13 +407,18 @@ export async function createProxyServer(
             }
             return resultHandler;
           }
-        } else if (!options.quiet) {
-          // No routable provider — log the reason/hint but fall through to
-          // legacy step 7 (OpenRouter handler) so existing flows still
-          // surface a clear error from that handler. Strict no-route
-          // enforcement lands in commit 5.
-          logStderr(`[Route] ${plan.reason}`);
-          if (plan.hint) logStderr(plan.hint);
+        } else {
+          // No routable provider for a bare model name. Routing is fully
+          // data-driven now (DEFAULT_ROUTING_RULES + user overrides) — if the
+          // chain is empty and credential filtering produces nothing, that's
+          // the user's configured outcome. Throw so the request handler
+          // surfaces a clean error instead of silently falling through to a
+          // legacy OpenRouter fallback. (Pre-commit-5 there was a hidden
+          // OpenRouter step 7 that masked the no-route case.)
+          const message = plan.hint
+            ? `[Route] ${plan.reason}\n${plan.hint}`
+            : `[Route] ${plan.reason}`;
+          throw new Error(message);
         }
       }
     }
@@ -535,11 +524,10 @@ export async function createProxyServer(
   // Warm recommended models from Firebase in background (non-blocking)
   warmRecommendedModels().catch(() => {});
 
-  // Warm model catalog resolvers in background (non-blocking)
-  // OpenRouter always warms; LiteLLM only if configured.
-  const catalogProvidersToWarm = ["openrouter"];
-  if (process.env.LITELLM_BASE_URL) catalogProvidersToWarm.push("litellm");
-  warmAllCatalogs(catalogProvidersToWarm).catch(() => {
+  // Warm model catalog resolvers in background (non-blocking).
+  // OpenRouter is the only registered resolver post-commit-5 — the LiteLLM
+  // resolver was removed (claudish doesn't fetch LiteLLM's catalog anymore).
+  warmAllCatalogs(["openrouter"]).catch(() => {
     // Warming failures are non-fatal — resolver falls back to passthrough
   });
 

@@ -143,10 +143,7 @@ export function logResolution(
  *
  * Call this before resolveModelNameSync() to guarantee the cache is populated.
  */
-export async function ensureCatalogReady(
-  provider: string,
-  timeoutMs = 5000
-): Promise<void> {
+export async function ensureCatalogReady(provider: string, timeoutMs = 5000): Promise<void> {
   const resolver = getResolver(provider);
   if (!resolver || resolver.isCacheWarm()) return;
   await resolver.ensureReady(timeoutMs);
@@ -170,10 +167,8 @@ export async function warmAllCatalogs(providers?: string[]): Promise<void> {
 // Auto-register all resolvers at import time
 // ---------------------------------------------------------------------------
 import { OpenRouterCatalogResolver } from "./catalog-resolvers/openrouter.js";
-import { LiteLLMCatalogResolver } from "./catalog-resolvers/litellm.js";
 
 [
   new OpenRouterCatalogResolver(),
-  new LiteLLMCatalogResolver(),
   // Future: OllamaCloudCatalogResolver, VertexCatalogResolver, etc.
 ].forEach(registerResolver);

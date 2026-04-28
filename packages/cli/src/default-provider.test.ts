@@ -61,7 +61,13 @@ describe("resolveDefaultProvider precedence", () => {
     expect(result.legacyAutoPromoted).toBe(false);
   });
 
-  test("legacy LITELLM auto-promotes when nothing else set", () => {
+  test("LITELLM env vars no longer auto-promote (commit 5: removed)", () => {
+    // Pre-commit-5, having both LITELLM_BASE_URL and LITELLM_API_KEY set
+    // would resolve provider="litellm" with source="legacy-litellm". After
+    // commit 5 of the catalog/routing redesign, this auto-promotion is gone
+    // — the resolver falls through to the next tier (OPENROUTER_API_KEY or
+    // hardcoded). Users wanting LiteLLM as default must set defaultProvider
+    // explicitly in config.json or via CLAUDISH_DEFAULT_PROVIDER.
     const env: NodeJS.ProcessEnv = {
       LITELLM_BASE_URL: "http://litellm.local",
       LITELLM_API_KEY: "key",
@@ -70,9 +76,9 @@ describe("resolveDefaultProvider precedence", () => {
 
     const result = resolveDefaultProvider({ config, env });
 
-    expect(result.provider).toBe("litellm");
-    expect(result.source).toBe("legacy-litellm");
-    expect(result.legacyAutoPromoted).toBe(true);
+    expect(result.provider).toBe("openrouter");
+    expect(result.source).toBe("hardcoded");
+    expect(result.legacyAutoPromoted).toBe(false);
   });
 
   test("OPENROUTER_API_KEY fallback when no LITELLM", () => {
@@ -123,37 +129,23 @@ describe("resolveDefaultProvider precedence", () => {
   });
 });
 
-describe("buildLegacyHint", () => {
-  test("returns string only when legacyAutoPromoted is true", () => {
-    const resolved: ResolvedDefaultProvider = {
+describe("buildLegacyHint (commit 5: now a no-op)", () => {
+  // Pre-commit-5, this returned a stderr hint when legacyAutoPromoted=true.
+  // Since LiteLLM auto-promotion was removed, the function always returns
+  // null — kept for backwards-compat with existing callers.
+  test("always returns null", () => {
+    const resolvedTrue: ResolvedDefaultProvider = {
       provider: "litellm",
-      source: "legacy-litellm",
+      source: "config-file",
       legacyAutoPromoted: true,
     };
-
-    const hint = buildLegacyHint(resolved);
-    expect(hint).not.toBeNull();
-    expect(hint).toContain("LITELLM_BASE_URL");
-    expect(hint).toContain("defaultProvider");
-  });
-
-  test("returns null for cli-flag source", () => {
-    const resolved: ResolvedDefaultProvider = {
-      provider: "openrouter",
-      source: "cli-flag",
-      legacyAutoPromoted: false,
-    };
-
-    expect(buildLegacyHint(resolved)).toBeNull();
-  });
-
-  test("returns null for hardcoded source", () => {
-    const resolved: ResolvedDefaultProvider = {
+    const resolvedFalse: ResolvedDefaultProvider = {
       provider: "openrouter",
       source: "hardcoded",
       legacyAutoPromoted: false,
     };
 
-    expect(buildLegacyHint(resolved)).toBeNull();
+    expect(buildLegacyHint(resolvedTrue)).toBeNull();
+    expect(buildLegacyHint(resolvedFalse)).toBeNull();
   });
 });

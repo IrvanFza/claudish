@@ -43,7 +43,6 @@
     "bin/",
     "native/mtm/mtm-*",
     "AI_AGENT_GUIDE.md",
-    "recommended-models.json",
     "skills/"
   ],
   "engines": {

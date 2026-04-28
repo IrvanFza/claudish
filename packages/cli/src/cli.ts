@@ -4,7 +4,6 @@ import type { ClaudishConfig } from "./types.js";
 import {
   loadModelInfo,
   getAvailableModels,
-  fetchLiteLLMModels,
   getRecommendedModels,
   searchModels,
   getModelsByProvider,
@@ -33,11 +32,7 @@ import { homedir } from "node:os";
 import { getModelMapping, loadConfig, loadLocalConfig } from "./profile-config.js";
 import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
 import { parseModelSpec } from "./providers/model-parser.js";
-import {
-  warmZenModelCache,
-  warmZenGoModelCache,
-  type FallbackRoute,
-} from "./providers/auto-route.js";
+import { type FallbackRoute } from "./providers/auto-route.js";
 import {
   loadRoutingRules,
   matchRoutingRule,
@@ -104,7 +99,7 @@ function clearAllModelCaches(): void {
   try {
     const files = readdirSync(cacheDir);
     for (const file of files) {
-      if (cachePatterns.includes(file) || file.startsWith("litellm-models-")) {
+      if (cachePatterns.includes(file)) {
         unlinkSync(join(cacheDir, file));
         cleared++;
       }
@@ -838,23 +833,12 @@ async function printLocalProvidersFooter(): Promise<void> {
   }
   console.log(ollamaLine);
 
-  // LiteLLM probe — only meaningful if env is configured
+  // LiteLLM probe — claudish no longer fetches LiteLLM's catalog (Firebase-only
+  // catalog rule). Just show whether the env vars are set; users can list
+  // models on their own LiteLLM instance.
   let litellmLine = "  LiteLLM:   not configured (set LITELLM_BASE_URL + LITELLM_API_KEY)";
   if (process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY) {
-    try {
-      const litellmModels = await fetchLiteLLMModels(
-        process.env.LITELLM_BASE_URL,
-        process.env.LITELLM_API_KEY,
-        false
-      );
-      if (litellmModels.length > 0) {
-        litellmLine = `  LiteLLM:   ${litellmModels.length} model groups configured — use: claudish --model litellm@<group>`;
-      } else {
-        litellmLine = "  LiteLLM:   reachable but no model groups returned";
-      }
-    } catch {
-      litellmLine = "  LiteLLM:   configured but unreachable";
-    }
+    litellmLine = "  LiteLLM:   configured — use: claudish --model litellm@<group>";
   }
   console.log(litellmLine);
 }
@@ -1287,9 +1271,6 @@ async function probeModelRouting(
     const YELLOW = "\x1b[33m";
     const RESET = "\x1b[0m";
 
-    console.error(`${DIM}Warming provider caches...${RESET}`);
-    await Promise.allSettled([warmZenModelCache(), warmZenGoModelCache()]);
-
     let liveProxy: LiveProxy | null = null;
     if (options.live) {
       try {
@@ -1434,12 +1415,7 @@ async function probeModelRouting(
     loadRoutingRules();
     updateStep("Loading routing rules", "done");
 
-    // Step 2: Warm caches
-    addStep("Warming provider caches", "running");
-    await Promise.allSettled([warmZenModelCache(), warmZenGoModelCache()]);
-    updateStep("Warming provider caches", "done");
-
-    // Step 3: Start live proxy (if enabled)
+    // Step 2: Start live proxy (if enabled)
     if (options.live) {
       addStep("Starting probe proxy", "running");
       try {

@@ -1,14 +1,8 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
 import type { OpenRouterModel } from "./types.js";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
-
-// Get __dirname equivalent in ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // ─── Firebase Model Catalog Types ────────────────────────────────────────────
 // These mirror `firebase/functions/src/schema.ts` but are defined locally so we
@@ -183,14 +177,6 @@ export const RECOMMENDED_MODELS_CACHE_PATH = join(
 );
 const RECOMMENDED_FETCH_TIMEOUT_MS = 5000;
 const SEARCH_FETCH_TIMEOUT_MS = 10000;
-
-/**
- * Absolute path to the bundled recommended-models.json fallback.
- * Used as the last-resort source when Firebase and disk cache are unavailable.
- */
-export function getBundledRecommendedModelsPath(): string {
-  return join(__dirname, "../recommended-models.json");
-}
 
 // ─── Recommended models grouping + formatting helpers ───────────────────────
 
@@ -399,11 +385,12 @@ export function computeQuickPicks(primaries: RecommendedModelEntry[]): QuickPick
  *
  * Resolution order:
  *   1. In-memory cache (unless forceRefresh)
- *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH if <12h old (unless forceRefresh)
+ *   2. Disk cache at RECOMMENDED_MODELS_CACHE_PATH (24h TTL via FIREBASE_CACHE_TTL_HOURS)
  *   3. Firebase ?catalog=recommended (writes disk cache on success)
- *   4. Bundled recommended-models.json fallback
  *
- * Throws only when all four tiers fail.
+ * Throws when all three tiers fail. The bundled fallback was removed in commit
+ * 5 of the model-catalog and routing redesign — Firebase is the single catalog
+ * source now (see plan §A and CLAUDE.md).
  */
 export async function getRecommendedModels(
   opts: { forceRefresh?: boolean } = {}
@@ -453,11 +440,13 @@ export async function getRecommendedModels(
       }
     }
   } catch {
-    // Silent — fall through to bundled fallback
+    // Silent — fall through to the explicit error below
   }
 
-  // Tier 4: bundled fallback
-  return loadBundledRecommendedModels();
+  throw new Error(
+    "Unable to load recommended models: Firebase unreachable and no local cache. " +
+      "Check connectivity."
+  );
 }
 
 /**
@@ -466,9 +455,11 @@ export async function getRecommendedModels(
  * Tiers (no network):
  *   1. In-memory cache
  *   2. Disk cache (no freshness check — best-effort)
- *   3. Bundled recommended-models.json
  *
- * Throws only if every source fails.
+ * Sync access is best-effort; bundled fallback removed per the Firebase-only
+ * catalog rule. Help text degrades to an empty doc if Firebase has never been
+ * reached. Callers (`loadModelInfo()`, `getAvailableModels()` for `--model`
+ * flag help) handle empty data.
  */
 export function getRecommendedModelsSync(): RecommendedModelsDoc {
   if (_cachedRecommendedModels) return _cachedRecommendedModels;
@@ -483,11 +474,11 @@ export function getRecommendedModelsSync(): RecommendedModelsDoc {
         return cacheData;
       }
     } catch {
-      // Fall through to bundled
+      // Fall through to empty doc
     }
   }
 
-  return loadBundledRecommendedModels();
+  return { version: "0", lastUpdated: "", models: [] };
 }
 
 /**
@@ -507,23 +498,6 @@ function isFreshEnough(doc: RecommendedModelsDoc): boolean {
   if (!generatedAt) return true; // No timestamp — treat as usable
   const ageHours = (Date.now() - new Date(generatedAt).getTime()) / (1000 * 60 * 60);
   return ageHours <= FIREBASE_CACHE_TTL_HOURS;
-}
-
-function loadBundledRecommendedModels(): RecommendedModelsDoc {
-  const jsonPath = getBundledRecommendedModelsPath();
-  if (!existsSync(jsonPath)) {
-    throw new Error(
-      `recommended-models.json not found at ${jsonPath}. ` +
-        `Run 'claudish --top-models --force-update' to refresh from Firebase.`
-    );
-  }
-  try {
-    const doc = JSON.parse(readFileSync(jsonPath, "utf-8")) as RecommendedModelsDoc;
-    _cachedRecommendedModels = doc;
-    return doc;
-  } catch (error) {
-    throw new Error(`Failed to parse bundled recommended-models.json: ${error}`);
-  }
 }
 
 // ─── On-demand Firebase search API ───────────────────────────────────────────
@@ -751,137 +725,3 @@ export function getAvailableModels(): OpenRouterModel[] {
   return result as OpenRouterModel[];
 }
 
-// ─── LiteLLM model fetch (unchanged — not OpenRouter) ────────────────────────
-
-/**
- * LiteLLM model structure from /public/model_hub API
- */
-interface LiteLLMModel {
-  model_group: string;
-  providers: string[];
-  max_input_tokens?: number;
-  max_output_tokens?: number;
-  input_cost_per_token?: number;
-  output_cost_per_token?: number;
-  supports_vision?: boolean;
-  supports_reasoning?: boolean;
-  supports_function_calling?: boolean;
-  mode?: string;
-}
-
-interface LiteLLMCache {
-  timestamp: string;
-  models: any[];
-}
-
-const LITELLM_CACHE_MAX_AGE_HOURS = 24;
-
-/**
- * Fetch models from LiteLLM instance with caching.
- */
-export async function fetchLiteLLMModels(
-  baseUrl: string,
-  apiKey: string,
-  forceUpdate = false
-): Promise<any[]> {
-  const hash = createHash("sha256").update(baseUrl).digest("hex").substring(0, 16);
-  const cacheDir = join(homedir(), ".claudish");
-  const cachePath = join(cacheDir, `litellm-models-${hash}.json`);
-
-  if (!forceUpdate && existsSync(cachePath)) {
-    try {
-      const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
-      const timestamp = new Date(cacheData.timestamp);
-      const now = new Date();
-      const ageInHours = (now.getTime() - timestamp.getTime()) / (1000 * 60 * 60);
-
-      if (ageInHours < LITELLM_CACHE_MAX_AGE_HOURS) {
-        return cacheData.models;
-      }
-    } catch {
-      // Cache read error, will fetch fresh data
-    }
-  }
-
-  try {
-    const url = `${baseUrl.replace(/\/$/, "")}/model_group/info`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      console.error(`Failed to fetch LiteLLM models: ${response.status} ${response.statusText}`);
-      if (existsSync(cachePath)) {
-        try {
-          const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
-          return cacheData.models;
-        } catch {
-          return [];
-        }
-      }
-      return [];
-    }
-
-    const responseData = (await response.json()) as { data?: LiteLLMModel[] } | LiteLLMModel[];
-    const rawModels: LiteLLMModel[] = Array.isArray(responseData)
-      ? responseData
-      : responseData.data || [];
-
-    const transformedModels = rawModels
-      .filter((m) => m.mode === "chat" && m.supports_function_calling)
-      .map((m) => {
-        const inputCostPerM = (m.input_cost_per_token || 0) * 1_000_000;
-        const outputCostPerM = (m.output_cost_per_token || 0) * 1_000_000;
-        const avgCost = (inputCostPerM + outputCostPerM) / 2;
-        const isFree = inputCostPerM === 0 && outputCostPerM === 0;
-
-        const contextLength = m.max_input_tokens || 128000;
-        const contextStr =
-          contextLength >= 1000000
-            ? `${Math.round(contextLength / 1000000)}M`
-            : `${Math.round(contextLength / 1000)}K`;
-
-        return {
-          id: `litellm@${m.model_group}`,
-          name: m.model_group,
-          description: `LiteLLM model (providers: ${m.providers.join(", ")})`,
-          provider: "LiteLLM",
-          pricing: {
-            input: isFree ? "FREE" : `$${inputCostPerM.toFixed(2)}`,
-            output: isFree ? "FREE" : `$${outputCostPerM.toFixed(2)}`,
-            average: isFree ? "FREE" : `$${avgCost.toFixed(2)}/1M`,
-          },
-          context: contextStr,
-          contextLength,
-          supportsTools: m.supports_function_calling || false,
-          supportsReasoning: m.supports_reasoning || false,
-          supportsVision: m.supports_vision || false,
-          isFree,
-          source: "LiteLLM" as const,
-        };
-      });
-
-    mkdirSync(cacheDir, { recursive: true });
-    const cacheData: LiteLLMCache = {
-      timestamp: new Date().toISOString(),
-      models: transformedModels,
-    };
-    writeFileSync(cachePath, JSON.stringify(cacheData, null, 2), "utf-8");
-
-    return transformedModels;
-  } catch (error) {
-    console.error(`Failed to fetch LiteLLM models: ${error}`);
-    if (existsSync(cachePath)) {
-      try {
-        const cacheData: LiteLLMCache = JSON.parse(readFileSync(cachePath, "utf-8"));
-        return cacheData.models;
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  }
-}

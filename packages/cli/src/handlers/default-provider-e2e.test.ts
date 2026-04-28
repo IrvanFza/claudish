@@ -244,44 +244,33 @@ const MARKER = () => `x${Math.random().toString(36).slice(2, 8)}`;
 // throttle-marker file lifecycle, observed from the filesystem as a user would.
 // ---------------------------------------------------------------------------
 
-describe("Group A — legacy-hint throttle marker file", () => {
+describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
   beforeEach(() => {
-    // Fresh sandbox home so the marker file starts absent
     sandboxHome();
   });
 
-  test("A1 — marker file is written once and suppresses the second hint", () => {
+  test("A1 — LITELLM env vars no longer auto-promote LiteLLM as default", () => {
+    // Pre-commit-5, LITELLM_BASE_URL + LITELLM_API_KEY together would resolve
+    // provider="litellm" with source="legacy-litellm" and legacyAutoPromoted=true
+    // (and the CLI emitted a one-shot stderr hint, throttled by a marker file).
+    // After commit 5 of the model-catalog and routing redesign, this auto-
+    // promotion path is gone — the resolver falls through to OPENROUTER_API_KEY
+    // or hardcoded "openrouter". Users wanting LiteLLM as default must set
+    // defaultProvider: "litellm" in ~/.claudish/config.json or set
+    // CLAUDISH_DEFAULT_PROVIDER=litellm. The marker file is no longer produced.
     const env: NodeJS.ProcessEnv = {
       HOME: process.env.HOME,
       LITELLM_BASE_URL: "http://example.invalid:4000",
       LITELLM_API_KEY: "ll-test-key",
     };
 
-    const markerPath = join(process.env.HOME!, ".claudish", ".legacy-litellm-hint-shown");
-    // Clean any leftover marker from a previous test run before asserting precondition
-    if (existsSync(markerPath)) {
-      try { rmSync(markerPath); } catch {}
-    }
-    expect(existsSync(markerPath)).toBe(false);
-
-    const first = resolveDefaultProvider({ env, config: { version: "1.0.0", defaultProfile: "default", profiles: {} } });
-    expect(first.provider).toBe("litellm");
-    expect(first.legacyAutoPromoted).toBe(true);
-
-    // The resolver itself doesn't write the marker — that's the CLI layer's
-    // responsibility. What we CAN observe from outside is that legacyAutoPromoted
-    // fires truthy every time the legacy shape is present (it's a pure function).
-    // The marker's job is to gate whether the CLI PRINTS the hint. We simulate
-    // the CLI writing it, then verify the second resolver call still reports
-    // the promotion (pure logic) but the existing marker blocks a second print.
-    writeFileSync(markerPath, "shown\n", "utf8");
-    expect(existsSync(markerPath)).toBe(true);
-
-    const second = resolveDefaultProvider({ env, config: { version: "1.0.0", defaultProfile: "default", profiles: {} } });
-    expect(second.provider).toBe("litellm");
-    // Contract: resolver always reports auto-promotion; the throttle lives in
-    // the CLI frontend layer reading the marker file we just created.
-    expect(second.legacyAutoPromoted).toBe(true);
+    const result = resolveDefaultProvider({
+      env,
+      config: { version: "1.0.0", defaultProfile: "default", profiles: {} },
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.source).toBe("hardcoded");
+    expect(result.legacyAutoPromoted).toBe(false);
   });
 });
 
@@ -297,7 +286,18 @@ describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
     "B1a — defaultProvider=openrouter + gpt-5.4 bare → served by OpenRouter",
     async () => {
-      sandboxHome({ version: "1.0.0", defaultProfile: "default", profiles: {}, defaultProvider: "openrouter" });
+      // Pin routing for `gpt-*` to skip codex (commit 5: DEFAULT_ROUTING_RULES
+      // puts openai-codex first for `gpt-*`, which can fire on dev boxes that
+      // happen to have a codex OAuth file. The intent of this test is the
+      // openrouter default-provider path, so we override the gpt-* chain to
+      // exclude codex.)
+      sandboxHome({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        defaultProvider: "openrouter",
+        routing: { "gpt-*": ["openai", "openrouter"] },
+      });
       captureStderr();
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
@@ -419,63 +419,31 @@ describe("Group B — real API routing", () => {
   );
 
   test.skipIf(!HAS_LL)(
-    "B4 — legacy auto-promotion emits hint once, throttled on second call",
+    "B4 — legacy auto-promotion gone (commit 5): no banner ever appears",
     async () => {
-      // Sandbox with NO defaultProvider in config. LITELLM_* env stays set.
+      // Pre-commit-5 this test asserted the one-shot hint fired on the first
+      // call and was throttled (via marker file) on the second. Commit 5 of
+      // the model-catalog and routing redesign removed the auto-promotion
+      // path entirely — the resolver no longer treats `LITELLM_*` env vars
+      // as "make LiteLLM default". Now both calls must be banner-free.
       sandboxHome({ version: "1.0.0", defaultProfile: "default", profiles: {} });
-      const markerFile = join(process.env.HOME!, ".claudish", ".legacy-litellm-hint-shown");
-      // Ensure marker does not exist for the FIRST call
-      if (existsSync(markerFile)) rmSync(markerFile);
 
       captureStderr();
-      const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
-      const first = await askProxy(port, "minimax-m2.5", `hi ${MARKER()}`);
+      await askProxy(port, "minimax-m2.5", `hi ${MARKER()}`);
       await killProxy();
       const firstStderr = releaseStderr();
-      const elapsed1 = Date.now() - t0;
-
-      console.log(
-        `[B4-1] ok=${first.ok} elapsed=${elapsed1}ms markerExists=${existsSync(markerFile)}`
-      );
-
-      // The one-shot hint should be visible in stderr on first call OR the
-      // marker file should now exist (whichever the CLI uses to implement it).
-      const firstHasHint =
-        firstStderr.toLowerCase().includes("litellm") &&
-        (firstStderr.toLowerCase().includes("deprecated") ||
-          firstStderr.toLowerCase().includes("legacy") ||
-          firstStderr.toLowerCase().includes("default-provider") ||
-          firstStderr.toLowerCase().includes("defaultprovider"));
-
-      // Second call: we expect the marker to suppress the hint. If the CLI
-      // didn't create it, simulate it ourselves (test documents the contract).
-      if (!existsSync(markerFile)) {
-        mkdirSync(join(process.env.HOME!, ".claudish"), { recursive: true });
-        writeFileSync(markerFile, "shown\n", "utf8");
-      }
+      const firstLower = firstStderr.toLowerCase();
+      const firstBanner = firstLower.includes("deprecat") && firstLower.includes("litellm");
+      expect(firstBanner).toBe(false);
 
       captureStderr();
-      const t1 = Date.now();
       const port2 = await spinProxy({ quiet: false });
-      const second = await askProxy(port2, "minimax-m2.5", `hi ${MARKER()}`);
+      await askProxy(port2, "minimax-m2.5", `hi ${MARKER()}`);
       const secondStderr = releaseStderr();
-      const elapsed2 = Date.now() - t1;
-
-      console.log(
-        `[B4-2] ok=${second.ok} elapsed=${elapsed2}ms firstHintSeen=${firstHasHint}`
-      );
-
-      // We don't strictly assert firstHasHint (the CLI may not print until
-      // certain code paths run) — we DO strictly assert that the second
-      // invocation with marker present does NOT show a NEW migration hint.
       const secondLower = secondStderr.toLowerCase();
-      // A second invocation should not repeat a "migrating to default-provider"
-      // style deprecation banner. It may still log "litellm" as the route name,
-      // which is fine.
-      const secondHasBanner =
-        secondLower.includes("deprecat") && secondLower.includes("litellm");
-      expect(secondHasBanner).toBe(false);
+      const secondBanner = secondLower.includes("deprecat") && secondLower.includes("litellm");
+      expect(secondBanner).toBe(false);
     },
     120_000
   );
@@ -533,6 +501,7 @@ describe("Group C — custom endpoint registration", () => {
   test.skipIf(!HAS_OR)(
     "C2 — invalid custom endpoint is warned but bare call still succeeds",
     async () => {
+      // Pin routing for `gpt-*` to skip codex (see B1a comment).
       sandboxHome({
         version: "1.0.0",
         defaultProfile: "default",
@@ -552,6 +521,7 @@ describe("Group C — custom endpoint registration", () => {
           },
         },
         defaultProvider: "openrouter",
+        routing: { "gpt-*": ["openai", "openrouter"] },
       });
 
       captureStderr();

@@ -25,22 +25,21 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
-import { resolveProvider, parseUrlModel } from "./provider-registry.js";
-import { resolveRemoteProvider } from "./remote-provider-registry.js";
-import { autoRoute, getAutoRouteHint } from "./auto-route.js";
+import { join } from "node:path";
 import {
-  parseModelSpec,
-  isLocalProviderName,
-  isDirectApiProvider,
-  getLegacySyntaxWarning,
   type ParsedModel,
+  getLegacySyntaxWarning,
+  isLocalProviderName,
+  parseModelSpec,
 } from "./model-parser.js";
 import {
   getApiKeyInfo as getApiKeyInfoFromDefs,
   getDisplayName as getDisplayNameFromDefs,
 } from "./provider-definitions.js";
+import { parseUrlModel, resolveProvider } from "./provider-registry.js";
+import { resolveRemoteProvider } from "./remote-provider-registry.js";
+import { buildCredentialHint } from "./routing-hints.js";
 
 /**
  * Provider category types
@@ -307,48 +306,10 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     });
   }
 
-  // 5. Auto-routing: when no explicit provider was given, use priority chain
-  let pendingAutoRouteMessage: string | undefined;
-  if (!parsed.isExplicitProvider && parsed.provider !== "native-anthropic") {
-    const autoResult = autoRoute(parsed.model, parsed.provider);
-
-    if (autoResult) {
-      if (autoResult.provider === "litellm") {
-        const info = API_KEY_INFO.litellm;
-        return addCommonFields({
-          category: "direct-api",
-          providerName: "LiteLLM",
-          modelName: autoResult.modelName,
-          fullModelId: autoResult.resolvedModelId,
-          requiredApiKeyEnvVar: info.envVar || null,
-          apiKeyAvailable: isApiKeyAvailable(info),
-          apiKeyDescription: info.description,
-          apiKeyUrl: info.url,
-          wasAutoRouted: true,
-          autoRouteMessage: autoResult.displayMessage,
-        });
-      }
-
-      if (autoResult.provider === "openrouter") {
-        const info = API_KEY_INFO.openrouter;
-        return addCommonFields({
-          category: "openrouter",
-          providerName: "OpenRouter",
-          modelName: autoResult.modelName,
-          fullModelId: autoResult.resolvedModelId,
-          requiredApiKeyEnvVar: info.envVar,
-          apiKeyAvailable: isApiKeyAvailable(info),
-          apiKeyDescription: info.description,
-          apiKeyUrl: info.url,
-          wasAutoRouted: true,
-          autoRouteMessage: autoResult.displayMessage,
-        });
-      }
-
-      // For oauth/api-key routes: fall through to resolveRemoteProvider() with annotation
-      pendingAutoRouteMessage = autoResult.displayMessage;
-    }
-  }
+  // 5. Auto-routing for bare model names is handled upstream in proxy-server.ts
+  // by route() (see providers/routing-rules.ts). This resolver runs ahead of
+  // request handling and only annotates `wasAutoRouted` for diagnostics; the
+  // actual chain construction lives in route().
 
   // 6. Try to resolve as direct API provider
   const remoteResolved = resolveRemoteProvider(modelId);
@@ -380,7 +341,7 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
       apiKeyUrl: info.envVar ? info.url : null,
       wasAutoRouted,
       autoRouteMessage: wasAutoRouted
-        ? (pendingAutoRouteMessage ?? `Auto-routed: ${parsed.model} -> ${providerDisplayName}`)
+        ? `Auto-routed: ${parsed.model} -> ${providerDisplayName}`
         : undefined,
     });
   }
@@ -444,7 +405,6 @@ export function getMissingKeyResolutions(resolutions: ProviderResolution[]): Pro
 export function getMissingKeyError(resolution: ProviderResolution): string {
   // Handle unknown provider
   if (resolution.category === "unknown") {
-    const vendor = resolution.fullModelId.split("/")[0];
     return [
       `Error: Unknown provider for model "${resolution.fullModelId}"`,
       "",
@@ -494,7 +454,7 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
       parsed.provider !== "unknown" &&
       parsed.provider !== "native-anthropic"
     ) {
-      const hint = getAutoRouteHint(parsed.model, parsed.provider);
+      const hint = buildCredentialHint(parsed.model, [parsed.provider]);
       if (hint) {
         lines.push("");
         lines.push(hint);

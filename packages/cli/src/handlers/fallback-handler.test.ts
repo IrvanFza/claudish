@@ -157,66 +157,12 @@ function hasAnyCredentials(): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Group 1: Fallback chain construction (unit, no API calls)
+// (Group 1 — unit tests of getFallbackChain — removed in commit 5 of the
+// model-catalog and routing redesign. The fallback chain construction logic
+// moved from auto-route.ts (now ~50 lines) into routing-rules.ts route()
+// + DEFAULT_ROUTING_RULES. Equivalent matrix coverage lives in
+// providers/routing-rules.test.ts and providers/default-routing-rules.test.ts.)
 // ---------------------------------------------------------------------------
-
-describe("Group 1: Fallback chain construction", () => {
-  const { getFallbackChain } = require("../providers/auto-route.js");
-
-  test("default provider 'litellm' puts LiteLLM first when configured", () => {
-    if (!process.env.LITELLM_BASE_URL || !process.env.LITELLM_API_KEY) return;
-    const chain = getFallbackChain("minimax-m2.5", "minimax", "litellm");
-    const providerOrder = chain.map((r: any) => r.provider);
-    const litellmIdx = providerOrder.indexOf("litellm");
-    expect(litellmIdx).toBe(0);
-  });
-
-  test("default provider 'openrouter' puts OpenRouter first and excludes LiteLLM duplicate", () => {
-    if (!process.env.OPENROUTER_API_KEY) return;
-    const chain = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
-    const providerOrder = chain.map((r: any) => r.provider);
-    expect(providerOrder[0]).toBe("openrouter");
-    // LiteLLM should NOT appear when default is openrouter (was always-first before)
-    expect(providerOrder.indexOf("litellm")).toBe(-1);
-  });
-
-  test("chain construction is deterministic for fixed default", () => {
-    const chain = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
-    const chain2 = getFallbackChain("minimax-m2.5", "minimax", "openrouter");
-    expect(chain.map((r: any) => r.provider)).toEqual(chain2.map((r: any) => r.provider));
-  });
-
-  test("kimi model includes subscription alternative with translated model name", () => {
-    const chain = getFallbackChain("kimi-k2.5", "kimi");
-    const sub = chain.find((r: any) => r.provider === "kimi-coding");
-    if (!sub) return;
-    expect(sub.modelSpec).toContain("kimi-for-coding");
-  });
-
-  test("google model includes gemini-codeassist subscription alternative", () => {
-    const chain = getFallbackChain("gemini-2.0-flash", "google");
-    const sub = chain.find((r: any) => r.provider === "gemini-codeassist");
-    if (!sub) return;
-    expect(sub.modelSpec).toContain("gemini-2.0-flash");
-  });
-
-  test("unknown provider with default='openrouter' gets only OpenRouter (not LiteLLM)", () => {
-    if (!process.env.OPENROUTER_API_KEY) return;
-    const chain = getFallbackChain("some-unknown-model", "unknown", "openrouter");
-    const providers = chain.map((r: any) => r.provider);
-    expect(providers).toContain("openrouter");
-    expect(providers).not.toContain("litellm");
-    expect(providers).not.toContain("unknown");
-  });
-
-  test("unknown provider with default='litellm' gets only LiteLLM and OpenRouter (no native)", () => {
-    if (!process.env.LITELLM_BASE_URL || !process.env.LITELLM_API_KEY) return;
-    const chain = getFallbackChain("some-unknown-model", "unknown", "litellm");
-    const providers = chain.map((r: any) => r.provider);
-    expect(providers).toContain("litellm");
-    expect(providers).not.toContain("unknown");
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Group 2: Real API — fallback produces a valid response or structured error

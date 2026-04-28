@@ -1,7 +1,6 @@
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
-import type { FallbackRoute } from "./auto-route.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { resolveModelNameSync } from "./model-catalog-resolver.js";
@@ -87,15 +86,12 @@ export function matchRoutingRule(modelName: string, rules: RoutingRules): Routin
 }
 
 /**
- * Convert routing entries to FallbackRoute objects.
+ * Convert routing entries to Route objects.
  * Plain name "provider" uses originalModelName.
  * Explicit "provider@model" uses the specified model.
  */
-export function buildRoutingChain(
-  entries: RoutingEntry[],
-  originalModelName: string
-): FallbackRoute[] {
-  const routes: FallbackRoute[] = [];
+export function buildRoutingChain(entries: RoutingEntry[], originalModelName: string): Route[] {
+  const routes: Route[] = [];
 
   for (const entry of entries) {
     const atIdx = entry.indexOf("@");

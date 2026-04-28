@@ -5,9 +5,10 @@
  * No imports from cli.ts or proxy-server.ts (otherwise we get import cycles).
  * Reads from a passed-in config object, env vars, and an optional CLI flag.
  *
- * Phase 1 of the LiteLLM-demotion refactor: this file ships the resolver and
- * a one-shot stderr hint. Phase 2 will wire `resolveDefaultProvider()` into
- * `auto-route.ts` and the routing fallback chain.
+ * LiteLLM auto-promotion was removed in commit 5 of the model-catalog and
+ * routing redesign. Users who relied on `LITELLM_BASE_URL` + `LITELLM_API_KEY`
+ * triggering "make LiteLLM the default" must add `defaultProvider: "litellm"`
+ * to `~/.claudish/config.json` (or set `CLAUDISH_DEFAULT_PROVIDER=litellm`).
  */
 
 import type { ClaudishProfileConfig } from "./profile-config.js";
@@ -16,16 +17,19 @@ export type DefaultProviderSource =
   | "cli-flag"
   | "env-var"
   | "config-file"
-  | "legacy-litellm"
   | "openrouter-key"
   | "hardcoded";
 
 export interface ResolvedDefaultProvider {
   /** Resolved provider name (builtin or custom-endpoint name). */
   provider: string;
-  /** Where the value came from (for diagnostics + the legacy hint). */
+  /** Where the value came from. */
   source: DefaultProviderSource;
-  /** True when we fell back to legacy LITELLM auto-promotion — emit hint. */
+  /**
+   * Always `false` post-commit-5. Field is preserved for type-stability with
+   * existing callers that pattern-match on it; will be removed in a future
+   * cleanup once those callers are gone.
+   */
   legacyAutoPromoted: boolean;
 }
 
@@ -40,10 +44,8 @@ export interface ResolveOptions {
  *   1. --default-provider CLI flag
  *   2. CLAUDISH_DEFAULT_PROVIDER env var
  *   3. config.json defaultProvider
- *   4. legacy auto-promotion: LITELLM_BASE_URL + LITELLM_API_KEY env vars → "litellm"
- *      (deprecated; emits a one-shot stderr hint elsewhere)
- *   5. OPENROUTER_API_KEY present → "openrouter"
- *   6. hardcoded "openrouter"
+ *   4. OPENROUTER_API_KEY present → "openrouter"
+ *   5. hardcoded "openrouter"
  */
 export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultProvider {
   const env = opts.env ?? process.env;
@@ -65,11 +67,6 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
     };
   }
 
-  // Legacy auto-promotion (preserves pre-refactor behavior for users with LITELLM env vars set)
-  if (env.LITELLM_BASE_URL && env.LITELLM_API_KEY) {
-    return { provider: "litellm", source: "legacy-litellm", legacyAutoPromoted: true };
-  }
-
   if (env.OPENROUTER_API_KEY) {
     return { provider: "openrouter", source: "openrouter-key", legacyAutoPromoted: false };
   }
@@ -78,17 +75,9 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
 }
 
 /**
- * Build the one-shot stderr hint shown to users still relying on LITELLM_BASE_URL
- * env vars without an explicit defaultProvider. Returns null when no hint is needed.
+ * Legacy stub — LiteLLM auto-promotion was removed in commit 5; the hint never
+ * fires anymore. Kept as a no-op for callers that still import it.
  */
-export function buildLegacyHint(resolved: ResolvedDefaultProvider): string | null {
-  if (!resolved.legacyAutoPromoted) return null;
-  return (
-    "[claudish] Detected legacy LITELLM_BASE_URL with no defaultProvider set.\n" +
-    "           Routing requests through LiteLLM as before.\n" +
-    "           To make this explicit (and silence this hint), add to ~/.claudish/config.json:\n" +
-    '             { "defaultProvider": "litellm" }\n' +
-    "           Or set CLAUDISH_DEFAULT_PROVIDER=litellm in your environment.\n" +
-    "           Auto-promotion will be removed in a future major version."
-  );
+export function buildLegacyHint(_resolved: ResolvedDefaultProvider): string | null {
+  return null;
 }
