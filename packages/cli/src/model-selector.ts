@@ -1,22 +1,35 @@
 /**
  * Model Selector with Fuzzy Search
  *
- * Uses @inquirer/search for fuzzy search model selection
+ * Two-step interactive picker over the Firebase-backed `CatalogClient`:
+ *   1. Pick a provider (filtered by `isProviderAvailable()`).
+ *   2. Pick a model — either:
+ *      - cross-vendor `catalog.searchModels()` (when "All providers" is chosen),
+ *      - vendor-scoped `catalog.modelsByVendor()` (when a specific provider is chosen),
+ *      - or a free-text input (when the provider is local / user-deployed).
+ *
+ * Pure helpers (`pickerProviderToFirebaseSlug`, `isUserDeployedProvider`,
+ * `buildExplicitModelSpec`) are exported for unit tests; the inquirer-driven
+ * flow is exercised end-to-end via the headless tmux smoke run.
  */
 
 import { confirm, input, search, select } from "@inquirer/prompts";
 import {
   type ModelDoc,
   type RecommendedModelEntry,
-  fetchLiteLLMModels,
-  getModelsByProvider,
   getRecommendedModels,
   getTop100Models,
-  searchModels,
-  searchModelsByProvider,
 } from "./model-loader.js";
-import { getProviderByName, isProviderAvailable } from "./providers/provider-definitions.js";
-import { readZenModelCacheSync, warmZenModelCache } from "./providers/auto-route.js";
+import {
+  type CatalogClient,
+  type CatalogModel,
+  createCatalogClient,
+} from "./providers/model-catalog.js";
+import {
+  getDisplayName,
+  getProviderByName,
+  isProviderAvailable,
+} from "./providers/provider-definitions.js";
 
 /**
  * Model data structure
@@ -42,33 +55,91 @@ export interface ModelInfo {
   source?: string; // Which platform the model is from
 }
 
-const RECOMMENDED_PROVIDER_SOURCE_MAP: Record<
-  string,
-  string
-> = {
-  google: "Gemini",
-  openai: "OpenAI",
-  "x-ai": "xAI",
-  moonshotai: "Kimi",
-  minimax: "MiniMax",
-  "z-ai": "Z.AI",
+/**
+ * Picker provider value → Firebase aggregator/owner slug.
+ *
+ * Picker values come from `ALL_PROVIDER_CHOICES.value` (e.g. "zen", "openai-codex");
+ * Firebase aggregator/owner slugs come from `VendorRecord.vendor` /
+ * `aggregators[].provider` in the slim catalog (e.g. "opencode-zen", "openai").
+ *
+ * Subscription endpoints (codex, kimi-coding, glm-coding, gemini-codeassist) reuse
+ * the underlying owner's catalog because they serve the same models.
+ *
+ * Picker-local glue, intentionally not exported as a global concept.
+ * Exported for unit tests only.
+ */
+export const pickerProviderToFirebaseSlug: Record<string, string> = {
+  openrouter: "openrouter",
+  google: "google",
+  "gemini-codeassist": "google",
+  openai: "openai",
+  "openai-codex": "openai",
+  xai: "x-ai",
+  deepseek: "deepseek",
+  minimax: "minimax",
+  "minimax-coding": "minimax",
+  kimi: "moonshotai",
+  "kimi-coding": "moonshotai",
+  glm: "z-ai",
+  "glm-coding": "z-ai",
+  zai: "z-ai",
+  zen: "opencode-zen",
+  "opencode-zen": "opencode-zen",
+  "opencode-zen-go": "opencode-zen-go",
+  ollamacloud: "ollamacloud",
 };
 
-const RECOMMENDED_PROVIDER_LABEL_MAP: Record<string, string> = {
-  google: "Gemini",
-  openai: "OpenAI",
-  "x-ai": "xAI",
-  moonshotai: "Kimi",
-  minimax: "MiniMax",
-  "z-ai": "Z.AI",
-};
+/**
+ * Providers whose catalogs aren't in Firebase by design — picker shows a
+ * neutral free-text input instead of a model list. Anything else falls
+ * through to the Firebase-backed catalog client.
+ */
+const LOCAL_OR_USER_DEPLOYED = new Set<string>(["litellm", "ollama", "lmstudio"]);
 
-function getRecommendedModelSource(provider: string): ModelInfo["source"] {
-  return RECOMMENDED_PROVIDER_SOURCE_MAP[provider.toLowerCase()] || "Recommended";
+/**
+ * Pure predicate — exported for unit tests.
+ */
+export function isUserDeployedProvider(value: string): boolean {
+  return LOCAL_OR_USER_DEPLOYED.has(value);
 }
 
-function getRecommendedProviderLabel(provider: string): string {
-  return RECOMMENDED_PROVIDER_LABEL_MAP[provider.toLowerCase()] || provider;
+/**
+ * Friendly display name for a Firebase provider slug. Routes through
+ * `provider-definitions.ts` `getDisplayName()` after mapping Firebase
+ * vendor slugs (e.g. "x-ai", "moonshotai") to the canonical claudish
+ * provider name (e.g. "xai", "kimi"). For genuinely unknown slugs
+ * (e.g. "perplexity") the canonical-name path falls back to a
+ * capitalized rendering of the slug.
+ */
+function firebaseSlugToProviderName(slug: string): string {
+  const lower = slug.toLowerCase();
+  // Reverse-lookup: pick the FIRST picker-value that maps to this slug.
+  // Order matters — the more "canonical" entries (e.g. "xai" before
+  // "openai-codex") sit higher in pickerProviderToFirebaseSlug.
+  for (const [pickerValue, firebaseSlug] of Object.entries(pickerProviderToFirebaseSlug)) {
+    if (firebaseSlug === lower) return pickerValue;
+  }
+  return lower;
+}
+
+function formatFirebaseProviderLabel(slug: string): string {
+  if (!slug || slug === "unknown") return "Unknown";
+  const canonical = firebaseSlugToProviderName(slug);
+  // getDisplayName falls back to capitalized provider name when the slug isn't
+  // a known builtin — that's acceptable polish for fringe vendors.
+  const displayName = getDisplayName(canonical);
+  // Prettify a few multi-segment slugs that aren't in provider-definitions.
+  if (displayName === canonical && canonical.includes("-")) {
+    return canonical
+      .split("-")
+      .map((part) => {
+        if (part === "ai") return "AI";
+        if (part.length <= 3) return part.toUpperCase();
+        return part.charAt(0).toUpperCase() + part.slice(1);
+      })
+      .join(" ");
+  }
+  return displayName;
 }
 
 /**
@@ -83,7 +154,7 @@ async function loadRecommendedModels(forceRefresh = false): Promise<ModelInfo[]>
       id: model.id,
       name: model.name,
       description: model.description,
-      provider: getRecommendedProviderLabel(model.provider),
+      provider: formatFirebaseProviderLabel(model.provider),
       providerSlug: model.provider.toLowerCase(),
       pricing: model.pricing,
       context: model.context,
@@ -91,7 +162,7 @@ async function loadRecommendedModels(forceRefresh = false): Promise<ModelInfo[]>
       supportsTools: model.supportsTools,
       supportsReasoning: model.supportsReasoning,
       supportsVision: model.supportsVision,
-      source: getRecommendedModelSource(model.provider),
+      source: formatFirebaseProviderLabel(model.provider),
     }));
   } catch {
     return [];
@@ -112,49 +183,6 @@ interface PickerProvider {
   slug: string;
   label: string;
   count: number;
-}
-
-const FIREBASE_PROVIDER_LABEL_MAP: Record<string, string> = {
-  ai21: "AI21",
-  alibaba: "Alibaba",
-  anthropic: "Anthropic",
-  baidu: "Baidu",
-  "black-forest-labs": "Black Forest Labs",
-  bytedance: "ByteDance",
-  cohere: "Cohere",
-  deepseek: "DeepSeek",
-  google: "Gemini",
-  meta: "Meta",
-  "meta-llama": "Meta Llama",
-  minimax: "MiniMax",
-  mistralai: "Mistral AI",
-  moonshotai: "Kimi",
-  nvidia: "NVIDIA",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  perplexity: "Perplexity",
-  qwen: "Qwen",
-  tencent: "Tencent",
-  togethercomputer: "Together AI",
-  unknown: "Unknown",
-  "x-ai": "xAI",
-  "z-ai": "Z.AI",
-};
-
-function formatFirebaseProviderLabel(slug: string): string {
-  const lower = slug.toLowerCase();
-  if (FIREBASE_PROVIDER_LABEL_MAP[lower]) {
-    return FIREBASE_PROVIDER_LABEL_MAP[lower];
-  }
-
-  return lower
-    .split("-")
-    .map((part) => {
-      if (part === "ai") return "AI";
-      if (part.length <= 3) return part.toUpperCase();
-      return part.charAt(0).toUpperCase() + part.slice(1);
-    })
-    .join(" ");
 }
 
 function formatContextLength(ctx?: number): string {
@@ -210,6 +238,31 @@ function modelDocToModelInfo(model: ModelDoc): ModelInfo {
   };
 }
 
+function catalogModelToModelInfo(model: CatalogModel): ModelInfo {
+  // Catalog models from the slim cache don't carry the owner provider — fall
+  // back to the first aggregator's name so the picker still shows something
+  // useful in the column.
+  const ownerOrFirstAggregator = model.provider || model.aggregators?.[0]?.provider || "unknown";
+  const providerLabel = formatFirebaseProviderLabel(ownerOrFirstAggregator);
+  const contextLength = model.contextWindow || 0;
+
+  return {
+    id: model.modelId,
+    name: model.displayName || model.modelId,
+    description: model.description || `${providerLabel} model`,
+    provider: providerLabel,
+    providerSlug: ownerOrFirstAggregator,
+    releaseDate: model.releaseDate,
+    pricing: formatAveragePricing(model.pricing),
+    context: formatContextLength(contextLength),
+    contextLength,
+    supportsTools: model.capabilities?.tools,
+    supportsReasoning: model.capabilities?.thinking,
+    supportsVision: model.capabilities?.vision,
+    source: providerLabel,
+  };
+}
+
 function dedupeModels(models: ModelInfo[]): ModelInfo[] {
   const seen = new Set<string>();
   const deduped: ModelInfo[] = [];
@@ -219,45 +272,6 @@ function dedupeModels(models: ModelInfo[]): ModelInfo[] {
     deduped.push(model);
   }
   return deduped;
-}
-
-const FIREBASE_PROVIDER_ACCESS_MAP: Record<string, string[]> = {
-  anthropic: ["native-anthropic"],
-  deepseek: ["deepseek"],
-  google: ["google", "vertex"],
-  meta: ["ollamacloud"],
-  "meta-llama": ["ollamacloud"],
-  minimax: ["minimax", "minimax-coding"],
-  moonshotai: ["kimi", "kimi-coding"],
-  openai: ["openai", "openai-codex"],
-  openrouter: ["openrouter"],
-  "x-ai": ["xai"],
-  "z-ai": ["zai", "glm", "glm-coding"],
-};
-
-function hasAccessibleAggregator(): boolean {
-  const openrouter = getProviderByName("openrouter");
-  const litellm = getProviderByName("litellm");
-  return Boolean(
-    (openrouter && isProviderAvailable(openrouter)) || (litellm && isProviderAvailable(litellm))
-  );
-}
-
-function isFirebaseProviderAccessible(providerSlug?: string): boolean {
-  if (!providerSlug) return false;
-  const slug = providerSlug.toLowerCase();
-  if (slug === "unknown") return false;
-  if (hasAccessibleAggregator()) return true;
-
-  const mappedProviders = FIREBASE_PROVIDER_ACCESS_MAP[slug] ?? [];
-  return mappedProviders.some((providerName) => {
-    const def = getProviderByName(providerName);
-    return def ? isProviderAvailable(def) : false;
-  });
-}
-
-function filterAccessibleModels(models: ModelInfo[]): ModelInfo[] {
-  return models.filter((model) => isFirebaseProviderAccessible(model.providerSlug));
 }
 
 function extractVersionParts(modelId: string): number[] {
@@ -319,7 +333,10 @@ function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
       return bReleaseSafe - aReleaseSafe;
     }
 
-    const versionCompare = compareVersionPartsDesc(extractVersionParts(a.id), extractVersionParts(b.id));
+    const versionCompare = compareVersionPartsDesc(
+      extractVersionParts(a.id),
+      extractVersionParts(b.id)
+    );
     if (versionCompare !== 0) {
       return versionCompare;
     }
@@ -339,28 +356,6 @@ async function getFreeModels(): Promise<ModelInfo[]> {
 }
 
 /**
- * Gather models for the interactive picker.
- * RELIES ON FIREBASE ONLY - no hardcoded known models or direct API fetchers.
- */
-async function getAllModelsForSearch(_forceUpdate = false): Promise<ModelInfo[]> {
-  // Check for LiteLLM configuration (user's own LiteLLM instance)
-  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
-  const litellmApiKey = process.env.LITELLM_API_KEY;
-
-  if (litellmBaseUrl && litellmApiKey) {
-    try {
-      const models = await fetchLiteLLMModels(litellmBaseUrl, litellmApiKey, false);
-      return models;
-    } catch {
-      // LiteLLM fetch failed, return empty
-      return [];
-    }
-  }
-
-  return [];
-}
-
-/**
  * Format model for display in selector
  */
 function formatModelChoice(model: ModelInfo, showSource = false): string {
@@ -376,7 +371,6 @@ function formatModelChoice(model: ModelInfo, showSource = false): string {
   const priceStr = model.pricing?.average || "N/A";
   const ctxStr = model.context || "N/A";
 
-  // Show source for free models list (OpenRouter vs Zen)
   if (showSource && model.source) {
     const sourceTagMap: Record<string, string> = {
       Zen: "Zen",
@@ -442,12 +436,6 @@ const PROVIDER_FILTER_ALIASES: Record<string, string> = {
 /**
  * Parse search term for @provider filter prefix
  * Returns { provider: source string or null, searchTerm: remaining text }
- *
- * Examples:
- *   "@xai"        → { provider: "xai", searchTerm: "" }
- *   "@xai grok"   → { provider: "xai", searchTerm: "grok" }
- *   "@openai gpt" → { provider: "openai", searchTerm: "gpt" }
- *   "grok"        → { provider: null, searchTerm: "grok" }
  */
 function parseProviderFilter(
   term: string,
@@ -477,13 +465,13 @@ function parseProviderFilter(
 
   const exactMatch = providers.find(
     (provider) =>
-      provider.slug === prefix.toLowerCase() || provider.label.toLowerCase() === prefix.toLowerCase()
+      provider.slug === prefix.toLowerCase() ||
+      provider.label.toLowerCase() === prefix.toLowerCase()
   );
   if (exactMatch) {
     return { provider: exactMatch.slug, searchTerm: rest };
   }
 
-  // Partial match: find aliases that start with the typed prefix
   const partialMatch = Object.entries(PROVIDER_FILTER_ALIASES).find(([alias]) =>
     alias.startsWith(prefix.toLowerCase())
   );
@@ -500,7 +488,6 @@ function parseProviderFilter(
     return { provider: partialProvider.slug, searchTerm: rest };
   }
 
-  // No match — treat the whole thing as a regular search term
   return { provider: null, searchTerm: term };
 }
 
@@ -512,10 +499,40 @@ export interface ModelSelectorOptions {
 }
 
 /**
+ * Resolve the picker's model list for a given provider/search-term combination.
+ * Pulled out of `selectModel` to keep that function below the cognitive-complexity
+ * limit; the three branches map directly to the picker's three flows.
+ */
+async function fetchPickerModels(
+  providerSlug: string | null,
+  searchTerm: string,
+  defaultModels: ModelInfo[],
+  catalog: CatalogClient
+): Promise<ModelInfo[]> {
+  if (providerSlug) {
+    const firebaseSlug = pickerProviderToFirebaseSlug[providerSlug];
+    if (!firebaseSlug) return [];
+    const vendorModels = await catalog.modelsByVendor(firebaseSlug);
+    const infos = sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)));
+    if (!searchTerm) return infos;
+    const needle = searchTerm.toLowerCase();
+    return infos.filter((m) => m.id.toLowerCase().includes(needle));
+  }
+
+  if (searchTerm) {
+    const found = await catalog.searchModels(searchTerm, 100);
+    return dedupeModels(found.map(catalogModelToModelInfo));
+  }
+
+  return defaultModels;
+}
+
+/**
  * Select a model interactively with fuzzy search
  */
 export async function selectModel(options: ModelSelectorOptions = {}): Promise<string> {
   const { freeOnly = false, recommended = true, message, forceUpdate = false } = options;
+  const catalog = createCatalogClient();
 
   let models: ModelInfo[];
   let recommendedModels: ModelInfo[] = [];
@@ -535,16 +552,11 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
     const topModels =
       top100Result.status === "fulfilled"
-        ? filterAccessibleModels(dedupeModels(top100Result.value.models.map(modelDocToModelInfo)))
+        ? dedupeModels(top100Result.value.models.map(modelDocToModelInfo))
         : [];
-    recommendedModels =
-      recommendedResult.status === "fulfilled" ? filterAccessibleModels(recommendedResult.value) : [];
+    recommendedModels = recommendedResult.status === "fulfilled" ? recommendedResult.value : [];
 
     models = topModels.length > 0 ? topModels : recommendedModels;
-
-    if (models.length === 0) {
-      models = filterAccessibleModels(dedupeModels(await getAllModelsForSearch(forceUpdate)));
-    }
 
     pickerProviders = toPickerProviders(getInteractiveProviderChoices());
   }
@@ -560,35 +572,10 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     }
 
     const request = (async () => {
-      if (freeOnly) {
-        // No local fallback - rely on Firebase only
-        return [];
-      }
-
+      if (freeOnly) return [];
       try {
-        if (providerSlug && searchTerm) {
-          return await searchModelsForConfiguredProvider(
-            providerSlug,
-            searchTerm,
-            recommendedModels,
-            forceUpdate
-          );
-        }
-
-        if (providerSlug) {
-          return await loadModelsForConfiguredProvider(providerSlug, recommendedModels, forceUpdate);
-        }
-
-        if (searchTerm) {
-          // Rely on Firebase only for search results
-          return filterAccessibleModels(
-            dedupeModels((await searchModels(searchTerm, 100)).map(modelDocToModelInfo))
-          );
-        }
-
-        return models;
+        return await fetchPickerModels(providerSlug, searchTerm, models, catalog);
       } catch {
-        // No local fallback - return empty on Firebase errors
         return [];
       }
     })();
@@ -597,18 +584,14 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
     return request;
   };
 
-  // Allow Escape key to cleanly exit prompts
   const ac = new AbortController();
   const onData = (data: Buffer) => {
-    // Escape key sends \x1b — but arrow keys and other sequences also start with \x1b
-    // Only treat bare \x1b (length 1) as Escape; multi-byte sequences are arrow keys etc.
     if (data.length === 1 && data[0] === 0x1b) ac.abort();
   };
   process.stdin.on("data", onData);
   const cleanupKeypress = () => process.stdin.removeListener("data", onData);
 
   try {
-    // Provider selection step (skip if freeOnly or custom message — those are special flows)
     if (!freeOnly && !message && pickerProviders.length > 1) {
       const interactiveProviderChoices = getInteractiveProviderChoices();
       const providerChoices = [
@@ -640,9 +623,9 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         return await selectModelFromProvider(
           selectedProvider,
           "interactive session",
-          models,
           recommendedModels,
-          forceUpdate
+          forceUpdate,
+          catalog
         );
       }
     }
@@ -655,7 +638,6 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
         message: promptMessage,
         pageSize: 20,
         source: async (term) => {
-          // Also support @provider prefix as power-user shortcut
           const normalizedTerm = term?.trim() || "";
           const { provider: filterProvider, searchTerm } = parseProviderFilter(
             normalizedTerm,
@@ -666,7 +648,9 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
           return remoteModels.slice(0, 100).map((model) => ({
             name: formatModelChoice(model, true),
-            value: effectiveProvider ? buildExplicitModelSpec(effectiveProvider, model.id) : model.id,
+            value: effectiveProvider
+              ? buildExplicitModelSpec(effectiveProvider, model.id)
+              : model.id,
             description: model.description?.slice(0, 160),
           }));
         },
@@ -790,7 +774,10 @@ function getProviderChoices() {
 }
 
 /**
- * Model ID prefix for each provider
+ * Model ID prefix for each provider. This is the prefix that gets prepended to
+ * the user-selected model name to produce the final `provider@model` spec
+ * handed back to claudish — a separate concern from the Firebase slug map
+ * above.
  */
 const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   google: "google@",
@@ -812,28 +799,11 @@ const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   openrouter: "openrouter@",
 };
 
-const PROVIDER_FIREBASE_SLUGS: Record<string, string[]> = {
-  google: ["google"],
-  openai: ["openai"],
-  "openai-codex": ["openai"],
-  xai: ["x-ai"],
-  minimax: ["minimax"],
-  "minimax-coding": ["minimax"],
-  kimi: ["moonshotai"],
-  "kimi-coding": ["moonshotai"],
-  glm: ["z-ai"],
-  "glm-coding": ["z-ai"],
-  zai: ["z-ai"],
-  deepseek: ["deepseek"],
-};
-
 function getInteractiveProviderChoices() {
   return getProviderChoices().filter((choice) => choice.value !== "skip");
 }
 
-function toPickerProviders(
-  choices: Array<{ name: string; value: string }>
-): PickerProvider[] {
+function toPickerProviders(choices: Array<{ name: string; value: string }>): PickerProvider[] {
   return choices.map((choice) => ({
     slug: choice.value,
     label: choice.name,
@@ -841,166 +811,115 @@ function toPickerProviders(
   }));
 }
 
-function buildExplicitModelSpec(provider: string, modelId: string): string {
+/**
+ * Build the final model spec returned to claudish, e.g. "zen@gpt-5".
+ * Pure function — exported for unit tests.
+ */
+export function buildExplicitModelSpec(provider: string, modelId: string): string {
   const prefix = PROVIDER_MODEL_PREFIX[provider];
   if (!prefix) {
     return modelId;
   }
-
   return modelId.startsWith(prefix) ? modelId : `${prefix}${modelId}`;
 }
 
 /**
- * Load OpenCode Zen models for the picker.
- * Zen lives outside Firebase — its catalog is fetched from /zen/v1/models and
- * cached to ~/.claudish/zen-models.json by warmZenModelCache. The interactive
- * selector runs BEFORE the proxy starts, so we may hit a cold cache here and
- * need to warm it on demand.
+ * Resolve the human-readable provider name used in picker prompt copy.
  */
-async function loadZenModelsForPicker(): Promise<ModelInfo[]> {
-  let cached = readZenModelCacheSync();
-  if (!cached || cached.size === 0) {
-    try {
-      await warmZenModelCache();
-    } catch {
-      // ignore; cache may stay empty
-    }
-    cached = readZenModelCacheSync();
-  }
-  if (!cached) return [];
-
-  return Array.from(cached).map((id) => ({
-    id,
-    name: id,
-    description: "OpenCode Zen",
-    provider: "Zen",
-    providerSlug: "opencode-zen",
-    source: "Zen",
-  }));
+function getPickerDisplayName(providerValue: string): string {
+  const choice = ALL_PROVIDER_CHOICES.find((c) => c.value === providerValue);
+  if (choice) return choice.name;
+  // Fall back to provider-definitions for runtime providers / custom endpoints.
+  return getDisplayName(providerValue);
 }
 
-async function loadModelsForConfiguredProvider(
-  provider: string,
-  recommendedModels: ModelInfo[],
-  _forceUpdate = false
+/**
+ * Load models for a specific picker provider value via the CatalogClient.
+ */
+async function loadModelsForPickerProvider(
+  providerValue: string,
+  catalog: CatalogClient
 ): Promise<ModelInfo[]> {
-  if (provider === "zen") {
-    return sortModelsNewestFirst(await loadZenModelsForPicker());
-  }
+  const firebaseSlug = pickerProviderToFirebaseSlug[providerValue];
+  if (!firebaseSlug) return [];
 
-  if (provider === "openrouter") {
-    try {
-      const top100 = await getTop100Models();
-      return dedupeModels([...recommendedModels, ...top100.models.map(modelDocToModelInfo)]);
-    } catch {
-      return recommendedModels;
-    }
-  }
-
-  // All other providers rely on Firebase only
-  const firebaseSlugs = PROVIDER_FIREBASE_SLUGS[provider] ?? [];
-  if (firebaseSlugs.length === 0) {
+  try {
+    const vendorModels = await catalog.modelsByVendor(firebaseSlug);
+    return sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)));
+  } catch {
     return [];
   }
-
-  const settled = await Promise.allSettled(firebaseSlugs.map((slug) => getModelsByProvider(slug, 500)));
-  const models = settled.flatMap((result) =>
-    result.status === "fulfilled" ? result.value.map(modelDocToModelInfo) : []
-  );
-  return sortModelsNewestFirst(dedupeModels(models));
 }
 
-async function searchModelsForConfiguredProvider(
-  provider: string,
+async function searchModelsForPickerProvider(
+  providerValue: string,
   searchTerm: string,
-  recommendedModels: ModelInfo[],
-  forceUpdate = false
+  catalog: CatalogClient
 ): Promise<ModelInfo[]> {
-  if (!searchTerm) {
-    return loadModelsForConfiguredProvider(provider, recommendedModels, forceUpdate);
-  }
-
-  if (provider === "zen") {
-    const all = await loadZenModelsForPicker();
-    const needle = searchTerm.toLowerCase();
-    return all.filter((m) => m.id.toLowerCase().includes(needle));
-  }
-
-  if (provider === "openrouter") {
-    return dedupeModels((await searchModels(searchTerm, 100)).map(modelDocToModelInfo));
-  }
-
-  const firebaseSlugs = PROVIDER_FIREBASE_SLUGS[provider] ?? [];
-  if (firebaseSlugs.length > 0) {
-    const settled = await Promise.allSettled(
-      firebaseSlugs.map((slug) => searchModelsByProvider(slug, searchTerm, 100))
-    );
-    const models = settled.flatMap((result) =>
-      result.status === "fulfilled" ? result.value.map(modelDocToModelInfo) : []
-    );
-    if (models.length > 0) {
-      return dedupeModels(models);
-    }
-  }
-
-  // Rely on Firebase only - no local fallback
-  const loaded = await loadModelsForConfiguredProvider(provider, recommendedModels, forceUpdate);
-  return loaded;
+  const all = await loadModelsForPickerProvider(providerValue, catalog);
+  if (!searchTerm) return all;
+  const needle = searchTerm.toLowerCase();
+  return all.filter((m) => m.id.toLowerCase().includes(needle));
 }
 
 /**
  * Select a model from a specific provider with filterable search.
- * Rely on Firebase for model data - no hardcoded known models.
+ * Rely on Firebase for model data via CatalogClient — no per-provider branching.
  */
 async function selectModelFromProvider(
   provider: string,
   tierName: string,
-  _allModels: ModelInfo[],
   recommendedModels: ModelInfo[],
-  forceUpdate = false
+  _forceUpdate: boolean,
+  catalog: CatalogClient
 ): Promise<string> {
-  const LOCAL_INPUT_PROVIDERS = new Set(["ollama", "lmstudio"]);
   const prefix = PROVIDER_MODEL_PREFIX[provider] || `${provider}@`;
+  const displayName = getPickerDisplayName(provider);
 
-  // Local providers: just ask for model name
-  if (LOCAL_INPUT_PROVIDERS.has(provider)) {
+  // Local / user-deployed providers: Firebase has no catalog, free-text only.
+  // No prefix advertising — buildExplicitModelSpec adds it silently.
+  if (isUserDeployedProvider(provider)) {
     const modelName = await input({
-      message: `Enter ${provider} model name for ${tierName}:`,
+      message:
+        tierName === "interactive session"
+          ? `Enter ${displayName} model name:`
+          : `Enter ${displayName} model name for ${tierName}:`,
       validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
     });
     return `${prefix}${modelName.trim()}`;
   }
 
-  const providerModels = await loadModelsForConfiguredProvider(provider, recommendedModels, forceUpdate);
+  const providerModels = await loadModelsForPickerProvider(provider, catalog);
 
-  // No models at all: fall back to text input
+  // No catalog data: graceful fall-through to text input (e.g. ollamacloud
+  // when Firebase ingest hasn't covered it yet).
   if (providerModels.length === 0) {
     const modelName = await input({
-      message: `Enter ${provider} model name for ${tierName}:`,
+      message:
+        tierName === "interactive session"
+          ? `Enter ${displayName} model name:`
+          : `Enter ${displayName} model name for ${tierName}:`,
       validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
     });
     return `${prefix}${modelName.trim()}`;
   }
 
-  // Show filterable search with custom entry option
+  // Filterable list with a custom-entry escape hatch.
   const CUSTOM_VALUE = "__custom_model__";
 
   const selected = await search<string>({
-    message: `Select model for ${tierName} (type to filter):`,
+    message:
+      tierName === "interactive session"
+        ? `Select ${displayName} model (type to filter):`
+        : `Select model for ${tierName} (type to filter):`,
     pageSize: 15,
     source: async (term) => {
       let filtered: ModelInfo[];
 
       if (term) {
         try {
-          filtered = await searchModelsForConfiguredProvider(
-            provider,
-            term,
-            recommendedModels,
-            forceUpdate
-          );
+          filtered = await searchModelsForPickerProvider(provider, term, catalog);
         } catch {
-          // No local fallback - return empty
           filtered = [];
         }
       } else {
@@ -1013,11 +932,11 @@ async function selectModelFromProvider(
         description: m.description?.slice(0, 80),
       }));
 
-      // Always add custom option at the end
+      // Always show the custom-entry escape hatch.
       choices.push({
         name: ">> Enter custom model ID",
         value: CUSTOM_VALUE,
-        description: `Type a custom ${provider} model name`,
+        description: `Type a custom ${displayName} model name`,
       });
 
       return choices;
@@ -1026,12 +945,15 @@ async function selectModelFromProvider(
 
   if (selected === CUSTOM_VALUE) {
     const modelName = await input({
-      message: `Enter ${provider} model name:`,
+      message: `Enter ${displayName} model name:`,
       validate: (v) => (v.trim() ? true : "Model name cannot be empty"),
     });
     return `${prefix}${modelName.trim()}`;
   }
 
+  // recommendedModels currently unused at this stage (kept on the public flow
+  // for future "highlight recommended models" UI); avoid an unused warning.
+  void recommendedModels;
   return buildExplicitModelSpec(provider, selected);
 }
 
@@ -1046,10 +968,8 @@ export async function selectModelsForProfile(): Promise<{
   subagent?: string;
 }> {
   console.log("\nLoading available models...");
-  const [fetchedModels, recommendedModels] = await Promise.all([
-    getAllModelsForSearch(),
-    loadRecommendedModels(),
-  ]);
+  const catalog = createCatalogClient();
+  const recommendedModels = await loadRecommendedModels();
 
   const tiers = [
     { key: "opus" as const, name: "Opus", description: "Most capable, used for complex reasoning" },
@@ -1093,8 +1013,9 @@ export async function selectModelsForProfile(): Promise<{
     result[tier.key] = await selectModelFromProvider(
       provider,
       tier.name,
-      fetchedModels,
-      recommendedModels
+      recommendedModels,
+      false,
+      catalog
     );
   }
 
