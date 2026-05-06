@@ -1,8 +1,12 @@
 name: Smoke Tests
 
 on:
-  schedule:
-    - cron: "0 6 * * *" # Daily at 06:00 UTC
+  # Daily schedule disabled — three direct-provider API keys are out of credit
+  # (openai, kimi, glm) so all runs fail with HTTP 429 billing errors.
+  # Re-enable by uncommenting the schedule once keys are topped up or the
+  # smoke test learns to tolerate billing-side 429s.
+  # schedule:
+  #   - cron: "0 6 * * *" # Daily at 06:00 UTC
   workflow_dispatch: # Manual trigger
 
 jobs:
