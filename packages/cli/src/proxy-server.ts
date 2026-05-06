@@ -472,8 +472,13 @@ export async function createProxyServer(
   app.post("/v1/messages/count_tokens", async (c) => {
     try {
       const body = await c.req.json();
-      const reqModel = body.model || "claude-3-opus-20240229";
-      const handler = await getHandlerForRequest(reqModel);
+      if (typeof body?.model !== "string" || body.model.length === 0) {
+        return c.json(
+          wrapAnthropicError(400, "missing required field: model"),
+          400
+        );
+      }
+      const handler = await getHandlerForRequest(body.model);
 
       // If native, we just forward. OpenRouter needs estimation.
       if (handler instanceof NativeHandler) {
