@@ -11,8 +11,7 @@ import {
   setApiKey,
   setEndpoint,
 } from "../profile-config.js";
-import { getFallbackChain } from "../providers/auto-route.js";
-import { parseModelSpec } from "../providers/model-parser.js";
+import { route } from "../providers/routing-rules.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 import { testProviderKey } from "./test-provider.js";
 import { PROVIDERS, ProviderDef, maskKey } from "./providers.js";
@@ -183,20 +182,20 @@ export function App() {
           setProbeMode("idle");
           return;
         }
-        const parsed = parseModelSpec(model);
-        const chain = getFallbackChain(model, parsed.provider);
-        if (chain.length === 0) {
+        const plan = route(model);
+        if (plan.kind !== "ok") {
           setProbeResults([
             {
               provider: "none",
               displayName: "No routes found",
               status: "failed",
-              error: "No credentials configured for any provider",
+              error: plan.hint ?? plan.reason,
             },
           ]);
           setProbeMode("done");
           return;
         }
+        const chain = [plan.primary, ...plan.fallbacks];
         // Check which routing rule matched
         const ruleEntries = Object.entries(config.routing ?? {});
         const matchedRule = ruleEntries.find(([pat]) => {
@@ -209,16 +208,11 @@ export function App() {
         });
 
         const initial: ProbeEntry[] = chain.map((r) => {
-          const provDef = PROVIDERS.find((p) => p.name === r.provider);
-          const hk = !!(
-            provDef &&
-            (config.apiKeys?.[provDef.apiKeyEnvVar] || process.env[provDef.apiKeyEnvVar])
-          );
           return {
             provider: r.provider,
             displayName: r.displayName,
-            status: hk ? "pending" : "no_key",
-            hasKey: hk,
+            status: "pending",
+            hasKey: true,
             reason: matchedRule ? `Custom rule: ${matchedRule[0]}` : "Default fallback chain",
           };
         });

@@ -270,14 +270,6 @@ jobs:
             cd ../..
           done
 
-      - name: Update recommended models from OpenRouter
-        run: |
-          echo "Fetching latest model data from OpenRouter..."
-          bun scripts/update-models.ts
-          echo ""
-          echo "Updated recommended-models.json:"
-          cat packages/cli/recommended-models.json | head -50
-
       - name: Build packages
         run: bun run build:cli
 
@@ -289,7 +281,7 @@ jobs:
           node -e "
             const pkg = require('./package.json');
             delete pkg.dependencies['@claudish/core'];
-            pkg.files = ['dist/', 'AI_AGENT_GUIDE.md', 'recommended-models.json', 'skills/'];
+            pkg.files = ['dist/', 'AI_AGENT_GUIDE.md', 'skills/'];
             // Sync optionalDependencies versions to release version
             if (pkg.optionalDependencies) {
               for (const key of Object.keys(pkg.optionalDependencies)) {
@@ -305,35 +297,6 @@ jobs:
 
       - name: Publish to npm
         run: cd packages/cli && npm publish --access public --provenance
-
-  deploy-landing-page:
-    needs: release
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: cd landingpage && bun install --frozen-lockfile
-
-      - name: Build landing page
-        run: cd landingpage && bun run build
-
-      - name: Deploy to Firebase Hosting
-        uses: FirebaseExtended/action-hosting-deploy@v0  # no Node 24 version; covered by FORCE_JAVASCRIPT_ACTIONS_TO_NODE24
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          channelId: live
-          projectId: claudish-6da10
-          entryPoint: landingpage
 
   update-homebrew:
     needs: release

@@ -12,8 +12,7 @@
 
 ## Build Commands
 
-- `bun run build` - Full build (extracts models + bundles)
-- `bun run build:ci` - CI build (bundles only, no model extraction)
+- `bun run build` - Build CLI and macOS bridge bundles
 - `bun run dev` - Development mode
 
 ## Model Routing (v4.0+)
@@ -97,7 +96,7 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 - Resolution happens BEFORE handler construction (in `proxy-server.ts`), not inside adapters.
 - Sync entry point (`resolveModelNameSync()`) — uses in-memory caches + `readFileSync`, no async propagation.
 
-**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. CLI consumers can look up `provider → externalId` directly instead of walking the `sources` array. The catalog backend lives in the [models-index](https://github.com/MadAppGang/models-index) repo.
+**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. Claudish only consumes this hosted catalog at runtime. Catalog extraction, recommendation generation, portal hosting, and API documentation live in the [models-index](https://github.com/MadAppGang/models-index) repo.
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 

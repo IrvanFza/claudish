@@ -261,7 +261,6 @@ Add magmux binaries to the `files` array in `packages/cli/package.json`:
     "native/mtm/mtm-*",
     "native/magmux/magmux-*",
     "AI_AGENT_GUIDE.md",
-    "recommended-models.json",
     "skills/"
   ]
 }

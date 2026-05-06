@@ -78,3 +78,8 @@ packages/cli/results/*.json
 
 # Model validation
 validation/
+
+# Added by claudeup
+.mnemex/
+gtd/sessions/
+.agents/
