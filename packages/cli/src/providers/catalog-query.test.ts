@@ -1,0 +1,213 @@
+/**
+ * Tests for the slim-catalog query accessor module.
+ *
+ * Run: bun test packages/cli/src/providers/catalog-query.test.ts
+ *
+ * Covers:
+ *   - findEntryByAlias: hit, miss, multi-entry cache
+ *   - findEntryByModelId: hit, miss
+ *   - findVisionAlias: respects `supportsVision === true`, miss when no vision entry
+ *   - Cache missing (readAllModelsCache → null): all three return null without throwing
+ *   - Empty entries array: all three return null
+ *
+ * Mock strategy mirrors `catalog-warm.test.ts` — `mock.module` swaps the
+ * `./all-models-cache.js` module so `readAllModelsCache()` returns a synthetic
+ * `DiskCacheV2` (or null) configured per-test. No real disk I/O.
+ */
+
+import { describe, test, expect, beforeEach, mock } from "bun:test";
+import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
+
+// ---------------------------------------------------------------------------
+// Module mock for the disk-cache layer
+// ---------------------------------------------------------------------------
+//
+// `mock.module()` is hoisted by Bun, so we register the mock BEFORE importing
+// the module under test. `mockReadResult` is mutated in beforeEach.
+
+let mockReadResult: DiskCacheV2 | null = null;
+
+mock.module("./all-models-cache.js", () => ({
+  readAllModelsCache: () => mockReadResult,
+  // catalog-query.ts only imports readAllModelsCache + the SlimModelEntry
+  // type. The other exports are present in the real module but unused here;
+  // we still expose them as no-ops so a type-only import doesn't crash if
+  // tree-shaking doesn't strip it.
+  writeAllModelsCache: () => undefined,
+  ALL_MODELS_CACHE_PATH: "/tmp/test-all-models.json",
+}));
+
+// Now import the module under test. The mock above is wired in.
+import {
+  findEntryByAlias,
+  findEntryByModelId,
+  findVisionAlias,
+} from "./catalog-query.js";
+
+// ---------------------------------------------------------------------------
+// Test fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a synthetic disk cache from a list of slim entries. Wraps them in the
+ * v2 envelope with a fixed `lastUpdated` so tests don't depend on `now`.
+ */
+function diskCache(entries: SlimModelEntry[]): DiskCacheV2 {
+  return {
+    version: 2,
+    lastUpdated: "2026-05-08T12:00:00.000Z",
+    entries,
+    models: entries.map((e) => ({ id: e.modelId })),
+  };
+}
+
+/**
+ * The standard multi-entry fixture used by most tests:
+ *   - sonnet entry: modelId "claude-sonnet-4-6", aliases include "sonnet",
+ *     supportsVision: true.
+ *   - haiku entry: modelId "claude-haiku-4-6", aliases include "haiku",
+ *     supportsVision: false.
+ *   - opus entry: modelId "claude-opus-4-7", aliases include "opus",
+ *     supportsVision: true.
+ *
+ * This shape mirrors what the Firebase slim catalog actually returns — see
+ * `OpenRouterCatalogResolver._fetchAndCache` for the producer.
+ */
+function standardEntries(): SlimModelEntry[] {
+  return [
+    {
+      modelId: "claude-sonnet-4-6",
+      aliases: ["sonnet", "claude-sonnet-4"],
+      sources: { "openrouter-api": { externalId: "anthropic/claude-sonnet-4" } },
+      supportsVision: true,
+      contextWindow: 200000,
+    },
+    {
+      modelId: "claude-haiku-4-6",
+      aliases: ["haiku"],
+      sources: { "openrouter-api": { externalId: "anthropic/claude-haiku-4" } },
+      supportsVision: false,
+      contextWindow: 200000,
+    },
+    {
+      modelId: "claude-opus-4-7",
+      aliases: ["opus"],
+      sources: { "openrouter-api": { externalId: "anthropic/claude-opus-4" } },
+      supportsVision: true,
+      contextWindow: 200000,
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("findEntryByAlias", () => {
+  beforeEach(() => {
+    mockReadResult = diskCache(standardEntries());
+  });
+
+  test("returns the entry whose aliases includes 'sonnet'", () => {
+    const result = findEntryByAlias("sonnet");
+    expect(result).not.toBeNull();
+    expect(result?.modelId).toBe("claude-sonnet-4-6");
+    expect(result?.aliases).toContain("sonnet");
+    expect(result?.supportsVision).toBe(true);
+    expect(result?.contextWindow).toBe(200000);
+  });
+
+  test("returns the haiku entry from a multi-entry fixture", () => {
+    const result = findEntryByAlias("haiku");
+    expect(result).not.toBeNull();
+    expect(result?.modelId).toBe("claude-haiku-4-6");
+    expect(result?.supportsVision).toBe(false);
+  });
+
+  test("'nonexistent' alias → null", () => {
+    expect(findEntryByAlias("nonexistent")).toBeNull();
+  });
+
+  test("alias match is case-sensitive (per architecture §6.B)", () => {
+    // "SONNET" is not in the aliases array (which has "sonnet" lowercase).
+    expect(findEntryByAlias("SONNET")).toBeNull();
+  });
+});
+
+describe("findEntryByModelId", () => {
+  beforeEach(() => {
+    mockReadResult = diskCache(standardEntries());
+  });
+
+  test("returns the matching entry for 'claude-opus-4-7'", () => {
+    const result = findEntryByModelId("claude-opus-4-7");
+    expect(result).not.toBeNull();
+    expect(result?.modelId).toBe("claude-opus-4-7");
+    expect(result?.aliases).toContain("opus");
+    expect(result?.supportsVision).toBe(true);
+  });
+
+  test("'not-real' modelId → null", () => {
+    expect(findEntryByModelId("not-real")).toBeNull();
+  });
+});
+
+describe("findVisionAlias", () => {
+  beforeEach(() => {
+    mockReadResult = diskCache(standardEntries());
+  });
+
+  test("returns the sonnet entry (supportsVision: true)", () => {
+    const result = findVisionAlias("sonnet");
+    expect(result).not.toBeNull();
+    expect(result?.modelId).toBe("claude-sonnet-4-6");
+    expect(result?.supportsVision).toBe(true);
+  });
+
+  test("haiku entry has supportsVision: false → null", () => {
+    expect(findVisionAlias("haiku")).toBeNull();
+  });
+
+  test("'nonexistent-alias' → null", () => {
+    expect(findVisionAlias("nonexistent-alias")).toBeNull();
+  });
+});
+
+describe("when readAllModelsCache returns null (cache missing)", () => {
+  beforeEach(() => {
+    mockReadResult = null;
+  });
+
+  test("findEntryByAlias returns null without throwing", () => {
+    expect(() => findEntryByAlias("sonnet")).not.toThrow();
+    expect(findEntryByAlias("sonnet")).toBeNull();
+  });
+
+  test("findEntryByModelId returns null without throwing", () => {
+    expect(() => findEntryByModelId("claude-opus-4-7")).not.toThrow();
+    expect(findEntryByModelId("claude-opus-4-7")).toBeNull();
+  });
+
+  test("findVisionAlias returns null without throwing", () => {
+    expect(() => findVisionAlias("sonnet")).not.toThrow();
+    expect(findVisionAlias("sonnet")).toBeNull();
+  });
+});
+
+describe("when cache exists but entries is empty", () => {
+  beforeEach(() => {
+    mockReadResult = diskCache([]);
+  });
+
+  test("findEntryByAlias returns null", () => {
+    expect(findEntryByAlias("sonnet")).toBeNull();
+  });
+
+  test("findEntryByModelId returns null", () => {
+    expect(findEntryByModelId("claude-opus-4-7")).toBeNull();
+  });
+
+  test("findVisionAlias returns null", () => {
+    expect(findVisionAlias("sonnet")).toBeNull();
+  });
+});
