@@ -19,6 +19,17 @@ export interface ClaudishConfig {
   openrouterApiKey?: string; // Optional in monitor mode
   anthropicApiKey?: string; // Required in monitor mode
   freeOnly?: boolean; // Show only free models in selector
+  /**
+   * --force-update flag. Today: forces a fresh fetch on `--top-models`/`--list-models`.
+   * After the launcher catalog warm lands, this also forces the warm step to refetch
+   * the slim catalog from Firebase (ignoring TTL).
+   */
+  forceUpdate?: boolean;
+  /**
+   * --skip-models-update flag. When true, the launcher catalog warm step is skipped
+   * entirely. No runtime effect yet — warm step lands in a later commit.
+   */
+  skipModelsUpdate?: boolean;
   profile?: string; // Profile name to use for model mapping
   /** --default-provider <name> CLI flag (Phase 1 of LiteLLM-demotion refactor) */
   defaultProvider?: string;

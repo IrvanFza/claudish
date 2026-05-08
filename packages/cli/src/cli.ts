@@ -308,6 +308,15 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.stdin = true;
     } else if (arg === "--free") {
       config.freeOnly = true;
+    } else if (arg === "--force-update") {
+      // Force-refresh model caches. Consumed by the --top-models/--list-models
+      // branches below AND (after the launcher warm step lands) by
+      // warmCatalogIfNeeded() to bypass the TTL check.
+      config.forceUpdate = true;
+    } else if (arg === "--skip-models-update") {
+      // Skip the launcher catalog warm step entirely. No runtime effect yet —
+      // wired up by a later commit that introduces warmCatalogIfNeeded().
+      config.skipModelsUpdate = true;
     } else if (arg === "--profile") {
       const profileArg = args[++i];
       if (!profileArg) {
@@ -385,7 +394,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--top-models") {
       // Show recommended/top models (curated Firebase catalog)
       const hasJsonFlag = args.includes("--json");
-      const forceUpdate = args.includes("--force-update");
+      // Read from cliConfig (set by the main argv loop). Fall back to args.includes
+      // so behavior is preserved when --force-update appears AFTER --top-models in argv.
+      const forceUpdate = config.forceUpdate || args.includes("--force-update");
 
       if (forceUpdate) clearAllModelCaches();
 
@@ -427,7 +438,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const query = hasQuery ? args[++i] : null;
 
       const hasJsonFlag = args.includes("--json");
-      const forceUpdate = args.includes("--force-update");
+      // Read from cliConfig (set by the main argv loop). Fall back to args.includes
+      // so behavior is preserved when --force-update appears AFTER --list-models in argv.
+      const forceUpdate = config.forceUpdate || args.includes("--force-update");
 
       // Pick up --provider <slug> anywhere in the argv. We DON'T consume it
       // from the loop — it's read-once here and harmless to let the outer
@@ -1708,7 +1721,11 @@ OPTIONS:
   --no-probe               Skip live requests, show static chain only
   --probe-timeout <secs>   Per-link timeout for live probes (default: 40)
   --json                   Output in JSON format (use with --list-models, --top-models, --probe)
-  --force-update           Force refresh model cache from OpenRouter API
+  --force-update           Force refresh the slim model catalog from Firebase
+                           (also clears per-cache files used by --top-models /
+                           --list-models; bypasses the launcher catalog TTL)
+  --skip-models-update     Skip the launcher catalog warm step entirely
+                           (use offline / when you trust the cached catalog)
   --version                Show version information
   -h, --help               Show this help message
   --help-ai                Show AI agent usage guide (file-based patterns, sub-agents)
