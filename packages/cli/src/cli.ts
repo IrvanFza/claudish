@@ -25,6 +25,7 @@ import {
   copyFileSync,
   readdirSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -156,7 +157,7 @@ export function parseAdvisorFlag(value: string): {
  * Parse CLI arguments and environment variables
  */
 export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
-  const config: Partial<ClaudishConfig> = {
+  const config: Partial<ClaudishConfig> & { claudeArgs: string[] } = {
     model: undefined, // Will prompt interactively if not provided
     autoApprove: true, // Auto-approve enabled by default (confirmed on first run)
     dangerous: false,
