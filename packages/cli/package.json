@@ -13,7 +13,7 @@
     "dev:grok": "bun run src/index.ts --interactive --model x-ai/grok-code-fast-1",
     "dev:grok:debug": "bun run src/index.ts --interactive --debug --log-level info --model x-ai/grok-code-fast-1",
     "dev:info": "bun run src/index.ts --interactive --monitor",
-    "build": "bun run scripts/generate-version.ts && bun build src/index.ts --outdir dist --target bun && chmod +x dist/index.js",
+    "build": "bun run scripts/generate-version.ts && bun build src/index.ts --outdir dist --target bun --external '@opentui/core' --external '@opentui/core-*' --external '@opentui/react' && chmod +x dist/index.js",
     "build:binary": "bun run scripts/generate-version.ts && bun build src/index.ts --compile --outfile claudish",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
