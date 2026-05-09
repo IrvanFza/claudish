@@ -5,7 +5,7 @@ import { C } from "../theme.js";
 import { DETAIL_H, CHAIN_PROVIDERS } from "../constants.js";
 import { DEFAULT_ROUTING_RULES } from "../../providers/default-routing-rules.js";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
-import type { Mode, ProbeEntry, ProbeMode } from "../types.js";
+import type { MergedRule, Mode, ProbeEntry, ProbeMode } from "../types.js";
 
 // Format a chain as inline text: "kimi → openrouter"
 function chainStr(chain: string[]): string {
@@ -30,14 +30,6 @@ const PROVIDER_REASONS: Record<string, string> = {
   ollamacloud: "Cloud Ollama",
   vertex: "Vertex AI Express",
   openrouter: "Fallback: 580+ models",
-};
-
-export type MergedRule = {
-  kind: "default" | "user";
-  pattern: string;
-  chain: string[];
-  /** True when a user rule shares an exact-match key with a default. */
-  overridesDefault: boolean;
 };
 
 interface RoutingContentProps {
@@ -406,14 +398,43 @@ export function RoutingContent({
             {mergedRules.map((rule, idx) => {
               const sel = idx === providerIndex;
               const isDefault = rule.kind === "default";
-              // Marker column: ★ = user override of a default, • = user-only,
-              // · = built-in default. Visible without color.
-              const marker = isDefault ? "·" : rule.overridesDefault ? "★" : "•";
-              const markerFg = isDefault ? C.dim : rule.overridesDefault ? C.yellow : C.green;
+              const isProject = rule.kind === "project";
+              // Marker priority: project (▴ cyan) > override (★ yellow) >
+              // user (• green) > default (· dim). Project wins the marker
+              // slot when a row is BOTH project AND override; the inline
+              // annotation below disambiguates.
+              let marker: string;
+              let markerFg: string;
+              if (isDefault) {
+                marker = "·";
+                markerFg = C.dim;
+              } else if (isProject) {
+                marker = "▴";
+                markerFg = C.cyan;
+              } else if (rule.overridesDefault) {
+                marker = "★";
+                markerFg = C.yellow;
+              } else {
+                marker = "•";
+                markerFg = C.green;
+              }
               // Pattern column: white when selected, cyan when user, dim when default.
               const patFg = sel ? C.white : isDefault ? C.fgMuted : C.cyan;
               // Chain column: cyan when selected, fgMuted when user, dim when default.
               const chainFg = sel ? C.cyan : isDefault ? C.dim : C.fgMuted;
+              // Inline scope annotation — only on project rows. Matches the
+              // selective-disclosure principle: visual noise only when a
+              // project rule actually exists.
+              let scopeAnnotation = "";
+              if (isProject) {
+                if (rule.overridesGlobal) {
+                  scopeAnnotation = "  (project, overrides global)";
+                } else if (rule.overridesDefault) {
+                  scopeAnnotation = "  (project, overrides default)";
+                } else {
+                  scopeAnnotation = "  (project)";
+                }
+              }
               return (
                 <box
                   key={`${rule.kind}-${rule.pattern}`}
@@ -430,12 +451,41 @@ export function RoutingContent({
                     </span>
                     <span fg={C.dim}>{"  "}</span>
                     <span fg={chainFg}>{chainStr(rule.chain)}</span>
+                    {scopeAnnotation && <span fg={C.dim}>{scopeAnnotation}</span>}
                   </text>
                 </box>
               );
             })}
           </scrollbox>
         </>
+      )}
+
+      {/* Scope picker — mirrors pick_profile_scope (Profiles tab pattern).
+          Renders inline below the rules table when the user is creating a
+          new rule or override and needs to choose global vs project. */}
+      {mode === "pick_routing_scope" && (
+        <box flexDirection="column" paddingTop={1}>
+          <text height={1}>
+            <span fg={C.blue} bold>{"Scope for "}</span>
+            <span fg={C.white} bold>{routingPattern}</span>
+            <span fg={C.blue} bold>{":"}</span>
+          </text>
+          <box height={1} flexDirection="row">
+            <box width={16} height={1} backgroundColor={C.bgHighlight} paddingX={1}>
+              <text>
+                <span fg={C.green} bold>{"g"}</span>
+                <span fg={C.white}>{" global"}</span>
+              </text>
+            </box>
+            <box width={2} />
+            <box width={36} height={1} paddingX={1}>
+              <text>
+                <span fg={C.cyan} bold>{"p"}</span>
+                <span fg={C.fgMuted}>{" project (.claudish.json)"}</span>
+              </text>
+            </box>
+          </box>
+        </box>
       )}
 
       {/* Input fields */}

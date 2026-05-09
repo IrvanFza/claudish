@@ -79,6 +79,13 @@ export function Footer({ activeTab, mode, probeMode }: FooterProps) {
       [C.blue, "Tab", "section"],
       [C.dim, "q", "quit"],
     ];
+  } else if (activeTab === "routing" && mode === "pick_routing_scope") {
+    // Routing scope picker — mirrors pick_profile_scope keybindings.
+    keys = [
+      [C.green, "g", "global"],
+      [C.cyan, "p", "project"],
+      [C.red, "Esc", "cancel"],
+    ];
   } else if (activeTab === "routing") {
     keys = [
       [C.blue, "↑↓", "navigate"],

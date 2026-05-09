@@ -2,7 +2,7 @@
 import { C } from "../theme.js";
 import { DETAIL_H } from "../constants.js";
 import type { ProbeMode } from "../types.js";
-import type { MergedRule } from "./RoutingContent.js";
+import type { MergedRule } from "../types.js";
 
 interface RoutingDetailProps {
   probeMode: ProbeMode;
@@ -16,9 +16,15 @@ export function RoutingDetail({ probeMode, mergedRules }: RoutingDetailProps) {
   }
 
   const defaults = mergedRules.filter((r) => r.kind === "default").length;
-  const userRules = mergedRules.filter((r) => r.kind === "user");
-  const overrides = userRules.filter((r) => r.overridesDefault).length;
-  const userOnly = userRules.length - overrides;
+  const globalRules = mergedRules.filter((r) => r.kind === "global");
+  const projectRules = mergedRules.filter((r) => r.kind === "project");
+  const projectCount = projectRules.length;
+  // "overrides" counts user customizations that shadow a built-in default.
+  // Both global and project rules can override defaults.
+  const overrides =
+    globalRules.filter((r) => r.overridesDefault).length +
+    projectRules.filter((r) => r.overridesDefault).length;
+  const userOnly = globalRules.length + projectRules.length - overrides;
 
   return (
     <box
@@ -46,6 +52,13 @@ export function RoutingDetail({ probeMode, mergedRules }: RoutingDetailProps) {
           {"★"}
         </span>
         <span fg={C.fgMuted}>{" custom override of a built-in default"}</span>
+        {projectCount > 0 && (
+          <>
+            <span fg={C.fgMuted}>{" · "}</span>
+            <span fg={C.cyan} bold>{"▴"}</span>
+            <span fg={C.fgMuted}>{" project rule (.claudish.json)"}</span>
+          </>
+        )}
       </text>
       <text>
         <span fg={C.fgMuted}>{"  Chains tried left to right; built-in defaults can be overridden via "}</span>
@@ -61,6 +74,13 @@ export function RoutingDetail({ probeMode, mergedRules }: RoutingDetailProps) {
         <span fg={C.dim}>{"  ·  "}</span>
         <span fg={C.yellow} bold>{`${overrides}`}</span>
         <span fg={C.fgMuted}>{" override" + (overrides === 1 ? "" : "s")}</span>
+        {projectCount > 0 && (
+          <>
+            <span fg={C.dim}>{"  ·  "}</span>
+            <span fg={C.cyan} bold>{`${projectCount}`}</span>
+            <span fg={C.fgMuted}>{" project"}</span>
+          </>
+        )}
       </text>
     </box>
   );
