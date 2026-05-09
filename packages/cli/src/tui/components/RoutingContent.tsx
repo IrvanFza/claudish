@@ -30,6 +30,14 @@ const PROVIDER_REASONS: Record<string, string> = {
   openrouter: "Fallback: 580+ models",
 };
 
+export type MergedRule = {
+  kind: "default" | "user";
+  pattern: string;
+  chain: string[];
+  /** True when a user rule shares an exact-match key with a default. */
+  overridesDefault: boolean;
+};
+
 interface RoutingContentProps {
   config: ClaudishProfileConfig;
   probeMode: ProbeMode;
@@ -44,7 +52,7 @@ interface RoutingContentProps {
   // ai-docs/app-tsx-split/walkthrough.md — switching tabs preserves the cursor
   // across two unrelated lists. Intentionally not fixed in this refactor.
   providerIndex: number;
-  ruleEntries: Array<[string, string[]]>;
+  mergedRules: MergedRule[];
   width: number;
   contentH: number;
   isRoutingInput: boolean;
@@ -61,7 +69,7 @@ export function RoutingContent({
   chainOrder,
   chainCursor,
   providerIndex,
-  ruleEntries,
+  mergedRules,
   width,
   contentH,
   isRoutingInput,
@@ -317,26 +325,29 @@ export function RoutingContent({
       <text>
         <span fg={C.dim}>{" ─".repeat(Math.max(1, Math.floor((width - 6) / 2)))}</span>
       </text>
-      {/* Custom rules header */}
+      {/* Rules table — built-in defaults followed by user customizations.
+          The catch-all `*` is shown above and excluded from this list. */}
       <text>
         <span fg={C.blue} bold>
-          {" Custom rules:"}
+          {" Rules:"}
         </span>
-        <span fg={C.fgMuted}>{"  (override default for matching models)"}</span>
+        <span fg={C.fgMuted}>{"  (a add new · e override selected · d delete user rule)"}</span>
       </text>
-      {/* Custom rules or empty state */}
-      {ruleEntries.length === 0 && !isRoutingInput && (
+      {!isRoutingInput && mergedRules.length === 0 && (
         <text>
-          <span fg={C.fgMuted}>{" None configured. Press "}</span>
+          <span fg={C.fgMuted}>{" No rules. Press "}</span>
           <span fg={C.green} bold>
             a
           </span>
           <span fg={C.fgMuted}>{" to add."}</span>
         </text>
       )}
-      {ruleEntries.length > 0 && (
+      {mergedRules.length > 0 && (
         <>
           <text>
+            <span fg={C.blue} bold>
+              {"  "}
+            </span>
             <span fg={C.blue} bold>
               {"PATTERN         "}
             </span>
@@ -344,21 +355,33 @@ export function RoutingContent({
               {"CHAIN"}
             </span>
           </text>
-          {ruleEntries.slice(0, Math.max(0, innerH - 3)).map(([pat, chain], idx) => {
+          {mergedRules.slice(0, Math.max(0, innerH - 3)).map((rule, idx) => {
             const sel = idx === providerIndex;
+            const isDefault = rule.kind === "default";
+            // Marker column: ★ = user override of a default, • = user-only,
+            // · = built-in default. Visible without color.
+            const marker = isDefault ? "·" : rule.overridesDefault ? "★" : "•";
+            const markerFg = isDefault ? C.dim : rule.overridesDefault ? C.yellow : C.green;
+            // Pattern column: white when selected, cyan when user, dim when default.
+            const patFg = sel ? C.white : isDefault ? C.fgMuted : C.cyan;
+            // Chain column: cyan when selected, fgMuted when user, dim when default.
+            const chainFg = sel ? C.cyan : isDefault ? C.dim : C.fgMuted;
             return (
               <box
-                key={pat}
+                key={`${rule.kind}-${rule.pattern}`}
                 height={1}
                 flexDirection="row"
                 backgroundColor={sel ? C.bgHighlight : C.bg}
               >
                 <text>
-                  <span fg={sel ? C.white : C.fgMuted} bold={sel}>
-                    {pat.padEnd(16).substring(0, 16)}
+                  <span fg={markerFg} bold={!isDefault}>
+                    {` ${marker} `}
+                  </span>
+                  <span fg={patFg} bold={sel}>
+                    {rule.pattern.padEnd(16).substring(0, 16)}
                   </span>
                   <span fg={C.dim}>{"  "}</span>
-                  <span fg={sel ? C.cyan : C.fgMuted}>{chainStr(chain)}</span>
+                  <span fg={chainFg}>{chainStr(rule.chain)}</span>
                 </text>
               </box>
             );

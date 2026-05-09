@@ -11,6 +11,7 @@ import {
   setApiKey,
   setEndpoint,
 } from "../profile-config.js";
+import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 import { testProviderKey } from "./test-provider.js";
 import { PROVIDERS, maskKey } from "./providers.js";
@@ -118,7 +119,39 @@ export function App() {
 
   const statsEnabled = process.env.CLAUDISH_STATS !== "0" && process.env.CLAUDISH_STATS !== "false";
 
-  const ruleEntries = Object.entries(config.routing ?? {});
+  // Merged routing rules: built-in defaults + user customizations.
+  // Each entry is tagged with `kind` so the cursor and `e`/`d` handlers know
+  // whether the row is a default (override-via-`e`-only) or a user rule
+  // (override-or-delete). The catch-all `*` is rendered separately above the
+  // table, so it is excluded from both the defaults and user lists here.
+  // User rules where the user has set the SAME pattern as a default are
+  // shown only once — under "user", with `overridesDefault` true so the
+  // render layer can dim or annotate.
+  const userPatterns = new Set(Object.keys(config.routing ?? {}));
+  type MergedRule = {
+    kind: "default" | "user";
+    pattern: string;
+    chain: string[];
+    overridesDefault: boolean;
+  };
+  const mergedRules: MergedRule[] = useMemo(() => {
+    const out: MergedRule[] = [];
+    for (const [pat, chain] of Object.entries(DEFAULT_ROUTING_RULES)) {
+      if (pat === "*") continue;
+      if (userPatterns.has(pat)) continue; // user override appears under user list
+      out.push({ kind: "default", pattern: pat, chain, overridesDefault: false });
+    }
+    for (const [pat, chain] of Object.entries(config.routing ?? {})) {
+      if (pat === "*") continue;
+      out.push({
+        kind: "user",
+        pattern: pat,
+        chain,
+        overridesDefault: pat in DEFAULT_ROUTING_RULES,
+      });
+    }
+    return out;
+  }, [config.routing]);
   const profileName = config.defaultProfile || "default";
 
   const readyCount = PROVIDERS.filter(
@@ -493,26 +526,57 @@ export function App() {
       if (key.name === "a") {
         setRoutingPattern("");
         setRoutingChain("");
+        setChainSelected(new Set());
+        setChainOrder([]);
         setStatusMsg(null);
         setMode("add_routing_pattern");
-      } else if (key.name === "d") {
-        // delete selected rule — select by index
-        if (ruleEntries.length > 0) {
-          const [pat] = ruleEntries[Math.min(providerIndex, ruleEntries.length - 1)]!;
-          const cfg = loadConfig();
-          if (cfg.routing) {
-            delete cfg.routing[pat];
-            saveConfig(cfg);
-            refreshConfig();
-            setStatusMsg(`Rule deleted: '${pat}'.`);
-          }
+      } else if (key.name === "e") {
+        // Edit selected rule (default or user). Prefill the chain builder
+        // from the existing chain so the user sees what they're modifying.
+        // Submitting (Enter from add_routing_chain) writes a user rule that
+        // overrides the default (or replaces an existing user rule).
+        if (mergedRules.length === 0) {
+          setStatusMsg("No rules to edit.");
         } else {
-          setStatusMsg("No routing rules to delete.");
+          const idx = Math.min(providerIndex, mergedRules.length - 1);
+          const rule = mergedRules[idx]!;
+          setRoutingPattern(rule.pattern);
+          setChainSelected(new Set(rule.chain));
+          setChainOrder([...rule.chain]);
+          setChainCursor(0);
+          setStatusMsg(null);
+          setMode("add_routing_chain");
+        }
+      } else if (key.name === "d") {
+        if (mergedRules.length === 0) {
+          setStatusMsg("No rules to delete.");
+        } else {
+          const idx = Math.min(providerIndex, mergedRules.length - 1);
+          const rule = mergedRules[idx]!;
+          if (rule.kind === "default") {
+            setStatusMsg(
+              `Built-in default '${rule.pattern}' cannot be deleted. Press e to override.`
+            );
+          } else {
+            const cfg = loadConfig();
+            if (cfg.routing && cfg.routing[rule.pattern] !== undefined) {
+              delete cfg.routing[rule.pattern];
+              saveConfig(cfg);
+              refreshConfig();
+              if (rule.overridesDefault) {
+                setStatusMsg(
+                  `Custom override for '${rule.pattern}' deleted; reverted to built-in default.`
+                );
+              } else {
+                setStatusMsg(`Rule deleted: '${rule.pattern}'.`);
+              }
+            }
+          }
         }
       } else if (key.name === "up" || key.name === "k") {
         setProviderIndex((i) => Math.max(0, i - 1));
       } else if (key.name === "down" || key.name === "j") {
-        setProviderIndex((i) => Math.min(Math.max(0, ruleEntries.length - 1), i + 1));
+        setProviderIndex((i) => Math.min(Math.max(0, mergedRules.length - 1), i + 1));
       } else if (key.name === "p") {
         setStatusMsg(null);
         probe.startInput();
@@ -664,12 +728,12 @@ export function App() {
             // "Known wart" in ai-docs/app-tsx-split/walkthrough.md — switching
             // tabs preserves the cursor across two unrelated lists.
             providerIndex={providerIndex}
-            ruleEntries={ruleEntries}
+            mergedRules={mergedRules}
             width={width}
             contentH={contentH}
             isRoutingInput={isRoutingInput}
           />
-          <RoutingDetail probeMode={probeMode} ruleEntries={ruleEntries} />
+          <RoutingDetail probeMode={probeMode} mergedRules={mergedRules} />
         </>
       )}
       {activeTab === "privacy" && (

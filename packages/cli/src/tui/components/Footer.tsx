@@ -83,6 +83,7 @@ export function Footer({ activeTab, mode, probeMode }: FooterProps) {
     keys = [
       [C.blue, "↑↓", "navigate"],
       [C.green, "a", "add rule"],
+      [C.green, "e", "edit"],
       [C.red, "d", "delete"],
       [C.cyan, "p", "probe"],
       [C.blue, "Tab", "section"],
