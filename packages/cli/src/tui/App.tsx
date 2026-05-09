@@ -751,7 +751,10 @@ export function App() {
   }
 
   const isInputMode = mode === "input_key" || mode === "input_endpoint";
-  const isRoutingInput = mode === "add_routing_pattern" || mode === "add_routing_chain";
+  const isRoutingInput =
+    mode === "add_routing_pattern" ||
+    mode === "add_routing_chain" ||
+    mode === "pick_routing_scope";
 
   // ── Layout math ───────────────────────────────────────────────────────────
   // header(1) + tab-bar(3) + content(flex) + detail(fixed) + footer(1)

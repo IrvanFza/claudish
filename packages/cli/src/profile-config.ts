@@ -9,7 +9,7 @@
  * Resolution order: local config takes priority over global config.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 
@@ -337,10 +337,35 @@ export function loadLocalConfig(): ClaudishProfileConfig | null {
 }
 
 /**
- * Save local configuration to .claudish.json in CWD
+ * Save local configuration to .claudish.json. Prunes empty containers so
+ * deleting the last project rule doesn't leave a stub `{"routing": {}}`
+ * file behind. If the entire local config carries no meaningful state
+ * (no profiles, no routing), the file is unlinked instead of written.
  */
 export function saveLocalConfig(config: ClaudishProfileConfig): void {
-  writeFileSync(getLocalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  // Drop empty routing object so the on-disk file stays clean.
+  const toWrite: ClaudishProfileConfig = { ...config };
+  if (toWrite.routing !== undefined && Object.keys(toWrite.routing).length === 0) {
+    delete toWrite.routing;
+  }
+  const profileCount = Object.keys(toWrite.profiles ?? {}).length;
+  const routingCount = toWrite.routing ? Object.keys(toWrite.routing).length : 0;
+
+  const path = getLocalConfigPath();
+  if (profileCount === 0 && routingCount === 0) {
+    // Nothing meaningful left — remove the file if it exists.
+    if (existsSync(path)) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // Best-effort: if unlink fails (read-only fs etc.), fall through to
+        // a write of the empty-but-valid shell so the file isn't corrupt.
+        writeFileSync(path, JSON.stringify(toWrite, null, 2), "utf-8");
+      }
+    }
+    return;
+  }
+  writeFileSync(path, JSON.stringify(toWrite, null, 2), "utf-8");
 }
 
 // ─── Scope-Aware Operations ─────────────────────────────

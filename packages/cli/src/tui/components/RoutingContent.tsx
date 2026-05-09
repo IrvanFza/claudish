@@ -477,39 +477,59 @@ export function RoutingContent({
         </>
       )}
 
-      {/* Scope picker — mirrors pick_profile_scope (Profiles tab pattern).
-          When the picker is opened via `e` on an existing rule, the rule's
-          current scope is labeled "(current)" so picking the same letter
-          confirms-and-edits, while picking the OTHER letter moves the
-          rule to the new scope. */}
+      {/* Scope picker — opens as a full-area modal-style view that replaces
+          the rules table when active. `isRoutingInput` (App.tsx) gates the
+          rules-table render, so when the picker is up the table is hidden
+          and the picker takes the full space. Mirrors how
+          `add_routing_chain` mode renders. */}
       {mode === "pick_routing_scope" && (
-        <box flexDirection="column" paddingTop={1}>
+        <box flexDirection="column" paddingTop={1} paddingX={1} style={{ flexGrow: 1 }}>
           <text height={1}>
             <span fg={C.blue} bold>{"Scope for "}</span>
             <span fg={C.white} bold>{routingPattern}</span>
             <span fg={C.blue} bold>{":"}</span>
           </text>
+          <text height={1}>
+            <span fg={C.fgMuted}>
+              {"  Choose where to save this rule. Project rules live in "}
+            </span>
+            <span fg={C.cyan}>{".claudish.json"}</span>
+            <span fg={C.fgMuted}>{" and only apply when running"}</span>
+          </text>
+          <text height={1}>
+            <span fg={C.fgMuted}>{"  claudish from inside this project."}</span>
+          </text>
+          <text height={1}>{" "}</text>
           <box height={1} flexDirection="row">
-            <box width={22} height={1} paddingX={1}>
-              <text>
-                <span fg={C.green} bold>{"g"}</span>
-                <span fg={C.white}>{" global"}</span>
-                {editingExistingScope === "global" && (
-                  <span fg={C.dim}>{"  (current)"}</span>
-                )}
-              </text>
-            </box>
-            <box width={2} />
-            <box width={42} height={1} paddingX={1}>
-              <text>
-                <span fg={C.cyan} bold>{"p"}</span>
-                <span fg={C.fgMuted}>{" project (.claudish.json)"}</span>
-                {editingExistingScope === "project" && (
-                  <span fg={C.dim}>{"  (current)"}</span>
-                )}
-              </text>
-            </box>
+            <text>
+              <span fg={C.green} bold>{"  g"}</span>
+              <span fg={C.white} bold>{"  global   "}</span>
+              <span fg={C.fgMuted}>{"~/.claudish/config.json"}</span>
+              {editingExistingScope === "global" && (
+                <span fg={C.dim}>{"   (current)"}</span>
+              )}
+            </text>
           </box>
+          <box height={1} flexDirection="row">
+            <text>
+              <span fg={C.cyan} bold>{"  p"}</span>
+              <span fg={C.cyan} bold>{"  project  "}</span>
+              <span fg={C.fgMuted}>{".claudish.json (walks up to git root)"}</span>
+              {editingExistingScope === "project" && (
+                <span fg={C.dim}>{"   (current)"}</span>
+              )}
+            </text>
+          </box>
+          <text height={1}>{" "}</text>
+          <text height={1}>
+            <span fg={C.dim}>{"  "}</span>
+            <span fg={C.green} bold>{"g"}</span>
+            <span fg={C.dim}>{" / "}</span>
+            <span fg={C.cyan} bold>{"p"}</span>
+            <span fg={C.dim}>{" to choose · "}</span>
+            <span fg={C.red} bold>{"Esc"}</span>
+            <span fg={C.dim}>{" to cancel"}</span>
+          </text>
         </box>
       )}
 
