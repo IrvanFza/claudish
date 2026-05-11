@@ -364,30 +364,25 @@ export function RoutingContent({
       <text height={1}>
         <span fg={C.dim}>{" ─".repeat(Math.max(1, Math.floor((width - 6) / 2)))}</span>
       </text>
-      {/* Rules table — built-in defaults followed by user customizations.
-          The catch-all `*` is shown above and excluded from this list. */}
+      {/* Rules table. Header is title + a single dim hint about scope
+          discovery. Hotkeys (a / e / d) live in the footer — don't repeat
+          them inline. The scope picker shown by `a`/`e` is its own
+          explainer, so we only need a discoverability nudge here. */}
       <text height={1}>
-        <span fg={C.blue} bold>
-          {" Rules:"}
-        </span>
-        <span fg={C.fgMuted}>{"  (a add new · e override selected · d delete user rule)"}</span>
+        <span fg={C.blue} bold>{" Rules"}</span>
+        {!isRoutingInput && (
+          <>
+            <span fg={C.dim}>{"   "}</span>
+            <span fg={C.green}>{"global"}</span>
+            <span fg={C.dim}>{" / "}</span>
+            <span fg={C.cyan}>{"project"}</span>
+            <span fg={C.dim}>{" scope chosen on "}</span>
+            <span fg={C.green} bold>{"a"}</span>
+            <span fg={C.dim}>{" or "}</span>
+            <span fg={C.green} bold>{"e"}</span>
+          </>
+        )}
       </text>
-      {/* Scope hint — always shown so the global/project distinction is
-          discoverable even before the user has any project rules. The
-          ▴ marker in the legend stays present too (count may be 0). */}
-      {!isRoutingInput && (
-        <text height={1}>
-          <span fg={C.dim}>{"   Saves to "}</span>
-          <span fg={C.green}>{"global"}</span>
-          <span fg={C.dim}>{" by default; "}</span>
-          <span fg={C.green} bold>{"a"}</span>
-          <span fg={C.dim}>{" / "}</span>
-          <span fg={C.green} bold>{"e"}</span>
-          <span fg={C.dim}>{" prompts for scope ("}</span>
-          <span fg={C.cyan}>{"project"}</span>
-          <span fg={C.dim}>{" = .claudish.json)."}</span>
-        </text>
-      )}
       {!isRoutingInput && mergedRules.length === 0 && (
         <text height={1}>
           <span fg={C.fgMuted}>{" No rules. Press "}</span>
