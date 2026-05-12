@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import { C } from "../theme.js";
-import { ProviderDef, maskKey } from "../providers.js";
+import { ProviderDef, maskKey, providerAuthSource } from "../providers.js";
 import type { TestResultsMap } from "../types.js";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
 
@@ -12,6 +12,16 @@ interface ProvidersContentProps {
   width: number;
   contentH: number;
   isInputMode: boolean;
+}
+
+// Column widths — kept here so headers and rows stay in lockstep.
+const COL_NAME = 14;
+const COL_STATUS = 9; // "ready Xms" / "testing" / "not set" / "FAIL"
+const COL_AUTH = 6;   // "env" / "cfg" / "e+c" / "oauth" / "—"
+const COL_KEY = 10;   // 8-char mask + a little breathing room
+
+function pad(s: string, n: number): string {
+  return s.length >= n ? s.substring(0, n) : s + " ".repeat(n - s.length);
 }
 
 export function ProvidersContent({
@@ -27,34 +37,57 @@ export function ProvidersContent({
   let separatorRendered = false;
 
   const getRow = (p: ProviderDef, idx: number) => {
-    const isReady = !!(config.apiKeys?.[p.apiKeyEnvVar] || process.env[p.apiKeyEnvVar]);
+    const auth = providerAuthSource(p, config);
+    const isReady = auth !== null;
+    const isOauthOnly = auth === "oauth";
     const selected = idx === providerIndex;
-    const cfgMask = maskKey(config.apiKeys?.[p.apiKeyEnvVar]);
-    const envMask = maskKey(process.env[p.apiKeyEnvVar]);
-    const hasCfg = cfgMask !== "────────";
-    const hasEnv = envMask !== "────────";
-    const keyDisplay = isReady ? (hasCfg ? cfgMask : envMask) : "────────";
-    const src = hasEnv && hasCfg ? "e+c" : hasEnv ? "env" : hasCfg ? "cfg" : "";
-    const namePad = p.displayName.padEnd(14).substring(0, 14);
+
+    // KEY column. For API-key providers, show the masked key. For OAuth-
+    // only providers, show "oauth···" placeholder so the column aligns and
+    // makes the auth method obvious at a glance. For unauthenticated
+    // providers, dashes.
+    let keyDisplay: string;
+    if (isOauthOnly) {
+      keyDisplay = "oauth···";
+    } else if (auth === "cfg") {
+      keyDisplay = maskKey(config.apiKeys?.[p.apiKeyEnvVar]);
+    } else if (auth === "env" || auth === "e+c") {
+      keyDisplay = maskKey(process.env[p.apiKeyEnvVar]);
+    } else {
+      keyDisplay = "────────";
+    }
+
+    // AUTH column source label.
+    const authLabel = auth ?? "—";
+    const authFg = !auth ? C.dim : auth === "oauth" ? C.cyan : C.green;
+
     const isFirstUnready = !isReady && !separatorRendered;
     if (isFirstUnready) separatorRendered = true;
 
-    // Inline test result for this provider
+    // Inline test result for this provider.
     const tr = testResults[p.name];
-    let statusFg = isReady ? C.green : C.dim;
-    let statusText = isReady ? "ready  " : "not set";
+    let statusFg: string = isReady ? C.green : C.dim;
+    let statusText = isReady ? "ready" : "not set";
     if (tr) {
       if (tr.status === "testing") {
         statusFg = C.yellow;
         statusText = "testing";
       } else if (tr.status === "valid") {
         statusFg = C.green;
-        statusText = tr.ms !== undefined ? `ready ${tr.ms}ms` : "ready ✓";
+        statusText = tr.ms !== undefined ? `ready ${tr.ms}ms` : "ready";
       } else {
         statusFg = C.red;
-        statusText = "FAIL   ";
+        statusText = "FAIL";
       }
     }
+
+    // Description: for OAuth-only providers without credentials, replace
+    // the catalog description with an actionable hint so the user sees
+    // the path forward.
+    const description =
+      !isReady && p.oauthSlug
+        ? `Press l to login (claudish login ${p.oauthSlug})`
+        : p.description;
 
     return (
       <box key={p.name} flexDirection="column">
@@ -75,17 +108,20 @@ export function ProvidersContent({
             </span>
             <span>{"  "}</span>
             <span fg={selected ? C.white : isReady ? C.fgMuted : C.dim} bold={selected}>
-              {namePad}
+              {pad(p.displayName, COL_NAME)}
             </span>
             <span fg={C.dim}>{"  "}</span>
             <span fg={statusFg} bold={tr?.status === "valid" || isReady}>
-              {statusText}
+              {pad(statusText, COL_STATUS)}
             </span>
             <span fg={C.dim}>{"  "}</span>
-            <span fg={isReady ? C.cyan : C.dim}>{keyDisplay}</span>
-            {src ? <span fg={C.dim}>{` (${src})`}</span> : null}
+            <span fg={authFg}>{pad(authLabel, COL_AUTH)}</span>
             <span fg={C.dim}>{"  "}</span>
-            <span fg={selected ? C.white : C.dim}>{p.description}</span>
+            <span fg={isOauthOnly ? C.cyan : isReady ? C.cyan : C.dim}>
+              {pad(keyDisplay, COL_KEY)}
+            </span>
+            <span fg={C.dim}>{"  "}</span>
+            <span fg={selected ? C.white : C.dim}>{description}</span>
           </text>
         </box>
       </box>
@@ -102,21 +138,18 @@ export function ProvidersContent({
       flexDirection="column"
       paddingX={1}
     >
-      {/* Column header */}
+      {/* Column header — widths match COL_* constants used by getRow. */}
       <text>
         <span fg={C.dim}>{"   "}</span>
-        <span fg={C.blue} bold>
-          {"PROVIDER        "}
-        </span>
-        <span fg={C.blue} bold>
-          {"STATUS    "}
-        </span>
-        <span fg={C.blue} bold>
-          {"KEY         "}
-        </span>
-        <span fg={C.blue} bold>
-          DESCRIPTION
-        </span>
+        <span fg={C.blue} bold>{pad("PROVIDER", COL_NAME)}</span>
+        <span>{"  "}</span>
+        <span fg={C.blue} bold>{pad("STATUS", COL_STATUS)}</span>
+        <span>{"  "}</span>
+        <span fg={C.blue} bold>{pad("AUTH", COL_AUTH)}</span>
+        <span>{"  "}</span>
+        <span fg={C.blue} bold>{pad("KEY", COL_KEY)}</span>
+        <span>{"  "}</span>
+        <span fg={C.blue} bold>DESCRIPTION</span>
       </text>
       {displayProviders.slice(0, listH).map(getRow)}
     </box>

@@ -14,7 +14,7 @@ import {
 import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 import { testProviderKey } from "./test-provider.js";
-import { PROVIDERS, maskKey } from "./providers.js";
+import { PROVIDERS, maskKey, providerIsReady } from "./providers.js";
 import { C } from "./theme.js";
 import {
   CHAIN_PROVIDERS,
@@ -78,13 +78,14 @@ export function App() {
 
   const quit = useCallback(() => renderer.destroy(), [renderer]);
 
-  // Sort: configured providers first, then unconfigured (preserving original order within groups)
+  // Sort: configured providers first (env/cfg key OR OAuth credentials),
+  // then unconfigured. Original order preserved within each group.
   const displayProviders = useMemo(() => {
     return [...PROVIDERS].sort((a, b) => {
-      const aHasKey = !!(config.apiKeys?.[a.apiKeyEnvVar] || process.env[a.apiKeyEnvVar]);
-      const bHasKey = !!(config.apiKeys?.[b.apiKeyEnvVar] || process.env[b.apiKeyEnvVar]);
-      if (aHasKey === bHasKey) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
-      return aHasKey ? -1 : 1;
+      const aReady = providerIsReady(a, config);
+      const bReady = providerIsReady(b, config);
+      if (aReady === bReady) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
+      return aReady ? -1 : 1;
     });
   }, [config]);
 
