@@ -561,6 +561,27 @@ export function App() {
         } else {
           setStatusMsg("No stored key to remove.");
         }
+      } else if (key.name === "l") {
+        // OAuth login for the selected provider. Only available for
+        // providers whose catalog entry declares an oauthLoginSlug
+        // (gemini-codeassist, openai-codex, kimi-coding).
+        //
+        // We do NOT tear down the TUI and run loginCommand inline. That
+        // approach was attempted but the OAuth flow's localhost callback
+        // server fought with OpenTUI's renderer lifecycle, leading to
+        // ERR_CONNECTION_REFUSED on the browser callback. The robust
+        // alternative is to tell the user the command and have them run
+        // it in a separate terminal (or after quitting the TUI).
+        const slug = selectedProvider.oauthSlug;
+        if (!slug) {
+          setStatusMsg(
+            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
+          );
+        } else {
+          setStatusMsg(
+            `Run in another terminal: claudish login ${slug}   (or press q to quit and run it here)`
+          );
+        }
       } else if (key.raw === "T") {
         // Test ALL credentialed providers in parallel. Each provider's
         // testProviderKey runs concurrently; results stream into testResults

@@ -40,14 +40,18 @@ export function Footer({ activeTab, mode, probeMode }: FooterProps) {
       [C.dim, "q", "quit"],
     ];
   } else if (activeTab === "providers") {
+    // Order roughly by frequency: navigate first, key/endpoint/login next
+    // (setup actions), then test, then destructive. `Tab section` is omitted
+    // here to keep the row under 80 cols once `l login` was added — Tab is
+    // a universal navigation key, users will discover it on other tabs.
     keys = [
       [C.blue, "↑↓", "navigate"],
       [C.green, "s", "set key"],
       [C.green, "e", "endpoint"],
+      [C.green, "l", "login"],
       [C.cyan, "t", "test"],
       [C.cyan, "T", "test all"],
       [C.red, "x", "remove"],
-      [C.blue, "Tab", "section"],
       [C.dim, "q", "quit"],
     ];
   } else if (activeTab === "profiles" && mode === "pick_profile_scope") {

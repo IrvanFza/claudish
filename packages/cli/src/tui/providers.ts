@@ -14,6 +14,13 @@ export interface ProviderDef {
   endpointEnvVar?: string;
   defaultEndpoint?: string;
   aliases?: string[];
+  /**
+   * If set, this provider supports OAuth login via `claudish login {slug}`.
+   * Derived from the underlying provider catalog's oauthFallback field
+   * mapped to the three login subcommand slugs: gemini, codex, kimi.
+   * Used by the Providers tab `l` keybinding to offer in-place OAuth flow.
+   */
+  oauthSlug?: "gemini" | "codex" | "kimi";
 }
 
 // Skip virtual providers that have no API key and no TUI presence
@@ -29,6 +36,10 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
     endpointEnvVar: def.baseUrlEnvVars?.[0],
     defaultEndpoint: def.baseUrl || undefined,
     aliases: def.apiKeyAliases,
+    // Sourced from the catalog (provider-definitions.ts), not a duplicate
+    // table here. If a provider supports `claudish login {slug}`, the
+    // catalog entry declares which slug.
+    oauthSlug: def.oauthLoginSlug,
   };
 }
 

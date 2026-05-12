@@ -82,6 +82,15 @@ export interface ProviderDefinition {
   publicKeyFallback?: string;
   /** OAuth credential file under ~/.claudish/ to check as fallback */
   oauthFallback?: string;
+  /**
+   * Slug for `claudish login {slug}` if this provider supports OAuth.
+   * Multiple catalog entries can share a slug — e.g. `google` and
+   * `gemini-codeassist` both map to `"gemini"` because one OAuth flow
+   * covers the whole family.
+   * Single source of truth: keep this in sync with AUTH_PROVIDERS in
+   * src/auth/auth-commands.ts.
+   */
+  oauthLoginSlug?: "gemini" | "codex" | "kimi";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -117,6 +126,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^google\//i }, { pattern: /^gemini-/i }],
     isDirectApi: true,
     description: "Direct Gemini API (g@, google@)",
+    // No oauthLoginSlug: the bare Gemini direct API takes GEMINI_API_KEY.
+    // OAuth login (`claudish login gemini`) targets the gemini-codeassist
+    // subscription endpoint below, not this one.
   },
 
   // ── Gemini Code Assist (OAuth) ─────────────────────────────────────
@@ -129,6 +141,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Gemini Code Assist (OAuth)",
     apiKeyUrl: "https://cloud.google.com/code-assist",
+    oauthLoginSlug: "gemini",
     shortcuts: ["go"],
     shortestPrefix: "go",
     legacyPrefixes: [{ prefix: "go/", stripPrefix: true }],
@@ -176,6 +189,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "OpenAI Codex API Key (ChatGPT Plus/Pro subscription)",
     apiKeyUrl: "https://platform.openai.com/api-keys",
     oauthFallback: "codex-oauth.json",
+    oauthLoginSlug: "codex",
     shortcuts: ["cx", "codex"],
     shortestPrefix: "cx",
     legacyPrefixes: [{ prefix: "cx/", stripPrefix: true }],
@@ -281,6 +295,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Kimi Coding API Key",
     apiKeyUrl: "https://kimi.com/code (get key from membership page, or run: claudish login kimi)",
     oauthFallback: "kimi-oauth.json",
+    oauthLoginSlug: "kimi",
     shortcuts: ["kc"],
     shortestPrefix: "kc",
     legacyPrefixes: [{ prefix: "kc/", stripPrefix: true }],
