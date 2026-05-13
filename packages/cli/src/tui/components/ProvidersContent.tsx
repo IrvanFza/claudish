@@ -22,13 +22,10 @@ interface ProvidersContentProps {
 // Column widths — kept here so headers and rows stay in lockstep.
 const COL_NAME = 14;
 const COL_STATUS = 9;  // "ready Xms" / "testing" / "not set" / "FAIL"
-// AUTH column shows two pill-shaped tags side by side: `key` and `oauth`.
-// When set, the tag has a background color (green for key, cyan for oauth)
-// and white text. When supported but unset, plain dim text. When not
-// supported, blank space the same width so columns line up across rows.
-const PILL_KEY_W = 5;    // " key " (1 pad + 3 chars + 1 pad)
-const PILL_OAUTH_W = 7;  // " oauth " (1 pad + 5 chars + 1 pad)
-const COL_AUTH = PILL_KEY_W + 1 + PILL_OAUTH_W; // 13 chars total with 1 separator
+// AUTH column: SINGLE slot per row showing the active method as a pill, or
+// dim text for "supported but unset". Combined "key+oauth" tag when both
+// are set. Fixed width keeps the table aligned.
+const COL_AUTH = 12;   // " key+oauth " max width
 const COL_KEY = 10;    // 8-char mask + a little breathing room
 
 function pad(s: string, n: number): string {
@@ -126,31 +123,58 @@ export function ProvidersContent({
               {pad(statusText, COL_STATUS)}
             </span>
             <span fg={C.dim}>{"  "}</span>
-            {/* AUTH column: two pill tags side by side.
-                · Set    → bg color + white text (lowercase, pill-style)
-                · Unset  → dim gray text on default bg
-                · Absent → spaces, same width, keeps columns aligned */}
-            {keySlot.supported ? (
-              <span
-                fg={keySlot.set ? C.white : C.dim}
-                bg={keySlot.set ? C.green : undefined}
-              >
-                {" key "}
-              </span>
-            ) : (
-              <span>{" ".repeat(PILL_KEY_W)}</span>
-            )}
-            <span>{" "}</span>
-            {oauthSlot.supported ? (
-              <span
-                fg={oauthSlot.set ? C.white : C.dim}
-                bg={oauthSlot.set ? C.cyan : undefined}
-              >
-                {" oauth "}
-              </span>
-            ) : (
-              <span>{" ".repeat(PILL_OAUTH_W)}</span>
-            )}
+            {/* AUTH column: ONE slot per row.
+                Cases (most-specific first):
+                  · key + oauth both set     → pill " key+oauth " (key bg)
+                  · key set only             → pill " key " (key bg)
+                  · oauth set only           → pill " oauth " (oauth bg)
+                  · both supported, neither  → dim " key/oauth "
+                  · key supported only       → dim " key "
+                  · oauth supported only     → dim " oauth "
+                  · neither supported        → blank, same width
+                White text on muted bg for set; dim text for supported-unset. */}
+            {(() => {
+              const ks = keySlot.set, kSup = keySlot.supported;
+              const os = oauthSlot.set, oSup = oauthSlot.supported;
+              let label: string, fg: string, bg: string | undefined;
+              if (ks && os) {
+                label = " key+oauth ";
+                fg = C.white;
+                bg = C.pillKeyBg;
+              } else if (ks) {
+                label = " key ";
+                fg = C.white;
+                bg = C.pillKeyBg;
+              } else if (os) {
+                label = " oauth ";
+                fg = C.white;
+                bg = C.pillOauthBg;
+              } else if (kSup && oSup) {
+                label = " key/oauth ";
+                fg = C.dim;
+                bg = undefined;
+              } else if (kSup) {
+                label = " key ";
+                fg = C.dim;
+                bg = undefined;
+              } else if (oSup) {
+                label = " oauth ";
+                fg = C.dim;
+                bg = undefined;
+              } else {
+                label = "";
+                fg = C.dim;
+                bg = undefined;
+              }
+              // Right-pad to COL_AUTH width so the next column aligns.
+              const padded = label + " ".repeat(Math.max(0, COL_AUTH - label.length));
+              return (
+                <>
+                  <span fg={fg} bg={bg}>{label}</span>
+                  <span>{padded.substring(label.length)}</span>
+                </>
+              );
+            })()}
             <span fg={C.dim}>{"  "}</span>
             <span fg={isOauthOnly ? C.cyan : isReady ? C.cyan : C.dim}>
               {pad(keyDisplay, COL_KEY)}

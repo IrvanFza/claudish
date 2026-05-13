@@ -33,4 +33,10 @@ export const C = {
   tabInactiveBg: "#001a33",
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#0088ff",
+
+  // Muted pill backgrounds for AUTH column tags. The standard `green` / `cyan`
+  // are neon-bright and cause eye strain when used as a solid fill. These
+  // are lower-saturation forest/teal versions, contrast-tuned for white text.
+  pillKeyBg: "#2d6e3e", // forest green; white text reads cleanly
+  pillOauthBg: "#1f6d75", // muted teal; white text reads cleanly
 } as const;
