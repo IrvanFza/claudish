@@ -38,7 +38,18 @@ import { RoutingDetail } from "./components/RoutingDetail.js";
 import { PrivacyContent } from "./components/PrivacyContent.js";
 import { PrivacyDetail } from "./components/PrivacyDetail.js";
 
-export function App() {
+interface AppProps {
+  /**
+   * Called from the Providers tab `l` handler. The wrapper in
+   * tui/index.tsx records the requested slug, then after the renderer
+   * is destroyed it spawns `claudish login {slug}` as a child process
+   * and re-enters startConfigTui when the child exits. App.tsx just
+   * signals intent; lifecycle is the wrapper's responsibility.
+   */
+  requestLogin?: (slug: "gemini" | "codex" | "kimi") => void;
+}
+
+export function App({ requestLogin }: AppProps = {}) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
 
@@ -563,44 +574,32 @@ export function App() {
           setStatusMsg("No stored key to remove.");
         }
       } else if (key.name === "l") {
-        // OAuth login for the selected provider. Tears down the TUI so the
-        // OAuth flow's localhost callback server and inquirer prompts get
-        // a clean stdio/TTY environment, then runs loginCommand directly
-        // in the same process. After login completes (success or error),
-        // the process exits cleanly — the user re-runs `claudish config`
-        // to continue.
+        // OAuth login for the selected provider. Signal the wrapper
+        // (tui/index.tsx) which slug to log into, then destroy the
+        // renderer. The wrapper spawns `claudish login {slug}` as a
+        // child process so the OAuth callback server and inquirer
+        // prompts run in a clean stdio environment. When the child
+        // exits, the wrapper re-enters startConfigTui and we're back
+        // on a fresh Providers tab.
         //
-        // We do NOT try to restart the TUI in-place after login: that
-        // approach previously caused ERR_CONNECTION_REFUSED because of
-        // lifecycle conflicts between OpenTUI's renderer and the OAuth
-        // callback server. Single-process, exit-when-done is robust.
+        // Child-process isolation avoids the ERR_CONNECTION_REFUSED
+        // issue that an earlier in-process attempt hit — the child
+        // gets a fresh Node runtime with no OpenTUI residue.
         const slug = selectedProvider.oauthSlug;
         if (!slug) {
           setStatusMsg(
             `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
           );
+        } else if (!requestLogin) {
+          // Fallback: wrapper didn't provide the login bridge. Tell the
+          // user the command to run manually.
+          setStatusMsg(`Run: claudish login ${slug}`);
         } else {
-          // Defer the destroy so React commits the status message first.
           setStatusMsg(`Launching: claudish login ${slug}…`);
+          // Defer destroy so React commits the status message first.
           setTimeout(() => {
+            requestLogin(slug);
             renderer.destroy();
-            // Allow OpenTUI to fully release stdio before we touch it.
-            setImmediate(async () => {
-              console.log(`\nLaunching: claudish login ${slug}\n`);
-              try {
-                const mod = await import("../auth/auth-commands.js");
-                await mod.loginCommand(slug);
-                // loginCommand calls process.exit on its own paths; if it
-                // returns here, we still exit cleanly so the user gets a
-                // clean shell prompt.
-                process.exit(0);
-              } catch (err) {
-                console.error(
-                  `\n❌ OAuth login failed: ${err instanceof Error ? err.message : String(err)}\n`
-                );
-                process.exit(1);
-              }
-            });
           }, 50);
         }
       } else if (key.raw === "T") {
