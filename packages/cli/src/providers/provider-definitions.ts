@@ -297,7 +297,12 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "mmc/", stripPrefix: true }],
     isDirectApi: true,
     description: "MiniMax Coding Plan (mmc@)",
-    testModel: "MiniMax-M2.5",
+    // MiniMax Coding is an Anthropic-compat endpoint that accepts Claude
+    // model names in the request body and routes to its native model
+    // internally. The Claude Code integration docs confirm this: users
+    // set ANTHROPIC_BASE_URL and Claude Code sends its own Claude model
+    // names. Sending the native model name (MiniMax-M2.5) returns 404.
+    testModel: "claude-3-5-sonnet-20241022",
   },
 
   // ── Kimi Coding Plan (must be before Kimi — kimi-for-coding$ is more specific than kimi-*)
@@ -318,7 +323,13 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^kimi-for-coding$/i }],
     isDirectApi: true,
     description: "Kimi Coding Plan (kc@)",
-    testModel: "kimi-for-coding",
+    // Kimi Coding accepts Claude model names in the Anthropic-compat
+    // endpoint and routes to kimi-for-coding internally. Per docs at
+    // https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html
+    // the standard setup is ANTHROPIC_BASE_URL=https://api.kimi.com/coding/
+    // with Claude Code sending its own Claude model names. Sending
+    // "kimi-for-coding" in the body returns 404.
+    testModel: "claude-3-5-sonnet-20241022",
   },
 
   // ── Kimi / Moonshot (Anthropic-compatible) ─────────────────────────
