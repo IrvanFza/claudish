@@ -99,6 +99,14 @@ export interface ProviderDefinition {
   shortestPrefix?: string;
   /** Short description for TUI display (e.g., "580+ models, default backend") */
   description?: string;
+  /**
+   * A small, cheap, native model name to use when testing this provider's
+   * credentials from the TUI Providers tab. Should be a model the provider
+   * is known to accept and respond to quickly. NOT used by runtime routing
+   * — only the TUI test-button uses it. Omit for providers where no
+   * reliable test model exists.
+   */
+  testModel?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +134,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^google\//i }, { pattern: /^gemini-/i }],
     isDirectApi: true,
     description: "Direct Gemini API (g@, google@)",
+    testModel: "gemini-2.5-flash",
     // No oauthLoginSlug: the bare Gemini direct API takes GEMINI_API_KEY.
     // OAuth login (`claudish login gemini`) targets the gemini-codeassist
     // subscription endpoint below, not this one.
@@ -147,6 +156,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "go/", stripPrefix: true }],
     isDirectApi: true,
     description: "Gemini Code Assist OAuth (go@)",
+    testModel: "gemini-2.5-flash",
   },
 
   // ── OpenAI (direct API) ────────────────────────────────────────────
@@ -173,6 +183,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "Direct OpenAI API (oai@)",
+    testModel: "gpt-4o-mini",
   },
 
   // ── OpenAI Codex (Responses API — ChatGPT Plus/Pro subscription) ────
@@ -196,6 +207,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /codex$/i }],
     isDirectApi: true,
     description: "OpenAI Codex (cx@, codex@)",
+    testModel: "gpt-4o-mini",
   },
 
   // ── OpenRouter ─────────────────────────────────────────────────────
@@ -218,6 +230,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     },
     isDirectApi: true,
     description: "580+ models, default backend (or@)",
+    testModel: "openai/gpt-4o-mini",
   },
 
   // ── xAI / Grok (OpenAI-compatible) ──────────────────────────────────
@@ -236,6 +249,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "xai/", stripPrefix: true }],
     nativeModelPatterns: [{ pattern: /^x-ai\//i }, { pattern: /^grok-/i }],
     isDirectApi: true,
+    testModel: "grok-3-mini",
   },
 
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────
@@ -263,6 +277,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "MiniMax API (mm@, mmax@)",
+    testModel: "MiniMax-M2.5",
   },
 
   // ── MiniMax Coding Plan ────────────────────────────────────────────
@@ -282,6 +297,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "mmc/", stripPrefix: true }],
     isDirectApi: true,
     description: "MiniMax Coding Plan (mmc@)",
+    testModel: "MiniMax-M2.5",
   },
 
   // ── Kimi Coding Plan (must be before Kimi — kimi-for-coding$ is more specific than kimi-*)
@@ -302,6 +318,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^kimi-for-coding$/i }],
     isDirectApi: true,
     description: "Kimi Coding Plan (kc@)",
+    testModel: "kimi-for-coding",
   },
 
   // ── Kimi / Moonshot (Anthropic-compatible) ─────────────────────────
@@ -329,6 +346,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "Kimi API (kimi@, moon@)",
+    testModel: "kimi-k2-thinking-turbo",
   },
 
   // ── GLM / Zhipu (OpenAI-compatible) ────────────────────────────────
@@ -357,6 +375,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "GLM API (glm@, zhipu@)",
+    testModel: "glm-4.6",
   },
 
   // ── GLM Coding Plan ────────────────────────────────────────────────
@@ -376,6 +395,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "gc/", stripPrefix: true }],
     isDirectApi: true,
     description: "GLM Coding Plan (gc@)",
+    testModel: "glm-4.6",
   },
 
   // ── Z.AI (Anthropic-compatible GLM API) ────────────────────────────
@@ -395,6 +415,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^z-ai\//i }, { pattern: /^zai\//i }],
     isDirectApi: true,
     description: "Z.AI API (zai@)",
+    testModel: "glm-4.6",
   },
 
   // ── OllamaCloud ────────────────────────────────────────────────────
@@ -420,6 +441,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "Cloud Ollama (oc@, llama@)",
+    testModel: "gpt-oss:20b-cloud",
   },
 
   // ── OpenCode Zen (free anonymous + paid) ───────────────────────────
@@ -624,6 +646,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^deepseek\//i }, { pattern: /^deepseek-/i }],
     isDirectApi: true,
     description: "DeepSeek API (ds@)",
+    testModel: "deepseek-chat",
   },
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────

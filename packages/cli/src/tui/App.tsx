@@ -12,9 +12,17 @@ import {
   setEndpoint,
 } from "../profile-config.js";
 import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
+import { probeLink, describeProbeState } from "../providers/probe-live.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
-import { testProviderKey } from "./test-provider.js";
-import { PROVIDERS, maskKey, providerIsReady } from "./providers.js";
+import { ensureProbeProxy, isProbeProxyReady } from "./probe-proxy.js";
+import {
+  PROVIDERS,
+  maskKey,
+  providerAuthCapabilities,
+  providerIsReady,
+  type ProviderDef,
+} from "./providers.js";
 import { C } from "./theme.js";
 import {
   CHAIN_PROVIDERS,
@@ -197,6 +205,65 @@ export function App({ requestLogin }: AppProps = {}) {
   const readyCount = PROVIDERS.filter(
     (p) => !!(config.apiKeys?.[p.apiKeyEnvVar] || process.env[p.apiKeyEnvVar])
   ).length;
+
+  /**
+   * Run a single provider's connectivity test via the shared probe proxy.
+   *
+   * Flips testResults[prov.name] to "testing", lazily ensures the proxy is
+   * running, then sends a 1-token probe through the same stack
+   * `claudish --probe` uses. The proxy resolves credentials uniformly across
+   * env / config / OAuth — so this is a true "will it work?" answer for any
+   * auth method.
+   *
+   * Returns silently after writing the final TestResult, so callers can fire
+   * a batch of these in parallel without awaiting.
+   */
+  const runProbeTest = useCallback(async (prov: ProviderDef): Promise<void> => {
+    const def = getProviderByName(prov.catalogName);
+    const testModel = def?.testModel;
+    const provName = prov.name;
+    if (!testModel) {
+      setTestResults((prev) => ({
+        ...prev,
+        [provName]: { status: "failed", error: "no test model configured" },
+      }));
+      return;
+    }
+
+    setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
+    const startMs = Date.now();
+    try {
+      const proxyUrl = await ensureProbeProxy();
+      const result = await probeLink(
+        proxyUrl,
+        {
+          provider: prov.catalogName,
+          modelSpec: `${prov.catalogName}@${testModel}`,
+          // Let the proxy resolve credentials (env, cfg, OAuth). probeLink's
+          // pre-flight gate is for static env-var checks only; for everything
+          // else the live request is the source of truth.
+          hasCredentials: true,
+        },
+        15000
+      );
+      const ms = Date.now() - startMs;
+      if (result.state === "live") {
+        setTestResults((prev) => ({ ...prev, [provName]: { status: "valid", ms } }));
+      } else {
+        setTestResults((prev) => ({
+          ...prev,
+          [provName]: { status: "failed", error: describeProbeState(result), ms },
+        }));
+      }
+    } catch (err: unknown) {
+      const ms = Date.now() - startMs;
+      const msg = err instanceof Error ? err.message : String(err);
+      setTestResults((prev) => ({
+        ...prev,
+        [provName]: { status: "failed", error: `proxy: ${msg}`, ms },
+      }));
+    }
+  }, []);
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") return quit();
@@ -603,71 +670,74 @@ export function App({ requestLogin }: AppProps = {}) {
           }, 50);
         }
       } else if (key.raw === "T") {
-        // Test ALL credentialed providers in parallel. Each provider's
-        // testProviderKey runs concurrently; results stream into testResults
-        // as they arrive (badge flips from "testing" → "valid"/"failed").
+        // Test ALL credentialed providers in parallel. Each call goes through
+        // the shared probe proxy (same stack as `claudish --probe`), so
+        // credentials are resolved uniformly from env / config / OAuth.
         //
-        // Providers without a key are SKIPPED — they keep their default
-        // "not set" / "not configured" badge. Marking them as FAIL would
-        // be misleading: "no key" isn't a test failure, it's just an
-        // unused row, and lighting up 10 red FAIL badges drowns out the
-        // real test results.
+        // Providers without ANY credentials are SKIPPED — they keep their
+        // default "not set" / "not configured" badge. Marking them as FAIL
+        // would be misleading: "no key, no oauth" isn't a test failure, it's
+        // just an unused row.
+        //
+        // Providers without a `testModel` are also skipped here (no point
+        // firing a request we know won't have anywhere meaningful to go).
         const fired: string[] = [];
         for (const prov of PROVIDERS) {
-          const apiKey = config.apiKeys?.[prov.apiKeyEnvVar] || process.env[prov.apiKeyEnvVar];
-          if (!apiKey) continue;
+          if (!providerIsReady(prov, config)) continue;
+          const def = getProviderByName(prov.catalogName);
+          if (!def?.testModel) continue;
           fired.push(prov.displayName);
-          const provName = prov.name;
-          setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
-          const startMs = Date.now();
-          testProviderKey(provName, apiKey).then((result) => {
-            const ms = Date.now() - startMs;
-            const ok = result === "valid";
-            setTestResults((prev) => ({
-              ...prev,
-              [provName]: ok ? { status: "valid", ms } : { status: "failed", error: result, ms },
-            }));
-          });
+          // Fire-and-forget — errors are written into testResults inside
+          // runProbeTest, no need to await.
+          void runProbeTest(prov);
         }
-        setStatusMsg(
-          fired.length === 0
-            ? "No credentialed providers to test."
-            : `Testing ${fired.length} provider${fired.length === 1 ? "" : "s"} in parallel…`
-        );
+        if (fired.length === 0) {
+          setStatusMsg("No credentialed providers with test models to test.");
+        } else {
+          const startupHint = !isProbeProxyReady()
+            ? " (starting probe proxy…)"
+            : "";
+          setStatusMsg(
+            `Testing ${fired.length} provider${fired.length === 1 ? "" : "s"} in parallel…${startupHint}`
+          );
+        }
       } else if (key.name === "t") {
-        // Single-provider test. No-op if there's nothing to test against —
-        // we don't want to flip the badge to FAIL just because no key is
-        // set. Use the appropriate hint based on provider capabilities.
-        const apiKey =
-          config.apiKeys?.[selectedProvider.apiKeyEnvVar] ||
-          process.env[selectedProvider.apiKeyEnvVar];
-        if (!apiKey) {
-          if (selectedProvider.oauthSlug) {
+        // Single-provider test. No-op if there's no credential of any kind —
+        // we don't want to flip the badge to FAIL just because nothing is
+        // configured. Use the right hint based on provider capabilities.
+        const caps = providerAuthCapabilities(selectedProvider, config);
+        const ready = providerIsReady(selectedProvider, config);
+        if (!ready) {
+          if (caps.apiKey.supported && caps.oauth.supported) {
             setStatusMsg(
-              `${selectedProvider.displayName}: no key set. Press s to set a key or l to login.`
+              `${selectedProvider.displayName}: no credentials. Press s to set a key or l to login.`
             );
-          } else if (selectedProvider.apiKeyEnvVar) {
+          } else if (caps.oauth.supported) {
+            setStatusMsg(
+              `${selectedProvider.displayName}: no credentials. Press l to login.`
+            );
+          } else if (caps.apiKey.supported) {
             setStatusMsg(
               `${selectedProvider.displayName}: no key set. Press s to set an API key.`
             );
           } else {
             setStatusMsg(
-              `${selectedProvider.displayName} doesn't support API-key auth.`
+              `${selectedProvider.displayName} doesn't support auth from the TUI.`
             );
           }
           return;
         }
-        const provName = selectedProvider.name;
-        setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
-        const startMs = Date.now();
-        testProviderKey(provName, apiKey).then((result) => {
-          const ms = Date.now() - startMs;
-          const ok = result === "valid";
-          setTestResults((prev) => ({
-            ...prev,
-            [provName]: ok ? { status: "valid", ms } : { status: "failed", error: result, ms },
-          }));
-        });
+        const def = getProviderByName(selectedProvider.catalogName);
+        if (!def?.testModel) {
+          setStatusMsg(
+            `${selectedProvider.displayName} has no test model configured.`
+          );
+          return;
+        }
+        if (!isProbeProxyReady()) {
+          setStatusMsg("Starting probe proxy…");
+        }
+        void runProbeTest(selectedProvider);
       }
     } else if (activeTab === "profiles") {
       // Build profile list for navigation

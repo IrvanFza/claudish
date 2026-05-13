@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { App } from "./App.js";
+import { shutdownProbeProxy } from "./probe-proxy.js";
 
 /**
  * Start the config TUI. Re-entrant: if App requests an OAuth login,
@@ -38,6 +39,11 @@ export async function startConfigTui(): Promise<void> {
     renderer.once("destroy", () => resolve());
     createRoot(renderer).render(<App requestLogin={requestLogin} />);
   });
+
+  // Tear down the test-button probe proxy if it was started. Keeping it alive
+  // across the renderer-destroy → re-render cycle (e.g. after OAuth login)
+  // would leak the port; the next probe will lazily start a fresh proxy.
+  await shutdownProbeProxy();
 
   if (loginRequest.slug !== null) {
     const slug = loginRequest.slug;
