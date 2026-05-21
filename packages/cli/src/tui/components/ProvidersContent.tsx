@@ -17,6 +17,38 @@ interface ProvidersContentProps {
   width: number;
   contentH: number;
   isInputMode: boolean;
+  /**
+   * Monotonically-incrementing counter from App that ticks every ~80ms while
+   * at least one provider is being tested. Used to drive the Matrix-style
+   * key-scramble animation on testing rows. When no test is in flight, this
+   * stays constant and rows render normally.
+   */
+  animTick: number;
+}
+
+// Matrix-style charset for the key scramble. Uppercase + digits + a few
+// glyphs gives the right "code falling" texture in a monospaced font.
+const SCRAMBLE_CHARS = "01ABCDEFGHJKLMNPQRSTUVWXYZ#@$%*?";
+
+function scrambleKey(width: number, tick: number, salt: string): string {
+  // Deterministic-ish per-(tick, salt) random so each row scrambles
+  // independently but stably within a single render frame.
+  let seed = tick * 2654435761 + hashString(salt);
+  let out = "";
+  for (let i = 0; i < width; i++) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    out += SCRAMBLE_CHARS[seed % SCRAMBLE_CHARS.length];
+  }
+  return out;
+}
+
+function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
 // Column widths — kept here so headers and rows stay in lockstep.
@@ -43,6 +75,7 @@ export function ProvidersContent({
   width,
   contentH,
   isInputMode,
+  animTick,
 }: ProvidersContentProps) {
   // contentH = total height of the rounded box.
   //   -2 for top/bottom border, -1 for column header, -1 for legend row.
@@ -60,8 +93,16 @@ export function ProvidersContent({
     // only providers, show "oauth···" placeholder so the column aligns and
     // makes the auth method obvious at a glance. For unauthenticated
     // providers, dashes.
+    //
+    // When a provider is being tested, swap the static masked key for a
+    // Matrix-style scramble that re-rolls every tick from `animTick`. Gives
+    // visceral "computing..." feedback without animating the status text.
+    const tr = testResults[p.name];
+    const isTesting = tr?.status === "testing";
     let keyDisplay: string;
-    if (isOauthOnly) {
+    if (isTesting) {
+      keyDisplay = scrambleKey(8, animTick, p.name);
+    } else if (isOauthOnly) {
       keyDisplay = "oauth···";
     } else if (auth === "cfg") {
       keyDisplay = maskKey(config.apiKeys?.[p.apiKeyEnvVar]);
@@ -74,8 +115,7 @@ export function ProvidersContent({
     const isFirstUnready = !isReady && !separatorRendered;
     if (isFirstUnready) separatorRendered = true;
 
-    // Inline test result for this provider.
-    const tr = testResults[p.name];
+    // `tr` was already resolved above (for the key scramble); reuse it here.
     let statusFg: string = isReady ? C.green : C.dim;
     let statusText = isReady ? "ready" : "not set";
     if (tr) {
@@ -114,7 +154,27 @@ export function ProvidersContent({
             </text>
           </box>
         )}
-        <box height={1} flexDirection="row" backgroundColor={selected ? C.bgHighlight : C.bg}>
+        {/*
+          Row background: selected wins over failed wins over default.
+          A failed row gets a faint red-tinted background so the inline
+          error message reads as a unified band across the full row width.
+          flexGrow=1 lets OpenTUI size the row to its parent column
+          automatically. overflow="hidden" clips the description/error span
+          so a long error message can't bleed past the row's bounding box.
+        */}
+        <box
+          height={1}
+          flexGrow={1}
+          flexDirection="row"
+          overflow="hidden"
+          backgroundColor={
+            selected
+              ? C.bgHighlight
+              : tr?.status === "failed"
+                ? C.bgError
+                : C.bg
+          }
+        >
           <text>
             <span fg={tr?.status === "testing" ? C.yellow : isReady ? C.green : C.dim}>
               {tr?.status === "testing" ? "◌" : isReady ? "●" : "○"}
@@ -158,7 +218,25 @@ export function ProvidersContent({
               {pad(keyDisplay, COL_KEY)}
             </span>
             <span fg={C.dim}>{"  "}</span>
-            <span fg={selected ? C.white : C.dim}>{p.description}</span>
+            {/*
+              Description column doubles as inline error surface. When a row's
+              test failed, replace the static description with the error
+              message (collapsed to a single line, clipped to remaining width)
+              rendered red so the user can see what went wrong without leaving
+              the row. The proxy used to print `[claudish] Error [Provider]:
+              ...` to stderr — that's now suppressed in the TUI (see
+              tui/index.tsx → setStderrQuiet), and the error data lives in
+              testResults[p.name].error instead.
+            */}
+            {/* Description column doubles as inline error surface when a test
+                failed. We collapse whitespace to a single line, but DON'T
+                pre-compute truncation width — the row's height={1} + the
+                container's overflow="hidden" let OpenTUI clip naturally. */}
+            {tr?.status === "failed" && tr.error ? (
+              <span fg={C.red}>{tr.error.replace(/\s+/g, " ").trim()}</span>
+            ) : (
+              <span fg={selected ? C.white : C.dim}>{p.description}</span>
+            )}
           </text>
         </box>
       </box>

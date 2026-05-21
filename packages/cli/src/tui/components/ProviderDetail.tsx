@@ -27,7 +27,6 @@ interface ProviderDetailProps {
   hasKey: boolean;
   cfgKeyMask: string;
   envKeyMask: string;
-  keySrc: string;
   activeEndpoint: string;
   testResults: TestResultsMap;
   isInputMode: boolean;
@@ -44,12 +43,13 @@ export function ProviderDetail({
   hasKey,
   cfgKeyMask,
   envKeyMask,
-  keySrc,
   activeEndpoint,
   testResults,
   isInputMode,
 }: ProviderDetailProps) {
-  const displayKey = hasCfgKey ? cfgKeyMask : hasEnvKey ? envKeyMask : "────────";
+  // Show the mask of the key that's ACTUALLY being used at runtime.
+  // process.env wins over config in the resolver, so env is shown first when both exist.
+  const displayKey = hasEnvKey ? envKeyMask : hasCfgKey ? cfgKeyMask : "────────";
 
   if (isInputMode) {
     return (
@@ -105,26 +105,53 @@ export function ProviderDetail({
       flexDirection="column"
       paddingX={1}
     >
-      <box flexDirection="row">
-        <text>
-          <span fg={C.blue} bold>
-            Status:{" "}
-          </span>
-          {hasKey ? (
-            <span fg={C.green} bold>
-              ● Ready
-            </span>
-          ) : (
-            <span fg={C.fgMuted}>○ Not configured</span>
-          )}
-          <span fg={C.dim}>{"    "}</span>
-          <span fg={C.blue} bold>
-            Key:{" "}
-          </span>
-          <span fg={C.green}>{displayKey}</span>
-          {keySrc && <span fg={C.fgMuted}> (source: {keySrc})</span>}
-        </text>
-      </box>
+      {/*
+        Single-row line: Status + Key + source breakdown.
+        Source labels enumerate every place this key is found (env, config),
+        in runtime precedence order. The runtime-active source is tagged
+        `(used)`; a shadowed source is tagged `(shadowed)` so the user
+        knows their `s`-saved config key isn't taking effect.
+
+        Packed into ONE <text> row to fit inside DETAIL_H=7 (5 content
+        rows: this + URL + Desc + Get Key + Test). All literal whitespace
+        goes inside `{...}` to avoid JSX whitespace trimming.
+      */}
+      <text>
+        <span fg={C.blue} bold>{"Status: "}</span>
+        {hasKey ? (
+          <span fg={C.green} bold>{"● Ready"}</span>
+        ) : (
+          <span fg={C.fgMuted}>{"○ Not configured"}</span>
+        )}
+        <span fg={C.dim}>{"   "}</span>
+        <span fg={C.blue} bold>{"Key: "}</span>
+        <span fg={C.green}>{displayKey}</span>
+        {hasKey && (
+          <>
+            <span fg={C.dim}>{"   "}</span>
+            <span fg={C.blue} bold>{"From: "}</span>
+            {hasEnvKey && (
+              <span fg={C.green} bold>{"env"}</span>
+            )}
+            {hasEnvKey && hasCfgKey && (
+              <span fg={C.fgMuted}>{" (used) + "}</span>
+            )}
+            {hasEnvKey && !hasCfgKey && (
+              <span fg={C.fgMuted}>{" (used)"}</span>
+            )}
+            {hasCfgKey && (
+              <span fg={hasEnvKey ? C.fgMuted : C.green} bold={!hasEnvKey}>
+                {"config"}
+              </span>
+            )}
+            {hasCfgKey && (
+              <span fg={C.fgMuted}>
+                {hasEnvKey ? " (shadowed)" : " (used)"}
+              </span>
+            )}
+          </>
+        )}
+      </text>
       {selectedProvider.endpointEnvVar && (
         <text>
           <span fg={C.blue} bold>

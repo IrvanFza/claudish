@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   loadConfig,
   loadLocalConfig,
@@ -91,6 +91,20 @@ export function App({ requestLogin }: AppProps = {}) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResultsMap>({});
 
+  // Matrix-style key-scramble animation tick. Increments every ~80ms while
+  // ANY provider has status === "testing". When no test is in flight the
+  // interval is torn down so the TUI stays idle (no CPU, no re-renders).
+  const [animTick, setAnimTick] = useState(0);
+  const anyTesting = useMemo(
+    () => Object.values(testResults).some((r) => r?.status === "testing"),
+    [testResults]
+  );
+  useEffect(() => {
+    if (!anyTesting) return;
+    const id = setInterval(() => setAnimTick((t) => (t + 1) % 1_000_000), 80);
+    return () => clearInterval(id);
+  }, [anyTesting]);
+
   // Profile tab state — only the cursor is owned by App. The rest of the
   // profile-edit wizard state lives in useProfileWizard.
   const [profileIndex, setProfileIndex] = useState(0);
@@ -139,7 +153,6 @@ export function App({ requestLogin }: AppProps = {}) {
   const hasKey = hasCfgKey || hasEnvKey;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
-  const keySrc = hasEnvKey && hasCfgKey ? "e+c" : hasEnvKey ? "env" : hasCfgKey ? "cfg" : "";
   const activeEndpoint =
     (selectedProvider.endpointEnvVar
       ? config.endpoints?.[selectedProvider.endpointEnvVar] ||
@@ -974,6 +987,7 @@ export function App({ requestLogin }: AppProps = {}) {
             width={width}
             contentH={contentH}
             isInputMode={isInputMode}
+            animTick={animTick}
           />
           <ProviderDetail
             selectedProvider={selectedProvider}
@@ -986,7 +1000,6 @@ export function App({ requestLogin }: AppProps = {}) {
             hasKey={hasKey}
             cfgKeyMask={cfgKeyMask}
             envKeyMask={envKeyMask}
-            keySrc={keySrc}
             activeEndpoint={activeEndpoint}
             testResults={testResults}
             isInputMode={isInputMode}

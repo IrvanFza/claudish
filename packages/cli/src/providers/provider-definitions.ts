@@ -478,6 +478,8 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "zen/", stripPrefix: true }],
     isDirectApi: true,
     description: "OpenCode Zen (zen@) - free models",
+    // Free, anonymous-accessible model on the Zen platform — small + cheap.
+    testModel: "deepseek-v4-flash-free",
   },
 
   // ── OpenCode Zen Go (lite plan) ────────────────────────────────────
@@ -500,6 +502,8 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "OpenCode Zen Go plan (zengo@)",
+    // Cheapest paid model on the Zen Go plan — confirms billing + auth path.
+    testModel: "gpt-5-nano",
   },
 
   // ── Vertex AI ──────────────────────────────────────────────────────
@@ -542,6 +546,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     ],
     isDirectApi: true,
     description: "LiteLLM proxy (ll@, litellm@)",
+    // Best-effort default — LiteLLM is a user-deployed proxy, so the right
+    // test model depends on what they've configured. gpt-4o-mini is the most
+    // common upstream and ships in nearly every default LiteLLM config.
+    // The LiteLLMAdapter resolves vendor prefixes automatically.
+    testModel: "gpt-4o-mini",
   },
 
   // ── Poe ────────────────────────────────────────────────────────────

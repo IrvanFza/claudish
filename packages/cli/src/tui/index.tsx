@@ -4,6 +4,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { App } from "./App.js";
 import { shutdownProbeProxy } from "./probe-proxy.js";
+import { setStderrQuiet } from "../logger.js";
 
 /**
  * Start the config TUI. Re-entrant: if App requests an OAuth login,
@@ -21,6 +22,13 @@ import { shutdownProbeProxy } from "./probe-proxy.js";
  * rare and the state machine is small.
  */
 export async function startConfigTui(): Promise<void> {
+  // Silence proxy/handler stderr toasts ("[claudish] Error [Provider]: ...")
+  // while the TUI owns the screen. Probe failures are still captured in the
+  // testResults state and surfaced inline on each provider row — writing them
+  // to stderr would corrupt the OpenTUI buffer and leave ghost characters on
+  // screen (the renderer can't invalidate cells it didn't draw).
+  setStderrQuiet(true);
+
   const loginRequest: { slug: "gemini" | "codex" | "kimi" | null } = { slug: null };
 
   const requestLogin = (slug: "gemini" | "codex" | "kimi"): void => {
@@ -44,6 +52,10 @@ export async function startConfigTui(): Promise<void> {
   // across the renderer-destroy → re-render cycle (e.g. after OAuth login)
   // would leak the port; the next probe will lazily start a fresh proxy.
   await shutdownProbeProxy();
+
+  // Restore stderr output for any post-TUI work (login child process, error
+  // messages on quit). Re-suppressed at the top of the next recursive call.
+  setStderrQuiet(false);
 
   if (loginRequest.slug !== null) {
     const slug = loginRequest.slug;

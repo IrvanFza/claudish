@@ -9,6 +9,7 @@ export const C = {
   bg: "#000000",
   bgAlt: "#111111",
   bgHighlight: "#1e3a5f",
+  bgError: "#3a0a14", // faint red-tinted band for failed test rows
 
   fg: "#ffffff",
   fgMuted: "#a0a0a0",
