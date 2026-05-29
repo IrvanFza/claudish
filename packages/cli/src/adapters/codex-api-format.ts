@@ -51,7 +51,16 @@ export class CodexAPIFormat extends BaseAPIFormat {
   }
 
   shouldHandle(modelId: string): boolean {
-    return matchesModelFamily(modelId, "codex");
+    // Two valid Codex naming patterns:
+    //  - prefix:  "codex", "codex-mini", "openai/codex-foo"
+    //  - suffix:  "gpt-5-codex", "gpt-5.2-codex", "openai/gpt-5-codex"
+    // The suffix form is what the openai-codex provider's nativeModelPatterns
+    // matches (/codex$/i), so the format adapter must agree — otherwise the
+    // request gets routed to the Codex /v1/responses endpoint but shaped as
+    // a Chat Completions body, which the server 400s.
+    if (matchesModelFamily(modelId, "codex")) return true;
+    const lower = modelId.toLowerCase();
+    return /(^|\/)[a-z0-9.+-]*-codex$/.test(lower);
   }
 
   getName(): string {

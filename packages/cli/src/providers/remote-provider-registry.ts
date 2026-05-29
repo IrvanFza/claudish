@@ -30,7 +30,11 @@ import type {
   ResolvedRemoteProvider,
 } from "../handlers/shared/remote-provider-types.js";
 import { parseModelSpec, isLocalProviderName } from "./model-parser.js";
-import { getAllProviders, toRemoteProvider } from "./provider-definitions.js";
+import {
+  getAllProviders,
+  getEffectiveBaseUrl,
+  toRemoteProvider,
+} from "./provider-definitions.js";
 
 /**
  * Remote provider configurations — derived from BUILTIN_PROVIDERS.
@@ -40,7 +44,14 @@ const getRemoteProviders = (): RemoteProvider[] => {
   return getAllProviders()
     .filter(
       (def) =>
-        !def.isLocal && def.baseUrl !== "" && def.name !== "qwen" && def.name !== "native-anthropic"
+        !def.isLocal &&
+        // Resolve baseUrlEnvVars so user-deployed providers like LiteLLM
+        // (static baseUrl: "", populated via LITELLM_BASE_URL) aren't filtered
+        // out. Without this, resolveRemoteProvider("litellm@...") returns null
+        // and probe-discovery / runtime routing both fail.
+        getEffectiveBaseUrl(def) !== "" &&
+        def.name !== "qwen" &&
+        def.name !== "native-anthropic"
     )
     .map(toRemoteProvider);
 };

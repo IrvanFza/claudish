@@ -7,6 +7,7 @@
 
 import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { discoverViaOpenAIModels } from "./probe-discovery.js";
 
 export class OllamaProviderTransport implements ProviderTransport {
   readonly name = "ollamacloud";
@@ -31,6 +32,21 @@ export class OllamaProviderTransport implements ProviderTransport {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
     return headers;
+  }
+
+  async discoverProbeModel(exclude?: ReadonlySet<string>) {
+    // OllamaCloud also exposes /v1/models (OpenAI-compatible alongside its
+    // native /api/chat). /v1/models with bearer auth lists the user's
+    // available cloud models.
+    return discoverViaOpenAIModels(
+      `${this.provider.baseUrl}/v1/models`,
+      await this.getHeaders(),
+      {
+        key: `ollamacloud:${this.provider.baseUrl}`,
+        displayName: this.displayName,
+        exclude,
+      }
+    );
   }
 }
 

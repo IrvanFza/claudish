@@ -5,6 +5,7 @@ import { log, logStderr } from "./logger.js";
 import type { ProxyServer } from "./types.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
+import type { ProviderTransport } from "./providers/transport/types.js";
 import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
@@ -33,7 +34,7 @@ import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
-import { loadConfig } from "./profile-config.js";
+import { getApiKey, loadConfig } from "./profile-config.js";
 
 export interface ProxyServerOptions {
   summarizeTools?: boolean; // Summarize tool descriptions for local models
@@ -242,9 +243,12 @@ export async function createProxyServer(
         return null; // Will fall through to OpenRouterHandler
       }
 
-      // Get API key - empty string for providers that don't require auth (like zen/ free models)
+      // Get API key — config wins over env (TUI's `s` key writes to config).
+      // Empty string for providers that don't require auth (e.g. zen/ free models).
       const apiKey = resolved.provider.apiKeyEnvVar
-        ? process.env[resolved.provider.apiKeyEnvVar] || ""
+        ? getApiKey(resolved.provider.apiKeyEnvVar) ||
+          process.env[resolved.provider.apiKeyEnvVar] ||
+          ""
         : "";
 
       const handler = createHandlerForProvider({
@@ -468,6 +472,67 @@ export async function createProxyServer(
   );
   app.get("/health", (c) => c.json({ status: "ok" }));
 
+  /**
+   * Probe-model discovery for self-hosted / user-deployed providers
+   * (litellm, ollama, lmstudio, vllm, mlx, ollamacloud). The cloud
+   * /probeModels catalog can't enumerate user deployments — only the
+   * endpoint itself knows what's available. The TUI calls this when the
+   * catalog has no entry for a provider.
+   *
+   * GET /v1/probe-discover?provider=<slug>
+   * → 200 { provider, model } on success
+   * → 200 { provider, model: null, reason } on discovery failure
+   * → 404 if provider has no transport-level discoverer
+   */
+  app.get("/v1/probe-discover", async (c) => {
+    const provider = c.req.query("provider");
+    if (!provider) return c.json({ error: "missing provider query" }, 400);
+    // Optional exclude list — TUI's probe loop passes models that already
+    // failed so discovery returns the next candidate. Format: comma-separated.
+    const excludeQuery = c.req.query("exclude") ?? "";
+    const exclude = new Set(
+      excludeQuery
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+    // Use a sentinel model name — the handler factory needs one, but
+    // discoverProbeModel doesn't consult the modelName field.
+    const targetModel = `${provider}@<discover>`;
+    // Try local providers first (ollama, lmstudio, vllm, mlx). They're
+    // filtered out of the remote registry by design, so getRemoteProviderHandler
+    // returns null for them and we'd otherwise report "transport does not
+    // support discovery" even though LocalTransport DOES implement it.
+    const handler =
+      getLocalProviderHandler(targetModel) ?? getRemoteProviderHandler(targetModel);
+    const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
+    if (!transport?.discoverProbeModel) {
+      return c.json(
+        { provider, model: null, reason: "transport does not support discovery" },
+        404
+      );
+    }
+    try {
+      const outcome = await transport.discoverProbeModel(exclude);
+      return c.json({
+        provider,
+        model: outcome.model,
+        reason: outcome.model
+          ? null
+          : (outcome.reason ?? "no model available"),
+      });
+    } catch (e: unknown) {
+      return c.json(
+        {
+          provider,
+          model: null,
+          reason: e instanceof Error ? e.message : String(e),
+        },
+        500
+      );
+    }
+  });
+
   // Token counting
   app.post("/v1/messages/count_tokens", async (c) => {
     try {
@@ -541,6 +606,28 @@ export async function createProxyServer(
     url: `http://127.0.0.1:${port}`,
     shutdown: async () => {
       return new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+    invalidateHandlerCache: (providerSlug?: string) => {
+      if (!providerSlug) {
+        localProviderHandlers.clear();
+        remoteProviderHandlers.clear();
+        return;
+      }
+      // Handler cache keys are model specs like "lmstudio@<model>". Drop
+      // any whose left-of-@ matches the slug, plus any using the slug as
+      // a legacy prefix (e.g. "ollama/llama3"). Both forms route to the
+      // same transport so both need invalidation.
+      const matches = (k: string) =>
+        k === providerSlug ||
+        k.startsWith(`${providerSlug}@`) ||
+        k.startsWith(`${providerSlug}/`) ||
+        k.startsWith(`${providerSlug}:`);
+      for (const k of [...localProviderHandlers.keys()]) {
+        if (matches(k)) localProviderHandlers.delete(k);
+      }
+      for (const k of [...remoteProviderHandlers.keys()]) {
+        if (matches(k)) remoteProviderHandlers.delete(k);
+      }
     },
   };
 }

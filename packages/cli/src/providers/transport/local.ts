@@ -16,6 +16,11 @@ import type { LocalProvider as LocalProviderConfig } from "../../providers/provi
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import { Agent } from "undici";
+import {
+  discoverViaLMStudio,
+  discoverViaOllama,
+  discoverViaOpenAIModels,
+} from "./probe-discovery.js";
 
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -75,7 +80,44 @@ export class LocalTransport implements ProviderTransport {
   }
 
   async getHeaders(): Promise<Record<string, string>> {
-    return {};
+    const headers: Record<string, string> = {};
+    // Local providers default to no auth. When the deployment requires
+    // it (LM Studio "Reachable on local network", vLLM --api-key, remote
+    // Ollama behind a reverse proxy), the user sets <PROVIDER>_API_KEY
+    // and it ships as a Bearer token.
+    if (this.config.apiKey) {
+      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+    }
+    return headers;
+  }
+
+  async discoverProbeModel(exclude?: ReadonlySet<string>) {
+    // Each local server gets the richest discovery surface it exposes:
+    //   - Ollama: /api/ps (loaded) + /api/tags (all with size).
+    //   - LM Studio: /api/v0/models with per-model loaded state, so we can
+    //     pick a loaded model and avoid the "model loading error" 400 that
+    //     happens when LM Studio fails to JIT-load a downloaded-but-cold
+    //     model. Falls back to /v1/models if /api/v0 isn't available.
+    //   - vLLM / MLX: plain /v1/models — no loaded-state distinction.
+    const cacheKey = {
+      key: `${this.config.name}:${this.config.baseUrl}`,
+      displayName: this.displayName,
+      exclude,
+    };
+    if (this.config.name === "ollama") {
+      return discoverViaOllama(this.config.baseUrl, {
+        ...cacheKey,
+        key: `ollama:${this.config.baseUrl}`,
+      });
+    }
+    if (this.config.name === "lmstudio") {
+      return discoverViaLMStudio(this.config.baseUrl, await this.getHeaders(), cacheKey);
+    }
+    return discoverViaOpenAIModels(
+      `${this.config.baseUrl}/v1/models`,
+      await this.getHeaders(),
+      cacheKey
+    );
   }
 
   getRequestInit(): Record<string, any> {

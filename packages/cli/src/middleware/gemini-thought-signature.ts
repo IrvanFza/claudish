@@ -166,7 +166,9 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
       const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
       // Extract tool_call_ids
-      const toolCallIds = new Set(toolCalls.map((tc: any) => tc.id).filter(Boolean));
+      const toolCallIds = new Set<string>(
+        toolCalls.map((tc: any) => tc.id).filter((id: unknown): id is string => typeof id === "string")
+      );
 
       // Store the full reasoning_details array
       this.persistentReasoningDetails.set(messageId, {

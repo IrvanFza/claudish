@@ -9,9 +9,9 @@
  * Resolution order: local config takes priority over global config.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, parse } from "node:path";
 
 // Config directory and file paths
 const CONFIG_DIR = join(homedir(), ".claudish");
@@ -121,6 +121,8 @@ export interface ClaudishProfileConfig {
   apiKeys?: Record<string, string>;
   /** Custom provider endpoints (env var name → URL) */
   endpoints?: Record<string, string>;
+  /** Built-in local providers explicitly enabled in global config. */
+  localProviders?: string[];
   /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
   autoApproveConfirmedAt?: string;
   /** Diagnostic output mode: auto (default), logfile, off */
@@ -211,6 +213,9 @@ export function loadConfig(): ClaudishProfileConfig {
     if (config.endpoints !== undefined) {
       merged.endpoints = config.endpoints;
     }
+    if (config.localProviders !== undefined) {
+      merged.localProviders = Array.from(new Set(config.localProviders)).sort();
+    }
     if (config.autoApproveConfirmedAt !== undefined) {
       merged.autoApproveConfirmedAt = config.autoApproveConfirmedAt;
     }
@@ -252,9 +257,39 @@ export function getConfigPath(): string {
 // ─── Local Config ────────────────────────────────────────
 
 /**
- * Get path to local config file (.claudish.json in CWD)
+ * Get path to local config file (.claudish.json).
+ *
+ * Walks up from cwd to find an existing .claudish.json so users can run
+ * `claudish` from any subdirectory of their project. Walk-up stops at:
+ *   - $HOME (don't escape into the user's home dir)
+ *   - The git repo root (presence of `.git`) — bounds project scope
+ *   - The filesystem root
+ *
+ * If no .claudish.json is found in the walk-up chain, returns the path at
+ * cwd so first-time saves create the file at the user's working directory
+ * (preserves prior "create at cwd" semantics for fresh projects).
+ *
+ * Behavior change vs. v7.x: previously cwd-only. This unifies how every
+ * local-config consumer (Profiles, Routing, custom endpoints) discovers
+ * the project file. Documented in app-tsx-split PR.
  */
 export function getLocalConfigPath(): string {
+  const home = homedir();
+  let dir = process.cwd();
+  const root = parse(dir).root;
+
+  while (dir !== root && dir !== home) {
+    const candidate = join(dir, LOCAL_CONFIG_FILENAME);
+    if (existsSync(candidate)) return candidate;
+    if (existsSync(join(dir, ".git"))) {
+      // At git root; if .claudish.json doesn't exist here, stop walking and
+      // return this path so first-time saves create the file at the git root
+      // (the natural project boundary), not at cwd or somewhere above the repo.
+      return candidate;
+    }
+    dir = dirname(dir);
+  }
+  // No project boundary found — fall back to cwd.
   return join(process.cwd(), LOCAL_CONFIG_FILENAME);
 }
 
@@ -307,10 +342,35 @@ export function loadLocalConfig(): ClaudishProfileConfig | null {
 }
 
 /**
- * Save local configuration to .claudish.json in CWD
+ * Save local configuration to .claudish.json. Prunes empty containers so
+ * deleting the last project rule doesn't leave a stub `{"routing": {}}`
+ * file behind. If the entire local config carries no meaningful state
+ * (no profiles, no routing), the file is unlinked instead of written.
  */
 export function saveLocalConfig(config: ClaudishProfileConfig): void {
-  writeFileSync(getLocalConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  // Drop empty routing object so the on-disk file stays clean.
+  const toWrite: ClaudishProfileConfig = { ...config };
+  if (toWrite.routing !== undefined && Object.keys(toWrite.routing).length === 0) {
+    delete toWrite.routing;
+  }
+  const profileCount = Object.keys(toWrite.profiles ?? {}).length;
+  const routingCount = toWrite.routing ? Object.keys(toWrite.routing).length : 0;
+
+  const path = getLocalConfigPath();
+  if (profileCount === 0 && routingCount === 0) {
+    // Nothing meaningful left — remove the file if it exists.
+    if (existsSync(path)) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // Best-effort: if unlink fails (read-only fs etc.), fall through to
+        // a write of the empty-but-valid shell so the file isn't corrupt.
+        writeFileSync(path, JSON.stringify(toWrite, null, 2), "utf-8");
+      }
+    }
+    return;
+  }
+  writeFileSync(path, JSON.stringify(toWrite, null, 2), "utf-8");
 }
 
 // ─── Scope-Aware Operations ─────────────────────────────
@@ -649,4 +709,43 @@ export function removeEndpoint(name: string): void {
     delete config.endpoints[name];
     saveConfig(config);
   }
+}
+
+// ─── Local Provider Helpers ─────────────────────────────────
+
+/**
+ * Check whether a built-in local provider is explicitly enabled in
+ * ~/.claudish/config.json.
+ */
+export function isLocalProviderEnabled(
+  providerName: string,
+  config: { localProviders?: string[] } = loadConfig()
+): boolean {
+  return (config.localProviders ?? []).includes(providerName);
+}
+
+/**
+ * Enable a built-in local provider in ~/.claudish/config.json.
+ */
+export function enableLocalProvider(providerName: string): void {
+  const config = loadConfig();
+  const providers = new Set(config.localProviders ?? []);
+  providers.add(providerName);
+  config.localProviders = Array.from(providers).sort();
+  saveConfig(config);
+}
+
+/**
+ * Disable a built-in local provider in ~/.claudish/config.json.
+ */
+export function disableLocalProvider(providerName: string): void {
+  const config = loadConfig();
+  const providers = new Set(config.localProviders ?? []);
+  providers.delete(providerName);
+  if (providers.size > 0) {
+    config.localProviders = Array.from(providers).sort();
+  } else {
+    delete config.localProviders;
+  }
+  saveConfig(config);
 }

@@ -309,13 +309,13 @@ describe("PROVIDER_PROFILES — coverage", () => {
   });
 
   test("all remote BUILTIN_PROVIDERS have a profile (except openrouter, poe, qwen, native-anthropic)", () => {
-    // openrouter has its own dedicated handler (not ComposedHandler), poe has transport but no profile yet
+    // openrouter has its own dedicated handler (not ComposedHandler), poe has
+    // transport but no profile yet, native-anthropic is a passthrough format.
+    // Local providers (ollama, lmstudio, vllm, mlx) use a separate local path.
     const skipProviders = new Set([
-      "qwen",
       "native-anthropic",
       "poe",
       "openrouter",
-      "xai", // auto-routed through OpenRouter
       "ollama",
       "lmstudio",
       "vllm",

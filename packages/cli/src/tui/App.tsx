@@ -1,9 +1,12 @@
 /** @jsxImportSource @opentui/react */
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   loadConfig,
   loadLocalConfig,
+  disableLocalProvider,
+  enableLocalProvider,
+  isLocalProviderEnabled,
   removeApiKey,
   removeEndpoint,
   saveConfig,
@@ -12,76 +15,63 @@ import {
   setEndpoint,
 } from "../profile-config.js";
 import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
-import { route } from "../providers/routing-rules.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
+import {
+  discoverProbeModelFromEndpoint,
+  ensureProbeModelsCached,
+  getProbeModel,
+} from "../providers/probe-catalog.js";
+import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
+import { describeProbeState } from "../providers/probe-live.js";
+import { probeProviderRoute } from "../providers/probe-runner.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
-import { testProviderKey } from "./test-provider.js";
-import { PROVIDERS, ProviderDef, maskKey } from "./providers.js";
-import { C } from "./theme.js";
+import {
+  ensureProbeProxy,
+  invalidateProbeProxyHandlers,
+  isProbeProxyReady,
+} from "./probe-proxy.js";
+import {
+  PROVIDERS,
+  maskKey,
+  providerAuthCapabilities,
+  providerIsReady,
+  type ProviderDef,
+} from "./providers.js";
+import { A, C } from "./theme.js";
+import {
+  CHAIN_PROVIDERS,
+  HEADER_H,
+  TABS_H,
+  FOOTER_H,
+  DETAIL_H,
+  VERSION,
+} from "./constants.js";
+import type { MergedRule, Mode, RoutingScope, Tab, TestResultsMap } from "./types.js";
+import { useRouteProbe } from "./hooks/useRouteProbe.js";
+import { useProfileWizard } from "./hooks/useProfileWizard.js";
+import { TabBar } from "./components/TabBar.js";
+import { Footer } from "./components/Footer.js";
+import { ProvidersContent } from "./components/ProvidersContent.js";
+import { ProviderDetail } from "./components/ProviderDetail.js";
+import { ProfilesContent } from "./components/ProfilesContent.js";
+import { ProfileDetail } from "./components/ProfileDetail.js";
+import { RoutingContent } from "./components/RoutingContent.js";
+import { RoutingDetail } from "./components/RoutingDetail.js";
+import { PrivacyContent } from "./components/PrivacyContent.js";
+import { PrivacyDetail } from "./components/PrivacyDetail.js";
 
-const VERSION = "v5.16";
-
-// ── Common models for autocomplete ────────────────────────────────────────────
-const COMMON_MODELS = [
-  "g@gemini-3.1-pro-preview",
-  "g@gemini-2.5-flash",
-  "g@gemini-2.5-pro",
-  "oai@gpt-4o",
-  "oai@gpt-4o-mini",
-  "oai@o3-mini",
-  "or@anthropic/claude-sonnet-4-20250514",
-  "mm@minimax-m2.5",
-  "kimi@kimi-k2.5",
-  "glm@glm-5",
-  "zen@glm-5",
-  "zen@minimax-m2.5-free",
-  "ll@gemini-2.5-flash",
-  "ll@gpt-4o",
-  "or@google/gemini-3.1-pro-preview",
-  "or@x-ai/grok-code-fast-1",
-  "or@deepseek/deepseek-r1",
-];
-
-// Provider prefix suggestions for the provider picker
-const PROVIDER_PREFIXES = PROVIDERS.map((p) => ({
-  prefix: p.aliases?.[0] ? `${p.aliases[0]}@` : `${p.name}@`,
-  displayName: p.displayName,
-  name: p.name,
-}));
-
-type Tab = "providers" | "profiles" | "routing" | "privacy";
-type Mode =
-  | "browse"
-  | "input_key"
-  | "input_endpoint"
-  | "add_routing_pattern"
-  | "add_routing_chain"
-  | "new_profile"
-  | "pick_profile_scope"
-  | "pick_provider_prefix"
-  | "edit_profile_opus"
-  | "edit_profile_sonnet"
-  | "edit_profile_haiku"
-  | "edit_profile_subagent";
-
-type ProbeMode = "idle" | "input" | "running" | "done";
-
-interface ProbeEntry {
-  provider: string;
-  displayName: string;
-  status: "pending" | "testing" | "success" | "failed" | "skipped" | "no_key";
-  error?: string;
-  ms?: number;
-  hasKey?: boolean;
-  reason?: string;
+interface AppProps {
+  /**
+   * Called from the Providers tab `l` handler. The wrapper in
+   * tui/index.tsx records the requested slug, then after the renderer
+   * is destroyed it spawns `claudish login {slug}` as a child process
+   * and re-enters startConfigTui when the child exits. App.tsx just
+   * signals intent; lifecycle is the wrapper's responsibility.
+   */
+  requestLogin?: (slug: "gemini" | "codex" | "kimi") => void;
 }
 
-function bytesHuman(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-export function App() {
+export function App({ requestLogin }: AppProps = {}) {
   const renderer = useRenderer();
   const { width, height } = useTerminalDimensions();
 
@@ -92,68 +82,101 @@ export function App() {
   const [mode, setMode] = useState<Mode>("browse");
   const [inputValue, setInputValue] = useState("");
   const [routingPattern, setRoutingPattern] = useState("");
-  const [routingChain, setRoutingChain] = useState("");
   const [chainSelected, setChainSelected] = useState<Set<string>>(new Set());
   const [chainOrder, setChainOrder] = useState<string[]>([]);
   const [chainCursor, setChainCursor] = useState(0);
+  // Routing scope wizard state. `routingScope` carries the user's `g`/`p`
+  // choice from `pick_routing_scope` into `add_routing_chain`'s save logic.
+  // `routingScopeReturnsToEdit=true` when entering the chain builder via
+  // `e` (edit existing rule), so the picker is skipped and the rule's own
+  // scope is used (edit-in-place semantics, matching Profiles wizard).
+  const [routingScope, setRoutingScope] = useState<RoutingScope>("global");
+  // Cursor for the scope picker menu. 0 = global, 1 = project. Mirrors the
+  // chain-selector navigation pattern (↑↓ + Enter) instead of g/p shortcuts.
+  const [routingScopeCursor, setRoutingScopeCursor] = useState<0 | 1>(0);
+  const [routingScopeReturnsToEdit, setRoutingScopeReturnsToEdit] = useState(false);
+  // When `e` is pressed on an existing user/project rule, these track WHICH
+  // rule we're editing. If the user picks a DIFFERENT scope in the picker,
+  // the save path also deletes the old rule (effectively a move). For new
+  // rules (a) and overrides of defaults (e on default), both are null.
+  const [editingExistingScope, setEditingExistingScope] = useState<RoutingScope | null>(null);
+  const [editingExistingPattern, setEditingExistingPattern] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<
-    Record<string, { status: "testing" | "valid" | "failed"; error?: string; ms?: number }>
-  >({});
-  const [probeMode, setProbeMode] = useState<ProbeMode>("idle");
-  const [probeModel, setProbeModel] = useState("");
-  const [probeResults, setProbeResults] = useState<ProbeEntry[]>([]);
+  const [testResults, setTestResults] = useState<TestResultsMap>({});
+  const [animTick, setAnimTick] = useState(0);
+  const anyTesting = useMemo(
+    () => Object.values(testResults).some((r) => r?.status === "testing"),
+    [testResults]
+  );
 
-  // Profile tab state
+  useEffect(() => {
+    if (!anyTesting) return;
+    const id = setInterval(() => setAnimTick((tick) => (tick + 1) % 1_000_000), 90);
+    return () => clearInterval(id);
+  }, [anyTesting]);
+
+  // Profile tab state — only the cursor is owned by App. The rest of the
+  // profile-edit wizard state lives in useProfileWizard.
   const [profileIndex, setProfileIndex] = useState(0);
-  const [editProfileName, setEditProfileName] = useState("");
-  const [editProfileValue, setEditProfileValue] = useState("");
-  const [profileScope, setProfileScope] = useState<"global" | "project">("global");
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [suggestionIndex, setSuggestionIndex] = useState(-1);
-  const [providerPickerIndex, setProviderPickerIndex] = useState(0);
-  const [providerPickerReturnMode, setProviderPickerReturnMode] =
-    useState<Mode>("edit_profile_opus");
-
-  // Chain selector uses same PROVIDERS list for consistent naming
-  const CHAIN_PROVIDERS = PROVIDERS;
-
-  // Compute autocomplete suggestions for model input
-  const computeSuggestions = useCallback((input: string): string[] => {
-    if (!input) return COMMON_MODELS.slice(0, 8);
-    const lower = input.toLowerCase();
-    return COMMON_MODELS.filter((m) => m.toLowerCase().includes(lower)).slice(0, 8);
-  }, []);
 
   const quit = useCallback(() => renderer.destroy(), [renderer]);
 
-  // Sort: configured providers first, then unconfigured (preserving original order within groups)
+  // Sort: configured providers first (env/cfg key OR OAuth credentials),
+  // then unconfigured. Original order preserved within each group.
   const displayProviders = useMemo(() => {
     return [...PROVIDERS].sort((a, b) => {
-      const aHasKey = !!(config.apiKeys?.[a.apiKeyEnvVar] || process.env[a.apiKeyEnvVar]);
-      const bHasKey = !!(config.apiKeys?.[b.apiKeyEnvVar] || process.env[b.apiKeyEnvVar]);
-      if (aHasKey === bHasKey) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
-      return aHasKey ? -1 : 1;
+      const aReady = providerIsReady(a, config);
+      const bReady = providerIsReady(b, config);
+      if (aReady === bReady) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
+      return aReady ? -1 : 1;
     });
   }, [config]);
 
   const selectedProvider = displayProviders[providerIndex]!;
+  const selectedProviderDef = getProviderByName(selectedProvider.catalogName);
+  const selectedProviderIsLocal = !!(selectedProvider.isLocal || selectedProviderDef?.isLocal);
+  const selectedLocalEnabled =
+    selectedProviderIsLocal && isLocalProviderEnabled(selectedProvider.catalogName, config);
   const refreshConfig = useCallback(() => {
     setConfig(loadConfig());
     setBufStats(getBufferStats());
   }, []);
 
+  // Route probe wizard — owns probeMode/probeModel/probeResults internally.
+  // The keyboard handler delegates to verb methods (startInput, submit, etc.).
+  const probe = useRouteProbe(config);
+  const { probeMode, probeModel, probeResults } = probe;
+
+  // Profile editor wizard — owns editProfileName/Value, profileScope,
+  // suggestions/suggestionIndex, providerPickerIndex, and the
+  // (intentionally hook-internal) providerPickerReturnMode. The keyboard
+  // handler dispatches verb methods; the hook flips parent `mode` for its
+  // visible sub-states.
+  const wizard = useProfileWizard({ mode, setMode, refreshConfig, setStatusMsg });
+  const {
+    editProfileName,
+    editProfileValue,
+    profileScope,
+    suggestions,
+    suggestionIndex,
+    providerPickerIndex,
+  } = wizard;
+
   const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
   const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
-  const hasKey = hasCfgKey || hasEnvKey;
+  const hasKey = hasCfgKey || hasEnvKey || selectedLocalEnabled;
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
-  const keySrc = hasEnvKey && hasCfgKey ? "e+c" : hasEnvKey ? "env" : hasCfgKey ? "cfg" : "";
+  const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
+  const activeEndpointFromConfig = activeEndpointEnvVar
+    ? config.endpoints?.[activeEndpointEnvVar]
+    : undefined;
+  const activeEndpointFromEnv = selectedProvider.endpointEnvVars
+    ?.map((envVar) => process.env[envVar])
+    .find((value): value is string => !!value);
   const activeEndpoint =
-    (selectedProvider.endpointEnvVar
-      ? config.endpoints?.[selectedProvider.endpointEnvVar] ||
-        process.env[selectedProvider.endpointEnvVar]
-      : undefined) ||
+    activeEndpointFromConfig ||
+    activeEndpointFromEnv ||
     selectedProvider.defaultEndpoint ||
     "";
 
@@ -162,113 +185,203 @@ export function App() {
     process.env.CLAUDISH_TELEMETRY !== "false" &&
     config.telemetry?.enabled === true;
 
-  const statsEnabled = process.env.CLAUDISH_STATS !== "0" && process.env.CLAUDISH_STATS !== "false";
+  const statsDisabledByEnv =
+    process.env.CLAUDISH_STATS === "0" || process.env.CLAUDISH_STATS === "false";
+  const statsEnabled = !statsDisabledByEnv && config.stats?.enabled === true;
 
-  const ruleEntries = Object.entries(config.routing ?? {});
+  // Merged routing rules: built-in defaults + global config + project-local
+  // config rendered as a flat list with NO shadowing. If a pattern exists at
+  // multiple layers (e.g. a global override AND a project rule for `gpt-*`),
+  // BOTH rows are visible — the user can edit/delete each independently.
+  //
+  // The runtime routing engine (loadRoutingRules + matchRoutingRule) still
+  // applies precedence (project beats global beats default), but the TUI
+  // shows the data as it exists on disk, not the runtime resolution.
+  //
+  // Catch-all `*` is rendered separately above the table and excluded here.
+  //
+  // Sort order: defaults first (alphabetical), then global, then project.
+  // `loadLocalConfig()` is called inside the memo so a `refreshConfig()`
+  // after a project save triggers re-derivation.
+  const mergedRules: MergedRule[] = useMemo(() => {
+    const out: MergedRule[] = [];
+    const localCfg = loadLocalConfig();
+
+    for (const [pat, chain] of Object.entries(DEFAULT_ROUTING_RULES)) {
+      if (pat === "*") continue;
+      out.push({ kind: "default", pattern: pat, chain, overridesDefault: false });
+    }
+    for (const [pat, chain] of Object.entries(config.routing ?? {})) {
+      if (pat === "*") continue;
+      out.push({
+        kind: "global",
+        pattern: pat,
+        chain,
+        overridesDefault: pat in DEFAULT_ROUTING_RULES,
+      });
+    }
+    if (localCfg?.routing) {
+      for (const [pat, chain] of Object.entries(localCfg.routing)) {
+        if (pat === "*") continue;
+        out.push({
+          kind: "project",
+          pattern: pat,
+          chain,
+          overridesDefault: pat in DEFAULT_ROUTING_RULES,
+        });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.routing, JSON.stringify(loadLocalConfig()?.routing ?? {})]);
   const profileName = config.defaultProfile || "default";
 
   const readyCount = PROVIDERS.filter(
     (p) => !!(config.apiKeys?.[p.apiKeyEnvVar] || process.env[p.apiKeyEnvVar])
   ).length;
 
+  /**
+   * Run a single provider's connectivity test via the shared probe proxy.
+   *
+   * Flips testResults[prov.name] to "testing", lazily ensures the proxy is
+   * running, then sends a 1-token probe through the same stack
+   * `claudish --probe` uses. The proxy resolves credentials uniformly across
+   * env / config / OAuth — so this is a true "will it work?" answer for any
+   * auth method.
+   *
+   * Returns silently after writing the final TestResult, so callers can fire
+   * a batch of these in parallel without awaiting.
+   */
+  const runProbeTest = useCallback(async (prov: ProviderDef): Promise<void> => {
+    const provName = prov.name;
+
+    setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
+    const outcome = await ensureProbeModelsCached();
+    if (outcome.kind !== "ok") {
+      setTestResults((prev) => ({
+        ...prev,
+        [provName]: {
+          status: "failed",
+          error: `could not reach model catalog (${outcome.kind})`,
+        },
+      }));
+      return;
+    }
+
+    const startMs = Date.now();
+    try {
+      const proxyUrl = await ensureProbeProxy();
+      const catalogModel = getProbeModel(prov.catalogName);
+      // Models that already failed this round — passed to discovery so we
+      // get the NEXT candidate, not the same one again.
+      const tried = new Set<string>();
+      const MAX_ATTEMPTS = 3;
+      let lastResult: import("../providers/probe-live.js").ProbeResult | null = null;
+      let lastDiscoveryReason: string | undefined;
+
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        let testModel: string | null = null;
+        // On the first attempt, the cloud catalog's pick wins. On retries,
+        // the cloud catalog is exhausted (it returns one model) so we always
+        // walk the endpoint's own list via discovery.
+        if (attempt === 0 && catalogModel && !tried.has(catalogModel)) {
+          testModel = catalogModel;
+        } else {
+          const discovery = await discoverProbeModelFromEndpoint(
+            proxyUrl,
+            prov.catalogName,
+            tried
+          );
+          testModel = discovery.model;
+          lastDiscoveryReason = discovery.reason;
+        }
+        if (!testModel) break;
+
+        tried.add(testModel);
+        const result = await probeProviderRoute(
+          proxyUrl,
+          {
+            provider: prov.catalogName,
+            modelSpec: testModel,
+            // Let the shared probe path and proxy resolve credentials (env,
+            // cfg, OAuth). The live request is the source of truth.
+            hasCredentials: true,
+          },
+          15000
+        );
+        lastResult = result;
+
+        if (result.state === "live" || result.state === "rate-limited") break;
+        // Retry on per-model failures (the next candidate might work).
+        // Don't retry on transport-level failures (auth/network/timeout) —
+        // those won't get better by changing model.
+        const retryable =
+          result.state === "model-not-found" || result.state === "error";
+        if (!retryable) break;
+      }
+
+      const ms = Date.now() - startMs;
+      if (!lastResult) {
+        // Discovery never produced even one model.
+        setTestResults((prev) => ({
+          ...prev,
+          [provName]: {
+            status: "failed",
+            error: lastDiscoveryReason
+              ? `no probe model: ${lastDiscoveryReason}`
+              : "no probe model available",
+            ms,
+          },
+        }));
+        return;
+      }
+      const result = lastResult;
+      if (result.state === "live") {
+        setTestResults((prev) => ({ ...prev, [provName]: { status: "valid", ms } }));
+      } else if (result.state === "rate-limited") {
+        // 429 proves auth+endpoint+model are all reachable — the only thing
+        // wrong is the user's current request rate. Treat as healthy, just
+        // annotate so the user knows why latency is high right now.
+        setTestResults((prev) => ({
+          ...prev,
+          [provName]: { status: "valid", ms, note: "throttled" },
+        }));
+      } else {
+        const baseError = describeProbeState(result);
+        const error =
+          tried.size > 1
+            ? `${baseError} (tried ${tried.size} models)`
+            : baseError;
+        setTestResults((prev) => ({
+          ...prev,
+          [provName]: { status: "failed", error, ms },
+        }));
+      }
+    } catch (err: unknown) {
+      const ms = Date.now() - startMs;
+      const msg = err instanceof Error ? err.message : String(err);
+      setTestResults((prev) => ({
+        ...prev,
+        [provName]: { status: "failed", error: `proxy: ${msg}`, ms },
+      }));
+    }
+  }, []);
+
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") return quit();
 
-    // Probe input mode — handled independently of main mode (non-blocking)
+    // Probe input mode — handled independently of main mode (non-blocking).
+    // Delegates to useRouteProbe verb methods. Note: probe.submit() kicks off
+    // an async test loop that does NOT abort on cancel — see the hook comment.
     if (probeMode === "input") {
       if (key.name === "return" || key.name === "enter") {
-        const model = probeModel.trim();
-        if (!model) {
-          setProbeModel("");
-          setProbeMode("idle");
-          return;
-        }
-        const plan = route(model);
-        if (plan.kind !== "ok") {
-          setProbeResults([
-            {
-              provider: "none",
-              displayName: "No routes found",
-              status: "failed",
-              error: plan.hint ?? plan.reason,
-            },
-          ]);
-          setProbeMode("done");
-          return;
-        }
-        const chain = [plan.primary, ...plan.fallbacks];
-        // Check which routing rule matched
-        const ruleEntries = Object.entries(config.routing ?? {});
-        const matchedRule = ruleEntries.find(([pat]) => {
-          if (pat === model) return true;
-          if (pat.includes("*")) {
-            const regex = new RegExp("^" + pat.replace(/\*/g, ".*") + "$");
-            return regex.test(model);
-          }
-          return false;
-        });
-
-        const initial: ProbeEntry[] = chain.map((r) => {
-          return {
-            provider: r.provider,
-            displayName: r.displayName,
-            status: "pending",
-            hasKey: true,
-            reason: matchedRule ? `Custom rule: ${matchedRule[0]}` : "Default fallback chain",
-          };
-        });
-        setProbeResults(initial);
-        setProbeMode("running");
-
-        // Run tests sequentially — skip providers without keys
-        (async () => {
-          for (let i = 0; i < chain.length; i++) {
-            const entry = initial[i]!;
-            if (!entry.hasKey) {
-              // No key — mark as no_key (already set), continue to next
-              continue;
-            }
-            // Mark current as testing
-            setProbeResults((prev) =>
-              prev.map((e, idx) => (idx === i ? { ...e, status: "testing" } : e))
-            );
-            const startMs = Date.now();
-            const provDef = PROVIDERS.find((p) => p.name === chain[i]!.provider);
-            const apiKey =
-              (provDef
-                ? config.apiKeys?.[provDef.apiKeyEnvVar] || process.env[provDef.apiKeyEnvVar]
-                : undefined) ?? "";
-            const elapsed = () => Date.now() - startMs;
-            const result = await testProviderKey(chain[i]!.provider, apiKey);
-            const ms = elapsed();
-            const ok = result === "valid";
-            setProbeResults((prev) =>
-              prev.map((e, idx) => {
-                if (idx === i)
-                  return {
-                    ...e,
-                    status: ok ? ("success" as const) : ("failed" as const),
-                    error: ok ? undefined : result,
-                    ms,
-                  };
-                // After success: remaining providers with keys become "not reached", without keys stay "no_key"
-                if (idx > i && ok && e.status !== "no_key")
-                  return { ...e, status: "skipped" as const };
-                return e;
-              })
-            );
-            if (ok) break;
-          }
-          setProbeMode("done");
-        })();
-        return;
+        probe.submit();
       } else if (key.name === "escape") {
-        setProbeModel("");
-        setProbeMode("idle");
+        probe.cancel();
       } else if (key.name === "backspace" || key.name === "delete") {
-        setProbeModel((p) => p.slice(0, -1));
+        probe.backspace();
       } else if (key.raw && key.raw.length === 1 && !key.ctrl && !key.meta) {
-        setProbeModel((p) => p + key.raw);
+        probe.typeChar(key.raw);
       }
       return;
     }
@@ -276,9 +389,7 @@ export function App() {
     // Probe running/done — handle keys before normal routing handlers
     if (probeMode === "running" && activeTab === "routing") {
       if (key.name === "escape") {
-        setProbeModel("");
-        setProbeResults([]);
-        setProbeMode("idle");
+        probe.cancel();
       }
       // Block all other keys while running
       return;
@@ -289,14 +400,10 @@ export function App() {
         return quit();
       } else if (key.name === "escape" || key.name === "p") {
         // Return to normal routing view
-        setProbeModel("");
-        setProbeResults([]);
-        setProbeMode("idle");
+        probe.cancel();
       } else if (key.name === "return" || key.name === "enter") {
         // Start a new probe
-        setProbeModel("");
-        setProbeResults([]);
-        setProbeMode("input");
+        probe.enterFromDone();
       }
       return;
     }
@@ -311,16 +418,36 @@ export function App() {
           return;
         }
         if (mode === "input_key") {
-          setApiKey(selectedProvider.apiKeyEnvVar, val);
-          process.env[selectedProvider.apiKeyEnvVar] = val;
-          setStatusMsg(`Key saved for ${selectedProvider.displayName}.`);
+          if (!selectedProvider.apiKeyEnvVar) {
+            setStatusMsg(
+              `${selectedProvider.displayName} has no apiKeyEnvVar — cannot save key.`
+            );
+          } else {
+            setApiKey(selectedProvider.apiKeyEnvVar, val);
+            process.env[selectedProvider.apiKeyEnvVar] = val;
+            setStatusMsg(
+              `Key saved for ${selectedProvider.displayName} (${selectedProvider.apiKeyEnvVar}).`
+            );
+          }
         } else {
-          if (selectedProvider.endpointEnvVar) {
+          if (!selectedProvider.endpointEnvVar) {
+            setStatusMsg(
+              `${selectedProvider.displayName} has no endpointEnvVar — cannot save URL.`
+            );
+          } else {
             setEndpoint(selectedProvider.endpointEnvVar, val);
             process.env[selectedProvider.endpointEnvVar] = val;
+            setStatusMsg(
+              `URL saved for ${selectedProvider.displayName} (${selectedProvider.endpointEnvVar}=${val}).`
+            );
           }
-          setStatusMsg("Endpoint saved.");
         }
+        // Drop stale caches so the next probe picks up the new URL/key.
+        // Without this the probe-proxy keeps using a pre-built transport
+        // pointing at the old endpoint, and discovery returns the cached
+        // model lookup keyed by the old URL.
+        invalidateProbeProxyHandlers(selectedProvider.catalogName);
+        invalidateProbeDiscovery(selectedProvider.catalogName);
         refreshConfig();
         setInputValue("");
         setMode("browse");
@@ -337,7 +464,18 @@ export function App() {
           setChainSelected(new Set());
           setChainCursor(0);
           setChainOrder([]);
-          setMode("add_routing_chain");
+          // For NEW rules (a from browse) advance to scope picker. For
+          // overrides invoked from `e` on a default, the picker is also
+          // needed (the user is creating a fresh user rule). The flag
+          // routingScopeReturnsToEdit=true is set ONLY on `e` of an
+          // existing user rule (global or project) — those already know
+          // their scope and skip the picker entirely.
+          if (routingScopeReturnsToEdit) {
+            setMode("add_routing_chain");
+          } else {
+            setRoutingScopeCursor(0);
+            setMode("pick_routing_scope");
+          }
         }
       } else if (key.name === "escape") {
         setRoutingPattern("");
@@ -350,6 +488,38 @@ export function App() {
       return;
     }
 
+    // Routing scope picker — menu-style navigation (↑↓ + Enter), matching the
+    // chain selector and Providers tab. Letter shortcuts (g/p) still work as
+    // silent accelerators for users who learned the prior version, but the
+    // primary interaction is the menu and the footer advertises that.
+    if (mode === "pick_routing_scope") {
+      if (key.name === "up" || key.name === "k") {
+        setRoutingScopeCursor((i) => (i === 0 ? 0 : 0));
+      } else if (key.name === "down" || key.name === "j") {
+        setRoutingScopeCursor((i) => (i === 0 ? 1 : 1));
+      } else if (key.name === "return" || key.name === "enter") {
+        setRoutingScope(routingScopeCursor === 0 ? "global" : "project");
+        setMode("add_routing_chain");
+      } else if (key.raw === "g" || key.raw === "G") {
+        // Silent accelerator — picks AND commits in one keystroke.
+        setRoutingScope("global");
+        setMode("add_routing_chain");
+      } else if (key.raw === "p" || key.raw === "P") {
+        setRoutingScope("project");
+        setMode("add_routing_chain");
+      } else if (key.name === "escape") {
+        setRoutingPattern("");
+        setChainSelected(new Set());
+        setChainOrder([]);
+        setRoutingScopeCursor(0);
+        setRoutingScopeReturnsToEdit(false);
+        setEditingExistingScope(null);
+        setEditingExistingPattern(null);
+        setMode("browse");
+      }
+      return;
+    }
+
     if (mode === "add_routing_chain") {
       if (key.name === "up" || key.name === "k") {
         setChainCursor((i) => Math.max(0, i - 1));
@@ -357,7 +527,12 @@ export function App() {
         setChainCursor((i) => Math.min(CHAIN_PROVIDERS.length - 1, i + 1));
       } else if (key.name === "space" || key.raw === " ") {
         // Toggle: add to end or remove
-        const provName = CHAIN_PROVIDERS[chainCursor].name;
+        const prov = CHAIN_PROVIDERS[chainCursor];
+        if (prov.isLocal && !providerIsReady(prov, config)) {
+          setStatusMsg(`${prov.displayName} is disabled. Enable it in Providers first.`);
+          return;
+        }
+        const provName = prov.name;
         setChainSelected((prev) => {
           const next = new Set(prev);
           if (next.has(provName)) {
@@ -371,7 +546,12 @@ export function App() {
         });
       } else if (key.raw && key.raw >= "1" && key.raw <= "9") {
         // Number key: move current provider to that position in chain
-        const provName = CHAIN_PROVIDERS[chainCursor].name;
+        const prov = CHAIN_PROVIDERS[chainCursor];
+        if (prov.isLocal && !providerIsReady(prov, config)) {
+          setStatusMsg(`${prov.displayName} is disabled. Enable it in Providers first.`);
+          return;
+        }
+        const provName = prov.name;
         const targetPos = parseInt(key.raw, 10) - 1; // 0-indexed
         setChainSelected((prev) => {
           const next = new Set(prev);
@@ -387,251 +567,143 @@ export function App() {
       } else if (key.name === "return" || key.name === "enter") {
         const pat = routingPattern.trim();
         if (pat && chainOrder.length) {
-          const cfg = loadConfig();
-          if (!cfg.routing) cfg.routing = {};
-          cfg.routing[pat] = chainOrder;
-          saveConfig(cfg);
+          // Move detection: if `e` was used on an existing rule AND the user
+          // picked a different scope in the picker, write to the new scope
+          // and delete from the old one. Otherwise this is a plain update
+          // or a fresh add — just write.
+          const isMove =
+            editingExistingScope !== null &&
+            editingExistingScope !== routingScope &&
+            editingExistingPattern === pat;
+
+          if (routingScope === "project") {
+            const local = loadLocalConfig() ?? {
+              version: "1.0.0",
+              defaultProfile: "",
+              profiles: {},
+            };
+            if (!local.routing) local.routing = {};
+            local.routing[pat] = chainOrder;
+            saveLocalConfig(local);
+          } else {
+            const cfg = loadConfig();
+            if (!cfg.routing) cfg.routing = {};
+            cfg.routing[pat] = chainOrder;
+            saveConfig(cfg);
+          }
+          if (isMove && editingExistingScope === "global") {
+            const cfg = loadConfig();
+            if (cfg.routing && cfg.routing[pat] !== undefined) {
+              delete cfg.routing[pat];
+              saveConfig(cfg);
+            }
+            setStatusMsg(`Rule moved global → project: ${pat}`);
+          } else if (isMove && editingExistingScope === "project") {
+            const local = loadLocalConfig();
+            if (local?.routing && local.routing[pat] !== undefined) {
+              delete local.routing[pat];
+              saveLocalConfig(local);
+            }
+            setStatusMsg(`Rule moved project → global: ${pat}`);
+          } else if (routingScope === "project") {
+            setStatusMsg(`Project rule saved: ${pat} → ${chainOrder.join(", ")}`);
+          } else {
+            setStatusMsg(`Global rule saved: ${pat} → ${chainOrder.join(", ")}`);
+          }
           refreshConfig();
-          setStatusMsg(`Rule added: ${pat} → ${chainOrder.join(", ")}`);
         }
         setRoutingPattern("");
-        setRoutingChain("");
         setChainSelected(new Set());
         setChainOrder([]);
         setChainCursor(0);
+        // Reset scope state for the next add cycle.
+        setRoutingScope("global");
+        setRoutingScopeReturnsToEdit(false);
+        setEditingExistingScope(null);
+        setEditingExistingPattern(null);
         setMode("browse");
       } else if (key.name === "escape") {
         setChainSelected(new Set());
         setChainOrder([]);
         setChainCursor(0);
-        setMode("add_routing_pattern");
+        // If we entered the chain builder via `e` on an existing rule, the
+        // pattern is fixed — go straight to browse. For fresh adds, fall
+        // back to pattern input so the user can fix the pattern.
+        if (routingScopeReturnsToEdit) {
+          setRoutingPattern("");
+          setRoutingScope("global");
+          setRoutingScopeReturnsToEdit(false);
+          setEditingExistingScope(null);
+          setEditingExistingPattern(null);
+          setMode("browse");
+        } else {
+          setMode("add_routing_pattern");
+        }
       }
       return;
     }
 
-    // Profile: scope picker (g = global, p = project)
+    // Profile wizard: scope picker (g = global, p = project)
     if (mode === "pick_profile_scope") {
       if (key.raw === "g" || key.raw === "G") {
-        setProfileScope("global");
-        setEditProfileValue("");
-        setMode("new_profile");
+        wizard.pickScope("global");
       } else if (key.raw === "p" || key.raw === "P") {
-        setProfileScope("project");
-        setEditProfileValue("");
-        setMode("new_profile");
+        wizard.pickScope("project");
       } else if (key.name === "escape") {
-        setMode("browse");
+        wizard.cancelPickScope();
       }
       return;
     }
 
-    // Profile: new profile name input
+    // Profile wizard: new profile name input
     if (mode === "new_profile") {
       if (key.name === "return" || key.name === "enter") {
-        const name = editProfileValue.trim();
-        if (!name) {
-          setMode("browse");
-          setEditProfileValue("");
-          return;
-        }
-        const now = new Date().toISOString();
-        if (profileScope === "project") {
-          // Save to local .claudish.json
-          const localCfg = loadLocalConfig() ?? {
-            version: "1.0.0",
-            defaultProfile: "",
-            profiles: {},
-          };
-          localCfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
-          saveLocalConfig(localCfg);
-        } else {
-          // Save to global config
-          const cfg = loadConfig();
-          cfg.profiles[name] = { name, models: {}, createdAt: now, updatedAt: now };
-          saveConfig(cfg);
-        }
-        refreshConfig();
-        setEditProfileName(name);
-        setEditProfileValue("");
-        setSuggestions(computeSuggestions(""));
-        setSuggestionIndex(-1);
-        setMode("edit_profile_opus");
+        wizard.newProfileSubmit();
       } else if (key.name === "escape") {
-        setEditProfileValue("");
-        setMode("browse");
+        wizard.newProfileEscape();
       } else if (key.name === "backspace" || key.name === "delete") {
-        setEditProfileValue((p) => p.slice(0, -1));
+        wizard.newProfileBackspace();
       } else if (key.raw && key.raw.length === 1 && !key.ctrl && !key.meta) {
-        setEditProfileValue((p) => p + key.raw);
+        wizard.newProfileTypeChar(key.raw);
       }
       return;
     }
 
-    // Profile: provider prefix picker
+    // Profile wizard: provider prefix picker (side-trip from edit fields)
     if (mode === "pick_provider_prefix") {
       if (key.name === "up" || key.name === "k") {
-        setProviderPickerIndex((i) => Math.max(0, i - 1));
+        wizard.prefixPickerUp();
       } else if (key.name === "down" || key.name === "j") {
-        setProviderPickerIndex((i) => Math.min(PROVIDER_PREFIXES.length - 1, i + 1));
+        wizard.prefixPickerDown();
       } else if (key.name === "return" || key.name === "enter") {
-        const prefix = PROVIDER_PREFIXES[providerPickerIndex]?.prefix ?? "";
-        setEditProfileValue(prefix);
-        setSuggestions(computeSuggestions(prefix));
-        setSuggestionIndex(-1);
-        setProviderPickerIndex(0);
-        setMode(providerPickerReturnMode);
+        wizard.prefixPickerSubmit();
       } else if (key.name === "escape") {
-        setProviderPickerIndex(0);
-        setMode(providerPickerReturnMode);
+        wizard.prefixPickerCancel();
       }
       return;
     }
 
-    // Profile: edit model role fields (opus → sonnet → haiku → subagent)
+    // Profile wizard: edit model role fields (opus → sonnet → haiku → subagent)
     if (
       mode === "edit_profile_opus" ||
       mode === "edit_profile_sonnet" ||
       mode === "edit_profile_haiku" ||
       mode === "edit_profile_subagent"
     ) {
-      // Helper: save value to correct scope config
-      const saveModelField = (fieldVal: string) => {
-        const val = fieldVal.trim() === "auto" ? undefined : fieldVal.trim();
-        if (profileScope === "project") {
-          const localCfg = loadLocalConfig() ?? {
-            version: "1.0.0",
-            defaultProfile: "",
-            profiles: {},
-          };
-          const prof = localCfg.profiles[editProfileName];
-          if (prof) {
-            if (mode === "edit_profile_opus") prof.models.opus = val || undefined;
-            else if (mode === "edit_profile_sonnet") prof.models.sonnet = val || undefined;
-            else if (mode === "edit_profile_haiku") prof.models.haiku = val || undefined;
-            else if (mode === "edit_profile_subagent") prof.models.subagent = val || undefined;
-            prof.updatedAt = new Date().toISOString();
-            saveLocalConfig(localCfg);
-          }
-        } else {
-          const cfg = loadConfig();
-          const prof = cfg.profiles[editProfileName];
-          if (prof) {
-            if (mode === "edit_profile_opus") prof.models.opus = val || undefined;
-            else if (mode === "edit_profile_sonnet") prof.models.sonnet = val || undefined;
-            else if (mode === "edit_profile_haiku") prof.models.haiku = val || undefined;
-            else if (mode === "edit_profile_subagent") prof.models.subagent = val || undefined;
-            prof.updatedAt = new Date().toISOString();
-            saveConfig(cfg);
-          }
-        }
-        refreshConfig();
-      };
-
-      const getNextFieldValue = (nextMode: Mode): string => {
-        if (profileScope === "project") {
-          const localCfg = loadLocalConfig();
-          const prof = localCfg?.profiles[editProfileName];
-          if (nextMode === "edit_profile_sonnet") return prof?.models?.sonnet ?? "";
-          if (nextMode === "edit_profile_haiku") return prof?.models?.haiku ?? "";
-          if (nextMode === "edit_profile_subagent") return prof?.models?.subagent ?? "";
-        } else {
-          const cfg = loadConfig();
-          const prof = cfg.profiles[editProfileName];
-          if (nextMode === "edit_profile_sonnet") return prof?.models?.sonnet ?? "";
-          if (nextMode === "edit_profile_haiku") return prof?.models?.haiku ?? "";
-          if (nextMode === "edit_profile_subagent") return prof?.models?.subagent ?? "";
-        }
-        return "";
-      };
-
       if (key.name === "return" || key.name === "enter") {
-        // Accept highlighted suggestion or typed value
-        let val = editProfileValue;
-        if (suggestionIndex >= 0 && suggestions[suggestionIndex]) {
-          val = suggestions[suggestionIndex];
-        }
-        saveModelField(val);
-        setSuggestions([]);
-        setSuggestionIndex(-1);
-        // Advance to next field or finish
-        if (mode === "edit_profile_opus") {
-          const nextVal = getNextFieldValue("edit_profile_sonnet");
-          setEditProfileValue(nextVal);
-          setSuggestions(computeSuggestions(nextVal));
-          setSuggestionIndex(-1);
-          setMode("edit_profile_sonnet");
-        } else if (mode === "edit_profile_sonnet") {
-          const nextVal = getNextFieldValue("edit_profile_haiku");
-          setEditProfileValue(nextVal);
-          setSuggestions(computeSuggestions(nextVal));
-          setSuggestionIndex(-1);
-          setMode("edit_profile_haiku");
-        } else if (mode === "edit_profile_haiku") {
-          const nextVal = getNextFieldValue("edit_profile_subagent");
-          setEditProfileValue(nextVal);
-          setSuggestions(computeSuggestions(nextVal));
-          setSuggestionIndex(-1);
-          setMode("edit_profile_subagent");
-        } else {
-          // subagent — done
-          setEditProfileValue("");
-          setEditProfileName("");
-          setSuggestions([]);
-          setSuggestionIndex(-1);
-          setMode("browse");
-          setStatusMsg(`Profile "${editProfileName}" saved.`);
-        }
+        wizard.editFieldSubmit();
       } else if (key.name === "tab") {
-        if (editProfileValue === "") {
-          // Empty input + Tab → enter provider prefix picker
-          setProviderPickerReturnMode(mode);
-          setProviderPickerIndex(0);
-          setMode("pick_provider_prefix");
-        } else if (suggestionIndex >= 0 && suggestions[suggestionIndex]) {
-          // Tab with suggestion highlighted → autocomplete into input, keep editing
-          setEditProfileValue(suggestions[suggestionIndex]);
-          setSuggestions(computeSuggestions(suggestions[suggestionIndex]!));
-          setSuggestionIndex(-1);
-        }
+        wizard.editFieldTab();
       } else if (key.name === "up" || key.name === "k") {
-        if (suggestions.length > 0) {
-          setSuggestionIndex((i) => Math.max(0, i - 1));
-        }
+        wizard.editFieldUp();
       } else if (key.name === "down" || key.name === "j") {
-        if (suggestions.length > 0) {
-          setSuggestionIndex((i) => Math.min(suggestions.length - 1, i + 1));
-        }
+        wizard.editFieldDown();
       } else if (key.name === "escape") {
-        if (suggestionIndex >= 0) {
-          // Esc dismisses suggestion selection first
-          setSuggestionIndex(-1);
-        } else {
-          setEditProfileValue("");
-          setEditProfileName("");
-          setSuggestions([]);
-          setSuggestionIndex(-1);
-          setMode("browse");
-        }
+        wizard.editFieldEscape();
       } else if (key.name === "backspace" || key.name === "delete") {
-        setEditProfileValue((p) => {
-          const next = p.slice(0, -1);
-          setSuggestions(computeSuggestions(next));
-          setSuggestionIndex(-1);
-          return next;
-        });
+        wizard.editFieldBackspace();
       } else if (key.raw && key.raw.length === 1 && !key.ctrl && !key.meta) {
-        setEditProfileValue((p) => {
-          const next = p + key.raw;
-          // Handle 'auto' shortcut with empty input + 'a'
-          if (p === "" && key.raw === "a") {
-            setSuggestions([]);
-            setSuggestionIndex(-1);
-            return "auto";
-          }
-          setSuggestions(computeSuggestions(next));
-          setSuggestionIndex(-1);
-          return next;
-        });
+        wizard.editFieldTypeChar(key.raw);
       }
       return;
     }
@@ -677,50 +749,162 @@ export function App() {
         setProviderIndex((i) => Math.min(displayProviders.length - 1, i + 1));
         setStatusMsg(null);
       } else if (key.name === "s") {
-        setInputValue("");
-        setStatusMsg(null);
-        setMode("input_key");
+        if (selectedProvider.apiKeyEnvVar) {
+          setInputValue("");
+          setStatusMsg(null);
+          setMode("input_key");
+        } else if (selectedProvider.endpointEnvVar) {
+          setInputValue(activeEndpoint);
+          setStatusMsg(null);
+          setMode("input_endpoint");
+        } else {
+          setStatusMsg(`${selectedProvider.displayName} has no API-key setup.`);
+        }
       } else if (key.name === "e") {
-        if (selectedProvider.endpointEnvVar) {
+        if (selectedProviderIsLocal) {
+          if (selectedLocalEnabled) {
+            disableLocalProvider(selectedProvider.catalogName);
+            setStatusMsg(`${selectedProvider.displayName} disabled in global config.`);
+          } else {
+            enableLocalProvider(selectedProvider.catalogName);
+            setStatusMsg(`${selectedProvider.displayName} enabled in global config.`);
+          }
+          refreshConfig();
+        } else if (selectedProvider.endpointEnvVar) {
           setInputValue(activeEndpoint);
           setStatusMsg(null);
           setMode("input_endpoint");
         } else {
           setStatusMsg("This provider has no custom endpoint.");
         }
+      } else if (key.name === "u") {
+        // Edit URL for any provider that has a configurable endpoint.
+        // For local providers `e` is taken by the enable/disable toggle, so
+        // `u` is the consistent way to edit the URL across all provider types.
+        if (selectedProvider.endpointEnvVar) {
+          setInputValue(activeEndpoint);
+          setStatusMsg(null);
+          setMode("input_endpoint");
+        } else {
+          setStatusMsg("This provider has no editable URL.");
+        }
       } else if (key.name === "x") {
+        let changed = false;
         if (hasCfgKey) {
           removeApiKey(selectedProvider.apiKeyEnvVar);
-          if (selectedProvider.endpointEnvVar) {
-            removeEndpoint(selectedProvider.endpointEnvVar);
-          }
+          changed = true;
+        }
+        if (activeEndpointEnvVar && config.endpoints?.[activeEndpointEnvVar]) {
+          removeEndpoint(activeEndpointEnvVar);
+          delete process.env[activeEndpointEnvVar];
+          changed = true;
+        }
+        if (changed) {
+          invalidateProbeProxyHandlers(selectedProvider.catalogName);
+          invalidateProbeDiscovery(selectedProvider.catalogName);
           refreshConfig();
-          setStatusMsg(`Key removed for ${selectedProvider.displayName}.`);
+          setStatusMsg(`Stored config removed for ${selectedProvider.displayName}.`);
         } else {
-          setStatusMsg("No stored key to remove.");
+          setStatusMsg("No stored config to remove.");
+        }
+      } else if (key.name === "l") {
+        // OAuth login for the selected provider. Signal the wrapper
+        // (tui/index.tsx) which slug to log into, then destroy the
+        // renderer. The wrapper spawns `claudish login {slug}` as a
+        // child process so the OAuth callback server and inquirer
+        // prompts run in a clean stdio environment. When the child
+        // exits, the wrapper re-enters startConfigTui and we're back
+        // on a fresh Providers tab.
+        //
+        // Child-process isolation avoids the ERR_CONNECTION_REFUSED
+        // issue that an earlier in-process attempt hit — the child
+        // gets a fresh Node runtime with no OpenTUI residue.
+        const slug = selectedProvider.oauthSlug;
+        if (!slug) {
+          setStatusMsg(
+            `${selectedProvider.displayName} doesn't support OAuth login. Press s to set an API key.`
+          );
+        } else if (!requestLogin) {
+          // Fallback: wrapper didn't provide the login bridge. Tell the
+          // user the command to run manually.
+          setStatusMsg(`Run: claudish login ${slug}`);
+        } else {
+          setStatusMsg(`Launching: claudish login ${slug}…`);
+          // Defer destroy so React commits the status message first.
+          setTimeout(() => {
+            requestLogin(slug);
+            renderer.destroy();
+          }, 50);
+        }
+      } else if (key.raw === "T") {
+        // Test ALL credentialed providers in parallel. Each call goes through
+        // the shared probe proxy (same stack as `claudish --probe`), so
+        // credentials are resolved uniformly from env / config / OAuth.
+        //
+        // Providers without ANY credentials are SKIPPED — they keep their
+        // default "not set" / "not configured" badge. Marking them as FAIL
+        // would be misleading: "no key, no oauth" isn't a test failure, it's
+        // just an unused row.
+        //
+        // The probe model for each provider is picked from the cached
+        // /probeModels catalog inside runProbeTest. Providers with no entry
+        // surface as "no probe model in catalog" rather than being skipped
+        // silently — that's a more useful signal than an absent row.
+        const fired: string[] = [];
+        for (const prov of PROVIDERS) {
+          if (!providerIsReady(prov, config)) continue;
+          fired.push(prov.displayName);
+          // Fire-and-forget — errors are written into testResults inside
+          // runProbeTest, no need to await.
+          void runProbeTest(prov);
+        }
+        if (fired.length === 0) {
+          setStatusMsg("No credentialed providers to test.");
+        } else {
+          const startupHint = !isProbeProxyReady()
+            ? " (starting probe proxy…)"
+            : "";
+          setStatusMsg(
+            `Testing ${fired.length} provider${fired.length === 1 ? "" : "s"} in parallel…${startupHint}`
+          );
         }
       } else if (key.name === "t") {
-        const apiKey =
-          config.apiKeys?.[selectedProvider.apiKeyEnvVar] ||
-          process.env[selectedProvider.apiKeyEnvVar];
-        const provName = selectedProvider.name;
-        if (!apiKey) {
-          setTestResults((prev) => ({
-            ...prev,
-            [provName]: { status: "failed", error: "No key configured" },
-          }));
+        // Single-provider test. No-op if there's no credential of any kind —
+        // we don't want to flip the badge to FAIL just because nothing is
+        // configured. Use the right hint based on provider capabilities.
+        const caps = providerAuthCapabilities(selectedProvider, config);
+        const ready = providerIsReady(selectedProvider, config);
+        if (!ready) {
+          if (selectedProviderIsLocal) {
+            setStatusMsg(
+              `${selectedProvider.displayName}: disabled. Press e to enable in global config.`
+            );
+          } else if (caps.apiKey.supported && caps.oauth.supported) {
+            setStatusMsg(
+              `${selectedProvider.displayName}: no credentials. Press s to set a key or l to login.`
+            );
+          } else if (caps.oauth.supported) {
+            setStatusMsg(
+              `${selectedProvider.displayName}: no credentials. Press l to login.`
+            );
+          } else if (caps.apiKey.supported) {
+            setStatusMsg(
+              `${selectedProvider.displayName}: no key set. Press s to set an API key.`
+            );
+          } else {
+            setStatusMsg(
+              `${selectedProvider.displayName} doesn't support auth from the TUI.`
+            );
+          }
           return;
         }
-        setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
-        const startMs = Date.now();
-        testProviderKey(provName, apiKey).then((result) => {
-          const ms = Date.now() - startMs;
-          const ok = result === "valid";
-          setTestResults((prev) => ({
-            ...prev,
-            [provName]: ok ? { status: "valid", ms } : { status: "failed", error: result, ms },
-          }));
-        });
+        if (!isProbeProxyReady()) {
+          setStatusMsg("Starting probe proxy…");
+        }
+        // Probe model is picked from the cached /probeModels catalog inside
+        // runProbeTest. A missing entry surfaces as a failure row, not a
+        // status-line message, so the user sees it on the provider row itself.
+        void runProbeTest(selectedProvider);
       }
     } else if (activeTab === "profiles") {
       // Build profile list for navigation
@@ -747,29 +931,14 @@ export function App() {
           setStatusMsg(`Profile "${selectedName}" activated.`);
         }
       } else if (key.name === "n") {
-        // New profile — first pick scope
-        setEditProfileValue("");
-        setProfileScope("global");
-        setMode("pick_profile_scope");
-        setStatusMsg(null);
+        // New profile — first pick scope (delegates to wizard)
+        wizard.startNewProfile();
       } else if (key.name === "e") {
-        // Edit selected profile's model mappings
+        // Edit selected profile's model mappings (delegates to wizard)
         const selectedName = allNames[profileIndex];
         if (selectedName) {
-          // Determine which scope the selected profile is in
           const isLocal = localCfg ? !!localCfg.profiles[selectedName] : false;
-          const scope: "global" | "project" = isLocal ? "project" : "global";
-          setProfileScope(scope);
-          const prof = isLocal
-            ? localCfg?.profiles[selectedName]
-            : loadConfig().profiles[selectedName];
-          setEditProfileName(selectedName);
-          const opusVal = prof?.models?.opus ?? "";
-          setEditProfileValue(opusVal);
-          setSuggestions(computeSuggestions(opusVal));
-          setSuggestionIndex(-1);
-          setMode("edit_profile_opus");
-          setStatusMsg(null);
+          wizard.startEditExisting(selectedName, isLocal);
         }
       } else if (key.name === "d") {
         // Delete selected profile (can't delete active one)
@@ -804,32 +973,76 @@ export function App() {
     } else if (activeTab === "routing") {
       if (key.name === "a") {
         setRoutingPattern("");
-        setRoutingChain("");
+        setChainSelected(new Set());
+        setChainOrder([]);
         setStatusMsg(null);
         setMode("add_routing_pattern");
-      } else if (key.name === "d") {
-        // delete selected rule — select by index
-        if (ruleEntries.length > 0) {
-          const [pat] = ruleEntries[Math.min(providerIndex, ruleEntries.length - 1)]!;
-          const cfg = loadConfig();
-          if (cfg.routing) {
-            delete cfg.routing[pat];
-            saveConfig(cfg);
-            refreshConfig();
-            setStatusMsg(`Rule deleted: '${pat}'.`);
-          }
+      } else if (key.name === "e") {
+        // Edit selected rule. ALWAYS opens the scope picker so the user can
+        // either confirm the current scope (and proceed to chain edit) or
+        // move the rule to the other scope (effectively a single-keystroke
+        // promote/demote). The picker is prefilled with the rule's current
+        // scope as the suggested choice.
+        //
+        // For `default` rows, there's no current scope — the picker just
+        // asks the user to choose where to write the new override.
+        if (mergedRules.length === 0) {
+          setStatusMsg("No rules to edit.");
         } else {
-          setStatusMsg("No routing rules to delete.");
+          const idx = Math.min(providerIndex, mergedRules.length - 1);
+          const rule = mergedRules[idx]!;
+          setRoutingPattern(rule.pattern);
+          setChainSelected(new Set(rule.chain));
+          setChainOrder([...rule.chain]);
+          setChainCursor(0);
+          setStatusMsg(null);
+          // Default scope to the rule's current scope (or "global" for defaults
+          // — matches the typical case where users write personal overrides).
+          const initialScope: RoutingScope = rule.kind === "project" ? "project" : "global";
+          setRoutingScope(initialScope);
+          setRoutingScopeCursor(initialScope === "global" ? 0 : 1);
+          setEditingExistingScope(rule.kind === "default" ? null : rule.kind);
+          setEditingExistingPattern(rule.pattern);
+          setRoutingScopeReturnsToEdit(true);
+          setMode("pick_routing_scope");
+        }
+      } else if (key.name === "d") {
+        // No more peel: each row owns its scope. Delete from that scope only.
+        if (mergedRules.length === 0) {
+          setStatusMsg("No rules to delete.");
+        } else {
+          const idx = Math.min(providerIndex, mergedRules.length - 1);
+          const rule = mergedRules[idx]!;
+          if (rule.kind === "default") {
+            setStatusMsg(
+              `Built-in default '${rule.pattern}' cannot be deleted. Press e to override.`
+            );
+          } else if (rule.kind === "project") {
+            const local = loadLocalConfig();
+            if (local?.routing && local.routing[rule.pattern] !== undefined) {
+              delete local.routing[rule.pattern];
+              saveLocalConfig(local);
+              refreshConfig();
+              setStatusMsg(`Project rule deleted: '${rule.pattern}'.`);
+            }
+          } else {
+            // rule.kind === "global"
+            const cfg = loadConfig();
+            if (cfg.routing && cfg.routing[rule.pattern] !== undefined) {
+              delete cfg.routing[rule.pattern];
+              saveConfig(cfg);
+              refreshConfig();
+              setStatusMsg(`Global rule deleted: '${rule.pattern}'.`);
+            }
+          }
         }
       } else if (key.name === "up" || key.name === "k") {
         setProviderIndex((i) => Math.max(0, i - 1));
       } else if (key.name === "down" || key.name === "j") {
-        setProviderIndex((i) => Math.min(Math.max(0, ruleEntries.length - 1), i + 1));
+        setProviderIndex((i) => Math.min(Math.max(0, mergedRules.length - 1), i + 1));
       } else if (key.name === "p") {
-        setProbeModel("");
-        setProbeResults([]);
         setStatusMsg(null);
-        setProbeMode("input");
+        probe.startInput();
       }
     } else if (activeTab === "privacy") {
       if (key.name === "t") {
@@ -845,16 +1058,15 @@ export function App() {
         setStatusMsg(`Telemetry ${next ? "enabled" : "disabled"}.`);
       } else if (key.name === "u") {
         const cfg = loadConfig();
-        const statsKey = "CLAUDISH_STATS";
-        // Toggle via config (env cannot be persisted, use telemetry-like flag)
         const next = !statsEnabled;
-        if (!cfg.telemetry)
-          cfg.telemetry = { enabled: telemetryEnabled, askedAt: new Date().toISOString() };
-        (cfg as Record<string, unknown>).statsEnabled = next;
+        cfg.stats = {
+          ...(cfg.stats ?? {}),
+          enabled: next,
+          enabledAt: next ? (cfg.stats?.enabledAt ?? new Date().toISOString()) : cfg.stats?.enabledAt,
+        };
         saveConfig(cfg);
         refreshConfig();
         setStatusMsg(`Usage stats ${next ? "enabled" : "disabled"}.`);
-        void statsKey; // used for env check
       } else if (key.name === "c") {
         clearBuffer();
         setBufStats(getBufferStats());
@@ -867,7 +1079,7 @@ export function App() {
     return (
       <box width="100%" height="100%" padding={1} backgroundColor={C.bg}>
         <text>
-          <span fg={C.red} bold>
+          <span fg={C.red} attributes={A.bold}>
             Terminal too small ({width}x{height}). Resize to at least 60x15.
           </span>
         </text>
@@ -876,1413 +1088,14 @@ export function App() {
   }
 
   const isInputMode = mode === "input_key" || mode === "input_endpoint";
-  const isRoutingInput = mode === "add_routing_pattern" || mode === "add_routing_chain";
-  const isProfileEditMode =
-    mode === "new_profile" ||
-    mode === "pick_profile_scope" ||
-    mode === "pick_provider_prefix" ||
-    mode === "edit_profile_opus" ||
-    mode === "edit_profile_sonnet" ||
-    mode === "edit_profile_haiku" ||
-    mode === "edit_profile_subagent";
+  const isRoutingInput =
+    mode === "add_routing_pattern" ||
+    mode === "add_routing_chain" ||
+    mode === "pick_routing_scope";
 
   // ── Layout math ───────────────────────────────────────────────────────────
   // header(1) + tab-bar(3) + content(flex) + detail(fixed) + footer(1)
-  const HEADER_H = 1;
-  const TABS_H = 3;
-  const FOOTER_H = 1;
-  const DETAIL_H = 7;
   const contentH = Math.max(4, height - HEADER_H - TABS_H - DETAIL_H - FOOTER_H - 1);
-
-  // ── Render helpers ────────────────────────────────────────────────────────
-  function TabBar() {
-    const tabs: Array<{ label: string; value: Tab; num: string }> = [
-      { label: "Providers", value: "providers", num: "1" },
-      { label: "Profiles", value: "profiles", num: "2" },
-      { label: "Routing", value: "routing", num: "3" },
-      { label: "Privacy", value: "privacy", num: "4" },
-    ];
-
-    return (
-      <box height={TABS_H} flexDirection="column" backgroundColor={C.bg}>
-        {/* Tab buttons row — use box-level backgroundColor for unmistakable tab highlighting */}
-        <box height={1} flexDirection="row">
-          <box width={1} height={1} backgroundColor={C.bg} />
-          {tabs.map((t, i) => {
-            const active = activeTab === t.value;
-            return (
-              <box key={t.value} flexDirection="row" height={1}>
-                {i > 0 && <box width={2} height={1} backgroundColor={C.bg} />}
-                <box
-                  height={1}
-                  backgroundColor={active ? C.tabActiveBg : C.tabInactiveBg}
-                  paddingX={1}
-                >
-                  <text>
-                    <span fg={active ? C.tabActiveFg : C.tabInactiveFg} bold>
-                      {`${t.num}. ${t.label}`}
-                    </span>
-                  </text>
-                </box>
-              </box>
-            );
-          })}
-          {statusMsg && (
-            <box height={1} backgroundColor={C.bg} paddingX={1}>
-              <text>
-                <span fg={C.dim}>{"─  "}</span>
-                <span
-                  fg={
-                    statusMsg.startsWith("Key saved") ||
-                    statusMsg.startsWith("Rule added") ||
-                    statusMsg.startsWith("Endpoint") ||
-                    statusMsg.startsWith("Telemetry") ||
-                    statusMsg.startsWith("Usage") ||
-                    statusMsg.startsWith("Stats buffer") ||
-                    statusMsg.startsWith("Profile") ||
-                    statusMsg.startsWith("Key removed")
-                      ? C.green
-                      : C.yellow
-                  }
-                  bold
-                >
-                  {statusMsg}
-                </span>
-              </text>
-            </box>
-          )}
-        </box>
-        {/* Separator line */}
-        <box height={1} paddingX={1}>
-          <text>
-            <span fg={C.tabActiveBg}>{"─".repeat(Math.max(0, width - 2))}</span>
-          </text>
-        </box>
-        {/* Spacer */}
-        <box height={1} />
-      </box>
-    );
-  }
-
-  // ── Providers tab ─────────────────────────────────────────────────────────
-  function ProvidersContent() {
-    const listH = contentH - 2; // inner height of box
-    let separatorRendered = false;
-
-    const getRow = (p: ProviderDef, idx: number) => {
-      const isReady = !!(config.apiKeys?.[p.apiKeyEnvVar] || process.env[p.apiKeyEnvVar]);
-      const selected = idx === providerIndex;
-      const cfgMask = maskKey(config.apiKeys?.[p.apiKeyEnvVar]);
-      const envMask = maskKey(process.env[p.apiKeyEnvVar]);
-      const hasCfg = cfgMask !== "────────";
-      const hasEnv = envMask !== "────────";
-      const keyDisplay = isReady ? (hasCfg ? cfgMask : envMask) : "────────";
-      const src = hasEnv && hasCfg ? "e+c" : hasEnv ? "env" : hasCfg ? "cfg" : "";
-      const namePad = p.displayName.padEnd(14).substring(0, 14);
-      const isFirstUnready = !isReady && !separatorRendered;
-      if (isFirstUnready) separatorRendered = true;
-
-      // Inline test result for this provider
-      const tr = testResults[p.name];
-      let statusFg = isReady ? C.green : C.dim;
-      let statusText = isReady ? "ready  " : "not set";
-      if (tr) {
-        if (tr.status === "testing") {
-          statusFg = C.yellow;
-          statusText = "testing";
-        } else if (tr.status === "valid") {
-          statusFg = C.green;
-          statusText = tr.ms !== undefined ? `ready ${tr.ms}ms` : "ready ✓";
-        } else {
-          statusFg = C.red;
-          statusText = "FAIL   ";
-        }
-      }
-
-      return (
-        <box key={p.name} flexDirection="column">
-          {isFirstUnready && (
-            <box height={1} paddingX={1}>
-              <text>
-                <span fg={C.dim}>
-                  {"─ not configured "}
-                  {"─".repeat(Math.max(0, width - 22))}
-                </span>
-              </text>
-            </box>
-          )}
-          <box height={1} flexDirection="row" backgroundColor={selected ? C.bgHighlight : C.bg}>
-            <text>
-              <span fg={tr?.status === "testing" ? C.yellow : isReady ? C.green : C.dim}>
-                {tr?.status === "testing" ? "◌" : isReady ? "●" : "○"}
-              </span>
-              <span>{"  "}</span>
-              <span fg={selected ? C.white : isReady ? C.fgMuted : C.dim} bold={selected}>
-                {namePad}
-              </span>
-              <span fg={C.dim}>{"  "}</span>
-              <span fg={statusFg} bold={tr?.status === "valid" || isReady}>
-                {statusText}
-              </span>
-              <span fg={C.dim}>{"  "}</span>
-              <span fg={isReady ? C.cyan : C.dim}>{keyDisplay}</span>
-              {src ? <span fg={C.dim}>{` (${src})`}</span> : null}
-              <span fg={C.dim}>{"  "}</span>
-              <span fg={selected ? C.white : C.dim}>{p.description}</span>
-            </text>
-          </box>
-        </box>
-      );
-    };
-
-    return (
-      <box
-        height={contentH}
-        border
-        borderStyle="single"
-        borderColor={!isInputMode ? C.blue : C.dim}
-        backgroundColor={C.bg}
-        flexDirection="column"
-        paddingX={1}
-      >
-        {/* Column header */}
-        <text>
-          <span fg={C.dim}>{"   "}</span>
-          <span fg={C.blue} bold>
-            {"PROVIDER        "}
-          </span>
-          <span fg={C.blue} bold>
-            {"STATUS    "}
-          </span>
-          <span fg={C.blue} bold>
-            {"KEY         "}
-          </span>
-          <span fg={C.blue} bold>
-            DESCRIPTION
-          </span>
-        </text>
-        {displayProviders.slice(0, listH).map(getRow)}
-      </box>
-    );
-  }
-
-  function ProviderDetail() {
-    const displayKey = hasCfgKey ? cfgKeyMask : hasEnvKey ? envKeyMask : "────────";
-
-    if (isInputMode) {
-      return (
-        <box
-          height={DETAIL_H}
-          border
-          borderStyle="single"
-          borderColor={C.focusBorder}
-          title={` Set ${mode === "input_key" ? "API Key" : "Endpoint"} — ${selectedProvider.displayName} `}
-          backgroundColor={C.bg}
-          flexDirection="column"
-          paddingX={1}
-        >
-          <text>
-            <span fg={C.green} bold>
-              Enter{" "}
-            </span>
-            <span fg={C.fgMuted}>to save · </span>
-            <span fg={C.red} bold>
-              Esc{" "}
-            </span>
-            <span fg={C.fgMuted}>to cancel</span>
-          </text>
-          <box flexDirection="row">
-            <text>
-              <span fg={C.green} bold>
-                &gt;{" "}
-              </span>
-            </text>
-            <input
-              value={inputValue}
-              onChange={setInputValue}
-              focused={true}
-              width={width - 8}
-              backgroundColor={C.bgHighlight}
-              textColor={C.white}
-            />
-          </box>
-        </box>
-      );
-    }
-
-    const tr = testResults[selectedProvider.name];
-
-    return (
-      <box
-        height={DETAIL_H}
-        border
-        borderStyle="single"
-        borderColor={C.dim}
-        title={` ${selectedProvider.displayName} `}
-        backgroundColor={C.bgAlt}
-        flexDirection="column"
-        paddingX={1}
-      >
-        <box flexDirection="row">
-          <text>
-            <span fg={C.blue} bold>
-              Status:{" "}
-            </span>
-            {hasKey ? (
-              <span fg={C.green} bold>
-                ● Ready
-              </span>
-            ) : (
-              <span fg={C.fgMuted}>○ Not configured</span>
-            )}
-            <span fg={C.dim}>{"    "}</span>
-            <span fg={C.blue} bold>
-              Key:{" "}
-            </span>
-            <span fg={C.green}>{displayKey}</span>
-            {keySrc && <span fg={C.fgMuted}> (source: {keySrc})</span>}
-          </text>
-        </box>
-        {selectedProvider.endpointEnvVar && (
-          <text>
-            <span fg={C.blue} bold>
-              URL:{" "}
-            </span>
-            <span fg={C.cyan}>
-              {activeEndpoint || selectedProvider.defaultEndpoint || "default"}
-            </span>
-          </text>
-        )}
-        <text>
-          <span fg={C.blue} bold>
-            Desc:{" "}
-          </span>
-          <span fg={C.white}>{selectedProvider.description}</span>
-        </text>
-        {selectedProvider.keyUrl && (
-          <text>
-            <span fg={C.blue} bold>
-              Get Key:{" "}
-            </span>
-            <span fg={C.cyan}>{selectedProvider.keyUrl}</span>
-          </text>
-        )}
-        {tr && (
-          <text>
-            <span fg={C.blue} bold>
-              {"Test:  "}
-            </span>
-            {tr.status === "testing" && (
-              <span fg={C.yellow} bold>
-                {"◌ testing..."}
-              </span>
-            )}
-            {tr.status === "valid" && (
-              <>
-                <span fg={C.green} bold>
-                  {"● valid"}
-                </span>
-                {tr.ms !== undefined && <span fg={C.dim}>{`  ${tr.ms}ms`}</span>}
-                <span fg={C.fgMuted}>{"  API key is valid and endpoint is reachable."}</span>
-              </>
-            )}
-            {tr.status === "failed" && (
-              <>
-                <span fg={C.red} bold>
-                  {"✗ failed"}
-                </span>
-                {tr.error && <span fg={C.red}>{`  ${tr.error}`}</span>}
-              </>
-            )}
-          </text>
-        )}
-      </box>
-    );
-  }
-
-  // ── Profiles tab ──────────────────────────────────────────────────────────
-
-  function ProfilesContent() {
-    const globalCfg = config;
-    const localCfg = loadLocalConfig();
-    const localProfileNames = localCfg
-      ? new Set(Object.keys(localCfg.profiles))
-      : new Set<string>();
-
-    // Build unified list: local profiles first, then global
-    const allEntries: Array<{
-      name: string;
-      scope: "local" | "global";
-      models: Record<string, string | undefined>;
-    }> = [];
-    if (localCfg) {
-      for (const [name, prof] of Object.entries(localCfg.profiles)) {
-        allEntries.push({ name, scope: "local", models: prof.models });
-      }
-    }
-    for (const [name, prof] of Object.entries(globalCfg.profiles)) {
-      allEntries.push({ name, scope: "global", models: prof.models });
-    }
-
-    const activeProfileName = globalCfg.defaultProfile;
-    const listH = contentH - 2;
-
-    // Edit mode prompt
-    const editPromptLabel =
-      mode === "new_profile"
-        ? `New ${profileScope} profile — name:`
-        : mode === "pick_profile_scope"
-          ? "Scope for new profile:"
-          : mode === "pick_provider_prefix"
-            ? "Select provider:"
-            : mode === "edit_profile_opus"
-              ? `${editProfileName} — opus model:`
-              : mode === "edit_profile_sonnet"
-                ? `${editProfileName} — sonnet model:`
-                : mode === "edit_profile_haiku"
-                  ? `${editProfileName} — haiku model:`
-                  : mode === "edit_profile_subagent"
-                    ? `${editProfileName} — subagent model (optional):`
-                    : null;
-
-    return (
-      <box
-        height={contentH}
-        border
-        borderStyle="single"
-        borderColor={activeTab === "profiles" && !isProfileEditMode ? C.blue : C.dim}
-        backgroundColor={C.bg}
-        flexDirection="column"
-        paddingX={1}
-      >
-        {/* Active profile indicator */}
-        <text>
-          <span fg={C.dim}>{"  "}</span>
-          <span fg={C.fgMuted}>Active profile: </span>
-          <span fg={C.orange} bold>
-            {activeProfileName}
-          </span>
-        </text>
-        {/* Column header */}
-        <text>
-          <span fg={C.dim}>{"   "}</span>
-          <span fg={C.blue} bold>
-            {"PROFILE         "}
-          </span>
-          <span fg={C.blue} bold>
-            {"SCOPE    "}
-          </span>
-          <span fg={C.blue} bold>
-            {"MODELS"}
-          </span>
-        </text>
-        {/* Profile rows */}
-        {allEntries.slice(0, Math.max(0, listH - 3)).map((entry, idx) => {
-          const isActive = entry.name === activeProfileName;
-          const selected = idx === profileIndex;
-          const namePad = entry.name.padEnd(16).substring(0, 16);
-          const scopePad = entry.scope.padEnd(8).substring(0, 8);
-          const shadowed = entry.scope === "global" && localProfileNames.has(entry.name);
-
-          const modelSummary =
-            [
-              entry.models.opus ? `opus→${entry.models.opus.substring(0, 14)}` : null,
-              entry.models.sonnet ? `sonnet→${entry.models.sonnet.substring(0, 14)}` : null,
-            ]
-              .filter(Boolean)
-              .join("  ") || "(auto-route)";
-
-          return (
-            <box
-              key={`${entry.scope}-${entry.name}`}
-              height={1}
-              flexDirection="row"
-              backgroundColor={selected ? C.bgHighlight : C.bg}
-            >
-              <text>
-                <span fg={isActive ? C.orange : C.dim}>{isActive ? "●" : " "}</span>
-                <span fg={C.dim}> </span>
-                <span
-                  fg={selected ? C.white : isActive ? C.orange : C.fgMuted}
-                  bold={selected || isActive}
-                >
-                  {namePad}
-                </span>
-                <span fg={C.dim}>{"  "}</span>
-                <span fg={entry.scope === "local" ? C.cyan : C.fgMuted}>{scopePad}</span>
-                <span fg={C.dim}>{"  "}</span>
-                <span fg={selected ? C.white : shadowed ? C.dim : C.fgMuted}>
-                  {shadowed ? "(shadowed by local)  " : modelSummary}
-                </span>
-              </text>
-            </box>
-          );
-        })}
-
-        {/* Local profiles note */}
-        {!localCfg && (
-          <text>
-            <span fg={C.dim}>{"  No project-level profiles (.claudish.json)"}</span>
-          </text>
-        )}
-
-        {/* Edit mode input */}
-        {isProfileEditMode && editPromptLabel && (
-          <box flexDirection="column" paddingTop={1}>
-            <text>
-              <span fg={C.blue} bold>
-                {editPromptLabel + " "}
-              </span>
-            </text>
-
-            {/* Scope picker */}
-            {mode === "pick_profile_scope" && (
-              <box flexDirection="column">
-                <box height={1} flexDirection="row">
-                  <box width={16} height={1} backgroundColor={C.bgHighlight} paddingX={1}>
-                    <text>
-                      <span fg={C.green} bold>
-                        g
-                      </span>
-                      <span fg={C.white}> global</span>
-                    </text>
-                  </box>
-                  <box width={2} />
-                  <box width={16} height={1} paddingX={1}>
-                    <text>
-                      <span fg={C.cyan} bold>
-                        p
-                      </span>
-                      <span fg={C.fgMuted}> project (.claudish.json)</span>
-                    </text>
-                  </box>
-                </box>
-                <text>
-                  <span fg={C.green} bold>
-                    g{" "}
-                  </span>
-                  <span fg={C.fgMuted}>global · </span>
-                  <span fg={C.cyan} bold>
-                    p{" "}
-                  </span>
-                  <span fg={C.fgMuted}>project · </span>
-                  <span fg={C.red} bold>
-                    Esc{" "}
-                  </span>
-                  <span fg={C.fgMuted}>cancel</span>
-                </text>
-              </box>
-            )}
-
-            {/* Provider prefix picker */}
-            {mode === "pick_provider_prefix" && (
-              <box flexDirection="column">
-                {PROVIDER_PREFIXES.slice(0, 8).map((p, idx) => (
-                  <box
-                    key={p.name}
-                    height={1}
-                    backgroundColor={idx === providerPickerIndex ? C.bgHighlight : C.bg}
-                  >
-                    <text>
-                      <span fg={idx === providerPickerIndex ? C.white : C.dim}> </span>
-                      <span
-                        fg={idx === providerPickerIndex ? C.cyan : C.fgMuted}
-                        bold={idx === providerPickerIndex}
-                      >
-                        {p.prefix.padEnd(14).substring(0, 14)}
-                      </span>
-                      <span fg={C.dim}>{"  "}</span>
-                      <span fg={idx === providerPickerIndex ? C.fgMuted : C.dim}>
-                        {p.displayName}
-                      </span>
-                    </text>
-                  </box>
-                ))}
-                <text>
-                  <span fg={C.blue} bold>
-                    ↑↓{" "}
-                  </span>
-                  <span fg={C.fgMuted}>navigate · </span>
-                  <span fg={C.green} bold>
-                    Enter{" "}
-                  </span>
-                  <span fg={C.fgMuted}>select prefix · </span>
-                  <span fg={C.red} bold>
-                    Esc{" "}
-                  </span>
-                  <span fg={C.fgMuted}>back</span>
-                </text>
-              </box>
-            )}
-
-            {/* Normal text input (not scope/provider picker) */}
-            {mode !== "pick_profile_scope" && mode !== "pick_provider_prefix" && (
-              <box flexDirection="column">
-                <text>
-                  <span fg={C.green} bold>
-                    {"> "}
-                  </span>
-                  <span fg={editProfileValue === "auto" ? C.yellow : C.white}>
-                    {editProfileValue}
-                  </span>
-                  <span fg={C.cyan}>{"█"}</span>
-                </text>
-
-                {/* Suggestion list */}
-                {suggestions.length > 0 && (
-                  <box flexDirection="column">
-                    {suggestions.map((s, idx) => {
-                      const selected = idx === suggestionIndex;
-                      // Highlight matching portion
-                      const lower = editProfileValue.toLowerCase();
-                      const matchIdx = lower ? s.toLowerCase().indexOf(lower) : -1;
-                      return (
-                        <box key={s} height={1} backgroundColor={selected ? C.bgHighlight : C.bg}>
-                          <text>
-                            <span fg={selected ? C.dim : C.dim}>{"  "}</span>
-                            {matchIdx >= 0 && lower ? (
-                              <>
-                                <span fg={selected ? C.fgMuted : C.dim}>
-                                  {s.substring(0, matchIdx)}
-                                </span>
-                                <span fg={selected ? C.white : C.cyan} bold>
-                                  {s.substring(matchIdx, matchIdx + lower.length)}
-                                </span>
-                                <span fg={selected ? C.fgMuted : C.dim}>
-                                  {s.substring(matchIdx + lower.length)}
-                                </span>
-                              </>
-                            ) : (
-                              <span fg={selected ? C.white : C.fgMuted}>{s}</span>
-                            )}
-                          </text>
-                        </box>
-                      );
-                    })}
-                  </box>
-                )}
-
-                {editProfileValue === "auto" ? (
-                  <text>
-                    <span fg={C.yellow} bold>
-                      auto-route{" "}
-                    </span>
-                    <span fg={C.fgMuted}>— claudish will use the routing table · </span>
-                    <span fg={C.green} bold>
-                      Enter{" "}
-                    </span>
-                    <span fg={C.fgMuted}>to confirm · </span>
-                    <span fg={C.red} bold>
-                      Esc{" "}
-                    </span>
-                    <span fg={C.fgMuted}>cancel</span>
-                  </text>
-                ) : (
-                  <text>
-                    <span fg={C.green} bold>
-                      Enter{" "}
-                    </span>
-                    <span fg={C.fgMuted}>save · </span>
-                    <span fg={C.blue} bold>
-                      Tab{" "}
-                    </span>
-                    <span fg={C.fgMuted}>
-                      {editProfileValue === "" ? "pick provider · " : "autocomplete · "}
-                    </span>
-                    <span fg={C.blue} bold>
-                      ↑↓{" "}
-                    </span>
-                    <span fg={C.fgMuted}>suggestion · </span>
-                    <span fg={C.yellow} bold>
-                      a{" "}
-                    </span>
-                    <span fg={C.fgMuted}>auto-route · </span>
-                    <span fg={C.red} bold>
-                      Esc{" "}
-                    </span>
-                    <span fg={C.fgMuted}>cancel</span>
-                  </text>
-                )}
-              </box>
-            )}
-          </box>
-        )}
-      </box>
-    );
-  }
-
-  function ProfileDetail() {
-    const globalCfg = config;
-    const localCfg = loadLocalConfig();
-    const localProfileNames = localCfg
-      ? new Set(Object.keys(localCfg.profiles))
-      : new Set<string>();
-
-    // Resolve selected profile entry
-    const allEntries: Array<{
-      name: string;
-      scope: "local" | "global";
-      models: Record<string, string | undefined>;
-    }> = [];
-    if (localCfg) {
-      for (const [name, prof] of Object.entries(localCfg.profiles)) {
-        allEntries.push({ name, scope: "local", models: prof.models });
-      }
-    }
-    for (const [name, prof] of Object.entries(globalCfg.profiles)) {
-      allEntries.push({ name, scope: "global", models: prof.models });
-    }
-
-    const entry = allEntries[profileIndex];
-    const isActive = entry ? entry.name === globalCfg.defaultProfile : false;
-    const shadowed = entry ? entry.scope === "global" && localProfileNames.has(entry.name) : false;
-
-    return (
-      <box
-        height={DETAIL_H}
-        border
-        borderStyle="single"
-        borderColor={C.dim}
-        title={entry ? ` ${entry.name} ` : " (no selection) "}
-        backgroundColor={C.bgAlt}
-        flexDirection="column"
-        paddingX={1}
-      >
-        {entry ? (
-          <>
-            {(["opus", "sonnet", "haiku", "subagent"] as const).map((role) => {
-              const val = entry.models[role];
-              const isAuto = !val;
-              const label = role.padEnd(8);
-              return (
-                <text key={role}>
-                  <span fg={C.blue} bold>
-                    {label + ": "}
-                  </span>
-                  {isAuto ? (
-                    <>
-                      <span fg={C.yellow}>(auto-route</span>
-                      <span fg={C.dim}> — uses routing table</span>
-                      <span fg={C.yellow}>)</span>
-                    </>
-                  ) : (
-                    <span fg={C.cyan}>{val}</span>
-                  )}
-                </text>
-              );
-            })}
-            <text>
-              <span fg={C.blue} bold>
-                {"Scope:    "}
-              </span>
-              <span fg={entry.scope === "local" ? C.cyan : C.fgMuted}>
-                {entry.scope === "local"
-                  ? `local (.claudish.json)`
-                  : `global (~/.claudish/config.json)`}
-              </span>
-              {isActive && (
-                <span fg={C.orange} bold>
-                  {"  ● active"}
-                </span>
-              )}
-              {shadowed && <span fg={C.dim}>{"  (shadowed)"}</span>}
-            </text>
-          </>
-        ) : (
-          <text>
-            <span fg={C.fgMuted}>{"No profiles configured."}</span>
-          </text>
-        )}
-      </box>
-    );
-  }
-
-  // ── Routing tab ───────────────────────────────────────────────────────────
-
-  // Format a chain as inline text: "kimi → openrouter"
-  function chainStr(chain: string[]): string {
-    return chain.join(" → ");
-  }
-
-  // Reasons shown beneath each probe entry
-  const PROVIDER_REASONS: Record<string, string> = {
-    litellm: "LiteLLM proxy",
-    "opencode-zen": "Free tier (OpenCode Zen)",
-    "opencode-zen-go": "Zen Go plan",
-    kimi: "Native Kimi API",
-    "kimi-coding": "Kimi Coding Plan",
-    minimax: "Native MiniMax API",
-    "minimax-coding": "MiniMax Coding Plan",
-    glm: "Native GLM API",
-    "glm-coding": "GLM Coding Plan",
-    google: "Direct Gemini API",
-    openai: "Direct OpenAI API",
-    "openai-codex": "OpenAI Codex (Responses API)",
-    zai: "Z.AI API",
-    ollamacloud: "Cloud Ollama",
-    vertex: "Vertex AI Express",
-    openrouter: "Fallback: 580+ models",
-  };
-
-  function RoutingContent() {
-    // Full-screen probe takes over when not idle
-    const probeBoxH = contentH + DETAIL_H + 1; // spans content + detail area
-
-    if (probeMode === "input") {
-      return (
-        <box
-          height={probeBoxH}
-          border
-          borderStyle="single"
-          borderColor={C.focusBorder}
-          backgroundColor={C.bg}
-          flexDirection="column"
-          paddingX={2}
-          paddingY={1}
-        >
-          <text>
-            <span fg={C.white} bold>
-              {"Route Probe"}
-            </span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.fgMuted}>{"Enter a model name to trace its routing chain:"}</span>
-          </text>
-          <box flexDirection="row" height={1}>
-            <text>
-              <span fg={C.green} bold>
-                {"> "}
-              </span>
-              <span fg={C.white}>{probeModel}</span>
-              <span fg={C.cyan}>{"█"}</span>
-            </text>
-          </box>
-          <text> </text>
-          <text>
-            <span fg={C.dim}>{"Examples: kimi-k2  deepseek-r1  gemini-2.0-flash  gpt-4o"}</span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.fgMuted}>
-              {"The probe resolves the fallback chain and tests each provider's"}
-            </span>
-          </text>
-          <text>
-            <span fg={C.fgMuted}>{"API key in order, stopping at the first success."}</span>
-          </text>
-        </box>
-      );
-    }
-
-    if (probeMode === "running" || probeMode === "done") {
-      const successEntry = probeResults.find((e) => e.status === "success");
-      const allFailed = probeMode === "done" && !successEntry;
-      const totalMs = successEntry?.ms;
-
-      const statusBadge =
-        probeMode === "running"
-          ? { text: "probing...", color: C.yellow }
-          : successEntry
-            ? { text: "routed", color: C.green }
-            : { text: "no route", color: C.red };
-
-      return (
-        <box
-          height={probeBoxH}
-          border
-          borderStyle="single"
-          borderColor={probeMode === "running" ? C.focusBorder : C.blue}
-          backgroundColor={C.bg}
-          flexDirection="column"
-          paddingX={2}
-          paddingY={1}
-        >
-          {/* Title row */}
-          <box flexDirection="row" height={1}>
-            <text>
-              <span fg={C.white} bold>
-                {probeMode === "done" ? "Probe: " : "Probing: "}
-              </span>
-              <span fg={C.cyan} bold>
-                {probeModel}
-              </span>
-              <span fg={C.dim}>{"  "}</span>
-              {probeMode === "done" && (
-                <span fg={statusBadge.color} bold>
-                  {successEntry ? "● " : "✗ "}
-                  {statusBadge.text}
-                </span>
-              )}
-              {probeMode === "running" && <span fg={C.yellow}>{"◌ probing..."}</span>}
-            </text>
-          </box>
-          <text> </text>
-          {/* Route source */}
-          <text>
-            <span fg={C.fgMuted}>
-              {probeResults[0]?.reason ?? `Chain (${probeResults.length} providers):`}
-            </span>
-          </text>
-          <text> </text>
-          {/* Chain entries — 2 lines each */}
-          {probeResults.map((entry, idx) => {
-            const isNoKey = entry.status === "no_key";
-            const isNotReached = entry.status === "skipped";
-            const isSelected = entry.status === "success" && probeMode === "done";
-
-            const statusIcon =
-              entry.status === "success"
-                ? "●"
-                : entry.status === "failed"
-                  ? "✗"
-                  : entry.status === "testing"
-                    ? "◌"
-                    : isNoKey
-                      ? "○"
-                      : isNotReached
-                        ? "·"
-                        : "○";
-
-            const statusColor =
-              entry.status === "success"
-                ? C.green
-                : entry.status === "failed"
-                  ? C.red
-                  : entry.status === "testing"
-                    ? C.yellow
-                    : C.dim;
-
-            const nameCol = entry.displayName.padEnd(18).substring(0, 18);
-
-            const statusText =
-              entry.status === "success"
-                ? entry.ms !== undefined
-                  ? `${entry.ms}ms`
-                  : "success"
-                : entry.status === "failed"
-                  ? (entry.error ?? "failed")
-                  : entry.status === "testing"
-                    ? "testing..."
-                    : isNoKey
-                      ? "not configured, skipping"
-                      : isNotReached
-                        ? "not reached"
-                        : "waiting";
-
-            const reason = PROVIDER_REASONS[entry.provider] ?? entry.provider;
-
-            return (
-              <box key={entry.provider} flexDirection="column">
-                <text>
-                  <span fg={C.dim}>{`${idx + 1}. `}</span>
-                  <span
-                    fg={isNoKey ? C.dim : isSelected ? C.white : isNotReached ? C.dim : C.fgMuted}
-                    bold={isSelected}
-                  >
-                    {nameCol}
-                  </span>
-                  <span fg={C.dim}>{"  "}</span>
-                  <span fg={statusColor} bold={entry.status === "success"}>
-                    {statusIcon} {statusText}
-                  </span>
-                  {isSelected && (
-                    <span fg={C.green} bold>
-                      {" ← routed here"}
-                    </span>
-                  )}
-                </text>
-                <text>
-                  <span fg={C.dim}>{"    ↳ "}</span>
-                  <span fg={isNoKey ? C.dim : C.fgMuted}>{reason}</span>
-                </text>
-              </box>
-            );
-          })}
-          {/* Result line */}
-          {probeMode === "done" && (
-            <>
-              <text> </text>
-              <text>
-                {allFailed ? (
-                  <>
-                    <span fg={C.red} bold>
-                      {"Result: "}
-                    </span>
-                    <span fg={C.red}>{"✗ No provider could serve this model"}</span>
-                  </>
-                ) : (
-                  <>
-                    <span fg={C.green} bold>
-                      {"Result: "}
-                    </span>
-                    <span fg={C.fgMuted}>{"Routed to "}</span>
-                    <span fg={C.cyan} bold>
-                      {successEntry!.displayName}
-                    </span>
-                    {totalMs !== undefined && <span fg={C.fgMuted}>{` in ${totalMs}ms`}</span>}
-                  </>
-                )}
-              </text>
-            </>
-          )}
-        </box>
-      );
-    }
-
-    const innerH = contentH - 2;
-
-    return (
-      <box
-        height={contentH}
-        border
-        borderStyle="single"
-        borderColor={C.blue}
-        backgroundColor={C.bg}
-        flexDirection="column"
-        paddingX={1}
-      >
-        {/* Catch-all default — the only "global" default that actually exists.
-            Per-pattern defaults (gpt-* → codex/openai/openrouter, etc.) are
-            visible in the rule table below alongside any user overrides. */}
-        <text>
-          <span fg={C.blue} bold>
-            {" Catch-all default:"}
-          </span>
-          <span fg={C.fgMuted}>{"  (used for any model not matched by a rule)"}</span>
-        </text>
-        <text>
-          <span fg={C.dim}>{"  * "}</span>
-          <span fg={C.dim}>{"→ "}</span>
-          <span fg={C.cyan}>
-            {config.defaultProvider && config.defaultProvider.length > 0
-              ? config.defaultProvider
-              : (DEFAULT_ROUTING_RULES["*"]?.[0] ?? "openrouter")}
-          </span>
-          {config.defaultProvider && config.defaultProvider.length > 0 ? (
-            <span fg={C.fgMuted}>
-              {`  (defaultProvider — overrides built-in '${DEFAULT_ROUTING_RULES["*"]?.[0] ?? "openrouter"}')`}
-            </span>
-          ) : (
-            <span fg={C.fgMuted}>{"  (built-in)"}</span>
-          )}
-        </text>
-        <text>
-          <span fg={C.dim}>{" ─".repeat(Math.max(1, Math.floor((width - 6) / 2)))}</span>
-        </text>
-        {/* Custom rules header */}
-        <text>
-          <span fg={C.blue} bold>
-            {" Custom rules:"}
-          </span>
-          <span fg={C.fgMuted}>{"  (override default for matching models)"}</span>
-        </text>
-        {/* Custom rules or empty state */}
-        {ruleEntries.length === 0 && !isRoutingInput && (
-          <text>
-            <span fg={C.fgMuted}>{" None configured. Press "}</span>
-            <span fg={C.green} bold>
-              a
-            </span>
-            <span fg={C.fgMuted}>{" to add."}</span>
-          </text>
-        )}
-        {ruleEntries.length > 0 && (
-          <>
-            <text>
-              <span fg={C.blue} bold>
-                {"PATTERN         "}
-              </span>
-              <span fg={C.blue} bold>
-                {"CHAIN"}
-              </span>
-            </text>
-            {ruleEntries.slice(0, Math.max(0, innerH - 3)).map(([pat, chain], idx) => {
-              const sel = idx === providerIndex;
-              return (
-                <box
-                  key={pat}
-                  height={1}
-                  flexDirection="row"
-                  backgroundColor={sel ? C.bgHighlight : C.bg}
-                >
-                  <text>
-                    <span fg={sel ? C.white : C.fgMuted} bold={sel}>
-                      {pat.padEnd(16).substring(0, 16)}
-                    </span>
-                    <span fg={C.dim}>{"  "}</span>
-                    <span fg={sel ? C.cyan : C.fgMuted}>{chainStr(chain)}</span>
-                  </text>
-                </box>
-              );
-            })}
-          </>
-        )}
-
-        {/* Input fields */}
-        {mode === "add_routing_pattern" && (
-          <box flexDirection="column">
-            <text>
-              <span fg={C.blue} bold>
-                {"Pattern "}
-              </span>
-              <span fg={C.dim}>{"(e.g. kimi-*, gpt-4o):"}</span>
-            </text>
-            <text>
-              <span fg={C.green} bold>
-                {"> "}
-              </span>
-              <span fg={C.white}>{routingPattern}</span>
-              <span fg={C.cyan}>{"█"}</span>
-            </text>
-            <text>
-              <span fg={C.green} bold>
-                Enter{" "}
-              </span>
-              <span fg={C.fgMuted}>to continue · </span>
-              <span fg={C.red} bold>
-                Esc{" "}
-              </span>
-              <span fg={C.fgMuted}>to cancel</span>
-            </text>
-          </box>
-        )}
-        {mode === "add_routing_chain" && (
-          <box flexDirection="column">
-            <text>
-              <span fg={C.blue} bold>
-                {"Select providers for "}
-              </span>
-              <span fg={C.white} bold>
-                {routingPattern}
-              </span>
-              <span fg={C.dim}>{" (Space=toggle, 1-9=set position, Enter=save)"}</span>
-            </text>
-            {chainOrder.length > 0 && (
-              <text>
-                <span fg={C.fgMuted}>{"  Chain: "}</span>
-                <span fg={C.cyan}>{chainOrder.join(" → ")}</span>
-              </text>
-            )}
-            {CHAIN_PROVIDERS.map((prov, idx) => {
-              const isCursor = idx === chainCursor;
-              const isOn = chainSelected.has(prov.name);
-              const pos = isOn ? chainOrder.indexOf(prov.name) + 1 : 0;
-              const hasKey = !!(
-                config.apiKeys?.[prov.apiKeyEnvVar] || process.env[prov.apiKeyEnvVar]
-              );
-              const label = prov.displayName.padEnd(18).substring(0, 18);
-              return (
-                <box key={prov.name} height={1} backgroundColor={isCursor ? C.bgHighlight : C.bg}>
-                  <text>
-                    {isOn ? (
-                      <span fg={C.green} bold>{` [${pos}] `}</span>
-                    ) : (
-                      <span fg={C.dim}>{" [ ] "}</span>
-                    )}
-                    <span fg={isCursor ? C.white : hasKey ? C.fgMuted : C.dim} bold={isCursor}>
-                      {label}
-                    </span>
-                    {hasKey ? (
-                      <span fg={C.green}>{" ●"}</span>
-                    ) : (
-                      <span fg={C.dim}>{" ○ no key"}</span>
-                    )}
-                  </text>
-                </box>
-              );
-            })}
-          </box>
-        )}
-      </box>
-    );
-  }
-
-  function RoutingDetail() {
-    // Probe is full-screen — no separate detail panel shown
-    if (probeMode !== "idle") {
-      return null;
-    }
-
-    return (
-      <box
-        height={DETAIL_H}
-        border
-        borderStyle="single"
-        borderColor={C.dim}
-        title=" Examples "
-        backgroundColor={C.bgAlt}
-        flexDirection="column"
-        paddingX={1}
-      >
-        <text>
-          <span fg={C.fgMuted}>{"  kimi-*      "}</span>
-          <span fg={C.dim}>{" → "}</span>
-          <span fg={C.cyan}>{"kimi, openrouter"}</span>
-        </text>
-        <text>
-          <span fg={C.fgMuted}>{"  gpt-*       "}</span>
-          <span fg={C.dim}>{" → "}</span>
-          <span fg={C.cyan}>{"oai, litellm"}</span>
-        </text>
-        <text>
-          <span fg={C.fgMuted}>{"  gemini-*    "}</span>
-          <span fg={C.dim}>{" → "}</span>
-          <span fg={C.cyan}>{"google, zen, openrouter"}</span>
-        </text>
-        <text>
-          <span fg={C.fgMuted}>{"  deepseek-*  "}</span>
-          <span fg={C.dim}>{" → "}</span>
-          <span fg={C.cyan}>{"zen, openrouter"}</span>
-        </text>
-        <text>
-          <span fg={C.dim}>{"  Glob pattern (* = any). Chain tried left to right. "}</span>
-          <span fg={C.cyan} bold>
-            {ruleEntries.length}
-          </span>
-          <span fg={C.fgMuted}>
-            {" custom rule"}
-            {ruleEntries.length !== 1 ? "s" : ""}
-          </span>
-        </text>
-      </box>
-    );
-  }
-
-  // ── Privacy tab ───────────────────────────────────────────────────────────
-  function PrivacyContent() {
-    const halfW = Math.floor((width - 4) / 2);
-    const cardH = Math.max(7, contentH - 1);
-
-    return (
-      <box height={contentH} flexDirection="row" backgroundColor={C.bg} paddingX={1}>
-        {/* Telemetry card */}
-        <box
-          width={halfW}
-          height={cardH}
-          border
-          borderStyle="single"
-          borderColor={activeTab === "privacy" ? C.blue : C.dim}
-          title=" Telemetry "
-          backgroundColor={C.bg}
-          flexDirection="column"
-          paddingX={1}
-        >
-          <text>
-            <span fg={C.blue} bold>
-              Status:{" "}
-            </span>
-            {telemetryEnabled ? (
-              <span fg={C.green} bold>
-                ● Enabled
-              </span>
-            ) : (
-              <span fg={C.fgMuted}>○ Disabled</span>
-            )}
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.fgMuted}>Collects anonymized platform info and</span>
-          </text>
-          <text>
-            <span fg={C.fgMuted}>sanitized error types to improve claudish.</span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.white} bold>
-              Never sends keys, prompts, or paths.
-            </span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.dim}>Press [</span>
-            <span fg={C.green} bold>
-              t
-            </span>
-            <span fg={C.dim}>] to toggle.</span>
-          </text>
-        </box>
-
-        {/* Usage stats card */}
-        <box
-          width={width - 4 - halfW}
-          height={cardH}
-          border
-          borderStyle="single"
-          borderColor={activeTab === "privacy" ? C.blue : C.dim}
-          title=" Usage Stats "
-          backgroundColor={C.bg}
-          flexDirection="column"
-          paddingX={1}
-        >
-          <text>
-            <span fg={C.blue} bold>
-              Status:{" "}
-            </span>
-            {statsEnabled ? (
-              <span fg={C.green} bold>
-                ● Enabled
-              </span>
-            ) : (
-              <span fg={C.fgMuted}>○ Disabled</span>
-            )}
-          </text>
-          <text>
-            <span fg={C.blue} bold>
-              Buffer:{" "}
-            </span>
-            <span fg={C.white} bold>
-              {bufStats.events}
-            </span>
-            <span fg={C.fgMuted}> events (</span>
-            <span fg={C.yellow}>{bytesHuman(bufStats.bytes)}</span>
-            <span fg={C.fgMuted}>)</span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.fgMuted}>Collects local, anonymous stats on model</span>
-          </text>
-          <text>
-            <span fg={C.fgMuted}>usage, latency, and token counts.</span>
-          </text>
-          <text> </text>
-          <text>
-            <span fg={C.dim}>Press [</span>
-            <span fg={C.green} bold>
-              u
-            </span>
-            <span fg={C.dim}>] to toggle, [</span>
-            <span fg={C.red} bold>
-              c
-            </span>
-            <span fg={C.dim}>] to clear buffer.</span>
-          </text>
-        </box>
-      </box>
-    );
-  }
-
-  function PrivacyDetail() {
-    return (
-      <box
-        height={DETAIL_H}
-        border
-        borderStyle="single"
-        borderColor={C.dim}
-        title=" Your Privacy "
-        backgroundColor={C.bgAlt}
-        flexDirection="column"
-        paddingX={1}
-      >
-        <text>
-          <span fg={C.fgMuted}>
-            Telemetry and usage stats are always opt-in and never send personally identifiable data.
-          </span>
-        </text>
-        <text>
-          <span fg={C.fgMuted}>
-            All data is anonymized before transmission. You can disable either independently.
-          </span>
-        </text>
-      </box>
-    );
-  }
-
-  // ── Footer hotkeys ────────────────────────────────────────────────────────
-  function Footer() {
-    let keys: Array<[string, string, string]>;
-    if (activeTab === "routing" && probeMode === "input") {
-      keys = [
-        [C.green, "Enter", "probe"],
-        [C.red, "Esc", "cancel"],
-      ];
-    } else if (activeTab === "routing" && probeMode === "running") {
-      keys = [
-        [C.yellow, "◌", "probing..."],
-        [C.red, "Esc", "cancel"],
-      ];
-    } else if (activeTab === "routing" && probeMode === "done") {
-      keys = [
-        [C.cyan, "p", "back to routes"],
-        [C.green, "Enter", "probe another"],
-        [C.red, "Esc", "back to routes"],
-        [C.dim, "q", "quit"],
-      ];
-    } else if (activeTab === "providers") {
-      keys = [
-        [C.blue, "↑↓", "navigate"],
-        [C.green, "s", "set key"],
-        [C.green, "e", "endpoint"],
-        [C.cyan, "t", "test key"],
-        [C.red, "x", "remove"],
-        [C.blue, "Tab", "section"],
-        [C.dim, "q", "quit"],
-      ];
-    } else if (activeTab === "profiles" && mode === "pick_profile_scope") {
-      keys = [
-        [C.green, "g", "global"],
-        [C.cyan, "p", "project"],
-        [C.red, "Esc", "cancel"],
-      ];
-    } else if (activeTab === "profiles" && mode === "pick_provider_prefix") {
-      keys = [
-        [C.blue, "↑↓", "navigate"],
-        [C.green, "Enter", "select prefix"],
-        [C.red, "Esc", "back"],
-      ];
-    } else if (activeTab === "profiles" && isProfileEditMode) {
-      keys = [
-        [C.green, "Enter", "save field"],
-        [C.blue, "Tab", "provider picker"],
-        [C.blue, "↑↓", "suggestion"],
-        [C.yellow, "a", "auto-route"],
-        [C.red, "Esc", "cancel"],
-      ];
-    } else if (activeTab === "profiles") {
-      keys = [
-        [C.blue, "↑↓", "navigate"],
-        [C.green, "Enter", "activate"],
-        [C.cyan, "n", "new"],
-        [C.green, "e", "edit"],
-        [C.red, "d", "delete"],
-        [C.blue, "Tab", "section"],
-        [C.dim, "q", "quit"],
-      ];
-    } else if (activeTab === "routing") {
-      keys = [
-        [C.blue, "↑↓", "navigate"],
-        [C.green, "a", "add rule"],
-        [C.red, "d", "delete"],
-        [C.cyan, "p", "probe"],
-        [C.blue, "Tab", "section"],
-        [C.dim, "q", "quit"],
-      ];
-    } else {
-      keys = [
-        [C.green, "t", "telemetry"],
-        [C.green, "u", "stats"],
-        [C.red, "c", "clear"],
-        [C.blue, "Tab", "section"],
-        [C.dim, "q", "quit"],
-      ];
-    }
-
-    return (
-      <box height={FOOTER_H} flexDirection="row" paddingX={1} backgroundColor={C.bgAlt}>
-        <text>
-          {keys.map(([color, key, label], i) => (
-            <span key={i}>
-              {i > 0 && <span fg={C.dim}>{" │ "}</span>}
-              <span fg={color as string} bold>
-                {key}
-              </span>
-              <span fg={C.fgMuted}> {label}</span>
-            </span>
-          ))}
-        </text>
-      </box>
-    );
-  }
 
   // ── Main render ───────────────────────────────────────────────────────────
   return (
@@ -2290,19 +1103,19 @@ export function App() {
       {/* Header */}
       <box height={HEADER_H} flexDirection="row" backgroundColor={C.bgAlt} paddingX={1}>
         <text>
-          <span fg={C.white} bold>
+          <span fg={C.white} attributes={A.bold}>
             claudish
           </span>
           <span fg={C.dim}> ─ </span>
-          <span fg={C.blue} bold>
+          <span fg={C.blue} attributes={A.bold}>
             {VERSION}
           </span>
           <span fg={C.dim}> ─ </span>
-          <span fg={C.orange} bold>
+          <span fg={C.orange} attributes={A.bold}>
             ★ {profileName}
           </span>
           <span fg={C.dim}> ─ </span>
-          <span fg={C.green} bold>
+          <span fg={C.green} attributes={A.bold}>
             {readyCount}
           </span>
           <span fg={C.fgMuted}> providers configured</span>
@@ -2313,36 +1126,117 @@ export function App() {
       </box>
 
       {/* Tab bar */}
-      <TabBar />
+      <TabBar activeTab={activeTab} statusMsg={statusMsg} width={width} />
 
       {/* Content + detail */}
       {activeTab === "providers" && (
         <>
-          <ProvidersContent />
-          <ProviderDetail />
+          <ProvidersContent
+            config={config}
+            displayProviders={displayProviders}
+            providerIndex={providerIndex}
+            testResults={testResults}
+            width={width}
+            contentH={contentH}
+            isInputMode={isInputMode}
+            animTick={animTick}
+          />
+          <ProviderDetail
+            selectedProvider={selectedProvider}
+            mode={mode}
+            inputValue={inputValue}
+            setInputValue={setInputValue}
+            width={width}
+            hasCfgKey={hasCfgKey}
+            hasEnvKey={hasEnvKey}
+            hasKey={hasKey}
+            cfgKeyMask={cfgKeyMask}
+            envKeyMask={envKeyMask}
+            activeEndpoint={activeEndpoint}
+            testResults={testResults}
+            isInputMode={isInputMode}
+          />
         </>
       )}
       {activeTab === "profiles" && (
         <>
-          <ProfilesContent />
-          <ProfileDetail />
+          <ProfilesContent
+            config={config}
+            activeTab={activeTab}
+            mode={mode}
+            profileScope={profileScope}
+            profileIndex={profileIndex}
+            editProfileName={editProfileName}
+            editProfileValue={editProfileValue}
+            suggestions={suggestions}
+            suggestionIndex={suggestionIndex}
+            providerPickerIndex={providerPickerIndex}
+            width={width}
+            contentH={contentH}
+          />
+          <ProfileDetail config={config} profileIndex={profileIndex} />
         </>
       )}
       {activeTab === "routing" && (
         <>
-          <RoutingContent />
-          <RoutingDetail />
+          <RoutingContent
+            config={config}
+            probeMode={probeMode}
+            probeModel={probeModel}
+            probeResults={probeResults}
+            mode={mode}
+            routingPattern={routingPattern}
+            chainSelected={chainSelected}
+            chainOrder={chainOrder}
+            chainCursor={chainCursor}
+            // NOTE: `providerIndex` is shared with the Providers tab here. See
+            // "Known wart" in ai-docs/app-tsx-split/walkthrough.md — switching
+            // tabs preserves the cursor across two unrelated lists.
+            providerIndex={providerIndex}
+            mergedRules={mergedRules}
+            width={width}
+            contentH={contentH}
+            isRoutingInput={isRoutingInput}
+            editingExistingScope={editingExistingScope}
+            routingScopeCursor={routingScopeCursor}
+          />
+          <RoutingDetail probeMode={probeMode} mergedRules={mergedRules} />
         </>
       )}
       {activeTab === "privacy" && (
         <>
-          <PrivacyContent />
+          <PrivacyContent
+            activeTab={activeTab}
+            telemetryEnabled={telemetryEnabled}
+            statsEnabled={statsEnabled}
+            bufStats={bufStats}
+            width={width}
+            contentH={contentH}
+          />
           <PrivacyDetail />
         </>
       )}
 
       {/* Footer */}
-      <Footer />
+      <Footer
+        activeTab={activeTab}
+        mode={mode}
+        probeMode={probeMode}
+        // Per-row capabilities so the Providers tab footer hides chips
+        // (s set key / l login / e endpoint / x remove) on rows that
+        // don't support the corresponding method.
+        providerCaps={
+          activeTab === "providers" && selectedProvider
+            ? {
+                apiKey: !!selectedProvider.apiKeyEnvVar,
+                oauth: !!selectedProvider.oauthSlug,
+                endpoint: !!selectedProvider.endpointEnvVar,
+                local: selectedProviderIsLocal,
+                localEnabled: selectedLocalEnabled,
+              }
+            : undefined
+        }
+      />
     </box>
   );
 }

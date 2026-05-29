@@ -1,4 +1,6 @@
 /** @jsxImportSource @opentui/react */
+import { createTextAttributes } from "@opentui/core";
+
 /**
  * btop-inspired color palette — true black base, vivid neon colors.
  *
@@ -9,6 +11,7 @@ export const C = {
   bg: "#000000",
   bgAlt: "#111111",
   bgHighlight: "#1e3a5f",
+  bgError: "#3a0a14", // faint red-tinted band for failed test rows
 
   fg: "#ffffff",
   fgMuted: "#a0a0a0",
@@ -33,4 +36,17 @@ export const C = {
   tabInactiveBg: "#001a33",
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#0088ff",
+
+  // Muted pill backgrounds for AUTH column tags. The standard `green` / `cyan`
+  // are neon-bright and cause eye strain when used as a solid fill. These
+  // are lower-saturation forest/teal versions, contrast-tuned for white text.
+  pillKeyBg: "#2d6e3e", // forest green; white text reads cleanly
+  pillOauthBg: "#1f6d75", // muted teal; white text reads cleanly
+} as const;
+
+const bold = createTextAttributes({ bold: true });
+
+export const A = {
+  bold,
+  boldIf: (enabled: boolean): number | undefined => (enabled ? bold : undefined),
 } as const;

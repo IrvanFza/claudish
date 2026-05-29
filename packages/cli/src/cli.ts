@@ -18,7 +18,7 @@ import {
   type ModelDoc,
 } from "./model-loader.js";
 import { compareByReleaseDateDesc } from "./model-selector.js";
-import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import {
   readFileSync,
   existsSync,
@@ -31,7 +31,12 @@ import {
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { getModelMapping, loadConfig, loadLocalConfig } from "./profile-config.js";
+import {
+  getModelMapping,
+  isLocalProviderEnabled,
+  loadConfig,
+  loadLocalConfig,
+} from "./profile-config.js";
 import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { type FallbackRoute } from "./providers/auto-route.js";
@@ -46,10 +51,13 @@ import {
 } from "./providers/api-key-provenance.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import {
-  probeLink,
   describeProbeState,
   type ProbeResult,
 } from "./providers/probe-live.js";
+import {
+  pinProbeModelSpec,
+  probeProviderRoute,
+} from "./providers/probe-runner.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
 import type {
   ProbeAppState,
@@ -1171,11 +1179,17 @@ async function probeModelRouting(
 
     const chainDetails = chain.routes.map((route) => {
       const keyInfo = API_KEY_MAP[route.provider];
+      const providerDef = getProviderByName(route.provider);
       let hasCredentials = false;
       let credentialHint: string | undefined;
       let provenance: KeyProvenance | undefined;
 
-      if (!keyInfo) {
+      if (providerDef?.isLocal) {
+        hasCredentials = isLocalProviderEnabled(route.provider);
+        if (!hasCredentials) {
+          credentialHint = "enable local provider in global config";
+        }
+      } else if (!keyInfo) {
         hasCredentials = true;
       } else if (!keyInfo.envVar) {
         hasCredentials = true;
@@ -1316,17 +1330,24 @@ async function probeModelRouting(
         let directProbeResult: ProbeResult | undefined;
         if (liveProxy && chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
-          const directHasCreds = directKeyInfo?.envVar
-            ? !!process.env[directKeyInfo.envVar] ||
-              (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-            : true;
-          directProbeResult = await probeLink(
+          const directProviderDef = getProviderByName(parsed.provider);
+          const directHasCreds = directProviderDef?.isLocal
+            ? isLocalProviderEnabled(parsed.provider)
+            : directKeyInfo?.envVar
+              ? !!process.env[directKeyInfo.envVar] ||
+                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
+              : true;
+          const directCredentialHint =
+            directProviderDef?.isLocal && !directHasCreds
+              ? "enable local provider in global config"
+              : directKeyInfo?.envVar;
+          directProbeResult = await probeProviderRoute(
             liveProxy.url,
             {
               provider: parsed.provider,
               modelSpec: modelInput,
               hasCredentials: directHasCreds,
-              credentialHint: directKeyInfo?.envVar,
+              credentialHint: directCredentialHint,
             },
             options.timeoutMs
           ).catch((e) => ({
@@ -1340,14 +1361,11 @@ async function probeModelRouting(
         if (liveProxy) {
           const probes = await Promise.all(
             chainDetails.map((link) => {
-              const pinnedSpec = link.modelSpec.includes("@")
-                ? link.modelSpec
-                : `${link.provider}@${link.modelSpec}`;
-              return probeLink(
+              return probeProviderRoute(
                 liveProxy!.url,
                 {
                   provider: link.provider,
-                  modelSpec: pinnedSpec,
+                  modelSpec: link.modelSpec,
                   hasCredentials: link.hasCredentials,
                   credentialHint: link.credentialHint,
                 },
@@ -1481,10 +1499,17 @@ async function probeModelRouting(
       for (const { modelInput, parsed, chain, chainDetails } of modelChains) {
         if (chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
-          const directHasCreds = directKeyInfo?.envVar
-            ? !!process.env[directKeyInfo.envVar] ||
-              (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-            : true;
+          const directProviderDef = getProviderByName(parsed.provider);
+          const directHasCreds = directProviderDef?.isLocal
+            ? isLocalProviderEnabled(parsed.provider)
+            : directKeyInfo?.envVar
+              ? !!process.env[directKeyInfo.envVar] ||
+                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
+              : true;
+          const directCredentialHint =
+            directProviderDef?.isLocal && !directHasCreds
+              ? "enable local provider in global config"
+              : directKeyInfo?.envVar;
           allLinks.push({
             id: `${modelInput}:direct`,
             displayName: parsed.provider,
@@ -1492,16 +1517,14 @@ async function probeModelRouting(
             provider: parsed.provider,
             pinnedSpec: modelInput,
             hasCredentials: directHasCreds,
-            credentialHint: directKeyInfo?.envVar,
+            credentialHint: directCredentialHint,
             chainDetail: null,
             isDirect: true,
             modelInput,
           });
         }
         for (const link of chainDetails) {
-          const pinnedSpec = link.modelSpec.includes("@")
-            ? link.modelSpec
-            : `${link.provider}@${link.modelSpec}`;
+          const pinnedSpec = pinProbeModelSpec(link);
           allLinks.push({
             id: `${modelInput}:${link.provider}`,
             displayName: link.displayName,
@@ -1532,11 +1555,11 @@ async function probeModelRouting(
       const probePromises = allLinks.map(async (link) => {
         updateLink(link.id, { status: "probing", startTime: Date.now() });
 
-        const result = await probeLink(
+        const result = await probeProviderRoute(
           liveProxy!.url,
           {
             provider: link.provider,
-            modelSpec: link.pinnedSpec,
+            modelSpec: link.modelSpec,
             hasCredentials: link.hasCredentials,
             credentialHint: link.credentialHint,
           },
@@ -2073,4 +2096,3 @@ function printAvailableModels(): void {
     );
   }
 }
-

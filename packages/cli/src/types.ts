@@ -142,6 +142,17 @@ export interface ProxyServer {
   port: number;
   url: string;
   shutdown: () => Promise<void>;
+  /**
+   * Drop any cached per-provider handlers so the next request rebuilds
+   * the transport with current config (URL, API key, etc.). Called by the
+   * TUI when the user saves a URL/key change so the next probe doesn't
+   * reuse a stale transport.
+   *
+   * `providerSlug` is optional — when omitted, all handler caches are
+   * cleared. The local registry (provider-registry) rebuilds its provider
+   * list from env/config on every call, so dropping handlers is sufficient.
+   */
+  invalidateHandlerCache: (providerSlug?: string) => void;
 }
 
 // Model Handler interface

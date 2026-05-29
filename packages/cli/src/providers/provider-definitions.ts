@@ -11,6 +11,7 @@
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
+import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -82,6 +83,15 @@ export interface ProviderDefinition {
   publicKeyFallback?: string;
   /** OAuth credential file under ~/.claudish/ to check as fallback */
   oauthFallback?: string;
+  /**
+   * Slug for `claudish login {slug}` if this provider supports OAuth.
+   * Multiple catalog entries can share a slug — e.g. `google` and
+   * `gemini-codeassist` both map to `"gemini"` because one OAuth flow
+   * covers the whole family.
+   * Single source of truth: keep this in sync with AUTH_PROVIDERS in
+   * src/auth/auth-commands.ts.
+   */
+  oauthLoginSlug?: "gemini" | "codex" | "kimi";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -117,6 +127,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^google\//i }, { pattern: /^gemini-/i }],
     isDirectApi: true,
     description: "Direct Gemini API (g@, google@)",
+    // No oauthLoginSlug: the bare Gemini direct API takes GEMINI_API_KEY.
+    // OAuth login (`claudish login gemini`) targets the gemini-codeassist
+    // subscription endpoint below, not this one.
   },
 
   // ── Gemini Code Assist (OAuth) ─────────────────────────────────────
@@ -129,6 +142,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Gemini Code Assist (OAuth)",
     apiKeyUrl: "https://cloud.google.com/code-assist",
+    oauthLoginSlug: "gemini",
     shortcuts: ["go"],
     shortestPrefix: "go",
     legacyPrefixes: [{ prefix: "go/", stripPrefix: true }],
@@ -176,6 +190,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "OpenAI Codex API Key (ChatGPT Plus/Pro subscription)",
     apiKeyUrl: "https://platform.openai.com/api-keys",
     oauthFallback: "codex-oauth.json",
+    oauthLoginSlug: "codex",
     shortcuts: ["cx", "codex"],
     shortestPrefix: "cx",
     legacyPrefixes: [{ prefix: "cx/", stripPrefix: true }],
@@ -281,6 +296,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Kimi Coding API Key",
     apiKeyUrl: "https://kimi.com/code (get key from membership page, or run: claudish login kimi)",
     oauthFallback: "kimi-oauth.json",
+    oauthLoginSlug: "kimi",
     shortcuts: ["kc"],
     shortestPrefix: "kc",
     legacyPrefixes: [{ prefix: "kc/", stripPrefix: true }],
@@ -322,13 +338,15 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "GLM",
     transport: "openai",
     tokenStrategy: "delta-aware",
-    baseUrl: "https://open.bigmodel.cn",
+    // api.z.ai is the international mirror — same models, same auth,
+    // dramatically better reachability from outside CN than open.bigmodel.cn.
+    baseUrl: "https://api.z.ai",
     baseUrlEnvVars: ["ZHIPU_BASE_URL", "GLM_BASE_URL"],
     apiPath: "/api/paas/v4/chat/completions",
     apiKeyEnvVar: "ZHIPU_API_KEY",
     apiKeyAliases: ["GLM_API_KEY"],
     apiKeyDescription: "GLM/Zhipu API Key",
-    apiKeyUrl: "https://open.bigmodel.cn/",
+    apiKeyUrl: "https://z.ai/",
     shortcuts: ["glm", "zhipu"],
     shortestPrefix: "glm",
     legacyPrefixes: [
@@ -434,10 +452,15 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     transport: "openai",
     tokenStrategy: "delta-aware",
     baseUrl: "https://opencode.ai/zen/go",
-    baseUrlEnvVars: ["OPENCODE_BASE_URL"],
+    baseUrlEnvVars: ["OPENCODE_GO_BASE_URL"],
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "OPENCODE_API_KEY",
-    apiKeyDescription: "OpenCode Zen Go (Lite Plan)",
+    // Zen Go is a separate paid tier from the free Zen plan — keys for one
+    // tier are not accepted by the other (401). Old single OPENCODE_API_KEY
+    // kept as an alias for backward compat, but new users should set
+    // OPENCODE_GO_API_KEY explicitly to avoid confusion.
+    apiKeyEnvVar: "OPENCODE_GO_API_KEY",
+    apiKeyAliases: ["OPENCODE_API_KEY"],
+    apiKeyDescription: "OpenCode Zen Go (Lite Plan) API Key",
     apiKeyUrl: "https://opencode.ai/",
     shortcuts: ["zengo", "zgo"],
     shortestPrefix: "zengo",
@@ -515,9 +538,13 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "Ollama",
     transport: "local",
     baseUrl: "http://localhost:11434",
+    baseUrlEnvVars: ["OLLAMA_BASE_URL", "OLLAMA_HOST"],
     apiPath: "/api/chat",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "Ollama (Local)",
+    // Optional: Ollama supports auth when exposed over the network (e.g.
+    // via reverse proxy). Empty by default; user sets OLLAMA_API_KEY if
+    // their deployment requires it.
+    apiKeyEnvVar: "OLLAMA_API_KEY",
+    apiKeyDescription: "Ollama API Key (optional — leave blank for localhost)",
     apiKeyUrl: "",
     shortcuts: ["ollama"],
     shortestPrefix: "ollama",
@@ -535,10 +562,14 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "LM Studio",
     transport: "local",
     baseUrl: "http://localhost:1234",
+    baseUrlEnvVars: ["LMSTUDIO_BASE_URL"],
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "LM Studio (Local)",
-    apiKeyUrl: "",
+    // Optional: LM Studio supports API key auth when "Reachable on local
+    // network" is enabled in its server settings. Empty by default; user
+    // sets LMSTUDIO_API_KEY if their server requires it.
+    apiKeyEnvVar: "LMSTUDIO_API_KEY",
+    apiKeyDescription: "LM Studio API Key (optional — leave blank for localhost)",
+    apiKeyUrl: "https://lmstudio.ai/docs/local-server",
     shortcuts: ["lms", "lmstudio", "mlstudio"],
     shortestPrefix: "lms",
     legacyPrefixes: [
@@ -557,9 +588,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "vLLM",
     transport: "local",
     baseUrl: "http://localhost:8000",
+    baseUrlEnvVars: ["VLLM_BASE_URL"],
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "vLLM (Local)",
+    // Optional: vLLM accepts an API key when started with --api-key.
+    apiKeyEnvVar: "VLLM_API_KEY",
+    apiKeyDescription: "vLLM API Key (optional — set if --api-key is configured)",
     apiKeyUrl: "",
     shortcuts: ["vllm"],
     shortestPrefix: "vllm",
@@ -577,9 +610,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "MLX",
     transport: "local",
     baseUrl: "http://localhost:8080",
+    baseUrlEnvVars: ["MLX_BASE_URL"],
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "MLX (Local)",
+    apiKeyEnvVar: "MLX_API_KEY",
+    apiKeyDescription: "MLX API Key (optional)",
     apiKeyUrl: "",
     shortcuts: ["mlx"],
     shortestPrefix: "mlx",
@@ -791,10 +825,25 @@ export function getDisplayName(providerName: string): string {
 }
 
 /**
- * Get the effective base URL for a provider, respecting env var overrides.
+ * Get the effective base URL for a provider.
+ *
+ * Resolution precedence (highest to lowest):
+ *   1. config.endpoints[envVar] from ~/.claudish/config.json — primary,
+ *      TUI-editable, scoped to the user's profile.
+ *   2. process.env[envVar] — fallback for CI/scripted environments.
+ *   3. def.baseUrl — static default (e.g. http://localhost:1234).
+ *
+ * Each candidate env var name in `baseUrlEnvVars` is consulted in order
+ * for both config and env steps, so an explicit `LMSTUDIO_BASE_URL` setting
+ * wins over a generic `OLLAMA_HOST`.
  */
 export function getEffectiveBaseUrl(def: ProviderDefinition): string {
   if (def.baseUrlEnvVars) {
+    // Config wins over env (matches the apiKeys precedence rule).
+    for (const envVar of def.baseUrlEnvVars) {
+      const fromConfig = getConfigEndpoint(envVar);
+      if (fromConfig) return fromConfig;
+    }
     for (const envVar of def.baseUrlEnvVars) {
       const value = process.env[envVar];
       if (value) return value;

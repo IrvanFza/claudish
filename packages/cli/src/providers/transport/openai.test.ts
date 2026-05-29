@@ -61,8 +61,8 @@ describe("OpenAIProviderTransport 429 retry (#66)", () => {
     });
 
     expect(response.status).toBe(429);
-    expect(callCount).toBe(6); // 1 initial + 5 retries
-  }, 120000);
+    expect(callCount).toBe(3); // 1 initial + 2 retries (bounded budget)
+  }, 10000);
 
   test("does not retry non-429 errors", async () => {
     const transport = new OpenAIProviderTransport(mockProvider, "minimax-m2.5-free", "test-key");
@@ -75,5 +75,44 @@ describe("OpenAIProviderTransport 429 retry (#66)", () => {
 
     expect(response.status).toBe(400);
     expect(callCount).toBe(1); // No retry
+  });
+
+  test("skips retry on terminal 429 (billing/balance)", async () => {
+    const transport = new OpenAIProviderTransport(mockProvider, "minimax-m2.5-free", "test-key");
+    let callCount = 0;
+    const startTime = Date.now();
+
+    // GLM-style insufficient-balance error
+    const body = JSON.stringify({
+      error: { code: "1113", message: "Insufficient balance or no resource package. Please recharge." },
+    });
+    const response = await transport.enqueueRequest(() => {
+      callCount++;
+      return Promise.resolve(new Response(body, { status: 429 }));
+    });
+
+    const elapsed = Date.now() - startTime;
+    expect(response.status).toBe(429);
+    expect(callCount).toBe(1); // No retry
+    expect(elapsed).toBeLessThan(500); // No backoff sleep
+  });
+});
+
+describe("isTerminal429", () => {
+  test("detects insufficient balance variants", async () => {
+    const { isTerminal429 } = await import("./openai.js");
+    expect(isTerminal429('{"error":"Insufficient balance"}')).toBe(true);
+    expect(isTerminal429('{"error":"insufficient_balance"}')).toBe(true);
+    expect(isTerminal429('{"error":"insufficient_quota"}')).toBe(true);
+    expect(isTerminal429('{"error":"You exceeded your current quota"}')).toBe(true);
+    expect(isTerminal429('{"code":"1113"}')).toBe(true);
+    expect(isTerminal429('{"code":1113}')).toBe(true);
+  });
+
+  test("retries unknown 429 bodies", async () => {
+    const { isTerminal429 } = await import("./openai.js");
+    expect(isTerminal429('{"error":"rate limit exceeded"}')).toBe(false);
+    expect(isTerminal429('{"error":"too many requests"}')).toBe(false);
+    expect(isTerminal429('')).toBe(false);
   });
 });

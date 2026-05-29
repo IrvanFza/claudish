@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { C } from "../tui/theme.js";
+import { A, C } from "../tui/theme.js";
 import { VERSION } from "../version.js";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ function Banner() {
       {ishLine !== null && (
         <>
           <text>{ishPad}</text>
-          <text><span fg={ishGreen} bold>{ishLine}</span></text>
+          <text><span fg={ishGreen} attributes={A.bold}>{ishLine}</span></text>
         </>
       )}
     </box>
@@ -307,7 +307,7 @@ function ModelGroup({
         <text>{"  "}</text>
         <box backgroundColor="#1e3a5f">
           <text>
-            <span fg="#ffffff" bold>
+            <span fg="#ffffff" attributes={A.bold}>
               {headerText}
             </span>
           </text>
