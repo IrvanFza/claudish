@@ -362,6 +362,11 @@ export function RoutingContent({
           );
         })()}
       </text>
+      {/* Dashed section divider (" ─" units). Intentionally NOT a border:
+          OpenTUI borders are solid, so a border={["top"]} box would render a
+          continuous line and lose the dashed look. The count is derived from
+          the real terminal width (minus paddingX) divided by 2 cells/unit —
+          principled arithmetic, not a magic constant. */}
       <text height={1}>
         <span fg={C.dim}>{" ─".repeat(Math.max(1, Math.floor((width - 6) / 2)))}</span>
       </text>

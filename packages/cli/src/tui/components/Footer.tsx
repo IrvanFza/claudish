@@ -78,26 +78,12 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
     keys.push([C.cyan, "T", "test all"]);
     if (showRemove) keys.push([C.red, "x", "remove"]);
     keys.push([C.dim, "q", "quit"]);
-  } else if (activeTab === "profiles" && mode === "pick_profile_scope") {
-    keys = [
-      [C.green, "g", "global"],
-      [C.cyan, "p", "project"],
-      [C.red, "Esc", "cancel"],
-    ];
-  } else if (activeTab === "profiles" && mode === "pick_provider_prefix") {
-    keys = [
-      [C.blue, "↑↓", "navigate"],
-      [C.green, "Enter", "select prefix"],
-      [C.red, "Esc", "back"],
-    ];
   } else if (activeTab === "profiles" && isProfileEditMode) {
-    keys = [
-      [C.green, "Enter", "save field"],
-      [C.blue, "Tab", "provider picker"],
-      [C.blue, "↑↓", "suggestion"],
-      [C.yellow, "a", "auto-route"],
-      [C.red, "Esc", "cancel"],
-    ];
+    // The bordered "New Profile" wizard modal owns its own inline hint line
+    // for every step (scope, name, model fields, provider picker). Showing
+    // hotkey chips down here too would be a redundant double hint, so the
+    // footer just carries a single context label while the modal is open.
+    keys = [[C.dim, "wizard", "follow the panel above"]];
   } else if (activeTab === "profiles") {
     keys = [
       [C.blue, "↑↓", "navigate"],

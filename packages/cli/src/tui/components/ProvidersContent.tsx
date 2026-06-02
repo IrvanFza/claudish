@@ -14,7 +14,6 @@ interface ProvidersContentProps {
   displayProviders: ProviderDef[];
   providerIndex: number;
   testResults: TestResultsMap;
-  width: number;
   contentH: number;
   isInputMode: boolean;
   animTick: number;
@@ -61,7 +60,6 @@ export function ProvidersContent({
   displayProviders,
   providerIndex,
   testResults,
-  width,
   contentH,
   isInputMode,
   animTick,
@@ -142,13 +140,13 @@ export function ProvidersContent({
     return (
       <box key={p.name} flexDirection="column">
         {isFirstUnready && (
-          <box height={1} paddingX={1}>
+          <box height={1} flexDirection="row" paddingX={1}>
             <text>
-              <span fg={C.dim}>
-                {"─ not configured "}
-                {"─".repeat(Math.max(0, width - 22))}
-              </span>
+              <span fg={C.dim}>{"─ not configured "}</span>
             </text>
+            {/* Trailing rule fills the rest of the row via flexbox — the
+                box's top border is the line, Yoga sizes it. No width math. */}
+            <box flexGrow={1} border={["top"]} borderStyle="single" borderColor={C.dim} />
           </box>
         )}
         {/*

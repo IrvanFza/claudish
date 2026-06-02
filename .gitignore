@@ -38,6 +38,9 @@ all-models.json
 .claude/
 .claudemem/
 
+# Local claudish profile/config state (per-user, not source)
+.claudish.json
+
 # npm lockfile (we use bun.lock)
 package-lock.json
 

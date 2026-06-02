@@ -44,8 +44,10 @@ import {
   TABS_H,
   FOOTER_H,
   DETAIL_H,
-  VERSION,
 } from "./constants.js";
+// Real package version (auto-generated at build), not the stale hardcoded
+// constant that used to live in constants.ts.
+import { VERSION as PKG_VERSION } from "../version.js";
 import type { MergedRule, Mode, RoutingScope, Tab, TestResultsMap } from "./types.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
@@ -154,7 +156,6 @@ export function App({ requestLogin }: AppProps = {}) {
   // visible sub-states.
   const wizard = useProfileWizard({ mode, setMode, refreshConfig, setStatusMsg });
   const {
-    editProfileName,
     editProfileValue,
     profileScope,
     suggestions,
@@ -234,11 +235,9 @@ export function App({ requestLogin }: AppProps = {}) {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.routing, JSON.stringify(loadLocalConfig()?.routing ?? {})]);
-  const profileName = config.defaultProfile || "default";
 
-  const readyCount = PROVIDERS.filter(
-    (p) => !!(config.apiKeys?.[p.apiKeyEnvVar] || process.env[p.apiKeyEnvVar])
-  ).length;
+  // Active routing profile, shown in the header as `profile: [name]`.
+  const profileName = config.defaultProfile || "default";
 
   /**
    * Run a single provider's connectivity test via the shared probe proxy.
@@ -643,12 +642,14 @@ export function App({ requestLogin }: AppProps = {}) {
       return;
     }
 
-    // Profile wizard: scope picker (g = global, p = project)
+    // Profile wizard: scope picker. The bordered modal's <select> owns
+    // up/down navigation (focused, fires onChange → wizard.setScopeCursor).
+    // The global handler owns only Enter (commit the highlighted row) and
+    // Esc — divide responsibilities so neither double-acts on a key. This is
+    // the same coexistence model as the Providers tab <input>.
     if (mode === "pick_profile_scope") {
-      if (key.raw === "g" || key.raw === "G") {
-        wizard.pickScope("global");
-      } else if (key.raw === "p" || key.raw === "P") {
-        wizard.pickScope("project");
+      if (key.name === "return" || key.name === "enter") {
+        wizard.pickScopeAtCursor();
       } else if (key.name === "escape") {
         wizard.cancelPickScope();
       }
@@ -669,13 +670,14 @@ export function App({ requestLogin }: AppProps = {}) {
       return;
     }
 
-    // Profile wizard: provider prefix picker (side-trip from edit fields)
+    // Profile wizard: provider prefix picker (side-trip from edit fields).
+    // The bordered modal's <select> owns up/down navigation (focused, fires
+    // onChange → wizard.setProviderPickerIndex). The global handler owns only
+    // Enter (commit highlighted prefix) and Esc (back). The manual
+    // prefixPickerUp/Down nav is dead now that the native <select> drives the
+    // cursor — see useProfileWizard.
     if (mode === "pick_provider_prefix") {
-      if (key.name === "up" || key.name === "k") {
-        wizard.prefixPickerUp();
-      } else if (key.name === "down" || key.name === "j") {
-        wizard.prefixPickerDown();
-      } else if (key.name === "return" || key.name === "enter") {
+      if (key.name === "return" || key.name === "enter") {
         wizard.prefixPickerSubmit();
       } else if (key.name === "escape") {
         wizard.prefixPickerCancel();
@@ -1101,32 +1103,33 @@ export function App({ requestLogin }: AppProps = {}) {
   return (
     <box width={width} height={height} flexDirection="column" backgroundColor={C.bg}>
       {/* Header */}
-      <box height={HEADER_H} flexDirection="row" backgroundColor={C.bgAlt} paddingX={1}>
-        <text>
-          <span fg={C.white} attributes={A.bold}>
-            claudish
-          </span>
-          <span fg={C.dim}> ─ </span>
-          <span fg={C.blue} attributes={A.bold}>
-            {VERSION}
-          </span>
-          <span fg={C.dim}> ─ </span>
-          <span fg={C.orange} attributes={A.bold}>
-            ★ {profileName}
-          </span>
-          <span fg={C.dim}> ─ </span>
-          <span fg={C.green} attributes={A.bold}>
-            {readyCount}
-          </span>
-          <span fg={C.fgMuted}> providers configured</span>
-          <span fg={C.dim}>
-            {"─".repeat(Math.max(1, width - 38 - profileName.length - VERSION.length))}
-          </span>
-        </text>
+      <box height={HEADER_H} flexDirection="column" backgroundColor={C.bgAlt} paddingX={1}>
+        {/* Row 1: title / version / attribution / active profile. */}
+        <box height={1} flexDirection="row">
+          <text>
+            <span fg={C.white} attributes={A.bold}>
+              claudish
+            </span>
+            <span fg={C.dim}> ─ </span>
+            <span fg={C.blue} attributes={A.bold}>
+              {`v${PKG_VERSION}`}
+            </span>
+            <span fg={C.dim}> ─ </span>
+            <span fg={C.fgMuted}>by MadAppGang</span>
+            <span fg={C.dim}> ─ </span>
+            <span fg={C.fgMuted}>profile: </span>
+            <span fg={C.orange} attributes={A.bold}>
+              {`[${profileName}]`}
+            </span>
+          </text>
+        </box>
+        {/* Row 2: full-width rule. A flex-grow box with a bottom border
+            lets Yoga size the line — no manual width math. */}
+        <box flexGrow={1} border={["bottom"]} borderStyle="single" borderColor={C.dim} />
       </box>
 
       {/* Tab bar */}
-      <TabBar activeTab={activeTab} statusMsg={statusMsg} width={width} />
+      <TabBar activeTab={activeTab} statusMsg={statusMsg} />
 
       {/* Content + detail */}
       {activeTab === "providers" && (
@@ -1136,7 +1139,6 @@ export function App({ requestLogin }: AppProps = {}) {
             displayProviders={displayProviders}
             providerIndex={providerIndex}
             testResults={testResults}
-            width={width}
             contentH={contentH}
             isInputMode={isInputMode}
             animTick={animTick}
@@ -1166,13 +1168,14 @@ export function App({ requestLogin }: AppProps = {}) {
             mode={mode}
             profileScope={profileScope}
             profileIndex={profileIndex}
-            editProfileName={editProfileName}
             editProfileValue={editProfileValue}
             suggestions={suggestions}
             suggestionIndex={suggestionIndex}
             providerPickerIndex={providerPickerIndex}
             width={width}
             contentH={contentH}
+            onScopeChange={wizard.setScopeCursor}
+            onPrefixChange={wizard.setProviderPickerIndex}
           />
           <ProfileDetail config={config} profileIndex={profileIndex} />
         </>

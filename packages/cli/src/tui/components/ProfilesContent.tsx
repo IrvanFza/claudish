@@ -11,13 +11,56 @@ interface ProfilesContentProps {
   mode: Mode;
   profileScope: "global" | "project";
   profileIndex: number;
-  editProfileName: string;
   editProfileValue: string;
   suggestions: string[];
   suggestionIndex: number;
   providerPickerIndex: number;
   width: number;
   contentH: number;
+  // Wizard select integration — App owns these cursors so the global
+  // keyboard handler's Enter can commit the highlighted row. The native
+  // <select> renders its own highlight; onChange keeps these in sync.
+  onScopeChange: (index: number) => void;
+  onPrefixChange: (index: number) => void;
+}
+
+// ── Wizard step metadata ───────────────────────────────────────────────────
+// The "New Profile" wizard is a linear sequence. Each linear step gets a
+// "Step N of M" header so the bordered modal reads as one coherent flow.
+// The provider-prefix picker is a side-trip (Tab from an empty model field),
+// so it gets a plain title, not a step number.
+const WIZARD_STEPS: Mode[] = [
+  "pick_profile_scope",
+  "new_profile",
+  "edit_profile_opus",
+  "edit_profile_sonnet",
+  "edit_profile_haiku",
+  "edit_profile_subagent",
+];
+const TOTAL_STEPS = WIZARD_STEPS.length;
+
+function stepLabel(mode: Mode): { title: string; header: string } {
+  const idx = WIZARD_STEPS.indexOf(mode);
+  const stepNo = idx >= 0 ? idx + 1 : 0;
+  const prefix = stepNo > 0 ? `Step ${stepNo} of ${TOTAL_STEPS} — ` : "";
+  switch (mode) {
+    case "pick_profile_scope":
+      return { title: "New Profile", header: `${prefix}Choose scope` };
+    case "new_profile":
+      return { title: "New Profile", header: `${prefix}Profile name` };
+    case "edit_profile_opus":
+      return { title: "New Profile", header: `${prefix}opus model` };
+    case "edit_profile_sonnet":
+      return { title: "New Profile", header: `${prefix}sonnet model` };
+    case "edit_profile_haiku":
+      return { title: "New Profile", header: `${prefix}haiku model` };
+    case "edit_profile_subagent":
+      return { title: "New Profile", header: `${prefix}subagent model (optional)` };
+    case "pick_provider_prefix":
+      return { title: "Choose provider", header: "Pick a provider prefix" };
+    default:
+      return { title: "New Profile", header: "" };
+  }
 }
 
 export function ProfilesContent({
@@ -26,17 +69,25 @@ export function ProfilesContent({
   mode,
   profileScope,
   profileIndex,
-  editProfileName,
   editProfileValue,
   suggestions,
   suggestionIndex,
   providerPickerIndex,
   contentH,
+  onScopeChange,
+  onPrefixChange,
 }: ProfilesContentProps) {
   const isProfileEditMode =
     mode === "new_profile" ||
     mode === "pick_profile_scope" ||
     mode === "pick_provider_prefix" ||
+    mode === "edit_profile_opus" ||
+    mode === "edit_profile_sonnet" ||
+    mode === "edit_profile_haiku" ||
+    mode === "edit_profile_subagent";
+
+  const isTextStep =
+    mode === "new_profile" ||
     mode === "edit_profile_opus" ||
     mode === "edit_profile_sonnet" ||
     mode === "edit_profile_haiku" ||
@@ -66,23 +117,28 @@ export function ProfilesContent({
   const activeProfileName = globalCfg.defaultProfile;
   const listH = contentH - 2;
 
-  // Edit mode prompt
-  const editPromptLabel =
-    mode === "new_profile"
-      ? `New ${profileScope} profile — name:`
-      : mode === "pick_profile_scope"
-        ? "Scope for new profile:"
-        : mode === "pick_provider_prefix"
-          ? "Select provider:"
-          : mode === "edit_profile_opus"
-            ? `${editProfileName} — opus model:`
-            : mode === "edit_profile_sonnet"
-              ? `${editProfileName} — sonnet model:`
-              : mode === "edit_profile_haiku"
-                ? `${editProfileName} — haiku model:`
-                : mode === "edit_profile_subagent"
-                  ? `${editProfileName} — subagent model (optional):`
-                  : null;
+  const { title: modalTitle, header: modalHeader } = stepLabel(mode);
+
+  // Scope options — path baked into the name string, padded for alignment, so
+  // each choice renders as exactly ONE line (showDescription={false}). This is
+  // the critical fix: the native <select> with descriptions stacks
+  // name-over-description (2 lines each), making 2 choices look like 4.
+  const scopeOptions = [
+    { name: "global    ~/.claudish/config.json", description: "", value: "global" },
+    { name: "project   ./.claudish.json", description: "", value: "project" },
+  ];
+
+  // Provider prefix options — same one-line treatment. Prefix left-padded to a
+  // fixed width so the display name aligns into a clean second column.
+  // Pad to the widest prefix + a 2-space gutter so the display-name column
+  // aligns cleanly even for long prefixes like "gemini-codeassist@".
+  const prefixColW =
+    PROVIDER_PREFIXES.reduce((max, p) => Math.max(max, p.prefix.length), 0) + 2;
+  const prefixOptions = PROVIDER_PREFIXES.map((p) => ({
+    name: `${p.prefix.padEnd(prefixColW)}${p.displayName}`,
+    description: "",
+    value: p.prefix,
+  }));
 
   return (
     <box
@@ -165,98 +221,109 @@ export function ProfilesContent({
         </text>
       )}
 
-      {/* Edit mode input */}
-      {isProfileEditMode && editPromptLabel && (
-        <box flexDirection="column" paddingTop={1}>
+      {/* ── Bordered wizard modal ─────────────────────────────────────────── */}
+      {/* A single bordered panel owns each step. Title + "Step N of M" header
+          stay consistent across every step so the flow reads as one coherent
+          wizard. The modal appears BELOW the existing profile list. */}
+      {isProfileEditMode && (
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={C.blue}
+          title={modalTitle}
+          titleAlignment="left"
+          backgroundColor={C.bg}
+          flexDirection="column"
+          paddingX={1}
+          marginTop={1}
+        >
+          {/* Step header */}
           <text>
-            <span fg={C.blue} attributes={A.bold}>
-              {editPromptLabel + " "}
+            <span fg={C.cyan} attributes={A.bold}>
+              {modalHeader}
             </span>
           </text>
 
-          {/* Scope picker */}
+          {/* Scope step — one-line <select> */}
           {mode === "pick_profile_scope" && (
-            <box flexDirection="column">
-              <box height={1} flexDirection="row">
-                <box width={16} height={1} backgroundColor={C.bgHighlight} paddingX={1}>
-                  <text>
-                    <span fg={C.green} attributes={A.bold}>
-                      g
-                    </span>
-                    <span fg={C.white}> global</span>
-                  </text>
-                </box>
-                <box width={2} />
-                <box width={16} height={1} paddingX={1}>
-                  <text>
-                    <span fg={C.cyan} attributes={A.bold}>
-                      p
-                    </span>
-                    <span fg={C.fgMuted}> project (.claudish.json)</span>
-                  </text>
-                </box>
-              </box>
+            <box flexDirection="column" paddingTop={1}>
+              <select
+                options={scopeOptions}
+                focused={true}
+                showDescription={false}
+                wrapSelection={true}
+                onChange={onScopeChange}
+                backgroundColor={C.bg}
+                textColor={C.fgMuted}
+                selectedBackgroundColor={C.bgHighlight}
+                selectedTextColor={C.white}
+                height={scopeOptions.length}
+              />
               <text>
+                <span fg={C.dim}>{" "}</span>
+              </text>
+              <text>
+                <span fg={C.fgMuted}>↑↓ move · </span>
                 <span fg={C.green} attributes={A.bold}>
-                  g{" "}
+                  ⏎{" "}
                 </span>
-                <span fg={C.fgMuted}>global · </span>
-                <span fg={C.cyan} attributes={A.bold}>
-                  p{" "}
-                </span>
-                <span fg={C.fgMuted}>project · </span>
+                <span fg={C.fgMuted}>next · </span>
                 <span fg={C.red} attributes={A.bold}>
-                  Esc{" "}
+                  esc{" "}
                 </span>
                 <span fg={C.fgMuted}>cancel</span>
               </text>
             </box>
           )}
 
-          {/* Provider prefix picker */}
+          {/* Provider prefix step — one-line <select> */}
           {mode === "pick_provider_prefix" && (
-            <box flexDirection="column">
-              {PROVIDER_PREFIXES.slice(0, 8).map((p, idx) => (
-                <box
-                  key={p.name}
-                  height={1}
-                  backgroundColor={idx === providerPickerIndex ? C.bgHighlight : C.bg}
-                >
-                  <text>
-                    <span fg={idx === providerPickerIndex ? C.white : C.dim}> </span>
-                    <span
-                      fg={idx === providerPickerIndex ? C.cyan : C.fgMuted}
-                      attributes={A.boldIf(idx === providerPickerIndex)}
-                    >
-                      {p.prefix.padEnd(14).substring(0, 14)}
-                    </span>
-                    <span fg={C.dim}>{"  "}</span>
-                    <span fg={idx === providerPickerIndex ? C.fgMuted : C.dim}>
-                      {p.displayName}
-                    </span>
-                  </text>
-                </box>
-              ))}
+            <box flexDirection="column" paddingTop={1}>
+              <select
+                options={prefixOptions}
+                focused={true}
+                showDescription={false}
+                wrapSelection={true}
+                selectedIndex={providerPickerIndex}
+                onChange={onPrefixChange}
+                backgroundColor={C.bg}
+                textColor={C.fgMuted}
+                selectedBackgroundColor={C.bgHighlight}
+                selectedTextColor={C.cyan}
+                height={Math.min(8, prefixOptions.length)}
+                showScrollIndicator={true}
+              />
               <text>
-                <span fg={C.blue} attributes={A.bold}>
-                  ↑↓{" "}
-                </span>
-                <span fg={C.fgMuted}>navigate · </span>
+                <span fg={C.dim}>{" "}</span>
+              </text>
+              <text>
+                <span fg={C.fgMuted}>↑↓ move · </span>
                 <span fg={C.green} attributes={A.bold}>
-                  Enter{" "}
+                  ⏎{" "}
                 </span>
-                <span fg={C.fgMuted}>select prefix · </span>
+                <span fg={C.fgMuted}>select · </span>
                 <span fg={C.red} attributes={A.bold}>
-                  Esc{" "}
+                  esc{" "}
                 </span>
                 <span fg={C.fgMuted}>back</span>
               </text>
             </box>
           )}
 
-          {/* Normal text input (not scope/provider picker) */}
-          {mode !== "pick_profile_scope" && mode !== "pick_provider_prefix" && (
-            <box flexDirection="column">
+          {/* Text steps — profile name + model role fields */}
+          {isTextStep && (
+            <box flexDirection="column" paddingTop={1}>
+              {/* Scope reminder on the name step so the user knows where the
+                  profile will be written. */}
+              {mode === "new_profile" && (
+                <text>
+                  <span fg={C.fgMuted}>scope: </span>
+                  <span fg={profileScope === "project" ? C.cyan : C.green} attributes={A.bold}>
+                    {profileScope}
+                  </span>
+                </text>
+              )}
+
               <text>
                 <span fg={C.green} attributes={A.bold}>
                   {"> "}
@@ -267,12 +334,11 @@ export function ProfilesContent({
                 <span fg={C.cyan}>{"█"}</span>
               </text>
 
-              {/* Suggestion list */}
+              {/* Suggestion list (model role steps only) */}
               {suggestions.length > 0 && (
                 <box flexDirection="column">
                   {suggestions.map((s, idx) => {
                     const selected = idx === suggestionIndex;
-                    // Highlight matching portion
                     const lower = editProfileValue.toLowerCase();
                     const matchIdx = lower ? s.toLowerCase().indexOf(lower) : -1;
                     return (
@@ -301,43 +367,55 @@ export function ProfilesContent({
                 </box>
               )}
 
-              {editProfileValue === "auto" ? (
+              {/* Inline hint line */}
+              {mode === "new_profile" ? (
+                <text>
+                  <span fg={C.green} attributes={A.bold}>
+                    ⏎{" "}
+                  </span>
+                  <span fg={C.fgMuted}>next · </span>
+                  <span fg={C.red} attributes={A.bold}>
+                    esc{" "}
+                  </span>
+                  <span fg={C.fgMuted}>cancel</span>
+                </text>
+              ) : editProfileValue === "auto" ? (
                 <text>
                   <span fg={C.yellow} attributes={A.bold}>
                     auto-route{" "}
                   </span>
-                  <span fg={C.fgMuted}>— claudish will use the routing table · </span>
+                  <span fg={C.fgMuted}>— uses routing table · </span>
                   <span fg={C.green} attributes={A.bold}>
-                    Enter{" "}
+                    ⏎{" "}
                   </span>
-                  <span fg={C.fgMuted}>to confirm · </span>
+                  <span fg={C.fgMuted}>next · </span>
                   <span fg={C.red} attributes={A.bold}>
-                    Esc{" "}
+                    esc{" "}
                   </span>
                   <span fg={C.fgMuted}>cancel</span>
                 </text>
               ) : (
                 <text>
                   <span fg={C.green} attributes={A.bold}>
-                    Enter{" "}
+                    ⏎{" "}
                   </span>
-                  <span fg={C.fgMuted}>save · </span>
+                  <span fg={C.fgMuted}>next · </span>
                   <span fg={C.blue} attributes={A.bold}>
-                    Tab{" "}
+                    ⇥{" "}
                   </span>
                   <span fg={C.fgMuted}>
-                    {editProfileValue === "" ? "pick provider · " : "autocomplete · "}
+                    {editProfileValue === "" ? "provider · " : "complete · "}
                   </span>
                   <span fg={C.blue} attributes={A.bold}>
                     ↑↓{" "}
                   </span>
-                  <span fg={C.fgMuted}>suggestion · </span>
+                  <span fg={C.fgMuted}>pick · </span>
                   <span fg={C.yellow} attributes={A.bold}>
                     a{" "}
                   </span>
-                  <span fg={C.fgMuted}>auto-route · </span>
+                  <span fg={C.fgMuted}>auto · </span>
                   <span fg={C.red} attributes={A.bold}>
-                    Esc{" "}
+                    esc{" "}
                   </span>
                   <span fg={C.fgMuted}>cancel</span>
                 </text>

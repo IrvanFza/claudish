@@ -36,10 +36,9 @@ export const PROVIDER_PREFIXES = PROVIDERS.map((p) => ({
 // Chain selector uses same PROVIDERS list for consistent naming.
 export const CHAIN_PROVIDERS = PROVIDERS;
 
-// Layout constants — header(1) + tab-bar(3) + content(flex) + detail(fixed) + footer(1).
-export const HEADER_H = 1;
+// Layout constants — header(2) + tab-bar(3) + content(flex) + detail(fixed) + footer(1).
+// Header is 2 rows: the title/version/profile text, plus a bottom-border rule.
+export const HEADER_H = 2;
 export const TABS_H = 3;
 export const FOOTER_H = 1;
 export const DETAIL_H = 7;
-
-export const VERSION = "v5.16";
