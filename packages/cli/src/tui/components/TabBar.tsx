@@ -6,10 +6,9 @@ import type { Tab } from "../types.js";
 interface TabBarProps {
   activeTab: Tab;
   statusMsg: string | null;
-  width: number;
 }
 
-export function TabBar({ activeTab, statusMsg, width }: TabBarProps) {
+export function TabBar({ activeTab, statusMsg }: TabBarProps) {
   const tabs: Array<{ label: string; value: Tab; num: string }> = [
     { label: "Providers", value: "providers", num: "1" },
     { label: "Profiles", value: "profiles", num: "2" },
@@ -47,11 +46,12 @@ export function TabBar({ activeTab, statusMsg, width }: TabBarProps) {
           );
         })}
       </box>
-      {/* Separator line */}
+      {/* Separator line — a flex-grow box with a top border draws a
+          full-width horizontal rule that Yoga sizes automatically. No
+          width math; paddingX={1} preserves the 1-cell side margins the
+          old `width - 2` repeat produced. */}
       <box height={1} paddingX={1}>
-        <text>
-          <span fg={C.tabActiveBg}>{"─".repeat(Math.max(0, width - 2))}</span>
-        </text>
+        <box flexGrow={1} border={["top"]} borderStyle="single" borderColor={C.tabActiveBg} />
       </box>
       {/* Status line — sits on the otherwise-blank row beneath the separator.
           Moved here from the tab-buttons row so long error messages have the

@@ -72,9 +72,16 @@ export interface UseProfileWizardReturn {
   suggestions: string[];
   suggestionIndex: number;
   providerPickerIndex: number;
+  // Cursor for the scope <select> in the bordered wizard modal. 0 = global,
+  // 1 = project. The native <select> renders its own highlight; onChange
+  // syncs this so the global keyboard handler's Enter commits the right row.
+  scopeCursor: 0 | 1;
   // Verbs invoked from the parent's keyboard handler
   startNewProfile: () => void;
   pickScope: (scope: Scope) => void;
+  pickScopeAtCursor: () => void;
+  setScopeCursor: (index: number) => void;
+  setProviderPickerIndex: (index: number) => void;
   cancelPickScope: () => void;
   startEditExisting: (selectedName: string, isLocal: boolean) => void;
   newProfileSubmit: () => void;
@@ -109,6 +116,9 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
   const [providerPickerIndex, setProviderPickerIndex] = useState(0);
+  // Scope picker cursor for the bordered wizard modal's <select>. 0 = global,
+  // 1 = project.
+  const [scopeCursor, setScopeCursor] = useState<0 | 1>(0);
   // INTERNAL: the prefix picker is a side-trip that returns to one of four
   // edit modes. NEVER expose this as a flat hook field — see WizardState
   // type comment.
@@ -177,6 +187,7 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
   const startNewProfile = useCallback(() => {
     setEditProfileValue("");
     setProfileScope("global");
+    setScopeCursor(0);
     setMode("pick_profile_scope");
     setStatusMsg(null);
   }, [setMode, setStatusMsg]);
@@ -204,11 +215,30 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
   const pickScope = useCallback(
     (scope: Scope) => {
       setProfileScope(scope);
+      setScopeCursor(scope === "global" ? 0 : 1);
       setEditProfileValue("");
       setMode("new_profile");
     },
     [setMode]
   );
+
+  // Commit the scope highlighted by the <select> cursor. Called from the
+  // global keyboard handler on Enter (the proven pick_routing_scope pattern).
+  const pickScopeAtCursor = useCallback(() => {
+    pickScope(scopeCursor === 0 ? "global" : "project");
+  }, [pickScope, scopeCursor]);
+
+  // Sync the <select>'s highlighted row into hook state. Wired to the scope
+  // select's onChange so Enter commits the row the user is looking at.
+  const setScopeCursorVerb = useCallback((index: number) => {
+    setScopeCursor(index === 0 ? 0 : 1);
+  }, []);
+
+  // Sync the prefix <select>'s highlighted row into hook state. Wired to the
+  // prefix select's onChange so prefixPickerSubmit() commits the right prefix.
+  const setProviderPickerIndexVerb = useCallback((index: number) => {
+    setProviderPickerIndex(index < 0 ? 0 : index);
+  }, []);
 
   const cancelPickScope = useCallback(() => {
     setMode("browse");
@@ -444,8 +474,12 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
     suggestions,
     suggestionIndex,
     providerPickerIndex,
+    scopeCursor,
     startNewProfile,
     pickScope,
+    pickScopeAtCursor,
+    setScopeCursor: setScopeCursorVerb,
+    setProviderPickerIndex: setProviderPickerIndexVerb,
     cancelPickScope,
     startEditExisting,
     newProfileSubmit,
