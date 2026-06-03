@@ -16,6 +16,7 @@
 import {
   isFailureState,
   isReadyState,
+  STREAM_MS_FLOOR,
   type ProbeResult,
   type ProbeTiming,
 } from "../providers/probe-live.js";
@@ -176,7 +177,7 @@ function computeBarScales(results: ModelResult[]): BarScales {
     if (!probe || probe.state !== "live" || !probe.timing) return;
     const t = probe.timing;
     liveTotals.push(t.totalMs);
-    const streamMs = Math.max(50, t.totalMs - t.ttftMs);
+    const streamMs = Math.max(STREAM_MS_FLOOR, t.totalMs - t.ttftMs);
     const scaledTps = t.tokens > 0 ? (t.tokens / streamMs) * 1000 : 0;
     if (scaledTps > maxTokPerSec) maxTokPerSec = scaledTps;
   };
@@ -294,8 +295,9 @@ function buildBarsLine(
   }
 
   // Tok/s bar: fg █ on dim · track, heat-colored; the value uses the same color.
-  const ratio = scales.maxTokPerSec > 0 ? t.tokensPerSec / scales.maxTokPerSec : 0;
-  const tokFg = hexToAnsiFg(throughputFg(ratio));
+  // Bar LENGTH is relative-to-max (comparison); bar/value COLOR is absolute
+  // throughput health (so a fast model reads warm even next to a faster one).
+  const tokFg = hexToAnsiFg(throughputFg(t.tokensPerSec));
   let tokBar = "";
   if (showTokBar) {
     const tokCells = tokBarCells(
@@ -1131,8 +1133,7 @@ function renderLeaderboard(
         ` ${strFg}${padStartSafe(breakdownNum(strMs), STAGE_NUM_W)}${pc.reset}`;
     }
 
-    const ratio = scales.maxTokPerSec > 0 ? t.tokensPerSec / scales.maxTokPerSec : 0;
-    const tokFg = hexToAnsiFg(throughputFg(ratio));
+    const tokFg = hexToAnsiFg(throughputFg(t.tokensPerSec));
     let tokBar = "  ";
     if (showTokBar) {
       const tokCells = tokBarCells(t.tokensPerSec, scales.maxTokPerSec, PRINTER_TOK_WIDTH);
@@ -1217,8 +1218,17 @@ export function printProbeResults(
   // live+timed). Rendered above the detailed cards. Sized to the TERMINAL
   // (maxAllowed), not the per-card content width, so the breakdown + tok/s bar
   // show whenever the terminal can fit them.
-  if (isLiveProbe && anyTimedLive) {
+  const showedLeaderboard = isLiveProbe && anyTimedLive;
+  if (showedLeaderboard) {
     renderLeaderboard(results, scales, maxAllowed, w);
+  }
+
+  // Section heading between the headline leaderboard and the per-model detail
+  // cards, so the eye registers the shift from "summary" to "details" instead
+  // of the cards starting abruptly under the leaderboard rule. Only shown when
+  // the leaderboard was rendered (otherwise the cards ARE the top-level view).
+  if (showedLeaderboard) {
+    w(`  ${pc.bold}${pc.cyan}Details${pc.reset}${pc.dim} — per-model routing chains${pc.reset}\n\n`);
   }
 
   // Pass 2: render each card with the shared width so borders align.

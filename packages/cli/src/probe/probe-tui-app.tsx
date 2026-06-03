@@ -26,7 +26,7 @@ import {
   splitStageCells,
   tokBarCells,
 } from "../tui/theme.js";
-import type { ProbeTiming } from "../providers/probe-live.js";
+import { STREAM_MS_FLOOR, type ProbeTiming } from "../providers/probe-live.js";
 import { VERSION } from "../version.js";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -414,8 +414,8 @@ function ProgressBar({
   const srvMs = Math.max(0, t.ttftMs - t.ttfbMs);
   const strMs = Math.max(0, t.totalMs - t.ttftMs);
 
-  const ratio = maxTokPerSec > 0 ? t.tokensPerSec / maxTokPerSec : 0;
-  const tokColor = throughputFg(ratio);
+  // Bar length relative-to-max (comparison); color absolute (throughput health).
+  const tokColor = throughputFg(t.tokensPerSec);
   const tokCells =
     layout.tokWidth > 0
       ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth)
@@ -724,7 +724,7 @@ export function ProbeApp({ store }: { store: ProbeStore }) {
     if (link.status !== "live" || !link.timing) continue;
     const t = link.timing;
     if (t.totalMs > maxTotalMs) maxTotalMs = t.totalMs;
-    const streamMs = Math.max(50, t.totalMs - t.ttftMs);
+    const streamMs = Math.max(STREAM_MS_FLOOR, t.totalMs - t.ttftMs);
     const scaledTps = t.tokens > 0 ? (t.tokens / streamMs) * 1000 : 0;
     if (scaledTps > maxTokPerSec) maxTokPerSec = scaledTps;
     if (t.tokensPerSec > fastestTokPerSec) {

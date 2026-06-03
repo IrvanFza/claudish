@@ -205,15 +205,17 @@ export const STAGE_BG_ANSI = {
 export type ProbeStageKey = keyof typeof STAGE_BG;
 
 /**
- * Throughput-heat color for a tokens/sec value, relative to the run's fastest
- * generator (`ratio` = tokensPerSec / maxTokensPerSec, 0..1). Used for both the
- * tok/s bar fill and the colored number. Long bar + warm = good (opposite
- * polarity from latency). Reuses the muted slow-red so neon C.red stays
- * reserved for outright failure.
+ * Throughput-heat color for a tokens/sec value, on an ABSOLUTE scale (t/s),
+ * NOT relative to the run's fastest generator. Relative coloring made every
+ * healthy model dim-red whenever one outlier set a high max; absolute coloring
+ * reflects "is this throughput actually good." The tok/s BAR stays relative-to-max
+ * (that's the comparison), while the COLOR is absolute (that's the health) — the
+ * dual encoding is what lets a fast model read warm even next to a faster one.
+ * Reuses the muted slow-red so neon C.red stays reserved for outright failure.
  */
-export function throughputFg(ratio: number): string {
-  if (ratio >= 0.66) return C.brightGreen;
-  if (ratio >= 0.33) return C.orange;
+export function throughputFg(tokensPerSec: number): string {
+  if (tokensPerSec >= 100) return C.brightGreen;
+  if (tokensPerSec >= 40) return C.orange;
   return "#9e2b2b"; // muted red (same as the slow latency bucket)
 }
 

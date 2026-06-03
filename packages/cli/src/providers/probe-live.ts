@@ -41,6 +41,19 @@ export interface ProbeResult {
   timing?: ProbeTiming;
 }
 
+/**
+ * Minimum streaming window (ms) used when deriving tokens/sec. A response whose
+ * whole (token-capped) body lands in ~one chunk has TTFT ≈ total, so the raw
+ * streaming window collapses toward zero and `tokens / streamMs` explodes into a
+ * nonsense rate (e.g. 49000 t/s). Flooring the window to this constant bounds the
+ * rate to a defensible "tokens over a floored window" value. BOTH the displayed
+ * value (here) and the bar SCALE (computeBarScales / probe-tui-app.tsx) floor by
+ * this same constant so the number you read and the bar you see derive from one
+ * window and never disagree. Lives here (the canonical timing module) so the TUI
+ * theme can reference it without the network path depending on @opentui/core.
+ */
+export const STREAM_MS_FLOOR = 50;
+
 export interface ProbeTiming {
   /** Time to response headers (ms from request start). */
   ttfbMs: number;
@@ -147,8 +160,10 @@ export async function probeLink(
   ) {
     const ttftMs = streamResult.ttftMs;
     const tokens = streamResult.tokens ?? 0;
-    const streamMs = Math.max(0, totalMs - ttftMs);
-    const tokensPerSec = streamMs > 0 && tokens > 0 ? (tokens / streamMs) * 1000 : 0;
+    // Floor the streaming window to STREAM_MS_FLOOR so a near-instant response
+    // (TTFT ≈ total) can't produce a nonsense rate. Matches the scale floor.
+    const streamMs = Math.max(STREAM_MS_FLOOR, totalMs - ttftMs);
+    const tokensPerSec = tokens > 0 ? (tokens / streamMs) * 1000 : 0;
     timing = { ttfbMs, ttftMs, totalMs, tokens, tokensPerSec };
   }
 
