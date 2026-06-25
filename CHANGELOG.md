@@ -2,6 +2,12 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.7.3] - 2026-06-25
+
+### Bug Fixes
+
+- Only resolve config-driven 1Password secrets on the model-routing path. Previously every command — including `update`, `config`, `providers`, `init`, `telemetry`, `stats`, `login`/`logout` — ran the config `onepassword[]` glob imports + custom-endpoint key resolution at startup, which prompted a user with `op://` config for 1Password access even on `claudish update`. Resolution is now an allowlist: config-driven secrets hydrate ONLY for the paths that actually route a model and read a provider key from `process.env` (the CLI/proxy path, the MCP server, and `serve`). Management subcommands never touch 1Password (no auth prompt, no SDK, no WASM, no glob expansion). Explicit `--op` / `--op-env` flags still resolve wherever they appear, and a user with no 1Password config is unaffected.
+
 ## [7.7.2] - 2026-06-25
 
 ### Bug Fixes

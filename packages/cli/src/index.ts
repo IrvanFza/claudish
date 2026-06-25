@@ -470,30 +470,31 @@ async function applyCustomEndpointOpKeys(): Promise<void> {
 // 1Password at all pays nothing here. The SDK + WASM load only at the moment a
 // key is actually resolved, inside the sdkLoader (providers/onepassword.ts).
 //
-// BUT a user who DOES have op:// imports in config would otherwise resolve them
-// on EVERY command — including `help` / `--version`, which can never need a
-// secret. So skip the whole sequence for those commands. An EXPLICIT op flag
-// (--op / --op-env) overrides the skip (an intentional inline import is never
-// dropped). This is a command-level gate, distinct from lazy-by-need: it stops a
-// 1Password user from paying for secret resolution on a no-secret command.
-const earlyArgv = process.argv.slice(2);
-const hasExplicitOpFlag = earlyArgv.some(
-  (a) => a === "--op" || a === "--op-env" || a.startsWith("--op-env=")
-);
-const earlyFirst = earlyArgv.find((a) => !a.startsWith("-"));
-const isNoSecretCommand =
-  !hasExplicitOpFlag &&
-  (earlyArgv.includes("--help") ||
-    earlyArgv.includes("-h") ||
-    earlyArgv.includes("--help-ai") ||
-    earlyArgv.includes("--version") ||
-    earlyArgv.includes("-v") ||
-    earlyFirst === "help" ||
-    earlyFirst === "version");
+// Hydration is split by WHO asked:
+//
+//  - EXPLICIT FLAGS (--op-env / --op) are direct user intent and self-terminate
+//    (--op --list previews and exits; a bare --op import applies then exits), so
+//    they run EAGERLY here. Both are zero-cost when their flag is absent (they
+//    read argv and return immediately), so a flagless management command pays
+//    nothing.
+//
+//  - CONFIG-DRIVEN sources (config.json `onepassword[]` globs + apiKeys, and
+//    custom-endpoint op:// keys) are ONLY needed by commands that actually route
+//    a model and read a provider key from process.env: the proxy/CLI path
+//    (runCli), the MCP server, and `serve`. Management subcommands — update,
+//    init, profile, config, telemetry, stats, providers, login/logout, quota,
+//    help, version — never use a provider key, so they must NOT trigger
+//    1Password (no auth prompt, no SDK, no WASM, no glob expansion). We DEFER
+//    those into hydrateOpSecrets() and call it ONLY from the routing paths
+//    (an allowlist), instead of resolving for every command and trying to
+//    deny-list the rest.
+await applyOpEnvironment();
+await applyOpImport();
 
-if (!isNoSecretCommand) {
-  await applyOpEnvironment();
-  await applyOpImport();
+let opHydrated = false;
+async function hydrateOpSecrets(): Promise<void> {
+  if (opHydrated) return; // run at most once per process
+  opHydrated = true;
   await loadStoredApiKeys();
   await applyCustomEndpointOpKeys();
 }
@@ -543,17 +544,19 @@ const isLegacyKimiLogin = args.includes("--kimi-login");
 const isLegacyKimiLogout = args.includes("--kimi-logout");
 
 if (isMcpMode) {
-  // MCP server mode - dynamic import to keep CLI fast
-  import("./mcp-server.js").then((mcp) => mcp.startMcpServer());
+  // MCP server mode - dynamic import to keep CLI fast. Routes models → needs keys.
+  hydrateOpSecrets().then(() => import("./mcp-server.js").then((mcp) => mcp.startMcpServer()));
 } else if (isServeCommand) {
   // Standalone inference gateway for Claude Desktop redirect:
-  // claudish serve --port <n> --models <path>
+  // claudish serve --port <n> --models <path>. Routes models → needs keys.
   const serveArgIndex = args.indexOf("serve");
-  import("./serve-command.js").then((m) =>
-    m.serveCommand(args.slice(serveArgIndex + 1)).catch((e) => {
-      console.error(`[claudish serve] ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    })
+  hydrateOpSecrets().then(() =>
+    import("./serve-command.js").then((m) =>
+      m.serveCommand(args.slice(serveArgIndex + 1)).catch((e) => {
+        console.error(`[claudish serve] ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      })
+    )
   );
 } else if (isProvidersCommand) {
   // Provider credential presence (no key material): claudish providers --json
@@ -635,6 +638,11 @@ if (isMcpMode) {
  * Run CLI mode
  */
 async function runCli() {
+  // The CLI/proxy path routes a model and reads its provider key from
+  // process.env, so resolve config-driven 1Password secrets now (no-op if the
+  // user has none). Management subcommands never reach here, so they never
+  // trigger 1Password. Must run BEFORE parseArgs/provider resolution.
+  await hydrateOpSecrets();
   const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
