@@ -348,9 +348,7 @@ async function loadStoredApiKeys(): Promise<void> {
   try {
     // Dynamic import: only load the resolution path (and the SDK) when an
     // op:// reference OR glob import is actually present.
-    const { resolveSecrets, resolveGlobImport } = await import(
-      "./providers/onepassword.js"
-    );
+    const { resolveSecrets, resolveGlobImport } = await import("./providers/onepassword.js");
     const auth = await getSdkAuth();
 
     // Single op:// refs: batched, in one resolveAll call.
@@ -369,7 +367,16 @@ async function loadStoredApiKeys(): Promise<void> {
     // Genuine auth/token failures still surface via resolveSecrets above.
     for (const globPath of globImports) {
       try {
-        const resolved = await resolveGlobImport(globPath, { auth });
+        // Silence the per-field "skipped … (not a valid env var name)" warnings
+        // on startup: a glob like op://Vault/Item/** legitimately spans fields
+        // such as `username` / `credential` / `Customer Key` that simply aren't
+        // importable as env vars. Skipping them is EXPECTED, not an error, so it
+        // must not spew on every normal run. The explicit `--op … --list`
+        // preview still surfaces them (different, opt-in code path).
+        const resolved = await resolveGlobImport(globPath, {
+          auth,
+          warn: () => {},
+        });
         for (const [envVar, value] of Object.entries(resolved)) {
           if (!process.env[envVar]) {
             process.env[envVar] = value;
@@ -382,9 +389,7 @@ async function loadStoredApiKeys(): Promise<void> {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[claudish] 1Password secret resolution failed: ${message}`
-    );
+    console.error(`[claudish] 1Password secret resolution failed: ${message}`);
     process.exit(1);
   }
 }
@@ -458,18 +463,40 @@ async function applyCustomEndpointOpKeys(): Promise<void> {
 // without importing the 1Password SDK. SDK auth is resolved AT MOST once and
 // shared across all four (getSdkAuth memoization).
 //
-// These four are LAZY BY NEED, not gated by command: each inspects its source
-// (the --op-env / --op flags, then config.json's op:// refs + glob imports, then
-// custom-endpoint op:// keys) and returns IMMEDIATELY when there is nothing to
-// resolve — without importing the 1Password SDK or its ~10MB WASM. So a user who
-// doesn't use 1Password pays nothing here on ANY command (help, version, a real
-// run). The SDK + WASM load happens only at the moment a key is actually
-// resolved, inside the sdkLoader (providers/onepassword.ts), which calls
-// ensureOpWasmAvailable() right before `import("@1password/sdk")`.
-await applyOpEnvironment();
-await applyOpImport();
-await loadStoredApiKeys();
-await applyCustomEndpointOpKeys();
+// These four are LAZY BY NEED: each inspects its source (the --op-env / --op
+// flags, then config.json's op:// refs + glob imports, then custom-endpoint
+// op:// keys) and returns IMMEDIATELY when there is nothing to resolve — without
+// importing the 1Password SDK or its ~10MB WASM. So a user who doesn't use
+// 1Password at all pays nothing here. The SDK + WASM load only at the moment a
+// key is actually resolved, inside the sdkLoader (providers/onepassword.ts).
+//
+// BUT a user who DOES have op:// imports in config would otherwise resolve them
+// on EVERY command — including `help` / `--version`, which can never need a
+// secret. So skip the whole sequence for those commands. An EXPLICIT op flag
+// (--op / --op-env) overrides the skip (an intentional inline import is never
+// dropped). This is a command-level gate, distinct from lazy-by-need: it stops a
+// 1Password user from paying for secret resolution on a no-secret command.
+const earlyArgv = process.argv.slice(2);
+const hasExplicitOpFlag = earlyArgv.some(
+  (a) => a === "--op" || a === "--op-env" || a.startsWith("--op-env=")
+);
+const earlyFirst = earlyArgv.find((a) => !a.startsWith("-"));
+const isNoSecretCommand =
+  !hasExplicitOpFlag &&
+  (earlyArgv.includes("--help") ||
+    earlyArgv.includes("-h") ||
+    earlyArgv.includes("--help-ai") ||
+    earlyArgv.includes("--version") ||
+    earlyArgv.includes("-v") ||
+    earlyFirst === "help" ||
+    earlyFirst === "version");
+
+if (!isNoSecretCommand) {
+  await applyOpEnvironment();
+  await applyOpImport();
+  await loadStoredApiKeys();
+  await applyCustomEndpointOpKeys();
+}
 
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");

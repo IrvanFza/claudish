@@ -2,6 +2,13 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.7.2] - 2026-06-25
+
+### Bug Fixes
+
+- Don't resolve 1Password keys for `help` / `--help` / `-h` / `--help-ai` / `--version` / `-v` / `version`. A user with `op://` imports in config was resolving their keys (and touching the SDK) on every command, including those that can never need a secret. The early-hydration sequence now skips entirely for no-secret commands; an explicit `--op` / `--op-env` flag still overrides the skip. Interactive mode and real runs resolve keys exactly as before.
+- Stop printing `skipped 1Password field 'X' (not a valid env var name)` on every run. A glob import (e.g. `op://Vault/Item/**`) legitimately spans non-importable fields like `username` / `credential` / `Customer Key`; skipping them is expected, so the per-field warnings are now silent during startup hydration. The explicit `--op … --list` preview still surfaces them.
+
 ## [7.7.1] - 2026-06-25
 
 ### Bug Fixes
