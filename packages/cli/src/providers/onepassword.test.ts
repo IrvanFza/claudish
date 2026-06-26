@@ -34,6 +34,7 @@ import {
   readEnvironment,
   resolveDesktopAccount,
   resolveGlobImport,
+  resolveGlobImportForEnvVars,
   resolveSdkAuth,
   resolveSecrets,
   withSdkRetry,
@@ -388,7 +389,10 @@ describe("resolveSecrets", () => {
       }),
     });
     expect(
-      resolveSecrets({ A: "op://v/i/a", B: "op://v/i/b" }, { auth, sdkFactory: makeFakeSdkFactory(client) })
+      resolveSecrets(
+        { A: "op://v/i/a", B: "op://v/i/b" },
+        { auth, sdkFactory: makeFakeSdkFactory(client) }
+      )
     ).rejects.toThrow(/B.*fieldNotFound|could not resolve/i);
   });
 
@@ -730,9 +734,7 @@ describe("discoverItemFields", () => {
     // trailing-space label preserved verbatim in discovery
     expect(byLabel["GEMINI_API_KEY "]).toBeDefined();
     // synthesized reference for the trailing-space field keeps the space
-    expect(byLabel["GEMINI_API_KEY "].reference).toBe(
-      ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY ")
-    );
+    expect(byLabel["GEMINI_API_KEY "].reference).toBe(ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY "));
     // valueTail = last 4 chars of the value (for masked ••••1234 display); a
     // valueless field → "". The full value is never kept.
     expect(byLabel["OPENAI_API_KEY"].valueTail).toBe("-oai"); // value "sk-oai"
@@ -828,7 +830,9 @@ describe("filterGlobFields", () => {
 
   test("'/**' (whole-item match-all) → the UNION of sectionless + all-section fields", async () => {
     const fields = await discover();
-    const all = filterGlobFields(fields, parseGlobImport(ref("**"))).map((m) => m.envName).sort();
+    const all = filterGlobFields(fields, parseGlobImport(ref("**")))
+      .map((m) => m.envName)
+      .sort();
     const sectionless = filterGlobFields(fields, parseGlobImport(ref("*"))).map((m) => m.envName);
     const sectioned = filterGlobFields(fields, parseGlobImport(ref("*/*"))).map((m) => m.envName);
     // ** is exactly the union of `*` (sectionless) and `*/*` (every section).
@@ -945,6 +949,54 @@ describe("resolveGlobImport", () => {
     });
     expect(spy.called).toBe(true);
     expect(out["MOONSHOT_API_KEY"]).toBe(`sdk:${ref("Moonshot Kimi/MOONSHOT_API_KEY")}`);
+  });
+});
+
+describe("resolveGlobImportForEnvVars (per-credential — only the wanted keys)", () => {
+  test("returns ONLY the requested env var, not every field in the glob", async () => {
+    // The whole-item glob advertises 9 keys, but routing only needs OPENAI_API_KEY.
+    const out = await resolveGlobImportForEnvVars(ref("*/*_API_KEY"), ["OPENAI_API_KEY"], {
+      auth: stubAuth,
+      sdkFactory: itemSdkFactory(),
+      warn: () => {},
+    });
+    expect(Object.keys(out)).toEqual(["OPENAI_API_KEY"]);
+    expect(out["OPENAI_API_KEY"]).toBeDefined();
+    // None of the OTHER keys in the same glob leak out.
+    expect(out["OPENROUTER_API_KEY"]).toBeUndefined();
+    expect(out["ANTHROPIC_API_KEY"]).toBeUndefined();
+  });
+
+  test("resolves multiple requested env vars when several are wanted", async () => {
+    const out = await resolveGlobImportForEnvVars(
+      ref("*/*_API_KEY"),
+      new Set(["OPENAI_API_KEY", "OPENROUTER_API_KEY"]),
+      { auth: stubAuth, sdkFactory: itemSdkFactory(), warn: () => {} }
+    );
+    expect(Object.keys(out).sort()).toEqual(["OPENAI_API_KEY", "OPENROUTER_API_KEY"]);
+  });
+
+  test("returns {} (non-throwing) when this glob holds none of the wanted env vars", async () => {
+    // The keyless / wrong-item case: the routed model needs a key this glob can't
+    // supply → empty result, NO throw (so a real run reports the missing key
+    // normally instead of crashing).
+    const out = await resolveGlobImportForEnvVars(ref("*/*_API_KEY"), ["NOT_IN_THIS_ITEM_KEY"], {
+      auth: stubAuth,
+      sdkFactory: itemSdkFactory(),
+      warn: () => {},
+    });
+    expect(out).toEqual({});
+  });
+
+  test("empty wanted set → {} with the SDK never touched", async () => {
+    const spy = { called: false } as { called: boolean; auth?: SdkAuth };
+    const out = await resolveGlobImportForEnvVars(ref("*/*_API_KEY"), [], {
+      auth: stubAuth,
+      sdkFactory: itemSdkFactory(spy),
+      warn: () => {},
+    });
+    expect(out).toEqual({});
+    expect(spy.called).toBe(false);
   });
 });
 

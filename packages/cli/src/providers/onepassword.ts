@@ -256,7 +256,12 @@ export async function discoverItemFields(
   if (itemMatches.length === 0) {
     throw new Error(
       `1Password item '${item}' not found in vault '${vault}'. ` +
-        `Available items: ${items.map((i) => i.title).slice(0, 12).join(", ") || "(none)"}.`
+        `Available items: ${
+          items
+            .map((i) => i.title)
+            .slice(0, 12)
+            .join(", ") || "(none)"
+        }.`
     );
   }
   if (itemMatches.length > 1) {
@@ -472,6 +477,68 @@ export async function resolveGlobImport(
         `Available field labels include: ${available.join(", ") || "(none)"}.`
     );
   }
+
+  return resolveSecrets(refMap, {
+    sdkFactory: opts.sdkFactory,
+    auth: opts.auth,
+    env: opts.env,
+  });
+}
+
+/**
+ * Resolve a glob field-import path but SEEK ONLY the env var names in `envNames`.
+ *
+ * This is the per-credential variant of resolveGlobImport, used by the lazy
+ * hydration path: when claudish routes a model that needs a specific (missing)
+ * env-var API key, it resolves the op:// glob looking ONLY for THAT key — never
+ * decrypting/advertising every field of the item. A glob like
+ * `op://Vault/Item/**` therefore resolves to find just the wanted env var(s).
+ *
+ * Pipeline (mirrors resolveGlobImport, but with a wanted-name filter):
+ *  1. parse → discover all fields of the item (SDK, names only).
+ *  2. filter by section + field glob; envName = trimmed label.
+ *  3. KEEP only valid matches whose envName ∈ `envNames`.
+ *  4. resolve the surviving fields' op:// references via resolveSecrets.
+ *
+ * Returns `{}` when nothing wanted matches (NON-THROWING — unlike
+ * resolveGlobImport, an empty result is expected here: a routed model may need a
+ * key this particular glob simply doesn't contain). Discovery / resolution
+ * failures still propagate.
+ */
+export async function resolveGlobImportForEnvVars(
+  opPath: string,
+  envNames: Iterable<string>,
+  opts: {
+    sdkFactory?: SdkClientFactory;
+    auth?: SdkAuth;
+    env?: NodeJS.ProcessEnv;
+    /** Override the stderr warn sink (tests capture warnings). */
+    warn?: (msg: string) => void;
+  } = {}
+): Promise<Record<string, string>> {
+  const wanted = new Set(envNames);
+  if (wanted.size === 0) return {};
+
+  const warn = opts.warn ?? ((m: string) => console.error(m));
+  const glob = parseGlobImport(opPath);
+  const fields = await discoverItemFields(glob.vault, glob.item, {
+    sdkFactory: opts.sdkFactory,
+    auth: opts.auth,
+    env: opts.env,
+    warn,
+  });
+  const matches = filterGlobFields(fields, glob);
+
+  // Keep ONLY valid matches whose env name is one we're seeking.
+  const refMap: Record<string, string> = {};
+  for (const m of matches) {
+    if (!m.valid) continue;
+    if (!wanted.has(m.envName)) continue;
+    refMap[m.envName] = m.field.reference;
+  }
+
+  // Nothing wanted matched → return empty (this glob doesn't hold the key).
+  if (Object.keys(refMap).length === 0) return {};
 
   return resolveSecrets(refMap, {
     sdkFactory: opts.sdkFactory,
@@ -853,7 +920,7 @@ function runSdkExclusive<T>(op: () => Promise<T>): Promise<T> {
   // rejected op doesn't poison the queue for the next caller.
   sdkQueue = run.then(
     () => undefined,
-    () => undefined,
+    () => undefined
   );
   return run;
 }
@@ -1092,8 +1159,7 @@ export async function resolveSdkAuth(
       .map((a) => `  - ${a.url}${a.email ? ` (${a.email})` : ""}`)
       .join("\n");
     throw buildAuthError(
-      "Multiple 1Password accounts are available but none was selected.\n" +
-        `Accounts:\n${listing}`
+      "Multiple 1Password accounts are available but none was selected.\n" + `Accounts:\n${listing}`
     );
   }
 
