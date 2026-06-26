@@ -88,6 +88,11 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     return !!this.resolveSync() || this.hasOauthFallbackFile();
   }
 
+  /** SYNC resolved key string for the construction path (env → aliases → config). */
+  apiKeyValue(): string {
+    return this.resolveSync() ?? "";
+  }
+
   async getRequestAuth(_ctx: RequestAuthContext): Promise<RequestAuth> {
     const key = this.resolveSync() || "";
     let headers: Record<string, string>;

@@ -41,6 +41,11 @@ export class CompositeCredentialProvider implements CredentialProvider {
     return this.primary.isAuthenticated() || this.fallback.isAuthenticated();
   }
 
+  /** Construction-time key string comes from the API-key fallback half. */
+  apiKeyValue(): string {
+    return this.fallback.apiKeyValue?.() ?? "";
+  }
+
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     if (this.primary.isAuthenticated()) {
       try {

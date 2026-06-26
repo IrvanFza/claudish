@@ -39,6 +39,20 @@ export class CredentialAuthority {
     }
   }
 
+  /**
+   * SYNC resolved API-key STRING for the handler-construction path (proxy-server
+   * builds transports synchronously, before any request). Resolves env → aliases
+   * → config (op:// already hydrated into env up front). "" for OAuth/local/unknown
+   * providers — they mint per-request auth via getRequestAuth(), not a static key.
+   */
+  getApiKey(name: string): string {
+    try {
+      return this.registry.get(name)?.apiKeyValue?.() ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   async getRequestAuth(name: string, ctx: RequestAuthContext): Promise<RequestAuth> {
     const p = this.registry.get(name);
     if (!p) throw new Error(`No credential provider for ${name}`);

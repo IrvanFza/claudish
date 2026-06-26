@@ -33,6 +33,15 @@ export interface CredentialProvider {
   isAuthenticated(): boolean;
   /** ASYNC: the rich artifact for an outgoing request. Refreshes OAuth tokens internally. */
   getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth>;
+  /**
+   * SYNC: the resolved API-key STRING, for the synchronous handler-construction
+   * path (proxy-server builds transports before any request, no await). Resolves
+   * env → aliases → config (op:// already hydrated into env up front). Returns ""
+   * for OAuth/local providers — they never use a construction-time key string;
+   * they mint per-request auth via getRequestAuth(). Optional: providers that
+   * don't implement it have no construction-time key.
+   */
+  apiKeyValue?(): string;
   login?(): Promise<void>;
   logout?(): Promise<void>;
 }
