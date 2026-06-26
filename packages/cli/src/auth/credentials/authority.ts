@@ -96,6 +96,10 @@ export class CredentialAuthority {
           envVar: def.apiKeyEnvVar,
           aliases: def.apiKeyAliases,
           authScheme: def.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+          // Mirror the readiness affordances the old isProviderAvailable oracle
+          // granted, so authority.isAuthenticated() matches hasCredentialsForProvider.
+          publicKeyFallback: !!def.publicKeyFallback,
+          oauthFallback: def.oauthFallback,
         }),
         [def.name]
       );

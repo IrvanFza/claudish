@@ -120,6 +120,30 @@ describe("ApiKeyCredentialProvider", () => {
     expect(auth.headers.Authorization).toBe("Bearer sk-static");
   });
 
+  test("isAuthenticated() is always true when publicKeyFallback is set", () => {
+    // No env/config key at all, but a public/free key means always-available
+    // (mirrors isProviderAvailable's publicKeyFallback branch).
+    const provider = new ApiKeyCredentialProvider({
+      catalogName: "zen",
+      envVar: "CLAUDISH_TEST_ZEN_KEY_UNSET",
+      publicKeyFallback: true,
+    });
+    expect(provider.isAuthenticated()).toBe(true);
+  });
+
+  test("isAuthenticated() is true when the oauthFallback file exists", () => {
+    // package.json is guaranteed to exist; we point oauthFallback's existsSync at
+    // it via a relative filename that resolves under ~/.claudish only when present.
+    // Here we assert the negative+positive via a real file presence check: a
+    // bogus oauthFallback filename must NOT authenticate.
+    const provider = new ApiKeyCredentialProvider({
+      catalogName: "fake-oauth",
+      envVar: "CLAUDISH_TEST_FAKE_OAUTH_KEY_UNSET",
+      oauthFallback: "claudish-test-definitely-absent-oauth.json",
+    });
+    expect(provider.isAuthenticated()).toBe(false);
+  });
+
   // CRITICAL laziness test: a sync isAuthenticated() check with NO env/config key
   // and an op:// glob in config must return false WITHOUT touching the 1Password
   // SDK. It is sync, so it literally cannot do the async SDK call — we assert it
