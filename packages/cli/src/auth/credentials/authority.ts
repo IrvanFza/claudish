@@ -12,7 +12,7 @@ import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { GeminiCodeAssistCredentialProvider } from "./gemini-credential.js";
-import { makeKimiCredential } from "./kimi-credential.js";
+import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
@@ -77,7 +77,11 @@ export class CredentialAuthority {
     // Explicitly-handled providers (OAuth / composite / ADC / local / native).
     authority.register(makeCodexCredential(), ["openai-codex"]);
     authority.register(new GeminiCodeAssistCredentialProvider(), ["gemini-codeassist", "google"]);
-    authority.register(makeKimiCredential(), ["kimi", "kimi-coding"]);
+    authority.register(makeKimiCredential(), ["kimi"]);
+    // kimi-coding is a SEPARATE product with its own endpoint + KIMI_CODING_API_KEY.
+    // It must NOT alias onto the regular Kimi credential, or the coding endpoint
+    // receives the wrong product's key → 401.
+    authority.register(makeKimiCodingCredential(), ["kimi-coding"]);
     authority.register(new VertexCredentialProvider(), ["vertex"]);
     for (const name of LOCAL_PROVIDER_NAMES) {
       authority.register(new LocalCredentialProvider(name), [name]);

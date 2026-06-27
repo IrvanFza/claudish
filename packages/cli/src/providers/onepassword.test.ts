@@ -26,8 +26,10 @@ import {
   filterGlobFields,
   globToRegExp,
   isGlobImport,
+  isOpHydratedVar,
   isOpReference,
   isTransientSdkError,
+  recordOpHydratedVars,
   maskSecret,
   parseGlobImport,
   parseOpFlag,
@@ -65,6 +67,28 @@ describe("isOpReference / OP_REF_RE", () => {
     expect(isOpReference(null)).toBe(false);
     // @ts-expect-error intentionally passing a non-string
     expect(isOpReference(undefined)).toBe(false);
+  });
+});
+
+describe("recordOpHydratedVars / isOpHydratedVar", () => {
+  test("records names and reports them as op-hydrated", () => {
+    const v = `CLAUDISH_TEST_OP_HYDRATED_${"A"}_KEY`;
+    expect(isOpHydratedVar(v)).toBe(false);
+    recordOpHydratedVars([v]);
+    expect(isOpHydratedVar(v)).toBe(true);
+  });
+
+  test("a non-recorded var is not op-hydrated; undefined is safe", () => {
+    expect(isOpHydratedVar("CLAUDISH_TEST_NEVER_RECORDED_KEY")).toBe(false);
+    expect(isOpHydratedVar(undefined)).toBe(false);
+    expect(isOpHydratedVar("")).toBe(false);
+  });
+
+  test("ignores empty/non-string names", () => {
+    // Should not throw, and must not mark "" as hydrated.
+    recordOpHydratedVars(["", "CLAUDISH_TEST_OP_VALID_KEY"]);
+    expect(isOpHydratedVar("")).toBe(false);
+    expect(isOpHydratedVar("CLAUDISH_TEST_OP_VALID_KEY")).toBe(true);
   });
 });
 

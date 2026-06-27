@@ -49,6 +49,33 @@ export function isOpReference(v: string): boolean {
   return typeof v === "string" && OP_REF_RE.test(v);
 }
 
+/**
+ * Provenance registry for 1Password-hydrated env vars.
+ *
+ * 1Password keys are resolved at startup and written into `process.env` (see
+ * index.ts hydration points). Once there, an op://-sourced key is
+ * indistinguishable from a genuine shell env var by `process.env` inspection
+ * alone — which made the config TUI mislabel 1Password keys as "From: env".
+ *
+ * Each hydration site records the env-var names it sourced from 1Password via
+ * `recordOpHydratedVars`; UI/provenance code reads `isOpHydratedVar` to show the
+ * true source. In-memory is sufficient because both consumers (`claudish config`
+ * and `--probe`) run hydration in the SAME process before rendering.
+ */
+const opHydratedVars = new Set<string>();
+
+/** Record env-var names whose values were hydrated from 1Password. */
+export function recordOpHydratedVars(names: Iterable<string>): void {
+  for (const n of names) {
+    if (typeof n === "string" && n.length > 0) opHydratedVars.add(n);
+  }
+}
+
+/** True when this env var's value was hydrated from 1Password this run. */
+export function isOpHydratedVar(name: string | undefined): boolean {
+  return !!name && opHydratedVars.has(name);
+}
+
 /** Build the standard actionable auth-failure error. */
 export function buildAuthError(detail: string): Error {
   return new Error(

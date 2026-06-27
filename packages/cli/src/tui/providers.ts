@@ -24,6 +24,14 @@ export interface ProviderDef {
   aliases?: string[];
   isLocal?: boolean;
   /**
+   * If set, the provider is usable WITHOUT any user credential — it ships a
+   * built-in public/free key (e.g. OpenCode Zen). Sourced from the catalog's
+   * `publicKeyFallback`. Such a provider is "ready" even with no env/cfg key,
+   * which is why the readiness/source logic must treat it specially (else it
+   * lands under "not configured" yet probes green — the OpenCode Zen bug).
+   */
+  publicKeyFallback?: boolean;
+  /**
    * If set, this provider supports OAuth login via `claudish login {slug}`.
    * Used by the Providers tab `l` keybinding.
    */
@@ -46,6 +54,7 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
     defaultEndpoint: def.baseUrl || undefined,
     aliases: def.apiKeyAliases,
     isLocal: def.isLocal,
+    publicKeyFallback: !!def.publicKeyFallback,
     // Sourced from the catalog (provider-definitions.ts), not a duplicate
     // table here. If a provider supports `claudish login {slug}`, the
     // catalog entry declares which slug.
@@ -70,14 +79,23 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
  *   ~/.claudish/config.json; for all other providers: env > cfg > (no OAuth path).
  *
  * Returns:
- *   "local" - local provider explicitly enabled in global config
- *   "oauth" - valid OAuth credentials on disk (OAuth-capable providers)
- *   "e+c"   - both env var AND config-file key present
- *   "env"   - env var only
- *   "cfg"   - config-file key only
- *   null    - no credentials of any kind
+ *   "local"  - local provider explicitly enabled in global config
+ *   "oauth"  - valid OAuth credentials on disk (OAuth-capable providers)
+ *   "e+c"    - both env var AND config-file key present
+ *   "env"    - env var only
+ *   "cfg"    - config-file key only
+ *   "public" - no user credential, but the provider ships a public/free key
+ *              (publicKeyFallback) so it's usable as-is (e.g. OpenCode Zen)
+ *   null     - no credentials of any kind
+ *
+ * "public" is checked LAST among the ready sources: a real env/cfg/oauth key
+ * always takes precedence in the display, and the public-key affordance only
+ * fills in when nothing else is set. Keeping it as a non-null source is what
+ * makes the "configured first" sort, the "not configured" divider, the status
+ * dot, and Test All all AGREE with providerIsReady (which already honors
+ * publicKeyFallback via credentials.isAuthenticated).
  */
-export type AuthSource = "e+c" | "env" | "cfg" | "oauth" | "local" | null;
+export type AuthSource = "e+c" | "env" | "cfg" | "oauth" | "local" | "public" | null;
 
 export function providerAuthSource(
   p: ProviderDef,
@@ -91,6 +109,8 @@ export function providerAuthSource(
   if (hasEnv && hasCfg) return "e+c";
   if (hasEnv) return "env";
   if (hasCfg) return "cfg";
+  // Keyless/free providers are usable without any user credential.
+  if (p.publicKeyFallback) return "public";
   return null;
 }
 
@@ -120,6 +140,19 @@ export function providerIsReady(
   p: ProviderDef,
   config: { apiKeys?: Record<string, string>; localProviders?: string[] }
 ): boolean {
+  // Guard against a catalogName that the authority aliases onto a DIFFERENT
+  // product's credential. The direct-Gemini row has catalogName "google", but
+  // the authority registers the Gemini Code Assist OAuth credential under the
+  // "google" alias — so credentials.isAuthenticated("google") reflects Code
+  // Assist OAuth, NOT the direct API's GEMINI_API_KEY. A user who ran
+  // `claudish login gemini` (OAuth) but never set GEMINI_API_KEY would otherwise
+  // see the direct-Gemini row falsely "ready", then 401 on probe (the API-key
+  // transport has no key). The direct row is API-key-only (no oauthSlug), so for
+  // a NON-OAuth-capable provider we trust ONLY the source classifier (env / cfg
+  // / public), never the authority's OAuth-derived bool.
+  if (!p.oauthSlug) {
+    return providerAuthSource(p, config) !== null;
+  }
   return credentials.isAuthenticated(p.catalogName) || providerAuthSource(p, config) !== null;
 }
 

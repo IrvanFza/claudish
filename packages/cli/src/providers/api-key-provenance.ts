@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseDotenv } from "dotenv";
+import { isOpHydratedVar } from "./onepassword.js";
 
 export interface KeyLayer {
   source: string;
@@ -44,7 +45,6 @@ function maskKey(key: string | undefined | null): string | null {
  */
 export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): KeyProvenance {
   const layers: KeyLayer[] = [];
-  const effectiveValue = process.env[envVar] || null;
   let effectiveSource = "not set";
 
   // Check all env var names (primary + aliases)
@@ -96,6 +96,13 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
       effectiveSource = "~/.claudish/config.json";
       layers[1].isActive = true;
       layers[2].isActive = false;
+    } else if (isOpHydratedVar(runtimeVar)) {
+      // The value sits in process.env, but it was hydrated from 1Password at
+      // startup (op:// ref, glob import, or Environment) — not a genuine shell
+      // env var. Report the true origin so the UI doesn't mislabel it "env".
+      effectiveSource = "1Password";
+      layers[2].source = `process.env[${runtimeVar}] (from 1Password)`;
+      // layers[2] already marked active
     } else {
       effectiveSource = "shell environment";
       // layers[2] already marked active

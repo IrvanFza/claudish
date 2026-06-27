@@ -87,6 +87,35 @@ describe("ApiKeyCredentialProvider", () => {
     expect(provider.isAuthenticated()).toBe(true);
   });
 
+  // Regression: when ONLY an alias env var is set, the resolved key must be the
+  // alias's VALUE, not the alias NAME. Previously resolveSync used
+  // `aliases.find(a => process.env[a])`, which returns the matching element (the
+  // alias NAME string) — so apiKeyValue()/getRequestAuth sent the literal env-var
+  // name as the API key → guaranteed 401. Affects any provider configured via its
+  // alias (e.g. glm via GLM_API_KEY, glm-coding via ZAI_CODING_API_KEY).
+  test("resolves the alias VALUE (not the alias name) when only the alias is set", async () => {
+    process.env[ALIAS] = "sk-alias-real-value-789";
+    const provider = new ApiKeyCredentialProvider({
+      catalogName: "fake",
+      envVar: ENV_VAR,
+      aliases: [ALIAS],
+    });
+    expect(provider.apiKeyValue()).toBe("sk-alias-real-value-789");
+    const auth = await provider.getRequestAuth(CTX);
+    expect(auth.headers.Authorization).toBe("Bearer sk-alias-real-value-789");
+  });
+
+  test("primary env var wins over an alias when both are set", () => {
+    process.env[ENV_VAR] = "sk-primary-wins";
+    process.env[ALIAS] = "sk-alias-loses";
+    const provider = new ApiKeyCredentialProvider({
+      catalogName: "fake",
+      envVar: ENV_VAR,
+      aliases: [ALIAS],
+    });
+    expect(provider.apiKeyValue()).toBe("sk-primary-wins");
+  });
+
   test("getRequestAuth() returns an Authorization Bearer header (bearer scheme)", async () => {
     process.env[ENV_VAR] = "sk-bearer-789";
     const provider = new ApiKeyCredentialProvider({ catalogName: "fake", envVar: ENV_VAR });
@@ -345,8 +374,10 @@ describe("CredentialAuthority.buildDefault()", () => {
     // google alias resolves to the same Gemini Code Assist instance
     expect(authority.get("google")).toBe(authority.get("gemini-codeassist"));
     expect(authority.get("kimi")?.catalogName).toBe("kimi");
-    // kimi-coding alias resolves to the same Kimi instance
-    expect(authority.get("kimi-coding")).toBe(authority.get("kimi"));
+    // kimi-coding is a SEPARATE credential (own endpoint + KIMI_CODING_API_KEY),
+    // NOT an alias of the regular Kimi credential.
+    expect(authority.get("kimi-coding")?.catalogName).toBe("kimi-coding");
+    expect(authority.get("kimi-coding")).not.toBe(authority.get("kimi"));
     expect(authority.get("vertex")?.catalogName).toBe("vertex");
     expect(authority.get("native-anthropic")?.catalogName).toBe("native-anthropic");
   });
@@ -364,6 +395,34 @@ describe("CredentialAuthority.buildDefault()", () => {
     expect(authority.get("openrouter")?.catalogName).toBe("openrouter");
     expect(authority.get("openai")?.catalogName).toBe("openai");
     expect(authority.get("glm")?.catalogName).toBe("glm");
+  });
+
+  // Regression: kimi-coding must resolve its OWN key (KIMI_CODING_API_KEY),
+  // not the regular Kimi key. Previously kimi-coding was aliased onto the
+  // shared Kimi composite whose API-key half resolved MOONSHOT_API_KEY first,
+  // so the coding-plan endpoint received the wrong product's key → 401.
+  test("kimi-coding resolves KIMI_CODING_API_KEY, kimi resolves MOONSHOT_API_KEY", () => {
+    const savedMoon = process.env.MOONSHOT_API_KEY;
+    const savedKimi = process.env.KIMI_API_KEY;
+    const savedCoding = process.env.KIMI_CODING_API_KEY;
+    try {
+      process.env.MOONSHOT_API_KEY = "sk-moonshot-regular";
+      delete process.env.KIMI_API_KEY;
+      process.env.KIMI_CODING_API_KEY = "sk-kimi-coding-dedicated";
+
+      const authority = CredentialAuthority.buildDefault();
+      // The coding provider must NOT pick up the regular Moonshot key.
+      expect(authority.getApiKey("kimi-coding")).toBe("sk-kimi-coding-dedicated");
+      // The regular Kimi provider must NOT pick up the coding key.
+      expect(authority.getApiKey("kimi")).toBe("sk-moonshot-regular");
+    } finally {
+      if (savedMoon === undefined) delete process.env.MOONSHOT_API_KEY;
+      else process.env.MOONSHOT_API_KEY = savedMoon;
+      if (savedKimi === undefined) delete process.env.KIMI_API_KEY;
+      else process.env.KIMI_API_KEY = savedKimi;
+      if (savedCoding === undefined) delete process.env.KIMI_CODING_API_KEY;
+      else process.env.KIMI_CODING_API_KEY = savedCoding;
+    }
   });
 
   // The real OAuth singletons read real credential files; we only assert the
