@@ -4,34 +4,29 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.8.0] - 2026-06-27
 
-### New Features
-
-- **Unified credential authority.** All credential resolution — API keys, 1Password-backed keys, OAuth (Codex / Gemini Code Assist / Kimi), Vertex, and local providers — now flows through one `CredentialProvider` abstraction with per-provider implementations behind it (`packages/cli/src/auth/credentials/`). The interface is four methods: `isAuthenticated()` (sync), `getRequestAuth()` (async — returns `{headers, endpoint?, transformPayload?}`), `login()`/`logout()`. The OAuth transports no longer read `~/.claudish/*-oauth.json` themselves or build provider-specific headers — they delegate to `credentials.getRequestAuth()`, which mints the right artifact per provider (Codex's endpoint switch + account-id headers, Gemini's request envelope + project/tier, Kimi's platform headers, all with token refresh handled inside). The readiness oracle (`hasCredentialsForProvider`, the config Providers screen) and the api-key construction path route through the one authority too, pinned by a hermetic equivalence matrix proving identical behavior to the old scattered checks. Per-provider OAuth divergence lives in each implementation, wrapping the existing OAuth singletons — none rewritten.
-
 ### Bug Fixes
 
-- `claudish config` → Providers now shows your 1Password-backed keys instead of "not set". The config TUI resolves all configured `op://` sources (refs + globs) into the environment up front before rendering, so the screen's synchronous "has a key?" reads reflect the real keys. Zero-cost no-op when no 1Password is configured.
+- seed WASM cache from nearby copy (fixes ENOENT core_bg.wasm) *(onepassword)* ([`5a11962`](https://github.com/MadAppGang/claudish/commit/5a11962109fcb362aeee2d7a0956f6c58dcd3b2c))
+- resolve 1Password keys up front when opening the config TUI (step 2) *(config)* ([`0ce68c7`](https://github.com/MadAppGang/claudish/commit/0ce68c7c9d8a9579d9cd303d5e33339dd47dd130))
 
-### Breaking Changes
+### Documentation
 
-- **CLI flags renamed to a consistent naming scheme.** Old flag names are fully replaced — there are NO backward-compatibility aliases, so scripts and configs using the old names must be updated. The rename groups flags into clear families:
+- update CHANGELOG.md for v7.7.4([`24b07ea`](https://github.com/MadAppGang/claudish/commit/24b07ea99f44a1d4a8c622b1ce93a31333528c68))
 
-  | Old flag | New flag |
-  |---|---|
-  | `--cost-tracker` | `--cost-track` |
-  | `--audit-costs` | `--cost-audit` |
-  | `--reset-costs` | `--cost-reset` |
-  | `--list-models` | `--models` |
-  | `--list-providers` | `--providers` |
-  | `--top-models` | `--models-top` |
-  | `--search` / `-s` | `--models-search` / `-s` (the `-s` short alias is kept) |
-  | `--force-update` | `--models-refresh` |
-  | `--skip-models-update` | `--models-skip-update` |
-  | `--debug` / `-d` | `--log-debug` / `-d` (the `-d` short alias is kept) |
-  | `--diag-mode` | `--log-diag` |
-  | `--no-logs` | `--log-off` |
+### New Features
 
-  `--log-level` is unchanged (already consistent). The `--debug` rename applies ONLY to claudish's own debug logging flag — Claude Code's `--debug` passthrough is untouched. The help output's `--profile` line no longer advertises a `-p` short alias (it was never parsed).
+- add CredentialProvider authority (step 1 — pure addition) *(credentials)* ([`c5364e6`](https://github.com/MadAppGang/claudish/commit/c5364e66388b1a8fb6ac614233741af1044e3bc5))
+
+### Other Changes
+
+- v7.8.0 — unified credential authority + flag-consistency rename([`7bf44f1`](https://github.com/MadAppGang/claudish/commit/7bf44f11ec818401992956f34cfc0173edd83c52))
+
+### Refactoring
+
+- consistent flag naming + colorized, validated --help *(cli)* ([`7ec5407`](https://github.com/MadAppGang/claudish/commit/7ec5407afa3403df7c98f541cd1449fc6a3024fb))
+- OAuth transports delegate to the authority, stop reading files (step 5) *(credentials)* ([`217b60e`](https://github.com/MadAppGang/claudish/commit/217b60e2892eb1f3b018504757c5dea4a09c26a8))
+- resolve construction-path api key via the authority (step 4) *(credentials)* ([`c58939b`](https://github.com/MadAppGang/claudish/commit/c58939b34fdae972bd52c44001bcd8e69333377c))
+- route the readiness oracle through the authority (step 3) *(credentials)* ([`dc8ebac`](https://github.com/MadAppGang/claudish/commit/dc8ebac65f3f7cba178c2d8bcb92be3b8074a73b))
 
 ## [7.7.4] - 2026-06-26
 
