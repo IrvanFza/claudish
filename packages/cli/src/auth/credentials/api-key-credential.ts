@@ -68,8 +68,13 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
 
   /** SYNC: env → aliases → config.json apiKeys. Never resolves op://. */
   private resolveSync(): string | undefined {
+    // NOTE: map alias names to their VALUES before .find — `aliases.find(a =>
+    // process.env[a])` would return the alias NAME (a truthy string), so the
+    // credential would send the literal env-var name as the API key → 401.
     return (
-      process.env[this.envVar] || this.aliases.find((a) => process.env[a]) || getApiKey(this.envVar)
+      process.env[this.envVar] ||
+      this.aliases.map((a) => process.env[a]).find((v) => !!v) ||
+      getApiKey(this.envVar)
     );
   }
 

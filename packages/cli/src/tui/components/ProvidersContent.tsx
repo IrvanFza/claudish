@@ -8,12 +8,15 @@ import {
 } from "../providers.js";
 import type { TestResultsMap } from "../types.js";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
+import type { LocalLiveness } from "../../providers/local-liveness.js";
 
 interface ProvidersContentProps {
   config: ClaudishProfileConfig;
   displayProviders: ProviderDef[];
   providerIndex: number;
   testResults: TestResultsMap;
+  /** Liveness of local servers keyed by catalogName (ollama/lmstudio/...). */
+  localLiveness: Record<string, LocalLiveness>;
   contentH: number;
   isInputMode: boolean;
   animTick: number;
@@ -60,6 +63,7 @@ export function ProvidersContent({
   displayProviders,
   providerIndex,
   testResults,
+  localLiveness,
   contentH,
   isInputMode,
   animTick,
@@ -116,6 +120,9 @@ export function ProvidersContent({
       keyDisplay = "local";
     } else if (isOauthOnly) {
       keyDisplay = "oauth···";
+    } else if (auth === "public") {
+      // Keyless/free provider (publicKeyFallback) — no user key, but usable.
+      keyDisplay = "free";
     } else if (auth === "cfg") {
       keyDisplay = maskKey(config.apiKeys?.[p.apiKeyEnvVar]);
     } else if (auth === "env" || auth === "e+c") {
@@ -129,6 +136,29 @@ export function ProvidersContent({
     // `tr` was already resolved above (for the key scramble); reuse it here.
     let statusFg: string = isReady ? C.green : C.dim;
     let statusText = p.isLocal ? (isReady ? "enabled" : "disabled") : isReady ? "ready" : "not set";
+    // Local providers: layer liveness on top of config-enabled. "enabled" alone
+    // is misleading (the server may be down); a detected-but-not-enabled server
+    // is a useful nudge to enable it.
+    if (p.isLocal) {
+      const live = localLiveness[p.catalogName];
+      if (isReady) {
+        // config-enabled
+        if (live === "running") {
+          statusFg = C.green;
+          statusText = "running";
+        } else if (live === "down") {
+          statusFg = C.yellow;
+          statusText = "down";
+        } // live === undefined/unknown → keep "enabled"
+      } else {
+        // not config-enabled
+        if (live === "running") {
+          // Server is up but the user hasn't enabled it — surface it.
+          statusFg = C.cyan;
+          statusText = "running · off";
+        } // down/unknown → keep "disabled"
+      }
+    }
     if (tr) {
       if (tr.status === "testing") {
         statusFg = C.yellow;

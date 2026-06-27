@@ -25,6 +25,12 @@ import {
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { describeProbeState } from "../providers/probe-live.js";
 import { probeProviderRoute } from "../providers/probe-runner.js";
+import {
+  localBaseUrl,
+  pingLocalProvider,
+  pingLocalProviders,
+  type LocalLiveness,
+} from "../providers/local-liveness.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
 import {
   ensureProbeProxy,
@@ -94,6 +100,7 @@ import {
   maskSecret,
   envNameFromOpRef,
   resolveGlobImport,
+  isOpHydratedVar,
   type AccountInfo,
   type DiscoveredField,
 } from "../providers/onepassword.js";
@@ -162,6 +169,10 @@ export function App({ requestLogin }: AppProps = {}) {
   const [editingExistingPattern, setEditingExistingPattern] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResultsMap>({});
+  // Liveness of local servers (ollama/lmstudio/vllm/mlx), keyed by catalogName.
+  // Populated by a periodic background ping so the Providers tab can show
+  // "running" vs "down" — config-enabled is NOT the same as actually-running.
+  const [localLiveness, setLocalLiveness] = useState<Record<string, LocalLiveness>>({});
   const [animTick, setAnimTick] = useState(0);
   const anyTesting = useMemo(
     () => Object.values(testResults).some((r) => r?.status === "testing"),
@@ -173,6 +184,28 @@ export function App({ requestLogin }: AppProps = {}) {
     const id = setInterval(() => setAnimTick((tick) => (tick + 1) % 1_000_000), 90);
     return () => clearInterval(id);
   }, [anyTesting]);
+
+  // Background liveness ping for local servers. Only runs while the Providers
+  // tab is visible. Pings every local provider's health endpoint (short
+  // timeout) on entry and every 10s, so the list reflects what's ACTUALLY
+  // running — a started Ollama lights up even if not yet config-enabled, and an
+  // enabled-but-stopped LM Studio shows "down" instead of a misleading green.
+  useEffect(() => {
+    if (activeTab !== "providers") return;
+    let cancelled = false;
+    const localNames = PROVIDERS.filter((p) => p.isLocal).map((p) => p.catalogName);
+    if (localNames.length === 0) return;
+    const sweep = async () => {
+      const map = await pingLocalProviders(localNames);
+      if (!cancelled) setLocalLiveness(map);
+    };
+    void sweep();
+    const id = setInterval(() => void sweep(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [activeTab]);
 
   // Profile tab state — only the cursor is owned by App. The rest of the
   // profile-edit wizard state lives in useProfileWizard.
@@ -265,6 +298,19 @@ export function App({ requestLogin }: AppProps = {}) {
     setOpTick((t) => t + 1);
   }, []);
 
+  // Drop the cached test badge for one provider (keyed by TUI name, as
+  // runProbeTest stores it). Call on any credential change — save/remove key or
+  // URL, OAuth login — so a stale FAIL / "ready Xms" doesn't outlive the
+  // credential that produced it.
+  const clearTestResult = useCallback((provName: string) => {
+    setTestResults((prev) => {
+      if (!(provName in prev)) return prev;
+      const next = { ...prev };
+      delete next[provName];
+      return next;
+    });
+  }, []);
+
   // Route probe wizard — owns probeMode/probeModel/probeResults internally.
   // The keyboard handler delegates to verb methods (startInput, submit, etc.).
   const probe = useRouteProbe(config);
@@ -286,7 +332,15 @@ export function App({ requestLogin }: AppProps = {}) {
 
   const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
   const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
-  const hasKey = hasCfgKey || hasEnvKey || selectedLocalEnabled;
+  // Keyless/free provider (publicKeyFallback, e.g. OpenCode Zen): usable with no
+  // user key. Counts as "has key" so the detail pane shows it Ready, consistent
+  // with providerIsReady / the Providers list (no more "ready" under
+  // "not configured").
+  const selectedPublicKey = !!selectedProvider.publicKeyFallback && !hasCfgKey && !hasEnvKey;
+  const hasKey = hasCfgKey || hasEnvKey || selectedLocalEnabled || selectedPublicKey;
+  // True when the env-var value was hydrated from 1Password at startup (not a
+  // genuine shell env var) — so the detail pane shows "From: 1Password", not "env".
+  const isOpKey = hasEnvKey && isOpHydratedVar(selectedProvider.apiKeyEnvVar);
   const cfgKeyMask = maskKey(config.apiKeys?.[selectedProvider.apiKeyEnvVar]);
   const envKeyMask = maskKey(process.env[selectedProvider.apiKeyEnvVar]);
   const activeEndpointEnvVar = selectedProvider.endpointEnvVar;
@@ -851,6 +905,26 @@ export function App({ requestLogin }: AppProps = {}) {
     const provName = prov.name;
 
     setTestResults((prev) => ({ ...prev, [provName]: { status: "testing" } }));
+
+    // Local providers: ping the server first (short timeout). If it's not
+    // running, fast-fail with a clear "not running" message instead of letting
+    // endpoint discovery + probe eat the full 15s timeout (the LM-Studio
+    // "operation timed out" footgun).
+    if (prov.isLocal) {
+      const live = await pingLocalProvider(prov.catalogName);
+      if (live === "down") {
+        const base = localBaseUrl(prov.catalogName);
+        setTestResults((prev) => ({
+          ...prev,
+          [provName]: {
+            status: "failed",
+            error: `not running${base ? ` (${base} unreachable)` : ""}`,
+          },
+        }));
+        return;
+      }
+    }
+
     const outcome = await ensureProbeModelsCached();
     if (outcome.kind !== "ok") {
       setTestResults((prev) => ({
@@ -1071,6 +1145,11 @@ export function App({ requestLogin }: AppProps = {}) {
         // model lookup keyed by the old URL.
         invalidateProbeProxyHandlers(selectedProvider.catalogName);
         invalidateProbeDiscovery(selectedProvider.catalogName);
+        // Clear the stale test badge: a previous FAIL/valid result reflects the
+        // OLD credential, not the one just saved. Leaving it would show a red
+        // FAIL even after the user pastes a working key (testResults is separate
+        // state that refreshConfig doesn't touch).
+        clearTestResult(selectedProvider.name);
         refreshConfig();
         setInputValue("");
         setMode("browse");
@@ -1726,6 +1805,8 @@ export function App({ requestLogin }: AppProps = {}) {
         if (changed) {
           invalidateProbeProxyHandlers(selectedProvider.catalogName);
           invalidateProbeDiscovery(selectedProvider.catalogName);
+          // The prior test badge reflected the now-removed credential.
+          clearTestResult(selectedProvider.name);
           refreshConfig();
           setStatusMsg(`Stored config removed for ${selectedProvider.displayName}.`);
         } else {
@@ -1776,7 +1857,12 @@ export function App({ requestLogin }: AppProps = {}) {
         // silently — that's a more useful signal than an absent row.
         const fired: string[] = [];
         for (const prov of PROVIDERS) {
-          if (!providerIsReady(prov, config)) continue;
+          // A local server that is RUNNING right now is worth testing even if
+          // the user hasn't config-enabled it yet (e.g. a freshly-started
+          // Ollama) — otherwise it's invisible to Test All. Non-local providers
+          // and not-running locals keep the credential gate.
+          const localRunning = prov.isLocal && localLiveness[prov.catalogName] === "running";
+          if (!providerIsReady(prov, config) && !localRunning) continue;
           fired.push(prov.displayName);
           // Fire-and-forget — errors are written into testResults inside
           // runProbeTest, no need to await.
@@ -1797,11 +1883,15 @@ export function App({ requestLogin }: AppProps = {}) {
         // we don't want to flip the badge to FAIL just because nothing is
         // configured. Use the right hint based on provider capabilities.
         const caps = providerAuthCapabilities(selectedProvider, config);
-        const ready = providerIsReady(selectedProvider, config);
+        // A running local server is testable even when not config-enabled.
+        const localRunning =
+          selectedProviderIsLocal &&
+          localLiveness[selectedProvider.catalogName] === "running";
+        const ready = providerIsReady(selectedProvider, config) || localRunning;
         if (!ready) {
           if (selectedProviderIsLocal) {
             setStatusMsg(
-              `${selectedProvider.displayName}: disabled. Press e to enable in global config.`
+              `${selectedProvider.displayName}: not running / disabled. Start the server, or press e to enable.`
             );
           } else if (caps.apiKey.supported && caps.oauth.supported) {
             setStatusMsg(
@@ -2122,6 +2212,7 @@ export function App({ requestLogin }: AppProps = {}) {
             displayProviders={displayProviders}
             providerIndex={providerIndex}
             testResults={testResults}
+            localLiveness={localLiveness}
             contentH={contentH}
             isInputMode={isInputMode}
             animTick={animTick}
@@ -2135,6 +2226,8 @@ export function App({ requestLogin }: AppProps = {}) {
             hasCfgKey={hasCfgKey}
             hasEnvKey={hasEnvKey}
             hasKey={hasKey}
+            isOpKey={isOpKey}
+            isPublicKey={selectedPublicKey}
             cfgKeyMask={cfgKeyMask}
             envKeyMask={envKeyMask}
             activeEndpoint={activeEndpoint}

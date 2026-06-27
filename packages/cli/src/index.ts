@@ -175,7 +175,7 @@ async function applyOpEnvironment(): Promise<void> {
   try {
     // Dynamic import: only pull in the onepassword resolution path (and the SDK)
     // when an environment source is actually present.
-    const { readEnvironment } = await import("./providers/onepassword.js");
+    const { readEnvironment, recordOpHydratedVars } = await import("./providers/onepassword.js");
     const auth = await getSdkAuth();
     for (const envId of envIds) {
       const vars = await readEnvironment(envId, { auth });
@@ -183,6 +183,7 @@ async function applyOpEnvironment(): Promise<void> {
         // Environments are the highest-priority source: overwrite unconditionally.
         process.env[key] = value;
       }
+      recordOpHydratedVars(Object.keys(vars));
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -246,12 +247,13 @@ async function applyOpImport(): Promise<void> {
   // process env (explicit inline request, same as --op-env). Then strip the flag
   // tokens from process.argv and fall through to the normal dispatch.
   try {
-    const { resolveGlobImport } = await import("./providers/onepassword.js");
+    const { resolveGlobImport, recordOpHydratedVars } = await import("./providers/onepassword.js");
     const auth = await getSdkAuth();
     const resolved = await resolveGlobImport(glob, { auth });
     for (const [key, value] of Object.entries(resolved)) {
       process.env[key] = value;
     }
+    recordOpHydratedVars(Object.keys(resolved));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[claudish] 1Password --op import failed: ${message}`);
@@ -365,9 +367,12 @@ async function loadStoredApiKeys(neededEnvVars?: Set<string>): Promise<void> {
   try {
     // Dynamic import: only load the resolution path (and the SDK) when an
     // op:// reference OR glob import is actually present.
-    const { resolveSecrets, resolveGlobImport, resolveGlobImportForEnvVars } = await import(
-      "./providers/onepassword.js"
-    );
+    const {
+      resolveSecrets,
+      resolveGlobImport,
+      resolveGlobImportForEnvVars,
+      recordOpHydratedVars,
+    } = await import("./providers/onepassword.js");
     const auth = await getSdkAuth();
 
     // Single op:// refs: batched, in one resolveAll call.
@@ -376,6 +381,7 @@ async function loadStoredApiKeys(neededEnvVars?: Set<string>): Promise<void> {
       for (const [envVar, value] of Object.entries(resolved)) {
         process.env[envVar] = value;
       }
+      recordOpHydratedVars(Object.keys(resolved));
     }
 
     // Glob imports: each expands to MANY env vars (named by field label).
@@ -406,8 +412,11 @@ async function loadStoredApiKeys(neededEnvVars?: Set<string>): Promise<void> {
               warn: () => {},
             });
         for (const [envVar, value] of Object.entries(resolved)) {
+          // Explicit/shell env wins: only hydrate (and record op provenance for)
+          // a var we actually set — a var already present came from the real env.
           if (!process.env[envVar]) {
             process.env[envVar] = value;
+            recordOpHydratedVars([envVar]);
           }
         }
       } catch (globErr) {
@@ -469,12 +478,13 @@ async function applyCustomEndpointOpKeys(neededEnvVars?: Set<string>): Promise<v
   if (Object.keys(refs).length === 0) return;
 
   try {
-    const { resolveSecrets } = await import("./providers/onepassword.js");
+    const { resolveSecrets, recordOpHydratedVars } = await import("./providers/onepassword.js");
     const auth = await getSdkAuth();
     const resolved = await resolveSecrets(refs, { auth });
     for (const [envVar, value] of Object.entries(resolved)) {
       process.env[envVar] = value;
     }
+    recordOpHydratedVars(Object.keys(resolved));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[claudish] 1Password custom-endpoint key resolution failed: ${message}`);

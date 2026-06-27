@@ -25,6 +25,10 @@ interface ProviderDetailProps {
   hasCfgKey: boolean;
   hasEnvKey: boolean;
   hasKey: boolean;
+  /** True when the env-var key was hydrated from 1Password (not a shell env var). */
+  isOpKey: boolean;
+  /** True for a keyless/free provider usable via its built-in public key. */
+  isPublicKey: boolean;
   cfgKeyMask: string;
   envKeyMask: string;
   activeEndpoint: string;
@@ -41,6 +45,8 @@ export function ProviderDetail({
   hasCfgKey,
   hasEnvKey,
   hasKey,
+  isOpKey,
+  isPublicKey,
   cfgKeyMask,
   envKeyMask,
   activeEndpoint,
@@ -57,7 +63,9 @@ export function ProviderDetail({
       ? envKeyMask
       : hasCfgKey
         ? cfgKeyMask
-        : "────────";
+        : isPublicKey
+          ? "free"
+          : "────────";
 
   if (isInputMode) {
     return (
@@ -147,12 +155,19 @@ export function ProviderDetail({
             <span fg={C.green} attributes={A.bold}>{"global config"}</span>
           </>
         )}
-        {hasKey && !selectedProvider.isLocal && (
+        {hasKey && !selectedProvider.isLocal && isPublicKey && (
+          <>
+            <span fg={C.dim}>{"   "}</span>
+            <span fg={C.blue} attributes={A.bold}>{"From: "}</span>
+            <span fg={C.green} attributes={A.bold}>{"public key (free)"}</span>
+          </>
+        )}
+        {hasKey && !selectedProvider.isLocal && !isPublicKey && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>{"From: "}</span>
             {hasEnvKey && (
-              <span fg={C.green} attributes={A.bold}>{"env"}</span>
+              <span fg={C.green} attributes={A.bold}>{isOpKey ? "1Password" : "env"}</span>
             )}
             {hasEnvKey && hasCfgKey && (
               <span fg={C.fgMuted}>{" (used) + "}</span>
