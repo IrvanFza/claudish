@@ -41,6 +41,9 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 // ── Shared mutable state, consulted by every mock / override ──────────────────
 
@@ -51,7 +54,12 @@ interface MatrixState {
   codexHasCreds: boolean;
   /** envVar -> value for the config.json apiKeys map (getApiKey). */
   configKeys: Map<string, string>;
-  /** Provider names enabled as local providers (isLocalProviderEnabled). */
+  /**
+   * Provider names enabled as local providers. These are written into the REAL
+   * global config file (localProviders[]) in beforeEach — NOT mocked. See the
+   * "Local providers" note below for why mocking isLocalProviderEnabled is not
+   * isolation-safe.
+   */
   localEnabled: Set<string>;
 }
 
@@ -69,27 +77,122 @@ function resetState(): void {
   state.localEnabled.clear();
 }
 
-// ── Module mocks (hoisted by Bun; registered before the real imports below) ───
-
-mock.module("../oauth-registry.js", () => ({
-  hasOAuthCredentials: (name: string) => state.oauthAuthed.has(name),
-  // Preserve the OAUTH_PROVIDERS export shape in case anything reads it.
-  OAUTH_PROVIDERS: {},
-}));
+// ── Module mocks ──────────────────────────────────────────────────────────────
+//
+// `installModuleMocks()` registers the two leaf mocks that BOTH the new authority
+// and the old oracle consult. It is invoked once below (so the real imports that
+// follow capture the mocks).
+//
+// ── Local providers: NOT mocked — driven via the REAL config file ─────────────
+// NOTE the deliberate ASYMMETRY: this mock no longer overrides
+// `isLocalProviderEnabled`. Here's why mocking it is not isolation-safe.
+//
+// `authority.js` exports a `credentials` SINGLETON, built once via
+// `CredentialAuthority.buildDefault()` at module-load time. Its
+// LocalCredentialProvider closes over the `isLocalProviderEnabled` binding from
+// `local-credential.js`. In a full-suite run, some OTHER file imports `authority.js`
+// (directly, or transitively via routing-rules / proxy-server) BEFORE this file's
+// `mock.module("../../profile-config.js")` runs, so the singleton — and the
+// local-credential binding — are materialized against the REAL profile-config.
+// Bun then serves that already-built singleton from cache to our `await import`,
+// and a later `mock.module` does NOT retroactively re-point the binding inside a
+// build context that has already resolved. Net effect: `isAuthenticated("ollama")`
+// calls the REAL `isLocalProviderEnabled` regardless of our mock.
+//
+// Every OTHER provider in the matrix is decided by `process.env` (which we drive
+// directly) or by the oauth-registry mock / CodexOAuth override (which target a
+// no-singleton function and a method we patch in place) — those ARE isolation-safe.
+// The LOCAL path is the ONLY one whose truth flows through `isLocalProviderEnabled`
+// → `loadConfig()` → the real global config file. So for the local case we drive
+// that SINGLE shared source directly: `seedLocalProviders()` (in beforeEach) writes
+// the real ~/.claudish/config.json `localProviders[]` (backing up + restoring the
+// user's real file in afterEach, the same backup/restore pattern
+// handlers/default-provider-e2e.test.ts uses). BOTH the authority's
+// LocalCredentialProvider AND the oracle read that one file via loadConfig(), so
+// they can never diverge and the result is independent of test execution order.
+// This was the only assertion that failed in the full suite; it now passes because
+// it no longer depends on a mock reaching the singleton.
 
 const realProfileConfig = await import("../../profile-config.js");
-mock.module("../../profile-config.js", () => ({
-  ...realProfileConfig,
-  getApiKey: (envVar: string) => state.configKeys.get(envVar),
-  isLocalProviderEnabled: (providerName: string) => state.localEnabled.has(providerName),
-}));
+
+function installModuleMocks(): void {
+  mock.module("../oauth-registry.js", () => ({
+    hasOAuthCredentials: (name: string) => state.oauthAuthed.has(name),
+    // Preserve the OAUTH_PROVIDERS export shape in case anything reads it.
+    OAUTH_PROVIDERS: {},
+  }));
+
+  mock.module("../../profile-config.js", () => ({
+    ...realProfileConfig,
+    getApiKey: (envVar: string) => state.configKeys.get(envVar),
+    // isLocalProviderEnabled is intentionally NOT overridden — see the note above.
+  }));
+}
+
+installModuleMocks();
+
+// ── Real global-config driver for the LOCAL provider case ─────────────────────
+// loadConfig() reads CONFIG_FILE (~/.claudish/config.json) fresh on every call,
+// and isLocalProviderEnabled(name) === loadConfig().localProviders.includes(name).
+// We back up the user's real config once (the first time we touch it), write a
+// test config reflecting state.localEnabled, and restore it in afterAll.
+
+const REAL_CONFIG_PATH = join(homedir(), ".claudish", "config.json");
+let configBackup: string | null = null;
+let configExistedBefore = false;
+let configTouched = false;
+
+/** Write the real global config so its localProviders[] === state.localEnabled. */
+function seedLocalProviders(): void {
+  if (!configTouched) {
+    configExistedBefore = existsSync(REAL_CONFIG_PATH);
+    configBackup = configExistedBefore ? readFileSync(REAL_CONFIG_PATH, "utf-8") : null;
+    mkdirSync(dirname(REAL_CONFIG_PATH), { recursive: true });
+    configTouched = true;
+  }
+  // Start from the real config (preserve unrelated keys) and override localProviders.
+  let base: Record<string, unknown> = {};
+  if (configBackup !== null) {
+    try {
+      base = JSON.parse(configBackup) as Record<string, unknown>;
+    } catch {
+      base = {};
+    }
+  }
+  base.localProviders = Array.from(state.localEnabled).sort();
+  writeFileSync(REAL_CONFIG_PATH, JSON.stringify(base, null, 2), "utf-8");
+}
+
+/** Restore the user's real global config exactly as it was before the suite. */
+function restoreRealConfig(): void {
+  if (!configTouched) return;
+  if (configBackup !== null) {
+    writeFileSync(REAL_CONFIG_PATH, configBackup, "utf-8");
+  } else if (!configExistedBefore && existsSync(REAL_CONFIG_PATH)) {
+    try {
+      rmSync(REAL_CONFIG_PATH);
+    } catch {}
+  }
+  configTouched = false;
+  configBackup = null;
+  configExistedBefore = false;
+}
 
 // ── Override the real CodexOAuth singleton's hasCredentials (robust cross-file) ─
+//
+// The new codex path reads the CodexOAuth SINGLETON's hasCredentials() (not the
+// oauth-registry mock). We override that method in place. Re-applied in
+// `beforeEach` too, in case another file reset/reconstructed the singleton.
 
 const { CodexOAuth } = await import("../codex-oauth.js");
 const codexSingleton = CodexOAuth.getInstance();
 const realCodexHasCreds = codexSingleton.hasCredentials.bind(codexSingleton);
-codexSingleton.hasCredentials = () => state.codexHasCreds;
+
+function installCodexOverride(): void {
+  codexSingleton.hasCredentials = () => state.codexHasCreds;
+}
+
+installCodexOverride();
 
 // ── Real impls under test (imported AFTER the mocks are registered) ───────────
 
@@ -122,11 +225,23 @@ const ENV_VARS = [
 const savedEnv = new Map<string, string | undefined>();
 
 beforeEach(() => {
+  // Cross-file isolation guard: re-establish the mocks/override that CAN reliably
+  // re-point (oauth-registry function + the CodexOAuth method we patch in place),
+  // in case another file's `mock.restore()` ran since the last test. The local
+  // path is handled separately via the real config file (see seedLocalProviders).
+  installModuleMocks();
+  installCodexOverride();
+
   for (const v of ENV_VARS) {
     savedEnv.set(v, process.env[v]);
     delete process.env[v];
   }
   resetState();
+
+  // Default every test to "no local providers enabled" in the REAL config, so the
+  // local path's truth is deterministic and independent of the user's real config
+  // and of test execution order. Local tests that need ollama enabled re-seed.
+  seedLocalProviders();
 });
 
 afterEach(() => {
@@ -140,6 +255,7 @@ afterEach(() => {
 
 afterAll(() => {
   codexSingleton.hasCredentials = realCodexHasCreds;
+  restoreRealConfig();
   mock.restore();
 });
 
@@ -293,9 +409,13 @@ describe("credential equivalence: native-anthropic (dual-env)", () => {
 });
 
 describe("credential equivalence: ollama (local)", () => {
+  // The local path's truth flows through the REAL global config file (see the
+  // "Local providers" note above): beforeEach already seeded an empty
+  // localProviders[]; tests that enable ollama re-seed via seedLocalProviders().
   test("not enabled → false", () => assertEquivalent("ollama", false));
   test("local-enabled → true", () => {
     state.localEnabled.add("ollama");
+    seedLocalProviders(); // write localProviders:["ollama"] into the real config
     assertEquivalent("ollama", true);
   });
   // An env key alone must NOT make a local provider routable — only the
