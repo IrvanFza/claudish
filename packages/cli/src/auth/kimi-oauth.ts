@@ -106,6 +106,21 @@ export class KimiOAuth {
   }
 
   /**
+   * Re-read the credential file from disk into the in-memory singleton.
+   *
+   * The singleton loads credentials ONCE in its constructor, so a login that
+   * happens in a CHILD process (e.g. the config TUI spawns `claudish login
+   * kimi`) writes a fresh token file this long-lived parent never sees — its
+   * request path keeps using the stale startup snapshot and fails until the
+   * process is relaunched. Calling this after a login child returns picks up the
+   * new token in-process, no restart needed. (Device ID is preserved.)
+   */
+  reloadCredentials(): void {
+    this.credentials = this.loadCredentials();
+    this.refreshPromise = null;
+  }
+
+  /**
    * Check if credentials exist (without validating expiry)
    * Use this to determine if login is needed before making requests
    */
