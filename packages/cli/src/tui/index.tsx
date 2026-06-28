@@ -3,8 +3,11 @@ import { spawnSync } from "node:child_process";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { App } from "./App.js";
-import { shutdownProbeProxy } from "./probe-proxy.js";
+import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
 import { setStderrQuiet } from "../logger.js";
+import { reloadGeminiCredentials } from "../auth/gemini-oauth.js";
+import { getCodexOAuth } from "../auth/codex-oauth.js";
+import { getKimiOAuth } from "../auth/kimi-oauth.js";
 
 /**
  * Start the config TUI. Re-entrant: if App requests an OAuth login,
@@ -70,6 +73,26 @@ export async function startConfigTui(): Promise<void> {
       console.error(`\n❌ Failed to spawn login: ${result.error.message}\n`);
     } else if (result.status !== 0) {
       console.error(`\n❌ Login exited with status ${result.status}\n`);
+    } else {
+      // Login succeeded IN A CHILD PROCESS, which wrote a fresh token file this
+      // long-lived parent never re-reads (the OAuth singletons load once at
+      // startup). Reload the relevant singleton from disk so the re-entered TUI's
+      // probe/request path uses the NEW token immediately — without this the
+      // provider keeps failing auth until claudish is fully relaunched. Also drop
+      // the probe-proxy's per-provider handler cache so the next test rebuilds
+      // the transport with the fresh credential.
+      if (slug === "gemini") {
+        reloadGeminiCredentials();
+        invalidateProbeProxyHandlers("google");
+        invalidateProbeProxyHandlers("gemini-codeassist");
+      } else if (slug === "codex") {
+        getCodexOAuth().reloadCredentials();
+        invalidateProbeProxyHandlers("openai-codex");
+      } else if (slug === "kimi") {
+        getKimiOAuth().reloadCredentials();
+        invalidateProbeProxyHandlers("kimi");
+        invalidateProbeProxyHandlers("kimi-coding");
+      }
     }
     // Re-enter the TUI regardless of login outcome — failed login should
     // still let the user retry or set an API key instead.

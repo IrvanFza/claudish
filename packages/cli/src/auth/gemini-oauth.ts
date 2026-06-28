@@ -109,6 +109,22 @@ export class GeminiOAuth {
   }
 
   /**
+   * Re-read the credential file from disk into the in-memory singleton.
+   *
+   * The singleton loads credentials ONCE in its constructor, so a login that
+   * happens in a CHILD process (e.g. the config TUI spawns `claudish login
+   * gemini`) writes a fresh token file that this long-lived parent process
+   * never sees — its `getAccessToken()` keeps using the stale startup snapshot
+   * and fails until the whole process is relaunched. Calling this after a login
+   * child returns picks up the new token in-process, no restart needed.
+   */
+  reloadCredentials(): void {
+    this.credentials = this.loadCredentials();
+    // Drop any in-flight refresh bound to the old token.
+    this.refreshPromise = null;
+  }
+
+  /**
    * Check if credentials exist (without validating expiry)
    * Use this to determine if login is needed before making requests
    */
@@ -569,6 +585,20 @@ export function getGeminiOAuth(): GeminiOAuth {
   return GeminiOAuth.getInstance();
 }
 
+/**
+ * Pick up a Gemini login that happened in a child process: re-read the token
+ * file into the singleton AND drop the cached Code Assist project/tier (a new
+ * login may be a different account). Call after a `claudish login gemini` child
+ * returns so the running parent uses the fresh credential without a restart.
+ *
+ * NOTE: resetGeminiUserCache is defined later in this module but hoisted as a
+ * function declaration, so referencing it here is safe.
+ */
+export function reloadGeminiCredentials(): void {
+  GeminiOAuth.getInstance().reloadCredentials();
+  resetGeminiUserCache();
+}
+
 // ============================================================================
 // Code Assist User Setup Flow
 // ============================================================================
@@ -632,6 +662,18 @@ export async function getValidAccessToken(): Promise<string> {
 let cachedProjectId: string | null = null;
 let cachedTierId: string | null = null;
 let cachedTierName: string | null = null;
+
+/**
+ * Clear the cached Code Assist project/tier (set by setupGeminiUser). Must run
+ * on re-login: a fresh login can be a DIFFERENT Google account with a different
+ * project/tier, and the stale cache would otherwise be sent in the request
+ * envelope (wrong project → 4xx). Called by reloadGeminiCredentials().
+ */
+export function resetGeminiUserCache(): void {
+  cachedProjectId = null;
+  cachedTierId = null;
+  cachedTierName = null;
+}
 
 /** Short display names for known tier IDs (status bar needs compact names) */
 const TIER_SHORT_NAMES: Record<string, string> = {
