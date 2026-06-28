@@ -6,7 +6,11 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
-- **OAuth login (Gemini Code Assist / Codex / Kimi) now takes effect immediately — no relaunch needed.** The OAuth credential singletons read their token file once at process startup and never re-read it. But `claudish login <slug>` from the config TUI runs in a *child* process: it wrote a fresh token file the long-lived parent never saw, so the parent's request/probe path kept using the stale startup snapshot and failed auth (often a 401) until claudish was fully restarted — while the Providers list confusingly showed the provider as "ready" (the readiness check reads disk fresh, the request path did not). After a login child returns, claudish now reloads the relevant OAuth singleton from disk (and, for Gemini, clears the cached Code Assist project/tier in case you switched accounts) and drops the probe-proxy's handler cache, so the new token is used right away.
+- v7.8.4 — OAuth login takes effect without relaunch([`9158bba`](https://github.com/MadAppGang/claudish/commit/9158bba42afb22e8331bdc64e2c08836e373fc4e))
+
+### Documentation
+
+- update CHANGELOG.md for v7.8.3([`6c11933`](https://github.com/MadAppGang/claudish/commit/6c119333765d1e4846cc52f7409099da0fe06e67))
 
 ## [7.8.3] - 2026-06-27
 
