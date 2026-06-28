@@ -12,9 +12,6 @@
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +72,13 @@ export interface ProviderDefinition {
   legacyPrefixes: Array<{ prefix: string; stripPrefix: boolean }>;
   /** Native model patterns for auto-detection (when no provider prefix) */
   nativeModelPatterns?: Array<{ pattern: RegExp }>;
+  /**
+   * Single fixed model this provider serves. When set, the interactive picker
+   * skips the model prompt entirely and auto-selects this model — used by
+   * single-model subscription endpoints (e.g. Kimi Coding only serves
+   * `kimi-for-coding`). Leave unset for multi-model providers.
+   */
+  fixedModel?: string;
   /** Provider capabilities */
   capabilities?: ProviderCapabilities;
   /** Custom HTTP headers to include with requests */
@@ -304,6 +308,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     shortestPrefix: "kc",
     legacyPrefixes: [{ prefix: "kc/", stripPrefix: true }],
     nativeModelPatterns: [{ pattern: /^kimi-for-coding$/i }],
+    // Single-model subscription: the coding endpoint only serves this one
+    // model, so the picker auto-selects it and skips the model prompt.
+    fixedModel: "kimi-for-coding",
     isDirectApi: true,
     description: "Kimi Coding Plan (kc@)",
   },
@@ -650,6 +657,52 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "DeepSeek API (ds@)",
   },
 
+  // ── Sakana Fugu (OpenAI-compatible direct API / token plan) ────────
+  {
+    name: "sakana",
+    displayName: "Sakana Fugu",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.sakana.ai",
+    baseUrlEnvVars: ["SAKANA_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "SAKANA_API_KEY",
+    apiKeyDescription: "Sakana Fugu API Key",
+    apiKeyUrl: "https://console.sakana.ai/get-started",
+    shortcuts: ["sakana", "fugu"],
+    shortestPrefix: "fugu",
+    legacyPrefixes: [
+      { prefix: "sakana/", stripPrefix: true },
+      { prefix: "fugu/", stripPrefix: true },
+    ],
+    nativeModelPatterns: [{ pattern: /^fugu/i }, { pattern: /^sakana\//i }],
+    isDirectApi: true,
+    description: "Sakana Fugu API (sakana@, fugu@)",
+  },
+
+  // ── Sakana Fugu Subscription Plan ──────────────────────────────────
+  // Same endpoint/key as the token plan — the token-vs-subscription split
+  // lives in the user's Sakana account, not the wire. Own env var with an
+  // alias back to the shared key so a single SAKANA_API_KEY credentials both.
+  {
+    name: "sakana-coding",
+    displayName: "Sakana Fugu Subscription",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.sakana.ai",
+    baseUrlEnvVars: ["SAKANA_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "SAKANA_CODING_API_KEY",
+    apiKeyAliases: ["SAKANA_API_KEY"],
+    apiKeyDescription: "Sakana Fugu Subscription API Key",
+    apiKeyUrl: "https://console.sakana.ai/get-started",
+    shortcuts: ["sc"],
+    shortestPrefix: "sc",
+    legacyPrefixes: [{ prefix: "sc/", stripPrefix: true }],
+    isDirectApi: true,
+    description: "Sakana Fugu Subscription (sc@)",
+  },
+
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
   {
     name: "qwen",
@@ -960,55 +1013,8 @@ export function getApiKeyEnvVars(
   };
 }
 
-/**
- * Check if a provider has what it needs to be usable (API key, local service, etc.).
- *
- * A provider is available when ANY of the following is true:
- * - It's a local provider (no API key needed)
- * - It has a publicKeyFallback (e.g. Zen free tier)
- * - Its primary apiKeyEnvVar is set in the environment
- * - Any of its apiKeyAliases are set in the environment
- * - Its oauthFallback credential file exists in ~/.claudish/
- *
- * Used by model-selector to hide providers the user hasn't configured.
- */
-export function isProviderAvailable(def: ProviderDefinition): boolean {
-  // Local providers are always available
-  if (def.isLocal) return true;
-
-  // Providers with public fallback keys are always available
-  if (def.publicKeyFallback) return true;
-
-  // No API key required (e.g. auto-routed providers)
-  if (!def.apiKeyEnvVar) return true;
-
-  // Check primary env var
-  if (process.env[def.apiKeyEnvVar]) return true;
-
-  // Check aliases
-  if (def.apiKeyAliases) {
-    for (const alias of def.apiKeyAliases) {
-      if (process.env[alias]) return true;
-    }
-  }
-
-  // Check OAuth fallback credential file
-  if (def.oauthFallback) {
-    try {
-      if (existsSync(join(homedir(), ".claudish", def.oauthFallback))) return true;
-    } catch {
-      // fs check failed, treat as unavailable
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check provider availability by canonical name.
- */
-export function isProviderAvailableByName(providerName: string): boolean {
-  const def = getProviderByName(providerName);
-  if (!def) return false;
-  return isProviderAvailable(def);
-}
+// NOTE: the sync readiness oracles isProviderAvailable / isProviderAvailableByName
+// were DELETED in the async-credential-layer refactor. Provider readiness is now
+// resolved on demand through the credential authority (auth/credentials/authority.ts
+// → isAvailable), the single source of truth that also pulls from 1Password. The
+// model selector calls credentials.isAvailable() directly.

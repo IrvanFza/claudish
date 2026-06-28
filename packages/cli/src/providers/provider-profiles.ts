@@ -288,11 +288,9 @@ const vertexProfile: ProviderProfile = {
       // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
       const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
       const expressProvider = geminiConfig || ctx.provider;
-      const transport = new GeminiProviderTransport(
-        expressProvider,
-        ctx.modelName,
-        process.env.VERTEX_API_KEY!
-      );
+      // ctx.apiKey is the authority-resolved Vertex credential (Express key when
+      // VERTEX_API_KEY is set) — single source of truth, no raw env read here.
+      const transport = new GeminiProviderTransport(expressProvider, ctx.modelName, ctx.apiKey);
       const adapter = new GeminiAPIFormat(ctx.modelName);
       const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
         adapter,
@@ -375,6 +373,10 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   "opencode-zen": openCodeZenProfile,
   "opencode-zen-go": openCodeZenProfile,
   deepseek: openaiProfile,
+  // Sakana Fugu is OpenAI Chat-Completions compatible. Both siblings (token +
+  // subscription) hit the identical endpoint, so both reuse openaiProfile.
+  sakana: openaiProfile,
+  "sakana-coding": openaiProfile,
   ollamacloud: ollamaCloudProfile,
   litellm: litellmProfile,
   vertex: vertexProfile,

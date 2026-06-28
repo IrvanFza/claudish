@@ -35,7 +35,7 @@ import { route, loadRoutingRules } from "./providers/routing-rules.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { credentials } from "./auth/credentials/authority.js";
-import { getApiKey, loadConfig } from "./profile-config.js";
+import { loadConfig } from "./profile-config.js";
 
 /**
  * A single slot-routing entry for `claudish serve`. Claude Desktop sends
@@ -75,7 +75,10 @@ export interface ProxyServerOptions {
 
 export async function createProxyServer(
   port: number,
-  openrouterApiKey?: string,
+  // Legacy: the OpenRouter key is now resolved through the credential authority
+  // (transport getHeaders()), not passed in. Param retained for signature
+  // stability; callers may pass undefined.
+  _openrouterApiKey?: string,
   model?: string,
   monitorMode: boolean = false,
   anthropicApiKey?: string,
@@ -125,7 +128,10 @@ export async function createProxyServer(
     const modelId = targetModel.includes("@") ? parsed.model : targetModel;
 
     if (!openRouterHandlers.has(modelId)) {
-      const orProvider = new OpenRouterProviderTransport(openrouterApiKey || "", modelId);
+      // The OpenRouter key is resolved through the credential authority inside
+      // the transport's getHeaders() (single source of truth) — the legacy
+      // openrouterApiKey param is no longer the signing source.
+      const orProvider = new OpenRouterProviderTransport("", modelId);
       const orAdapter = new OpenRouterAPIFormat(modelId);
       openRouterHandlers.set(
         modelId,
@@ -140,19 +146,20 @@ export async function createProxyServer(
   };
 
   // Helper to get or create Poe handler for a target model
-  const getPoeHandler = (
+  const getPoeHandler = async (
     targetModel: string,
     invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler | null => {
-    const poeApiKey = process.env.POE_API_KEY;
-    if (!poeApiKey) {
-      log(`[Proxy] POE_API_KEY not set, cannot use Poe model: ${targetModel}`);
+  ): Promise<ModelHandler | null> => {
+    // Gate on the authority (env → config → op://), not a raw env read.
+    if (!(await credentials.isAvailable("poe"))) {
+      log(`[Proxy] Poe credentials not available, cannot use Poe model: ${targetModel}`);
       return null;
     }
     // Strip "poe:" prefix to get the actual model name for the API
     const modelId = targetModel.replace(/^poe:/, "");
     if (!poeHandlers.has(modelId)) {
-      const poeTransport = new PoeProvider(poeApiKey);
+      // The transport resolves its key through the authority in getHeaders().
+      const poeTransport = new PoeProvider();
       poeHandlers.set(
         modelId,
         new ComposedHandler(poeTransport, modelId, modelId, port, {
@@ -230,10 +237,10 @@ export async function createProxyServer(
 
   // Helper to get or create remote provider handler (Gemini, OpenAI)
   // TODO: Consolidate src/ and packages/core/src/ - they're manually synced duplicates
-  const getRemoteProviderHandler = (
+  const getRemoteProviderHandler = async (
     targetModel: string,
     invocationMode?: ComposedHandlerOptions["invocationMode"]
-  ): ModelHandler | null => {
+  ): Promise<ModelHandler | null> => {
     if (remoteProviderHandlers.has(targetModel)) {
       return remoteProviderHandlers.get(targetModel)!;
     }
@@ -264,8 +271,8 @@ export async function createProxyServer(
     const resolveTarget =
       resolution.wasAutoRouted && resolution.fullModelId ? resolution.fullModelId : targetModel;
 
-    // If resolver says use direct-api and key is available, create handler
-    if (resolution.category === "direct-api" && resolution.apiKeyAvailable) {
+    // If resolver says use direct-api, resolve credentials via the authority.
+    if (resolution.category === "direct-api") {
       const resolved = resolveRemoteProvider(resolveTarget);
       if (!resolved) return null;
 
@@ -274,18 +281,24 @@ export async function createProxyServer(
         return null; // Will fall through to OpenRouterHandler
       }
 
-      // Get API key — config wins over env (TUI's `s` key writes to config).
-      // Empty string for providers that don't require auth (e.g. zen/ free models).
-      // Resolve via the credential authority (env → ALIASES → config; op:// is
-      // already hydrated into env up front). The authority's getApiKey adds alias
-      // resolution the raw envVar read missed. Fall back to the legacy
-      // config/env read for any provider not in the registry.
-      const apiKey = resolved.provider.apiKeyEnvVar
-        ? credentials.getApiKey(resolved.provider.name) ||
-          getApiKey(resolved.provider.apiKeyEnvVar) ||
-          process.env[resolved.provider.apiKeyEnvVar] ||
-          ""
-        : "";
+      // Resolve the API key ON DEMAND via the credential authority — the SINGLE
+      // source of truth. This pulls env → aliases → config → 1Password (lazy SDK)
+      // and writes a resolved op:// key through to process.env. Providers that
+      // need no auth (e.g. zen/ free) have no apiKeyEnvVar → empty key.
+      let apiKey = "";
+      if (resolved.provider.apiKeyEnvVar) {
+        const auth = await credentials.getRequestAuth(resolved.provider.name, {
+          model: resolved.modelName,
+        });
+        // Extract the bearer / x-api-key value back into the construction-time
+        // key string createHandlerForProvider expects.
+        apiKey =
+          auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"] || "";
+        // ANTI-POISON: a provider that requires a key but resolved empty must NOT
+        // be cached — return null (falls through to OpenRouter) so a key added
+        // later (TUI hydrate-on-add, op:// resolve) is picked up on the next try.
+        if (!apiKey) return null;
+      }
 
       const handler = createHandlerForProvider({
         provider: resolved.provider,
@@ -442,7 +455,7 @@ export async function createProxyServer(
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady("openrouter", 5000);
 
-        const plan = route(parsedForFallback.model, effectiveRoutingRules);
+        const plan = await route(parsedForFallback.model, effectiveRoutingRules);
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
@@ -451,7 +464,7 @@ export async function createProxyServer(
             if (candidate.provider === "openrouter") {
               handler = getOpenRouterHandler(candidate.modelSpec, invocationMode);
             } else {
-              handler = getRemoteProviderHandler(candidate.modelSpec, invocationMode);
+              handler = await getRemoteProviderHandler(candidate.modelSpec, invocationMode);
             }
             if (handler) {
               candidates.push({ name: candidate.displayName, handler });
@@ -489,7 +502,7 @@ export async function createProxyServer(
 
     // 3. Check for Poe Model (poe: prefix)
     if (isPoeModel(target)) {
-      const poeHandler = getPoeHandler(target, invocationMode);
+      const poeHandler = await getPoeHandler(target, invocationMode);
       if (poeHandler) {
         log(`[Proxy] Routing to Poe: ${target}`);
         return poeHandler;
@@ -497,7 +510,7 @@ export async function createProxyServer(
     }
 
     // 4. Check for Remote Provider (g/, gemini/, oai/, openai/, mmax/, mm/, kimi/, moonshot/, glm/, zhipu/)
-    const remoteHandler = getRemoteProviderHandler(target, invocationMode);
+    const remoteHandler = await getRemoteProviderHandler(target, invocationMode);
     if (remoteHandler) return remoteHandler;
 
     // 5. Check for Local Provider (ollama/, lmstudio/, vllm/, or URL)
@@ -584,7 +597,8 @@ export async function createProxyServer(
     // filtered out of the remote registry by design, so getRemoteProviderHandler
     // returns null for them and we'd otherwise report "transport does not
     // support discovery" even though LocalTransport DOES implement it.
-    const handler = getLocalProviderHandler(targetModel) ?? getRemoteProviderHandler(targetModel);
+    const handler =
+      getLocalProviderHandler(targetModel) ?? (await getRemoteProviderHandler(targetModel));
     const transport = (handler as unknown as { provider?: ProviderTransport })?.provider;
     if (!transport?.discoverProbeModel) {
       return c.json({ provider, model: null, reason: "transport does not support discovery" }, 404);

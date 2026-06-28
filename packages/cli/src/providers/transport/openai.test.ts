@@ -4,10 +4,10 @@ import type { RemoteProvider } from "../../handlers/shared/remote-provider-types
 
 const mockProvider: RemoteProvider = {
   name: "opencode-zen",
-  displayName: "Zen",
   baseUrl: "https://opencode.ai/zen",
   apiPath: "/v1/chat/completions",
-  transport: "openai",
+  apiKeyEnvVar: "OPENCODE_API_KEY",
+  prefixes: ["zen@"],
 };
 
 describe("OpenAIProviderTransport 429 retry (#66)", () => {
@@ -114,5 +114,26 @@ describe("isTerminal429", () => {
     expect(isTerminal429('{"error":"rate limit exceeded"}')).toBe(false);
     expect(isTerminal429('{"error":"too many requests"}')).toBe(false);
     expect(isTerminal429('')).toBe(false);
+  });
+
+  test("matches the real OpenAI insufficient_quota body (composed-handler remaps it to a visible 400)", async () => {
+    const { isTerminal429 } = await import("./openai.js");
+    // Exact shape OpenAI returns on a billing/quota failure. composed-handler
+    // remaps this 429 → 400 invalid_request_error so Claude Code surfaces the
+    // message instead of silently retrying.
+    const realBody = JSON.stringify({
+      error: {
+        message:
+          "You exceeded your current quota, please check your plan and billing details.",
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+      },
+    });
+    expect(isTerminal429(realBody)).toBe(true);
+    // A genuine transient rate-limit must still be retried (not remapped).
+    const transient = JSON.stringify({
+      error: { message: "Rate limit reached for requests", code: "rate_limit_exceeded" },
+    });
+    expect(isTerminal429(transient)).toBe(false);
   });
 });

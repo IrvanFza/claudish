@@ -88,6 +88,18 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
+   * Maximum number of tools this API accepts in a single request. Returns null
+   * if no limit (default). OpenAI's Chat Completions API hard-caps the `tools`
+   * array at 128 — exceeding it fails the whole request with HTTP 400
+   * "Invalid 'tools': array too long". The ComposedHandler head-slices the
+   * converted tools to this count so a session with many MCP tools still works
+   * (Claude Code's built-in tools come first and are preserved).
+   */
+  getMaxToolCount(): number | null {
+    return null;
+  }
+
+  /**
    * Get the tool name map (truncated -> original).
    * Use after prepareRequest() to get the mapping for response processing.
    */

@@ -3,6 +3,9 @@ import {
   statusToErrorType,
   wrapAnthropicError,
   ensureAnthropicErrorFormat,
+  isTerminalError,
+  buildSurfacedErrorMessage,
+  extractProviderMessage,
 } from "./anthropic-error.js";
 
 describe("statusToErrorType", () => {
@@ -141,5 +144,124 @@ describe("ensureAnthropicErrorFormat", () => {
     const body = { error: "some raw error", type: "overloaded_error" };
     const result = ensureAnthropicErrorFormat(503, body);
     expect(result.error.type).toBe("overloaded_error");
+  });
+});
+
+describe("extractProviderMessage", () => {
+  it("returns a raw string as-is", () => {
+    expect(extractProviderMessage("plain error")).toBe("plain error");
+  });
+
+  it("pulls error.message from OpenAI-style bodies", () => {
+    expect(extractProviderMessage({ error: { message: "invalid api key" } })).toBe(
+      "invalid api key"
+    );
+  });
+
+  it("pulls top-level message", () => {
+    expect(extractProviderMessage({ message: "boom" })).toBe("boom");
+  });
+
+  it("pulls a string error field", () => {
+    expect(extractProviderMessage({ error: "raw error string" })).toBe("raw error string");
+  });
+
+  it("pulls FastAPI-style detail", () => {
+    expect(extractProviderMessage({ detail: "model gpt-5 not supported" })).toBe(
+      "model gpt-5 not supported"
+    );
+  });
+
+  it("falls back to JSON for structured bodies with no message", () => {
+    expect(extractProviderMessage({ code: 42 })).toBe('{"code":42}');
+  });
+
+  it("handles null/undefined", () => {
+    expect(extractProviderMessage(null)).toBe("");
+    expect(extractProviderMessage(undefined)).toBe("");
+  });
+});
+
+describe("isTerminalError", () => {
+  it("treats 401/403 as terminal (auth never recovers)", () => {
+    expect(isTerminalError(401, "unauthorized", false)).toBe(true);
+    expect(isTerminalError(403, "forbidden", false)).toBe(true);
+  });
+
+  it("treats a terminal 429 as terminal", () => {
+    expect(isTerminalError(429, "insufficient_quota", true)).toBe(true);
+  });
+
+  it("does NOT treat a plain 429 rate-limit as terminal", () => {
+    expect(isTerminalError(429, "rate limit exceeded, slow down", false)).toBe(false);
+  });
+
+  it("does NOT treat a transient 503/overloaded as terminal", () => {
+    expect(isTerminalError(503, "service overloaded", false)).toBe(false);
+    expect(isTerminalError(500, "internal server error", false)).toBe(false);
+  });
+
+  it("catches billing/quota signals under non-429 statuses", () => {
+    expect(isTerminalError(402, "insufficient balance", false)).toBe(true);
+    expect(isTerminalError(400, "out of credits", false)).toBe(true);
+    expect(isTerminalError(403, "billing_not_active", false)).toBe(true);
+  });
+
+  it("catches expired-subscription wording", () => {
+    expect(isTerminalError(403, "Your subscription has expired", false)).toBe(true);
+    // Only one of the two words is not enough
+    expect(isTerminalError(500, "subscription active", false)).toBe(false);
+  });
+
+  it("catches model-not-supported errors", () => {
+    expect(isTerminalError(400, "model gpt-5 is not supported", false)).toBe(true);
+    expect(isTerminalError(404, "model_not_found", false)).toBe(true);
+  });
+});
+
+describe("buildSurfacedErrorMessage", () => {
+  it("combines provider, status, hint, and upstream message", () => {
+    const msg = buildSurfacedErrorMessage({
+      providerDisplayName: "Sakana Fugu",
+      status: 401,
+      hint: "Check API key / OAuth credentials.",
+      providerMessage: "invalid api key",
+    });
+    expect(msg).toContain("Sakana Fugu error (HTTP 401)");
+    expect(msg).toContain("Check API key / OAuth credentials.");
+    expect(msg).toContain("invalid api key");
+  });
+
+  it("omits the detail tail when message is empty", () => {
+    const msg = buildSurfacedErrorMessage({
+      providerDisplayName: "Sakana Fugu",
+      status: 503,
+      hint: "Provider overloaded.",
+      providerMessage: "",
+    });
+    expect(msg).toBe("Sakana Fugu error (HTTP 503): Provider overloaded.");
+  });
+
+  it("does not duplicate the message when hint already contains it", () => {
+    const msg = buildSurfacedErrorMessage({
+      providerDisplayName: "X",
+      status: 400,
+      hint: "out of credits",
+      providerMessage: "out of credits",
+    });
+    // Appears once (in the hint), not twice
+    expect(msg.match(/out of credits/g)?.length).toBe(1);
+  });
+
+  it("truncates absurdly long upstream messages", () => {
+    const huge = "x".repeat(2000);
+    const msg = buildSurfacedErrorMessage({
+      providerDisplayName: "X",
+      status: 500,
+      hint: "Server error.",
+      providerMessage: huge,
+    });
+    expect(msg.length).toBeLessThan(700);
+    expect(msg).toContain("…");
   });
 });

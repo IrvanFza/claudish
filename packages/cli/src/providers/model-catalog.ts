@@ -106,6 +106,7 @@ const OWNER_PROVIDER_SLUGS = new Set<string>([
   "minimax",
   "moonshotai",
   "qwen",
+  "sakana",
 ]);
 
 /**
@@ -147,6 +148,48 @@ function modelDocToCatalogModel(doc: ModelDoc): CatalogModel {
     releaseDate: doc.releaseDate,
     capabilities: doc.capabilities,
   };
+}
+
+/**
+ * Filter an owner-lineage model list down to the models the slim catalog's
+ * served-by index (`aggregators[].provider`) confirms THIS provider actually
+ * serves, and graft the matched served-by aggregators onto each kept model (the
+ * owner query returns `aggregators: null`, so the picker's downstream pricing /
+ * externalId resolution needs them attached here).
+ *
+ * The backend emits the owner's canonical slug in the served-by index for
+ * first-party serving, so this is a plain exact-match — no slug translation.
+ *
+ * Safety: if the slim cache is empty/unavailable (cold start), DON'T filter —
+ * return the full list so the picker isn't blanked. A model present in the owner
+ * list but absent from the slim cache is excluded (conservative: better to hide
+ * a possibly-unservable model than to offer one that 404s).
+ */
+function filterToServedByProvider(
+  models: CatalogModel[],
+  slug: string,
+  reader: () => ReturnType<typeof readAllModelsCache>
+): CatalogModel[] {
+  const { entries } = readSlimCacheWithFreshness(reader);
+  if (entries.length === 0) return models; // cold start — don't blank the picker
+
+  // Index slim entries by modelId AND every alias, so an owner doc whose id is
+  // an alias in the slim catalog still matches.
+  const byId = new Map<string, SlimModelEntry>();
+  for (const entry of entries) {
+    byId.set(entry.modelId.toLowerCase(), entry);
+    for (const alias of entry.aliases) byId.set(alias.toLowerCase(), entry);
+  }
+
+  const kept: CatalogModel[] = [];
+  for (const model of models) {
+    const slim = byId.get(model.modelId.toLowerCase());
+    const served = slim?.aggregators?.some((agg) => agg.provider.toLowerCase() === slug);
+    if (served) {
+      kept.push({ ...model, aggregators: slim?.aggregators ?? model.aggregators });
+    }
+  }
+  return kept;
 }
 
 function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
@@ -220,9 +263,19 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
       if (NO_CATALOG_VENDOR_SLUGS.has(slug)) return [];
 
       // Owners → rich provider query (returns full ModelDoc).
+      //
+      // The `?provider=` query returns every model the provider OWNS by lineage,
+      // but a provider can only SERVE the subset its API actually exposes (e.g.
+      // `gpt-latest` is OpenAI-owned but only OpenRouter serves it → calling it
+      // via oai@ 404s). The slim catalog's `aggregators[].provider` is the
+      // served-by index; since the backend now emits the owner's canonical slug
+      // there for first-party serving, we keep only models whose slim entry lists
+      // THIS provider as a server, and graft the served-by aggregators (pricing /
+      // externalId) onto the kept models. The picker selects a provider exactly
+      // to see what that provider can run — lineage is not service.
       if (OWNER_PROVIDER_SLUGS.has(slug)) {
         const docs = await _getModelsByProvider(slug);
-        return docs.map(modelDocToCatalogModel);
+        return filterToServedByProvider(docs.map(modelDocToCatalogModel), slug, _readSlimCache);
       }
 
       // Aggregators → filter slim cache by aggregators[].provider.

@@ -1,11 +1,14 @@
 /**
  * CredentialAuthority — the single registry/dispatch point for credentials.
  *
- * This is a PURE ADDITION (Step 1 of the credential-authority refactor). Nothing
- * else in the codebase consumes it yet; transports and the existing read sites
- * are migrated in later steps. Registering a provider under multiple names
- * (aliases) lets the catalog's alternate slugs (e.g. "google" → the Gemini Code
- * Assist credential) resolve to the same instance.
+ * The single ASYNC source of truth for provider credentials. proxy-server
+ * (sign-time getRequestAuth), routing-rules (hasCredentialsForProvider), the
+ * model-selector/index readiness checks, provider-resolver, and the OAuth
+ * transports all consume it; the old per-entry-point env-push paths
+ * (loadStoredApiKeys/hydrateOpSecrets/applyCustomEndpointOpKeys) are gone.
+ * Registering a provider under multiple names (aliases) lets the catalog's
+ * alternate slugs (e.g. "google" → the Gemini Code Assist credential) resolve
+ * to the same instance.
  */
 
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
@@ -31,25 +34,42 @@ export class CredentialAuthority {
     }
   }
 
-  isAuthenticated(name: string): boolean {
-    try {
-      return this.registry.get(name)?.isAuthenticated() ?? false;
-    } catch {
-      return false;
-    }
+  /**
+   * Register (or replace) a plain API-key provider at RUNTIME — used by custom
+   * endpoints, which are loaded after this singleton is built. Idempotent: a
+   * re-register with the same name overwrites. This keeps custom endpoints
+   * inside the single authority instead of resolving their keys out-of-band.
+   */
+  registerApiKeyProvider(descriptor: {
+    name: string;
+    envVar: string;
+    aliases?: string[];
+    authScheme?: "bearer" | "x-api-key";
+  }): void {
+    if (!descriptor.envVar) return;
+    this.register(
+      new ApiKeyCredentialProvider({
+        catalogName: descriptor.name,
+        envVar: descriptor.envVar,
+        aliases: descriptor.aliases,
+        authScheme: descriptor.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+      }),
+      [descriptor.name]
+    );
   }
 
   /**
-   * SYNC resolved API-key STRING for the handler-construction path (proxy-server
-   * builds transports synchronously, before any request). Resolves env → aliases
-   * → config (op:// already hydrated into env up front). "" for OAuth/local/unknown
-   * providers — they mint per-request auth via getRequestAuth(), not a static key.
+   * ASYNC readiness: resolves env → config → oauth-file → op:// (lazy SDK) for
+   * the provider. Never throws — an unknown provider or a 1Password auth failure
+   * resolves to false. Memoized inside each provider, so the SDK is touched at
+   * most once. This is THE single readiness oracle (replaces the three old sync
+   * ones: isProviderAvailable / isApiKeyAvailable / the old isAuthenticated).
    */
-  getApiKey(name: string): string {
+  async isAvailable(name: string, opts?: { allowOpPrompt?: boolean }): Promise<boolean> {
     try {
-      return this.registry.get(name)?.apiKeyValue?.() ?? "";
+      return (await this.registry.get(name)?.isAvailable(opts)) ?? false;
     } catch {
-      return "";
+      return false;
     }
   }
 
@@ -57,6 +77,24 @@ export class CredentialAuthority {
     const p = this.registry.get(name);
     if (!p) throw new Error(`No credential provider for ${name}`);
     return p.getRequestAuth(ctx);
+  }
+
+  /**
+   * Drop any memoized resolution. With no name, invalidate every registered
+   * provider (after a TUI hydrate-on-add or a config change). Idempotent.
+   */
+  invalidate(name?: string): void {
+    if (name) {
+      this.registry.get(name)?.invalidate?.();
+      return;
+    }
+    // Dedup: providers registered under aliases share one instance.
+    const seen = new Set<CredentialProvider>();
+    for (const p of this.registry.values()) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      p.invalidate?.();
+    }
   }
 
   async login(name: string): Promise<void> {
