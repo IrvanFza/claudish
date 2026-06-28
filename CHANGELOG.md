@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.10.0] - 2026-06-28
+
+### Features
+
+- Async credential layer — one `CredentialAuthority` is the single source of truth for every provider key (env → config → OAuth file → 1Password `op://`, resolved on demand per provider). Replaces the per-entry-point env-push paths; 1Password SDK stays lazy and serialized.
+- Interactive picker shows the exact callable spec per row (e.g. `zen@gpt-5`, `or@openai/gpt-5`) using each provider's own externalId, and the true per-aggregator price.
+- Ollama (local) picker lists installed models from `/api/tags` instead of forcing free-text entry.
+- Kimi Coding (`kc@`) auto-selects its single `kimi-for-coding` model (new `fixedModel` provider field) instead of showing the full Moonshot catalog.
+- Per-provider model list now shows only models that provider actually serves (filters owner-lineage down to the catalog served-by index), so picking OpenAI no longer offers OpenRouter-only models like `gpt-latest`.
+
+### Bug Fixes
+
+- v7.10.0 — interactive crash under `op run` fixed. When stdout is piped (non-TTY) but stdin is a TTY, claudish now gives the child Claude Code a TTY-backed stdout (via `/dev/fd/0`) so it launches interactively instead of self-selecting `--print` and dying with "Input must be provided … when using --print".
+- OpenAI tool-count cap restored — the 128-tool limit (regressed away in the Firebase-catalog migration) is back as a per-format `getMaxToolCount()` hook, so sessions with many MCP tools no longer hard-fail with "Invalid 'tools': array too long".
+- Reasoning effort now reaches OpenAI for gpt-5.x — claudish reads Claude Code's `output_config.effort` and maps it to a valid `reasoning_effort` (`none/low/medium/high/xhigh`; `minimal`→`low`, `max`→`xhigh`, since gpt-5.x rejects `minimal`/`max`). Previously the effort was silently dropped for gpt-5.5 (the mapping was gated to o1/o3 and read a field Claude Code no longer sends).
+- Terminal billing/quota errors surface inline — a 429 with `insufficient_quota` is remapped to a 400 with the provider's real message ("Out of quota — check your plan & billing details") so Claude Code shows it instead of silently retrying with "API error · Retrying".
+- The "claude.ai connectors are disabled because ANTHROPIC_API_KEY …" warning is suppressed automatically (claudish sets `disableClaudeAiConnectors` in the child's settings) — it was harmless proxy-mode noise.
+- `gemini-codeassist` picker rows now route correctly (`go@` prefix added) instead of emitting a bare model id.
+
 ## [7.9.0] - 2026-06-28
 
 ### Features

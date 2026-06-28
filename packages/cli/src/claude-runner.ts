@@ -204,7 +204,16 @@ function createTempSettingsFile(
     padding: 0,
   };
 
-  const settings = { statusLine };
+  // claudish points Claude Code at its local proxy via ANTHROPIC_BASE_URL and
+  // injects a placeholder ANTHROPIC_API_KEY so Claude Code authenticates against
+  // the proxy instead of prompting for a claude.ai login. Claude Code then warns
+  // "claude.ai connectors are disabled because ANTHROPIC_API_KEY ... is set" on
+  // every session — harmless noise that reads like an error to users. claude.ai
+  // org connectors are irrelevant when routing through the proxy, so disable them
+  // outright, which removes the warning. (Verified: setting this suppresses the
+  // message; users can still override via their own --settings, which is merged
+  // on top of this temp file.)
+  const settings = { statusLine, disableClaudeAiConnectors: true };
 
   writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
   return { path: tempPath, statusLine };
@@ -248,6 +257,12 @@ function mergeUserSettingsIfPresent(
 
     // Inject claudish statusLine into user settings (overrides any existing statusLine)
     userSettings.statusLine = statusLine;
+
+    // Default claude.ai connectors off (suppresses the proxy-mode warning) —
+    // but let the user override it if they explicitly set the field.
+    if (!("disableClaudeAiConnectors" in userSettings)) {
+      userSettings.disableClaudeAiConnectors = true;
+    }
 
     // Overwrite the temp settings file with the merged result
     writeFileSync(tempSettingsPath, JSON.stringify(userSettings, null, 2), "utf-8");

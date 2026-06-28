@@ -40,7 +40,14 @@ import {
 } from "../services/vision-proxy.js";
 import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
-import { wrapAnthropicError, ensureAnthropicErrorFormat } from "./shared/anthropic-error.js";
+import {
+  wrapAnthropicError,
+  ensureAnthropicErrorFormat,
+  isTerminalError,
+  buildSurfacedErrorMessage,
+  extractProviderMessage,
+} from "./shared/anthropic-error.js";
+import { isTerminal429 } from "../providers/transport/openai.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -187,11 +194,21 @@ export class ComposedHandler implements ModelHandler {
 
     // 3. Convert messages and tools
     const messages = adapter.convertMessages(claudeRequest, filterIdentity);
-    const tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
+    let tools = adapter.convertTools(claudeRequest, this.options.summarizeTools);
 
-    // Per-API tool count limits (e.g., OpenAI's 128-tool cap) are enforced
-    // by the transport's transformPayload() hook, which runs later in the
-    // pipeline with full knowledge of the target API.
+    // Per-API tool-count cap (e.g. OpenAI Chat Completions hard-caps `tools` at
+    // 128 — exceeding it fails the WHOLE request with HTTP 400 "array too long").
+    // Head-slice to the limit: Claude Code emits its built-in agentic tools
+    // first and appends MCP-server tools after, so keeping the first N preserves
+    // the load-bearing built-ins and drops the tail-most MCP tools. Truncating
+    // is recoverable; failing the whole request is not.
+    const maxToolCount = adapter.getMaxToolCount();
+    if (maxToolCount && tools.length > maxToolCount) {
+      log(
+        `[ComposedHandler] Capping tools from ${tools.length} to ${maxToolCount} for ${this.targetModel} (API limit)`
+      );
+      tools = tools.slice(0, maxToolCount);
+    }
 
     // Handle image content for models that don't support vision
     if (!this.getModelSupportsVision()) {
@@ -561,7 +578,20 @@ export class ComposedHandler implements ModelHandler {
         const errorText = await response.text();
         log(`[${this.provider.displayName}] Error: ${errorText}`);
         const hint = getRecoveryHint(response.status, errorText, this.provider.displayName);
-        logStderr(`Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}`);
+        let parsedErrorBody: any;
+        try {
+          parsedErrorBody = JSON.parse(errorText);
+        } catch {
+          parsedErrorBody = undefined;
+        }
+        const providerMsg = extractProviderMessage(parsedErrorBody ?? errorText);
+        // Richer stderr line: provider + status + hint + the real upstream message,
+        // so the cause is findable in scrollback even when Claude Code only shows
+        // its own "API error · Retrying" banner. Bounded to one tidy line.
+        const msgTail = providerMsg
+          ? ` (${providerMsg.length > 200 ? providerMsg.slice(0, 200) + "…" : providerMsg})`
+          : "";
+        logStderr(`Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`);
 
         // Extract structured error type from provider response body if present
         let providerErrorType: string | undefined;
@@ -615,12 +645,28 @@ export class ComposedHandler implements ModelHandler {
           // Stats must never crash claudish
         }
 
-        // Parse error body to avoid double-JSON-encoding (errorText is already JSON)
-        let errorBody: any;
-        try {
-          errorBody = JSON.parse(errorText);
-        } catch {
-          errorBody = { error: { type: "api_error", message: errorText } };
+        // Reuse the body parsed above (avoid double-JSON-encoding — errorText is
+        // already JSON when parseable).
+        const errorBody: any =
+          parsedErrorBody ?? { error: { type: "api_error", message: errorText } };
+        // Terminal errors (auth / quota / billing / model-unsupported) won't
+        // resolve on retry. Leaving a retryable status (429/5xx) makes Claude
+        // Code silently retry, showing only "API error · Retrying · attempt N/10"
+        // and hiding the real reason. Remap terminal errors to 400
+        // (invalid_request_error) — a status Claude Code surfaces verbatim — and
+        // attach a rich message (provider + status + hint + upstream message) so
+        // the user sees WHY it failed, right in the chat.
+        if (isTerminalError(response.status, errorText, isTerminal429(errorText))) {
+          const surfaced = buildSurfacedErrorMessage({
+            providerDisplayName: this.provider.displayName,
+            status: response.status,
+            hint,
+            providerMessage: providerMsg,
+          });
+          return c.json(
+            wrapAnthropicError(400, surfaced, "invalid_request_error"),
+            400 as any
+          );
         }
         return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
       }
@@ -829,6 +875,9 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
 
   if (status === 503 || lower.includes("overloaded")) {
     return "Provider overloaded. Retry or use a different model.";
+  }
+  if (status === 429 && isTerminal429(errorText)) {
+    return "Out of quota — check your plan & billing details. This won't recover on retry.";
   }
   if (status === 429 || lower.includes("rate limit")) {
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";

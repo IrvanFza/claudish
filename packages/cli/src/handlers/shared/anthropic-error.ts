@@ -57,6 +57,106 @@ export function wrapAnthropicError(
 }
 
 /**
+ * Pull the most useful human-readable message out of an arbitrary provider
+ * error body (already JSON-parsed, or a raw string). Mirrors the extraction
+ * ladder in ensureAnthropicErrorFormat but usable standalone.
+ */
+export function extractProviderMessage(body: any): string {
+  if (body == null) return "";
+  if (typeof body === "string") return body;
+  const msg =
+    body?.error?.message ||
+    body?.message ||
+    (typeof body?.error === "string" ? body.error : undefined) ||
+    body?.detail ||
+    body?.error?.detail;
+  if (typeof msg === "string" && msg.length > 0) return msg;
+  try {
+    return JSON.stringify(body);
+  } catch {
+    return String(body);
+  }
+}
+
+/**
+ * Decide whether an upstream error is *terminal* — i.e. retrying will not help,
+ * so claudish should stop Claude Code's silent retry loop and surface the real
+ * reason inline. Generalizes the terminal-429 special case to any status that
+ * carries an auth / quota / billing / model-unsupported signal.
+ *
+ * Transient errors (plain rate limits, overloaded, 5xx blips) are NOT terminal:
+ * those legitimately recover on retry, so we leave the retryable status intact.
+ *
+ * @param status     - upstream HTTP status
+ * @param bodyText   - raw upstream error body (string)
+ * @param terminal429 - result of provider-specific isTerminal429(bodyText)
+ */
+export function isTerminalError(
+  status: number,
+  bodyText: string,
+  terminal429: boolean
+): boolean {
+  // Auth / permission failures never recover on retry.
+  if (status === 401 || status === 403) return true;
+  // Billing/quota exhaustion surfaced as a 429 (provider-specific signals).
+  if (status === 429 && terminal429) return true;
+
+  const lower = (bodyText || "").toLowerCase();
+  // Billing/quota signals can arrive under non-429 statuses too.
+  if (
+    lower.includes("insufficient balance") ||
+    lower.includes("insufficient_balance") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("insufficient quota") ||
+    lower.includes("billing_not_active") ||
+    lower.includes("billing not active") ||
+    lower.includes("out of credits") ||
+    lower.includes("exceeded your current quota") ||
+    (lower.includes("subscription") && lower.includes("expired"))
+  ) {
+    return true;
+  }
+  // Model-not-supported / not-found errors won't recover on retry.
+  if (
+    lower.includes("not supported") ||
+    lower.includes("unsupported model") ||
+    lower.includes("model not found") ||
+    lower.includes("model_not_found")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Build a single user-readable line that survives in the chat transcript when
+ * an upstream error is surfaced (instead of Claude Code's opaque
+ * "API error · Retrying"). Combines provider attribution, HTTP status, a
+ * recovery hint, and the real upstream message.
+ *
+ * Example:
+ *   "Sakana Fugu error (HTTP 401): Check API key / OAuth credentials. — invalid api key"
+ */
+export function buildSurfacedErrorMessage(opts: {
+  providerDisplayName: string;
+  status: number;
+  hint: string;
+  providerMessage: string;
+}): string {
+  const { providerDisplayName, status, hint, providerMessage } = opts;
+  const head = `${providerDisplayName} error (HTTP ${status})`;
+  const parts: string[] = [head];
+  if (hint) parts[0] = `${head}: ${hint}`;
+  const detail = (providerMessage || "").trim();
+  if (detail && !parts[0].includes(detail)) {
+    // Keep the surfaced line bounded — providers occasionally echo huge bodies.
+    const trimmed = detail.length > 600 ? `${detail.slice(0, 600)}…` : detail;
+    parts.push(`— ${trimmed}`);
+  }
+  return parts.join(" ");
+}
+
+/**
  * Check if a parsed JSON body is already in Anthropic error envelope format.
  * Returns the body as-is if valid, or wraps it if not.
  */

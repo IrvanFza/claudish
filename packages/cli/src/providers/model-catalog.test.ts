@@ -70,6 +70,8 @@ describe("modelsByVendor", () => {
       modelDoc("claude-opus-4-7", "anthropic"),
       modelDoc("claude-sonnet-4-5", "anthropic"),
     ]);
+    // Owner path now reads the slim cache to filter lineage → served-by. With a
+    // null cache (cold start) the filter is skipped and the full list returns.
     const fakeReadSlim = mock(() => null);
 
     const client = createCatalogClient({
@@ -81,10 +83,70 @@ describe("modelsByVendor", () => {
 
     expect(fakeProviderQuery).toHaveBeenCalledTimes(1);
     expect(fakeProviderQuery.mock.calls[0]?.[0]).toBe("anthropic");
-    // Slim cache must NOT be touched on the owner path.
-    expect(fakeReadSlim).not.toHaveBeenCalled();
+    // Cold-start (null cache): don't blank the picker — return the full list.
     expect(result).toHaveLength(2);
     expect(result[0]?.modelId).toBe("claude-opus-4-7");
+  });
+
+  test("owner path excludes lineage models the provider does not serve directly", async () => {
+    // gpt-latest is OpenAI-owned by lineage but the served-by index lists only
+    // openrouter → it must NOT appear under the openai (oai@) list. gpt-5 IS
+    // served by openai → kept. Backend emits the owner's canonical slug in the
+    // served-by index, so this is a plain exact-match (no slug translation).
+    const fakeProviderQuery = mock(async (_slug: string) => [
+      modelDoc("gpt-5", "openai"),
+      modelDoc("gpt-latest", "openai"),
+    ]);
+    const entries = [
+      slimEntry("gpt-5", [aggregator("openai", "gpt-5"), aggregator("openrouter", "openai/gpt-5")]),
+      slimEntry("gpt-latest", [aggregator("openrouter", "~openai/gpt-latest")]),
+    ];
+    const client = createCatalogClient({
+      getModelsByProvider: fakeProviderQuery,
+      readSlimCache: () => freshCache(entries),
+    });
+
+    const result = await client.modelsByVendor("openai");
+    expect(result.map((m) => m.modelId).sort()).toEqual(["gpt-5"]);
+    // The kept model carries the grafted served-by aggregators (owner query
+    // returns aggregators: null).
+    expect(result[0]?.aggregators?.some((a) => a.provider === "openai")).toBe(true);
+  });
+
+  test("owner path keeps a direct-API owner's models once the catalog indexes them", async () => {
+    // After the backend fix, minimax models carry a "minimax" served-by entry,
+    // so the picker keeps them (this used to blank because the catalog had no
+    // minimax entry at all).
+    const fakeProviderQuery = mock(async (_slug: string) => [
+      modelDoc("minimax-m3", "minimax"),
+      modelDoc("minimax-m2", "minimax"),
+    ]);
+    const entries = [
+      slimEntry("minimax-m3", [aggregator("minimax", "MiniMax-M3"), aggregator("openrouter", "minimax/minimax-m3")]),
+      slimEntry("minimax-m2", [aggregator("minimax", "MiniMax-M2")]),
+    ];
+    const client = createCatalogClient({
+      getModelsByProvider: fakeProviderQuery,
+      readSlimCache: () => freshCache(entries),
+    });
+
+    const result = await client.modelsByVendor("minimax");
+    expect(result.map((m) => m.modelId).sort()).toEqual(["minimax-m2", "minimax-m3"]);
+  });
+
+  test("owner path returns full list on cold-start (empty cache) to avoid blanking", async () => {
+    const fakeProviderQuery = mock(async (_slug: string) => [
+      modelDoc("gpt-5", "openai"),
+      modelDoc("gpt-latest", "openai"),
+    ]);
+    const client = createCatalogClient({
+      getModelsByProvider: fakeProviderQuery,
+      readSlimCache: () => null, // cold start
+    });
+
+    const result = await client.modelsByVendor("openai");
+    // No filtering when the cache is unavailable — both models returned.
+    expect(result.map((m) => m.modelId).sort()).toEqual(["gpt-5", "gpt-latest"]);
   });
 
   test("aggregator 'opencode-zen' filters slim cache by aggregators[].provider", async () => {
