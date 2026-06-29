@@ -20,9 +20,9 @@
 
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { connect, type Socket } from "node:net";
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir, platform } from "node:os";
+import { type Socket, connect } from "node:net";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
 // ─── Magmux Binary Resolution ────────────────────────────────────────────────
@@ -48,9 +48,7 @@ export function findMagmuxForTest(): string {
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  throw new Error(
-    "magmux not found for e2e tests. Install via `bun install` or PATH."
-  );
+  throw new Error("magmux not found for e2e tests. Install via `bun install` or PATH.");
 }
 
 // ─── PTY Runner ──────────────────────────────────────────────────────────────
@@ -152,16 +150,21 @@ export function runInPty(opts: PtyRunOptions): PtyHandle {
  * bytes. Keeps newlines and tabs so structural assertions still work.
  */
 export function stripAnsi(input: string): string {
-  return input
-    // CSI: ESC [ ... <final>
-    .replace(/\x1b\[[0-9;?]*[@-~]/g, "")
-    // OSC: ESC ] ... BEL/ST
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    // Other ESC sequences
-    .replace(/\x1b[@-_]/g, "")
-    // Remaining control characters except \n and \t
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+  return (
+    input
+      // CSI: ESC [ ... <final>
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
+      .replace(/\x1b\[[0-9;?]*[@-~]/g, "")
+      // OSC: ESC ] ... BEL/ST
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      // Other ESC sequences
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
+      .replace(/\x1b[@-_]/g, "")
+      // Remaining control characters except \n and \t
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: deliberately stripping raw control chars
+      .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+  );
 }
 
 /**
@@ -214,10 +217,7 @@ export interface MagmuxSubscription {
   onEvent: (fn: (event: MagmuxEvent) => void) => void;
   close(): Promise<void>;
   /** Wait until a predicate is true or timeout (ms) elapses. */
-  waitFor(
-    predicate: (events: MagmuxEvent[]) => boolean,
-    timeoutMs: number
-  ): Promise<MagmuxEvent[]>;
+  waitFor(predicate: (events: MagmuxEvent[]) => boolean, timeoutMs: number): Promise<MagmuxEvent[]>;
 }
 
 export interface MagmuxSocketBaseline {
@@ -302,9 +302,7 @@ export async function subscribeToMagmuxSocket(
   target: number | string | { baseline: MagmuxSocketBaseline; timeoutMs?: number }
 ): Promise<MagmuxSubscription> {
   const timeoutMs =
-    typeof target === "object" && !Array.isArray(target)
-      ? (target.timeoutMs ?? 5_000)
-      : 5_000;
+    typeof target === "object" && !Array.isArray(target) ? (target.timeoutMs ?? 5_000) : 5_000;
   const deadline = Date.now() + timeoutMs;
   let socket: Socket | null = null;
   let sockPath = "";
@@ -360,8 +358,7 @@ export async function subscribeToMagmuxSocket(
 
   if (!socket) {
     throw new Error(
-      `Could not connect to any magmux socket within ${timeoutMs}ms` +
-        (sockPath ? ` (last path: ${sockPath})` : "")
+      `Could not connect to any magmux socket within ${timeoutMs}ms${sockPath ? ` (last path: ${sockPath})` : ""}`
     );
   }
 
@@ -438,7 +435,7 @@ export function writeGridfile(lines: string[]): {
 } {
   const dir = mkdtempSync(join(tmpdir(), "e2e-grid-"));
   const path = join(dir, "gridfile.txt");
-  const content = lines.join("\n") + "\n";
+  const content = `${lines.join("\n")}\n`;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { writeFileSync } = require("node:fs") as typeof import("node:fs");
   writeFileSync(path, content, "utf-8");

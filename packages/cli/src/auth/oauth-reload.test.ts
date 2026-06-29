@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getGeminiOAuth, reloadGeminiCredentials } from "./gemini-oauth.js";
 import { getCodexOAuth } from "./codex-oauth.js";
+import { getGeminiOAuth, reloadGeminiCredentials } from "./gemini-oauth.js";
 import { getKimiOAuth } from "./kimi-oauth.js";
 
 /**

@@ -12,7 +12,7 @@
  */
 
 import type { Context } from "hono";
-import { log, getLogLevel } from "../../../logger.js";
+import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 
 export function createResponsesStreamHandler(

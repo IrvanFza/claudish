@@ -7,25 +7,18 @@
  * Run: bun test packages/cli/src/providers/probe-catalog.test.ts
  */
 
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  mock,
-  test,
-} from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  type ProbeModelsResponse,
   fetchProbeModels,
   getProbeModel,
   isCacheFresh,
   readProbeModelsCache,
   writeProbeModelsCache,
-  type ProbeModelsResponse,
 } from "./probe-catalog.js";
 
 function makeTmpPath(): { path: string; cleanup: () => void } {
@@ -139,8 +132,8 @@ describe("fetchProbeModels", () => {
   });
 
   test("returns ok with parsed response on 200", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify(SAMPLE), { status: 200 })
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify(SAMPLE), { status: 200 })
     ) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome.kind).toBe("ok");
@@ -148,14 +141,16 @@ describe("fetchProbeModels", () => {
   });
 
   test("returns http with status on non-2xx", async () => {
-    globalThis.fetch = mock(async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    globalThis.fetch = mock(
+      async () => new Response("", { status: 503 })
+    ) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome).toEqual({ kind: "http", status: 503 });
   });
 
   test("returns invalid when body is not the expected shape", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ foo: "bar" }), { status: 200 })
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ foo: "bar" }), { status: 200 })
     ) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome.kind).toBe("invalid");

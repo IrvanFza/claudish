@@ -11,16 +11,12 @@
  * Also serves as Layer 2 ModelDialect for OpenAI-native models (o1/o3 reasoning params).
  */
 
-import { BaseAPIFormat, type AdapterResult, type EffortLevel } from "./base-api-format.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
 
 export class OpenAIAPIFormat extends BaseAPIFormat {
-  constructor(modelId: string) {
-    super(modelId);
-  }
-
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],

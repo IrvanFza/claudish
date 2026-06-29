@@ -12,18 +12,18 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
-import { log, logStderr } from "../../logger.js";
-import {
-  getValidAccessToken,
-  setupGeminiUser,
-  getGeminiTierDisplayName,
-  retrieveUserQuota,
-  CODE_ASSIST_FALLBACK_CHAIN,
-} from "../../auth/gemini-oauth.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
+import {
+  CODE_ASSIST_FALLBACK_CHAIN,
+  getGeminiTierDisplayName,
+  getValidAccessToken,
+  retrieveUserQuota,
+  setupGeminiUser,
+} from "../../auth/gemini-oauth.js";
+import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
+import { log, logStderr } from "../../logger.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 const CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com";
 const CODE_ASSIST_ENDPOINT = `${CODE_ASSIST_BASE}/v1internal:streamGenerateContent?alt=sse`;
@@ -82,7 +82,7 @@ function classify429(responseBody: string): QuotaClassification | null {
     if (retryDelayMs === undefined && typeof error?.message === "string") {
       const match = error.message.match(/retry in ([\d.]+)(ms|s)/i);
       if (match) {
-        const val = parseFloat(match[1]);
+        const val = Number.parseFloat(match[1]);
         retryDelayMs = match[2] === "ms" ? Math.round(val) : Math.round(val * 1000);
       }
     }
@@ -133,7 +133,7 @@ function parseRetryDelay(value: any): number | undefined {
   if (!value) return undefined;
   if (typeof value === "string") {
     const match = value.match(/([\d.]+)s/);
-    return match ? Math.round(parseFloat(match[1]) * 1000) : undefined;
+    return match ? Math.round(Number.parseFloat(match[1]) * 1000) : undefined;
   }
   if (typeof value === "object") {
     const seconds = typeof value.seconds === "number" ? value.seconds : 0;
@@ -300,7 +300,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
 
       if (!classification) {
         // Can't parse — return as-is
-        log(`[GeminiCodeAssist] 429 response could not be classified, returning to caller`);
+        log("[GeminiCodeAssist] 429 response could not be classified, returning to caller");
         return response;
       }
 
@@ -404,7 +404,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       lastResponse = fallbackResponse;
     }
 
-    log(`[GeminiCodeAssist] All fallback models exhausted`);
+    log("[GeminiCodeAssist] All fallback models exhausted");
     logStderr(
       `[GeminiCodeAssist] All models capacity exhausted (tried: ${CODE_ASSIST_FALLBACK_CHAIN.slice(this.fallbackStartIndex).join(" -> ")})`
     );

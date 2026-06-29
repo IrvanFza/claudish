@@ -8,12 +8,12 @@
  * - Vision support detection (sourced from model-catalog.ts)
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import { log } from "../logger.js";
+import { type AdapterResult, BaseAPIFormat, matchesModelFamily } from "./base-api-format.js";
 import { lookupModel } from "./model-catalog.js";
 
 export class GLMModelDialect extends BaseAPIFormat {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],

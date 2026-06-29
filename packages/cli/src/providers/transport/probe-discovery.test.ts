@@ -30,11 +30,7 @@ describe("rankProbeCandidates", () => {
     // Smalls bubble to the top; alphabetical within group.
     expect(ranked[0]).toBe("claude-haiku-4");
     // Among smalls: claude-haiku-4, gpt-4o-mini, llama-3b
-    expect(ranked.slice(0, 3)).toEqual([
-      "claude-haiku-4",
-      "gpt-4o-mini",
-      "llama-3b",
-    ]);
+    expect(ranked.slice(0, 3)).toEqual(["claude-haiku-4", "gpt-4o-mini", "llama-3b"]);
   });
 
   test("falls back to alphabetical when none match heuristics", () => {
@@ -69,20 +65,12 @@ describe("rankProbeCandidates", () => {
   });
 
   test("returns empty when all candidates are non-chat", () => {
-    const ranked = rankProbeCandidates([
-      "text-embedding-3-large",
-      "whisper-1",
-      "tts-1-hd",
-    ]);
+    const ranked = rankProbeCandidates(["text-embedding-3-large", "whisper-1", "tts-1-hd"]);
     expect(ranked).toEqual([]);
   });
 
   test("drops wildcard route patterns", () => {
-    const ranked = rankProbeCandidates([
-      "gemini/*",
-      "gem-mad/*",
-      "gpt-4o-mini",
-    ]);
+    const ranked = rankProbeCandidates(["gemini/*", "gem-mad/*", "gpt-4o-mini"]);
     expect(ranked).toEqual(["gpt-4o-mini"]);
   });
 
@@ -104,10 +92,7 @@ describe("rankProbeCandidates", () => {
       "openai/gpt-4o-mini",
       "anthropic/claude-haiku",
     ]);
-    expect(ranked.slice(0, 2)).toEqual([
-      "anthropic/claude-haiku",
-      "openai/gpt-4o-mini",
-    ]);
+    expect(ranked.slice(0, 2)).toEqual(["anthropic/claude-haiku", "openai/gpt-4o-mini"]);
   });
 });
 
@@ -119,17 +104,14 @@ describe("discoverViaOpenAIModels", () => {
   });
 
   test("returns smallest model from /v1/models response", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(
-        JSON.stringify({
-          data: [
-            { id: "gpt-4o" },
-            { id: "gpt-4o-mini" },
-            { id: "claude-haiku-4" },
-          ],
-        }),
-        { status: 200 }
-      )
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [{ id: "gpt-4o" }, { id: "gpt-4o-mini" }, { id: "claude-haiku-4" }],
+          }),
+          { status: 200 }
+        )
     ) as unknown as typeof fetch;
 
     const outcome = await discoverViaOpenAIModels(
@@ -141,15 +123,17 @@ describe("discoverViaOpenAIModels", () => {
   });
 
   test("returns null + http reason on HTTP error", async () => {
-    globalThis.fetch = mock(async () => new Response("", { status: 503 })) as unknown as typeof fetch;
+    globalThis.fetch = mock(
+      async () => new Response("", { status: 503 })
+    ) as unknown as typeof fetch;
     const outcome = await discoverViaOpenAIModels("http://x", {}, { key: "test-503" });
     expect(outcome.model).toBeNull();
     expect(outcome.reason).toContain("503");
   });
 
   test("returns null + empty-list reason on empty model list", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ data: [] }), { status: 200 })
     ) as unknown as typeof fetch;
     const outcome = await discoverViaOpenAIModels(
       "http://localhost:1234/v1/models",
@@ -301,8 +285,8 @@ describe("discoverViaOllama", () => {
   });
 
   test("returns null + reason when both endpoints empty", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ models: [] }), { status: 200 })
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ models: [] }), { status: 200 })
     ) as unknown as typeof fetch;
     const outcome = await discoverViaOllama("http://localhost:11434", { key: "empty" });
     expect(outcome.model).toBeNull();
@@ -319,9 +303,9 @@ describe("discoverViaOllama", () => {
         return new Response(
           JSON.stringify({
             models: [
-              { name: "all-minilm:latest", size: 45_000_000 },     // smallest BUT embedding
-              { name: "nomic-embed-text", size: 274_000_000 },     // embedding
-              { name: "llama-3.2-3b", size: 3_000_000_000 },       // chat, bigger
+              { name: "all-minilm:latest", size: 45_000_000 }, // smallest BUT embedding
+              { name: "nomic-embed-text", size: 274_000_000 }, // embedding
+              { name: "llama-3.2-3b", size: 3_000_000_000 }, // chat, bigger
             ],
           }),
           { status: 200 }
@@ -428,10 +412,7 @@ describe("discoverViaLMStudio", () => {
         return new Response("", { status: 404 });
       }
       if (url.endsWith("/v1/models")) {
-        return new Response(
-          JSON.stringify({ data: [{ id: "gpt-4o-mini" }] }),
-          { status: 200 }
-        );
+        return new Response(JSON.stringify({ data: [{ id: "gpt-4o-mini" }] }), { status: 200 });
       }
       return new Response("", { status: 500 });
     }) as unknown as typeof fetch;
@@ -445,13 +426,14 @@ describe("discoverViaLMStudio", () => {
   });
 
   test("returns null + reason when nothing chat-capable", async () => {
-    globalThis.fetch = mock(async () =>
-      new Response(
-        JSON.stringify({
-          data: [{ id: "nomic-embed-text", state: "loaded", type: "embeddings" }],
-        }),
-        { status: 200 }
-      )
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [{ id: "nomic-embed-text", state: "loaded", type: "embeddings" }],
+          }),
+          { status: 200 }
+        )
     ) as unknown as typeof fetch;
 
     const outcome = await discoverViaLMStudio(

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import https from "node:https";
-import net from "node:net";
+import type net from "node:net";
 import tls, { type SecureContext } from "node:tls";
 import type { CertificateManager } from "./certificate-manager";
 
@@ -13,11 +13,7 @@ export interface HTTPSProxyServerOptions {
 }
 
 // Type for CONNECT handler callback
-export type ConnectHandler = (
-  req: IncomingMessage,
-  socket: net.Socket,
-  head: Buffer
-) => void;
+export type ConnectHandler = (req: IncomingMessage, socket: net.Socket, head: Buffer) => void;
 
 export class HTTPSProxyServer {
   private server: https.Server | null = null;

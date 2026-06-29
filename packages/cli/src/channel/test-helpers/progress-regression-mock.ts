@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
 /**
  * progress-regression-mock — minimal MCP server that emits
  * notifications/progress during a tool call to test whether Claude Code's
@@ -25,18 +26,14 @@
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { appendFileSync } from "node:fs";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const LOG_PATH = process.env.PROGRESS_REGRESSION_LOG ?? "/tmp/progress-regression.log";
 
 function log(event: Record<string, unknown>): void {
   const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
   try {
-    appendFileSync(LOG_PATH, line + "\n");
+    appendFileSync(LOG_PATH, `${line}\n`);
   } catch {
     // never let logging break the server
   }
@@ -94,7 +91,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "slow_with_many_progress") {
     if (progressToken === undefined) {
-      log({ event: "warn.no_progress_token", note: "client did not send progressToken; emitting nothing" });
+      log({
+        event: "warn.no_progress_token",
+        note: "client did not send progressToken; emitting nothing",
+      });
     } else {
       const steps = [
         { message: "Step 1 of 5: scanning files" },
@@ -132,7 +132,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   if (name === "slow_ping_with_progress") {
     if (progressToken === undefined) {
-      log({ event: "warn.no_progress_token", note: "client did not send progressToken; skipping notifications" });
+      log({
+        event: "warn.no_progress_token",
+        note: "client did not send progressToken; skipping notifications",
+      });
     } else {
       // First progress event
       log({ event: "emit.notification.progress", progress: 1, total: 2 });

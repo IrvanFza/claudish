@@ -28,7 +28,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { createProxyServer, type SlotRoute } from "./proxy-server.js";
+import { type SlotRoute, createProxyServer } from "./proxy-server.js";
 
 interface ServeArgs {
   port?: number;
@@ -78,16 +78,20 @@ function loadModelMap(path: string): { slotMap: Map<string, SlotRoute>; slotIds:
   try {
     raw = readFileSync(path, "utf-8");
   } catch (e) {
-    throw new Error(`failed to read --models file ${path}: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(
+      `failed to read --models file ${path}: ${e instanceof Error ? e.message : String(e)}`
+    );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    throw new Error(`--models file is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(
+      `--models file is not valid JSON: ${e instanceof Error ? e.message : String(e)}`
+    );
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`--models file must contain a JSON array of { slot, model, provider } entries`);
+    throw new Error("--models file must contain a JSON array of { slot, model, provider } entries");
   }
 
   const slotMap = new Map<string, SlotRoute>();
@@ -97,7 +101,9 @@ function loadModelMap(path: string): { slotMap: Map<string, SlotRoute>; slotIds:
       throw new Error(`--models entry #${idx} is missing a non-empty "slot" string`);
     }
     if (typeof entry.model !== "string" || entry.model.length === 0) {
-      throw new Error(`--models entry #${idx} (slot "${entry.slot}") is missing a non-empty "model" string`);
+      throw new Error(
+        `--models entry #${idx} (slot "${entry.slot}") is missing a non-empty "model" string`
+      );
     }
     if (entry.provider != null && typeof entry.provider !== "string") {
       throw new Error(`--models entry #${idx} (slot "${entry.slot}") has a non-string "provider"`);

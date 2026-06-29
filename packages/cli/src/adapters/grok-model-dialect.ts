@@ -10,20 +10,20 @@
  * This dialect translates that to Claude Code's expected tool_calls format.
  */
 
+import { log } from "../logger.js";
 import {
+  type AdapterResult,
   BaseAPIFormat,
-  AdapterResult,
-  ToolCall,
   type EffortLevel,
+  type ToolCall,
   matchesModelFamily,
 } from "./base-api-format.js";
-import { log } from "../logger.js";
 import { lookupModel } from "./model-catalog.js";
 
 export class GrokModelDialect extends BaseAPIFormat {
-  private xmlBuffer: string = "";
+  private xmlBuffer = "";
 
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Accumulate text to handle XML split across multiple chunks
     this.xmlBuffer += textContent;
 
@@ -124,11 +124,7 @@ export class GrokModelDialect extends BaseAPIFormat {
     const model = this.modelId.toLowerCase();
 
     // Non-reasoning + original grok-4 + grok-2 reject the param entirely.
-    if (
-      model.includes("non-reasoning") ||
-      model.includes("grok-2") ||
-      this.isOriginalGrok4()
-    ) {
+    if (model.includes("non-reasoning") || model.includes("grok-2") || this.isOriginalGrok4()) {
       return undefined;
     }
 
@@ -184,7 +180,8 @@ export class GrokModelDialect extends BaseAPIFormat {
     const params: Record<string, any> = {};
     const paramPattern = /<xai:parameter name="([^"]+)">([^<]*)<\/xai:parameter>/g;
 
-    let match;
+    let match: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
     while ((match = paramPattern.exec(xmlContent)) !== null) {
       const paramName = match[1];
       const paramValue = match[2];

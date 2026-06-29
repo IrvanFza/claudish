@@ -262,7 +262,9 @@ describe("ApiKeyCredentialProvider", () => {
     const provider = new ApiKeyCredentialProvider({ catalogName: "fake", envVar: ENV_VAR });
     expect(await provider.isAvailable()).toBe(true);
     // Prime the memo via a request.
-    expect((await provider.getRequestAuth(CTX)).headers.Authorization).toBe("Bearer sk-cached-first");
+    expect((await provider.getRequestAuth(CTX)).headers.Authorization).toBe(
+      "Bearer sk-cached-first"
+    );
 
     // Drop the key; the memoized value still reports available until invalidate().
     delete process.env[ENV_VAR];

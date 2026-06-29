@@ -41,18 +41,26 @@ export class LocalCredentialProvider implements CredentialProvider {
   private async resolveKey(): Promise<string> {
     if (this.cachedKey !== undefined) return this.cachedKey;
     const envVar = LOCAL_KEY_ENV[this.catalogName];
-    if (!envVar) return (this.cachedKey = "");
+    if (!envVar) {
+      this.cachedKey = "";
+      return "";
+    }
     const local = process.env[envVar] || getApiKey(envVar);
-    if (local) return (this.cachedKey = local);
+    if (local) {
+      this.cachedKey = local;
+      return local;
+    }
     if (hasOpSources()) {
       const resolved = await resolveOpKeyForEnvVars(new Set([envVar]), { onAuthFailure: "skip" });
       const v = resolved[envVar];
       if (v) {
         process.env[envVar] = v; // write-through mirror
-        return (this.cachedKey = v);
+        this.cachedKey = v;
+        return v;
       }
     }
-    return (this.cachedKey = "");
+    this.cachedKey = "";
+    return "";
   }
 
   async getRequestAuth(_ctx: RequestAuthContext): Promise<RequestAuth> {

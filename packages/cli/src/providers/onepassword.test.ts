@@ -12,8 +12,8 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  OP_REF_RE,
   type AccountInfo,
+  OP_REF_RE,
   type OpAccountLister,
   type SdkAuth,
   type SdkClientFactory,
@@ -29,11 +29,11 @@ import {
   isOpHydratedVar,
   isOpReference,
   isTransientSdkError,
-  recordOpHydratedVars,
   maskSecret,
   parseGlobImport,
   parseOpFlag,
   readEnvironment,
+  recordOpHydratedVars,
   resolveDesktopAccount,
   resolveGlobImport,
   resolveGlobImportForEnvVars,
@@ -749,20 +749,20 @@ describe("discoverItemFields", () => {
     });
     const byLabel = Object.fromEntries(fields.map((f) => [f.label, f]));
     // sectionless field → section null
-    expect(byLabel["username"].section).toBeNull();
-    expect(byLabel["username"].hasValue).toBe(false);
+    expect(byLabel.username.section).toBeNull();
+    expect(byLabel.username.hasValue).toBe(false);
     // sectioned field → section title + synthesized reference
-    expect(byLabel["OPENROUTER_API_KEY"].section).toBe("Open router");
-    expect(byLabel["OPENROUTER_API_KEY"].reference).toBe(ref("Open router/OPENROUTER_API_KEY"));
-    expect(byLabel["OPENROUTER_API_KEY"].hasValue).toBe(true);
+    expect(byLabel.OPENROUTER_API_KEY.section).toBe("Open router");
+    expect(byLabel.OPENROUTER_API_KEY.reference).toBe(ref("Open router/OPENROUTER_API_KEY"));
+    expect(byLabel.OPENROUTER_API_KEY.hasValue).toBe(true);
     // trailing-space label preserved verbatim in discovery
     expect(byLabel["GEMINI_API_KEY "]).toBeDefined();
     // synthesized reference for the trailing-space field keeps the space
     expect(byLabel["GEMINI_API_KEY "].reference).toBe(ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY "));
     // valueTail = last 4 chars of the value (for masked ••••1234 display); a
     // valueless field → "". The full value is never kept.
-    expect(byLabel["OPENAI_API_KEY"].valueTail).toBe("-oai"); // value "sk-oai"
-    expect(byLabel["username"].valueTail).toBe(""); // empty value
+    expect(byLabel.OPENAI_API_KEY.valueTail).toBe("-oai"); // value "sk-oai"
+    expect(byLabel.username.valueTail).toBe(""); // empty value
   });
 
   test("no SDK auth → hard-fails", async () => {
@@ -916,7 +916,7 @@ describe("resolveGlobImport", () => {
       ].sort()
     );
     // GEMINI_API_KEY resolved via the TRAILING-SPACE reference, named WITHOUT it.
-    expect(out["GEMINI_API_KEY"]).toBe(`sdk:${ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY ")}`);
+    expect(out.GEMINI_API_KEY).toBe(`sdk:${ref("GOOGLE_GEMINI_API_KEY/GEMINI_API_KEY ")}`);
     expect(out["Customer Key"]).toBeUndefined();
     expect(out["Bearer token"]).toBeUndefined();
   });
@@ -950,7 +950,7 @@ describe("resolveGlobImport", () => {
       sdkFactory: itemSdkFactory(),
       warn: (m) => warnings.push(m),
     });
-    expect(out["OPENROUTER_API_KEY"]).toBeDefined();
+    expect(out.OPENROUTER_API_KEY).toBeDefined();
     expect(out["Bad Name"]).toBeUndefined();
     expect(warnings.some((w) => w.includes("Bad Name"))).toBe(true);
     expect(warnings.some((w) => w.includes("not a valid env var name"))).toBe(true);
@@ -972,7 +972,7 @@ describe("resolveGlobImport", () => {
       sdkFactory: itemSdkFactory(spy),
     });
     expect(spy.called).toBe(true);
-    expect(out["MOONSHOT_API_KEY"]).toBe(`sdk:${ref("Moonshot Kimi/MOONSHOT_API_KEY")}`);
+    expect(out.MOONSHOT_API_KEY).toBe(`sdk:${ref("Moonshot Kimi/MOONSHOT_API_KEY")}`);
   });
 });
 
@@ -985,10 +985,10 @@ describe("resolveGlobImportForEnvVars (per-credential — only the wanted keys)"
       warn: () => {},
     });
     expect(Object.keys(out)).toEqual(["OPENAI_API_KEY"]);
-    expect(out["OPENAI_API_KEY"]).toBeDefined();
+    expect(out.OPENAI_API_KEY).toBeDefined();
     // None of the OTHER keys in the same glob leak out.
-    expect(out["OPENROUTER_API_KEY"]).toBeUndefined();
-    expect(out["ANTHROPIC_API_KEY"]).toBeUndefined();
+    expect(out.OPENROUTER_API_KEY).toBeUndefined();
+    expect(out.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   test("resolves multiple requested env vars when several are wanted", async () => {

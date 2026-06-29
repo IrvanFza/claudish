@@ -4,6 +4,7 @@
 // Default: 2000 lines (~200KB). 10 concurrent sessions ≈ 2MB.
 
 // Strip ANSI escape sequences (colors, cursor movement, etc.)
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
 const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[()][AB012]|\x1b[>=<]|\x0f|\x0e/g;
 
 export class ScrollbackBuffer {

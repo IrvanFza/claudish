@@ -3,8 +3,8 @@
  * Simple bridge test - tests CycleTLS and interception
  */
 
-import { spawn } from "child_process";
-import { setTimeout } from "timers/promises";
+import { spawn } from "node:child_process";
+import { setTimeout } from "node:timers/promises";
 
 const BRIDGE_DIR = new URL("..", import.meta.url).pathname;
 
@@ -13,7 +13,7 @@ async function main() {
 
   // Kill any existing bridges
   try {
-    const { execSync } = await import("child_process");
+    const { execSync } = await import("node:child_process");
     execSync("pkill -9 -f 'macos-bridge/dist/index.js'", { stdio: "ignore" });
     execSync("rm -f ~/.claudish-proxy/bridge.pid", { stdio: "ignore" });
   } catch {}
@@ -64,7 +64,7 @@ async function main() {
     const enableRes = await fetch(`http://127.0.0.1:${port}/proxy/enable`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -96,7 +96,7 @@ async function main() {
 
   // Configure system proxy
   console.log("[5] Configuring system proxy...");
-  const { execSync } = await import("child_process");
+  const { execSync } = await import("node:child_process");
   const pacUrl = `http://127.0.0.1:${port}/proxy.pac`;
 
   try {

@@ -1,6 +1,6 @@
+import { DETAIL_H } from "../constants.js";
 /** @jsxImportSource @opentui/react */
 import { C } from "../theme.js";
-import { DETAIL_H } from "../constants.js";
 
 export function PrivacyDetail() {
   return (

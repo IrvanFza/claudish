@@ -11,10 +11,10 @@
  */
 
 import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { log } from "../logger.js";
 
 const execAsync = promisify(exec);
@@ -238,7 +238,7 @@ export function buildVertexOAuthEndpoint(
   config: VertexConfig,
   publisher: string,
   model: string,
-  streaming: boolean = true
+  streaming = true
 ): string {
   const method = streaming ? "streamGenerateContent" : "generateContent";
 
@@ -252,7 +252,8 @@ export function buildVertexOAuthEndpoint(
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/${publisher}/models/${model}:${method}${sseParam}`
     );
-  } else if (publisher === "mistralai") {
+  }
+  if (publisher === "mistralai") {
     // Mistral uses regional rawPredict/streamRawPredict endpoint
     const mistralMethod = streaming ? "streamRawPredict" : "rawPredict";
     return (
@@ -260,14 +261,9 @@ export function buildVertexOAuthEndpoint(
       `projects/${config.projectId}/locations/${config.location}/` +
       `publishers/mistralai/models/${model}:${mistralMethod}`
     );
-  } else {
-    // Other partners (MiniMax, Meta, etc.) use global OpenAI-compatible endpoint
-    return (
-      `https://aiplatform.googleapis.com/v1/` +
-      `projects/${config.projectId}/locations/global/` +
-      `endpoints/openapi/chat/completions`
-    );
   }
+  // Other partners (MiniMax, Meta, etc.) use global OpenAI-compatible endpoint
+  return `https://aiplatform.googleapis.com/v1/projects/${config.projectId}/locations/global/endpoints/openapi/chat/completions`;
 }
 
 // Singleton instance

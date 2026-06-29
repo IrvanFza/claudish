@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  setupSession,
-  runModels,
-  judgeResponses,
-  getStatus,
-  validateSessionPath,
   type TeamStatus,
+  getStatus,
+  judgeResponses,
+  runModels,
+  setupSession,
+  validateSessionPath,
 } from "./team-orchestrator.js";
 
 // ─── Arg Parsing Helpers ─────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ export async function teamCommand(args: string[]): Promise<void> {
   const judgesRaw = getFlag(args, "--judges");
   const mode = (getFlag(args, "--mode") ?? "default") as "default" | "interactive" | "json";
   const timeoutStr = getFlag(args, "--timeout");
-  const timeout = timeoutStr ? parseInt(timeoutStr, 10) : 300;
+  const timeout = timeoutStr ? Number.parseInt(timeoutStr, 10) : 300;
 
   // Collect input: --input flag or bare positional args
   let input = getFlag(args, "--input");
@@ -128,9 +128,11 @@ export async function teamCommand(args: string[]): Promise<void> {
     : undefined;
 
   // Legacy --grid/--interactive flags map to modes
-  const effectiveMode = hasFlag(args, "--interactive") ? "interactive"
-    : hasFlag(args, "--grid") ? "default"
-    : mode;
+  const effectiveMode = hasFlag(args, "--interactive")
+    ? "interactive"
+    : hasFlag(args, "--grid")
+      ? "default"
+      : mode;
 
   switch (subcommand) {
     case "run": {
@@ -150,8 +152,10 @@ export async function teamCommand(args: string[]): Promise<void> {
         printStatus(runStatus);
       } else {
         const { runWithGrid } = await import("./team-grid.js");
-        const interactive = effectiveMode === "interactive";
-        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", { timeout, interactive });
+        const gridStatus = await runWithGrid(sessionPath, models, input ?? "", {
+          timeout,
+          mode: effectiveMode === "interactive" ? "interactive" : "default",
+        });
         printStatus(gridStatus);
       }
       break;

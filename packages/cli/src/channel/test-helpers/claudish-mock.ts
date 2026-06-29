@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { randomUUID } from "node:crypto";
 /**
  * claudish-mock — minimal MCP server that mimics a Claudish channel session
  * for end-to-end Claude Code rendering validation.
@@ -25,11 +26,7 @@
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { randomUUID } from "node:crypto";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const SERVER_NAME = "claudish-mock";
 
@@ -44,10 +41,25 @@ interface MockEvent {
 
 const SCRIPT: MockEvent[] = [
   { delayMs: 500, type: "running", content: "Starting analysis of the codebase." },
-  { delayMs: 2000, type: "tool_executing", content: "Read package.json", extraMeta: { tool: "Read" } },
+  {
+    delayMs: 2000,
+    type: "tool_executing",
+    content: "Read package.json",
+    extraMeta: { tool: "Read" },
+  },
   { delayMs: 3500, type: "tool_executing", content: "Running build", extraMeta: { tool: "Bash" } },
-  { delayMs: 5000, type: "tool_executing", content: "Editing src/index.ts", extraMeta: { tool: "Edit" } },
-  { delayMs: 6500, type: "tool_executing", content: "Writing CHANGELOG.md", extraMeta: { tool: "Write" } },
+  {
+    delayMs: 5000,
+    type: "tool_executing",
+    content: "Editing src/index.ts",
+    extraMeta: { tool: "Edit" },
+  },
+  {
+    delayMs: 6500,
+    type: "tool_executing",
+    content: "Writing CHANGELOG.md",
+    extraMeta: { tool: "Write" },
+  },
   { delayMs: 8000, type: "completed", content: "Mock session finished. All 6 events emitted." },
 ];
 
@@ -64,11 +76,7 @@ const server = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions:
-      `Mock channel server for testing. Call start_mock_session to begin a ` +
-      `scripted sequence of channel events. Events arrive as ` +
-      `<channel source="${SERVER_NAME}" event="..." session_id="..." ...> blocks. ` +
-      `Quote each <channel> block VERBATIM as it arrives so we can verify they reach the agent.`,
+    instructions: `Mock channel server for testing. Call start_mock_session to begin a scripted sequence of channel events. Events arrive as <channel source="${SERVER_NAME}" event="..." session_id="..." ...> blocks. Quote each <channel> block VERBATIM as it arrives so we can verify they reach the agent.`,
   }
 );
 

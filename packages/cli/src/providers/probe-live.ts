@@ -188,11 +188,7 @@ export async function probeLink(
  * re-authenticate — surface the exact command instead of leaving them to
  * guess.
  */
-function annotateOAuthHint(
-  result: ProbeResult,
-  provider: string,
-  isOAuth: boolean
-): ProbeResult {
+function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boolean): ProbeResult {
   if (!isOAuth) return result;
   if (result.state === "live") return result;
 
@@ -226,11 +222,7 @@ async function safeReadBody(response: Response): Promise<string> {
   }
 }
 
-function classifyHttpError(
-  status: number,
-  body: string,
-  latencyMs: number
-): ProbeResult {
+function classifyHttpError(status: number, body: string, latencyMs: number): ProbeResult {
   const lowered = body.toLowerCase();
   if (status === 401 || status === 403) {
     return {
@@ -292,10 +284,7 @@ function extractErrorMessage(body: string): string | undefined {
   try {
     const parsed = JSON.parse(body);
     const msg =
-      parsed?.error?.message ||
-      parsed?.error?.error?.message ||
-      parsed?.message ||
-      parsed?.detail;
+      parsed?.error?.message || parsed?.error?.error?.message || parsed?.message || parsed?.detail;
     if (typeof msg === "string" && msg.length > 0) {
       return msg.length > 160 ? `${msg.slice(0, 157)}...` : msg;
     }
@@ -443,10 +432,7 @@ function accountStreamEvent(rawEvent: string): {
   if (typeof text === "string" && text.length > 0) {
     contentDelta = true;
     textChars = text.length;
-  } else if (
-    parsed?.type === "content_block_delta" ||
-    parsed?.type === "content_block_start"
-  ) {
+  } else if (parsed?.type === "content_block_delta" || parsed?.type === "content_block_start") {
     contentDelta = true;
   }
 
@@ -527,9 +513,7 @@ export function describeProbeState(result: ProbeResult): string {
     case "live":
       return `live · ${result.latencyMs}ms`;
     case "key-missing":
-      return result.errorMessage
-        ? `missing (${result.errorMessage})`
-        : "missing";
+      return result.errorMessage ? `missing (${result.errorMessage})` : "missing";
     case "auth-failed":
       return `auth failed · ${result.httpStatus ?? ""}${result.latencyMs ? ` · ${result.latencyMs}ms` : ""}`.trim();
     case "model-not-found":

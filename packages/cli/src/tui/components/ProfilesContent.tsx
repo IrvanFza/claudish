@@ -1,8 +1,8 @@
-/** @jsxImportSource @opentui/react */
-import { A, C } from "../theme.js";
-import { PROVIDER_PREFIXES } from "../constants.js";
 import { loadLocalConfig } from "../../profile-config.js";
 import type { ClaudishProfileConfig, ModelMapping } from "../../profile-config.js";
+import { PROVIDER_PREFIXES } from "../constants.js";
+/** @jsxImportSource @opentui/react */
+import { A, C } from "../theme.js";
 import type { Mode, Tab } from "../types.js";
 
 interface ProfilesContentProps {
@@ -95,9 +95,7 @@ export function ProfilesContent({
 
   const globalCfg = config;
   const localCfg = loadLocalConfig();
-  const localProfileNames = localCfg
-    ? new Set(Object.keys(localCfg.profiles))
-    : new Set<string>();
+  const localProfileNames = localCfg ? new Set(Object.keys(localCfg.profiles)) : new Set<string>();
 
   // Build unified list: local profiles first, then global
   const allEntries: Array<{
@@ -132,8 +130,7 @@ export function ProfilesContent({
   // fixed width so the display name aligns into a clean second column.
   // Pad to the widest prefix + a 2-space gutter so the display-name column
   // aligns cleanly even for long prefixes like "gemini-codeassist@".
-  const prefixColW =
-    PROVIDER_PREFIXES.reduce((max, p) => Math.max(max, p.prefix.length), 0) + 2;
+  const prefixColW = PROVIDER_PREFIXES.reduce((max, p) => Math.max(max, p.prefix.length), 0) + 2;
   const prefixOptions = PROVIDER_PREFIXES.map((p) => ({
     name: `${p.prefix.padEnd(prefixColW)}${p.displayName}`,
     description: "",
@@ -260,7 +257,7 @@ export function ProfilesContent({
                 height={scopeOptions.length}
               />
               <text>
-                <span fg={C.dim}>{" "}</span>
+                <span fg={C.dim}> </span>
               </text>
               <text>
                 <span fg={C.fgMuted}>↑↓ move · </span>
@@ -294,7 +291,7 @@ export function ProfilesContent({
                 showScrollIndicator={true}
               />
               <text>
-                <span fg={C.dim}>{" "}</span>
+                <span fg={C.dim}> </span>
               </text>
               <text>
                 <span fg={C.fgMuted}>↑↓ move · </span>

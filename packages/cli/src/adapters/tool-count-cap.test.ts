@@ -13,9 +13,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { OpenAIAPIFormat } from "./openai-api-format.js";
 import { CodexAPIFormat } from "./codex-api-format.js";
 import { GeminiAPIFormat } from "./gemini-api-format.js";
+import { OpenAIAPIFormat } from "./openai-api-format.js";
 
 describe("getMaxToolCount — per-API tool-count cap", () => {
   test("OpenAI Chat Completions caps tools at 128", () => {

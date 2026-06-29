@@ -1,7 +1,8 @@
 import type { Context } from "hono";
-import type { ModelHandler } from "./types.js";
+import { credentials } from "../auth/credentials/authority.js";
+import { hasOpSources, resolveOpKeyForEnvVars } from "../auth/credentials/op-source.js";
 import { log, maskCredential } from "../logger.js";
-import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import { getApiKey } from "../profile-config.js";
 import {
   fetchMultiModelAdvice,
   findPendingAdvisorToolResults,
@@ -13,9 +14,8 @@ import {
   stubAdvisorAdvice,
   swapAdvisorToolInBody,
 } from "./native-handler-advisor.js";
-import { credentials } from "../auth/credentials/authority.js";
-import { hasOpSources, resolveOpKeyForEnvVars } from "../auth/credentials/op-source.js";
-import { getApiKey } from "../profile-config.js";
+import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import type { ModelHandler } from "./types.js";
 
 /**
  * Resolve the advisor provider keys through the credential layer (env → config →
@@ -36,15 +36,15 @@ async function resolveAdvisorKeys(): Promise<{
   const keyFromAuthority = async (name: string): Promise<string | undefined> => {
     try {
       const auth = await credentials.getRequestAuth(name, { model: "" });
-      const k =
-        auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"];
+      const k = auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"];
       return k || undefined;
     } catch {
       return undefined;
     }
   };
   const geminiKey = async (): Promise<string | undefined> => {
-    const local = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || getApiKey("GEMINI_API_KEY");
+    const local =
+      process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || getApiKey("GEMINI_API_KEY");
     if (local) return local;
     if (hasOpSources()) {
       const r = await resolveOpKeyForEnvVars(new Set(["GEMINI_API_KEY", "GOOGLE_API_KEY"]), {
@@ -129,18 +129,17 @@ export class NativeHandler implements ModelHandler {
               {
                 ...advisorKeys,
                 anthropic: originalHeaders["x-api-key"],
-              },
+              }
             );
             adviceMap.set(id, advice);
           }
           advisorRewrittenIds = rewriteAdvisorToolResults(
             payload,
-            (id) => adviceMap.get(id) ?? stubAdvisorAdvice(id),
+            (id) => adviceMap.get(id) ?? stubAdvisorAdvice(id)
           );
           if (advisorRewrittenIds.length > 0) {
             log(
-              `[Native][advisor] rewrote ${advisorRewrittenIds.length} tool_result(s) with multi-model advice from [${advisorCfg.models.join(", ")}]` +
-              (advisorCfg.collector ? ` (collector: ${advisorCfg.collector})` : " (no collector)")
+              `[Native][advisor] rewrote ${advisorRewrittenIds.length} tool_result(s) with multi-model advice from [${advisorCfg.models.join(", ")}]${advisorCfg.collector ? ` (collector: ${advisorCfg.collector})` : " (no collector)"}`
             );
             logAdvisorEvent(advisorCfg, {
               kind: "multi_model_rewrite",
@@ -184,7 +183,7 @@ export class NativeHandler implements ModelHandler {
       `[Native] x-api-key: ${originalHeaders["x-api-key"] ? maskCredential(originalHeaders["x-api-key"]) : "(not set)"}`
     );
     log(
-      `[Native] authorization: ${originalHeaders["authorization"] ? maskCredential(originalHeaders["authorization"]) : "(not set)"}`
+      `[Native] authorization: ${originalHeaders.authorization ? maskCredential(originalHeaders.authorization) : "(not set)"}`
     );
     log(`Request body (Model: ${target}):`);
     log("=== End Request ===\n");
@@ -199,13 +198,13 @@ export class NativeHandler implements ModelHandler {
     // (e.g. the --probe client, which doesn't replicate Claude Code's injected
     // key) fall back to the api key this handler was constructed with, so the
     // native passthrough can still authenticate against api.anthropic.com.
-    if (originalHeaders["authorization"]) {
-      headers["authorization"] = originalHeaders["authorization"];
+    if (originalHeaders.authorization) {
+      headers.authorization = originalHeaders.authorization;
     }
     if (originalHeaders["x-api-key"]) {
       headers["x-api-key"] = originalHeaders["x-api-key"];
     }
-    if (!originalHeaders["authorization"] && !originalHeaders["x-api-key"]) {
+    if (!originalHeaders.authorization && !originalHeaders["x-api-key"]) {
       // No inbound auth → fall back to the construction-time key, else resolve
       // ANTHROPIC_API_KEY through the credential authority (env → config → op://),
       // so even the native fallback is sourced from the single layer.
@@ -279,7 +278,7 @@ export class NativeHandler implements ModelHandler {
                   recordAdvisorEventsFromChunk(advisorCfg, chunkText);
                   const lines = buffer.split("\n");
                   buffer = lines.pop() || "";
-                  for (const line of lines) if (line.trim()) eventLog += line + "\n";
+                  for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
                 }
                 if (eventLog) log(eventLog);
                 controller.close();
@@ -344,7 +343,7 @@ function trimForLog(payload: any): any {
   const clone = structuredClone(payload);
   const trimStr = (s: string) =>
     typeof s === "string" && s.length > TEXT_TRUNC
-      ? s.slice(0, TEXT_TRUNC) + `… [+${s.length - TEXT_TRUNC} chars]`
+      ? `${s.slice(0, TEXT_TRUNC)}… [+${s.length - TEXT_TRUNC} chars]`
       : s;
   const walk = (v: any): any => {
     if (typeof v === "string") return trimStr(v);

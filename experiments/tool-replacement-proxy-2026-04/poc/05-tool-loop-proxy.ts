@@ -95,7 +95,7 @@ function startMockExecutor() {
             stop_sequence: null,
             usage: { input_tokens: 100, output_tokens: 50 },
           }),
-          { headers: { "content-type": "application/json" } },
+          { headers: { "content-type": "application/json" } }
         );
       }
 
@@ -104,7 +104,7 @@ function startMockExecutor() {
       const advice =
         typeof toolResult.content === "string"
           ? toolResult.content
-          : toolResult.content?.[0]?.text ?? JSON.stringify(toolResult.content);
+          : (toolResult.content?.[0]?.text ?? JSON.stringify(toolResult.content));
       console.log(`[mock-executor] turn ${turn}: received advice, quoting in continuation`);
       console.log(`[mock-executor]   advice: ${advice.slice(0, 120)}`);
 
@@ -124,7 +124,7 @@ function startMockExecutor() {
           stop_sequence: null,
           usage: { input_tokens: 200, output_tokens: 80 },
         }),
-        { headers: { "content-type": "application/json" } },
+        { headers: { "content-type": "application/json" } }
       );
     },
   });
@@ -150,7 +150,7 @@ function startMockAdvisor() {
           stop_sequence: null,
           usage: { input_tokens: 150, output_tokens: 30 },
         }),
-        { headers: { "content-type": "application/json" } },
+        { headers: { "content-type": "application/json" } }
       );
     },
   });
@@ -197,10 +197,7 @@ function extractAdvisorTool(tools: any[] | undefined): {
 }
 
 /** Call the third-party advisor with the full conversation transcript. */
-async function callThirdPartyAdvisor(
-  messages: any[],
-  advisorModel: string,
-): Promise<string> {
+async function callThirdPartyAdvisor(messages: any[], advisorModel: string): Promise<string> {
   const advisorReq = {
     model: advisorModel,
     max_tokens: 1024,
@@ -217,8 +214,7 @@ async function callThirdPartyAdvisor(
   });
   if (!resp.ok) throw new Error(`advisor call failed: ${resp.status}`);
   const data = (await resp.json()) as any;
-  const text =
-    data.content?.find((b: any) => b.type === "text")?.text ?? "(no advice)";
+  const text = data.content?.find((b: any) => b.type === "text")?.text ?? "(no advice)";
   return text;
 }
 
@@ -240,7 +236,7 @@ async function callExecutor(requestBody: any): Promise<any> {
  */
 async function runToolLoop(
   originalBody: any,
-  advisorConfig: { name: string; model: string },
+  advisorConfig: { name: string; model: string }
 ): Promise<{ combinedBlocks: any[]; advisorCalls: number }> {
   // Working request body we mutate across iterations
   let workingBody = JSON.parse(JSON.stringify(originalBody));
@@ -257,7 +253,7 @@ async function runToolLoop(
 
     // Find any advisor tool_use blocks in this response
     const advisorUseBlocks = blocks.filter(
-      (b) => b.type === "tool_use" && b.name === advisorConfig.name,
+      (b) => b.type === "tool_use" && b.name === advisorConfig.name
     );
 
     if (advisorUseBlocks.length === 0 || execResp.stop_reason !== "tool_use") {
@@ -275,10 +271,7 @@ async function runToolLoop(
     // Build the context we pass to the advisor: include the system prompt,
     // the full existing messages, and the current assistant turn so the
     // advisor sees exactly what the executor is looking at.
-    const advisorContext = [
-      ...workingBody.messages,
-      { role: "assistant", content: blocks },
-    ];
+    const advisorContext = [...workingBody.messages, { role: "assistant", content: blocks }];
 
     const toolResultBlocks: any[] = [];
     for (const toolUse of advisorUseBlocks) {
@@ -348,7 +341,7 @@ async function processClientRequest(originalBody: any): Promise<any> {
     const execResp = await callExecutor(workingBody);
     const blocks: any[] = execResp.content ?? [];
     const advisorUseBlocks = blocks.filter(
-      (b) => b.type === "tool_use" && b.name === advisorConfig.name,
+      (b) => b.type === "tool_use" && b.name === advisorConfig.name
     );
 
     if (advisorUseBlocks.length === 0 || execResp.stop_reason !== "tool_use") {
@@ -358,10 +351,7 @@ async function processClientRequest(originalBody: any): Promise<any> {
 
     combinedBlocks.push(...blocks);
 
-    const advisorContext = [
-      ...workingBody.messages,
-      { role: "assistant", content: blocks },
-    ];
+    const advisorContext = [...workingBody.messages, { role: "assistant", content: blocks }];
 
     const toolResultBlocks: any[] = [];
     for (const toolUse of advisorUseBlocks) {
@@ -446,10 +436,10 @@ function startProxy() {
           headers: { "content-type": "application/json" },
         });
       } catch (err: any) {
-        console.error(`[proxy] error:`, err);
+        console.error("[proxy] error:", err);
         return new Response(
           JSON.stringify({ error: { type: "proxy_error", message: String(err) } }),
-          { status: 500, headers: { "content-type": "application/json" } },
+          { status: 500, headers: { "content-type": "application/json" } }
         );
       }
     },
@@ -503,7 +493,7 @@ if (process.argv.includes("--self-test")) {
     const result = (await resp.json()) as any;
 
     console.log(`\n[self-test] proxy returned status ${resp.status}`);
-    console.log(`[self-test] proxy meta:`, result._proxy_meta);
+    console.log("[self-test] proxy meta:", result._proxy_meta);
     console.log(`[self-test] content blocks (${result.content?.length ?? 0}):`);
     for (const [i, b] of (result.content ?? []).entries()) {
       let preview: string;
@@ -529,25 +519,20 @@ if (process.argv.includes("--self-test")) {
     const finalText = blocks.filter((b) => b.type === "text").pop();
 
     const check1 = !!serverToolUse && serverToolUse.name === "advisor";
-    const check2 =
-      advisorResult?.content?.text?.includes("THIRD_PARTY_ADVICE_MARKER") ?? false;
+    const check2 = advisorResult?.content?.text?.includes("THIRD_PARTY_ADVICE_MARKER") ?? false;
     const check3 = finalText?.text?.includes("THIRD_PARTY_ADVICE_MARKER") ?? false;
     const check4 = (result._proxy_meta?.advisor_calls ?? 0) >= 1;
 
     console.log("\n[validation]");
     console.log(`  [${check1 ? "✓" : "✗"}] response has server_tool_use for advisor`);
+    console.log(`  [${check2 ? "✓" : "✗"}] advisor_tool_result contains third-party advice marker`);
     console.log(
-      `  [${check2 ? "✓" : "✗"}] advisor_tool_result contains third-party advice marker`,
-    );
-    console.log(
-      `  [${check3 ? "✓" : "✗"}] final text quotes third-party advice (executor used it)`,
+      `  [${check3 ? "✓" : "✗"}] final text quotes third-party advice (executor used it)`
     );
     console.log(`  [${check4 ? "✓" : "✗"}] proxy recorded ≥1 advisor call`);
 
     if (check1 && check2 && check3 && check4) {
-      console.log(
-        "\n\x1b[32m[PASS] Tool-loop advisor replacement works end-to-end:\x1b[0m",
-      );
+      console.log("\n\x1b[32m[PASS] Tool-loop advisor replacement works end-to-end:\x1b[0m");
       console.log("  - Proxy replaced advisor_20260301 with a regular tool");
       console.log("  - Executor called the regular tool (as a normal tool_use)");
       console.log("  - Proxy intercepted the call and ran the third-party advisor");

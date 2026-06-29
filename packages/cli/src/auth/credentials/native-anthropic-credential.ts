@@ -25,8 +25,13 @@ export class NativeAnthropicCredentialProvider implements CredentialProvider {
   private async resolveKey(): Promise<string> {
     if (this.cachedKey !== undefined) return this.cachedKey;
     const local =
-      process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || getApiKey("ANTHROPIC_API_KEY");
-    if (local) return (this.cachedKey = local);
+      process.env.ANTHROPIC_API_KEY ||
+      process.env.ANTHROPIC_AUTH_TOKEN ||
+      getApiKey("ANTHROPIC_API_KEY");
+    if (local) {
+      this.cachedKey = local;
+      return local;
+    }
     if (hasOpSources()) {
       const r = await resolveOpKeyForEnvVars(new Set(["ANTHROPIC_API_KEY"]), {
         onAuthFailure: "skip",
@@ -34,12 +39,14 @@ export class NativeAnthropicCredentialProvider implements CredentialProvider {
       const v = r.ANTHROPIC_API_KEY;
       if (v) {
         process.env.ANTHROPIC_API_KEY = v; // write-through mirror
-        return (this.cachedKey = v);
+        this.cachedKey = v;
+        return v;
         // (not cached as "" on a transient miss — see ApiKeyCredentialProvider)
       }
       return "";
     }
-    return (this.cachedKey = "");
+    this.cachedKey = "";
+    return "";
   }
 
   async isAvailable(): Promise<boolean> {

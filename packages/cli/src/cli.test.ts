@@ -8,7 +8,7 @@
  * These tests validate behavior described in requirements, not implementation details.
  */
 
-import { test, expect, describe } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { parseArgs } from "./cli.js";
 import type { ClaudishConfig } from "./types.js";
 
@@ -163,7 +163,7 @@ describe("Group 5: Dead agent code removed", () => {
     // This validates that the dead code (agent?: string) has been removed from types.ts
     // If config.agent were defined, TypeScript would allow this access.
     // We check at runtime that the property is absent from the returned object.
-    expect((config as Record<string, unknown>)["agent"]).toBeUndefined();
+    expect((config as unknown as Record<string, unknown>).agent).toBeUndefined();
 
     // Also verify the config object's own keys do not include 'agent'
     const keys = Object.keys(config);
@@ -260,8 +260,10 @@ describe("Regression: -p flag is not consumed by claudish (#76)", () => {
 describe("Interactive mode detection with flag-only args", () => {
   test("flags with values but no prompt → interactive", async () => {
     const config = await parseArgs([
-      "--model", "grok",
-      "--session-id", "abc-123",
+      "--model",
+      "grok",
+      "--session-id",
+      "abc-123",
       "--dangerously-skip-permissions",
     ]);
     expect(config.interactive).toBe(true);

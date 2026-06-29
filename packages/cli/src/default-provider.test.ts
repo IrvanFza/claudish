@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type ResolvedDefaultProvider,
   buildLegacyHint,
   resolveDefaultProvider,
-  type ResolvedDefaultProvider,
 } from "./default-provider.js";
 import type { ClaudishProfileConfig } from "./profile-config.js";
 

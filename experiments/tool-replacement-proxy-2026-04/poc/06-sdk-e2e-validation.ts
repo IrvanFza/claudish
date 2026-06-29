@@ -22,9 +22,9 @@
  * The SDK supports non-streaming fine — this is still a real end-to-end.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import Anthropic from "@anthropic-ai/sdk";
 
 // Start the tool-loop proxy as a child process
 const poc = spawn("bun", ["run", join(import.meta.dir, "05-tool-loop-proxy.ts"), "--server-only"], {
@@ -86,14 +86,14 @@ const execServer = Bun.serve({
           stop_sequence: null,
           usage: { input_tokens: 100, output_tokens: 50 },
         }),
-        { headers: { "content-type": "application/json" } },
+        { headers: { "content-type": "application/json" } }
       );
     }
 
     const advice =
       typeof toolResult.content === "string"
         ? toolResult.content
-        : toolResult.content?.[0]?.text ?? "(none)";
+        : (toolResult.content?.[0]?.text ?? "(none)");
 
     return new Response(
       JSON.stringify({
@@ -111,7 +111,7 @@ const execServer = Bun.serve({
         stop_sequence: null,
         usage: { input_tokens: 200, output_tokens: 80 },
       }),
-      { headers: { "content-type": "application/json" } },
+      { headers: { "content-type": "application/json" } }
     );
   },
 });
@@ -133,7 +133,7 @@ const advServer = Bun.serve({
         stop_sequence: null,
         usage: { input_tokens: 150, output_tokens: 30 },
       }),
-      { headers: { "content-type": "application/json" } },
+      { headers: { "content-type": "application/json" } }
     );
   },
 });
@@ -163,7 +163,7 @@ const proxyServer = Bun.serve({
                 input_schema: { type: "object", properties: {}, additionalProperties: false },
               },
             ]
-          : [],
+          : []
       );
 
     const adviceByToolUseId = new Map<string, string>();
@@ -179,7 +179,7 @@ const proxyServer = Bun.serve({
       const execMsg: any = await r.json();
       const blocks: any[] = execMsg.content ?? [];
       const advisorUses = blocks.filter(
-        (b) => b.type === "tool_use" && b.name === (advisorConfig?.name || "advisor"),
+        (b) => b.type === "tool_use" && b.name === (advisorConfig?.name || "advisor")
       );
 
       if (advisorUses.length === 0 || execMsg.stop_reason !== "tool_use") {
@@ -202,8 +202,7 @@ const proxyServer = Bun.serve({
           }),
         });
         const advMsg: any = await advResp.json();
-        const advice =
-          advMsg.content?.find((b: any) => b.type === "text")?.text ?? "(none)";
+        const advice = advMsg.content?.find((b: any) => b.type === "text")?.text ?? "(none)";
         adviceByToolUseId.set(use.id, advice);
         toolResults.push({
           type: "tool_result",
@@ -254,7 +253,7 @@ const proxyServer = Bun.serve({
         stop_sequence: null,
         usage: { input_tokens: 0, output_tokens: 0 },
       }),
-      { headers: { "content-type": "application/json" } },
+      { headers: { "content-type": "application/json" } }
     );
   },
 });
@@ -276,9 +275,7 @@ try {
   const msg = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
-    tools: [
-      { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-6" } as any,
-    ],
+    tools: [{ type: "advisor_20260301", name: "advisor", model: "claude-opus-4-6" } as any],
     messages: [
       {
         role: "user",
@@ -287,7 +284,7 @@ try {
     ],
   });
 
-  console.log(`\n[e2e] SDK received message:`);
+  console.log("\n[e2e] SDK received message:");
   console.log(`  id: ${msg.id}`);
   console.log(`  stop_reason: ${msg.stop_reason}`);
   console.log(`  content blocks: ${msg.content.length}`);
@@ -316,7 +313,9 @@ try {
 
   console.log("\n[validation]");
   console.log(`  [${c1 ? "✓" : "✗"}] Anthropic SDK parsed server_tool_use`);
-  console.log(`  [${c2 ? "✓" : "✗"}] Anthropic SDK parsed advisor_tool_result with third-party advice`);
+  console.log(
+    `  [${c2 ? "✓" : "✗"}] Anthropic SDK parsed advisor_tool_result with third-party advice`
+  );
   console.log(`  [${c3 ? "✓" : "✗"}] Executor continuation (final text) uses third-party advice`);
   console.log(`  [${c4 ? "✓" : "✗"}] stop_reason is end_turn`);
 
@@ -332,8 +331,8 @@ try {
   }
 } catch (err: any) {
   console.log(`\n\x1b[31m[e2e] SDK threw: ${err?.message}\x1b[0m`);
-  if (err?.error) console.log(`    error body:`, err.error);
-  if (err?.cause) console.log(`    cause:`, err.cause);
+  if (err?.error) console.log("    error body:", err.error);
+  if (err?.cause) console.log("    cause:", err.cause);
 }
 
 execServer.stop(true);

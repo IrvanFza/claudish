@@ -9,9 +9,9 @@
  *    (LiteLLMAPIFormat, OpenRouterAPIFormat) is set as the explicit adapter
  */
 
-import { describe, test, expect } from "bun:test";
-import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
+import { describe, expect, test } from "bun:test";
 import { DialectManager } from "./adapters/dialect-manager.js";
+import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { LiteLLMAPIFormat } from "./adapters/litellm-api-format.js";
 
 // ─── Group 1: GLMModelDialect unit tests ─────────────────────────────────────

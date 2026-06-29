@@ -31,12 +31,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AccountInfo, SdkAuth } from "../../providers/onepassword.js";
 import {
   readAllOnepasswordEnvironments,
   readOnepasswordAccount,
   saveOnepasswordAccount as saveOpConfigAccount,
 } from "../../providers/onepassword-config.js";
+import type { AccountInfo, SdkAuth } from "../../providers/onepassword.js";
 
 /** Thrown when no usable 1Password SDK auth can be resolved. */
 export class OpAuthError extends Error {
@@ -358,8 +358,12 @@ async function resolveOpKeyForEnvVarsInner(
     throw err;
   }
 
-  const { collectConfigImports, resolveSecrets, resolveGlobImportForEnvVars, recordOpHydratedVars } =
-    await import("../../providers/onepassword.js");
+  const {
+    collectConfigImports,
+    resolveSecrets,
+    resolveGlobImportForEnvVars,
+    recordOpHydratedVars,
+  } = await import("../../providers/onepassword.js");
 
   const cfg = readConfigRaw();
   const out: Record<string, string> = {};

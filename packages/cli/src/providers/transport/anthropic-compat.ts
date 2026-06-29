@@ -6,11 +6,11 @@
  * anthropic-version, plus Kimi OAuth fallback for kimi-coding.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
+import { credentials } from "../../auth/credentials/authority.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
-import { credentials } from "../../auth/credentials/authority.js";
 import { isTerminal429 } from "./openai.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export class AnthropicProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -37,7 +37,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
     };
 
     if (this.provider.authScheme === "bearer") {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers.Authorization = `Bearer ${this.apiKey}`;
     } else {
       headers["x-api-key"] = this.apiKey;
     }

@@ -1,4 +1,4 @@
-import { probeLink, type ProbeLinkInput, type ProbeResult } from "./probe-live.js";
+import { type ProbeLinkInput, type ProbeResult, probeLink } from "./probe-live.js";
 
 export function pinProbeModelSpec(link: Pick<ProbeLinkInput, "provider" | "modelSpec">): string {
   // native-anthropic is the ONE provider the proxy resolves by the ABSENCE of a

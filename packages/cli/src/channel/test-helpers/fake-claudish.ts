@@ -34,7 +34,7 @@ async function main() {
   // --sleep <seconds>: sleep then exit 0
   const sleepVal = getFlag("--sleep");
   if (sleepVal !== null) {
-    const ms = parseFloat(sleepVal) * 1000;
+    const ms = Number.parseFloat(sleepVal) * 1000;
     await new Promise((r) => setTimeout(r, ms));
     process.exit(0);
   }
@@ -42,7 +42,7 @@ async function main() {
   // --lines <n>: print N numbered lines then exit 0
   const linesVal = getFlag("--lines");
   if (linesVal !== null) {
-    const n = parseInt(linesVal, 10);
+    const n = Number.parseInt(linesVal, 10);
     for (let i = 1; i <= n; i++) {
       process.stdout.write(`line ${i}\n`);
     }
@@ -59,6 +59,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(String(err) + "\n");
+  process.stderr.write(`${String(err)}\n`);
   process.exit(1);
 });

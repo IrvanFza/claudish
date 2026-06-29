@@ -82,10 +82,10 @@ describe("OpenAICodexTransport — OAuth present (delegated)", () => {
 
     // headers come from cachedAuth (the 6 OAuth headers w/ accountId)
     const headers = await t.getHeaders();
-    expect(headers["Authorization"]).toBe(`Bearer ${FAKE_TOKEN}`);
+    expect(headers.Authorization).toBe(`Bearer ${FAKE_TOKEN}`);
     expect(headers["OpenAI-Beta"]).toBe("responses=experimental");
-    expect(headers["originator"]).toBe("codex_cli_rs");
-    expect(headers["accept"]).toBe("text/event-stream");
+    expect(headers.originator).toBe("codex_cli_rs");
+    expect(headers.accept).toBe("text/event-stream");
     expect(headers["chatgpt-account-id"]).toBe(FAKE_ACCOUNT);
     expect(headers["x-conversation-id"]).toBe("claudish-session");
     expect(headers["x-session-id"]).toBe("claudish-session");
@@ -130,7 +130,7 @@ describe("OpenAICodexTransport — no OAuth (api-key only)", () => {
 
     // Headers come from super.getHeaders() → Bearer <apiKey>, no OAuth headers.
     const headers = await t.getHeaders();
-    expect(headers["Authorization"]).toBe("Bearer sk-codex-key");
+    expect(headers.Authorization).toBe("Bearer sk-codex-key");
     expect(headers["OpenAI-Beta"]).toBeUndefined();
     expect(headers["chatgpt-account-id"]).toBeUndefined();
   });

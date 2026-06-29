@@ -1,10 +1,7 @@
 /** @jsxImportSource @opentui/react */
 import type { ReactNode } from "react";
+import type { AccountInfo, DiscoveredField } from "../../providers/onepassword.js";
 import { A, C } from "../theme.js";
-import {
-  type AccountInfo,
-  type DiscoveredField,
-} from "../../providers/onepassword.js";
 import type { Mode } from "../types.js";
 
 /**
@@ -260,7 +257,7 @@ export function buildFieldOptions(
       value: `op://${vaultTitle}/${itemTitle}/**`,
       selectable: true,
       role: "everything-all",
-      left: `★ All keys in this item`,
+      left: "★ All keys in this item",
       right: `${importable.length}, auto-updates`,
       indent: 0,
     });
@@ -298,7 +295,7 @@ export function buildFieldOptions(
       value: `op://${vaultTitle}/${itemTitle}/*`,
       selectable: true,
       role: "everything",
-      left: `★ All top-level keys`,
+      left: "★ All top-level keys",
       right: `${topLevel.length}, auto-updates`,
       indent: 0,
     });
@@ -316,7 +313,7 @@ export function midTruncate(s: string, w: number): string {
   if (w <= 1 || s.length <= w) return s;
   const keepEnd = Math.ceil((w - 1) * 0.6); // bias toward the tail (field / *)
   const keepStart = w - 1 - keepEnd;
-  return s.slice(0, keepStart) + "…" + s.slice(s.length - keepEnd);
+  return `${s.slice(0, keepStart)}…${s.slice(s.length - keepEnd)}`;
 }
 
 /** Per-step wizard metadata: title, step number, and short help line. */
@@ -540,8 +537,12 @@ export function OnepasswordModal({
       if (o.role === "everything-all" || o.role === "everything") {
         return (
           <>
-            <span fg={selected ? C.cyan : C.yellow} attributes={A.bold}>{marker}</span>
-            <span fg={selected ? C.cyan : C.yellow} attributes={A.bold}>{o.left}</span>
+            <span fg={selected ? C.cyan : C.yellow} attributes={A.bold}>
+              {marker}
+            </span>
+            <span fg={selected ? C.cyan : C.yellow} attributes={A.bold}>
+              {o.left}
+            </span>
             <span fg={C.dim}>{`  ${o.right}`}</span>
           </>
         );
@@ -549,7 +550,9 @@ export function OnepasswordModal({
       if (o.role === "section-glob") {
         return (
           <>
-            <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>{marker}</span>
+            <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>
+              {marker}
+            </span>
             <span fg={selected ? C.blue : C.dim}>{o.left}</span>
             <span fg={C.dim}>{`  ${o.right}`}</span>
           </>
@@ -558,8 +561,12 @@ export function OnepasswordModal({
       // role === "field": ENVNAME (green) + "· section" tag (dim, aligned).
       return (
         <>
-          <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>{marker}</span>
-          <span fg={C.green} attributes={A.boldIf(selected)}>{o.left.padEnd(keyLeftW)}</span>
+          <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>
+            {marker}
+          </span>
+          <span fg={C.green} attributes={A.boldIf(selected)}>
+            {o.left.padEnd(keyLeftW)}
+          </span>
           {o.right && <span fg={C.dim}>{`  · ${o.right}`}</span>}
         </>
       );
@@ -595,7 +602,7 @@ export function OnepasswordModal({
             {hiddenAbove > 0 ? (
               <span fg={C.cyan}>{`  ▲ ${hiddenAbove} more above`}</span>
             ) : (
-              <span fg={C.dim}>{" "}</span>
+              <span fg={C.dim}> </span>
             )}
           </text>
 
@@ -625,7 +632,7 @@ export function OnepasswordModal({
             {hiddenBelow > 0 ? (
               <span fg={C.cyan}>{`  ▼ ${hiddenBelow} more below`}</span>
             ) : (
-              <span fg={C.dim}>{" "}</span>
+              <span fg={C.dim}> </span>
             )}
           </text>
         </box>
@@ -719,8 +726,8 @@ export function OnepasswordModal({
                 </span>
               </text>
               {/* Description — muted, multi-line, indented under the title. */}
-              {opt.desc.map((line, j) => (
-                <text key={j}>
+              {opt.desc.map((line) => (
+                <text key={`${opt.title}-${line}`}>
                   <span fg={C.dim}>{`    ${line}`}</span>
                 </text>
               ))}
@@ -783,7 +790,9 @@ export function OnepasswordModal({
       <box marginTop={1}>
         <text>
           <span fg={C.fgMuted}>{"saves: "}</span>
-          <span fg={C.dim}>{midTruncate(fieldOptions[fieldCursor]?.value ?? "", dialogW - 16)}</span>
+          <span fg={C.dim}>
+            {midTruncate(fieldOptions[fieldCursor]?.value ?? "", dialogW - 16)}
+          </span>
         </text>
       </box>
     ) : null;
@@ -866,7 +875,7 @@ export function OnepasswordModal({
           <span fg={C.dim}>{meta.help}</span>
         </text>
         {breadcrumb}
-        <text>{" "}</text>
+        <text> </text>
 
         {/* Active step body */}
         {body}
@@ -875,7 +884,7 @@ export function OnepasswordModal({
         {fieldPathLine}
 
         {/* Footer hint inside the dialog */}
-        <text>{" "}</text>
+        <text> </text>
         <text>
           {footerHint}
           <span fg={C.red} attributes={A.bold}>

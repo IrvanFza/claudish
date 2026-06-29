@@ -1,15 +1,15 @@
-/** @jsxImportSource @opentui/react */
-import { A, C } from "../theme.js";
+import type { ClaudishProfileConfig } from "../../profile-config.js";
+import type { LocalLiveness } from "../../providers/local-liveness.js";
 import {
-  ProviderDef,
+  type ProviderDef,
   maskKey,
   providerAuthCapabilities,
   providerAuthSource,
   providerIsReadyForDisplay,
 } from "../providers.js";
+/** @jsxImportSource @opentui/react */
+import { A, C } from "../theme.js";
 import type { TestResultsMap } from "../types.js";
-import type { ClaudishProfileConfig } from "../../profile-config.js";
-import type { LocalLiveness } from "../../providers/local-liveness.js";
 
 interface ProvidersContentProps {
   config: ClaudishProfileConfig;
@@ -25,7 +25,7 @@ interface ProvidersContentProps {
 
 // Column widths — kept here so headers and rows stay in lockstep.
 const COL_NAME = 14;
-const COL_STATUS = 9;  // "ready Xms" / "testing" / "not set" / "FAIL"
+const COL_STATUS = 9; // "ready Xms" / "testing" / "not set" / "FAIL"
 // AUTH column: icon-based encoding.
 //   🔑 = key set       (2 cells)
 //   🌐 = oauth set     (2 cells)
@@ -33,7 +33,7 @@ const COL_STATUS = 9;  // "ready Xms" / "testing" / "not set" / "FAIL"
 //   (blank 2 cells) = method not supported by this provider
 // Two slots side by side: [key-slot] " " [oauth-slot] → 5 cells total.
 const COL_AUTH = 5;
-const COL_KEY = 10;    // 8-char mask + a little breathing room
+const COL_KEY = 10; // 8-char mask + a little breathing room
 const CODE_CHARS = "01ABCDEFGHJKLMNPQRSTUVWXYZabcdefhijkmnpqrstuvwxyz#@$%*?";
 
 function pad(s: string, n: number): string {
@@ -75,7 +75,7 @@ export function ProvidersContent({
   // ready (no divider). Index-based, not a mutable "seen one yet" flag, so the
   // divider still renders correctly even when earlier rows are scrolled off.
   const firstUnreadyIdx = displayProviders.findIndex(
-    (p) => !providerIsReadyForDisplay(p, config, localLiveness),
+    (p) => !providerIsReadyForDisplay(p, config, localLiveness)
   );
 
   // contentH = total height of the rounded box.
@@ -194,16 +194,8 @@ export function ProvidersContent({
     // align between rows with different capability sets.
     const keySlot = caps.apiKey;
     const oauthSlot = caps.oauth;
-    const keySlotGlyph = !keySlot.supported
-      ? "  "
-      : keySlot.set
-        ? "🔑"
-        : "· ";
-    const oauthSlotGlyph = !oauthSlot.supported
-      ? "  "
-      : oauthSlot.set
-        ? "🌐"
-        : "· ";
+    const keySlotGlyph = !keySlot.supported ? "  " : keySlot.set ? "🔑" : "· ";
+    const oauthSlotGlyph = !oauthSlot.supported ? "  " : oauthSlot.set ? "🌐" : "· ";
     return (
       <box key={p.name} flexDirection="column">
         {isFirstUnready && (
@@ -229,13 +221,7 @@ export function ProvidersContent({
           flexGrow={1}
           flexDirection="row"
           overflow="hidden"
-          backgroundColor={
-            selected
-              ? C.bgHighlight
-              : tr?.status === "failed"
-                ? C.bgError
-                : C.bg
-          }
+          backgroundColor={selected ? C.bgHighlight : tr?.status === "failed" ? C.bgError : C.bg}
         >
           <text>
             <span fg={isTesting ? C.yellow : isReady ? C.green : C.dim}>
@@ -260,12 +246,24 @@ export function ProvidersContent({
                 Legend at the bottom of the panel explains the icons. */}
             <>
               <span fg={keySlot.set ? C.white : C.dim}>{keySlotGlyph}</span>
-              <span>{" "}</span>
+              <span> </span>
               <span fg={oauthSlot.set ? C.white : C.dim}>{oauthSlotGlyph}</span>
             </>
             <span fg={C.dim}>{"  "}</span>
             <span
-              fg={isTesting ? C.yellow : p.isLocal ? (isReady ? C.green : C.dim) : isOauthOnly ? C.cyan : isReady ? C.cyan : C.dim}
+              fg={
+                isTesting
+                  ? C.yellow
+                  : p.isLocal
+                    ? isReady
+                      ? C.green
+                      : C.dim
+                    : isOauthOnly
+                      ? C.cyan
+                      : isReady
+                        ? C.cyan
+                        : C.dim
+              }
               attributes={A.boldIf(isTesting)}
             >
               {pad(keyDisplay, COL_KEY)}
@@ -313,15 +311,25 @@ export function ProvidersContent({
       {/* Column header — widths match COL_* constants used by getRow. */}
       <text height={1}>
         <span fg={C.dim}>{"   "}</span>
-        <span fg={C.blue} attributes={A.bold}>{pad("PROVIDER", COL_NAME)}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {pad("PROVIDER", COL_NAME)}
+        </span>
         <span>{"  "}</span>
-        <span fg={C.blue} attributes={A.bold}>{pad("STATUS", COL_STATUS)}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {pad("STATUS", COL_STATUS)}
+        </span>
         <span>{"  "}</span>
-        <span fg={C.blue} attributes={A.bold}>{pad("AUTH", COL_AUTH)}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {pad("AUTH", COL_AUTH)}
+        </span>
         <span>{"  "}</span>
-        <span fg={C.blue} attributes={A.bold}>{pad("KEY", COL_KEY)}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {pad("KEY", COL_KEY)}
+        </span>
         <span>{"  "}</span>
-        <span fg={C.blue} attributes={A.bold}>DESCRIPTION</span>
+        <span fg={C.blue} attributes={A.bold}>
+          DESCRIPTION
+        </span>
       </text>
       {/* Rows fill the available space between header and legend. flexGrow
           on this wrapper pushes the legend below to the panel's bottom

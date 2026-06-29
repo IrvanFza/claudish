@@ -17,25 +17,18 @@
  * fire in close succession.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import {
-  mkdtempSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  rmSync,
-  chmodSync,
-} from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setupSession, runModels } from "./team-orchestrator.js";
+import { runModels, setupSession } from "./team-orchestrator.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 let tempDir: string;
 let fakeClaudishDir: string;
 
-function makeFakeClaudish(delayMs: number = 50): string {
+function makeFakeClaudish(delayMs = 50): string {
   // Create a fake claudish that:
   // 1. Reads stdin (the input prompt)
   // 2. Waits a bit (simulating model thinking)
@@ -195,7 +188,10 @@ exit 0
       // Read manifest to find which anon ID maps to which model
       const manifest = JSON.parse(readFileSync(join(tempDir, "manifest.json"), "utf-8"));
 
-      for (const [anonId, entry] of Object.entries(manifest.models) as [string, { model: string }][]) {
+      for (const [anonId, entry] of Object.entries(manifest.models) as [
+        string,
+        { model: string },
+      ][]) {
         const modelStatus = status.models[anonId];
         if (entry.model === "slow-model") {
           expect(modelStatus.state).toBe("TIMEOUT");

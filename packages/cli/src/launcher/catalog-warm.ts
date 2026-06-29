@@ -15,15 +15,9 @@
  * is harmless if the launcher already populated the cache.
  */
 
+import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
+import { type RefreshOutcome, getResolver } from "../providers/model-catalog-resolver.js";
 import type { ClaudishConfig } from "../types.js";
-import {
-  readAllModelsCache,
-  type DiskCacheV2,
-} from "../providers/all-models-cache.js";
-import {
-  getResolver,
-  type RefreshOutcome,
-} from "../providers/model-catalog-resolver.js";
 import { VERSION } from "../version.js";
 
 /**
@@ -248,8 +242,7 @@ export async function warmCatalogIfNeeded(
   }
 
   const ttlHoursRaw =
-    opts?.ttlHours ??
-    parseFloat(process.env.CLAUDISH_CATALOG_TTL_HOURS ?? "24");
+    opts?.ttlHours ?? Number.parseFloat(process.env.CLAUDISH_CATALOG_TTL_HOURS ?? "24");
   const ttlHours = Number.isFinite(ttlHoursRaw) && ttlHoursRaw > 0 ? ttlHoursRaw : 24;
   const now = opts?.now ?? new Date();
   const cache = readAllModelsCache();
@@ -276,10 +269,7 @@ export async function warmCatalogIfNeeded(
     return "warned";
   }
 
-  const spinner = startSpinner(
-    "Fetching model catalog from Firebase...",
-    config.quiet
-  );
+  const spinner = startSpinner("Fetching model catalog from Firebase...", config.quiet);
   let outcome: RefreshOutcome;
   try {
     outcome = await resolver.refreshCatalog(8000);
@@ -301,8 +291,7 @@ export async function warmCatalogIfNeeded(
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);
     process.stderr.write(
-      `WARNING: Catalog stale (${ageStr}). Using cached version. ` +
-        `Run \`claudish --models-refresh\` to retry.\n`
+      `WARNING: Catalog stale (${ageStr}). Using cached version. Run \`claudish --models-refresh\` to retry.\n`
     );
     return "warned";
   }

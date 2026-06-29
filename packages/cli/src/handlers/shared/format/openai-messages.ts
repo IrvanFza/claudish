@@ -29,7 +29,7 @@ export function convertMessagesToOpenAI(
     const msg =
       "IMPORTANT: When calling tools, you MUST use the OpenAI tool_calls format with JSON. NEVER use XML format like <xai:function_call>.";
     if (messages.length > 0 && messages[0].role === "system") {
-      messages[0].content += "\n\n" + msg;
+      messages[0].content += `\n\n${msg}`;
     } else {
       messages.unshift({ role: "system", content: msg });
     }

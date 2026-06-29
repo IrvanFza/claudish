@@ -21,8 +21,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-const PROBE_MODELS_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
+const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
 // 1h TTL (matches the server's own instance cache). A 24h TTL meant a
 // server-side catalog correction (e.g. fixing a probe model that 404s) took up
 // to a day to reach users. 1h propagates fixes promptly without re-fetching on
@@ -36,11 +35,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 // the same UX deadline the user already accepts for a single probe.
 const FETCH_TIMEOUT_MS = 15000;
 
-export const PROBE_MODELS_CACHE_PATH = join(
-  homedir(),
-  ".claudish",
-  "probe-models.json"
-);
+export const PROBE_MODELS_CACHE_PATH = join(homedir(), ".claudish", "probe-models.json");
 
 export interface ProbeModelsResponse {
   version: number;
@@ -223,9 +218,7 @@ export async function discoverProbeModelFromEndpoint(
 ): Promise<DiscoveryResult> {
   let response: Response;
   const excludeParam =
-    exclude && exclude.size > 0
-      ? `&exclude=${encodeURIComponent([...exclude].join(","))}`
-      : "";
+    exclude && exclude.size > 0 ? `&exclude=${encodeURIComponent([...exclude].join(","))}` : "";
   try {
     response = await fetch(
       `${proxyUrl}/v1/probe-discover?provider=${encodeURIComponent(providerSlug)}${excludeParam}`,

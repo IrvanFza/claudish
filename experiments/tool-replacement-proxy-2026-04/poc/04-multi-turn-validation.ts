@@ -27,9 +27,7 @@ import Anthropic from "@anthropic-ai/sdk";
 const BASE_URL = "http://127.0.0.1:8788";
 const client = new Anthropic({ apiKey: "poc-fake", baseURL: BASE_URL, maxRetries: 0 });
 
-const tools = [
-  { type: "advisor_20260301", name: "advisor", model: "claude-opus-4-6" } as any,
-];
+const tools = [{ type: "advisor_20260301", name: "advisor", model: "claude-opus-4-6" } as any];
 
 console.log("\x1b[33m[turn 1] sending initial user message...\x1b[0m");
 
@@ -66,9 +64,11 @@ const turn2Messages = [
   { role: "user" as const, content: "Now add a max-in-flight limit of 10." },
 ];
 
-console.log("\n\x1b[33m[turn 2] sending follow-up (with turn-1 advisor blocks in history)...\x1b[0m");
+console.log(
+  "\n\x1b[33m[turn 2] sending follow-up (with turn-1 advisor blocks in history)...\x1b[0m"
+);
 console.log(`[turn 2] history message count: ${turn2Messages.length}`);
-console.log(`[turn 2] assistant message content blocks:`);
+console.log("[turn 2] assistant message content blocks:");
 for (const [i, b] of turn1.content.entries()) {
   console.log(`  [${i}] ${(b as any).type}`);
 }
@@ -86,7 +86,7 @@ try {
     .finalMessage();
 } catch (err: any) {
   turn2Err = err?.message || String(err);
-  if (err?.error) console.log(`    error body:`, err.error);
+  if (err?.error) console.log("    error body:", err.error);
   console.log(`\n\x1b[31m[turn 2] FAIL: ${turn2Err}\x1b[0m`);
   process.exit(1);
 }
@@ -96,7 +96,10 @@ console.log(`\n[turn 2] received ${turn2.content.length} blocks, stop=${turn2.st
 // Validate that the mock server saw the advisor_tool_result in the input
 // — the server logs all requests to mock-requests.ndjson.
 const serverLog = await Bun.file("logs/mock-requests.ndjson").text();
-const lines = serverLog.trim().split("\n").map((l) => JSON.parse(l));
+const lines = serverLog
+  .trim()
+  .split("\n")
+  .map((l) => JSON.parse(l));
 console.log(`\n[validation] mock server received ${lines.length} requests total`);
 
 // The second request should have the advisor_tool_result block in the
@@ -107,7 +110,7 @@ const assistantBlocks: any[] = Array.isArray(assistantMsg?.content) ? assistantM
 const hasAdvisorUse = assistantBlocks.some((b: any) => b?.type === "server_tool_use");
 const hasAdvisorResult = assistantBlocks.some((b: any) => b?.type === "advisor_tool_result");
 
-console.log(`[validation] turn-2 request assistant blocks:`);
+console.log("[validation] turn-2 request assistant blocks:");
 for (const b of assistantBlocks) {
   console.log(`    ${b?.type}`);
 }

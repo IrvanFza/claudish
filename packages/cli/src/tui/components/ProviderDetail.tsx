@@ -1,7 +1,7 @@
-/** @jsxImportSource @opentui/react */
-import { A, C } from "../theme.js";
 import { DETAIL_H } from "../constants.js";
 import type { ProviderDef } from "../providers.js";
+/** @jsxImportSource @opentui/react */
+import { A, C } from "../theme.js";
 import type { Mode, TestResultsMap } from "../types.js";
 
 /**
@@ -13,7 +13,7 @@ function truncateOneLine(text: string, maxWidth: number): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   const limit = Math.max(20, maxWidth);
   if (collapsed.length <= limit) return collapsed;
-  return collapsed.slice(0, limit - 1) + "…";
+  return `${collapsed.slice(0, limit - 1)}…`;
 }
 
 interface ProviderDetailProps {
@@ -139,52 +139,62 @@ export function ProviderDetail({
         goes inside `{...}` to avoid JSX whitespace trimming.
       */}
       <text>
-        <span fg={C.blue} attributes={A.bold}>{"Status: "}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {"Status: "}
+        </span>
         {hasKey ? (
-          <span fg={C.green} attributes={A.bold}>{"● Ready"}</span>
+          <span fg={C.green} attributes={A.bold}>
+            {"● Ready"}
+          </span>
         ) : (
           <span fg={C.fgMuted}>{"○ Not configured"}</span>
         )}
         <span fg={C.dim}>{"   "}</span>
-        <span fg={C.blue} attributes={A.bold}>{"Key: "}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {"Key: "}
+        </span>
         <span fg={C.green}>{displayKey}</span>
         {hasKey && selectedProvider.isLocal && (
           <>
             <span fg={C.dim}>{"   "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"From: "}</span>
-            <span fg={C.green} attributes={A.bold}>{"global config"}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"From: "}
+            </span>
+            <span fg={C.green} attributes={A.bold}>
+              {"global config"}
+            </span>
           </>
         )}
         {hasKey && !selectedProvider.isLocal && isPublicKey && (
           <>
             <span fg={C.dim}>{"   "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"From: "}</span>
-            <span fg={C.green} attributes={A.bold}>{"public key (free)"}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"From: "}
+            </span>
+            <span fg={C.green} attributes={A.bold}>
+              {"public key (free)"}
+            </span>
           </>
         )}
         {hasKey && !selectedProvider.isLocal && !isPublicKey && (
           <>
             <span fg={C.dim}>{"   "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"From: "}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"From: "}
+            </span>
             {hasEnvKey && (
-              <span fg={C.green} attributes={A.bold}>{isOpKey ? "1Password" : "env"}</span>
+              <span fg={C.green} attributes={A.bold}>
+                {isOpKey ? "1Password" : "env"}
+              </span>
             )}
-            {hasEnvKey && hasCfgKey && (
-              <span fg={C.fgMuted}>{" (used) + "}</span>
-            )}
-            {hasEnvKey && !hasCfgKey && (
-              <span fg={C.fgMuted}>{" (used)"}</span>
-            )}
+            {hasEnvKey && hasCfgKey && <span fg={C.fgMuted}>{" (used) + "}</span>}
+            {hasEnvKey && !hasCfgKey && <span fg={C.fgMuted}>{" (used)"}</span>}
             {hasCfgKey && (
               <span fg={hasEnvKey ? C.fgMuted : C.green} attributes={A.boldIf(!hasEnvKey)}>
                 {"config"}
               </span>
             )}
-            {hasCfgKey && (
-              <span fg={C.fgMuted}>
-                {hasEnvKey ? " (shadowed)" : " (used)"}
-              </span>
-            )}
+            {hasCfgKey && <span fg={C.fgMuted}>{hasEnvKey ? " (shadowed)" : " (used)"}</span>}
           </>
         )}
       </text>
@@ -193,9 +203,7 @@ export function ProviderDetail({
           <span fg={C.blue} attributes={A.bold}>
             URL:{" "}
           </span>
-          <span fg={C.cyan}>
-            {activeEndpoint || selectedProvider.defaultEndpoint || "default"}
-          </span>
+          <span fg={C.cyan}>{activeEndpoint || selectedProvider.defaultEndpoint || "default"}</span>
         </text>
       )}
       <text>

@@ -11,17 +11,17 @@
  * - Provider-specific error messages
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
+import { Agent } from "undici";
+import { credentials } from "../../auth/credentials/authority.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
-import { credentials } from "../../auth/credentials/authority.js";
-import { Agent } from "undici";
+import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
 import {
   discoverViaLMStudio,
   discoverViaOllama,
   discoverViaOpenAIModels,
 } from "./probe-discovery.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 // Custom undici agent with long timeouts for local LLM inference
 // Default undici headersTimeout is 30s which is too short for prompt processing
@@ -62,8 +62,8 @@ export class LocalTransport implements ProviderTransport {
     // Check for env var override of context window
     const envContextWindow = process.env.CLAUDISH_CONTEXT_WINDOW;
     if (envContextWindow) {
-      const parsed = parseInt(envContextWindow, 10);
-      if (!isNaN(parsed) && parsed > 0) {
+      const parsed = Number.parseInt(envContextWindow, 10);
+      if (!Number.isNaN(parsed) && parsed > 0) {
         this._contextWindow = parsed;
         log(`[${this.displayName}] Context window from env: ${this._contextWindow}`);
       }
@@ -95,7 +95,7 @@ export class LocalTransport implements ProviderTransport {
     }
     const headers: Record<string, string> = {};
     if (this.config.apiKey) {
-      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+      headers.Authorization = `Bearer ${this.config.apiKey}`;
     }
     return headers;
   }
@@ -269,9 +269,9 @@ export class LocalTransport implements ProviderTransport {
 
         const ctxFromParams = data.parameters?.match(/num_ctx\s+(\d+)/)?.[1];
         if (ctxFromInfo) {
-          this._contextWindow = parseInt(String(ctxFromInfo), 10);
+          this._contextWindow = Number.parseInt(String(ctxFromInfo), 10);
         } else if (ctxFromParams) {
-          this._contextWindow = parseInt(ctxFromParams, 10);
+          this._contextWindow = Number.parseInt(ctxFromParams, 10);
         } else {
           log(`[${this.displayName}] No context info found, using default: ${this._contextWindow}`);
         }

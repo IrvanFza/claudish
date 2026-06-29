@@ -11,36 +11,36 @@
  * - claudish profile edit [name] [--local|--global]: Edit a profile
  */
 
+import { confirm, select } from "@inquirer/prompts";
 import {
-  loadConfig,
-  loadLocalConfig,
-  getProfile,
-  getDefaultProfile,
-  getProfileNames,
-  setProfile,
-  deleteProfile,
-  setDefaultProfile,
-  createProfile,
-  listAllProfiles,
-  configExistsForScope,
-  getConfigPath,
-  getConfigPathForScope,
-  getLocalConfigPath,
-  localConfigExists,
-  isProjectDirectory,
+  confirmAction,
+  promptForProfileDescription,
+  promptForProfileName,
+  selectModel,
+  selectModelsForProfile,
+} from "./model-selector.js";
+import {
+  type ModelMapping,
   type Profile,
   type ProfileScope,
   type ProfileWithScope,
-  type ModelMapping,
+  configExistsForScope,
+  createProfile,
+  deleteProfile,
+  getConfigPath,
+  getConfigPathForScope,
+  getDefaultProfile,
+  getLocalConfigPath,
+  getProfile,
+  getProfileNames,
+  isProjectDirectory,
+  listAllProfiles,
+  loadConfig,
+  loadLocalConfig,
+  localConfigExists,
+  setDefaultProfile,
+  setProfile,
 } from "./profile-config.js";
-import {
-  selectModel,
-  selectModelsForProfile,
-  promptForProfileName,
-  promptForProfileDescription,
-  confirmAction,
-} from "./model-selector.js";
-import { select, confirm } from "@inquirer/prompts";
 
 // ANSI colors
 const RESET = "\x1b[0m";
@@ -601,9 +601,9 @@ function printProfileWithScope(profile: ProfileWithScope): void {
  * Print model mapping
  */
 function printModelMapping(models: ModelMapping): void {
-  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || DIM + "not set" + RESET}`);
-  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || DIM + "not set" + RESET}`);
+  console.log(`  ${CYAN}opus${RESET}:     ${models.opus || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}sonnet${RESET}:   ${models.sonnet || `${DIM}not set${RESET}`}`);
+  console.log(`  ${CYAN}haiku${RESET}:    ${models.haiku || `${DIM}not set${RESET}`}`);
   if (models.subagent) {
     console.log(`  ${CYAN}subagent${RESET}: ${models.subagent}`);
   }

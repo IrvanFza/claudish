@@ -4,7 +4,7 @@
  * real subscription credentials instead of setting placeholder tokens.
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { parseModelSpec } from "./providers/model-parser.js";
 
 // Replicate the hasNativeAnthropicMapping logic from claude-runner.ts

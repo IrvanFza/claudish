@@ -12,15 +12,15 @@
  * - 30s request timeout
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import {
-  getVertexAuthManager,
-  buildVertexOAuthEndpoint,
-  type VertexConfig,
-} from "../../auth/vertex-auth.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
+import {
+  type VertexConfig,
+  buildVertexOAuthEndpoint,
+  getVertexAuthManager,
+} from "../../auth/vertex-auth.js";
 import { log } from "../../logger.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export interface ParsedVertexModel {
   publisher: string;

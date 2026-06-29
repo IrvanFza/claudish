@@ -19,7 +19,7 @@
  *   bun run 02-mock-advisor-proxy.ts --self-test   # run a client against it
  */
 
-import { mkdirSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const LOG_DIR = join(import.meta.dir, "logs");
@@ -62,14 +62,15 @@ const server = Bun.serve({
     }
 
     const reqBody = req.body ? await req.json() : null;
-    appendFileSync(join(LOG_DIR, "mock-requests.ndjson"), JSON.stringify(reqBody) + "\n");
+    appendFileSync(join(LOG_DIR, "mock-requests.ndjson"), `${JSON.stringify(reqBody)}\n`);
 
     // Report whether the incoming request has the advisor tool
     const tools = (reqBody as any)?.tools ?? [];
     const hasAdvisor = tools.some((t: any) => t?.type === "advisor_20260301");
     console.log(`[mock]   tools: ${tools.length}, has advisor: ${hasAdvisor}`);
 
-    const stream = req.headers.get("accept")?.includes("text/event-stream") || (reqBody as any)?.stream === true;
+    const stream =
+      req.headers.get("accept")?.includes("text/event-stream") || (reqBody as any)?.stream === true;
     if (!stream) {
       // Non-streaming: return the whole message at once as JSON
       return new Response(JSON.stringify(buildNonStreamingResponse()), {
@@ -84,14 +85,16 @@ const server = Bun.serve({
       headers: {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
-        "connection": "keep-alive",
+        connection: "keep-alive",
       },
     });
   },
 });
 
-console.log(`\x1b[36m┌─ Mock advisor proxy listening on http://${server.hostname}:${server.port}\x1b[0m`);
-console.log(`\x1b[36m└─ POST /v1/messages (returns fabricated advisor response)\x1b[0m`);
+console.log(
+  `\x1b[36m┌─ Mock advisor proxy listening on http://${server.hostname}:${server.port}\x1b[0m`
+);
+console.log("\x1b[36m└─ POST /v1/messages (returns fabricated advisor response)\x1b[0m");
 
 // ─────────────────────────────────────────────────────────────
 // Response builders
@@ -232,7 +235,7 @@ function buildStreamingResponse(): ReadableStream<Uint8Array> {
   });
   for (const chunk of chunksOf(
     "Based on the advisor's guidance, here's the implementation plan: (1) use channels, (2) drain in-flight work.",
-    15,
+    15
   )) {
     push("content_block_delta", {
       type: "content_block_delta",
@@ -251,7 +254,12 @@ function buildStreamingResponse(): ReadableStream<Uint8Array> {
       output_tokens: 531,
       iterations: [
         { type: "message", input_tokens: 412, output_tokens: 89 },
-        { type: "advisor_message", model: "claude-opus-4-6", input_tokens: 823, output_tokens: 612 },
+        {
+          type: "advisor_message",
+          model: "claude-opus-4-6",
+          input_tokens: 823,
+          output_tokens: 612,
+        },
         { type: "message", input_tokens: 1348, output_tokens: 442 },
       ],
     },
@@ -291,7 +299,10 @@ async function runSelfTest() {
       const reqBody = req.body ? await req.json() : null;
       console.log("[self-test] server received request:");
       console.log("  model:", (reqBody as any)?.model);
-      console.log("  tools:", ((reqBody as any)?.tools || []).map((t: any) => t.type ?? t.name).join(", "));
+      console.log(
+        "  tools:",
+        ((reqBody as any)?.tools || []).map((t: any) => t.type ?? t.name).join(", ")
+      );
       console.log("  stream:", (reqBody as any)?.stream);
       return new Response(buildStreamingResponse(), {
         headers: {
@@ -326,7 +337,7 @@ async function runSelfTest() {
       "content-type": "application/json",
       "anthropic-beta": "advisor-tool-2026-03-01",
       "anthropic-version": "2023-06-01",
-      "accept": "text/event-stream",
+      accept: "text/event-stream",
     },
     body: JSON.stringify(clientBody),
   });
@@ -351,6 +362,7 @@ async function runSelfTest() {
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     let idx: number;
+    // biome-ignore lint/suspicious/noAssignInExpressions: canonical line-buffer drain idiom
     while ((idx = buf.indexOf("\n\n")) >= 0) {
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
@@ -407,7 +419,7 @@ async function runSelfTest() {
     }
   }
 
-  console.log(`\n\x1b[33m[self-test] reconstructed message:\x1b[0m`);
+  console.log("\n\x1b[33m[self-test] reconstructed message:\x1b[0m");
   console.log(`  id: ${messageId}`);
   console.log(`  stop_reason: ${stopReason}`);
   console.log(`  block count: ${blocks.length}`);
@@ -436,14 +448,18 @@ async function runSelfTest() {
     stopReason === "end_turn";
 
   if (ok) {
-    console.log("\n\x1b[32m[self-test] ✅ PASS: SSE events parse into a well-formed advisor response\x1b[0m");
+    console.log(
+      "\n\x1b[32m[self-test] ✅ PASS: SSE events parse into a well-formed advisor response\x1b[0m"
+    );
     console.log("  - Block 0 is text");
     console.log("  - Block 1 is server_tool_use with name='advisor'");
     console.log("  - Block 2 is advisor_tool_result linking to block 1's id");
     console.log("  - Block 3 is text (continuation)");
     console.log("  - stop_reason is 'end_turn'");
   } else {
-    console.log("\n\x1b[31m[self-test] ❌ FAIL: reconstructed message does not match expected shape\x1b[0m");
+    console.log(
+      "\n\x1b[31m[self-test] ❌ FAIL: reconstructed message does not match expected shape\x1b[0m"
+    );
   }
 
   testServer.stop();

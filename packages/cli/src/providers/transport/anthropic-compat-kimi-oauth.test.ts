@@ -80,7 +80,7 @@ describe("AnthropicProviderTransport — kimi-coding OAuth delegation", () => {
     const headers = await transport.getHeaders();
 
     expect(headers["anthropic-version"]).toBe("2023-06-01");
-    expect(headers["Authorization"]).toBe(`Bearer ${FAKE_TOKEN}`);
+    expect(headers.Authorization).toBe(`Bearer ${FAKE_TOKEN}`);
     expect(headers["x-api-key"]).toBeUndefined();
 
     expect(headers["X-Msh-Platform"]).toBe("claudish");
@@ -109,7 +109,7 @@ describe("AnthropicProviderTransport — kimi-coding OAuth delegation", () => {
 
     // Falls back to the plain api-key path: x-api-key set, no Bearer.
     expect(headers["x-api-key"]).toBe("fallback-api-key");
-    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
 });
@@ -127,7 +127,7 @@ describe("AnthropicProviderTransport — non-kimi providers are NOT routed throu
     const transport = new AnthropicProviderTransport(minimax, "mm-key");
     const headers = await transport.getHeaders();
 
-    expect(headers["Authorization"]).toBe("Bearer mm-key");
+    expect(headers.Authorization).toBe("Bearer mm-key");
     expect(headers["x-api-key"]).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
     expect(getRequestAuthMock).toHaveBeenCalledTimes(0);
@@ -146,7 +146,7 @@ describe("AnthropicProviderTransport — non-kimi providers are NOT routed throu
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe("zai-key");
-    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
     expect(headers["X-Custom"]).toBe("z-value");
     expect(getRequestAuthMock).toHaveBeenCalledTimes(0);

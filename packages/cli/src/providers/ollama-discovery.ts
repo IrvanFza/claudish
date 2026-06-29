@@ -83,8 +83,7 @@ export async function fetchOllamaModels(options: FetchOllamaOptions = {}): Promi
 
         const nameLower = String(m.name).toLowerCase();
         const supportsTools = capabilities.includes("tools");
-        const isEmbeddingModel =
-          capabilities.includes("embedding") || nameLower.includes("embed");
+        const isEmbeddingModel = capabilities.includes("embedding") || nameLower.includes("embed");
         const sizeInfo = m.details?.parameter_size || "unknown size";
         const toolsIndicator = supportsTools ? "✓ tools" : "✗ no tools";
 

@@ -19,7 +19,7 @@
  * the exact wire format before attempting to fabricate one.
  */
 
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const LOG_DIR = join(import.meta.dir, "logs");
@@ -34,7 +34,7 @@ let requestCounter = 0;
 const indexPath = join(LOG_DIR, "index.ndjson");
 
 function logIndex(entry: Record<string, unknown>) {
-  appendFileSync(indexPath, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
+  appendFileSync(indexPath, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`);
 }
 
 const server = Bun.serve({
@@ -66,12 +66,13 @@ const server = Bun.serve({
           bodyRaw: bodyText.length < 100_000 ? bodyText : `<${bodyText.length} bytes>`,
         },
         null,
-        2,
-      ),
+        2
+      )
     );
 
     // Quick scan: does this request contain the advisor tool? Flag it loudly.
-    const hasAdvisor = bodyText.includes("advisor_20260301") || bodyText.includes("advisor-tool-2026");
+    const hasAdvisor =
+      bodyText.includes("advisor_20260301") || bodyText.includes("advisor-tool-2026");
     const betaHeader = headers["anthropic-beta"] || "";
     logIndex({
       n,
@@ -116,10 +117,13 @@ const server = Bun.serve({
       });
     } catch (err) {
       console.error(`[${n}] upstream fetch failed:`, err);
-      return new Response(JSON.stringify({ error: { type: "proxy_error", message: String(err) } }), {
-        status: 502,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: { type: "proxy_error", message: String(err) } }),
+        {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        }
+      );
     }
 
     const respLogPath = join(LOG_DIR, `resp-${tag}.ndjson`);
@@ -133,8 +137,8 @@ const server = Bun.serve({
           headers: Object.fromEntries(upstreamResp.headers.entries()),
         },
         null,
-        2,
-      ),
+        2
+      )
     );
 
     // Tee the upstream stream: write raw bytes to disk AND pipe to client.
@@ -161,17 +165,20 @@ const server = Bun.serve({
           buf += decoder.decode(value, { stream: true });
           // Split by blank line (SSE event boundary)
           let idx: number;
+          // biome-ignore lint/suspicious/noAssignInExpressions: canonical line-buffer drain idiom
           while ((idx = buf.indexOf("\n\n")) >= 0) {
             const evt = buf.slice(0, idx);
             buf = buf.slice(idx + 2);
             const parsed = parseSSE(evt);
             if (parsed) {
-              appendFileSync(respLogPath, JSON.stringify(parsed) + "\n");
+              appendFileSync(respLogPath, `${JSON.stringify(parsed)}\n`);
               if (parsed.data && typeof parsed.data === "object") {
                 const s = JSON.stringify(parsed.data);
                 if (s.includes("advisor") || s.includes("server_tool_use")) {
                   if (!sawAdvisor) {
-                    console.log(`\x1b[35m[${n}] 🧠 ADVISOR EVENT in stream → ${respLogPath}\x1b[0m`);
+                    console.log(
+                      `\x1b[35m[${n}] 🧠 ADVISOR EVENT in stream → ${respLogPath}\x1b[0m`
+                    );
                     sawAdvisor = true;
                   }
                 }
@@ -181,10 +188,10 @@ const server = Bun.serve({
         }
         if (buf.trim()) {
           const parsed = parseSSE(buf);
-          if (parsed) appendFileSync(respLogPath, JSON.stringify(parsed) + "\n");
+          if (parsed) appendFileSync(respLogPath, `${JSON.stringify(parsed)}\n`);
         }
       } catch (err) {
-        appendFileSync(respLogPath, JSON.stringify({ proxyError: String(err) }) + "\n");
+        appendFileSync(respLogPath, `${JSON.stringify({ proxyError: String(err) })}\n`);
       }
     })();
 
@@ -204,12 +211,14 @@ const server = Bun.serve({
   },
 });
 
-console.log(`\x1b[36m┌─ Recording proxy listening on http://${server.hostname}:${server.port}\x1b[0m`);
+console.log(
+  `\x1b[36m┌─ Recording proxy listening on http://${server.hostname}:${server.port}\x1b[0m`
+);
 console.log(`\x1b[36m│  Logs → ${LOG_DIR}\x1b[0m`);
-console.log(`\x1b[36m│  Run Claude Code with:\x1b[0m`);
+console.log("\x1b[36m│  Run Claude Code with:\x1b[0m");
 console.log(`\x1b[36m│    export ANTHROPIC_BASE_URL=http://127.0.0.1:${server.port}\x1b[0m`);
-console.log(`\x1b[36m│    export ANTHROPIC_AUTH_TOKEN=$ANTHROPIC_API_KEY\x1b[0m`);
-console.log(`\x1b[36m└─  (keep ANTHROPIC_API_KEY blank if using AUTH_TOKEN)\x1b[0m`);
+console.log("\x1b[36m│    export ANTHROPIC_AUTH_TOKEN=$ANTHROPIC_API_KEY\x1b[0m");
+console.log("\x1b[36m└─  (keep ANTHROPIC_API_KEY blank if using AUTH_TOKEN)\x1b[0m");
 
 function safeParseJSON(s: string): unknown {
   try {

@@ -11,9 +11,9 @@
  * - MLX simple format for message conversion
  */
 
-import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
-import { DialectManager } from "./dialect-manager.js";
 import { log } from "../logger.js";
+import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
+import { DialectManager } from "./dialect-manager.js";
 
 interface SamplingParams {
   temperature: number;
@@ -41,7 +41,7 @@ export class LocalModelAdapter extends BaseAPIFormat {
     return this.innerAdapter.processTextContent(textContent, accumulatedText);
   }
 
-  shouldHandle(modelId: string): boolean {
+  shouldHandle(_modelId: string): boolean {
     return true; // Always used explicitly
   }
 
@@ -78,7 +78,7 @@ export class LocalModelAdapter extends BaseAPIFormat {
     // Qwen /no_think toggle
     if (this.modelId.toLowerCase().includes("qwen") && process.env.CLAUDISH_QWEN_NO_THINK === "1") {
       if (messages.length > 0 && messages[0].role === "system") {
-        messages[0].content = "/no_think\n\n" + messages[0].content;
+        messages[0].content = `/no_think\n\n${messages[0].content}`;
         log(`[${this.getName()}] Added /no_think to disable Qwen thinking mode`);
       }
     }

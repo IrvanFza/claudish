@@ -10,28 +10,28 @@
  * between phases.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { useEffect, useRef, useState } from "react";
+import {
+  type ProbeResult,
+  type ProbeTiming,
+  STREAM_MS_FLOOR,
+  describeProbeState,
+} from "../providers/probe-live.js";
 import {
   A,
   C,
-  latencyBg,
-  latencyFg,
-  formatLatency,
   STAGE_BG,
   STAGE_FG,
+  formatLatency,
+  latencyBg,
+  latencyFg,
+  splitStageCells,
   throughputFg,
   timelineBarCells,
-  splitStageCells,
   tokBarCells,
 } from "../tui/theme.js";
-import {
-  STREAM_MS_FLOOR,
-  describeProbeState,
-  type ProbeResult,
-  type ProbeTiming,
-} from "../providers/probe-live.js";
 import { VERSION } from "../version.js";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -293,6 +293,7 @@ function padEndSafe(s: string, n: number): string {
 }
 
 function stripAnsi(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
   return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
 
@@ -324,12 +325,7 @@ function Banner() {
   //  (_)__| |_
   //  | (_-< ' \
   //  |_/__/_||_|
-  const ishLines = [
-    "  _    _    ",
-    " (_)__| |_  ",
-    " | (_-< ' \\ ",
-    " |_/__/_||_|",
-  ];
+  const ishLines = ["  _    _    ", " (_)__| |_  ", " | (_-< ' \\ ", " |_/__/_||_|"];
 
   const ishPad = "  "; // 2 spaces between CLAUD and "ish"
   const ishGreen = "#00ff7f"; // bright spring green — pops against dark terminal bg
@@ -337,11 +333,17 @@ function Banner() {
   // Render one banner row as: orange CLAUD text + gap + bold bright-green ish text.
   const renderBannerRow = (claudLine: string, ishLine: string | null, key: number) => (
     <box key={key} flexDirection="row">
-      <text><span fg={C.orange}>{claudLine}</span></text>
+      <text>
+        <span fg={C.orange}>{claudLine}</span>
+      </text>
       {ishLine !== null && (
         <>
           <text>{ishPad}</text>
-          <text><span fg={ishGreen} attributes={A.bold}>{ishLine}</span></text>
+          <text>
+            <span fg={ishGreen} attributes={A.bold}>
+              {ishLine}
+            </span>
+          </text>
         </>
       )}
     </box>
@@ -462,9 +464,7 @@ function ProgressBar({
   // Bar length relative-to-max (comparison); color absolute (throughput health).
   const tokColor = throughputFg(t.tokensPerSec);
   const tokCells =
-    layout.tokWidth > 0
-      ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth)
-      : 0;
+    layout.tokWidth > 0 ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth) : 0;
   const tokTrack = Math.max(0, layout.tokWidth - tokCells);
   const tokValue = padStartSafe(`${Math.round(t.tokensPerSec)} t/s`, TOK_VALUE_COL);
 
@@ -485,15 +485,9 @@ function ProgressBar({
     <text>
       {prefix}
       {/* TIMELINE bar \u2014 bg-on-spaces segments + dim track */}
-      {stages.network > 0 && (
-        <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>
-      )}
-      {stages.server > 0 && (
-        <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>
-      )}
-      {stages.streaming > 0 && (
-        <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>
-      )}
+      {stages.network > 0 && <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>}
+      {stages.server > 0 && <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>}
+      {stages.streaming > 0 && <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>}
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL \u2014 right-aligned, white */}
@@ -516,7 +510,7 @@ function ProgressBar({
           <span fg={C.dim}>{"  "}</span>
           {tokCells > 0 && <span fg={tokColor}>{BAR_FILL.repeat(tokCells)}</span>}
           {tokTrack > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(tokTrack)}</span>}
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
         </>
       )}
       {layout.tokWidth === 0 && <span fg={C.dim}>{"  "}</span>}
@@ -528,11 +522,7 @@ function ProgressBar({
 }
 
 /** TIMELINE slot for a non-live link \u2014 keeps the bar column aligned. */
-function renderTimelineSlot(
-  link: ProbeLinkState,
-  animFrame: number,
-  barWidth: number,
-) {
+function renderTimelineSlot(link: ProbeLinkState, animFrame: number, barWidth: number) {
   if (barWidth <= 0) return null;
   switch (link.status) {
     case "probing": {
@@ -548,7 +538,6 @@ function renderTimelineSlot(
           {padEndSafe(`\u2717 ${stripAnsi(link.error || "failed")}`, barWidth)}
         </span>
       );
-    case "waiting":
     default:
       return <span fg={C.dim}>{"\u2591".repeat(barWidth)}</span>;
   }
@@ -567,9 +556,7 @@ function renderNonLiveStatus(link: ProbeLinkState, hasSlot: boolean) {
   switch (link.status) {
     case "probing": {
       const elapsedMs = link.startTime ? Date.now() - link.startTime : 0;
-      return (
-        <span fg={C.cyan}>{`\u23F3 probing ${formatElapsed(elapsedMs)}`}</span>
-      );
+      return <span fg={C.cyan}>{`\u23F3 probing ${formatElapsed(elapsedMs)}`}</span>;
     }
     case "failed":
       return hasSlot ? (
@@ -577,7 +564,6 @@ function renderNonLiveStatus(link: ProbeLinkState, hasSlot: boolean) {
       ) : (
         <span fg={C.red}>{`\u2717 ${stripAnsi(link.error || "failed")}`}</span>
       );
-    case "waiting":
     default:
       return <span fg={C.dim}>{"\u23F3 waiting\u2026"}</span>;
   }
@@ -681,9 +667,9 @@ function TabBar({ activeTab }: { activeTab: ProbeTab }) {
       <text>
         <span fg={C.dim}>{"  "}</span>
         {tab("1 Summary", activeTab === "summary")}
-        <span>{" "}</span>
+        <span> </span>
         {tab("2 Leaderboard", activeTab === "leaderboard")}
-        <span>{" "}</span>
+        <span> </span>
         {tab("3 Details", activeTab === "details")}
       </text>
     </box>
@@ -706,10 +692,12 @@ function Legend({ rowWidth }: { rowWidth: number }) {
         <span fg={STAGE_FG.server}>{" srv "}</span>
         <span bg={STAGE_BG.streaming}>{"  "}</span>
         <span fg={STAGE_FG.streaming}>{" str "}</span>
-        <span fg={C.dim}>{"·· idle  ·  bar = total time (shared scale) · tok/s color = absolute"}</span>
+        <span fg={C.dim}>
+          {"·· idle  ·  bar = total time (shared scale) · tok/s color = absolute"}
+        </span>
       </text>
       <text>
-        <span fg={C.dim}>{"  " + "─".repeat(ruleWidth)}</span>
+        <span fg={C.dim}>{`  ${"─".repeat(ruleWidth)}`}</span>
       </text>
     </box>
   );
@@ -788,19 +776,13 @@ function DetailLinkRow({
 }) {
   const probe = link.probe;
   const isLive = probe?.state === "live" && !!probe.timing;
-  const winnerMark = isWinner ? (
-    <span fg={C.brightGreen}>{"●"}</span>
-  ) : (
-    <span>{" "}</span>
-  );
-  const provider = (
-    <span fg={C.fg}>{padEndSafe(link.displayName, provW)}</span>
-  );
+  const winnerMark = isWinner ? <span fg={C.brightGreen}>{"●"}</span> : <span> </span>;
+  const provider = <span fg={C.fg}>{padEndSafe(link.displayName, provW)}</span>;
   const lead = (
     <>
       <span fg={C.dim}>{"  "}</span>
       {winnerMark}
-      <span>{" "}</span>
+      <span> </span>
       {provider}
       <span>{"  "}</span>
     </>
@@ -833,9 +815,7 @@ function DetailLinkRow({
   // Bar LENGTH relative-to-max (comparison); bar/value COLOR absolute (health).
   const tokColor = throughputFg(t.tokensPerSec);
   const tokCells =
-    layout.tokWidth > 0
-      ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth)
-      : 0;
+    layout.tokWidth > 0 ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth) : 0;
   const tokTrack = Math.max(0, layout.tokWidth - tokCells);
   const tokValue = padStartSafe(`${Math.round(t.tokensPerSec)} t/s`, TOK_VALUE_COL);
 
@@ -844,15 +824,9 @@ function DetailLinkRow({
       {lead}
       <span fg={C.green}>{"✓  "}</span>
       {/* TIMELINE bar — bg-on-spaces segments + dim track */}
-      {stages.network > 0 && (
-        <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>
-      )}
-      {stages.server > 0 && (
-        <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>
-      )}
-      {stages.streaming > 0 && (
-        <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>
-      )}
+      {stages.network > 0 && <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>}
+      {stages.server > 0 && <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>}
+      {stages.streaming > 0 && <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>}
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL — right-aligned, white */}
@@ -874,7 +848,7 @@ function DetailLinkRow({
           <span fg={C.dim}>{"  "}</span>
           {tokCells > 0 && <span fg={tokColor}>{BAR_FILL.repeat(tokCells)}</span>}
           {tokTrack > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(tokTrack)}</span>}
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
         </>
       )}
       {layout.tokWidth === 0 && <span fg={C.dim}>{"  "}</span>}
@@ -902,18 +876,13 @@ function DetailModel({
   isLast: boolean;
 }) {
   // Winner = first link that probed live+timed (the route claudish uses).
-  const winnerIdx = result.links.findIndex(
-    (l) => l.probe?.state === "live" && !!l.probe.timing,
-  );
+  const winnerIdx = result.links.findIndex((l) => l.probe?.state === "live" && !!l.probe.timing);
   const winner = winnerIdx >= 0 ? result.links[winnerIdx] : undefined;
 
   // Header: bold model name (left) + dim routing explanation (right-aligned so
   // the explanation hugs the right edge of the row content). headerW is the
   // shared row-content width (capped to the terminal) computed by DetailsView.
-  const gap = Math.max(
-    2,
-    headerW - result.model.length - result.routingExplanation.length - 2,
-  );
+  const gap = Math.max(2, headerW - result.model.length - result.routingExplanation.length - 2);
 
   // Wire line — only when a live winner exists; reuse its wiring.
   const wiring = result.wiring;
@@ -925,9 +894,7 @@ function DetailModel({
   // ── Routing advisor ────────────────────────────────────────────────
   // Full route: the ordered chain of providers claudish would try.
   const routeChain = result.links.map((l) => l.displayName).join(" → ");
-  const liveLinks = result.links.filter(
-    (l) => l.probe?.state === "live" && !!l.probe.timing,
-  );
+  const liveLinks = result.links.filter((l) => l.probe?.state === "live" && !!l.probe.timing);
   // Best live link on EACH axis: lowest total latency, and highest throughput.
   // We suggest a rule if the picked provider (winner) loses on EITHER axis —
   // "slow to finish" (latency) and "slow to stream" (tok/s) are both worth
@@ -1019,15 +986,19 @@ function DetailModel({
       </text>
       {showSuggestion && (
         <text>
-          <span fg={C.yellow} attributes={A.bold}>{"  ⚡ "}</span>
+          <span fg={C.yellow} attributes={A.bold}>
+            {"  ⚡ "}
+          </span>
           <span fg={C.fg}>{suggestion.link.displayName}</span>
-          <span fg={C.green}>{` is ${suggestion.factor.toFixed(1)}× faster ${suggestion.axis === "latency" ? "end-to-end" : "throughput"}`}</span>
+          <span
+            fg={C.green}
+          >{` is ${suggestion.factor.toFixed(1)}× faster ${suggestion.axis === "latency" ? "end-to-end" : "throughput"}`}</span>
           <span fg={C.dim}>
             {suggestion.axis === "latency"
               ? ` (${formatLatency(suggestion.link.probe!.timing!.totalMs)} vs ${formatLatency(winnerT!.totalMs)})`
               : ` (${Math.round(suggestion.link.probe!.timing!.tokensPerSec)} vs ${Math.round(winnerT!.tokensPerSec)} t/s)`}
           </span>
-          <span fg={C.dim}>{` — add routing: `}</span>
+          <span fg={C.dim}>{" — add routing: "}</span>
           {/* link.provider IS the routing-rule provider token (xai, openrouter…). */}
           <span fg={C.cyan}>{`"${ruleKey}": ["${suggestion.link.provider}"]`}</span>
         </text>
@@ -1053,15 +1024,12 @@ function DetailsView({
   // up (clamped like the live view's name column).
   const provW = Math.min(
     22,
-    Math.max(8, ...results.flatMap((r) => r.links.map((l) => l.displayName.length))),
+    Math.max(8, ...results.flatMap((r) => r.links.map((l) => l.displayName.length)))
   );
   // Shared header width = the live-row content width, capped to the terminal
   // (minus a 1-col scrollbar gutter) so the routing explanation hugs the right
   // edge of the rows instead of running off-screen.
-  const headerW = Math.max(
-    24,
-    Math.min(detailRowWidth(provW, layout), (termWidth || 100) - 3),
-  );
+  const headerW = Math.max(24, Math.min(detailRowWidth(provW, layout), (termWidth || 100) - 3));
   return (
     <box flexDirection="column">
       {results.map((r, idx) => (
@@ -1150,9 +1118,7 @@ function LeaderLiveRow({
 
   const tokColor = throughputFg(t.tokensPerSec);
   const tokCells =
-    layout.tokWidth > 0
-      ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth)
-      : 0;
+    layout.tokWidth > 0 ? tokBarCells(t.tokensPerSec, maxTokPerSec, layout.tokWidth) : 0;
   const tokTrack = Math.max(0, layout.tokWidth - tokCells);
   const tokValue = padStartSafe(`${Math.round(t.tokensPerSec)} t/s`, TOK_VALUE_COL);
 
@@ -1161,17 +1127,15 @@ function LeaderLiveRow({
     <>
       <span fg={C.dim}>{"  "}</span>
       <span fg={C.dim}>{padStartSafe(String(rank), rankW)}</span>
-      <span>{" "}</span>
-      {isFastest ? (
-        <span fg={C.brightGreen}>{"●"}</span>
-      ) : (
-        <span>{" "}</span>
-      )}
-      <span>{" "}</span>
-      <span fg={C.fg} attributes={A.bold}>{padEndSafe(row.model, nameW)}</span>
-      <span>{" "}</span>
+      <span> </span>
+      {isFastest ? <span fg={C.brightGreen}>{"●"}</span> : <span> </span>}
+      <span> </span>
+      <span fg={C.fg} attributes={A.bold}>
+        {padEndSafe(row.model, nameW)}
+      </span>
+      <span> </span>
       <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
-      <span>{" "}</span>
+      <span> </span>
     </>
   );
 
@@ -1189,15 +1153,9 @@ function LeaderLiveRow({
     <text>
       {lead}
       {/* TIMELINE bar — bg-on-spaces segments + dim track */}
-      {stages.network > 0 && (
-        <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>
-      )}
-      {stages.server > 0 && (
-        <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>
-      )}
-      {stages.streaming > 0 && (
-        <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>
-      )}
+      {stages.network > 0 && <span bg={STAGE_BG.network}>{" ".repeat(stages.network)}</span>}
+      {stages.server > 0 && <span bg={STAGE_BG.server}>{" ".repeat(stages.server)}</span>}
+      {stages.streaming > 0 && <span bg={STAGE_BG.streaming}>{" ".repeat(stages.streaming)}</span>}
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL — right-aligned, white */}
@@ -1210,9 +1168,9 @@ function LeaderLiveRow({
         <>
           <span fg={C.dim}>{"  "}</span>
           <span fg={STAGE_FG.network}>{netStr}</span>
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
           <span fg={STAGE_FG.server}>{srvStr}</span>
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
           <span fg={STAGE_FG.streaming}>{strStr}</span>
         </>
       )}
@@ -1222,7 +1180,7 @@ function LeaderLiveRow({
           <span fg={C.dim}>{"  "}</span>
           {tokCells > 0 && <span fg={tokColor}>{BAR_FILL.repeat(tokCells)}</span>}
           {tokTrack > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(tokTrack)}</span>}
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
         </>
       )}
       {layout.tokWidth === 0 && <span fg={C.dim}>{"  "}</span>}
@@ -1243,9 +1201,7 @@ function LeaderboardView({
   maxTokPerSec: number;
 }) {
   const reps = results.map(pickRepresentativeLink);
-  const live = reps
-    .filter((r) => r.timing)
-    .sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
+  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
   const unavailable = reps.filter((r) => !r.timing);
 
   // Name + provider columns: widest entry, clamped (mirrors renderLeaderboard's
@@ -1256,26 +1212,26 @@ function LeaderboardView({
 
   // Column header — aligned to the data rows. The data-row lead-in before the
   // name spans rankW + 3 (gap + ● slot + gap), matching LeaderLiveRow's lead.
-  const rankHdr = " ".repeat(rankW) + "   ";
+  const rankHdr = `${" ".repeat(rankW)}   `;
 
   return (
     <box flexDirection="column">
       {/* Title */}
       <text>
         <span fg={C.dim}>{"  "}</span>
-        <span fg={C.cyan} attributes={A.bold}>{"Leaderboard"}</span>
+        <span fg={C.cyan} attributes={A.bold}>
+          {"Leaderboard"}
+        </span>
         <span fg={C.dim}>{" — fastest first"}</span>
       </text>
       {/* Column header (dim) */}
       <text>
-        <span fg={C.dim}>{"  " + rankHdr}</span>
+        <span fg={C.dim}>{`  ${rankHdr}`}</span>
         <span fg={C.dim}>{padEndSafe("MODEL", nameW)}</span>
-        <span fg={C.dim}>{" "}</span>
+        <span fg={C.dim}> </span>
         <span fg={C.dim}>{padEndSafe("PROVIDER", provW)}</span>
-        <span fg={C.dim}>{" "}</span>
-        {layout.barWidth > 0 && (
-          <span fg={C.dim}>{padEndSafe("TIMELINE", layout.barWidth)}</span>
-        )}
+        <span fg={C.dim}> </span>
+        {layout.barWidth > 0 && <span fg={C.dim}>{padEndSafe("TIMELINE", layout.barWidth)}</span>}
         <span fg={C.dim}>{"  "}</span>
         <span fg={C.dim}>{padStartSafe("TOTAL", TOTAL_COL)}</span>
         {layout.showBreakdown && (
@@ -1285,17 +1241,17 @@ function LeaderboardView({
           // — left-aligned labels over the right-aligned value columns. Same
           // convention as the piped output and the spec example.
           <span fg={C.dim}>
-            {"  " + padEndSafe("net", STAGE_NUM_W) +
-              " " + padEndSafe("srv", STAGE_NUM_W) +
-              " " + padEndSafe("str", STAGE_NUM_W)}
+            {`  ${padEndSafe("net", STAGE_NUM_W)} ${padEndSafe("srv", STAGE_NUM_W)} ${padEndSafe("str", STAGE_NUM_W)}`}
           </span>
         )}
         {layout.tokWidth > 0 ? (
           // Data: "  " + tokBar(tokWidth) + " " + tokValue(TOK_VALUE_COL). The
           // caption sits over the value column (right-aligned like the value).
-          <span fg={C.dim}>{"  " + " ".repeat(layout.tokWidth + 1) + padStartSafe("tok/s", TOK_VALUE_COL)}</span>
+          <span
+            fg={C.dim}
+          >{`  ${" ".repeat(layout.tokWidth + 1)}${padStartSafe("tok/s", TOK_VALUE_COL)}`}</span>
         ) : (
-          <span fg={C.dim}>{"  " + padStartSafe("tok/s", TOK_VALUE_COL)}</span>
+          <span fg={C.dim}>{`  ${padStartSafe("tok/s", TOK_VALUE_COL)}`}</span>
         )}
       </text>
       {/* Live rows — fastest first */}
@@ -1316,9 +1272,9 @@ function LeaderboardView({
       {/* Unavailable models — dim, no bar. Provider column kept aligned. */}
       {unavailable.map((row) => (
         <text key={`lb-na:${row.model}`}>
-          <span fg={C.dim}>{"  " + " ".repeat(rankW) + "   "}</span>
+          <span fg={C.dim}>{`  ${" ".repeat(rankW)}   `}</span>
           <span fg={C.dim}>{padEndSafe(row.model, nameW)}</span>
-          <span fg={C.dim}>{" "}</span>
+          <span fg={C.dim}> </span>
           <span fg={C.dim}>{padEndSafe(row.provider, provW)}</span>
           <span fg={C.dim}>{" — no live route"}</span>
         </text>
@@ -1362,9 +1318,7 @@ export function ProbeApp({
         // Tab cycles forward through the three tabs; Shift+Tab cycles back.
         const order: ProbeTab[] = ["summary", "leaderboard", "details"];
         const cur = order.indexOf(store.getState().activeTab);
-        const next = key.shift
-          ? (cur - 1 + order.length) % order.length
-          : (cur + 1) % order.length;
+        const next = key.shift ? (cur - 1 + order.length) % order.length : (cur + 1) % order.length;
         store.setActiveTab(order[next]);
         return;
       }
@@ -1428,10 +1382,7 @@ export function ProbeApp({
   }
 
   // Shared max name length so bars align across all groups
-  const maxNameLen = Math.min(
-    25,
-    Math.max(...state.links.map((l) => l.displayName.length), 12),
-  );
+  const maxNameLen = Math.min(25, Math.max(...state.links.map((l) => l.displayName.length), 12));
 
   // Per-width layout tier (which bars/columns survive) + the matching row width
   // so the model header bar spans exactly the active row.
@@ -1446,7 +1397,7 @@ export function ProbeApp({
   let maxTotalMs = 1;
   let maxTokPerSec = 1;
   let fastestLinkId: string | null = null;
-  let fastestTokPerSec = -Infinity;
+  let fastestTokPerSec = Number.NEGATIVE_INFINITY;
   for (const link of state.links) {
     if (link.status !== "live" || !link.timing) continue;
     const t = link.timing;
@@ -1481,12 +1432,7 @@ export function ProbeApp({
   const legendRows = showSummary ? LEGEND_ROWS : 0;
   const listH = Math.max(
     MIN_LIST_H,
-    termHeight -
-      BANNER_ROWS -
-      stepsRows -
-      tabBarRows -
-      legendRows -
-      SCROLL_HINT_ROWS,
+    termHeight - BANNER_ROWS - stepsRows - tabBarRows - legendRows - SCROLL_HINT_ROWS
   );
 
   // Does the scrollbox content overflow its viewport? Only then are the scroll
@@ -1496,16 +1442,14 @@ export function ProbeApp({
   // Default to true on the first render (null ref) — better to briefly show a
   // hint than to hide a needed one.
   const sbForHint = listScrollRef.current;
-  const overflow = sbForHint
-    ? sbForHint.content.height > sbForHint.viewport.height
-    : true;
+  const overflow = sbForHint ? sbForHint.content.height > sbForHint.viewport.height : true;
 
   // Bottom hint. Scroll keys appear ONLY when content overflows. Tab-switch +
   // quit appear in the done phase regardless (they always apply).
   const scrollKeys = "↑↓ scroll · PgUp/PgDn page · g/G top/bottom";
   const footerHint = isDone
-    ? "  " + (overflow ? scrollKeys + " · " : "") + "Tab/1/2/3 switch · q quit"
-    : "  " + (overflow ? scrollKeys : "");
+    ? `  ${overflow ? `${scrollKeys} · ` : ""}Tab/1/2/3 switch · q quit`
+    : `  ${overflow ? scrollKeys : ""}`;
 
   return (
     // `key={state.phase}` forces React to discard the old subtree at the

@@ -2,11 +2,11 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  loadConfig,
-  loadLocalConfig,
   disableLocalProvider,
   enableLocalProvider,
   isLocalProviderEnabled,
+  loadConfig,
+  loadLocalConfig,
   removeApiKey,
   removeEndpoint,
   saveConfig,
@@ -15,23 +15,86 @@ import {
   setEndpoint,
 } from "../profile-config.js";
 import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
-import { getProviderByName } from "../providers/provider-definitions.js";
+import {
+  type LocalLiveness,
+  localBaseUrl,
+  pingLocalProvider,
+  pingLocalProviders,
+} from "../providers/local-liveness.js";
+// 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
+// project config files for the account / imports / environments fields.
+import {
+  addOnepasswordEnvironment,
+  addOnepasswordImport,
+  clearOnepasswordAccount,
+  listOnepasswordEnvironments,
+  listOnepasswordImports,
+  readOnepasswordAccount,
+  readOnepasswordAccountForScope,
+  removeOnepasswordEnvironment,
+  removeOnepasswordImport,
+  saveOnepasswordAccount,
+} from "../providers/onepassword-config.js";
+// 1Password SDK engine (async; the WASM is dynamically imported INSIDE these
+// functions only when auth + a secret are actually needed). Importing the
+// module here is cheap — no SDK is touched at import time.
+import {
+  type AccountInfo,
+  type DiscoveredField,
+  detectSdkAuth,
+  discoverItemFields,
+  discoverItemFieldsById,
+  envNameFromOpRef,
+  filterGlobFields,
+  isGlobImport,
+  isOpHydratedVar,
+  listItems,
+  listVaults,
+  maskSecret,
+  parseGlobImport,
+  readEnvironment,
+  resolveDesktopAccount,
+  resolveGlobImport,
+  resolveSdkAuth,
+  resolveSecrets,
+  withSdkRetry,
+} from "../providers/onepassword.js";
 import {
   discoverProbeModelFromEndpoint,
   ensureProbeModelsCached,
   forceRefreshProbeModels,
   getProbeModel,
 } from "../providers/probe-catalog.js";
-import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { describeProbeState } from "../providers/probe-live.js";
 import { probeProviderRoute } from "../providers/probe-runner.js";
-import {
-  localBaseUrl,
-  pingLocalProvider,
-  pingLocalProviders,
-  type LocalLiveness,
-} from "../providers/local-liveness.js";
+import { getProviderByName } from "../providers/provider-definitions.js";
+import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
+// Real package version (auto-generated at build), not the stale hardcoded
+// constant that used to live in constants.ts.
+import { VERSION as PKG_VERSION } from "../version.js";
+import { Footer } from "./components/Footer.js";
+import { OnepasswordContent, type OpExpansion } from "./components/OnepasswordContent.js";
+import { OnepasswordDetail } from "./components/OnepasswordDetail.js";
+import {
+  OnepasswordModal,
+  buildFieldOptions,
+  fuzzyFilterByTitle,
+  fuzzyMatch,
+  isOpModalMode,
+} from "./components/OnepasswordModal.js";
+import { PrivacyContent } from "./components/PrivacyContent.js";
+import { PrivacyDetail } from "./components/PrivacyDetail.js";
+import { ProfileDetail } from "./components/ProfileDetail.js";
+import { ProfilesContent } from "./components/ProfilesContent.js";
+import { ProviderDetail } from "./components/ProviderDetail.js";
+import { ProvidersContent } from "./components/ProvidersContent.js";
+import { RoutingContent } from "./components/RoutingContent.js";
+import { RoutingDetail } from "./components/RoutingDetail.js";
+import { TabBar } from "./components/TabBar.js";
+import { CHAIN_PROVIDERS, DETAIL_H, FOOTER_H, HEADER_H, TABS_H } from "./constants.js";
+import { useProfileWizard } from "./hooks/useProfileWizard.js";
+import { useRouteProbe } from "./hooks/useRouteProbe.js";
 import {
   ensureProbeProxy,
   invalidateProbeProxyHandlers,
@@ -39,23 +102,13 @@ import {
 } from "./probe-proxy.js";
 import {
   PROVIDERS,
+  type ProviderDef,
   maskKey,
   providerAuthCapabilities,
   providerIsReady,
   providerIsReadyForDisplay,
-  type ProviderDef,
 } from "./providers.js";
 import { A, C } from "./theme.js";
-import {
-  CHAIN_PROVIDERS,
-  HEADER_H,
-  TABS_H,
-  FOOTER_H,
-  DETAIL_H,
-} from "./constants.js";
-// Real package version (auto-generated at build), not the stale hardcoded
-// constant that used to live in constants.ts.
-import { VERSION as PKG_VERSION } from "../version.js";
 import type {
   MergedRule,
   Mode,
@@ -67,65 +120,6 @@ import type {
   Tab,
   TestResultsMap,
 } from "./types.js";
-// 1Password CONFIG persistence (sync, no SDK). Reads/writes the global +
-// project config files for the account / imports / environments fields.
-import {
-  readOnepasswordAccount,
-  readOnepasswordAccountForScope,
-  saveOnepasswordAccount,
-  clearOnepasswordAccount,
-  listOnepasswordImports,
-  addOnepasswordImport,
-  removeOnepasswordImport,
-  listOnepasswordEnvironments,
-  addOnepasswordEnvironment,
-  removeOnepasswordEnvironment,
-} from "../providers/onepassword-config.js";
-// 1Password SDK engine (async; the WASM is dynamically imported INSIDE these
-// functions only when auth + a secret are actually needed). Importing the
-// module here is cheap — no SDK is touched at import time.
-import {
-  resolveSdkAuth,
-  detectSdkAuth,
-  resolveDesktopAccount,
-  discoverItemFields,
-  discoverItemFieldsById,
-  withSdkRetry,
-  filterGlobFields,
-  parseGlobImport,
-  isGlobImport,
-  resolveSecrets,
-  readEnvironment,
-  listVaults,
-  listItems,
-  maskSecret,
-  envNameFromOpRef,
-  resolveGlobImport,
-  isOpHydratedVar,
-  type AccountInfo,
-  type DiscoveredField,
-} from "../providers/onepassword.js";
-import { useRouteProbe } from "./hooks/useRouteProbe.js";
-import { useProfileWizard } from "./hooks/useProfileWizard.js";
-import { TabBar } from "./components/TabBar.js";
-import { Footer } from "./components/Footer.js";
-import { ProvidersContent } from "./components/ProvidersContent.js";
-import { ProviderDetail } from "./components/ProviderDetail.js";
-import { ProfilesContent } from "./components/ProfilesContent.js";
-import { ProfileDetail } from "./components/ProfileDetail.js";
-import { RoutingContent } from "./components/RoutingContent.js";
-import { RoutingDetail } from "./components/RoutingDetail.js";
-import { PrivacyContent } from "./components/PrivacyContent.js";
-import { PrivacyDetail } from "./components/PrivacyDetail.js";
-import { OnepasswordContent, type OpExpansion } from "./components/OnepasswordContent.js";
-import { OnepasswordDetail } from "./components/OnepasswordDetail.js";
-import {
-  OnepasswordModal,
-  isOpModalMode,
-  buildFieldOptions,
-  fuzzyMatch,
-  fuzzyFilterByTitle,
-} from "./components/OnepasswordModal.js";
 
 interface AppProps {
   /**
@@ -326,13 +320,8 @@ export function App({ requestLogin }: AppProps = {}) {
   // handler dispatches verb methods; the hook flips parent `mode` for its
   // visible sub-states.
   const wizard = useProfileWizard({ mode, setMode, refreshConfig, setStatusMsg });
-  const {
-    editProfileValue,
-    profileScope,
-    suggestions,
-    suggestionIndex,
-    providerPickerIndex,
-  } = wizard;
+  const { editProfileValue, profileScope, suggestions, suggestionIndex, providerPickerIndex } =
+    wizard;
 
   const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
   const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
@@ -355,10 +344,7 @@ export function App({ requestLogin }: AppProps = {}) {
     ?.map((envVar) => process.env[envVar])
     .find((value): value is string => !!value);
   const activeEndpoint =
-    activeEndpointFromConfig ||
-    activeEndpointFromEnv ||
-    selectedProvider.defaultEndpoint ||
-    "";
+    activeEndpointFromConfig || activeEndpointFromEnv || selectedProvider.defaultEndpoint || "";
 
   const telemetryEnabled =
     process.env.CLAUDISH_TELEMETRY !== "0" &&
@@ -383,6 +369,7 @@ export function App({ requestLogin }: AppProps = {}) {
   // Sort order: defaults first (alphabetical), then global, then project.
   // `loadLocalConfig()` is called inside the memo so a `refreshConfig()`
   // after a project save triggers re-derivation.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   const mergedRules: MergedRule[] = useMemo(() => {
     const out: MergedRule[] = [];
     const localCfg = loadLocalConfig();
@@ -423,6 +410,7 @@ export function App({ requestLogin }: AppProps = {}) {
   // so the most-specific scope reads first. The op:// fields are read straight
   // from disk via the scope-aware helpers, so the memo depends on `opTick`
   // (bumped by refreshConfig after every save) rather than the config object.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   const opEntries: OpEntry[] = useMemo(() => {
     const out: OpEntry[] = [];
     const scopes: OpScope[] = ["project", "global"];
@@ -435,7 +423,7 @@ export function App({ requestLogin }: AppProps = {}) {
           kind,
           value: v,
           scope,
-          envName: kind === "ref" ? envNameFromOpRef(v) ?? undefined : undefined,
+          envName: kind === "ref" ? (envNameFromOpRef(v) ?? undefined) : undefined,
         });
       }
     }
@@ -453,6 +441,7 @@ export function App({ requestLogin }: AppProps = {}) {
   // list can show them as nested sub-rows. Best-effort + cached per glob value:
   // marks "loading" then resolves to "ready"/"error". Only runs on the
   // onepassword tab, and only for globs not already cached. Never blocks the UI.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opExpansions read for cache-check only, intentionally not a dep
   useEffect(() => {
     if (activeTab !== "onepassword") return;
     const globs = opEntries.filter((e) => e.kind === "glob");
@@ -466,7 +455,7 @@ export function App({ requestLogin }: AppProps = {}) {
           // withSdkRetry: a transient desktop-IPC failure (errno -4) rebuilds the
           // client + retries once instead of surfacing a one-off error.
           const fields = await withSdkRetry(() =>
-            discoverItemFields(parsed.vault, parsed.item, { auth }),
+            discoverItemFields(parsed.vault, parsed.item, { auth })
           );
           const keys = filterGlobFields(fields, parsed)
             .filter((m) => m.valid)
@@ -483,14 +472,12 @@ export function App({ requestLogin }: AppProps = {}) {
 
   // Account display by source. env/token first (read-only, can't be edited
   // here), then the two config scopes shown independently.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   const opAccountDisplay = useMemo(() => {
     const envAuth = detectSdkAuth();
     let env: string | undefined;
     if (envAuth) {
-      env =
-        envAuth.kind === "token"
-          ? "OP_SERVICE_ACCOUNT_TOKEN"
-          : envAuth.accountName;
+      env = envAuth.kind === "token" ? "OP_SERVICE_ACCOUNT_TOKEN" : envAuth.accountName;
     }
     return {
       global: readOnepasswordAccountForScope("global"),
@@ -501,17 +488,16 @@ export function App({ requestLogin }: AppProps = {}) {
   }, [opTick]);
 
   // True when op auth is available from env/token OR a configured account.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   const opAuthConfigured = useMemo(
     () => !!detectSdkAuth() || !!readOnepasswordAccount(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [opTick],
+    [opTick]
   );
 
   // The selected op entry (clamped) for the Detail panel's browse view.
   const selectedOpEntry =
-    opEntries.length > 0
-      ? opEntries[Math.min(opIndex, opEntries.length - 1)]
-      : undefined;
+    opEntries.length > 0 ? opEntries[Math.min(opIndex, opEntries.length - 1)] : undefined;
 
   // ── Fuzzy-filtered picker lists ──────────────────────────────────────────────
   // The vault/item/field/account list pickers narrow by `opFilter` as the user
@@ -521,12 +507,12 @@ export function App({ requestLogin }: AppProps = {}) {
     () => fuzzyFilterByTitle(opVaults, opFilter),
     [opVaults, opFilter]
   );
-  const opItemsFiltered = useMemo(
-    () => fuzzyFilterByTitle(opItems, opFilter),
-    [opItems, opFilter]
-  );
+  const opItemsFiltered = useMemo(() => fuzzyFilterByTitle(opItems, opFilter), [opItems, opFilter]);
   const opAccountsFiltered = useMemo(
-    () => (opFilter.trim() === "" ? opAccounts : opAccounts.filter((a) => fuzzyMatch(opFilter, `${a.url} ${a.email}`))),
+    () =>
+      opFilter.trim() === ""
+        ? opAccounts
+        : opAccounts.filter((a) => fuzzyMatch(opFilter, `${a.url} ${a.email}`)),
     [opAccounts, opFilter]
   );
   // Field options are built (glob + section + concrete) then filtered by name.
@@ -535,7 +521,10 @@ export function App({ requestLogin }: AppProps = {}) {
     [opPickedVault, opPickedItem, opFields]
   );
   const opFieldOptionsFiltered = useMemo(
-    () => (opFilter.trim() === "" ? opFieldOptionsAll : opFieldOptionsAll.filter((o) => fuzzyMatch(opFilter, o.name))),
+    () =>
+      opFilter.trim() === ""
+        ? opFieldOptionsAll
+        : opFieldOptionsAll.filter((o) => fuzzyMatch(opFilter, o.name)),
     [opFieldOptionsAll, opFilter]
   );
   // Keep the field cursor on a SELECTABLE row: the grouped list has header rows
@@ -571,7 +560,7 @@ export function App({ requestLogin }: AppProps = {}) {
           opPickerResolver.current = (url) => {
             // Persist the chosen account globally so the next run reuses it
             // without re-prompting (resolveSdkAuth itself doesn't write).
-            if (url && url.trim()) saveOnepasswordAccount(url.trim(), "global");
+            if (url?.trim()) saveOnepasswordAccount(url.trim(), "global");
             opPickerResolver.current = null;
             resolve(url);
           };
@@ -625,7 +614,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpBusy(false);
       }
     },
-    [acquireOpAuth],
+    [acquireOpAuth]
   );
 
   /**
@@ -649,7 +638,7 @@ export function App({ requestLogin }: AppProps = {}) {
     setOpPickedItem(null);
     setOpEnvPreview(null);
     setOpFilter("");
-  }, [setInputValue]);
+  }, []);
 
   /**
    * The ADD action. Runs after the user commits the final wizard step, with the
@@ -681,7 +670,13 @@ export function App({ requestLogin }: AppProps = {}) {
         // 2) Reflect the save in the UI right away.
         const isGlob = kind === "glob" || isGlobImport(value);
         const kindWord =
-          kind === "account" ? "account" : kind === "environment" ? "environment" : isGlob ? "glob" : "ref";
+          kind === "account"
+            ? "account"
+            : kind === "environment"
+              ? "environment"
+              : isGlob
+                ? "glob"
+                : "ref";
         setStatusMsg(`1Password ${kindWord} saved (${scope}). Confirming…`);
         setMode("browse");
         resetOpWizard();
@@ -711,7 +706,7 @@ export function App({ requestLogin }: AppProps = {}) {
             const vars = await withSdkRetry(() => readEnvironment(value, { auth }));
             apply(vars);
             setStatusMsg(
-              `1Password environment saved (${scope}) → ${Object.keys(vars).length} vars, ${hydrated} applied.`,
+              `1Password environment saved (${scope}) → ${Object.keys(vars).length} vars, ${hydrated} applied.`
             );
           } else if (isGlob) {
             // resolveGlobImport returns the {envVar: value} map directly — use it
@@ -723,14 +718,14 @@ export function App({ requestLogin }: AppProps = {}) {
             setStatusMsg(
               n > 0
                 ? `1Password set saved (${scope}) → ${n} key${n === 1 ? "" : "s"} applied (${names})`
-                : `1Password set saved (${scope}) — but it matched no importable fields right now.`,
+                : `1Password set saved (${scope}) — but it matched no importable fields right now.`
             );
           } else {
             const r = await withSdkRetry(() => resolveSecrets({ T: value }, { auth }));
             const name = envNameFromOpRef(value);
             if (name) apply({ [name]: r.T });
             setStatusMsg(
-              `1Password key saved (${scope}) → ${name ?? "?"} = ${maskSecret(r.T)}${hydrated ? " (applied)" : ""}`,
+              `1Password key saved (${scope}) → ${name ?? "?"} = ${maskSecret(r.T)}${hydrated ? " (applied)" : ""}`
             );
           }
           // Drop ALL cached probe handlers so the next probe rebuilds transports
@@ -756,7 +751,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpBusy(false);
       }
     },
-    [acquireOpAuth, refreshConfig, resetOpWizard, setMode],
+    [acquireOpAuth, refreshConfig, resetOpWizard]
   );
 
   /**
@@ -812,7 +807,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpBusy(false);
       }
     },
-    [acquireOpAuth],
+    [acquireOpAuth]
   );
 
   /**
@@ -826,7 +821,7 @@ export function App({ requestLogin }: AppProps = {}) {
       vaultId: string,
       vaultTitle: string,
       itemId: string,
-      itemTitle: string,
+      itemTitle: string
     ): Promise<void> => {
       setOpPickedItem(itemTitle);
       setOpFieldCursor(0);
@@ -838,7 +833,9 @@ export function App({ requestLogin }: AppProps = {}) {
       const cached = opFieldsCache.current.get(cacheKey);
       if (cached) {
         setOpFields(cached);
-        setStatusMsg(`1Password: ${cached.length} field${cached.length === 1 ? "" : "s"} (cached).`);
+        setStatusMsg(
+          `1Password: ${cached.length} field${cached.length === 1 ? "" : "s"} (cached).`
+        );
         return;
       }
 
@@ -848,7 +845,7 @@ export function App({ requestLogin }: AppProps = {}) {
       try {
         const auth = await acquireOpAuth();
         const fields = await withSdkRetry(() =>
-          discoverItemFieldsById(vaultId, itemId, vaultTitle, itemTitle, { auth }),
+          discoverItemFieldsById(vaultId, itemId, vaultTitle, itemTitle, { auth })
         );
         opFieldsCache.current.set(cacheKey, fields);
         setOpFields(fields);
@@ -861,7 +858,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpBusy(false);
       }
     },
-    [acquireOpAuth],
+    [acquireOpAuth]
   );
 
   /**
@@ -880,7 +877,7 @@ export function App({ requestLogin }: AppProps = {}) {
         const names = Object.keys(vars);
         setOpEnvPreview(names);
         setStatusMsg(
-          `1Password environment → ${names.length} var${names.length === 1 ? "" : "s"}. Enter to save.`,
+          `1Password environment → ${names.length} var${names.length === 1 ? "" : "s"}. Enter to save.`
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -890,7 +887,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpBusy(false);
       }
     },
-    [acquireOpAuth],
+    [acquireOpAuth]
   );
 
   /**
@@ -969,11 +966,7 @@ export function App({ requestLogin }: AppProps = {}) {
         if (catalogPick && !tried.has(catalogPick)) {
           testModel = catalogPick;
         } else {
-          const discovery = await discoverProbeModelFromEndpoint(
-            proxyUrl,
-            prov.catalogName,
-            tried
-          );
+          const discovery = await discoverProbeModelFromEndpoint(proxyUrl, prov.catalogName, tried);
           testModel = discovery.model;
           lastDiscoveryReason = discovery.reason;
         }
@@ -999,11 +992,7 @@ export function App({ requestLogin }: AppProps = {}) {
         // once and adopt a fresh, untried pick for the next attempt (self-heal
         // after a server-side fix). If the refresh yields nothing new, the loop
         // falls through to endpoint discovery as before.
-        if (
-          result.state === "model-not-found" &&
-          testModel === catalogPick &&
-          !catalogRefreshed
-        ) {
+        if (result.state === "model-not-found" && testModel === catalogPick && !catalogRefreshed) {
           catalogRefreshed = true;
           const refresh = await forceRefreshProbeModels();
           if (refresh.kind === "ok") {
@@ -1018,8 +1007,7 @@ export function App({ requestLogin }: AppProps = {}) {
         // Retry on per-model failures (the next candidate might work).
         // Don't retry on transport-level failures (auth/network/timeout) —
         // those won't get better by changing model.
-        const retryable =
-          result.state === "model-not-found" || result.state === "error";
+        const retryable = result.state === "model-not-found" || result.state === "error";
         if (!retryable) break;
       }
 
@@ -1055,10 +1043,7 @@ export function App({ requestLogin }: AppProps = {}) {
         }));
       } else {
         const baseError = describeProbeState(result);
-        const error =
-          tried.size > 1
-            ? `${baseError} (tried ${tried.size} models)`
-            : baseError;
+        const error = tried.size > 1 ? `${baseError} (tried ${tried.size} models)` : baseError;
         setTestResults((prev) => ({
           ...prev,
           [provName]: { status: "failed", error, ms },
@@ -1105,7 +1090,8 @@ export function App({ requestLogin }: AppProps = {}) {
     if (probeMode === "done" && activeTab === "routing") {
       if (key.name === "q") {
         return quit();
-      } else if (key.name === "escape" || key.name === "p") {
+      }
+      if (key.name === "escape" || key.name === "p") {
         // Return to normal routing view
         probe.cancel();
       } else if (key.name === "return" || key.name === "enter") {
@@ -1126,9 +1112,7 @@ export function App({ requestLogin }: AppProps = {}) {
         }
         if (mode === "input_key") {
           if (!selectedProvider.apiKeyEnvVar) {
-            setStatusMsg(
-              `${selectedProvider.displayName} has no apiKeyEnvVar — cannot save key.`
-            );
+            setStatusMsg(`${selectedProvider.displayName} has no apiKeyEnvVar — cannot save key.`);
           } else {
             setApiKey(selectedProvider.apiKeyEnvVar, val);
             process.env[selectedProvider.apiKeyEnvVar] = val;
@@ -1264,7 +1248,7 @@ export function App({ requestLogin }: AppProps = {}) {
           return;
         }
         const provName = prov.name;
-        const targetPos = parseInt(key.raw, 10) - 1; // 0-indexed
+        const targetPos = Number.parseInt(key.raw, 10) - 1; // 0-indexed
         setChainSelected((prev) => {
           const next = new Set(prev);
           next.add(provName);
@@ -1645,7 +1629,7 @@ export function App({ requestLogin }: AppProps = {}) {
         setOpFieldCursor((i) => nextSelectable(i + 1, 1));
       } else if (key.name === "return" || key.name === "enter") {
         const chosen = opts[opFieldCursor];
-        if (chosen && chosen.selectable) {
+        if (chosen?.selectable) {
           const isGlob = isGlobImport(chosen.value);
           setOpPendingValue(chosen.value);
           void runOpAdd(isGlob ? "glob" : "ref", chosen.value, opPendingScope);
@@ -1692,7 +1676,7 @@ export function App({ requestLogin }: AppProps = {}) {
           resolver(chosen);
         } else {
           // (B) wizard step 2 → save + advance to the kind picker.
-          if (chosen && chosen.trim()) saveOnepasswordAccount(chosen.trim(), "global");
+          if (chosen?.trim()) saveOnepasswordAccount(chosen.trim(), "global");
           setOpKindCursor(0);
           setMode("pick_op_kind");
         }
@@ -1881,9 +1865,7 @@ export function App({ requestLogin }: AppProps = {}) {
         if (fired.length === 0) {
           setStatusMsg("No credentialed providers to test.");
         } else {
-          const startupHint = !isProbeProxyReady()
-            ? " (starting probe proxy…)"
-            : "";
+          const startupHint = !isProbeProxyReady() ? " (starting probe proxy…)" : "";
           setStatusMsg(
             `Testing ${fired.length} provider${fired.length === 1 ? "" : "s"} in parallel…${startupHint}`
           );
@@ -1895,8 +1877,7 @@ export function App({ requestLogin }: AppProps = {}) {
         const caps = providerAuthCapabilities(selectedProvider, config);
         // A running local server is testable even when not config-enabled.
         const localRunning =
-          selectedProviderIsLocal &&
-          localLiveness[selectedProvider.catalogName] === "running";
+          selectedProviderIsLocal && localLiveness[selectedProvider.catalogName] === "running";
         const ready = providerIsReady(selectedProvider, config) || localRunning;
         if (!ready) {
           if (selectedProviderIsLocal) {
@@ -1908,17 +1889,11 @@ export function App({ requestLogin }: AppProps = {}) {
               `${selectedProvider.displayName}: no credentials. Press s to set a key or l to login.`
             );
           } else if (caps.oauth.supported) {
-            setStatusMsg(
-              `${selectedProvider.displayName}: no credentials. Press l to login.`
-            );
+            setStatusMsg(`${selectedProvider.displayName}: no credentials. Press l to login.`);
           } else if (caps.apiKey.supported) {
-            setStatusMsg(
-              `${selectedProvider.displayName}: no key set. Press s to set an API key.`
-            );
+            setStatusMsg(`${selectedProvider.displayName}: no key set. Press s to set an API key.`);
           } else {
-            setStatusMsg(
-              `${selectedProvider.displayName} doesn't support auth from the TUI.`
-            );
+            setStatusMsg(`${selectedProvider.displayName} doesn't support auth from the TUI.`);
           }
           return;
         }
@@ -2086,7 +2061,9 @@ export function App({ requestLogin }: AppProps = {}) {
         cfg.stats = {
           ...(cfg.stats ?? {}),
           enabled: next,
-          enabledAt: next ? (cfg.stats?.enabledAt ?? new Date().toISOString()) : cfg.stats?.enabledAt,
+          enabledAt: next
+            ? (cfg.stats?.enabledAt ?? new Date().toISOString())
+            : cfg.stats?.enabledAt,
         };
         saveConfig(cfg);
         refreshConfig();
@@ -2136,9 +2113,7 @@ export function App({ requestLogin }: AppProps = {}) {
           setStatusMsg("No 1Password entry to remove.");
         } else if (selectedOpEntry.scope === "env") {
           // The env/token account is read-only here — can't remove from config.
-          setStatusMsg(
-            "Account comes from OP_ACCOUNT / token — unset the env var to remove.",
-          );
+          setStatusMsg("Account comes from OP_ACCOUNT / token — unset the env var to remove.");
         } else {
           const e = selectedOpEntry;
           // The "env" case was handled above; re-derive a concrete OpScope so
@@ -2174,9 +2149,7 @@ export function App({ requestLogin }: AppProps = {}) {
 
   const isInputMode = mode === "input_key" || mode === "input_endpoint";
   const isRoutingInput =
-    mode === "add_routing_pattern" ||
-    mode === "add_routing_chain" ||
-    mode === "pick_routing_scope";
+    mode === "add_routing_pattern" || mode === "add_routing_chain" || mode === "pick_routing_scope";
 
   // ── Layout math ───────────────────────────────────────────────────────────
   // header(1) + tab-bar(3) + content(flex) + detail(fixed) + footer(1)

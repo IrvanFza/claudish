@@ -1,8 +1,8 @@
-/** @jsxImportSource @opentui/react */
-import { A, C } from "../theme.js";
-import { DETAIL_H } from "../constants.js";
 import { loadLocalConfig } from "../../profile-config.js";
 import type { ClaudishProfileConfig, ModelMapping } from "../../profile-config.js";
+import { DETAIL_H } from "../constants.js";
+/** @jsxImportSource @opentui/react */
+import { A, C } from "../theme.js";
 
 interface ProfileDetailProps {
   config: ClaudishProfileConfig;
@@ -12,9 +12,7 @@ interface ProfileDetailProps {
 export function ProfileDetail({ config, profileIndex }: ProfileDetailProps) {
   const globalCfg = config;
   const localCfg = loadLocalConfig();
-  const localProfileNames = localCfg
-    ? new Set(Object.keys(localCfg.profiles))
-    : new Set<string>();
+  const localProfileNames = localCfg ? new Set(Object.keys(localCfg.profiles)) : new Set<string>();
 
   // Resolve selected profile entry
   const allEntries: Array<{
@@ -55,7 +53,7 @@ export function ProfileDetail({ config, profileIndex }: ProfileDetailProps) {
             return (
               <text key={role}>
                 <span fg={C.blue} attributes={A.bold}>
-                  {label + ": "}
+                  {`${label}: `}
                 </span>
                 {isAuto ? (
                   <>
@@ -75,8 +73,8 @@ export function ProfileDetail({ config, profileIndex }: ProfileDetailProps) {
             </span>
             <span fg={entry.scope === "local" ? C.cyan : C.fgMuted}>
               {entry.scope === "local"
-                ? `local (.claudish.json)`
-                : `global (~/.claudish/config.json)`}
+                ? "local (.claudish.json)"
+                : "global (~/.claudish/config.json)"}
             </span>
             {isActive && (
               <span fg={C.orange} attributes={A.bold}>

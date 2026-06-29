@@ -11,16 +11,8 @@
  * belong in integration tests.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  existsSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { VoteResult } from "./team-orchestrator.js";
@@ -290,8 +282,12 @@ describe("team-orchestrator", () => {
     it("TEST-20: rejects claude-* model IDs", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["claude-sonnet-4-6"], "task")).toThrow(/claude-sonnet-4-6/i);
-      expect(() => setupSession(tempDir, ["claude-3-opus-20240229"], "task")).toThrow(/claude-3-opus/i);
+      expect(() => setupSession(tempDir, ["claude-sonnet-4-6"], "task")).toThrow(
+        /claude-sonnet-4-6/i
+      );
+      expect(() => setupSession(tempDir, ["claude-3-opus-20240229"], "task")).toThrow(
+        /claude-3-opus/i
+      );
     });
 
     it("TEST-21: rejects sentinels case-insensitively", async () => {
@@ -304,14 +300,20 @@ describe("team-orchestrator", () => {
     it("TEST-22: rejects mixed arrays containing sentinels alongside valid models", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["gemini-2.0-flash", "internal", "gpt-4o"], "task")).toThrow(/internal/i);
+      expect(() =>
+        setupSession(tempDir, ["gemini-2.0-flash", "internal", "gpt-4o"], "task")
+      ).toThrow(/internal/i);
     });
 
     it("TEST-23: accepts valid external model names", async () => {
       const { setupSession } = await getOrchestrator();
 
       // These should NOT throw
-      const manifest = setupSession(tempDir, ["gemini-2.0-flash", "gpt-4o", "or@deepseek/deepseek-r1"], "task");
+      const manifest = setupSession(
+        tempDir,
+        ["gemini-2.0-flash", "gpt-4o", "or@deepseek/deepseek-r1"],
+        "task"
+      );
       expect(manifest).toBeDefined();
       expect(Object.keys(manifest.models)).toHaveLength(3);
     });
@@ -735,9 +737,9 @@ describe("parseJudgeVotes", () => {
   function makeVoteBlock(
     responseId: string,
     verdict: string,
-    confidence: string = "8",
-    summary: string = "Looks good",
-    keyIssues: string = "None"
+    confidence = "8",
+    summary = "Looks good",
+    keyIssues = "None"
   ): string {
     return `\`\`\`vote\nRESPONSE: ${responseId}\nVERDICT: ${verdict}\nCONFIDENCE: ${confidence}\nSUMMARY: ${summary}\nKEY_ISSUES: ${keyIssues}\n\`\`\``;
   }

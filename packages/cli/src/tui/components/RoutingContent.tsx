@@ -1,11 +1,11 @@
+import type { ScrollBoxRenderable } from "@opentui/core";
 /** @jsxImportSource @opentui/react */
 import { useEffect, useRef } from "react";
-import type { ScrollBoxRenderable } from "@opentui/core";
-import { A, C } from "../theme.js";
-import { DETAIL_H, CHAIN_PROVIDERS } from "../constants.js";
-import { DEFAULT_ROUTING_RULES } from "../../providers/default-routing-rules.js";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
+import { DEFAULT_ROUTING_RULES } from "../../providers/default-routing-rules.js";
+import { CHAIN_PROVIDERS, DETAIL_H } from "../constants.js";
 import { providerIsReady } from "../providers.js";
+import { A, C } from "../theme.js";
 import type { MergedRule, Mode, ProbeEntry, ProbeMode } from "../types.js";
 
 // Format a chain as inline text: "kimi → openrouter"
@@ -100,6 +100,7 @@ export function RoutingContent({
     }
   }, [providerIndex, mergedRules.length]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `mode` deliberately re-triggers scroll-into-view on mode change
   useEffect(() => {
     const sb = chainScrollRef.current;
     if (!sb) return;
@@ -318,7 +319,6 @@ export function RoutingContent({
     );
   }
 
-
   return (
     <box
       height={contentH}
@@ -354,9 +354,7 @@ export function RoutingContent({
           const hasOverride = !!(override && override.length > 0);
           const overridesBuiltIn = hasOverride && override !== builtIn;
           return overridesBuiltIn ? (
-            <span fg={C.fgMuted}>
-              {`  (defaultProvider — overrides built-in '${builtIn}')`}
-            </span>
+            <span fg={C.fgMuted}>{`  (defaultProvider — overrides built-in '${builtIn}')`}</span>
           ) : (
             <span fg={C.fgMuted}>{"  (built-in)"}</span>
           );
@@ -375,7 +373,9 @@ export function RoutingContent({
           them inline. The scope picker shown by `a`/`e` is its own
           explainer, so we only need a discoverability nudge here. */}
       <text height={1}>
-        <span fg={C.blue} attributes={A.bold}>{" Rules"}</span>
+        <span fg={C.blue} attributes={A.bold}>
+          {" Rules"}
+        </span>
         {!isRoutingInput && (
           <>
             <span fg={C.dim}>{"   "}</span>
@@ -383,9 +383,13 @@ export function RoutingContent({
             <span fg={C.dim}>{" / "}</span>
             <span fg={C.cyan}>{"project"}</span>
             <span fg={C.dim}>{" scope chosen on "}</span>
-            <span fg={C.green} attributes={A.bold}>{"a"}</span>
+            <span fg={C.green} attributes={A.bold}>
+              {"a"}
+            </span>
             <span fg={C.dim}>{" or "}</span>
-            <span fg={C.green} attributes={A.bold}>{"e"}</span>
+            <span fg={C.green} attributes={A.bold}>
+              {"e"}
+            </span>
           </>
         )}
       </text>
@@ -401,10 +405,18 @@ export function RoutingContent({
       {mergedRules.length > 0 && !isRoutingInput && (
         <>
           <text height={1}>
-            <span fg={C.blue} attributes={A.bold}>{"  "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"PATTERN         "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"SCOPE     "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"CHAIN"}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"  "}
+            </span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"PATTERN         "}
+            </span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"SCOPE     "}
+            </span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"CHAIN"}
+            </span>
           </text>
           {/* Native OpenTUI scrollbox. Unfocused: cursor navigation stays in
               App.tsx's useKeyboard handler; we sync scroll position via the
@@ -488,21 +500,25 @@ export function RoutingContent({
       {mode === "pick_routing_scope" && (
         <box flexDirection="column" paddingTop={1} paddingX={1} style={{ flexGrow: 1 }}>
           <text height={1}>
-            <span fg={C.blue} attributes={A.bold}>{"Scope for "}</span>
-            <span fg={C.white} attributes={A.bold}>{routingPattern}</span>
-            <span fg={C.blue} attributes={A.bold}>{":"}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"Scope for "}
+            </span>
+            <span fg={C.white} attributes={A.bold}>
+              {routingPattern}
+            </span>
+            <span fg={C.blue} attributes={A.bold}>
+              {":"}
+            </span>
           </text>
           <text height={1}>
-            <span fg={C.fgMuted}>
-              {"  Choose where to save this rule. Project rules live in "}
-            </span>
+            <span fg={C.fgMuted}>{"  Choose where to save this rule. Project rules live in "}</span>
             <span fg={C.cyan}>{".claudish.json"}</span>
             <span fg={C.fgMuted}>{" and only apply when"}</span>
           </text>
           <text height={1}>
             <span fg={C.fgMuted}>{"  running claudish from inside this project."}</span>
           </text>
-          <text height={1}>{" "}</text>
+          <text height={1}> </text>
           {/* Menu rows with cursor highlight. Same pattern as
               add_routing_chain's CHAIN_PROVIDERS rows: backgroundColor on
               the cursor row, bold on selected text. */}
@@ -511,11 +527,11 @@ export function RoutingContent({
               <span fg={routingScopeCursor === 0 ? C.green : C.fgMuted} attributes={A.bold}>
                 {routingScopeCursor === 0 ? " ▸ " : "   "}
               </span>
-              <span fg={C.green} attributes={A.boldIf(routingScopeCursor === 0)}>{"global   "}</span>
+              <span fg={C.green} attributes={A.boldIf(routingScopeCursor === 0)}>
+                {"global   "}
+              </span>
               <span fg={C.fgMuted}>{"~/.claudish/config.json"}</span>
-              {editingExistingScope === "global" && (
-                <span fg={C.dim}>{"   (current)"}</span>
-              )}
+              {editingExistingScope === "global" && <span fg={C.dim}>{"   (current)"}</span>}
             </text>
           </box>
           <box height={1} backgroundColor={routingScopeCursor === 1 ? C.bgHighlight : C.bg}>
@@ -523,21 +539,27 @@ export function RoutingContent({
               <span fg={routingScopeCursor === 1 ? C.cyan : C.fgMuted} attributes={A.bold}>
                 {routingScopeCursor === 1 ? " ▸ " : "   "}
               </span>
-              <span fg={C.cyan} attributes={A.boldIf(routingScopeCursor === 1)}>{"project  "}</span>
+              <span fg={C.cyan} attributes={A.boldIf(routingScopeCursor === 1)}>
+                {"project  "}
+              </span>
               <span fg={C.fgMuted}>{".claudish.json (walks up to git root)"}</span>
-              {editingExistingScope === "project" && (
-                <span fg={C.dim}>{"   (current)"}</span>
-              )}
+              {editingExistingScope === "project" && <span fg={C.dim}>{"   (current)"}</span>}
             </text>
           </box>
-          <text height={1}>{" "}</text>
+          <text height={1}> </text>
           <text height={1}>
             <span fg={C.dim}>{"  "}</span>
-            <span fg={C.blue} attributes={A.bold}>{"↑↓"}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"↑↓"}
+            </span>
             <span fg={C.dim}>{" navigate · "}</span>
-            <span fg={C.green} attributes={A.bold}>{"Enter"}</span>
+            <span fg={C.green} attributes={A.bold}>
+              {"Enter"}
+            </span>
             <span fg={C.dim}>{" select · "}</span>
-            <span fg={C.red} attributes={A.bold}>{"Esc"}</span>
+            <span fg={C.red} attributes={A.bold}>
+              {"Esc"}
+            </span>
             <span fg={C.dim}>{" cancel"}</span>
           </text>
         </box>
@@ -612,7 +634,10 @@ export function RoutingContent({
                     ) : (
                       <span fg={C.dim}>{" [ ] "}</span>
                     )}
-                    <span fg={isCursor ? C.white : ready ? C.fgMuted : C.dim} attributes={A.boldIf(isCursor)}>
+                    <span
+                      fg={isCursor ? C.white : ready ? C.fgMuted : C.dim}
+                      attributes={A.boldIf(isCursor)}
+                    >
                       {label}
                     </span>
                     {ready ? (

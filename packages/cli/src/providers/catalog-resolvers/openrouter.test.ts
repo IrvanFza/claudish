@@ -4,7 +4,7 @@
  * Run: bun test packages/cli/src/providers/catalog-resolvers/openrouter.test.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 // We need to test the resolver's resolveSync logic with controlled cache state.
 // The resolver uses module-level _memCache, so we import the class and inject test data.
@@ -82,9 +82,7 @@ describe("OpenRouterCatalogResolver.resolveSync", () => {
   });
 
   test("exact modelId for gemini → returns OpenRouter externalId", () => {
-    expect(resolver.resolveSync("gemini-3.1-pro-preview")).toBe(
-      "google/gemini-3.1-pro-preview"
-    );
+    expect(resolver.resolveSync("gemini-3.1-pro-preview")).toBe("google/gemini-3.1-pro-preview");
   });
 
   // Step 2: Alias match
@@ -116,9 +114,7 @@ describe("OpenRouterCatalogResolver.resolveSync", () => {
 
   // Model without OpenRouter source falls back to any vendor-prefixed externalId
   test("model without openrouter-api source → uses first vendor-prefixed externalId", () => {
-    expect(resolver.resolveSync("some-direct-only-model")).toBe(
-      "vendor/some-direct-only-model"
-    );
+    expect(resolver.resolveSync("some-direct-only-model")).toBe("vendor/some-direct-only-model");
   });
 
   // Step 5: Passthrough (null) — cold-start handled by proxy-server + launcher warm
@@ -250,9 +246,7 @@ describe("OpenRouterCatalogResolver.refreshCatalog", () => {
   });
 
   test("success → isCacheWarm returns true after refresh", async () => {
-    const fakeModels = [
-      entry("delta", [], { "openrouter-api": { externalId: "vendor-d/delta" } }),
-    ];
+    const fakeModels = [entry("delta", [], { "openrouter-api": { externalId: "vendor-d/delta" } })];
     globalThis.fetch = mock(async () =>
       jsonResponse({ models: fakeModels, total: 1 })
     ) as unknown as typeof globalThis.fetch;

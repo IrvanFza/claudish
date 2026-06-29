@@ -1,6 +1,6 @@
+import { TABS_H } from "../constants.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
-import { TABS_H } from "../constants.js";
 import type { Tab } from "../types.js";
 
 interface TabBarProps {

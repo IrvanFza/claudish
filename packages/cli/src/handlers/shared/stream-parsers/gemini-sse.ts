@@ -8,8 +8,8 @@
 
 import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
-import type { MiddlewareManager } from "../../../middleware/manager.js";
 import { log } from "../../../logger.js";
+import type { MiddlewareManager } from "../../../middleware/manager.js";
 
 export interface GeminiSseOptions {
   modelName: string;
@@ -23,7 +23,7 @@ export interface GeminiSseOptions {
 }
 
 export function createGeminiSseStream(
-  c: Context,
+  _c: Context,
   response: Response,
   opts: GeminiSseOptions
 ): Response {

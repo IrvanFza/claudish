@@ -62,7 +62,7 @@ export class ProcessManager {
             fs.unlinkSync(this.pidFilePath);
           } catch (unlinkErr) {
             // File might already be deleted by cleanupZombies
-            if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+            if ((unlinkErr as NodeJS.ErrnoException).code !== "ENOENT") {
               throw unlinkErr;
             }
           }

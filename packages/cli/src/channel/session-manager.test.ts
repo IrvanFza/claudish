@@ -17,14 +17,14 @@
  * recognise.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { SessionManager } from "./session-manager.js";
-import type { SessionManagerOptions, ChannelEvent } from "./types.js";
+import type { ChannelEvent, SessionManagerOptions } from "./types.js";
 
 // ─── Setup: PATH shim ────────────────────────────────────────────────────────
 

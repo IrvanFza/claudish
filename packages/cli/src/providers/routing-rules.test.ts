@@ -8,23 +8,23 @@
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
 
-import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { __resetSniffForTests } from "../auth/credentials/op-source.js";
+import type { RoutingRules } from "../profile-config.js";
+import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
+import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
+import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import {
-  matchRoutingRule,
   buildRoutingChain,
   loadRoutingRules,
+  matchRoutingRule,
   mergeRoutingRules,
   route,
 } from "./routing-rules.js";
-import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
-import { PROVIDER_SHORTCUTS } from "./model-parser.js";
-import { PROVIDER_TO_PREFIX, DISPLAY_NAMES } from "./auto-route.js";
-import type { RoutingRules } from "../profile-config.js";
-import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 
 // ---------------------------------------------------------------------------
 // matchRoutingRule — pattern matching
@@ -192,7 +192,7 @@ describe("buildRoutingChain", () => {
     expect(route.provider).toBe("minimax");
     // PROVIDER_TO_PREFIX["minimax"] = "mm"
     expect(route.modelSpec).toBe("mm@minimax-m2.5");
-    expect(route.displayName).toBe(DISPLAY_NAMES["minimax"] ?? "minimax");
+    expect(route.displayName).toBe(DISPLAY_NAMES.minimax ?? "minimax");
   });
 
   test("plain provider shortcut 'mm' resolves to canonical 'minimax'", () => {
@@ -626,22 +626,22 @@ describe("route() with defaultProvider", () => {
 
 describe("import consistency", () => {
   test("PROVIDER_SHORTCUTS maps 'mm' to 'minimax'", () => {
-    expect(PROVIDER_SHORTCUTS["mm"]).toBe("minimax");
+    expect(PROVIDER_SHORTCUTS.mm).toBe("minimax");
   });
 
   test("PROVIDER_SHORTCUTS maps 'kimi' to 'kimi'", () => {
-    expect(PROVIDER_SHORTCUTS["kimi"]).toBe("kimi");
+    expect(PROVIDER_SHORTCUTS.kimi).toBe("kimi");
   });
 
   test("PROVIDER_TO_PREFIX maps 'minimax' to 'mm'", () => {
-    expect(PROVIDER_TO_PREFIX["minimax"]).toBe("mm");
+    expect(PROVIDER_TO_PREFIX.minimax).toBe("mm");
   });
 
   test("PROVIDER_TO_PREFIX maps 'google' to 'g'", () => {
-    expect(PROVIDER_TO_PREFIX["google"]).toBe("g");
+    expect(PROVIDER_TO_PREFIX.google).toBe("g");
   });
 
   test("DISPLAY_NAMES maps 'openrouter' to 'OpenRouter'", () => {
-    expect(DISPLAY_NAMES["openrouter"]).toBe("OpenRouter");
+    expect(DISPLAY_NAMES.openrouter).toBe("OpenRouter");
   });
 });

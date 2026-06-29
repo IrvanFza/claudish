@@ -6,13 +6,13 @@
  * - Maps thinking → enable_thinking + thinking_budget params
  */
 
+import { log } from "../logger.js";
 import {
+  type AdapterResult,
   BaseAPIFormat,
-  AdapterResult,
   type EffortLevel,
   matchesModelFamily,
 } from "./base-api-format.js";
-import { log } from "../logger.js";
 
 // Qwen special tokens that should be stripped from output
 const QWEN_SPECIAL_TOKENS = [
@@ -24,7 +24,7 @@ const QWEN_SPECIAL_TOKENS = [
 ];
 
 export class QwenModelDialect extends BaseAPIFormat {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // Strip Qwen special tokens that may leak through
     // This can happen when the model gets confused and outputs its chat template
     let cleanedText = textContent;

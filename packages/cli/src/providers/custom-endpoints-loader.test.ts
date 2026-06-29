@@ -2,22 +2,17 @@
  * Tests for custom-endpoints-loader.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ClaudishProfileConfig } from "../profile-config.js";
-import {
-  loadCustomEndpoints,
-  resolveCustomEndpointApiKey,
-} from "./custom-endpoints-loader.js";
+import { loadCustomEndpoints, resolveCustomEndpointApiKey } from "./custom-endpoints-loader.js";
 import {
   clearRuntimeRegistry,
-  getRuntimeProviders,
   getRuntimeProfiles,
+  getRuntimeProviders,
 } from "./runtime-providers.js";
 
 // Minimal ClaudishProfileConfig stub — only the fields the loader reads.
-function makeConfig(
-  customEndpoints?: Record<string, unknown>
-): ClaudishProfileConfig {
+function makeConfig(customEndpoints?: Record<string, unknown>): ClaudishProfileConfig {
   return {
     version: "1.0.0",
     defaultProfile: "default",

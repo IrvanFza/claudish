@@ -1,6 +1,6 @@
+import { DETAIL_H } from "../constants.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
-import { DETAIL_H } from "../constants.js";
 import type { OpEntry, OpTestResultsMap } from "../types.js";
 
 /**
@@ -137,9 +137,7 @@ export function OnepasswordDetail({ selectedEntry, testResults }: OnepasswordDet
               <span fg={C.red} attributes={A.bold}>
                 {"✗ failed"}
               </span>
-              {tr.error && (
-                <span fg={C.red}>{`  ${tr.error.replace(/\s+/g, " ").trim()}`}</span>
-              )}
+              {tr.error && <span fg={C.red}>{`  ${tr.error.replace(/\s+/g, " ").trim()}`}</span>}
             </>
           )}
         </text>

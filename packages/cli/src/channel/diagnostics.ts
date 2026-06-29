@@ -108,13 +108,9 @@ export function installWireTap(): void {
   wireTapInstalled = true;
 
   const originalWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((
-    chunk: string | Uint8Array,
-    ...rest: unknown[]
-  ): boolean => {
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
     try {
-      const text =
-        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
+      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
       if (text.includes('"notifications/claude/channel"')) {
         emit(`WIRE-OUT ${text.trim()}`);
       }

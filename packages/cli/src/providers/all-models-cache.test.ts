@@ -6,15 +6,15 @@
  * Run: bun test packages/cli/src/providers/all-models-cache.test.ts
  */
 
-import { describe, test, expect, afterEach } from "bun:test";
-import { writeFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  readAllModelsCache,
-  writeAllModelsCache,
   type DiskCacheV2,
   type SlimModelEntry,
+  readAllModelsCache,
+  writeAllModelsCache,
 } from "./all-models-cache.js";
 
 /**
@@ -68,10 +68,7 @@ describe("all-models-cache helpers", () => {
     expect(result!.version).toBe(2);
     expect(result!.lastUpdated).toBe("2026-01-01T00:00:00.000Z");
     expect(result!.entries).toEqual([]);
-    expect(result!.models).toEqual([
-      { id: "openai/gpt-4" },
-      { id: "anthropic/claude-3" },
-    ]);
+    expect(result!.models).toEqual([{ id: "openai/gpt-4" }, { id: "anthropic/claude-3" }]);
   });
 
   test("reads v2 file unchanged", () => {

@@ -243,7 +243,7 @@ export class LocalModelQueue {
             if (this.isOOMError(retryErrorBody)) {
               // OOM persisted after retry - fail with helpful message
               throw new Error(
-                `GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing.`
+                "GPU out-of-memory error persisted after retry. Try setting CLAUDISH_LOCAL_MAX_PARALLEL=1 for sequential processing."
               );
             }
           }

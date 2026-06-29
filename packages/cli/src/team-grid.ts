@@ -1,33 +1,29 @@
 import { spawn } from "node:child_process";
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
-import { connect as netConnect, type Socket } from "node:net";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { type Socket, connect as netConnect } from "node:net";
+import { dirname, join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
-import {
-  setupSession,
-  type TeamManifest,
-  type TeamStatus,
-  type ModelStatus,
-} from "./team-orchestrator.js";
+import { fileURLToPath } from "node:url";
+import { loadConfig, loadLocalConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
-  matchRoutingRule,
   buildRoutingChain,
   loadRoutingRules,
+  matchRoutingRule,
 } from "./providers/routing-rules.js";
-import { loadConfig, loadLocalConfig } from "./profile-config.js";
+import {
+  type ModelStatus,
+  type TeamManifest,
+  type TeamStatus,
+  setupSession,
+} from "./team-orchestrator.js";
 
 // ─── Routing Resolution ──────────────────────────────────────────────────────
 
 interface RouteInfo {
-  chain: string[];       // e.g. ["LiteLLM", "OpenRouter"]
-  source: string;        // "direct", "project routing", "user routing", "auto"
+  chain: string[]; // e.g. ["LiteLLM", "OpenRouter"]
+  source: string; // "direct", "project routing", "user routing", "auto"
   sourceDetail?: string; // matched pattern for custom rules
 }
 
@@ -49,7 +45,9 @@ function resolveRouteInfo(modelId: string): RouteInfo {
         if (k === parsed.model) return true;
         if (k.includes("*")) {
           const star = k.indexOf("*");
-          return parsed.model.startsWith(k.slice(0, star)) && parsed.model.endsWith(k.slice(star + 1));
+          return (
+            parsed.model.startsWith(k.slice(0, star)) && parsed.model.endsWith(k.slice(star + 1))
+          );
         }
         return false;
       });
@@ -71,7 +69,9 @@ function resolveRouteInfo(modelId: string): RouteInfo {
         if (k === parsed.model) return true;
         if (k.includes("*")) {
           const star = k.indexOf("*");
-          return parsed.model.startsWith(k.slice(0, star)) && parsed.model.endsWith(k.slice(star + 1));
+          return (
+            parsed.model.startsWith(k.slice(0, star)) && parsed.model.endsWith(k.slice(star + 1))
+          );
         }
         return false;
       });
@@ -116,12 +116,12 @@ function resolveRouteInfo(modelId: string): RouteInfo {
 // Palette for model name backgrounds. Index is passed around between panes
 // via pickBannerColor() so visually-adjacent panes never share a color.
 const BANNER_BG_COLORS = [
-  "48;2;40;90;180",   // blue
-  "48;2;140;60;160",  // purple
-  "48;2;30;130;100",  // teal
-  "48;2;160;80;40",   // orange
-  "48;2;60;120;60",   // green
-  "48;2;160;50;70",   // red
+  "48;2;40;90;180", // blue
+  "48;2;140;60;160", // purple
+  "48;2;30;130;100", // teal
+  "48;2;160;80;40", // orange
+  "48;2;60;120;60", // green
+  "48;2;160;50;70", // red
 ];
 
 // Deterministic-first color assignment with collision avoidance.
@@ -149,9 +149,7 @@ function buildPaneHeader(model: string, prompt: string, bg: string): string {
 
   // Route chain string: "LiteLLM → OpenRouter"
   const chainStr = route.chain.join(" → ");
-  const sourceLabel = route.sourceDetail
-    ? `${route.source}: ${route.sourceDetail}`
-    : route.source;
+  const sourceLabel = route.sourceDetail ? `${route.source}: ${route.sourceDetail}` : route.source;
 
   const lines: string[] = [];
 
@@ -207,7 +205,9 @@ function findMagmuxBinary(): string {
       if (parent === searchDir) break;
       searchDir = parent;
     }
-  } catch { /* not installed */ }
+  } catch {
+    /* not installed */
+  }
 
   // 3. magmux in PATH
   try {
@@ -217,9 +217,7 @@ function findMagmuxBinary(): string {
     /* not in PATH */
   }
 
-  throw new Error(
-    "magmux not found. Install it:\n  brew install MadAppGang/tap/magmux"
-  );
+  throw new Error("magmux not found. Install it:\n  brew install MadAppGang/tap/magmux");
 }
 
 // ─── Magmux Event Protocol ───────────────────────────────────────────────────
@@ -238,7 +236,7 @@ function findMagmuxBinary(): string {
 
 interface PaneResult {
   pane: number;
-  state: string;       // "completed" | "failed" | "awaiting_input" | "running"
+  state: string; // "completed" | "failed" | "awaiting_input" | "running"
   exitCode: number;
   dead: boolean;
   controller?: string;
@@ -441,7 +439,7 @@ export async function runWithGrid(
     const header = buildPaneHeader(model, rawPrompt, bg);
     return `${header} claudish --model ${model} -y --quiet '${prompt}'`;
   });
-  writeFileSync(gridfilePath, gridLines.join("\n") + "\n", "utf-8");
+  writeFileSync(gridfilePath, `${gridLines.join("\n")}\n`, "utf-8");
 
   // 3. Spawn magmux with grid mode.
   const magmuxPath = findMagmuxBinary();

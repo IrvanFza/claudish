@@ -9,10 +9,10 @@
  */
 
 import { select } from "@inquirer/prompts";
-import { hasOAuthCredentials } from "./oauth-registry.js";
+import { CodexOAuth } from "./codex-oauth.js";
 import { GeminiOAuth } from "./gemini-oauth.js";
 import { KimiOAuth } from "./kimi-oauth.js";
-import { CodexOAuth } from "./codex-oauth.js";
+import { hasOAuthCredentials } from "./oauth-registry.js";
 
 interface OAuthInstance {
   login(): Promise<void>;

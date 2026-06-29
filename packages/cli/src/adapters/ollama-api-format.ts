@@ -8,14 +8,10 @@
  * - No tool schema support
  */
 
-import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 
 export class OllamaAPIFormat extends BaseAPIFormat {
-  constructor(modelId: string) {
-    super(modelId);
-  }
-
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,

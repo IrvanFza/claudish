@@ -11,16 +11,16 @@
  * Used with GeminiProviderTransport (direct API) and GeminiCodeAssistProviderTransport (OAuth).
  */
 
-import {
-  BaseAPIFormat,
-  type AdapterResult,
-  type EffortLevel,
-  matchesModelFamily,
-} from "./base-api-format.js";
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";
 import { filterIdentity } from "../handlers/shared/openai-compat.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import {
+  type AdapterResult,
+  BaseAPIFormat,
+  type EffortLevel,
+  matchesModelFamily,
+} from "./base-api-format.js";
 
 /**
  * Patterns that indicate internal reasoning/monologue that should be filtered.
@@ -77,10 +77,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   /** Reasoning filter state */
   private inReasoningBlock = false;
   private reasoningBlockDepth = 0;
-
-  constructor(modelId: string) {
-    super(modelId);
-  }
 
   // ─── Message Conversion (Claude → Gemini parts) ─────────────────
 
@@ -161,7 +157,10 @@ export class GeminiAPIFormat extends BaseAPIFormat {
               functionResponse: {
                 name: toolInfo.name,
                 response: {
-                  content: typeof block.content === "string" ? block.content : JSON.stringify(block.content),
+                  content:
+                    typeof block.content === "string"
+                      ? block.content
+                      : JSON.stringify(block.content),
                 },
               },
             });

@@ -1,21 +1,21 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import {
-  writeFileSync,
-  unlinkSync,
-  mkdirSync,
-  existsSync,
-  readFileSync,
-  openSync,
   closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { isatty } from "node:tty";
-import { tmpdir, homedir } from "node:os";
-import { join, basename } from "node:path";
 import { ENV } from "./config.js";
-import type { ClaudishConfig } from "./types.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
+import type { ClaudishConfig } from "./types.js";
 
 /**
  * Check if any resolved model mapping targets a native Anthropic model (claude-*).
@@ -156,7 +156,7 @@ process.stdin.on('end', () => {
  * file watcher trying to watch socket files in /tmp (which causes UNKNOWN errors)
  */
 function createTempSettingsFile(
-  modelDisplay: string,
+  _modelDisplay: string,
   port: string
 ): { path: string; statusLine: { type: string; command: string; padding: number } } {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
@@ -300,7 +300,7 @@ export async function runClaudeWithProxy(
   const port = portMatch ? portMatch[1] : "unknown";
 
   // Create temporary settings file with custom status line for this instance
-  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(modelId, port);
+  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(modelId ?? "default", port);
 
   // Merge user's --settings into our temp settings file if user provided one
   mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine);
@@ -477,8 +477,7 @@ export async function runClaudeWithProxy(
   // interactive run (logs go to stderr), so abandoning the piped fd 1 for the
   // child loses nothing. Any failure falls back to plain "inherit".
   let ttyFd: number | undefined;
-  const childWantsTty =
-    config.interactive && !process.stdout.isTTY && Boolean(process.stdin.isTTY);
+  const childWantsTty = config.interactive && !process.stdout.isTTY && Boolean(process.stdin.isTTY);
   if (childWantsTty) {
     try {
       const fd = openSync("/dev/fd/0", "r+");

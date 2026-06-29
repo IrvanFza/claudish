@@ -9,18 +9,15 @@
  * Adding a new provider = one entry in QUOTA_ADAPTERS.
  */
 
-import { hasOAuthCredentials } from "./oauth-registry.js";
+import { getModelByIdFromFirebase, getRecommendedModels } from "../model-loader.js";
 import {
-  getValidAccessToken,
-  setupGeminiUser,
-  retrieveUserQuota,
-  getGeminiTierFullName,
   CODE_ASSIST_FALLBACK_CHAIN,
+  getGeminiTierFullName,
+  getValidAccessToken,
+  retrieveUserQuota,
+  setupGeminiUser,
 } from "./gemini-oauth.js";
-import {
-  getRecommendedModels,
-  getModelByIdFromFirebase,
-} from "../model-loader.js";
+import { hasOAuthCredentials } from "./oauth-registry.js";
 
 // ANSI
 const R = "\x1b[0m";
@@ -120,24 +117,36 @@ async function geminiQuotaHandler(): Promise<void> {
     // Header box
     console.log("");
     console.log(`  ${CYN}\u256d${"\u2500".repeat(W)}\u256e${R}`);
-    console.log(`  ${CYN}\u2502${R} ${B}${WHT}Gemini Code Assist Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`);
+    console.log(
+      `  ${CYN}\u2502${R} ${B}${WHT}Gemini Code Assist Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`
+    );
     console.log(`  ${CYN}\u251c${"\u2500".repeat(W)}\u2524${R}`);
-    console.log(`  ${CYN}\u2502${R} ${GRY}Tier${R}     ${WHT}${tierName}${R}${" ".repeat(Math.max(0, W - 10 - tierName.length))}${CYN}\u2502${R}`);
-    console.log(`  ${CYN}\u2502${R} ${GRY}Project${R}  ${WHT}${projectId}${R}${" ".repeat(Math.max(0, W - 10 - projectId.length))}${CYN}\u2502${R}`);
+    console.log(
+      `  ${CYN}\u2502${R} ${GRY}Tier${R}     ${WHT}${tierName}${R}${" ".repeat(Math.max(0, W - 10 - tierName.length))}${CYN}\u2502${R}`
+    );
+    console.log(
+      `  ${CYN}\u2502${R} ${GRY}Project${R}  ${WHT}${projectId}${R}${" ".repeat(Math.max(0, W - 10 - projectId.length))}${CYN}\u2502${R}`
+    );
     console.log(`  ${CYN}\u2570${"\u2500".repeat(W)}\u256f${R}`);
 
     const groups = groupByVersion(quota.buckets);
 
     // Overall summary
-    const allBuckets = quota.buckets.filter((b: QuotaBucket) => typeof b.remainingFraction === "number");
-    const avgRemaining = allBuckets.length > 0
-      ? allBuckets.reduce((sum: number, b: QuotaBucket) => sum + (b.remainingFraction ?? 0), 0) / allBuckets.length
-      : 1;
+    const allBuckets = quota.buckets.filter(
+      (b: QuotaBucket) => typeof b.remainingFraction === "number"
+    );
+    const avgRemaining =
+      allBuckets.length > 0
+        ? allBuckets.reduce((sum: number, b: QuotaBucket) => sum + (b.remainingFraction ?? 0), 0) /
+          allBuckets.length
+        : 1;
     const avgUsed = 1 - avgRemaining;
     const summaryColor = avgUsed < 0.5 ? GRN : avgUsed < 0.8 ? YEL : RED;
 
     console.log("");
-    console.log(`  ${summaryColor}${B}${(avgUsed * 100).toFixed(1)}%${R} ${D}overall usage across ${allBuckets.length} models${R}`);
+    console.log(
+      `  ${summaryColor}${B}${(avgUsed * 100).toFixed(1)}%${R} ${D}overall usage across ${allBuckets.length} models${R}`
+    );
     console.log("");
 
     // Build a map of modelId -> remaining for fallback chain display
@@ -153,18 +162,22 @@ async function geminiQuotaHandler(): Promise<void> {
 
       for (const bucket of group.buckets) {
         const model = bucket.modelId || "unknown";
-        const remaining = typeof bucket.remainingFraction === "number" ? bucket.remainingFraction : null;
+        const remaining =
+          typeof bucket.remainingFraction === "number" ? bucket.remainingFraction : null;
         const used = remaining !== null ? 1 - remaining : null;
         const reset = bucket.resetTime ? formatRelativeReset(bucket.resetTime) : "";
 
         const color = used === null ? GRY : used < 0.5 ? GRN : used < 0.8 ? YEL : RED;
-        const bar = remaining !== null ? buildUsageBar(used!, color, 24) : `${GRY}${"\u00b7".repeat(24)}${R}`;
+        const bar =
+          remaining !== null ? buildUsageBar(used!, color, 24) : `${GRY}${"\u00b7".repeat(24)}${R}`;
         const pct = used !== null ? `${(used * 100).toFixed(1)}%` : "?";
 
         const nameStr = `  ${GRY}\u2502${R} ${WHT}${model}${R}`;
         const padLen = Math.max(1, 30 - model.length);
 
-        console.log(`${nameStr}${" ".repeat(padLen)}${bar}  ${color}${pct.padStart(6)}${R}  ${GRY}${I}${reset}${R}`);
+        console.log(
+          `${nameStr}${" ".repeat(padLen)}${bar}  ${color}${pct.padStart(6)}${R}  ${GRY}${I}${reset}${R}`
+        );
       }
       console.log("");
     }
@@ -177,7 +190,7 @@ async function geminiQuotaHandler(): Promise<void> {
       const pct = rem !== undefined ? `${((1 - rem) * 100).toFixed(0)}%` : "?";
       const color = rem === undefined ? GRY : rem > 0.5 ? GRN : rem > 0.2 ? YEL : RED;
       const arrow = i < CODE_ASSIST_FALLBACK_CHAIN.length - 1 ? ` ${GRY}\u2192${R}` : "";
-      const marker = i === 0 ? `${CYN}\u25b8${R} ` : `  `;
+      const marker = i === 0 ? `${CYN}\u25b8${R} ` : "  ";
       console.log(`  ${marker}${WHT}${model}${R} ${color}${pct}${R}${arrow}`);
     }
     console.log("");
@@ -193,7 +206,11 @@ async function geminiQuotaHandler(): Promise<void> {
       const seen = new Set<string>();
       geminiExamples = recs.models
         .filter((e) => (e.provider ?? "").toLowerCase() === "google")
-        .filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)))
+        .filter((e) => {
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        })
         .slice(0, 2)
         .map((e) => e.id);
       if (geminiExamples.length === 0) {
@@ -209,7 +226,9 @@ async function geminiQuotaHandler(): Promise<void> {
     console.log("");
 
     // Legend
-    console.log(`  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`);
+    console.log(
+      `  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`
+    );
     console.log("");
   } catch (err: any) {
     console.error(`Failed to fetch quota: ${err.message}`);
@@ -244,7 +263,9 @@ async function codexQuotaHandler(): Promise<void> {
       const claims = JSON.parse(Buffer.from(payload, "base64").toString());
       email = claims?.["https://api.openai.com/profile"]?.email || "";
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // Resolve the probe model from Firebase so we don't hardcode a Codex model
   // ID that drifts. quotaCommand runs before the launcher catalog warm (R7 in
@@ -279,17 +300,27 @@ async function codexQuotaHandler(): Promise<void> {
   });
 
   const planType = resp.headers.get("x-codex-plan-type") || "unknown";
-  const primaryUsed = parseInt(resp.headers.get("x-codex-primary-used-percent") || "", 10);
-  const secondaryUsed = parseInt(resp.headers.get("x-codex-secondary-used-percent") || "", 10);
-  const primaryResetAt = parseInt(resp.headers.get("x-codex-primary-reset-at") || "0", 10);
-  const secondaryResetAt = parseInt(resp.headers.get("x-codex-secondary-reset-at") || "0", 10);
+  const primaryUsed = Number.parseInt(resp.headers.get("x-codex-primary-used-percent") || "", 10);
+  const secondaryUsed = Number.parseInt(
+    resp.headers.get("x-codex-secondary-used-percent") || "",
+    10
+  );
+  const primaryResetAt = Number.parseInt(resp.headers.get("x-codex-primary-reset-at") || "0", 10);
+  const secondaryResetAt = Number.parseInt(
+    resp.headers.get("x-codex-secondary-reset-at") || "0",
+    10
+  );
   const hasCredits = resp.headers.get("x-codex-credits-has-credits") === "True";
   const creditsBalance = resp.headers.get("x-codex-credits-balance") || "";
 
   // Consume body to avoid connection leak
-  try { await resp.text(); } catch { /* ignore */ }
+  try {
+    await resp.text();
+  } catch {
+    /* ignore */
+  }
 
-  if (isNaN(primaryUsed)) {
+  if (Number.isNaN(primaryUsed)) {
     console.error(`${RED}Could not fetch usage data.${R} Headers missing from response.`);
     process.exit(1);
   }
@@ -302,7 +333,9 @@ async function codexQuotaHandler(): Promise<void> {
       const cache = JSON.parse(readFileSync(modelsPath, "utf-8"));
       modelSlugs = (cache.models || []).map((m: any) => m.slug || m.id).filter(Boolean);
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const W = 58;
   const planLabel = planType.charAt(0).toUpperCase() + planType.slice(1);
@@ -310,12 +343,16 @@ async function codexQuotaHandler(): Promise<void> {
   // Header box (Gemini style)
   console.log("");
   console.log(`  ${CYN}\u256d${"\u2500".repeat(W)}\u256e${R}`);
-  console.log(`  ${CYN}\u2502${R} ${B}${WHT}Codex Subscription Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`);
+  console.log(
+    `  ${CYN}\u2502${R} ${B}${WHT}Codex Subscription Quota${R}${" ".repeat(W - 25)}${CYN}\u2502${R}`
+  );
   console.log(`  ${CYN}\u251c${"\u2500".repeat(W)}\u2524${R}`);
   const boxRow = (label: string, value: string) => {
     const paddedLabel = label.padEnd(9);
     const visLen = paddedLabel.length + value.length;
-    console.log(`  ${CYN}\u2502${R} ${GRY}${paddedLabel}${R}${WHT}${value}${R}${" ".repeat(Math.max(0, W - 1 - visLen))}${CYN}\u2502${R}`);
+    console.log(
+      `  ${CYN}\u2502${R} ${GRY}${paddedLabel}${R}${WHT}${value}${R}${" ".repeat(Math.max(0, W - 1 - visLen))}${CYN}\u2502${R}`
+    );
   };
   boxRow("Plan", planLabel);
   if (email) boxRow("Account", email);
@@ -333,14 +370,22 @@ async function codexQuotaHandler(): Promise<void> {
   // Usage bars
   const primaryColor = primaryUsed < 50 ? GRN : primaryUsed < 80 ? YEL : RED;
   const primaryBar = buildUsageBar(primaryUsed / 100, primaryColor, 24);
-  const primaryReset = primaryResetAt > 0 ? formatRelativeReset(new Date(primaryResetAt * 1000).toISOString()) : "";
+  const primaryReset =
+    primaryResetAt > 0 ? formatRelativeReset(new Date(primaryResetAt * 1000).toISOString()) : "";
 
   const secondaryColor = secondaryUsed < 50 ? GRN : secondaryUsed < 80 ? YEL : RED;
   const secondaryBar = buildUsageBar(secondaryUsed / 100, secondaryColor, 24);
-  const secondaryReset = secondaryResetAt > 0 ? formatRelativeReset(new Date(secondaryResetAt * 1000).toISOString()) : "";
+  const secondaryReset =
+    secondaryResetAt > 0
+      ? formatRelativeReset(new Date(secondaryResetAt * 1000).toISOString())
+      : "";
 
-  console.log(`  ${GRY}\u2502${R} ${WHT}${"5h window".padEnd(14)}${R}${primaryBar}  ${primaryColor}${String(primaryUsed).padStart(3)}%${R}  ${GRY}${I}${primaryReset}${R}`);
-  console.log(`  ${GRY}\u2502${R} ${WHT}${"Weekly".padEnd(14)}${R}${secondaryBar}  ${secondaryColor}${String(secondaryUsed).padStart(3)}%${R}  ${GRY}${I}${secondaryReset}${R}`);
+  console.log(
+    `  ${GRY}\u2502${R} ${WHT}${"5h window".padEnd(14)}${R}${primaryBar}  ${primaryColor}${String(primaryUsed).padStart(3)}%${R}  ${GRY}${I}${primaryReset}${R}`
+  );
+  console.log(
+    `  ${GRY}\u2502${R} ${WHT}${"Weekly".padEnd(14)}${R}${secondaryBar}  ${secondaryColor}${String(secondaryUsed).padStart(3)}%${R}  ${GRY}${I}${secondaryReset}${R}`
+  );
   console.log("");
 
   // Models
@@ -353,7 +398,9 @@ async function codexQuotaHandler(): Promise<void> {
   console.log("");
 
   // Legend + link
-  console.log(`  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`);
+  console.log(
+    `  ${GRN}\u2588${R}${GRY} <50%${R}   ${YEL}\u2588${R}${GRY} 50-80%${R}   ${RED}\u2588${R}${GRY} >80%${R}   ${D}\u2591 available${R}`
+  );
   console.log(`  ${D}https://chatgpt.com/codex/settings/usage${R}`);
   console.log("");
 }
@@ -410,9 +457,8 @@ function extractVersion(modelId: string): string | undefined {
 
 function buildUsageBar(usedFraction: number, color: string, width = 24): string {
   const clamped = Math.max(0, Math.min(1, usedFraction));
-  const usedCols = clamped >= 1
-    ? width
-    : Math.max(clamped > 0.005 ? 1 : 0, Math.round(clamped * width));
+  const usedCols =
+    clamped >= 1 ? width : Math.max(clamped > 0.005 ? 1 : 0, Math.round(clamped * width));
   const freeCols = width - usedCols;
   const usedPart = usedCols > 0 ? `${color}${"\u2588".repeat(usedCols)}${R}` : "";
   const freePart = freeCols > 0 ? `${D}${"\u2591".repeat(freeCols)}${R}` : "";

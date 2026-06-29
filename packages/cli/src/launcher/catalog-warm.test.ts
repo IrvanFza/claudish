@@ -9,10 +9,10 @@
  *   3. warmCatalogIfNeeded — dispatcher state machine (mocked resolver/cache).
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
-import type { ClaudishConfig } from "../types.js";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { DiskCacheV2 } from "../providers/all-models-cache.js";
 import type { RefreshOutcome } from "../providers/model-catalog-resolver.js";
+import type { ClaudishConfig } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Module mocks for dispatcher tests
@@ -58,11 +58,7 @@ mock.module("../providers/model-catalog-resolver.js", () => ({
 }));
 
 // Now import the module under test. The two mocks above are wired in.
-import {
-  shouldWarmCatalog,
-  classifyCatalogState,
-  warmCatalogIfNeeded,
-} from "./catalog-warm.js";
+import { classifyCatalogState, shouldWarmCatalog, warmCatalogIfNeeded } from "./catalog-warm.js";
 
 // ---------------------------------------------------------------------------
 // shouldWarmCatalog (pure)
@@ -94,9 +90,7 @@ describe("shouldWarmCatalog", () => {
   });
 
   test("--models-skip-update with model → false", () => {
-    expect(
-      shouldWarmCatalog({ model: "gpt-4o", skipModelsUpdate: true })
-    ).toBe(false);
+    expect(shouldWarmCatalog({ model: "gpt-4o", skipModelsUpdate: true })).toBe(false);
   });
 
   test("--models-skip-update without model → false", () => {
@@ -146,42 +140,28 @@ describe("classifyCatalogState", () => {
   });
 
   test("empty entries+models → missing", () => {
-    expect(
-      classifyCatalogState(diskCache({ entries: [], models: [] }), 24, NOW)
-    ).toBe("missing");
+    expect(classifyCatalogState(diskCache({ entries: [], models: [] }), 24, NOW)).toBe("missing");
   });
 
   test("malformed lastUpdated → missing", () => {
-    expect(
-      classifyCatalogState(diskCache({ lastUpdated: "not-a-date" }), 24, NOW)
-    ).toBe("missing");
+    expect(classifyCatalogState(diskCache({ lastUpdated: "not-a-date" }), 24, NOW)).toBe("missing");
   });
 
   test("age 1h, ttl 24 → fresh", () => {
     const oneHourAgo = new Date(NOW.getTime() - 1 * 3_600_000).toISOString();
-    expect(
-      classifyCatalogState(diskCache({ lastUpdated: oneHourAgo }), 24, NOW)
-    ).toBe("fresh");
+    expect(classifyCatalogState(diskCache({ lastUpdated: oneHourAgo }), 24, NOW)).toBe("fresh");
   });
 
   test("age 25h, ttl 24 → stale", () => {
-    const twentyFiveHoursAgo = new Date(
-      NOW.getTime() - 25 * 3_600_000
-    ).toISOString();
-    expect(
-      classifyCatalogState(
-        diskCache({ lastUpdated: twentyFiveHoursAgo }),
-        24,
-        NOW
-      )
-    ).toBe("stale");
+    const twentyFiveHoursAgo = new Date(NOW.getTime() - 25 * 3_600_000).toISOString();
+    expect(classifyCatalogState(diskCache({ lastUpdated: twentyFiveHoursAgo }), 24, NOW)).toBe(
+      "stale"
+    );
   });
 
   test("age exactly TTL boundary → stale (uses strict <)", () => {
     const exactlyTtlAgo = new Date(NOW.getTime() - 24 * 3_600_000).toISOString();
-    expect(
-      classifyCatalogState(diskCache({ lastUpdated: exactlyTtlAgo }), 24, NOW)
-    ).toBe("stale");
+    expect(classifyCatalogState(diskCache({ lastUpdated: exactlyTtlAgo }), 24, NOW)).toBe("stale");
   });
 });
 
@@ -234,9 +214,7 @@ describe("warmCatalogIfNeeded", () => {
     stderrChunks = [];
     originalWrite = process.stderr.write.bind(process.stderr);
     // Capture stderr writes; return true to satisfy the WriteStream contract.
-    (process.stderr as unknown as { write: (s: string) => boolean }).write = (
-      s: string
-    ) => {
+    (process.stderr as unknown as { write: (s: string) => boolean }).write = (s: string) => {
       stderrChunks.push(s);
       return true;
     };
@@ -247,8 +225,7 @@ describe("warmCatalogIfNeeded", () => {
   });
 
   afterEach(() => {
-    (process.stderr as unknown as { write: typeof originalWrite }).write =
-      originalWrite;
+    (process.stderr as unknown as { write: typeof originalWrite }).write = originalWrite;
   });
 
   test("--models-skip-update → 'skipped' and refreshCatalog NOT called", async () => {
@@ -321,16 +298,10 @@ describe("warmCatalogIfNeeded", () => {
 
     const stderrText = stderrChunks.join("");
     // Verbatim FR-4 message expected.
-    expect(stderrText).toContain(
-      "Error: cannot reach model catalog and no cached copy found."
-    );
+    expect(stderrText).toContain("Error: cannot reach model catalog and no cached copy found.");
     expect(stderrText).toContain("Check network connection");
-    expect(stderrText).toContain(
-      "Use a local model: claudish --model ollama@llama3.2 'task'"
-    );
-    expect(stderrText).toContain(
-      "Skip catalog (advanced): claudish --models-skip-update 'task'"
-    );
+    expect(stderrText).toContain("Use a local model: claudish --model ollama@llama3.2 'task'");
+    expect(stderrText).toContain("Skip catalog (advanced): claudish --models-skip-update 'task'");
     expect(stderrText).toContain(
       "Claudish will not launch without catalog data when using cloud models."
     );
@@ -348,9 +319,7 @@ describe("warmCatalogIfNeeded", () => {
     expect(result).toBe("hard_fail");
     expect(refreshSpy).not.toHaveBeenCalled();
     const stderrText = stderrChunks.join("");
-    expect(stderrText).toContain(
-      "Error: cannot reach model catalog and no cached copy found."
-    );
+    expect(stderrText).toContain("Error: cannot reach model catalog and no cached copy found.");
   });
 
   test("stale cache aged exactly 24h + fetch_failed → WARNING uses singular '1 day'", async () => {

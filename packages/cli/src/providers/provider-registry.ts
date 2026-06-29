@@ -8,8 +8,8 @@
  * Legacy syntax: prefix/model or prefix:model (with deprecation warnings)
  */
 
-import { parseModelSpec, isLocalProviderName, type ParsedModel } from "./model-parser.js";
 import { getApiKey, getEndpoint as getConfigEndpoint } from "../profile-config.js";
+import { isLocalProviderName, parseModelSpec } from "./model-parser.js";
 
 /**
  * Config-first URL resolution. ~/.claudish/config.json's `endpoints` map
@@ -136,7 +136,7 @@ export function resolveProvider(modelId: string): ResolvedProvider | null {
         const concurrencyMatch = modelName.match(/^(.+):(\d+)$/);
         if (concurrencyMatch) {
           modelName = concurrencyMatch[1];
-          concurrency = parseInt(concurrencyMatch[2], 10);
+          concurrency = Number.parseInt(concurrencyMatch[2], 10);
         }
 
         return {
@@ -202,7 +202,7 @@ export function parseUrlModel(modelId: string): UrlParsedModel | null {
     if (pathParts.length > 1) {
       // Check if second-to-last is "v1" or similar API version
       const prefix = pathParts.slice(0, -1).join("/");
-      if (prefix) basePath = "/" + prefix;
+      if (prefix) basePath = `/${prefix}`;
     }
 
     const baseUrl = `${url.protocol}//${url.host}${basePath}`;

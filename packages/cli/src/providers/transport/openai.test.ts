@@ -1,6 +1,6 @@
-import { describe, test, expect } from "bun:test";
-import { OpenAIProviderTransport } from "./openai.js";
+import { describe, expect, test } from "bun:test";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { OpenAIProviderTransport } from "./openai.js";
 
 const mockProvider: RemoteProvider = {
   name: "opencode-zen",
@@ -84,7 +84,10 @@ describe("OpenAIProviderTransport 429 retry (#66)", () => {
 
     // GLM-style insufficient-balance error
     const body = JSON.stringify({
-      error: { code: "1113", message: "Insufficient balance or no resource package. Please recharge." },
+      error: {
+        code: "1113",
+        message: "Insufficient balance or no resource package. Please recharge.",
+      },
     });
     const response = await transport.enqueueRequest(() => {
       callCount++;
@@ -113,7 +116,7 @@ describe("isTerminal429", () => {
     const { isTerminal429 } = await import("./openai.js");
     expect(isTerminal429('{"error":"rate limit exceeded"}')).toBe(false);
     expect(isTerminal429('{"error":"too many requests"}')).toBe(false);
-    expect(isTerminal429('')).toBe(false);
+    expect(isTerminal429("")).toBe(false);
   });
 
   test("matches the real OpenAI insufficient_quota body (composed-handler remaps it to a visible 400)", async () => {
@@ -123,8 +126,7 @@ describe("isTerminal429", () => {
     // message instead of silently retrying.
     const realBody = JSON.stringify({
       error: {
-        message:
-          "You exceeded your current quota, please check your plan and billing details.",
+        message: "You exceeded your current quota, please check your plan and billing details.",
         type: "insufficient_quota",
         code: "insufficient_quota",
       },

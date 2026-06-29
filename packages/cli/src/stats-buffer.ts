@@ -23,8 +23,6 @@ import type { StatsEvent } from "./stats-otlp.js";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const BUFFER_MAX_BYTES = 64 * 1024; // 64KB cap
-const FLUSH_EVERY_N_EVENTS = 10; // Flush to disk every N events
-const FLUSH_EVERY_MS = 60_000; // Or every 60 seconds
 
 const CLAUDISH_DIR = join(homedir(), ".claudish");
 const BUFFER_FILE = join(CLAUDISH_DIR, "stats-buffer.json");
@@ -39,7 +37,6 @@ interface BufferFile {
 
 let memoryCache: StatsEvent[] | null = null;
 let eventsSinceLastFlush = 0;
-let lastFlushTime = Date.now();
 let flushScheduled = false;
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
@@ -71,12 +68,13 @@ function readFromDisk(): StatsEvent[] {
  */
 function enforceSizeCap(events: StatsEvent[]): StatsEvent[] {
   // Rough size estimate using JSON length
-  let payload = JSON.stringify({ version: 1, events });
-  while (payload.length > BUFFER_MAX_BYTES && events.length > 0) {
-    events = events.slice(1); // Drop oldest
-    payload = JSON.stringify({ version: 1, events });
+  let kept = events;
+  let payload = JSON.stringify({ version: 1, events: kept });
+  while (payload.length > BUFFER_MAX_BYTES && kept.length > 0) {
+    kept = kept.slice(1); // Drop oldest
+    payload = JSON.stringify({ version: 1, events: kept });
   }
-  return events;
+  return kept;
 }
 
 /**
@@ -107,7 +105,6 @@ function flushToDisk(): void {
   if (memoryCache === null) return;
   writeToDisk(memoryCache);
   eventsSinceLastFlush = 0;
-  lastFlushTime = Date.now();
   flushScheduled = false;
 }
 

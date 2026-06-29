@@ -22,7 +22,7 @@
  *   1 — diagnostic failure (no frames, no completion, or transport error)
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, createWriteStream } from "node:fs";
+import { createWriteStream, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const MODEL = process.argv[2] ?? "z-ai/glm-4.5-air:free";
@@ -40,7 +40,7 @@ function writeBoth(line: string) {
   log.write(line);
 }
 
-writeBoth(`[diag] starting channel diagnostic\n`);
+writeBoth("[diag] starting channel diagnostic\n");
 writeBoth(`[diag] model=${MODEL}\n`);
 writeBoth(`[diag] prompt=${PROMPT}\n`);
 writeBoth(`[diag] log file: ${LOG_FILE}\n`);
@@ -93,9 +93,13 @@ proc.stdout.on("data", (chunk: Buffer) => {
           if (evt === "completed") observedCompletion = true;
           if (evt === "failed") observedFailure = true;
         } else if (msg.id !== undefined && msg.result) {
-          writeBoth(`[diag] received response id=${msg.id} keys=${Object.keys(msg.result).join(",")}\n`);
+          writeBoth(
+            `[diag] received response id=${msg.id} keys=${Object.keys(msg.result).join(",")}\n`
+          );
         } else if (msg.id !== undefined && msg.error) {
-          writeBoth(`[diag] received ERROR id=${msg.id} code=${msg.error.code} msg=${msg.error.message}\n`);
+          writeBoth(
+            `[diag] received ERROR id=${msg.id} code=${msg.error.code} msg=${msg.error.message}\n`
+          );
         }
       } catch {
         // not JSON, skip
@@ -105,7 +109,7 @@ proc.stdout.on("data", (chunk: Buffer) => {
 });
 
 function send(rpc: object) {
-  const frame = JSON.stringify(rpc) + "\n";
+  const frame = `${JSON.stringify(rpc)}\n`;
   log.write(`SEND: ${frame}`);
   proc.stdin.write(frame);
 }
@@ -155,7 +159,7 @@ const killTimer = setTimeout(() => {
 proc.on("exit", (code) => {
   clearTimeout(killTimer);
   writeBoth(`[diag] server exited code=${code}\n`);
-  writeBoth(`\n=== DIAGNOSTIC SUMMARY ===\n`);
+  writeBoth("\n=== DIAGNOSTIC SUMMARY ===\n");
   writeBoth(`trace lines observed:   ${observedTraceLines}\n`);
   writeBoth(`wire frames observed:   ${observedWireFrames}\n`);
   writeBoth(`completion event:       ${observedCompletion}\n`);
@@ -165,17 +169,17 @@ proc.on("exit", (code) => {
 
   // Diagnostic verdict
   if (observedTraceLines === 0) {
-    writeBoth(`\n❌ VERDICT: onStateChange callback never fired.\n`);
-    writeBoth(`   Producer side broken — SignalWatcher or SessionManager not driving events.\n`);
+    writeBoth("\n❌ VERDICT: onStateChange callback never fired.\n");
+    writeBoth("   Producer side broken — SignalWatcher or SessionManager not driving events.\n");
   } else if (observedWireFrames === 0) {
-    writeBoth(`\n❌ VERDICT: onStateChange fired but no JSON-RPC frame reached stdout.\n`);
-    writeBoth(`   server.notification() is being called but transport is silently dropping.\n`);
+    writeBoth("\n❌ VERDICT: onStateChange fired but no JSON-RPC frame reached stdout.\n");
+    writeBoth("   server.notification() is being called but transport is silently dropping.\n");
   } else if (!observedCompletion && !observedFailure) {
-    writeBoth(`\n⚠️  VERDICT: Frames flowed but no terminal event seen.\n`);
-    writeBoth(`   Session may be hung or model produced no output.\n`);
+    writeBoth("\n⚠️  VERDICT: Frames flowed but no terminal event seen.\n");
+    writeBoth("   Session may be hung or model produced no output.\n");
   } else {
-    writeBoth(`\n✅ VERDICT: Producer→bridge→wire pipeline confirmed working.\n`);
-    writeBoth(`   If client sees no <channel> blocks, the issue is client-side handling.\n`);
+    writeBoth("\n✅ VERDICT: Producer→bridge→wire pipeline confirmed working.\n");
+    writeBoth("   If client sees no <channel> blocks, the issue is client-side handling.\n");
   }
 
   log.end();

@@ -12,13 +12,13 @@
  */
 
 import {
+  type AggregatorEntry,
+  type ModelDoc,
   getModelByIdFromFirebase,
   getModelsByProvider,
   searchModels as searchModelsFromFirebase,
-  type AggregatorEntry,
-  type ModelDoc,
 } from "../model-loader.js";
-import { readAllModelsCache, type SlimModelEntry } from "./all-models-cache.js";
+import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -126,12 +126,7 @@ const AGGREGATOR_PROVIDER_SLUGS = new Set<string>([
  * Local-only / undocumented-catalog vendors. These have no Firebase catalog
  * by design; the picker shows a free-text input instead of a model list.
  */
-const NO_CATALOG_VENDOR_SLUGS = new Set<string>([
-  "litellm",
-  "ollama",
-  "lmstudio",
-  "lm-studio",
-]);
+const NO_CATALOG_VENDOR_SLUGS = new Set<string>(["litellm", "ollama", "lmstudio", "lm-studio"]);
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -214,9 +209,10 @@ function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
  * Firebase-derived data — OK to cache locally per the catalog policy.
  * TTL shared with all other Firebase caches via FIREBASE_CACHE_TTL_HOURS.
  */
-function readSlimCacheWithFreshness(
-  reader: () => ReturnType<typeof readAllModelsCache>
-): { entries: SlimModelEntry[]; stale: boolean } {
+function readSlimCacheWithFreshness(reader: () => ReturnType<typeof readAllModelsCache>): {
+  entries: SlimModelEntry[];
+  stale: boolean;
+} {
   const cache = reader();
   if (!cache) return { entries: [], stale: true };
 
@@ -249,8 +245,7 @@ export interface CatalogClientDeps {
  */
 export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient {
   const _getModelsByProvider = deps.getModelsByProvider ?? getModelsByProvider;
-  const _getModelByIdFromFirebase =
-    deps.getModelByIdFromFirebase ?? getModelByIdFromFirebase;
+  const _getModelByIdFromFirebase = deps.getModelByIdFromFirebase ?? getModelByIdFromFirebase;
   const _searchModels = deps.searchModels ?? searchModelsFromFirebase;
   const _readSlimCache = deps.readSlimCache ?? readAllModelsCache;
 

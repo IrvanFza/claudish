@@ -288,6 +288,5 @@ export function __setOpWasmTestSeams(opts: {
   nearbyWasmResolver?: (() => string | null) | null;
 }): void {
   if ("cacheRoot" in opts) cacheRootOverride = opts.cacheRoot ?? null;
-  if ("nearbyWasmResolver" in opts)
-    nearbyWasmResolverOverride = opts.nearbyWasmResolver ?? null;
+  if ("nearbyWasmResolver" in opts) nearbyWasmResolverOverride = opts.nearbyWasmResolver ?? null;
 }

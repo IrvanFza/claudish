@@ -56,7 +56,9 @@ try {
     eventCount++;
     console.log(`  [${eventCount}] ${event.type}`);
     if (event.type === "content_block_start") {
-      console.log(`      └─ block[${event.index}] type=${event.content_block?.type} ${formatBlock(event.content_block)}`);
+      console.log(
+        `      └─ block[${event.index}] type=${event.content_block?.type} ${formatBlock(event.content_block)}`
+      );
     }
   });
 
@@ -86,18 +88,22 @@ try {
   ok = hasAdvisorUse && hasAdvisorResult && finalMessage.stop_reason === "end_turn";
 
   if (ok) {
-    console.log("\n\x1b[32m[sdk-test] ✅ PASS: Anthropic SDK accepted our fabricated advisor events\x1b[0m");
+    console.log(
+      "\n\x1b[32m[sdk-test] ✅ PASS: Anthropic SDK accepted our fabricated advisor events\x1b[0m"
+    );
   } else {
-    console.log("\n\x1b[31m[sdk-test] ❌ FAIL: SDK parsed the stream but content is missing\x1b[0m");
+    console.log(
+      "\n\x1b[31m[sdk-test] ❌ FAIL: SDK parsed the stream but content is missing\x1b[0m"
+    );
     console.log(`    hasAdvisorUse=${hasAdvisorUse} hasAdvisorResult=${hasAdvisorResult}`);
   }
 } catch (err: any) {
   errorMsg = err?.message || String(err);
-  console.log(`\n\x1b[31m[sdk-test] ❌ FAIL: SDK threw an error\x1b[0m`);
+  console.log("\n\x1b[31m[sdk-test] ❌ FAIL: SDK threw an error\x1b[0m");
   console.log(`    ${errorMsg}`);
   if (err?.status) console.log(`    HTTP status: ${err.status}`);
-  if (err?.error) console.log(`    error body:`, err.error);
-  if (err?.cause) console.log(`    cause:`, err.cause);
+  if (err?.error) console.log("    error body:", err.error);
+  if (err?.cause) console.log("    cause:", err.cause);
 }
 
 process.exit(ok ? 0 : 1);

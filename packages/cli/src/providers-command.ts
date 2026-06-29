@@ -23,7 +23,7 @@
  */
 
 import { loadConfig } from "./profile-config.js";
-import { PROVIDERS, providerAuthSource, type AuthSource } from "./tui/providers.js";
+import { type AuthSource, PROVIDERS, providerAuthSource } from "./tui/providers.js";
 
 interface ProviderStatus {
   slug: string;

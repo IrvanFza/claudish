@@ -8,11 +8,11 @@
  * - Legacy (R1 / V3.x) models reason by model name with no knob → strip.
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import { log } from "../logger.js";
+import { type AdapterResult, BaseAPIFormat, matchesModelFamily } from "./base-api-format.js";
 
 export class DeepSeekModelDialect extends BaseAPIFormat {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
@@ -31,7 +31,9 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
       if (effort === "none" || effort === "minimal") {
         // Disable thinking on V4.
         request.thinking = { type: "disabled" };
-        log(`[DeepSeekModelDialect] effort ${effort} -> thinking.type: disabled for ${this.modelId}`);
+        log(
+          `[DeepSeekModelDialect] effort ${effort} -> thinking.type: disabled for ${this.modelId}`
+        );
       } else {
         // DeepSeek honors only high|max — low/medium remap up to high; xhigh→max.
         const value = effort === "xhigh" || effort === "max" ? "max" : "high";
@@ -62,9 +64,7 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
   private isV4Model(): boolean {
     const model = this.modelId.toLowerCase();
     return (
-      model.includes("v4") ||
-      model.includes("deepseek-chat") ||
-      model.includes("deepseek-reasoner")
+      model.includes("v4") || model.includes("deepseek-chat") || model.includes("deepseek-reasoner")
     );
   }
 

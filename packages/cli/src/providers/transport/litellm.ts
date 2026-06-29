@@ -5,8 +5,8 @@
  * LiteLLM uses OpenAI-compatible /v1/chat/completions endpoint.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
 import { discoverViaOpenAIModels } from "./probe-discovery.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 /**
  * Extra headers that LiteLLM should forward to specific providers.
@@ -54,11 +54,11 @@ export class LiteLLMProviderTransport implements ProviderTransport {
   }
 
   async discoverProbeModel(exclude?: ReadonlySet<string>) {
-    return discoverViaOpenAIModels(
-      `${this.baseUrl}/v1/models`,
-      await this.getHeaders(),
-      { key: `litellm:${this.baseUrl}`, displayName: this.displayName, exclude }
-    );
+    return discoverViaOpenAIModels(`${this.baseUrl}/v1/models`, await this.getHeaders(), {
+      key: `litellm:${this.baseUrl}`,
+      displayName: this.displayName,
+      exclude,
+    });
   }
 
   getExtraPayloadFields(): Record<string, any> {

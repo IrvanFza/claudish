@@ -25,6 +25,9 @@
       "complexity": {
         "noExcessiveCognitiveComplexity": "warn"
       },
+      "performance": {
+        "noDelete": "off"
+      },
       "style": {
         "noNonNullAssertion": "off",
         "useNodejsImportProtocol": "error"

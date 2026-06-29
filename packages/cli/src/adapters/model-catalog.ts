@@ -51,9 +51,7 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
 
   const lower = modelId.toLowerCase();
   // Vendor-prefixed IDs like "x-ai/grok-beta" — match on segment after "/"
-  const unprefixed = lower.includes("/")
-    ? lower.substring(lower.lastIndexOf("/") + 1)
-    : lower;
+  const unprefixed = lower.includes("/") ? lower.substring(lower.lastIndexOf("/") + 1) : lower;
 
   for (const entry of cache.entries) {
     const entryId = entry.modelId.toLowerCase();

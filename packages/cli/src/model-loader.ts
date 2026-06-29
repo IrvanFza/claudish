@@ -1,8 +1,8 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import type { OpenRouterModel } from "./types.js";
+import { join } from "node:path";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
+import type { OpenRouterModel } from "./types.js";
 
 // ─── Firebase Model Catalog Types ────────────────────────────────────────────
 // These mirror `firebase/functions/src/schema.ts` but are defined locally so we
@@ -241,9 +241,10 @@ export interface RecommendedModelGroup {
  * Subscription-only groups (no non-subscription primary) are defensively
  * classified as "fast" — shouldn't happen in practice but keeps them visible.
  */
-export function groupRecommendedModels(
-  entries: RecommendedModelEntry[]
-): { flagship: RecommendedModelGroup[]; fast: RecommendedModelGroup[] } {
+export function groupRecommendedModels(entries: RecommendedModelEntry[]): {
+  flagship: RecommendedModelGroup[];
+  fast: RecommendedModelGroup[];
+} {
   const byId = new Map<string, RecommendedModelEntry[]>();
   for (const entry of entries) {
     const list = byId.get(entry.id);
@@ -255,8 +256,7 @@ export function groupRecommendedModels(
   const fast: RecommendedModelGroup[] = [];
 
   for (const [id, members] of byId.entries()) {
-    const primary =
-      members.find((m) => m.category !== "subscription") ?? members[0];
+    const primary = members.find((m) => m.category !== "subscription") ?? members[0];
     const subscriptions = members.filter((m) => m.category === "subscription");
     const bucket: "flagship" | "fast" =
       primary.category === "programming" ||
@@ -302,19 +302,19 @@ export function collectRoutingPrefixes(
 
 /** Parse "$1.32/1M" → 1.32, "FREE" → 0, "N/A"/"varies"/undefined → Infinity */
 export function parsePriceAvg(s?: string): number {
-  if (!s || s === "N/A") return Infinity;
+  if (!s || s === "N/A") return Number.POSITIVE_INFINITY;
   if (s === "FREE") return 0;
   const m = s.match(/\$([\d.]+)/);
-  return m ? parseFloat(m[1]) : Infinity;
+  return m ? Number.parseFloat(m[1]) : Number.POSITIVE_INFINITY;
 }
 
 /** Parse "196K" → 196000, "1M" → 1000000, "1048K" → 1048000 */
 export function parseCtx(s?: string): number {
   if (!s || s === "N/A") return 0;
   const upper = s.toUpperCase();
-  if (upper.includes("M")) return parseFloat(upper) * 1_000_000;
-  if (upper.includes("K")) return parseFloat(upper) * 1_000;
-  return parseInt(s, 10) || 0;
+  if (upper.includes("M")) return Number.parseFloat(upper) * 1_000_000;
+  if (upper.includes("K")) return Number.parseFloat(upper) * 1_000;
+  return Number.parseInt(s, 10) || 0;
 }
 
 /**
@@ -357,41 +357,31 @@ export function computeQuickPicks(primaries: RecommendedModelEntry[]): QuickPick
   const priced = primaries
     .filter((m) => {
       const p = parsePriceAvg(m.pricing?.average);
-      return p > 0 && p !== Infinity;
+      return p > 0 && p !== Number.POSITIVE_INFINITY;
     })
-    .sort(
-      (a, b) =>
-        parsePriceAvg(a.pricing?.average) - parsePriceAvg(b.pricing?.average)
-    );
+    .sort((a, b) => parsePriceAvg(a.pricing?.average) - parsePriceAvg(b.pricing?.average));
   const budget = priced[0] ?? null;
 
   // Large context: max parseCtx
-  const byCtx = [...primaries].sort(
-    (a, b) => parseCtx(b.context) - parseCtx(a.context)
-  );
+  const byCtx = [...primaries].sort((a, b) => parseCtx(b.context) - parseCtx(a.context));
   const largeContext = byCtx[0] ?? null;
 
   // Most capable: priciest
   const byPrice = [...primaries].sort(
-    (a, b) =>
-      parsePriceAvg(b.pricing?.average) - parsePriceAvg(a.pricing?.average)
+    (a, b) => parsePriceAvg(b.pricing?.average) - parsePriceAvg(a.pricing?.average)
   );
-  const mostCapable = byPrice.find((m) => parsePriceAvg(m.pricing?.average) !== Infinity) ?? null;
+  const mostCapable =
+    byPrice.find((m) => parsePriceAvg(m.pricing?.average) !== Number.POSITIVE_INFINITY) ?? null;
 
   // Vision + code: first with vision, excluding budget/priciest
   const visionCoding =
     primaries.find(
-      (m) =>
-        m.supportsVision === true &&
-        m.id !== budget?.id &&
-        m.id !== mostCapable?.id
+      (m) => m.supportsVision === true && m.id !== budget?.id && m.id !== mostCapable?.id
     ) ?? null;
 
   // Agentic: first with reasoning, excluding priciest
   const agentic =
-    primaries.find(
-      (m) => m.supportsReasoning === true && m.id !== mostCapable?.id
-    ) ?? null;
+    primaries.find((m) => m.supportsReasoning === true && m.id !== mostCapable?.id) ?? null;
 
   return { budget, largeContext, mostCapable, visionCoding, agentic };
 }
@@ -554,9 +544,7 @@ export async function searchModelsByProvider(
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(
-      `Firebase provider search returned ${response.status} ${response.statusText}`
-    );
+    throw new Error(`Firebase provider search returned ${response.status} ${response.statusText}`);
   }
   const data = (await response.json()) as { models?: ModelDoc[]; total?: number };
   return data.models ?? [];
@@ -638,9 +626,7 @@ export async function getTop100Models(): Promise<Top100Response> {
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(
-      `Firebase top100 fetch failed: ${response.status} ${response.statusText}`
-    );
+    throw new Error(`Firebase top100 fetch failed: ${response.status} ${response.statusText}`);
   }
   const data = (await response.json()) as Top100Response;
   return data;
@@ -666,9 +652,7 @@ export async function getProviderList(): Promise<ProviderListEntry[]> {
     signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(
-      `Firebase providers fetch failed: ${response.status} ${response.statusText}`,
-    );
+    throw new Error(`Firebase providers fetch failed: ${response.status} ${response.statusText}`);
   }
   const data = (await response.json()) as { providers?: ProviderListEntry[] };
   return data.providers ?? [];
@@ -742,4 +726,3 @@ export function getAvailableModels(): OpenRouterModel[] {
   _cachedModelIds = result;
   return result as OpenRouterModel[];
 }
-

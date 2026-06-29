@@ -11,12 +11,12 @@
  * Credentials stored at: ~/.claudish/gemini-oauth.json
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes, createHash } from "node:crypto";
-import { readFileSync, existsSync, unlinkSync, openSync, writeSync, closeSync } from "node:fs";
+import { exec } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
 
@@ -620,7 +620,7 @@ export const CODE_ASSIST_FALLBACK_CHAIN = [
   "gemini-2.5-flash",
 ] as const;
 
-export type CodeAssistFallbackModel = typeof CODE_ASSIST_FALLBACK_CHAIN[number];
+export type CodeAssistFallbackModel = (typeof CODE_ASSIST_FALLBACK_CHAIN)[number];
 
 interface ClientMetadata {
   pluginType: string;

@@ -8,8 +8,8 @@
  * temp files.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "./cli.js";

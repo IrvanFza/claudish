@@ -15,8 +15,8 @@
  * `DiskCacheV2` (or null) configured per-test. No real disk I/O.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterAll, mock } from "bun:test";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
 
 // ---------------------------------------------------------------------------
@@ -50,10 +50,10 @@ mock.module("./all-models-cache.js", () => ({
 
 // Now import the module under test. The mock above is wired in.
 import {
+  _resetMemo,
   findEntryByAlias,
   findEntryByModelId,
   findVisionAlias,
-  _resetMemo,
 } from "./catalog-query.js";
 
 // Touch the file so `statSync(ALL_MODELS_CACHE_PATH)` resolves in the memo

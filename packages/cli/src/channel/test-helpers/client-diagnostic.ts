@@ -19,9 +19,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync, createWriteStream } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,7 +39,7 @@ function logBoth(s: string) {
   log.write(s);
 }
 
-logBoth(`[client-diag] starting end-to-end client diagnostic\n`);
+logBoth("[client-diag] starting end-to-end client diagnostic\n");
 logBoth(`[client-diag] log file: ${LOG_FILE}\n`);
 
 // File where the MCP server will mirror its trace output. Claude Code
@@ -140,6 +140,7 @@ claude.stdout.on("data", (chunk: Buffer) => {
 
   // Parse line-delimited JSON
   let nl: number;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical line-buffer drain idiom
   while ((nl = stdoutBuf.indexOf("\n")) !== -1) {
     const line = stdoutBuf.slice(0, nl);
     stdoutBuf = stdoutBuf.slice(nl + 1);
@@ -165,7 +166,9 @@ claude.stdout.on("data", (chunk: Buffer) => {
         for (const b of Array.isArray(blocks) ? blocks : []) {
           if (b.type === "tool_use") {
             counts.clientToolCalls++;
-            logBoth(`[client-diag] tool_use: ${b.name} input=${JSON.stringify(b.input).slice(0, 150)}\n`);
+            logBoth(
+              `[client-diag] tool_use: ${b.name} input=${JSON.stringify(b.input).slice(0, 150)}\n`
+            );
           }
           if (b.type === "tool_result") {
             counts.clientToolResults++;
@@ -200,7 +203,7 @@ claude.stderr.on("data", (chunk: Buffer) => {
 
 const TIMEOUT_MS = 180_000;
 const killTimer = setTimeout(() => {
-  logBoth(`[client-diag] TIMEOUT — killing claude\n`);
+  logBoth("[client-diag] TIMEOUT — killing claude\n");
   claude.kill("SIGTERM");
   setTimeout(() => claude.kill("SIGKILL"), 3000);
 }, TIMEOUT_MS);
@@ -220,18 +223,18 @@ claude.on("exit", (code) => {
     counts.serverWireFrames = lines.filter((l) => l.includes("WIRE-OUT")).length;
     logBoth(`\n[client-diag] server trace file: ${SERVER_TRACE_FILE}\n`);
     if (lines.length > 0) {
-      logBoth(`[client-diag] first 5 trace lines:\n`);
+      logBoth("[client-diag] first 5 trace lines:\n");
       for (const l of lines.slice(0, 5)) logBoth(`  ${l}\n`);
     }
   } catch (err) {
     logBoth(`[client-diag] failed to read server trace file: ${(err as Error).message}\n`);
   }
 
-  logBoth(`\n=== END-TO-END CLIENT DIAGNOSTIC SUMMARY ===\n`);
-  logBoth(`SERVER SIDE (proves we sent frames):\n`);
+  logBoth("\n=== END-TO-END CLIENT DIAGNOSTIC SUMMARY ===\n");
+  logBoth("SERVER SIDE (proves we sent frames):\n");
   logBoth(`  channel-trace markers:     ${counts.serverChannelTraceLines}\n`);
   logBoth(`  wire-out frames:           ${counts.serverWireFrames}\n`);
-  logBoth(`\nCLIENT SIDE (proves Claude Code processed them):\n`);
+  logBoth("\nCLIENT SIDE (proves Claude Code processed them):\n");
   logBoth(`  total stream events:       ${counts.clientStreamEvents}\n`);
   logBoth(`  MCP tool calls (by Claude):${counts.clientToolCalls}\n`);
   logBoth(`  MCP tool results:          ${counts.clientToolResults}\n`);
@@ -239,19 +242,25 @@ claude.on("exit", (code) => {
   logBoth(`  system messages:           ${counts.clientSystemReminders}\n`);
   logBoth(`  unhandled-mcp log lines:   ${counts.clientUnhandledMcpLogs}\n`);
 
-  logBoth(`\n=== VERDICT ===\n`);
+  logBoth("\n=== VERDICT ===\n");
   if (counts.serverWireFrames === 0) {
     logBoth(`❌ Server didn't send frames. Test setup issue, not a client question.\n`);
   } else if (counts.clientChannelMentions > 0) {
-    logBoth(`✅ Server sent ${counts.serverWireFrames} frames. Client surfaced them in the stream.\n`);
-    logBoth(`   Channel notifications ARE consumed by Claude Code.\n`);
+    logBoth(
+      `✅ Server sent ${counts.serverWireFrames} frames. Client surfaced them in the stream.\n`
+    );
+    logBoth("   Channel notifications ARE consumed by Claude Code.\n");
   } else if (counts.clientUnhandledMcpLogs > 0) {
-    logBoth(`❌ Server sent ${counts.serverWireFrames} frames. Client logged "unhandled" warnings.\n`);
-    logBoth(`   Channel notifications reach Claude Code but are dropped (no handler).\n`);
+    logBoth(
+      `❌ Server sent ${counts.serverWireFrames} frames. Client logged "unhandled" warnings.\n`
+    );
+    logBoth("   Channel notifications reach Claude Code but are dropped (no handler).\n");
   } else {
-    logBoth(`⚠️  Server sent ${counts.serverWireFrames} frames. Client showed NO evidence of receiving them.\n`);
-    logBoth(`    No channel mentions, no <channel> tags, no debug logs about them.\n`);
-    logBoth(`    Either: Claude Code silently discards unknown methods, OR it consumes them\n`);
+    logBoth(
+      `⚠️  Server sent ${counts.serverWireFrames} frames. Client showed NO evidence of receiving them.\n`
+    );
+    logBoth("    No channel mentions, no <channel> tags, no debug logs about them.\n");
+    logBoth("    Either: Claude Code silently discards unknown methods, OR it consumes them\n");
     logBoth(`    but doesn't pass them through to the agent's visible context.\n`);
     logBoth(`    Inspect the log file directly to look for subtler signals: ${LOG_FILE}\n`);
   }

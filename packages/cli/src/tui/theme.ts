@@ -92,7 +92,7 @@ const LATENCY_BUCKETS: LatencyBucket[] = [
   { maxMs: 1000, hex: "#2d6e3e" }, // green (matches pillKeyBg family)
   { maxMs: 3000, hex: "#8a7d1e" }, // yellow/olive
   { maxMs: 6000, hex: "#b5651d" }, // orange
-  { maxMs: Infinity, hex: "#9e2b2b" }, // red
+  { maxMs: Number.POSITIVE_INFINITY, hex: "#9e2b2b" }, // red
 ];
 
 function latencyBucket(ms: number): LatencyBucket {
@@ -127,9 +127,9 @@ export function latencyBg(ms: number): string {
  */
 export function latencyBgAnsi(ms: number): string {
   const hex = latencyBucket(ms).hex;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
   return `\x1b[48;2;${r};${g};${b}m`;
 }
 
@@ -176,9 +176,9 @@ export const STAGE_FG = {
 } as const;
 
 function hexToAnsiBg(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
   return `\x1b[48;2;${r};${g};${b}m`;
 }
 
@@ -189,9 +189,9 @@ function hexToAnsiBg(hex: string): string {
  * shared palette. Pair with `ANSI_RESET`.
  */
 export function hexToAnsiFg(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
   return `\x1b[38;2;${r};${g};${b}m`;
 }
 
@@ -240,11 +240,7 @@ export interface StageCells {
  *
  *   barCells = clamp(round(B * totalMs / maxTotalMs), 1, B)
  */
-export function timelineBarCells(
-  totalMs: number,
-  maxTotalMs: number,
-  barWidth: number,
-): number {
+export function timelineBarCells(totalMs: number, maxTotalMs: number, barWidth: number): number {
   if (barWidth <= 0) return 0;
   const denom = maxTotalMs > 0 ? maxTotalMs : 1;
   const raw = Math.round((barWidth * Math.max(0, totalMs)) / denom);
@@ -264,7 +260,7 @@ export function splitStageCells(
   ttfbMs: number,
   ttftMs: number,
   totalMs: number,
-  barCells: number,
+  barCells: number
 ): StageCells {
   const net = Math.max(0, ttfbMs);
   const srv = Math.max(0, ttftMs - ttfbMs);
@@ -331,11 +327,7 @@ export function splitStageCells(
  * (`maxTokPerSec`) by the caller — NOT here. This uses the raw tokensPerSec;
  * the clamp absorbs any artifact link.
  */
-export function tokBarCells(
-  tokensPerSec: number,
-  maxTokPerSec: number,
-  tokWidth: number,
-): number {
+export function tokBarCells(tokensPerSec: number, maxTokPerSec: number, tokWidth: number): number {
   if (tokWidth <= 0) return 0;
   const denom = maxTokPerSec > 0 ? maxTokPerSec : 1;
   const raw = Math.round((tokWidth * Math.max(0, tokensPerSec)) / denom);

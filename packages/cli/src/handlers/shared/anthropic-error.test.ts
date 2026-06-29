@@ -1,11 +1,11 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
+  buildSurfacedErrorMessage,
+  ensureAnthropicErrorFormat,
+  extractProviderMessage,
+  isTerminalError,
   statusToErrorType,
   wrapAnthropicError,
-  ensureAnthropicErrorFormat,
-  isTerminalError,
-  buildSurfacedErrorMessage,
-  extractProviderMessage,
 } from "./anthropic-error.js";
 
 describe("statusToErrorType", () => {
@@ -243,9 +243,7 @@ describe("isTerminalError", () => {
     expect(isTerminalError(400, '{"error":{"message":"Unknown model: fugu-ultra"}}', false)).toBe(
       true
     );
-    expect(
-      isTerminalError(404, '{"error":{"code":"unsupported_model"}}', false)
-    ).toBe(true);
+    expect(isTerminalError(404, '{"error":{"code":"unsupported_model"}}', false)).toBe(true);
   });
 
   it("catches expired-subscription wording on a 4xx status", () => {

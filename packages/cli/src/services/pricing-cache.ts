@@ -26,18 +26,15 @@
  *   correct vendor (`z-ai/`) on its `aggregators` array.
  */
 
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { log } from "../logger.js";
 import {
-  registerDynamicPricingLookup,
   type ModelPricing,
+  registerDynamicPricingLookup,
 } from "../handlers/shared/remote-provider-types.js";
-import {
-  findEntryByAlias,
-  findEntryByModelId,
-} from "../providers/catalog-query.js";
+import { log } from "../logger.js";
+import { findEntryByAlias, findEntryByModelId } from "../providers/catalog-query.js";
 
 // In-memory pricing map: OpenRouter model ID → pricing
 const pricingMap = new Map<string, ModelPricing>();

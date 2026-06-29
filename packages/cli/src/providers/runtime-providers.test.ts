@@ -2,15 +2,15 @@
  * Tests for runtime-providers.ts — the small Map-backed registry.
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import type { ProviderProfile } from "./provider-profiles.js";
 import {
-  registerRuntimeProvider,
-  registerRuntimeProfile,
-  getRuntimeProviders,
-  getRuntimeProfiles,
   clearRuntimeRegistry,
+  getRuntimeProfiles,
+  getRuntimeProviders,
+  registerRuntimeProfile,
+  registerRuntimeProvider,
 } from "./runtime-providers.js";
 
 function makeDef(name: string, overrides: Partial<ProviderDefinition> = {}): ProviderDefinition {

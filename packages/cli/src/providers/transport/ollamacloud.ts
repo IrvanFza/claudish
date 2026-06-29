@@ -5,9 +5,9 @@
  * Uses Bearer token auth and Ollama's native JSONL streaming format.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { discoverViaOpenAIModels } from "./probe-discovery.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export class OllamaProviderTransport implements ProviderTransport {
   readonly name = "ollamacloud";
@@ -29,7 +29,7 @@ export class OllamaProviderTransport implements ProviderTransport {
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers.Authorization = `Bearer ${this.apiKey}`;
     }
     return headers;
   }
@@ -38,15 +38,11 @@ export class OllamaProviderTransport implements ProviderTransport {
     // OllamaCloud also exposes /v1/models (OpenAI-compatible alongside its
     // native /api/chat). /v1/models with bearer auth lists the user's
     // available cloud models.
-    return discoverViaOpenAIModels(
-      `${this.provider.baseUrl}/v1/models`,
-      await this.getHeaders(),
-      {
-        key: `ollamacloud:${this.provider.baseUrl}`,
-        displayName: this.displayName,
-        exclude,
-      }
-    );
+    return discoverViaOpenAIModels(`${this.provider.baseUrl}/v1/models`, await this.getHeaders(), {
+      key: `ollamacloud:${this.provider.baseUrl}`,
+      displayName: this.displayName,
+      exclude,
+    });
   }
 }
 

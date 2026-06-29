@@ -19,11 +19,11 @@
  * - https://openrouter.ai/docs/use-cases/reasoning-tokens#preserving-reasoning-blocks
  */
 
-import { log, isLoggingEnabled, logStructured } from "../logger.js";
+import { isLoggingEnabled, log, logStructured } from "../logger.js";
 import type {
   ModelMiddleware,
-  RequestContext,
   NonStreamingResponseContext,
+  RequestContext,
   StreamChunkContext,
 } from "./types.js";
 
@@ -103,7 +103,7 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
         }
 
         if (!msg.reasoning_details && isLoggingEnabled()) {
-          log(`[Gemini] WARNING: No reasoning_details found for assistant message with tool_calls`);
+          log("[Gemini] WARNING: No reasoning_details found for assistant message with tool_calls");
           log(`[Gemini] Tool call IDs: ${msg.tool_calls.map((tc: any) => tc.id).join(", ")}`);
         }
       }
@@ -167,7 +167,9 @@ export class GeminiThoughtSignatureMiddleware implements ModelMiddleware {
 
       // Extract tool_call_ids
       const toolCallIds = new Set<string>(
-        toolCalls.map((tc: any) => tc.id).filter((id: unknown): id is string => typeof id === "string")
+        toolCalls
+          .map((tc: any) => tc.id)
+          .filter((id: unknown): id is string => typeof id === "string")
       );
 
       // Store the full reasoning_details array

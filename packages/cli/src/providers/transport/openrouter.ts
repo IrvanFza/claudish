@@ -12,9 +12,9 @@
  * for metadata — model info comes from Firebase.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
-import { OpenRouterRequestQueue } from "../../handlers/shared/openrouter-queue.js";
 import { credentials } from "../../auth/credentials/authority.js";
+import { OpenRouterRequestQueue } from "../../handlers/shared/openrouter-queue.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 

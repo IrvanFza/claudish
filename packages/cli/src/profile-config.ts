@@ -468,7 +468,7 @@ export function getProfile(name: string, scope?: ProfileScope): Profile | undefi
 export function getDefaultProfile(scope?: ProfileScope): Profile {
   if (scope === "local") {
     const local = loadLocalConfig();
-    if (local && local.defaultProfile && local.profiles[local.defaultProfile]) {
+    if (local?.defaultProfile && local.profiles[local.defaultProfile]) {
       return local.profiles[local.defaultProfile];
     }
     // Local config exists but no valid default — return empty
@@ -486,7 +486,7 @@ export function getDefaultProfile(scope?: ProfileScope): Profile {
 
   // No scope: local-first resolution
   const local = loadLocalConfig();
-  if (local && local.defaultProfile) {
+  if (local?.defaultProfile) {
     // Resolve the name local-first, then global
     const profile = getProfile(local.defaultProfile);
     if (profile) return profile;

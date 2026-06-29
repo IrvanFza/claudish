@@ -3,7 +3,7 @@
 // Per-session state machine that detects events from stdout output patterns
 // and dispatches notifications via a callback.
 
-import type { SignalState, SignalData, SignalCallback } from "./types.js";
+import type { SignalCallback, SignalData, SignalState } from "./types.js";
 
 /** How long to wait after last output before declaring "waiting_for_input". */
 const QUIET_PERIOD_MS = 2000;

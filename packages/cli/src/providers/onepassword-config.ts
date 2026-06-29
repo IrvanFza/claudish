@@ -110,7 +110,9 @@ function mutateConfig(
  * global `~/.claudish/config.json` (local wins). Returns the trimmed URL, or
  * undefined when neither file sets a non-empty value. Raw fs — no SDK.
  */
-export function readOnepasswordAccount(paths: OpConfigPaths = defaultOpConfigPaths): string | undefined {
+export function readOnepasswordAccount(
+  paths: OpConfigPaths = defaultOpConfigPaths
+): string | undefined {
   for (const scope of ["project", "global"] as const) {
     const cfg = readRawConfig(pathFor(scope, paths));
     const acct = cfg.onepasswordAccount;
@@ -170,7 +172,12 @@ function readStringList(scope: OpConfigScope, key: string, paths: OpConfigPaths)
  * Add an entry to a string[] config field at a scope (idempotent — a duplicate
  * value is not added twice). Trims the entry; an empty entry is a no-op.
  */
-function addToStringList(scope: OpConfigScope, key: string, entry: string, paths: OpConfigPaths): void {
+function addToStringList(
+  scope: OpConfigScope,
+  key: string,
+  entry: string,
+  paths: OpConfigPaths
+): void {
   const value = entry.trim();
   if (!value) return;
   mutateConfig(scope, paths, (cfg) => {

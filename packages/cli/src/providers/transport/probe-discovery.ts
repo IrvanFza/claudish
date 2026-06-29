@@ -20,10 +20,7 @@ import { log } from "../../logger.js";
  * "model loading error" 400 for a not-loaded model — the next candidate
  * from the same cache entry might be loaded and succeed).
  */
-const _cache = new Map<
-  string,
-  { ranked: string[]; reason?: string; expiresAt: number }
->();
+const _cache = new Map<string, { ranked: string[]; reason?: string; expiresAt: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -122,17 +119,15 @@ function isStandardName(name: string): boolean {
  *   4. Tiebreak: alphabetical for determinism.
  */
 export function rankProbeCandidates(names: string[]): string[] {
-  return names
-    .filter(isChatCapable)
-    .sort((a, b) => {
-      const aStd = isStandardName(a);
-      const bStd = isStandardName(b);
-      if (aStd !== bStd) return aStd ? -1 : 1;
-      const aSmall = isSmallName(a);
-      const bSmall = isSmallName(b);
-      if (aSmall !== bSmall) return aSmall ? -1 : 1;
-      return a.localeCompare(b);
-    });
+  return names.filter(isChatCapable).sort((a, b) => {
+    const aStd = isStandardName(a);
+    const bStd = isStandardName(b);
+    if (aStd !== bStd) return aStd ? -1 : 1;
+    const aSmall = isSmallName(a);
+    const bSmall = isSmallName(b);
+    if (aSmall !== bSmall) return aSmall ? -1 : 1;
+    return a.localeCompare(b);
+  });
 }
 
 interface CacheKey {
@@ -151,7 +146,10 @@ export interface DiscoveryOutcome {
  * candidate not in the exclude set — lets the probe loop walk past models
  * that already failed.
  */
-function cacheGet(key: string, exclude: ReadonlySet<string> = new Set()): DiscoveryOutcome | undefined {
+function cacheGet(
+  key: string,
+  exclude: ReadonlySet<string> = new Set()
+): DiscoveryOutcome | undefined {
   const hit = _cache.get(key);
   if (!hit) return undefined;
   if (Date.now() > hit.expiresAt) {
@@ -209,7 +207,7 @@ export async function discoverViaOpenAIModels(
   } catch (e: unknown) {
     const reason = classifyFetchError(e, endpoint);
     log(
-      `[probe-discovery${cacheKey.displayName ? ":" + cacheKey.displayName : ""}] fetch failed: ${reason}`
+      `[probe-discovery${cacheKey.displayName ? `:${cacheKey.displayName}` : ""}] fetch failed: ${reason}`
     );
     cacheSetFailure(cacheKey.key, reason);
     return { model: null, reason };
@@ -217,9 +215,7 @@ export async function discoverViaOpenAIModels(
 
   if (!response.ok) {
     const reason = `HTTP ${response.status} from ${endpoint}`;
-    log(
-      `[probe-discovery${cacheKey.displayName ? ":" + cacheKey.displayName : ""}] ${reason}`
-    );
+    log(`[probe-discovery${cacheKey.displayName ? `:${cacheKey.displayName}` : ""}] ${reason}`);
     cacheSetFailure(cacheKey.key, reason);
     return { model: null, reason };
   }
@@ -395,7 +391,7 @@ export async function discoverViaOllama(
   let ranked: string[];
   if (sized.length > 0) {
     ranked = [...sized]
-      .sort((a, b) => (a.size ?? Infinity) - (b.size ?? Infinity))
+      .sort((a, b) => (a.size ?? Number.POSITIVE_INFINITY) - (b.size ?? Number.POSITIVE_INFINITY))
       .map((m) => m.name);
   } else {
     ranked = rankProbeCandidates(candidates.map((m) => m.name));
@@ -530,9 +526,9 @@ async function fetchOllamaModels(url: string): Promise<OllamaModel[]> {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!response.ok) return [];
-  const body = (await response.json().catch(() => null)) as
-    | { models?: Array<{ name?: unknown; size?: unknown }> }
-    | null;
+  const body = (await response.json().catch(() => null)) as {
+    models?: Array<{ name?: unknown; size?: unknown }>;
+  } | null;
   if (!body?.models) return [];
   return body.models
     .map((m) => ({

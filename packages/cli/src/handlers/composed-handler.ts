@@ -17,37 +17,37 @@
  */
 
 import type { Context } from "hono";
-import type { ModelHandler } from "./types.js";
-import type { ProviderTransport } from "../providers/transport/types.js";
 import type { BaseAPIFormat } from "../adapters/base-api-format.js";
+import type { ProviderTransport } from "../providers/transport/types.js";
+import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
 import { DialectManager } from "../adapters/dialect-manager.js";
-import { MiddlewareManager, GeminiThoughtSignatureMiddleware } from "../middleware/index.js";
-import { TokenTracker } from "./shared/token-tracker.js";
-import { transformOpenAIToClaude } from "../transform.js";
-import { filterIdentity } from "./shared/openai-compat.js";
-import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
-import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
-import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
-import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
-import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
-import { log, logStderr, logStructured, getLogLevel, truncateContent } from "../logger.js";
+import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
+import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
+import { isTerminal429 } from "../providers/transport/openai.js";
 import {
-  describeImages,
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
+  describeImages,
 } from "../services/vision-proxy.js";
-import { reportError, classifyError } from "../telemetry.js";
 import { recordStats } from "../stats.js";
+import { classifyError, reportError } from "../telemetry.js";
+import { transformOpenAIToClaude } from "../transform.js";
 import {
-  wrapAnthropicError,
-  ensureAnthropicErrorFormat,
-  isTerminalError,
   buildSurfacedErrorMessage,
+  ensureAnthropicErrorFormat,
   extractProviderMessage,
+  isTerminalError,
+  wrapAnthropicError,
 } from "./shared/anthropic-error.js";
-import { isTerminal429 } from "../providers/transport/openai.js";
+import { filterIdentity } from "./shared/openai-compat.js";
+import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
+import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
+import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
+import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
+import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
+import { TokenTracker } from "./shared/token-tracker.js";
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -107,9 +107,7 @@ export class ComposedHandler implements ModelHandler {
     // substring). Callers must strip the provider prefix before passing modelName.
     if (modelName.includes("@")) {
       throw new Error(
-        `ComposedHandler: modelName must not contain '@' (got "${modelName}"). ` +
-          `Strip the provider routing prefix before passing modelName. ` +
-          `If you need the full routed form, pass it as targetModel.`
+        `ComposedHandler: modelName must not contain '@' (got "${modelName}"). Strip the provider routing prefix before passing modelName. If you need the full routed form, pass it as targetModel.`
       );
     }
 
@@ -141,9 +139,7 @@ export class ComposedHandler implements ModelHandler {
     }
     this.middlewareManager
       .initialize()
-      .catch((err) =>
-        log(`[ComposedHandler:${this.bareModelName}] Middleware init error: ${err}`)
-      );
+      .catch((err) => log(`[ComposedHandler:${this.bareModelName}] Middleware init error: ${err}`));
 
     // Initialize token tracker — model adapter knows the real context window
     this.tokenTracker = new TokenTracker(port, {
@@ -269,7 +265,7 @@ export class ComposedHandler implements ModelHandler {
           }
         } else {
           // Vision proxy failed or not applicable — strip all unsupported image/document blocks
-          log(`[ComposedHandler] Stripping image/document blocks (vision not supported)`);
+          log("[ComposedHandler] Stripping image/document blocks (vision not supported)");
           for (const msg of messages) {
             if (Array.isArray(msg.content)) {
               msg.content = msg.content.filter(
@@ -569,10 +565,7 @@ export class ComposedHandler implements ModelHandler {
           } catch {
             // Stats must never crash claudish
           }
-          return c.json(
-            wrapAnthropicError(401, err.message, "authentication_error"),
-            401 as any
-          );
+          return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
         }
       } else {
         const errorText = await response.text();
@@ -589,9 +582,11 @@ export class ComposedHandler implements ModelHandler {
         // so the cause is findable in scrollback even when Claude Code only shows
         // its own "API error · Retrying" banner. Bounded to one tidy line.
         const msgTail = providerMsg
-          ? ` (${providerMsg.length > 200 ? providerMsg.slice(0, 200) + "…" : providerMsg})`
+          ? ` (${providerMsg.length > 200 ? `${providerMsg.slice(0, 200)}…` : providerMsg})`
           : "";
-        logStderr(`Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`);
+        logStderr(
+          `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`
+        );
 
         // Extract structured error type from provider response body if present
         let providerErrorType: string | undefined;
@@ -647,8 +642,9 @@ export class ComposedHandler implements ModelHandler {
 
         // Reuse the body parsed above (avoid double-JSON-encoding — errorText is
         // already JSON when parseable).
-        const errorBody: any =
-          parsedErrorBody ?? { error: { type: "api_error", message: errorText } };
+        const errorBody: any = parsedErrorBody ?? {
+          error: { type: "api_error", message: errorText },
+        };
         // Terminal errors (auth / quota / billing / model-unsupported) won't
         // resolve on retry. Leaving a retryable status (429/5xx) makes Claude
         // Code silently retry, showing only "API error · Retrying · attempt N/10"
@@ -663,12 +659,12 @@ export class ComposedHandler implements ModelHandler {
             hint,
             providerMessage: providerMsg,
           });
-          return c.json(
-            wrapAnthropicError(400, surfaced, "invalid_request_error"),
-            400 as any
-          );
+          return c.json(wrapAnthropicError(400, surfaced, "invalid_request_error"), 400 as any);
         }
-        return c.json(ensureAnthropicErrorFormat(response.status, errorBody), response.status as any);
+        return c.json(
+          ensureAnthropicErrorFormat(response.status, errorBody),
+          response.status as any
+        );
       }
     }
 
@@ -723,6 +719,9 @@ export class ComposedHandler implements ModelHandler {
     toolNameMap?: Map<string, string>,
     onComplete?: () => void
   ): Response {
+    // Local mutable copy so we can null it out after firing (prevents double-firing)
+    // without reassigning the function parameter.
+    let pendingOnComplete = onComplete;
     const onTokenUpdate = (input: number, output: number) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
@@ -735,21 +734,19 @@ export class ComposedHandler implements ModelHandler {
         case "local":
           this.tokenTracker.updateLocal(input, output);
           break;
-        // "actual-cost" is handled separately via updateWithActualCost
-        case "standard":
         default:
           this.tokenTracker.update(input, output);
           break;
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.
-      if (onComplete) {
+      if (pendingOnComplete) {
         try {
-          onComplete();
+          pendingOnComplete();
         } catch {
           // Stats must never crash claudish
         }
         // Prevent double-firing if onTokenUpdate is called more than once
-        onComplete = undefined;
+        pendingOnComplete = undefined;
       }
     };
 
@@ -768,7 +765,8 @@ export class ComposedHandler implements ModelHandler {
     // for zai@glm-* — the Anthropic SSE was then fed to the OpenAI parser and dropped.
     const streamFormat =
       this.provider.overrideStreamFormat?.() ??
-      (this.explicitAdapter?.getStreamFormat() ?? this.modelAdapter?.getStreamFormat()) ??
+      this.explicitAdapter?.getStreamFormat() ??
+      this.modelAdapter?.getStreamFormat() ??
       this.getAdapter().getStreamFormat();
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in

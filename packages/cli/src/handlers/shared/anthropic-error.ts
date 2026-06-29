@@ -26,14 +26,21 @@ export interface AnthropicErrorEnvelope {
  */
 export function statusToErrorType(status: number): AnthropicErrorType {
   switch (status) {
-    case 400: return "invalid_request_error";
-    case 401: return "authentication_error";
-    case 403: return "permission_error";
-    case 404: return "not_found_error";
-    case 429: return "rate_limit_error";
+    case 400:
+      return "invalid_request_error";
+    case 401:
+      return "authentication_error";
+    case 403:
+      return "permission_error";
+    case 404:
+      return "not_found_error";
+    case 429:
+      return "rate_limit_error";
     case 503:
-    case 529: return "overloaded_error";
-    default:  return "api_error";
+    case 529:
+      return "overloaded_error";
+    default:
+      return "api_error";
   }
 }
 
@@ -112,11 +119,7 @@ export function extractProviderMessage(body: any): string {
  * @param bodyText   - raw upstream error body (string)
  * @param terminal429 - result of provider-specific isTerminal429(bodyText)
  */
-export function isTerminalError(
-  status: number,
-  bodyText: string,
-  terminal429: boolean
-): boolean {
+export function isTerminalError(status: number, bodyText: string, terminal429: boolean): boolean {
   // Auth / permission failures never recover on retry.
   if (status === 401 || status === 403) return true;
   // Billing/quota exhaustion surfaced as a 429 (provider-specific signals).
@@ -194,10 +197,7 @@ export function buildSurfacedErrorMessage(opts: {
  * Check if a parsed JSON body is already in Anthropic error envelope format.
  * Returns the body as-is if valid, or wraps it if not.
  */
-export function ensureAnthropicErrorFormat(
-  status: number,
-  body: any
-): AnthropicErrorEnvelope {
+export function ensureAnthropicErrorFormat(status: number, body: any): AnthropicErrorEnvelope {
   // Already correct format: { type: "error", error: { type: "...", message: "..." } }
   if (
     body?.type === "error" &&

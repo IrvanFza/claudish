@@ -194,16 +194,13 @@ async function fetchChangelog(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
-    const response = await fetch(
-      "https://api.github.com/repos/MadAppGang/claudish/releases",
-      {
-        signal: controller.signal,
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "claudish-updater",
-        },
-      }
-    );
+    const response = await fetch("https://api.github.com/repos/MadAppGang/claudish/releases", {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "claudish-updater",
+      },
+    });
 
     clearTimeout(timeout);
 
@@ -331,7 +328,9 @@ export async function updateCommand(): Promise<void> {
   }
 
   // Show header (compact single line)
-  console.log(`  ${BOLD}claudish${RESET} ${YELLOW}v${currentVersion}${RESET} ${DIM}\u2192${RESET} ${GREEN}v${latestVersion}${RESET}   ${DIM}(${installInfo.method})${RESET}`);
+  console.log(
+    `  ${BOLD}claudish${RESET} ${YELLOW}v${currentVersion}${RESET} ${DIM}\u2192${RESET} ${GREEN}v${latestVersion}${RESET}   ${DIM}(${installInfo.method})${RESET}`
+  );
 
   if (installInfo.method === "unknown") {
     printManualInstructions();

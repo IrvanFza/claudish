@@ -31,7 +31,7 @@ export function sanitizeToolNameForGemini(name: string | undefined | null): stri
 
   // Ensure name starts with a letter or underscore
   if (!/^[a-zA-Z_]/.test(sanitized)) {
-    sanitized = "_" + sanitized;
+    sanitized = `_${sanitized}`;
   }
 
   // Truncate to max 64 characters

@@ -218,7 +218,12 @@ export class HTTPRequestParser {
   /**
    * Get current parser state for debugging
    */
-  getState(): { method: string | null; contentLength: number | null; bodyReceived: number; isChunked: boolean } {
+  getState(): {
+    method: string | null;
+    contentLength: number | null;
+    bodyReceived: number;
+    isChunked: boolean;
+  } {
     return {
       method: this.requestLine?.method || null,
       contentLength: this.contentLength,

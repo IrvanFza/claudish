@@ -9,11 +9,11 @@
  * Run: bun test packages/cli/src/providers/model-catalog.test.ts
  */
 
-import { describe, test, expect, mock } from "bun:test";
-import { createCatalogClient } from "./model-catalog.js";
-import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
+import { describe, expect, mock, test } from "bun:test";
 import type { AggregatorEntry, ModelDoc } from "../model-loader.js";
 import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
+import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
+import { createCatalogClient } from "./model-catalog.js";
 
 // ─── Fixture helpers ─────────────────────────────────────────────────────────
 
@@ -122,7 +122,10 @@ describe("modelsByVendor", () => {
       modelDoc("minimax-m2", "minimax"),
     ]);
     const entries = [
-      slimEntry("minimax-m3", [aggregator("minimax", "MiniMax-M3"), aggregator("openrouter", "minimax/minimax-m3")]),
+      slimEntry("minimax-m3", [
+        aggregator("minimax", "MiniMax-M3"),
+        aggregator("openrouter", "minimax/minimax-m3"),
+      ]),
       slimEntry("minimax-m2", [aggregator("minimax", "MiniMax-M2")]),
     ];
     const client = createCatalogClient({
@@ -171,9 +174,7 @@ describe("modelsByVendor", () => {
 
     const result = await client.modelsByVendor("opencode-zen");
 
-    expect(result.map((m) => m.modelId).sort()).toEqual(
-      ["claude-opus-4-7", "gpt-5"].sort()
-    );
+    expect(result.map((m) => m.modelId).sort()).toEqual(["claude-opus-4-7", "gpt-5"].sort());
     // Aggregator path must not hit the rich provider query.
     expect(fakeProviderQuery).not.toHaveBeenCalled();
   });
@@ -189,9 +190,7 @@ describe("modelsByVendor", () => {
   });
 
   test("aggregator slug match is case-insensitive", async () => {
-    const entries = [
-      slimEntry("claude-opus-4-7", [aggregator("OpenCode-Zen", "x")]),
-    ];
+    const entries = [slimEntry("claude-opus-4-7", [aggregator("OpenCode-Zen", "x")])];
     const client = createCatalogClient({
       getModelsByProvider: mock(async () => []),
       readSlimCache: () => freshCache(entries),
@@ -201,26 +200,24 @@ describe("modelsByVendor", () => {
     expect(result).toHaveLength(1);
   });
 
-  test.each([
-    ["litellm"],
-    ["ollama"],
-    ["lmstudio"],
-    ["lm-studio"],
-  ])("'%s' returns [] without any I/O", async (slug) => {
-    const fakeProviderQuery = mock(async () => []);
-    const fakeReadSlim = mock(() => null);
+  test.each([["litellm"], ["ollama"], ["lmstudio"], ["lm-studio"]])(
+    "'%s' returns [] without any I/O",
+    async (slug) => {
+      const fakeProviderQuery = mock(async () => []);
+      const fakeReadSlim = mock(() => null);
 
-    const client = createCatalogClient({
-      getModelsByProvider: fakeProviderQuery,
-      readSlimCache: fakeReadSlim,
-    });
+      const client = createCatalogClient({
+        getModelsByProvider: fakeProviderQuery,
+        readSlimCache: fakeReadSlim,
+      });
 
-    const result = await client.modelsByVendor(slug);
+      const result = await client.modelsByVendor(slug);
 
-    expect(result).toEqual([]);
-    expect(fakeProviderQuery).not.toHaveBeenCalled();
-    expect(fakeReadSlim).not.toHaveBeenCalled();
-  });
+      expect(result).toEqual([]);
+      expect(fakeProviderQuery).not.toHaveBeenCalled();
+      expect(fakeReadSlim).not.toHaveBeenCalled();
+    }
+  );
 
   test("unknown slug falls through to rich provider query", async () => {
     const fakeProviderQuery = mock(async (slug: string) => {

@@ -29,12 +29,8 @@ import type {
   RemoteProvider,
   ResolvedRemoteProvider,
 } from "../handlers/shared/remote-provider-types.js";
-import { parseModelSpec, isLocalProviderName } from "./model-parser.js";
-import {
-  getAllProviders,
-  getEffectiveBaseUrl,
-  toRemoteProvider,
-} from "./provider-definitions.js";
+import { isLocalProviderName, parseModelSpec } from "./model-parser.js";
+import { getAllProviders, getEffectiveBaseUrl, toRemoteProvider } from "./provider-definitions.js";
 
 /**
  * Remote provider configurations — derived from BUILTIN_PROVIDERS.

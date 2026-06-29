@@ -24,6 +24,7 @@
  * - g/, gemini/, oai/, mmax/, etc. prefixes still work with deprecation warnings
  */
 
+import { credentials } from "../auth/credentials/authority.js";
 import {
   type ParsedModel,
   getLegacySyntaxWarning,
@@ -37,7 +38,6 @@ import {
 import { parseUrlModel, resolveProvider } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import { buildCredentialHint } from "./routing-hints.js";
-import { credentials } from "../auth/credentials/authority.js";
 
 /**
  * Provider category types
@@ -150,7 +150,6 @@ const PROVIDER_DISPLAY_NAMES = new Proxy<Record<string, string>>(
     },
   }
 );
-
 
 /**
  * Resolve a model ID to its provider information

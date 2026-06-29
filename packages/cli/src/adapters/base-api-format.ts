@@ -8,13 +8,13 @@
  * - Others: Future model-specific behaviors
  */
 
-import { truncateToolName } from "./tool-name-utils.js";
 import type { ModelPricing } from "../handlers/shared/remote-provider-types.js";
 import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { APIFormat } from "./api-format.js";
-import type { ModelDialect } from "./model-dialect.js";
 import { lookupModel } from "./model-catalog.js";
+import type { ModelDialect } from "./model-dialect.js";
+import { truncateToolName } from "./tool-name-utils.js";
 
 /**
  * Match a model ID against a model family name, handling vendor-prefixed IDs.
@@ -47,15 +47,7 @@ export interface ToolCall {
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** The seven canonical levels, ascending — also the membership set for validation. */
-const EFFORT_ORDER: EffortLevel[] = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
+const EFFORT_ORDER: EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export interface AdapterResult {
   /** Cleaned text content (with XML/special formats removed) */
@@ -77,6 +69,11 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
 
   constructor(modelId: string) {
     this.modelId = modelId;
+  }
+
+  /** The model ID this format/dialect was constructed for. */
+  getModelId(): string {
+    return this.modelId;
   }
 
   /**
@@ -139,7 +136,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * @param originalRequest - The original Claude-format request
    * @returns The modified request payload
    */
-  prepareRequest(request: any, originalRequest: any): any {
+  prepareRequest(request: any, _originalRequest: any): any {
     return request;
   }
 
@@ -323,7 +320,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
  * Default format/dialect that does no transformation
  */
 export class DefaultAPIFormat extends BaseAPIFormat {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,
       extractedToolCalls: [],
@@ -331,7 +328,7 @@ export class DefaultAPIFormat extends BaseAPIFormat {
     };
   }
 
-  shouldHandle(modelId: string): boolean {
+  shouldHandle(_modelId: string): boolean {
     return false; // Default is fallback
   }
 

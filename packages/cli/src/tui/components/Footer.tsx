@@ -1,6 +1,6 @@
+import { FOOTER_H } from "../constants.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
-import { FOOTER_H } from "../constants.js";
 import type { Mode, ProbeMode, Tab } from "../types.js";
 
 interface FooterProps {
@@ -63,7 +63,9 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
     const showKey = providerCaps ? providerCaps.apiKey : true;
     const showEndpoint = providerCaps ? providerCaps.endpoint || providerCaps.local : true;
     const showLogin = providerCaps ? providerCaps.oauth : true;
-    const showRemove = providerCaps ? !providerCaps.local && (providerCaps.apiKey || providerCaps.endpoint) : true;
+    const showRemove = providerCaps
+      ? !providerCaps.local && (providerCaps.apiKey || providerCaps.endpoint)
+      : true;
     // `u` is shown whenever the provider has an editable endpoint URL.
     // For local providers it's the ONLY way to change the URL because `e`
     // is taken by the enable/disable toggle. For remote providers it's a
@@ -71,7 +73,12 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
     const showUrl = providerCaps ? providerCaps.endpoint : true;
     keys = [[C.blue, "↑↓", "navigate"]];
     if (showKey) keys.push([C.green, "s", "set key"]);
-    if (showEndpoint) keys.push([C.green, "e", providerCaps?.local ? (providerCaps.localEnabled ? "disable" : "enable") : "endpoint"]);
+    if (showEndpoint)
+      keys.push([
+        C.green,
+        "e",
+        providerCaps?.local ? (providerCaps.localEnabled ? "disable" : "enable") : "endpoint",
+      ]);
     if (showUrl) keys.push([C.green, "u", "url"]);
     if (showLogin) keys.push([C.green, "l", "login"]);
     keys.push([C.cyan, "t", "test"]);
@@ -170,7 +177,7 @@ export function Footer({ activeTab, mode, probeMode, providerCaps }: FooterProps
             them. Emphasis is by text brightness (bright bold key vs. muted
             label), not hue. Gaps BETWEEN chips have no background. */}
         {keys.map(([_color, key, label], i) => (
-          <span key={i}>
+          <span key={`${key}-${label}`}>
             {i > 0 && <span>{"  "}</span>}
             {/* Key segment — lighter fill, bright bold text. */}
             <span fg={C.fg} bg={C.chipKeyBg} attributes={A.bold}>

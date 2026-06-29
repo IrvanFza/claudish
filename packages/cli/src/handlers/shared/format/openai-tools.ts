@@ -86,7 +86,7 @@ function summarizeToolDescription(name: string, description: string): string {
   if (!description) return name;
 
   // Remove markdown, examples, and extra whitespace
-  let clean = description
+  const clean = description
     .replace(/```[\s\S]*?```/g, "") // Remove code blocks
     .replace(/<[^>]+>/g, "") // Remove HTML/XML tags
     .replace(/\n+/g, " ") // Replace newlines with spaces
@@ -98,7 +98,7 @@ function summarizeToolDescription(name: string, description: string): string {
 
   // Limit to 150 chars
   if (firstSentence.length > 150) {
-    return firstSentence.slice(0, 147) + "...";
+    return `${firstSentence.slice(0, 147)}...`;
   }
 
   return firstSentence;
@@ -115,13 +115,13 @@ function summarizeToolParameters(schema: any): any {
 
   // Summarize property descriptions
   if (summarized.properties) {
-    for (const [key, prop] of Object.entries(summarized.properties)) {
+    for (const prop of Object.values(summarized.properties)) {
       const p = prop as any;
       if (p.description && p.description.length > 80) {
         // Keep first sentence or truncate
         const firstSentence = p.description.match(/^[^.!?]+[.!?]/)?.[0] || p.description;
         p.description =
-          firstSentence.length > 80 ? firstSentence.slice(0, 77) + "..." : firstSentence;
+          firstSentence.length > 80 ? `${firstSentence.slice(0, 77)}...` : firstSentence;
       }
       // Remove examples from enum descriptions
       if (p.enum && Array.isArray(p.enum) && p.enum.length > 5) {

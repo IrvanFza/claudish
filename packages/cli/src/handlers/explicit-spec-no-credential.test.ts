@@ -17,7 +17,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProxyServer } from "../proxy-server.js";
@@ -38,11 +38,7 @@ let configExisted = false;
 
 // Sakana keys must be ABSENT for the missing-credential path. Snapshot + delete
 // any that happen to be set in the runner's env, restore in afterEach.
-const SAKANA_ENV_KEYS = [
-  "SAKANA_API_KEY",
-  "SAKANA_SUBSCRIPTION_API_KEY",
-  "SAKANA_CODING_API_KEY",
-];
+const SAKANA_ENV_KEYS = ["SAKANA_API_KEY", "SAKANA_SUBSCRIPTION_API_KEY", "SAKANA_CODING_API_KEY"];
 const savedEnv: Record<string, string | undefined> = {};
 
 function sandbox(config: Record<string, unknown>): void {

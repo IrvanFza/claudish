@@ -1,10 +1,10 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
+  type OtlpResource,
+  type StatsEvent,
   buildResource,
   eventToLogRecord,
   formatOtlpBatch,
-  type StatsEvent,
-  type OtlpResource,
 } from "./stats-otlp.js";
 
 const SAMPLE_RESOURCE: OtlpResource = {

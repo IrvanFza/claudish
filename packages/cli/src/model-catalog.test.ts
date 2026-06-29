@@ -13,15 +13,15 @@
  * don't depend on the user's ~/.claudish/all-models.json.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lookupModel } from "./adapters/model-catalog.js";
-import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
-import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
-import { DialectManager } from "./adapters/dialect-manager.js";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
+import { DialectManager } from "./adapters/dialect-manager.js";
+import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
+import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
+import { lookupModel } from "./adapters/model-catalog.js";
 
 const MINIMAX_API_KEY = process.env.MINIMAX_CODING_API_KEY || process.env.MINIMAX_API_KEY;
 const SKIP_REAL_API = !MINIMAX_API_KEY;
@@ -213,9 +213,12 @@ describe("Group 2: MiniMaxModelDialect — catalog integration", () => {
     expect(request.temperature).toBe(0.7);
   });
 
-  test("thinking param is NOT deleted (MiniMax passes it through)", () => {
+  test("thinking maps to MiniMax's {type:adaptive} toggle (not passed through verbatim)", () => {
     const dialect = new MiniMaxModelDialect("MiniMax-M2.7");
     const originalRequest: any = {
+      // Legacy budget hint resolves to an effort level → MiniMax's `adaptive`
+      // enable value (its Anthropic-compatible endpoint takes adaptive/disabled,
+      // NOT "enabled" and NOT a budget).
       thinking: { type: "enabled", budget_tokens: 10000 },
       messages: [],
       max_tokens: 100,
@@ -223,7 +226,8 @@ describe("Group 2: MiniMaxModelDialect — catalog integration", () => {
     const request: any = { ...originalRequest };
     dialect.prepareRequest(request, originalRequest);
     expect(request.thinking).toBeDefined();
-    expect(request.thinking.type).toBe("enabled");
+    expect(request.thinking.type).toBe("adaptive");
+    expect(request.thinking.budget_tokens).toBeUndefined();
   });
 });
 
@@ -437,7 +441,7 @@ describe("Group 4: AnthropicAPIFormat + MiniMaxModelDialect pipeline", () => {
     return payload;
   }
 
-  test("thinking param passes through (not converted to reasoning_split)", () => {
+  test("thinking maps to {type:adaptive} (not reasoning_split, not a budget)", () => {
     const claudeRequest = {
       model: "MiniMax-M2.7",
       max_tokens: 100,
@@ -447,9 +451,12 @@ describe("Group 4: AnthropicAPIFormat + MiniMaxModelDialect pipeline", () => {
 
     const payload = buildMinimaxPayload(claudeRequest);
 
+    // MiniMax's Anthropic-compatible endpoint takes a {type:adaptive|disabled}
+    // toggle, NOT a budget. The legacy budget hint resolves to an effort level
+    // which maps to `adaptive`.
     expect(payload.thinking).toBeDefined();
-    expect(payload.thinking.type).toBe("enabled");
-    expect(payload.thinking.budget_tokens).toBe(8000);
+    expect(payload.thinking.type).toBe("adaptive");
+    expect(payload.thinking.budget_tokens).toBeUndefined();
     // Must not have been converted to reasoning_effort or reasoning_split
     expect(payload.reasoning_effort).toBeUndefined();
     expect(payload.reasoning_split).toBeUndefined();

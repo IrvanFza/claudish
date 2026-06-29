@@ -16,12 +16,12 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveDefaultProvider } from "../default-provider.js";
 import { createProxyServer } from "../proxy-server.js";
 import type { ProxyServer } from "../types.js";
-import { resolveDefaultProvider } from "../default-provider.js";
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -302,7 +302,11 @@ describe("Group B — real API routing", () => {
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
       const marker = MARKER();
-      const { ok, status, text, raw } = await askProxy(port, "gpt-5.4", `say hi with marker ${marker}`);
+      const { ok, status, text, raw } = await askProxy(
+        port,
+        "gpt-5.4",
+        `say hi with marker ${marker}`
+      );
       const stderr = releaseStderr();
       const elapsed = Date.now() - t0;
 
@@ -311,7 +315,9 @@ describe("Group B — real API routing", () => {
       }
       expect(ok).toBe(true);
       expect(text.length).toBeGreaterThan(0);
-      console.log(`[B1a] model=gpt-5.4 provider=openrouter elapsed=${elapsed}ms text="${text.slice(0, 60)}"`);
+      console.log(
+        `[B1a] model=gpt-5.4 provider=openrouter elapsed=${elapsed}ms text="${text.slice(0, 60)}"`
+      );
       // Stderr provenance: openrouter should appear in route chain; litellm must NOT lead.
       expect(stderr.toLowerCase()).toContain("openrouter");
     },
@@ -321,7 +327,12 @@ describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
     "B1b — defaultProvider=openrouter + gemini-3.1-pro-preview bare → served by OpenRouter",
     async () => {
-      sandboxHome({ version: "1.0.0", defaultProfile: "default", profiles: {}, defaultProvider: "openrouter" });
+      sandboxHome({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        defaultProvider: "openrouter",
+      });
       captureStderr();
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
@@ -356,7 +367,12 @@ describe("Group B — real API routing", () => {
   test.skipIf(!HAS_LL)(
     "B2 — defaultProvider=litellm + minimax-m2.5 bare → served by LiteLLM first",
     async () => {
-      sandboxHome({ version: "1.0.0", defaultProfile: "default", profiles: {}, defaultProvider: "litellm" });
+      sandboxHome({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        defaultProvider: "litellm",
+      });
       captureStderr();
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
@@ -388,7 +404,12 @@ describe("Group B — real API routing", () => {
   test.skipIf(!HAS_XAI)(
     "B3 — explicit xai@grok-code-fast-1 bypasses default-provider (no openrouter route)",
     async () => {
-      sandboxHome({ version: "1.0.0", defaultProfile: "default", profiles: {}, defaultProvider: "openrouter" });
+      sandboxHome({
+        version: "1.0.0",
+        defaultProfile: "default",
+        profiles: {},
+        defaultProvider: "openrouter",
+      });
       captureStderr();
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
@@ -544,7 +565,7 @@ describe("Group C — custom endpoint registration", () => {
       if (!(mentionsBroken || mentionsWarn)) {
         console.log(
           "[C2] stderr capture missed the broken-ep warning (Bun async timing) " +
-          "— continuing because the bare call succeeded which is the load-bearing assertion"
+            "— continuing because the bare call succeeded which is the load-bearing assertion"
         );
       }
       // Bare call still works
@@ -652,68 +673,52 @@ describe("Group D — Firebase slim catalog", () => {
     return cachedBody;
   }
 
-  test(
-    "D1 — catalog returns {models: [...]} with at least one entry",
-    async () => {
-      const body = await fetchCatalog();
-      expect(body).toBeDefined();
-      expect(Array.isArray(body.models)).toBe(true);
-      expect(body.models.length).toBeGreaterThan(0);
-      console.log(`[D1] slim catalog models count=${body.models.length}`);
-    },
-    15_000
-  );
+  test("D1 — catalog returns {models: [...]} with at least one entry", async () => {
+    const body = await fetchCatalog();
+    expect(body).toBeDefined();
+    expect(Array.isArray(body.models)).toBe(true);
+    expect(body.models.length).toBeGreaterThan(0);
+    console.log(`[D1] slim catalog models count=${body.models.length}`);
+  }, 15_000);
 
-  test(
-    "D1b — aggregators[] contract (soft-skip if Phase 4 not deployed)",
-    async () => {
-      const body = await fetchCatalog();
-      const withAgg = (body.models as any[]).filter(
-        (m) => Array.isArray(m?.aggregators) && m.aggregators.length > 0
-      );
-      if (withAgg.length === 0) {
-        console.log("[D1b] PENDING DEPLOY — no models have aggregators[] yet");
-        return;
-      }
-      console.log(
-        `[D1b] ${withAgg.length}/${body.models.length} models have aggregators[]`
-      );
-      for (const m of withAgg) {
-        for (const agg of m.aggregators) {
-          expect(typeof agg.provider).toBe("string");
-          expect(typeof agg.externalId).toBe("string");
-          expect(typeof agg.confidence).toBe("string");
-          if (!KNOWN_PROVIDERS.has(agg.provider)) {
-            throw new Error(
-              `Unknown provider '${agg.provider}' on model '${m.id ?? m.name ?? "?"}' — contract violation`
-            );
-          }
+  test("D1b — aggregators[] contract (soft-skip if Phase 4 not deployed)", async () => {
+    const body = await fetchCatalog();
+    const withAgg = (body.models as any[]).filter(
+      (m) => Array.isArray(m?.aggregators) && m.aggregators.length > 0
+    );
+    if (withAgg.length === 0) {
+      console.log("[D1b] PENDING DEPLOY — no models have aggregators[] yet");
+      return;
+    }
+    console.log(`[D1b] ${withAgg.length}/${body.models.length} models have aggregators[]`);
+    for (const m of withAgg) {
+      for (const agg of m.aggregators) {
+        expect(typeof agg.provider).toBe("string");
+        expect(typeof agg.externalId).toBe("string");
+        expect(typeof agg.confidence).toBe("string");
+        if (!KNOWN_PROVIDERS.has(agg.provider)) {
+          throw new Error(
+            `Unknown provider '${agg.provider}' on model '${m.id ?? m.name ?? "?"}' — contract violation`
+          );
         }
       }
-    },
-    15_000
-  );
+    }
+  }, 15_000);
 
-  test(
-    "D2 — entries without aggregators[] parse cleanly (field is optional)",
-    async () => {
-      const body = await fetchCatalog();
-      const withoutAgg = (body.models as any[]).filter(
-        (m) => !Array.isArray(m?.aggregators) || m.aggregators.length === 0
-      );
-      console.log(`[D2] models without aggregators[]: ${withoutAgg.length}`);
-      // Just a shape sanity: each should still have SOMETHING identifiable.
-      // The slim catalog uses `modelId` (not `id` or `name`).
-      for (const m of withoutAgg.slice(0, 20)) {
-        const hasIdentifier =
-          typeof m.modelId === "string" ||
-          typeof m.id === "string" ||
-          typeof m.name === "string";
-        expect(hasIdentifier).toBe(true);
-      }
-    },
-    15_000
-  );
+  test("D2 — entries without aggregators[] parse cleanly (field is optional)", async () => {
+    const body = await fetchCatalog();
+    const withoutAgg = (body.models as any[]).filter(
+      (m) => !Array.isArray(m?.aggregators) || m.aggregators.length === 0
+    );
+    console.log(`[D2] models without aggregators[]: ${withoutAgg.length}`);
+    // Just a shape sanity: each should still have SOMETHING identifiable.
+    // The slim catalog uses `modelId` (not `id` or `name`).
+    for (const m of withoutAgg.slice(0, 20)) {
+      const hasIdentifier =
+        typeof m.modelId === "string" || typeof m.id === "string" || typeof m.name === "string";
+      expect(hasIdentifier).toBe(true);
+    }
+  }, 15_000);
 });
 
 // ---------------------------------------------------------------------------

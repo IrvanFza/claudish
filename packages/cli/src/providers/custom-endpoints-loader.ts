@@ -15,32 +15,26 @@
  */
 
 import { z } from "zod";
-import {
-  CustomEndpointSchema,
-  type CustomEndpoint,
-  type CustomEndpointSimple,
-  type CustomEndpointComplex,
-} from "../config-schema.js";
-import type { ClaudishProfileConfig } from "../profile-config.js";
-import { credentials } from "../auth/credentials/authority.js";
-import type {
-  ProviderDefinition,
-  TransportType,
-} from "./provider-definitions.js";
-import type { ProviderProfile, ProfileContext } from "./provider-profiles.js";
-import type { ModelHandler } from "../handlers/types.js";
-import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
-import {
-  registerRuntimeProvider,
-  registerRuntimeProfile,
-} from "./runtime-providers.js";
-import { ComposedHandler } from "../handlers/composed-handler.js";
-import { OpenAIProviderTransport } from "./transport/openai.js";
-import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
-import { LiteLLMProviderTransport } from "./transport/litellm.js";
-import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
+import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { credentials } from "../auth/credentials/authority.js";
+import {
+  type CustomEndpoint,
+  type CustomEndpointComplex,
+  CustomEndpointSchema,
+  type CustomEndpointSimple,
+} from "../config-schema.js";
+import { ComposedHandler } from "../handlers/composed-handler.js";
+import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import type { ModelHandler } from "../handlers/types.js";
+import type { ClaudishProfileConfig } from "../profile-config.js";
+import type { ProviderDefinition, TransportType } from "./provider-definitions.js";
+import type { ProfileContext, ProviderProfile } from "./provider-profiles.js";
+import { registerRuntimeProfile, registerRuntimeProvider } from "./runtime-providers.js";
+import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
+import { LiteLLMProviderTransport } from "./transport/litellm.js";
+import { OpenAIProviderTransport } from "./transport/openai.js";
 
 /**
  * Result of loading custom endpoints from a config object.
@@ -96,10 +90,7 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
  * (getProviderByName, getAllProviders, etc.). The definition is minimal —
  * real handler construction happens in the profile.
  */
-function buildProviderDefinition(
-  name: string,
-  ep: CustomEndpoint
-): ProviderDefinition {
+function buildProviderDefinition(name: string, ep: CustomEndpoint): ProviderDefinition {
   if (ep.kind === "simple") {
     return {
       name,

@@ -8,15 +8,15 @@
  * - Vision: not supported — supportsVision() returns false so ComposedHandler strips images
  */
 
-import { BaseAPIFormat, AdapterResult, matchesModelFamily } from "./base-api-format.js";
 import { log } from "../logger.js";
+import { type AdapterResult, BaseAPIFormat, matchesModelFamily } from "./base-api-format.js";
 import { lookupModel } from "./model-catalog.js";
 
 /** MiniMax API requires temperature in (0.0, 1.0]. Sourced from MiniMax's published API docs, not per-model. */
 const TEMPERATURE_RANGE = { min: 0.01, max: 1.0 } as const;
 
 export class MiniMaxModelDialect extends BaseAPIFormat {
-  processTextContent(textContent: string, accumulatedText: string): AdapterResult {
+  processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     // MiniMax interleaved thinking is handled by the model
     return {
       cleanedText: textContent,

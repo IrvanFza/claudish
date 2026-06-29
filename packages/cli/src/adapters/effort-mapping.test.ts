@@ -12,15 +12,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { BaseAPIFormat, type AdapterResult, type EffortLevel } from "./base-api-format.js";
-import { OpenAIAPIFormat } from "./openai-api-format.js";
+import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
 import { CodexAPIFormat } from "./codex-api-format.js";
-import { GeminiAPIFormat } from "./gemini-api-format.js";
-import { GrokModelDialect } from "./grok-model-dialect.js";
-import { QwenModelDialect } from "./qwen-model-dialect.js";
-import { GLMModelDialect } from "./glm-model-dialect.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
+import { GeminiAPIFormat } from "./gemini-api-format.js";
+import { GLMModelDialect } from "./glm-model-dialect.js";
+import { GrokModelDialect } from "./grok-model-dialect.js";
 import { MiniMaxModelDialect } from "./minimax-model-dialect.js";
+import { OpenAIAPIFormat } from "./openai-api-format.js";
+import { QwenModelDialect } from "./qwen-model-dialect.js";
 
 // ─── Part 1: shared resolveEffortLevel ────────────────────────────────────
 
@@ -160,7 +160,9 @@ function codexReasoning(modelId: string, req: any): any {
 
 describe("Codex reasoning.effort", () => {
   test("flows effort into reasoning.effort (not hardcoded medium)", () => {
-    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "high" } }).effort).toBe("high");
+    expect(codexReasoning("gpt-5-codex", { output_config: { effort: "high" } }).effort).toBe(
+      "high"
+    );
     expect(codexReasoning("gpt-5-codex", { output_config: { effort: "low" } }).effort).toBe("low");
   });
 
@@ -179,9 +181,9 @@ describe("Codex reasoning.effort", () => {
   });
 
   test("codex-max accepts xhigh", () => {
-    expect(
-      codexReasoning("gpt-5.1-codex-max", { output_config: { effort: "xhigh" } }).effort
-    ).toBe("xhigh");
+    expect(codexReasoning("gpt-5.1-codex-max", { output_config: { effort: "xhigh" } }).effort).toBe(
+      "xhigh"
+    );
     expect(codexReasoning("gpt-5.1-codex-max", { output_config: { effort: "max" } }).effort).toBe(
       "xhigh"
     );
@@ -210,18 +212,18 @@ describe("Gemini thinking config", () => {
   });
 
   test("gemini-3 level mapping", () => {
-    expect(geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "none" } }).thinkingLevel).toBe(
-      "minimal"
-    );
-    expect(geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "low" } }).thinkingLevel).toBe(
-      "low"
-    );
+    expect(
+      geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "none" } }).thinkingLevel
+    ).toBe("minimal");
+    expect(
+      geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "low" } }).thinkingLevel
+    ).toBe("low");
     expect(
       geminiThinkingConfig("gemini-3-flash", { output_config: { effort: "medium" } }).thinkingLevel
     ).toBe("medium");
-    expect(geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "max" } }).thinkingLevel).toBe(
-      "high"
-    );
+    expect(
+      geminiThinkingConfig("gemini-3-pro", { output_config: { effort: "max" } }).thinkingLevel
+    ).toBe("high");
   });
 
   test("gemini-2.5 → thinkingBudget (int), NEVER a level", () => {
@@ -306,7 +308,9 @@ function qwenPrep(modelId: string, req: any): any {
 
 describe("Qwen enable_thinking + thinking_budget", () => {
   test("none/minimal → enable_thinking false", () => {
-    expect(qwenPrep("qwen3-max", { output_config: { effort: "none" } }).enable_thinking).toBe(false);
+    expect(qwenPrep("qwen3-max", { output_config: { effort: "none" } }).enable_thinking).toBe(
+      false
+    );
     expect(qwenPrep("qwen3-max", { output_config: { effort: "minimal" } }).enable_thinking).toBe(
       false
     );
@@ -363,9 +367,12 @@ describe("GLM thinking toggle (hybrid 4.5/4.6)", () => {
 
   test("non-hybrid glm-4-plus strips thinking (no toggle)", () => {
     const fmt = new GLMModelDialect("glm-4-plus");
-    const out = (fmt as any).prepareRequest({ thinking: { budget_tokens: 5 } }, {
-      output_config: { effort: "high" },
-    });
+    const out = (fmt as any).prepareRequest(
+      { thinking: { budget_tokens: 5 } },
+      {
+        output_config: { effort: "high" },
+      }
+    );
     expect(out.thinking).toBeUndefined();
   });
 });
@@ -385,16 +392,18 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
     expect(
       dsPrep("deepseek-v4-flash", { output_config: { effort: "medium" } }).reasoning_effort
     ).toBe("high");
-    expect(dsPrep("deepseek-v4-flash", { output_config: { effort: "high" } }).reasoning_effort).toBe(
-      "high"
-    );
+    expect(
+      dsPrep("deepseek-v4-flash", { output_config: { effort: "high" } }).reasoning_effort
+    ).toBe("high");
   });
 
   test("V4: xhigh → max, max → max", () => {
     expect(dsPrep("deepseek-v4", { output_config: { effort: "xhigh" } }).reasoning_effort).toBe(
       "max"
     );
-    expect(dsPrep("deepseek-v4", { output_config: { effort: "max" } }).reasoning_effort).toBe("max");
+    expect(dsPrep("deepseek-v4", { output_config: { effort: "max" } }).reasoning_effort).toBe(
+      "max"
+    );
   });
 
   test("V4: none/minimal → thinking disabled (no reasoning_effort)", () => {
@@ -409,13 +418,16 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
     expect(dsPrep("deepseek-chat", { output_config: { effort: "low" } }).reasoning_effort).toBe(
       "high"
     );
-    expect(
-      dsPrep("deepseek-reasoner", { output_config: { effort: "max" } }).reasoning_effort
-    ).toBe("max");
+    expect(dsPrep("deepseek-reasoner", { output_config: { effort: "max" } }).reasoning_effort).toBe(
+      "max"
+    );
   });
 
   test("legacy (deepseek-r1) strips, no reasoning_effort", () => {
-    const out = dsPrep("deepseek-r1", { output_config: { effort: "high" }, thinking: { budget_tokens: 5 } });
+    const out = dsPrep("deepseek-r1", {
+      output_config: { effort: "high" },
+      thinking: { budget_tokens: 5 },
+    });
     expect(out.reasoning_effort).toBeUndefined();
     expect(out.thinking).toBeUndefined();
   });

@@ -6,7 +6,7 @@
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import { isLocalProviderEnabled } from "../profile-config.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
-import { getAllProviders, type ProviderDefinition } from "../providers/provider-definitions.js";
+import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";
 
 export interface ProviderDef {
   /** TUI-facing name (e.g. "gemini" for the renamed Google direct API). */

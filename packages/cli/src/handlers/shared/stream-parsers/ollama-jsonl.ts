@@ -13,7 +13,7 @@ import type { Context } from "hono";
 import { log } from "../../../logger.js";
 
 export function createOllamaJsonlStream(
-  c: Context,
+  _c: Context,
   response: Response,
   opts: {
     modelName: string;

@@ -14,6 +14,7 @@
  */
 
 import { confirm, input, search, select } from "@inquirer/prompts";
+import { credentials } from "./auth/credentials/authority.js";
 import {
   type AggregatorEntry,
   type ModelDoc,
@@ -26,9 +27,8 @@ import {
   type CatalogModel,
   createCatalogClient,
 } from "./providers/model-catalog.js";
-import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
-import { credentials } from "./auth/credentials/authority.js";
+import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
 
 /**
  * Model data structure
@@ -929,9 +929,7 @@ function resolveProviderAggregatorEntry(
 ): AggregatorEntry | undefined {
   const firebaseSlug = pickerProviderToFirebaseSlug[provider];
   if (!firebaseSlug || !model.aggregators) return undefined;
-  return model.aggregators.find(
-    (a) => a.provider.toLowerCase() === firebaseSlug.toLowerCase()
-  );
+  return model.aggregators.find((a) => a.provider.toLowerCase() === firebaseSlug.toLowerCase());
 }
 
 /**

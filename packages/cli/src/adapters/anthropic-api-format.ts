@@ -6,8 +6,8 @@
  * Used by: MiniMax, Kimi, Kimi Coding, Z.AI
  */
 
-import { BaseAPIFormat, type AdapterResult } from "./base-api-format.js";
 import type { StreamFormat } from "../providers/transport/types.js";
+import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 
 export class AnthropicAPIFormat extends BaseAPIFormat {
   constructor(modelId: string, _providerName?: string) {
@@ -23,7 +23,7 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
     };
   }
 
-  shouldHandle(modelId: string): boolean {
+  shouldHandle(_modelId: string): boolean {
     return false; // Not auto-selected; always explicitly passed
   }
 

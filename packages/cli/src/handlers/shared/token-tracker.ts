@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "../../logger.js";
-import { getModelPricing, type ModelPricing } from "./remote-provider-types.js";
+import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
 
 export interface TokenTrackerConfig {
   contextWindow: number;

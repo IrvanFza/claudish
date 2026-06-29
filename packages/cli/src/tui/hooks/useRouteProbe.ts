@@ -1,10 +1,10 @@
 import { useCallback, useState } from "react";
-import { route } from "../../providers/routing-rules.js";
+import type { ClaudishProfileConfig } from "../../profile-config.js";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { probeProviderRoute } from "../../providers/probe-runner.js";
-import type { ClaudishProfileConfig } from "../../profile-config.js";
-import { PROVIDERS, providerIsReady } from "../providers.js";
+import { route } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
+import { PROVIDERS, providerIsReady } from "../providers.js";
 import type { ProbeEntry, ProbeMode } from "../types.js";
 
 /**
@@ -118,7 +118,7 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
       const matchedRule = ruleEntries.find(([pat]) => {
         if (pat.toLowerCase() === modelLower) return true;
         if (pat.includes("*")) {
-          const regex = new RegExp("^" + pat.replace(/\*/g, ".*") + "$", "i");
+          const regex = new RegExp(`^${pat.replace(/\*/g, ".*")}$`, "i");
           return regex.test(model);
         }
         return false;

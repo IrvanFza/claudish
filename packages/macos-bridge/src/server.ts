@@ -141,7 +141,10 @@ export class BridgeServer {
      */
     this.app.get("/debug/state", (c) => {
       const config = this.configManager.getConfig();
-      const routingConfig = this.connectHandler?.getRoutingConfig() || { enabled: false, modelMap: {} };
+      const routingConfig = this.connectHandler?.getRoutingConfig() || {
+        enabled: false,
+        modelMap: {},
+      };
       return c.json({
         config,
         routingConfig,
@@ -390,7 +393,10 @@ export class BridgeServer {
           await this.cycleTLSManager.initialize();
           console.error("[bridge] CycleTLS initialized successfully");
         } catch (cycleTLSError) {
-          console.error("[bridge] CycleTLS failed to initialize, will use native TLS fallback:", cycleTLSError);
+          console.error(
+            "[bridge] CycleTLS failed to initialize, will use native TLS fallback:",
+            cycleTLSError
+          );
           this.cycleTLSManager = null;
         }
 
@@ -506,7 +512,7 @@ export class BridgeServer {
         }
 
         // Stop routing middleware
-        console.error(`[DEBUG] Disabling proxy - setting routingMiddleware to null`);
+        console.error("[DEBUG] Disabling proxy - setting routingMiddleware to null");
         await this.routingMiddleware.shutdown();
         this.routingMiddleware = null;
 
@@ -1114,7 +1120,7 @@ export class BridgeServer {
 
     // Stop routing middleware
     if (this.routingMiddleware) {
-      console.error(`[DEBUG] stop() called - setting routingMiddleware to null`);
+      console.error("[DEBUG] stop() called - setting routingMiddleware to null");
       await this.routingMiddleware.shutdown();
       this.routingMiddleware = null;
     }

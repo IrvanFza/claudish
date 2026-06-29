@@ -15,10 +15,10 @@
  * IMPORTANT: OAuth tokens only work with chatgpt.com/backend-api, NOT api.openai.com.
  */
 
-import { OpenAIProviderTransport } from "./openai.js";
+import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
-import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
+import { OpenAIProviderTransport } from "./openai.js";
 
 export class OpenAICodexTransport extends OpenAIProviderTransport {
   /**
@@ -63,13 +63,14 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
    * auth artifact's transformPayload, applied only when OAuth is active.
    */
   transformPayload(payload: any): any {
+    let normalizedPayload = payload;
     if (payload?.model) {
       const normalized = normalizeCodexModel(payload.model);
       if (normalized !== payload.model) {
-        payload = { ...payload, model: normalized };
+        normalizedPayload = { ...payload, model: normalized };
       }
     }
     // Auth-derived store:false / include reasoning bits, only under OAuth.
-    return this.cachedAuth?.transformPayload?.(payload) ?? payload;
+    return this.cachedAuth?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
   }
 }

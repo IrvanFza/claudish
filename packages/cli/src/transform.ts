@@ -168,7 +168,8 @@ function extractTextContent(content: any): string {
     // Handle object content
     if (content.text) {
       return content.text;
-    } else if (content.content) {
+    }
+    if (content.content) {
       return extractTextContent(content.content);
     }
   }
@@ -184,7 +185,7 @@ export function transformMessages(req: any): void {
   if (!req.messages || !Array.isArray(req.messages)) return;
 
   const transformedMessages: any[] = [];
-  let systemMessages: string[] = [];
+  const systemMessages: string[] = [];
 
   for (const msg of req.messages) {
     // Handle developer messages (o3 specific) - treat as system messages
@@ -361,15 +362,19 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
       .map((item: any) => {
         if (typeof item === "string") {
           return item;
-        } else if (item && typeof item === "object") {
+        }
+        if (item && typeof item === "object") {
           // Handle content blocks
           if (item.type === "text" && item.text) {
             return item.text;
-          } else if (item.type === "text" && item.content) {
+          }
+          if (item.type === "text" && item.content) {
             return item.content;
-          } else if (item.text) {
+          }
+          if (item.text) {
             return item.text;
-          } else if (item.content) {
+          }
+          if (item.content) {
             return typeof item.content === "string" ? item.content : JSON.stringify(item.content);
           }
         }
@@ -388,7 +393,7 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
   if (!Array.isArray(req.tools)) req.tools = [];
 
   for (const t of req.tools) {
-    if (t && t.input_schema) {
+    if (t?.input_schema) {
       t.input_schema = removeUriFormat(t.input_schema);
     }
   }

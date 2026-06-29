@@ -1,42 +1,42 @@
+import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { serve } from "@hono/node-server";
-import { log, logStderr } from "./logger.js";
-import type { ProxyServer } from "./types.js";
-import { NativeHandler } from "./handlers/native-handler.js";
-import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
-import type { ProviderTransport } from "./providers/transport/types.js";
-import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
-import { LocalTransport } from "./providers/transport/local.js";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
-import { PoeProvider } from "./providers/transport/poe.js";
-import type { ModelHandler } from "./handlers/types.js";
+import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
+import { credentials } from "./auth/credentials/authority.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
-import {
-  resolveProvider,
-  parseUrlModel,
-  createUrlProvider,
-} from "./providers/provider-registry.js";
-import { parseModelSpec } from "./providers/model-parser.js";
-import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
-import { resolveModelProvider } from "./providers/provider-resolver.js";
-import { warmPricingCache } from "./services/pricing-cache.js";
-import { warmRecommendedModels } from "./model-loader.js";
-import {
-  resolveModelNameSync,
-  logResolution,
-  warmAllCatalogs,
-  ensureCatalogReady,
-} from "./providers/model-catalog-resolver.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
-import { route, loadRoutingRules } from "./providers/routing-rules.js";
-import { createHandlerForProvider } from "./providers/provider-profiles.js";
-import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
-import { credentials } from "./auth/credentials/authority.js";
+import type { ModelHandler } from "./handlers/types.js";
+import { log, logStderr } from "./logger.js";
+import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
+import { API_KEY_MAP } from "./providers/api-key-map.js";
+import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
+import {
+  ensureCatalogReady,
+  logResolution,
+  resolveModelNameSync,
+  warmAllCatalogs,
+} from "./providers/model-catalog-resolver.js";
+import { parseModelSpec } from "./providers/model-parser.js";
+import { createHandlerForProvider } from "./providers/provider-profiles.js";
+import {
+  createUrlProvider,
+  parseUrlModel,
+  resolveProvider,
+} from "./providers/provider-registry.js";
+import { resolveModelProvider } from "./providers/provider-resolver.js";
+import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
+import { loadRoutingRules, route } from "./providers/routing-rules.js";
+import { LocalTransport } from "./providers/transport/local.js";
+import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
+import { PoeProvider } from "./providers/transport/poe.js";
+import type { ProviderTransport } from "./providers/transport/types.js";
+import { warmPricingCache } from "./services/pricing-cache.js";
+import type { ProxyServer } from "./types.js";
 
 /**
  * Routing failures are TERMINAL — no provider can serve the request (missing
@@ -95,7 +95,7 @@ export async function createProxyServer(
   // stability; callers may pass undefined.
   _openrouterApiKey?: string,
   model?: string,
-  monitorMode: boolean = false,
+  monitorMode = false,
   anthropicApiKey?: string,
   modelMap?: { opus?: string; sonnet?: string; haiku?: string; subagent?: string },
   options: ProxyServerOptions = {}
@@ -682,11 +682,10 @@ export async function createProxyServer(
           body: JSON.stringify(body),
         });
         return c.json(await res.json());
-      } else {
-        // OpenRouter handler logic (estimation)
-        const txt = JSON.stringify(body);
-        return c.json({ input_tokens: Math.ceil(txt.length / 4) });
       }
+      // OpenRouter handler logic (estimation)
+      const txt = JSON.stringify(body);
+      return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
       if (e instanceof RoutingError) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
@@ -718,10 +717,9 @@ export async function createProxyServer(
 
   // Port resolution
   const addr = server.address();
-  const actualPort = typeof addr === "object" && addr?.port ? addr.port : port;
-  if (actualPort !== port) port = actualPort;
+  const resolvedPort = typeof addr === "object" && addr?.port ? addr.port : port;
 
-  log(`[Proxy] Server started on port ${port}`);
+  log(`[Proxy] Server started on port ${resolvedPort}`);
 
   // Warm pricing cache in background (non-blocking)
   warmPricingCache().catch(() => {});
@@ -737,8 +735,8 @@ export async function createProxyServer(
   });
 
   return {
-    port,
-    url: `http://127.0.0.1:${port}`,
+    port: resolvedPort,
+    url: `http://127.0.0.1:${resolvedPort}`,
     shutdown: async () => {
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },

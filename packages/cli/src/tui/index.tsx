@@ -2,12 +2,12 @@
 import { spawnSync } from "node:child_process";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
+import { getCodexOAuth } from "../auth/codex-oauth.js";
+import { reloadGeminiCredentials } from "../auth/gemini-oauth.js";
+import { getKimiOAuth } from "../auth/kimi-oauth.js";
+import { setStderrQuiet } from "../logger.js";
 import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
-import { setStderrQuiet } from "../logger.js";
-import { reloadGeminiCredentials } from "../auth/gemini-oauth.js";
-import { getCodexOAuth } from "../auth/codex-oauth.js";
-import { getKimiOAuth } from "../auth/kimi-oauth.js";
 
 /**
  * Start the config TUI. Re-entrant: if App requests an OAuth login,

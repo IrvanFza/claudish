@@ -24,9 +24,9 @@
 
 import { appendFileSync } from "node:fs";
 import { log } from "../logger.js";
-import { parseModelSpec } from "../providers/model-parser.js";
-import { resolveModelNameSync } from "../providers/model-catalog-resolver.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
+import { resolveModelNameSync } from "../providers/model-catalog-resolver.js";
+import { parseModelSpec } from "../providers/model-parser.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";
 const ADVISOR_BETA_FLAG = "advisor-tool-2026-03-01";
@@ -42,7 +42,7 @@ export interface AdvisorSwapConfig {
 
 export function loadAdvisorSwapConfig(
   cliModels?: string[],
-  cliCollector?: string | null,
+  cliCollector?: string | null
 ): AdvisorSwapConfig {
   return {
     enabled: process.env.CLAUDISH_SWAP_ADVISOR === "1" || (cliModels?.length ?? 0) > 0,
@@ -71,14 +71,12 @@ interface AdvisorInfo {
  *
  * Returns `null` if the payload had no advisor server tool (nothing to do).
  */
-export function swapAdvisorToolInBody(
-  payload: Record<string, unknown>,
-): AdvisorInfo | null {
+export function swapAdvisorToolInBody(payload: Record<string, unknown>): AdvisorInfo | null {
   const tools = payload.tools;
   if (!Array.isArray(tools)) return null;
 
   const idx = tools.findIndex(
-    (t) => t && typeof t === "object" && (t as any).type === ADVISOR_SERVER_TOOL_TYPE,
+    (t) => t && typeof t === "object" && (t as any).type === ADVISOR_SERVER_TOOL_TYPE
   );
   if (idx < 0) return null;
 
@@ -123,9 +121,10 @@ export function swapAdvisorToolInBody(
  * Removes `advisor-tool-2026-03-01` from a comma-separated anthropic-beta
  * header value. Returns `undefined` if the header had no advisor beta flag.
  */
-export function stripAdvisorBeta(
-  betaHeader: string | undefined,
-): { stripped: string | undefined; changed: boolean } {
+export function stripAdvisorBeta(betaHeader: string | undefined): {
+  stripped: string | undefined;
+  changed: boolean;
+} {
   if (!betaHeader) return { stripped: betaHeader, changed: false };
   const parts = betaHeader
     .split(",")
@@ -145,12 +144,9 @@ export function stripAdvisorBeta(
  * Appends a structured log entry to the configured advisor-swap log file.
  * Safe to call even if no log path is set (no-op in that case).
  */
-export function logAdvisorEvent(
-  cfg: AdvisorSwapConfig,
-  event: Record<string, unknown>,
-): void {
+export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, unknown>): void {
   if (!cfg.logPath) return;
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n";
+  const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;
   try {
     appendFileSync(cfg.logPath, line);
   } catch {
@@ -167,10 +163,7 @@ export function logAdvisorEvent(
  * Set so that subsequent inbound requests containing tool_result blocks
  * for those ids can be recognized and rewritten (Stage 2).
  */
-export function recordAdvisorEventsFromChunk(
-  cfg: AdvisorSwapConfig,
-  chunkText: string,
-): void {
+export function recordAdvisorEventsFromChunk(cfg: AdvisorSwapConfig, chunkText: string): void {
   // Regardless of logPath, always try to extract advisor tool_use ids —
   // Stage 2 rewrite depends on them even when no log file is configured.
   extractAdvisorToolUseIds(chunkText);
@@ -229,13 +222,14 @@ function extractAdvisorToolUseIds(chunkText: string): void {
   const re =
     /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"\s*,\s*"name"\s*:\s*"advisor"/g;
   let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((m = re.exec(chunkText)) !== null) {
     rememberAdvisorToolUseId(m[1]);
   }
 
   // Alternate pattern where input may appear before id (defensive).
-  const re2 =
-    /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"/g;
+  const re2 = /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"/g;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((m = re2.exec(chunkText)) !== null) {
     rememberAdvisorToolUseId(m[1]);
   }
@@ -281,7 +275,7 @@ export function rewriteAdvisorToolResults(
    * model call should pre-fetch advice keyed by tool_use_id before invoking
    * this function.
    */
-  getAdviceFor: (toolUseId: string) => string,
+  getAdviceFor: (toolUseId: string) => string
 ): string[] {
   const messages = payload.messages;
   if (!Array.isArray(messages)) return [];
@@ -318,15 +312,7 @@ export function rewriteAdvisorToolResults(
  * it in the executor's continuation.
  */
 export function stubAdvisorAdvice(toolUseId: string): string {
-  return (
-    `CLAUDISH_ADVISOR_STUB_${toolUseId}: ` +
-    "Evaluation mode — this advice was supplied by a claudish proxy stub. " +
-    "For the rate-limiter design, consider a hybrid: local token bucket " +
-    "per node for burst tolerance plus a central quota coordinator for " +
-    "cross-region fairness. Use the CAP tradeoff as your framing; expose " +
-    "availability vs accuracy knobs per tenant. The single most important " +
-    "decision is your failure mode: fail-open vs fail-closed."
-  );
+  return `CLAUDISH_ADVISOR_STUB_${toolUseId}: Evaluation mode — this advice was supplied by a claudish proxy stub. For the rate-limiter design, consider a hybrid: local token bucket per node for burst tolerance plus a central quota coordinator for cross-region fairness. Use the CAP tradeoff as your framing; expose availability vs accuracy knobs per tenant. The single most important decision is your failure mode: fail-open vs fail-closed.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,9 +324,7 @@ export function stubAdvisorAdvice(toolUseId: string): string {
  * advisor call. Returns the list of matching IDs without modifying the payload.
  * Used to determine which IDs need async pre-fetch before rewriting.
  */
-export function findPendingAdvisorToolResults(
-  payload: Record<string, unknown>,
-): string[] {
+export function findPendingAdvisorToolResults(payload: Record<string, unknown>): string[] {
   const messages = payload.messages;
   if (!Array.isArray(messages)) return [];
   const found: string[] = [];
@@ -362,15 +346,15 @@ export function findPendingAdvisorToolResults(
 }
 
 export function convertToOpenAIMessages(
-  anthropicMessages: any[],
+  anthropicMessages: any[]
 ): Array<{ role: string; content: string }> {
   return anthropicMessages
-    .filter(m => m.role === "user" || m.role === "assistant")
-    .map(m => ({
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
       role: m.role,
       content: extractBlocksAsText(m.content),
     }))
-    .filter(m => m.content.length > 0);
+    .filter((m) => m.content.length > 0);
 }
 
 export function extractBlocksAsText(content: any): string {
@@ -384,11 +368,16 @@ export function extractBlocksAsText(content: any): string {
         return `[Called tool: ${b.name} with input: ${inputStr}]`;
       }
       if (b.type === "tool_result") {
-        const resultText = typeof b.content === "string"
-          ? b.content.slice(0, 500)
-          : Array.isArray(b.content)
-            ? b.content.filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n").slice(0, 500)
-            : "(binary)";
+        const resultText =
+          typeof b.content === "string"
+            ? b.content.slice(0, 500)
+            : Array.isArray(b.content)
+              ? b.content
+                  .filter((x: any) => x.type === "text")
+                  .map((x: any) => x.text)
+                  .join("\n")
+                  .slice(0, 500)
+              : "(binary)";
         return `[Tool result (${b.tool_use_id}): ${resultText}]`;
       }
       return "";
@@ -421,14 +410,14 @@ function buildAdvisorRequest(
   parsed: ReturnType<typeof parseModelSpec>,
   messages: any[],
   apiKeys: { openrouter?: string; google?: string; openai?: string },
-  systemPrompt: string = ADVISOR_SYSTEM_PROMPT,
+  systemPrompt: string = ADVISOR_SYSTEM_PROMPT
 ): { url: string; headers: Record<string, string>; body: any } {
   const openaiMessages = convertToOpenAIMessages(messages);
   const provider = parsed.provider;
 
   if (provider === "google" || provider === "gemini") {
     return {
-      url: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`,
+      url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKeys.google ?? ""}`,
@@ -457,9 +446,10 @@ function buildAdvisorRequest(
   }
 
   // Everything else -> OpenRouter
-  const rawModelId = parsed.isExplicitProvider && provider !== "openrouter"
-    ? `${provider}/${parsed.model}`
-    : parsed.model;
+  const rawModelId =
+    parsed.isExplicitProvider && provider !== "openrouter"
+      ? `${provider}/${parsed.model}`
+      : parsed.model;
   const modelId = resolveModelNameSync("openrouter", rawModelId) ?? rawModelId;
 
   return {
@@ -481,7 +471,7 @@ function buildAdvisorRequest(
 async function callAdvisorModel(
   modelSpec: string,
   messages: any[],
-  apiKeys: { openrouter?: string; google?: string; openai?: string },
+  apiKeys: { openrouter?: string; google?: string; openai?: string }
 ): Promise<string> {
   const parsed = parseModelSpec(modelSpec);
   const { url, headers, body } = buildAdvisorRequest(parsed, messages, apiKeys);
@@ -500,7 +490,7 @@ async function callAdvisorModel(
       const errText = await resp.text().catch(() => "");
       throw new Error(`${resp.status}: ${errText.slice(0, 200)}`);
     }
-    const data = await resp.json() as any;
+    const data = (await resp.json()) as any;
     return data.choices?.[0]?.message?.content ?? "(no response)";
   } finally {
     clearTimeout(timeout);
@@ -512,18 +502,21 @@ function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
   return (
     parsed.provider === "anthropic" ||
     m.startsWith("claude-") ||
-    m === "haiku" || m === "sonnet" || m === "opus"
+    m === "haiku" ||
+    m === "sonnet" ||
+    m === "opus"
   );
 }
 
 async function callAnthropicCollector(
   model: string,
   adviceText: string,
-  apiKey?: string,
+  apiKey?: string
 ): Promise<string> {
-  const aliasResolved = (model === "haiku" || model === "sonnet" || model === "opus")
-    ? findEntryByAlias(model)?.modelId
-    : null;
+  const aliasResolved =
+    model === "haiku" || model === "sonnet" || model === "opus"
+      ? findEntryByAlias(model)?.modelId
+      : null;
   const resolvedModel = aliasResolved ?? model;
 
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -542,14 +535,14 @@ async function callAnthropicCollector(
   });
 
   if (!resp.ok) throw new Error(`anthropic collector ${resp.status}`);
-  const data = await resp.json() as any;
+  const data = (await resp.json()) as any;
   return data.content?.find((b: any) => b.type === "text")?.text ?? "(empty)";
 }
 
 async function callCollectorModel(
   collectorSpec: string,
   advice: Array<{ model: string; text: string }>,
-  apiKeys: { openrouter?: string; google?: string; openai?: string; anthropic?: string },
+  apiKeys: { openrouter?: string; google?: string; openai?: string; anthropic?: string }
 ): Promise<string> {
   const adviceText = advice
     .map((a, i) => `### Advisor ${i + 1} (${a.model})\n${a.text}`)
@@ -567,10 +560,13 @@ async function callCollectorModel(
     parsed,
     collectorMessages as any,
     apiKeys,
-    COLLECTOR_SYSTEM_PROMPT,
+    COLLECTOR_SYSTEM_PROMPT
   );
   // Override messages since buildAdvisorRequest would try to convert
-  body.messages = [{ role: "system", content: COLLECTOR_SYSTEM_PROMPT }, { role: "user", content: adviceText }];
+  body.messages = [
+    { role: "system", content: COLLECTOR_SYSTEM_PROMPT },
+    { role: "user", content: adviceText },
+  ];
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
@@ -583,7 +579,7 @@ async function callCollectorModel(
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`collector ${resp.status}`);
-    const data = await resp.json() as any;
+    const data = (await resp.json()) as any;
     return data.choices?.[0]?.message?.content ?? "(collector returned empty)";
   } finally {
     clearTimeout(timeout);
@@ -595,11 +591,11 @@ export async function fetchMultiModelAdvice(
   messages: any[],
   models: string[],
   collector: string | null,
-  apiKeys: { openrouter?: string; google?: string; openai?: string; anthropic?: string },
+  apiKeys: { openrouter?: string; google?: string; openai?: string; anthropic?: string }
 ): Promise<string> {
   // Step 1: Call all advisors in parallel
   const results = await Promise.allSettled(
-    models.map(model => callAdvisorModel(model, messages, apiKeys))
+    models.map((model) => callAdvisorModel(model, messages, apiKeys))
   );
 
   const sections: string[] = [];

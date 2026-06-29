@@ -13,25 +13,25 @@
  * sub-rows, and a compact key/wire footer.
  */
 
+import type { KeyProvenance } from "../providers/api-key-provenance.js";
 import {
-  isFailureState,
-  isReadyState,
-  STREAM_MS_FLOOR,
   type ProbeResult,
   type ProbeTiming,
+  STREAM_MS_FLOOR,
+  isFailureState,
+  isReadyState,
 } from "../providers/probe-live.js";
-import { type KeyProvenance } from "../providers/api-key-provenance.js";
 import {
-  latencyBgAnsi,
-  LATENCY_FG_ANSI,
   ANSI_RESET,
-  formatLatency,
+  LATENCY_FG_ANSI,
   STAGE_BG_ANSI,
   STAGE_FG,
-  throughputFg,
+  formatLatency,
   hexToAnsiFg,
-  timelineBarCells,
+  latencyBgAnsi,
   splitStageCells,
+  throughputFg,
+  timelineBarCells,
   tokBarCells,
 } from "../tui/theme.js";
 
@@ -51,6 +51,7 @@ const pc = {
   bgSlowest: "\x1b[48;5;95m",
 } as const;
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
 function stripAnsi(s: string): string {
@@ -63,11 +64,7 @@ function visibleLength(s: string): number {
 }
 
 /** Pad a string (which may contain ANSI codes) to a target visible width. */
-function padVisible(
-  s: string,
-  width: number,
-  align: "left" | "right" = "left",
-): string {
+function padVisible(s: string, width: number, align: "left" | "right" = "left"): string {
   const vis = visibleLength(s);
   if (vis >= width) return s;
   const pad = " ".repeat(width - vis);
@@ -79,7 +76,7 @@ function truncate(s: string, max: number): string {
   if (max <= 0) return "";
   if (s.length <= max) return s;
   if (max <= 1) return "…";
-  return s.slice(0, max - 1) + "…";
+  return `${s.slice(0, max - 1)}…`;
 }
 
 /** Word-wrap a plain string into lines no wider than maxWidth. Splits on whitespace. */
@@ -106,7 +103,7 @@ function wordWrap(text: string, maxWidth: number): string[] {
     if (current.length === 0) {
       current = word;
     } else if (current.length + 1 + word.length <= maxWidth) {
-      current += " " + word;
+      current += ` ${word}`;
     } else {
       lines.push(current);
       current = word;
@@ -243,20 +240,15 @@ function buildBarsLine(
   timing: ProbeTiming,
   scales: BarScales,
   isFastest: boolean,
-  usable: number,
+  usable: number
 ): string {
   const t = timing;
 
   // Degradation tiers (see PRINTER_BARS_* constants) — keyed on usable width.
   const showTokBar = usable >= PRINTER_BARS_FULL_WIDTH;
-  const showBreakdown =
-    usable >= PRINTER_BARS_FULL_WIDTH || usable >= PRINTER_BARS_NOTOK_WIDTH;
+  const showBreakdown = usable >= PRINTER_BARS_FULL_WIDTH || usable >= PRINTER_BARS_NOTOK_WIDTH;
 
-  const barCells = timelineBarCells(
-    t.totalMs,
-    scales.maxTotalMs,
-    PRINTER_BAR_WIDTH,
-  );
+  const barCells = timelineBarCells(t.totalMs, scales.maxTotalMs, PRINTER_BAR_WIDTH);
   const stages = splitStageCells(t.ttfbMs, t.ttftMs, t.totalMs, barCells);
   const trackCells = Math.max(0, PRINTER_BAR_WIDTH - barCells);
 
@@ -300,11 +292,7 @@ function buildBarsLine(
   const tokFg = hexToAnsiFg(throughputFg(t.tokensPerSec));
   let tokBar = "";
   if (showTokBar) {
-    const tokCells = tokBarCells(
-      t.tokensPerSec,
-      scales.maxTokPerSec,
-      PRINTER_TOK_WIDTH,
-    );
+    const tokCells = tokBarCells(t.tokensPerSec, scales.maxTokPerSec, PRINTER_TOK_WIDTH);
     const tokTrack = Math.max(0, PRINTER_TOK_WIDTH - tokCells);
     if (tokCells > 0) {
       tokBar += `${tokFg}${PRINTER_BAR_FILL.repeat(tokCells)}${pc.reset}`;
@@ -367,13 +355,11 @@ function summaryColor(live: number, total: number): string {
   return pc.yellow;
 }
 
-function statusColor(state: string): string {
-  if (state === "live") return pc.green;
-  if (state === "key-missing") return pc.dim + pc.red;
-  return pc.red;
-}
-
-function shortStatusLabel(probe: ProbeResult | undefined, hasCreds: boolean, hint?: string): string {
+function shortStatusLabel(
+  probe: ProbeResult | undefined,
+  hasCreds: boolean,
+  _hint?: string
+): string {
   if (!probe) {
     if (hasCreds) return `${pc.green}● ready${pc.reset}`;
     return `${pc.dim}${pc.red}○ missing${pc.reset}`;
@@ -388,6 +374,7 @@ function shortStatusLabel(probe: ProbeResult | undefined, hasCreds: boolean, hin
     case "key-missing":
       return `${pc.dim}${pc.red}○ missing${pc.reset}`;
     case "auth-failed":
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: trims whitespace before an ANSI escape
       return `${pc.red}⊗ auth ${probe.httpStatus ?? ""}${pc.reset}`.replace(/\s+\u001b/, "\u001b");
     case "model-not-found":
       return `${pc.red}⊗ not found${pc.reset}`;
@@ -417,13 +404,7 @@ function renderBorderTop(title: string, summary: string, width: number): string 
   // middle dashes = width - 2 - 2 - titleVis - summaryVis
   const middleDashes = width - 4 - titleVis - summaryVis;
   const middle = "─".repeat(Math.max(1, middleDashes));
-  return (
-    `${pc.dim}┌─${pc.reset}` +
-    titleSeg +
-    `${pc.dim}${middle}${pc.reset}` +
-    summarySeg +
-    `${pc.dim}─┐${pc.reset}`
-  );
+  return `${pc.dim}┌─${pc.reset}${titleSeg}${pc.dim}${middle}${pc.reset}${summarySeg}${pc.dim}─┐${pc.reset}`;
 }
 
 function renderBorderBottom(width: number): string {
@@ -456,6 +437,7 @@ function renderTextLine(body: string, width: number, bg?: string): string {
   const padded = padVisible(content, usable, "left");
   if (bg) {
     // Re-apply bg after every reset within the body so the stripe stays continuous
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: matches the ANSI reset sequence
     const tinted = padded.replace(/\x1b\[0m/g, `\x1b[0m${bg}`);
     return `${pc.dim}│${pc.reset}${bg}${leftPad}${tinted}${rightPad}${pc.reset}${pc.dim}│${pc.reset}`;
   }
@@ -468,12 +450,7 @@ function renderTextLine(body: string, width: number, bg?: string): string {
  * If `bg` is provided, the entire inner row content is wrapped with that
  * background color (for zebra-striping). The border `│` chars stay un-tinted.
  */
-function renderRow(
-  cells: string[],
-  widths: number[],
-  width: number,
-  bg?: string,
-): string {
+function renderRow(cells: string[], widths: number[], width: number, bg?: string): string {
   // Layout:
   // │  c0 │ c1 │ c2 │ c3  │
   // inner = width - 2
@@ -486,9 +463,7 @@ function renderRow(
   // through the separator too — so we use the bg color on the spaces but keep
   // the `│` dim. We re-apply the bg right after each reset so the stripe
   // doesn't break.
-  const sep = bg
-    ? ` ${pc.dim}│${pc.reset}${bg} `
-    : ` ${pc.dim}│${pc.reset} `;
+  const sep = bg ? ` ${pc.dim}│${pc.reset}${bg} ` : ` ${pc.dim}│${pc.reset} `;
   const sepVis = 3; // " │ "
   const fixedUsed =
     CARD_PADDING_LEFT +
@@ -503,18 +478,19 @@ function renderRow(
 
   // When applying a background, we must re-apply `bg` after each cell's
   // internal `pc.reset` so the stripe stays continuous across colored text.
-  const body = bg
-    ? padded.map((cell) => cell.replace(/\x1b\[0m/g, `\x1b[0m${bg}`)).join(sep)
-    : padded.join(sep);
+  let body: string;
+  if (bg) {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: matches the ANSI reset sequence
+    const reTinted = padded.map((cell) => cell.replace(/\x1b\[0m/g, `\x1b[0m${bg}`));
+    body = reTinted.join(sep);
+  } else {
+    body = padded.join(sep);
+  }
 
   if (bg) {
-    return (
-      `${pc.dim}│${pc.reset}${bg}${leftPad}${body}${rightPad}${pc.reset}${pc.dim}│${pc.reset}`
-    );
+    return `${pc.dim}│${pc.reset}${bg}${leftPad}${body}${rightPad}${pc.reset}${pc.dim}│${pc.reset}`;
   }
-  return (
-    `${pc.dim}│${pc.reset}${leftPad}${body}${rightPad}${pc.dim}│${pc.reset}`
-  );
+  return `${pc.dim}│${pc.reset}${leftPad}${body}${rightPad}${pc.dim}│${pc.reset}`;
 }
 
 /**
@@ -568,17 +544,14 @@ interface RowData {
   barsTiming?: ProbeTiming;
 }
 
-function buildRowData(
-  result: ModelResult,
-  isLiveProbe: boolean,
-): RowData[] {
+function buildRowData(result: ModelResult, isLiveProbe: boolean): RowData[] {
   // Find fastest and slowest live providers by latency.
   // Only highlight if there are 2+ live providers (no point marking 1 as both).
   let fastestIdx = -1;
   let slowestIdx = -1;
   if (isLiveProbe) {
-    let fastestLatency = Infinity;
-    let slowestLatency = -Infinity;
+    let fastestLatency = Number.POSITIVE_INFINITY;
+    let slowestLatency = Number.NEGATIVE_INFINITY;
     let liveCount = 0;
     result.chain.forEach((entry, i) => {
       if (entry.probe?.state === "live") {
@@ -614,9 +587,7 @@ function buildRowData(
     // Bars sub-row timing for a live probe; the line is built later (renderCard)
     // once the card width is known.
     const barsTiming =
-      entry.probe?.state === "live" && entry.probe.timing
-        ? entry.probe.timing
-        : undefined;
+      entry.probe?.state === "live" && entry.probe.timing ? entry.probe.timing : undefined;
 
     return {
       num: `${i + 1}`,
@@ -646,8 +617,7 @@ function buildDirectRowData(result: ModelResult): RowData[] {
   if (probe && isFailureState(probe.state) && probe.errorMessage) {
     errorDetail = stripAnsi(probe.errorMessage).replace(/\s+/g, " ").trim();
   }
-  const barsTiming =
-    probe?.state === "live" && probe.timing ? probe.timing : undefined;
+  const barsTiming = probe?.state === "live" && probe.timing ? probe.timing : undefined;
   return [
     {
       num: "1",
@@ -676,11 +646,11 @@ function computeColumnWidths(rows: RowData[]): number[] {
  * can safely render.
  */
 function computeCardWidth(
-  rows: RowData[],
+  _rows: RowData[],
   widths: number[],
   topTitleVis: number,
   topSummaryVis: number,
-  footerVis: number,
+  footerVis: number
 ): number {
   // table row width:
   // 2 borders + leftPad + sum(widths) + (n-1)*" │ " + rightPad
@@ -751,7 +721,7 @@ interface CardLayout {
 function buildCardLayout(
   result: ModelResult,
   isLiveProbe: boolean,
-  directKeyVar?: string,
+  directKeyVar?: string
 ): CardLayout {
   const rows =
     result.routingSource === "direct"
@@ -765,8 +735,7 @@ function buildCardLayout(
       ? 1
       : 0;
   const effLive = result.routingSource === "direct" ? liveCount : liveCount;
-  const effTotal =
-    result.routingSource === "direct" ? totalLinks : result.chain.length;
+  const effTotal = result.routingSource === "direct" ? totalLinks : result.chain.length;
 
   const titleText = result.model;
   const sumColor = summaryColor(effLive, effTotal);
@@ -780,10 +749,7 @@ function buildCardLayout(
 
   const keyLine = buildKeyLine(activeEntry, directKeyVar);
   const wireLine = result.wiring
-    ? buildWireLine(
-        result.wiring,
-        activeEntry?.displayName ?? result.nativeProvider,
-      )
+    ? buildWireLine(result.wiring, activeEntry?.displayName ?? result.nativeProvider)
     : "";
   const footerVis = Math.max(visibleLength(keyLine), visibleLength(wireLine));
 
@@ -809,7 +775,7 @@ function buildCardLayout(
 export function computeRequiredWidth(
   result: ModelResult,
   isLiveProbe: boolean,
-  directKeyVar?: string,
+  directKeyVar?: string
 ): number {
   const layout = buildCardLayout(result, isLiveProbe, directKeyVar);
   return computeCardWidth(
@@ -817,7 +783,7 @@ export function computeRequiredWidth(
     layout.widths,
     visibleLength(layout.titleStyled),
     visibleLength(layout.summaryStyled),
-    layout.footerVis,
+    layout.footerVis
   );
 }
 
@@ -827,21 +793,14 @@ function renderCard(
   w: Writer,
   width: number,
   scales: BarScales,
-  directKeyVar?: string,
+  directKeyVar?: string
 ): void {
   const layout = buildCardLayout(result, isLiveProbe, directKeyVar);
-  const {
-    rows,
-    widths,
-    titleStyled,
-    summaryStyled,
-    keyLine,
-    wireLine,
-  } = layout;
+  const { rows, widths, titleStyled, summaryStyled, keyLine, wireLine } = layout;
 
   // === Render ===
-  w(renderBorderTop(titleStyled, summaryStyled, width) + "\n");
-  w(renderBlankLine(width) + "\n");
+  w(`${renderBorderTop(titleStyled, summaryStyled, width)}\n`);
+  w(`${renderBlankLine(width)}\n`);
 
   // Header row (dim styled headers)
   const headerCells = [
@@ -850,27 +809,18 @@ function renderCard(
     `${pc.dim}Model Spec${pc.reset}`,
     `${pc.dim}Status${pc.reset}`,
   ];
-  w(renderRow(headerCells, widths, width) + "\n");
-  w(renderSepRow(widths, width) + "\n");
+  w(`${renderRow(headerCells, widths, width)}\n`);
+  w(`${renderSepRow(widths, width)}\n`);
 
   // Data rows — only highlight fastest (green bg) and slowest (red bg) live
   // providers. Other rows have no background. Each "logical row" (data row +
   // its optional error sub-rows) shares one bg so error details stay grouped.
   for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
     const r = rows[rowIdx];
-    const bg = r.fastest
-      ? pc.bgFastest
-      : r.slowest
-        ? pc.bgSlowest
-        : undefined;
+    const bg = r.fastest ? pc.bgFastest : r.slowest ? pc.bgSlowest : undefined;
 
-    const cells = [
-      r.num,
-      r.provider,
-      `${pc.dim}${r.spec}${pc.reset}`,
-      r.status,
-    ];
-    w(renderRow(cells, widths, width, bg) + "\n");
+    const cells = [r.num, r.provider, `${pc.dim}${r.spec}${pc.reset}`, r.status];
+    w(`${renderRow(cells, widths, width, bg)}\n`);
 
     // Bars sub-row beneath a live provider row (timeline + breakdown + tok/s).
     // Indented to read as a child of the row. Built here (not at row-build time)
@@ -884,7 +834,7 @@ function renderCard(
       if (barsUsable >= PRINTER_BARS_MIN_WIDTH) {
         const barsLine = buildBarsLine(r.barsTiming, scales, false, barsUsable);
         const body = `${" ".repeat(barsIndent)}${barsLine}`;
-        w(renderTextLine(body, width, bg) + "\n");
+        w(`${renderTextLine(body, width, bg)}\n`);
       }
     }
 
@@ -895,8 +845,7 @@ function renderCard(
       //   │{leftPad}{errorIndent}└ {text}{pad}{rightPad}│
       // where errorIndent visually insets the error one column past the
       // "#" column so it reads as a child of the failed row.
-      const innerUsable =
-        width - 2 - CARD_PADDING_LEFT - CARD_PADDING_RIGHT;
+      const innerUsable = width - 2 - CARD_PADDING_LEFT - CARD_PADDING_RIGHT;
       const errorIndent = 4; // 4 spaces of indent inside the usable area
       const prefixVis = 2; // "└ " or "  "
       const textWidth = innerUsable - errorIndent - prefixVis;
@@ -913,38 +862,38 @@ function renderCard(
           const last = wrapped[wrapped.length - 1];
           // Append an ellipsis to the last kept line (replace last char if needed).
           if (last.length >= textWidth) {
-            wrapped[wrapped.length - 1] = last.slice(0, textWidth - 1) + "…";
+            wrapped[wrapped.length - 1] = `${last.slice(0, textWidth - 1)}…`;
           } else {
-            wrapped[wrapped.length - 1] = last + "…";
+            wrapped[wrapped.length - 1] = `${last}…`;
           }
         }
         const indentStr = " ".repeat(errorIndent);
         for (let i = 0; i < wrapped.length; i++) {
           const prefix = i === 0 ? "└ " : "  ";
           const body = `${indentStr}${pc.dim}${pc.red}${prefix}${wrapped[i]}${pc.reset}`;
-          w(renderTextLine(body, width, bg) + "\n");
+          w(`${renderTextLine(body, width, bg)}\n`);
         }
       }
     }
   }
 
-  w(renderBlankLine(width) + "\n");
+  w(`${renderBlankLine(width)}\n`);
 
   // Footer: Key + Wire
   if (visibleLength(keyLine) > 0) {
-    w(renderTextLine(keyLine, width) + "\n");
+    w(`${renderTextLine(keyLine, width)}\n`);
   }
   if (visibleLength(wireLine) > 0) {
-    w(renderTextLine(wireLine, width) + "\n");
+    w(`${renderTextLine(wireLine, width)}\n`);
   }
 
   // Routing-source note (custom rules)
   if (result.routingSource === "custom-rules" && result.matchedPattern) {
     const note = `${pc.dim}Custom rule: ${pc.reset}${pc.cyan}${result.matchedPattern}${pc.reset}`;
-    w(renderTextLine(note, width) + "\n");
+    w(`${renderTextLine(note, width)}\n`);
   }
 
-  w(renderBorderBottom(width) + "\n");
+  w(`${renderBorderBottom(width)}\n`);
 }
 
 /**
@@ -963,11 +912,11 @@ function renderLegend(w: Writer): void {
       `${net}  ${ANSI_RESET}${netFg} network${pc.reset}   ` +
       `${srv}  ${ANSI_RESET}${srvFg} server${pc.reset}   ` +
       `${str}  ${ANSI_RESET}${strFg} streaming${pc.reset}   ` +
-      `${pc.dim}·· idle${pc.reset}\n`,
+      `${pc.dim}·· idle${pc.reset}\n`
   );
   w(
     `  ${pc.dim}bar length = total time, shared scale (slowest = full bar)  ·  ` +
-      `tok/s scaled to fastest${pc.reset}\n`,
+      `tok/s scaled to fastest${pc.reset}\n`
   );
   w("\n");
 }
@@ -1023,12 +972,10 @@ function renderLeaderboard(
   results: ModelResult[],
   scales: BarScales,
   maxWidth: number,
-  w: Writer,
+  w: Writer
 ): void {
   const reps = results.map(pickRepresentative);
-  const live = reps
-    .filter((r) => r.timing)
-    .sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
+  const live = reps.filter((r) => r.timing).sort((a, b) => a.timing!.totalMs - b.timing!.totalMs);
   const unavailable = reps.filter((r) => !r.timing);
   if (live.length === 0) return; // nothing to rank
 
@@ -1083,11 +1030,13 @@ function renderLeaderboard(
   const strFg = hexToAnsiFg(STAGE_FG.streaming);
 
   // ── Title ──
-  w(`${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest model first${pc.reset}\n`);
+  w(
+    `${margin}${pc.bold}${pc.cyan}Leaderboard${pc.reset}${pc.dim} — fastest model first${pc.reset}\n`
+  );
 
   // ── Column header (dim), aligned to the data rows. The data-row lead-in is
   //    `${rankStr} ${dot} ` = rankW + 3 visible cols before the name. ──
-  const rankHdr = " ".repeat(rankW) + "   "; // rank + 3 (gap + dot slot + gap)
+  const rankHdr = `${" ".repeat(rankW)}   `; // rank + 3 (gap + dot slot + gap)
   const nameHdr = padEnd(`${pc.dim}MODEL${pc.reset}`, nameW);
   const provHdr = padEnd(`${pc.dim}PROVIDER${pc.reset}`, provW);
   let header = `${margin}${rankHdr}${nameHdr} ${provHdr} ${pc.dim}${padEnd("TIMELINE", PRINTER_BAR_WIDTH)}${pc.reset}  ${pc.dim}${padStartSafe("TOTAL", 7)}${pc.reset}`;
@@ -1099,7 +1048,7 @@ function renderLeaderboard(
   } else {
     header += `${pc.dim}  ${padStartSafe("tok/s", PRINTER_TOK_VALUE_W)}${pc.reset}`;
   }
-  w(header + "\n");
+  w(`${header}\n`);
 
   // ── Data rows (fastest first) ──
   live.forEach((row, idx) => {
@@ -1115,9 +1064,12 @@ function renderLeaderboard(
     const stages = splitStageCells(t.ttfbMs, t.ttftMs, t.totalMs, barCells);
     const trackCells = Math.max(0, PRINTER_BAR_WIDTH - barCells);
     let timeline = "";
-    if (stages.network > 0) timeline += `${STAGE_BG_ANSI.network}${" ".repeat(stages.network)}${ANSI_RESET}`;
-    if (stages.server > 0) timeline += `${STAGE_BG_ANSI.server}${" ".repeat(stages.server)}${ANSI_RESET}`;
-    if (stages.streaming > 0) timeline += `${STAGE_BG_ANSI.streaming}${" ".repeat(stages.streaming)}${ANSI_RESET}`;
+    if (stages.network > 0)
+      timeline += `${STAGE_BG_ANSI.network}${" ".repeat(stages.network)}${ANSI_RESET}`;
+    if (stages.server > 0)
+      timeline += `${STAGE_BG_ANSI.server}${" ".repeat(stages.server)}${ANSI_RESET}`;
+    if (stages.streaming > 0)
+      timeline += `${STAGE_BG_ANSI.streaming}${" ".repeat(stages.streaming)}${ANSI_RESET}`;
     if (trackCells > 0) timeline += `${pc.dim}${PRINTER_TRACK.repeat(trackCells)}${pc.reset}`;
 
     const total = `${LATENCY_FG_ANSI}${padStartSafe(formatLatency(t.totalMs), 7)}${pc.reset}`;
@@ -1145,7 +1097,9 @@ function renderLeaderboard(
     }
     const tokValue = `${tokFg}${padStartSafe(`${Math.round(t.tokensPerSec)} t/s`, PRINTER_TOK_VALUE_W)}${pc.reset}`;
 
-    w(`${margin}${rankStr} ${dot} ${name} ${prov} ${timeline}  ${total}${breakdown}${tokBar}${tokValue}\n`);
+    w(
+      `${margin}${rankStr} ${dot} ${name} ${prov} ${timeline}  ${total}${breakdown}${tokBar}${tokValue}\n`
+    );
   });
 
   // ── Unavailable models — dim, no bar. Keep the provider column aligned with
@@ -1160,7 +1114,8 @@ function renderLeaderboard(
   // ── Bottom rule — matches the ACTUAL rendered data-row width (not the
   //    card-calibrated `width` budget), so it underlines the table exactly. ──
   const rowVis =
-    (leadW - MARGIN) + // rank + dot + name + the space before the timeline
+    leadW -
+    MARGIN + // rank + dot + name + the space before the timeline
     LB_TIMELINE +
     (showBreakdown ? LB_BREAKDOWN : 0) +
     (showTokBar ? LB_TOKBAR : 2) +
@@ -1170,10 +1125,7 @@ function renderLeaderboard(
   w("\n");
 }
 
-export function printProbeResults(
-  results: ModelResult[],
-  isLiveProbe: boolean,
-): void {
+export function printProbeResults(results: ModelResult[], isLiveProbe: boolean): void {
   const w: Writer = process.stderr.write.bind(process.stderr);
 
   w("\n");
@@ -1184,14 +1136,10 @@ export function printProbeResults(
   const scales = computeBarScales(results);
 
   // Has any live probe carried timing? Only then is the legend meaningful.
-  const anyTimedLive = results.some(
-    (r) =>
-      r.directProbe?.state === "live" && r.directProbe.timing !== undefined,
-  ) ||
+  const anyTimedLive =
+    results.some((r) => r.directProbe?.state === "live" && r.directProbe.timing !== undefined) ||
     results.some((r) =>
-      (r.chain ?? []).some(
-        (c) => c.probe?.state === "live" && c.probe.timing !== undefined,
-      ),
+      (r.chain ?? []).some((c) => c.probe?.state === "live" && c.probe.timing !== undefined)
     );
 
   if (isLiveProbe && anyTimedLive) {
@@ -1200,17 +1148,12 @@ export function printProbeResults(
 
   // Pass 1: compute required width for each card. Done before the leaderboard so
   // it can share the exact same width (and shared scale) as the cards below it.
-  const requiredWidths = results.map((r) =>
-    computeRequiredWidth(r, isLiveProbe),
-  );
+  const requiredWidths = results.map((r) => computeRequiredWidth(r, isLiveProbe));
 
   // Pick the global width: the max required width, clamped to the terminal.
   const termCols = process.stderr.columns ?? process.stdout.columns ?? 100;
   const maxAllowed = Math.max(MIN_CARD_WIDTH, termCols - 4);
-  let globalWidth = requiredWidths.reduce(
-    (a, b) => Math.max(a, b),
-    MIN_CARD_WIDTH,
-  );
+  let globalWidth = requiredWidths.reduce((a, b) => Math.max(a, b), MIN_CARD_WIDTH);
   if (globalWidth > maxAllowed) globalWidth = maxAllowed;
 
   // Leaderboard — headline one-row-per-model comparison, fastest first, on the
@@ -1228,7 +1171,9 @@ export function printProbeResults(
   // of the cards starting abruptly under the leaderboard rule. Only shown when
   // the leaderboard was rendered (otherwise the cards ARE the top-level view).
   if (showedLeaderboard) {
-    w(`  ${pc.bold}${pc.cyan}Details${pc.reset}${pc.dim} — per-model routing chains${pc.reset}\n\n`);
+    w(
+      `  ${pc.bold}${pc.cyan}Details${pc.reset}${pc.dim} — per-model routing chains${pc.reset}\n\n`
+    );
   }
 
   // Pass 2: render each card with the shared width so borders align.
@@ -1239,7 +1184,7 @@ export function printProbeResults(
 
   // Compact tip footer (no legend — cards are self-describing).
   w(
-    `  ${pc.dim}Tip: chain order is LiteLLM → Zen Go → Subscription → Native API → OpenRouter${pc.reset}\n`,
+    `  ${pc.dim}Tip: chain order is LiteLLM → Zen Go → Subscription → Native API → OpenRouter${pc.reset}\n`
   );
   w("\n");
 

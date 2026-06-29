@@ -6,9 +6,9 @@
  * Includes 30-second timeout with detailed error reporting.
  */
 
-import type { ProviderTransport, StreamFormat } from "./types.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export class OpenAIProviderTransport implements ProviderTransport {
   readonly name: string;
@@ -42,7 +42,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     if (this.apiKey) {
-      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers.Authorization = `Bearer ${this.apiKey}`;
     }
     return headers;
   }
@@ -68,7 +68,10 @@ export class OpenAIProviderTransport implements ProviderTransport {
         if (response.status === 429 && attempt < maxRetries) {
           // Sniff body for terminal billing/quota errors. Clone first so the
           // caller still gets a readable body if we return this response.
-          const bodyText = await response.clone().text().catch(() => "");
+          const bodyText = await response
+            .clone()
+            .text()
+            .catch(() => "");
           if (isTerminal429(bodyText)) {
             log(`[${this.displayName}] 429 is terminal (billing/quota), not retrying`);
             return response;
@@ -141,8 +144,8 @@ export function isTerminal429(body: string): boolean {
     lower.includes("quota_exceeded") ||
     lower.includes("exceeded your current quota") ||
     lower.includes("out of credits") ||
-    lower.includes("\"code\":\"1113\"") ||
-    lower.includes("\"code\":1113")
+    lower.includes('"code":"1113"') ||
+    lower.includes('"code":1113')
   );
 }
 

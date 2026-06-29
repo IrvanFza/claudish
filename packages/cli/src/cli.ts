@@ -1,75 +1,66 @@
-import { VERSION } from "./version.js";
-import { ENV } from "./config.js";
-import type { ClaudishConfig } from "./types.js";
 import {
-  loadModelInfo,
-  getAvailableModels,
-  getRecommendedModels,
-  searchModels,
-  getModelsByProvider,
-  getProviderList,
-  getTop100Models,
-  groupRecommendedModels,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  normalizePricingDisplay,
-  FIREBASE_SLUG_TO_PROVIDER_NAME,
-  type RecommendedModelGroup,
-  type ModelDoc,
-} from "./model-loader.js";
-import { compareByReleaseDateDesc } from "./model-selector.js";
-import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
-import {
-  readFileSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
-  copyFileSync,
+  readFileSync,
   readdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ENV } from "./config.js";
+import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
+import {
+  FIREBASE_SLUG_TO_PROVIDER_NAME,
+  type ModelDoc,
+  type RecommendedModelGroup,
+  collectRoutingPrefixes,
+  computeQuickPicks,
+  getAvailableModels,
+  getModelsByProvider,
+  getProviderList,
+  getRecommendedModels,
+  getTop100Models,
+  groupRecommendedModels,
+  loadModelInfo,
+  normalizePricingDisplay,
+  searchModels,
+} from "./model-loader.js";
+import { compareByReleaseDateDesc } from "./model-selector.js";
+import {
+  type ModelResult as PrintableModelResult,
+  printProbeResults,
+} from "./probe/probe-results-printer.js";
+import type {
+  ProbeAppState,
+  ProbeLinkState,
+  ProbeModelResult,
+  ProbeStepState,
+} from "./probe/probe-tui-app.js";
+import { startProbeTui } from "./probe/probe-tui-runtime.js";
 import {
   getModelMapping,
   isLocalProviderEnabled,
   loadConfig,
   loadLocalConfig,
 } from "./profile-config.js";
-import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
+import { API_KEY_MAP } from "./providers/api-key-map.js";
+import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
+import type { FallbackRoute } from "./providers/auto-route.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
-import { type FallbackRoute } from "./providers/auto-route.js";
+import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
+import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
+import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import {
+  buildRoutingChain,
   loadRoutingRules,
   matchRoutingRule,
-  buildRoutingChain,
 } from "./providers/routing-rules.js";
-import {
-  resolveApiKeyProvenance,
-  type KeyProvenance,
-} from "./providers/api-key-provenance.js";
-import { API_KEY_MAP } from "./providers/api-key-map.js";
-import {
-  describeProbeState,
-  type ProbeResult,
-} from "./providers/probe-live.js";
-import {
-  pinProbeModelSpec,
-  probeProviderRoute,
-} from "./providers/probe-runner.js";
-import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import type {
-  ProbeAppState,
-  ProbeLinkState,
-  ProbeStepState,
-  ProbeModelResult,
-} from "./probe/probe-tui-app.js";
-import {
-  printProbeResults,
-  type ModelResult as PrintableModelResult,
-} from "./probe/probe-results-printer.js";
+import type { ClaudishConfig } from "./types.js";
+import { VERSION } from "./version.js";
 // Re-export from centralized provider-resolver for backwards compatibility
 export {
   resolveModelProvider,
@@ -148,7 +139,10 @@ export function parseAdvisorFlag(value: string): {
     collectorPart = undefined;
   }
 
-  const models = advisorPart.split(",").map(s => s.trim()).filter(Boolean);
+  const models = advisorPart
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   let collector: string | null;
   if (models.length <= 1) {
@@ -225,10 +219,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
   // Load diagMode from settings file (lowest priority — env/CLI override)
   try {
     const fileConfig = loadConfig();
-    if (
-      fileConfig.diagMode &&
-      ["auto", "logfile", "off"].includes(fileConfig.diagMode)
-    ) {
+    if (fileConfig.diagMode && ["auto", "logfile", "off"].includes(fileConfig.diagMode)) {
       config.diagMode = fileConfig.diagMode;
     }
   } catch {}
@@ -309,7 +300,9 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     } else if (arg === "--advisor") {
       const modelsArg = args[++i];
       if (!modelsArg) {
-        console.error("--advisor requires a comma-separated list of models (e.g., 'gemini-3-pro,grok-3')");
+        console.error(
+          "--advisor requires a comma-separated list of models (e.g., 'gemini-3-pro,grok-3')"
+        );
         process.exit(1);
       }
       const parsed = parseAdvisorFlag(modelsArg);
@@ -419,8 +412,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const probeTimeoutIdx = args.indexOf("--probe-timeout");
       if (probeTimeoutIdx !== -1 && probeTimeoutIdx + 1 < args.length) {
         const raw = args[probeTimeoutIdx + 1];
-        const parsed = parseInt(raw, 10);
-        if (!isNaN(parsed) && parsed > 0) {
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) {
           probeTimeoutMs = parsed * 1000;
         }
       }
@@ -450,7 +443,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         } else {
           console.log("\nProviders in Firebase catalog:\n");
           console.log("  Slug                 Active models");
-          console.log("  " + "─".repeat(40));
+          console.log(`  ${"─".repeat(40)}`);
           for (const { slug, count } of providers) {
             console.log(`  ${slug.padEnd(20)} ${String(count).padStart(5)}`);
           }
@@ -460,15 +453,11 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(0);
       } catch (err) {
         console.error(
-          `Failed to fetch providers: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to fetch providers: ${err instanceof Error ? err.message : String(err)}`
         );
         process.exit(1);
       }
-    } else if (
-      arg === "--models" ||
-      arg === "-s" ||
-      arg === "--models-search"
-    ) {
+    } else if (arg === "--models" || arg === "-s" || arg === "--models-search") {
       // Check for optional search query (next arg that doesn't start with --)
       const nextArg = args[i + 1];
       const hasQuery = nextArg && !nextArg.startsWith("--");
@@ -484,9 +473,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // passthrough swallow it later because we exit before that.
       const providerIdx = args.indexOf("--provider");
       const providerSlug =
-        providerIdx !== -1 && providerIdx + 1 < args.length
-          ? args[providerIdx + 1]
-          : null;
+        providerIdx !== -1 && providerIdx + 1 < args.length ? args[providerIdx + 1] : null;
 
       if (forceUpdate) clearAllModelCaches();
 
@@ -594,7 +581,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     // Uses Claude Code's native authentication (from `claude auth login`)
     //
     // Remove any placeholder API keys so Claude Code uses its stored credentials
-    if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.includes("placeholder")) {
+    if (process.env.ANTHROPIC_API_KEY?.includes("placeholder")) {
       delete process.env.ANTHROPIC_API_KEY;
     }
 
@@ -677,7 +664,6 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
 
   return config as ClaudishConfig;
 }
-
 
 /** Format a ModelDoc numeric pricing block for display. */
 function formatModelDocPricing(pricing: ModelDoc["pricing"]): string {
@@ -778,13 +764,11 @@ function renderModelDocTable(models: Array<ModelDoc & { rank?: number }>, showRa
     ? "  #    Model                          Provider    Pricing     Context  Caps  Released"
     : "       Model                          Provider    Pricing     Context  Caps  Released";
   console.log(header);
-  console.log("  " + "─".repeat(90));
+  console.log(`  ${"─".repeat(90)}`);
   for (const m of models) {
-    const rankCell = showRank
-      ? String(m.rank ?? "").padStart(3) + "  "
-      : "     ";
+    const rankCell = showRank ? `${String(m.rank ?? "").padStart(3)}  ` : "     ";
     const rawId = m.modelId;
-    const id = rawId.length > 30 ? rawId.substring(0, 27) + "..." : rawId;
+    const id = rawId.length > 30 ? `${rawId.substring(0, 27)}...` : rawId;
     const idPadded = id.padEnd(30);
     const prov = (m.provider || "").padEnd(10);
     const price = formatModelDocPricing(m.pricing).padEnd(10);
@@ -801,7 +785,7 @@ function renderModelDocTable(models: Array<ModelDoc & { rank?: number }>, showRa
  */
 async function printLocalProvidersFooter(): Promise<void> {
   console.log("\nLocal providers");
-  console.log("  " + "─".repeat(70));
+  console.log(`  ${"─".repeat(70)}`);
 
   // Ollama probe
   let ollamaLine = "  Ollama:    not running";
@@ -953,7 +937,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
   const renderGroup = (group: RecommendedModelGroup): void => {
     const m = group.primary;
     const rawId = m.id;
-    const modelId = rawId.length > 28 ? rawId.substring(0, 25) + "..." : rawId;
+    const modelId = rawId.length > 28 ? `${rawId.substring(0, 25)}...` : rawId;
     const modelIdPadded = modelId.padEnd(28);
 
     const pricing = normalizePricingDisplay(m.pricing?.average);
@@ -983,7 +967,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
 
   if (flagship.length > 0) {
     console.log("Flagship models");
-    console.log("  " + "─".repeat(70));
+    console.log(`  ${"─".repeat(70)}`);
     for (let i = 0; i < flagship.length; i++) {
       renderGroup(flagship[i]);
       if (i < flagship.length - 1) console.log("");
@@ -993,7 +977,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
   if (fast.length > 0) {
     if (flagship.length > 0) console.log("");
     console.log("Fast variants");
-    console.log("  " + "─".repeat(70));
+    console.log(`  ${"─".repeat(70)}`);
     for (let i = 0; i < fast.length; i++) {
       renderGroup(fast[i]);
       if (i < fast.length - 1) console.log("");
@@ -1017,10 +1001,8 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
     pickLines.push(
       `    Large ctx    → ${picks.largeContext.id} (${picks.largeContext.context || "N/A"})`
     );
-  if (picks.mostCapable)
-    pickLines.push(`    Most capable → ${picks.mostCapable.id}`);
-  if (picks.visionCoding)
-    pickLines.push(`    Vision+code  → ${picks.visionCoding.id}`);
+  if (picks.mostCapable) pickLines.push(`    Most capable → ${picks.mostCapable.id}`);
+  if (picks.visionCoding) pickLines.push(`    Vision+code  → ${picks.visionCoding.id}`);
   if (picks.agentic) pickLines.push(`    Agentic      → ${picks.agentic.id}`);
 
   if (pickLines.length > 0) {
@@ -1242,7 +1224,7 @@ async function probeModelRouting(
    */
   function buildRoutingExplanation(
     parsed: ReturnType<typeof parseModelSpec>,
-    chain: ReturnType<typeof buildModelChain>["chain"],
+    chain: ReturnType<typeof buildModelChain>["chain"]
   ): string {
     if (parsed.provider === "native-anthropic") {
       return "native passthrough · default Claude Code (Opus)";
@@ -1273,7 +1255,7 @@ async function probeModelRouting(
   function buildResultLinks(
     parsed: ReturnType<typeof parseModelSpec>,
     chainDetails: ReturnType<typeof buildModelChain>["chainDetails"],
-    directProbe: ProbeResult | undefined,
+    directProbe: ProbeResult | undefined
   ): ProbeModelResult["links"] {
     if (chainDetails.length === 0) {
       // Explicit/direct model — one synthetic link from the native provider.
@@ -1494,7 +1476,11 @@ async function probeModelRouting(
       console.log(JSON.stringify(results, null, 2));
     } finally {
       if (liveProxy) {
-        try { await liveProxy.shutdown(); } catch { /* ignore */ }
+        try {
+          await liveProxy.shutdown();
+        } catch {
+          /* ignore */
+        }
       }
     }
     return;
@@ -1662,11 +1648,13 @@ async function probeModelRouting(
             credentialHint: link.credentialHint,
           },
           options.timeoutMs
-        ).catch((e): ProbeResult => ({
-          state: "error",
-          latencyMs: 0,
-          errorMessage: String(e instanceof Error ? e.message : e),
-        }));
+        ).catch(
+          (e): ProbeResult => ({
+            state: "error",
+            latencyMs: 0,
+            errorMessage: String(e instanceof Error ? e.message : e),
+          })
+        );
 
         if (result.state === "live") {
           updateLink(link.id, {
@@ -1745,7 +1733,11 @@ async function probeModelRouting(
       // keep the app alive, and wait for the user to quit (q / Esc). Nothing is
       // dumped to stdout. The live proxy can shut down now — all probes are done.
       if (liveProxy) {
-        try { await liveProxy.shutdown(); } catch { /* ignore */ }
+        try {
+          await liveProxy.shutdown();
+        } catch {
+          /* ignore */
+        }
         liveProxy = null;
       }
       tui.store.setResults(results);
@@ -1758,7 +1750,11 @@ async function probeModelRouting(
       // cleanly BEFORE printing static output (avoids the OpenTUI in-place
       // reconciliation bug) and print the full static results table to stderr.
       if (liveProxy) {
-        try { await liveProxy.shutdown(); } catch { /* ignore */ }
+        try {
+          await liveProxy.shutdown();
+        } catch {
+          /* ignore */
+        }
         liveProxy = null;
       }
       await tui.shutdown();
@@ -1766,7 +1762,11 @@ async function probeModelRouting(
     }
   } finally {
     if (liveProxy) {
-      try { await liveProxy.shutdown(); } catch { /* ignore */ }
+      try {
+        await liveProxy.shutdown();
+      } catch {
+        /* ignore */
+      }
     }
     await tui.shutdown();
   }
@@ -2187,9 +2187,7 @@ function printAvailableModels(): void {
     console.log("");
   } catch (error) {
     console.error(
-      `Failed to load available models: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+      `Failed to load available models: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }

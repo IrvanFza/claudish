@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ const CLAUDISH_DIR = join(homedir(), ".claudish");
 const CONFIG_FILE = join(CLAUDISH_DIR, "config.json");
 
 function backupFile(path: string): string | null {
-  const backup = path + ".stats-test.bak";
+  const backup = `${path}.stats-test.bak`;
   if (existsSync(path)) {
     try {
       const content = require("node:fs").readFileSync(path, "utf-8");

@@ -86,7 +86,7 @@ describe("GeminiCodeAssistProviderTransport — delegated auth artifact", () => 
     await t.refreshAuth();
     const headers = await t.getHeaders();
 
-    expect(headers["Authorization"]).toBe(`Bearer ${FAKE_TOKEN}`);
+    expect(headers.Authorization).toBe(`Bearer ${FAKE_TOKEN}`);
     expect(headers["User-Agent"]).toBe("GeminiCLI/0.5.6/gemini-2.5-pro (darwin; arm64)");
     expect(headers["x-activity-request-id"]).toBe("act-fixed-id");
 

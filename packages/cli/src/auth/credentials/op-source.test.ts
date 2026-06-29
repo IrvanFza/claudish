@@ -16,10 +16,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  __resetResolveCacheForTests,
+  __resetSniffForTests,
   hasOpSources,
   resolveOpKeyForEnvVars,
-  __resetSniffForTests,
-  __resetResolveCacheForTests,
 } from "./op-source.js";
 
 let savedArgv: string[];

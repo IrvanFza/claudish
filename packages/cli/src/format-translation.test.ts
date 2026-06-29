@@ -11,9 +11,9 @@
  *   4. Run: bun test src/format-translation.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────
@@ -712,7 +712,7 @@ describe("ProviderProfile table completeness", () => {
   test("each profile has a createHandler function", async () => {
     const { PROVIDER_PROFILES } = await import("./providers/provider-profiles.js");
 
-    for (const [name, profile] of Object.entries(PROVIDER_PROFILES)) {
+    for (const profile of Object.values(PROVIDER_PROFILES)) {
       expect(typeof profile.createHandler).toBe("function");
     }
   });
@@ -1017,7 +1017,10 @@ describe("Regression: GeminiAPIFormat images in tool_result", () => {
               type: "tool_result",
               tool_use_id: "toolu_screenshot_1",
               content: [
-                { type: "text", text: '{"size_bytes": 358688, "viewport": {"width": 1800, "height": 991}}' },
+                {
+                  type: "text",
+                  text: '{"size_bytes": 358688, "viewport": {"width": 1800, "height": 991}}',
+                },
                 {
                   type: "image",
                   source: {
@@ -1064,7 +1067,12 @@ describe("Regression: GeminiAPIFormat images in tool_result", () => {
         {
           role: "assistant",
           content: [
-            { type: "tool_use", id: "toolu_read_1", name: "Read", input: { file_path: "/tmp/test.ts" } },
+            {
+              type: "tool_use",
+              id: "toolu_read_1",
+              name: "Read",
+              input: { file_path: "/tmp/test.ts" },
+            },
           ],
         },
         {
@@ -1102,9 +1110,7 @@ describe("Regression: GeminiAPIFormat images in tool_result", () => {
       messages: [
         {
           role: "assistant",
-          content: [
-            { type: "tool_use", id: "toolu_multi_1", name: "multi_screenshot", input: {} },
-          ],
+          content: [{ type: "tool_use", id: "toolu_multi_1", name: "multi_screenshot", input: {} }],
         },
         {
           role: "user",
@@ -1187,8 +1193,7 @@ describe("Anthropic SSE: thinking block filtering", () => {
 
     // Thinking block start should be present
     const thinkingStart = events.find(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
     );
     expect(thinkingStart).toBeDefined();
 
@@ -1224,8 +1229,7 @@ describe("Anthropic SSE: thinking block filtering", () => {
 
     // No thinking block start should be present
     const thinkingStart = events.find(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
     );
     expect(thinkingStart).toBeUndefined();
 
@@ -1267,8 +1271,7 @@ describe("Anthropic SSE: thinking block filtering", () => {
 
     // Thinking block start should be present (DefaultAPIFormat doesn't filter)
     const thinkingStart = events.find(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "thinking"
     );
     expect(thinkingStart).toBeDefined();
   });
@@ -1292,14 +1295,12 @@ describe("Anthropic SSE: thinking block filtering", () => {
     // After filtering thinking, text should be index 0, tool_use should be index 1
 
     const textStart = events.find(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "text"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "text"
     );
     expect(textStart?.data?.index).toBe(0);
 
     const toolStart = events.find(
-      (e) =>
-        e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
     );
     expect(toolStart?.data?.index).toBe(1);
 
@@ -1317,16 +1318,14 @@ describe("Anthropic SSE: thinking block filtering", () => {
 
     // content_block_stop for text should be index 0
     const textStop = events.find(
-      (e) =>
-        e.data?.type === "content_block_stop" && e.data?.index === 0
+      (e) => e.data?.type === "content_block_stop" && e.data?.index === 0
     );
     // Note: there will be a content_block_stop with index 0 for text (the thinking one was filtered)
     expect(textStop).toBeDefined();
 
     // content_block_stop for tool_use should be index 1
     const toolStop = events.find(
-      (e) =>
-        e.data?.type === "content_block_stop" && e.data?.index === 1
+      (e) => e.data?.type === "content_block_stop" && e.data?.index === 1
     );
     expect(toolStop).toBeDefined();
   });
@@ -1353,7 +1352,9 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     const createAnthropicPassthroughStream = await getParser();
     const adapter = await makeMiniMaxAdapter();
 
-    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse"));
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse")
+    );
     const ctx = createMockContext();
 
     const response = createAnthropicPassthroughStream(ctx, fixture, {
@@ -1370,9 +1371,7 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     expect(thinkingEvents.length).toBe(0);
 
     // NO signature_delta events should appear
-    const signatureEvents = events.filter(
-      (e) => e.data?.delta?.type === "signature_delta"
-    );
+    const signatureEvents = events.filter((e) => e.data?.delta?.type === "signature_delta");
     expect(signatureEvents.length).toBe(0);
 
     // Text block should be at index 0 (was index 1 before filtering thinking at index 0)
@@ -1413,7 +1412,9 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     const createAnthropicPassthroughStream = await getParser();
     const adapter = await makeMiniMaxAdapter();
 
-    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn2-thinking-tool-only.sse"));
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "minimax-m25-turn2-thinking-tool-only.sse")
+    );
     const ctx = createMockContext();
 
     const response = createAnthropicPassthroughStream(ctx, fixture, {
@@ -1424,15 +1425,11 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     const events = await parseClaudeSseStream(response);
 
     // NO thinking blocks
-    const thinkingStarts = events.filter(
-      (e) => e.data?.content_block?.type === "thinking"
-    );
+    const thinkingStarts = events.filter((e) => e.data?.content_block?.type === "thinking");
     expect(thinkingStarts.length).toBe(0);
 
     // NO text blocks (this turn had none)
-    const textStarts = events.filter(
-      (e) => e.data?.content_block?.type === "text"
-    );
+    const textStarts = events.filter((e) => e.data?.content_block?.type === "text");
     expect(textStarts.length).toBe(0);
 
     // Tool_use should be at index 0 (was index 1 after thinking at index 0)
@@ -1458,7 +1455,9 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     const createAnthropicPassthroughStream = await getParser();
     const adapter = await makeMiniMaxAdapter();
 
-    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn3-thinking-multichunk.sse"));
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "minimax-m25-turn3-thinking-multichunk.sse")
+    );
     const ctx = createMockContext();
 
     const response = createAnthropicPassthroughStream(ctx, fixture, {
@@ -1494,7 +1493,9 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
   test("Without adapter, real MiniMax thinking blocks pass through (backward compat)", async () => {
     const createAnthropicPassthroughStream = await getParser();
 
-    const fixture = fixtureToResponse(join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse"));
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "minimax-m25-turn1-thinking-text-tool.sse")
+    );
     const ctx = createMockContext();
 
     const response = createAnthropicPassthroughStream(ctx, fixture, {
@@ -1511,9 +1512,7 @@ describe("Integration: Real MiniMax M2.5 SSE — thinking filtering", () => {
     expect(thinkingStart).toBeDefined();
 
     // Thinking deltas with real content should be present
-    const thinkingDeltas = events.filter(
-      (e) => e.data?.delta?.type === "thinking_delta"
-    );
+    const thinkingDeltas = events.filter((e) => e.data?.delta?.type === "thinking_delta");
     expect(thinkingDeltas.length).toBeGreaterThan(0);
 
     // Original indices preserved (thinking=0, text=1, tool=2)

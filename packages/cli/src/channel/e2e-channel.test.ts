@@ -13,14 +13,14 @@
  * Both groups require the claudish MCP server to be buildable.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { spawn } from "node:child_process";
-import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -357,7 +357,7 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
   test.skipIf(!claudeAvailable)(
     "claude discovers claudish MCP tools and can call list_models",
     async () => {
-      const { stdout, stderr, exitCode } = await runClaudeWithMcp(
+      const { stdout, exitCode } = await runClaudeWithMcp(
         "Use the list_models tool from the claudish MCP server and show me the results. Just call the tool and output the result, nothing else.",
         { timeout: 90_000 }
       );
@@ -396,7 +396,7 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
   test.skipIf(!claudeAvailable || !hasOpenRouterKey)(
     "claude creates a session via create_session tool",
     async () => {
-      const { stdout, stderr, exitCode } = await runClaudeWithMcp(
+      const { stdout, exitCode } = await runClaudeWithMcp(
         `Use the create_session tool from the claudish MCP server to create a session with model "x-ai/grok-code-fast-1" and prompt "Say exactly: hello e2e test". Then call list_sessions with include_completed=true and show the session status. Finally, wait 15 seconds and call get_output for that session_id. Show me all the raw results.`,
         { timeout: 120_000 }
       );

@@ -12,8 +12,8 @@
  */
 
 import { createCliRenderer } from "@opentui/core";
-import { createRoot, type Root } from "@opentui/react";
-import { ProbeApp, ProbeStore, type ProbeAppState } from "./probe-tui-app.js";
+import { type Root, createRoot } from "@opentui/react";
+import { ProbeApp, type ProbeAppState, ProbeStore } from "./probe-tui-app.js";
 
 export interface ProbeRuntime {
   store: ProbeStore;
@@ -22,9 +22,7 @@ export interface ProbeRuntime {
   shutdown: () => Promise<void>;
 }
 
-export async function startProbeTui(
-  initial: ProbeAppState,
-): Promise<ProbeRuntime> {
+export async function startProbeTui(initial: ProbeAppState): Promise<ProbeRuntime> {
   const renderer = await createCliRenderer({
     // Route rendering to stderr so --json piping on stdout stays clean.
     stdout: process.stderr as unknown as NodeJS.WriteStream,

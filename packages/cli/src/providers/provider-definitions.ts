@@ -10,8 +10,8 @@
  */
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
-import { getRuntimeProviders } from "./runtime-providers.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
+import { getRuntimeProviders } from "./runtime-providers.js";
 
 // ---------------------------------------------------------------------------
 // Types

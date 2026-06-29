@@ -6,8 +6,8 @@ config({ quiet: true }); // Loads .env from current working directory
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { readAllOnepasswordEnvironments } from "./providers/onepassword-config.js";
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
+import { readAllOnepasswordEnvironments } from "./providers/onepassword-config.js";
 
 // The 1Password SDK-auth resolver, the multi-account picker, and the
 // config-driven hydration (loadStoredApiKeys / applyCustomEndpointOpKeys /
@@ -452,7 +452,7 @@ async function runCli() {
 
       // Print final status (interactive may not reach here until user quits magmux)
       const modelIds = Object.keys(status.models).sort();
-      console.log(`\nTeam Status`);
+      console.log("\nTeam Status");
       for (const id of modelIds) {
         const m = status.models[id];
         const duration =

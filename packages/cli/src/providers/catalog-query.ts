@@ -31,12 +31,12 @@
  */
 
 import { statSync } from "node:fs";
+import type { AggregatorEntry } from "../model-loader.js";
 import {
-  readAllModelsCache,
   ALL_MODELS_CACHE_PATH,
   type SlimModelEntry,
+  readAllModelsCache,
 } from "./all-models-cache.js";
-import type { AggregatorEntry } from "../model-loader.js";
 
 /**
  * Minimal projection of a slim catalog entry for query consumers.

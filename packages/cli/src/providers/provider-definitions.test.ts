@@ -4,21 +4,21 @@
  * Run: bun test packages/cli/src/providers/provider-definitions.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   BUILTIN_PROVIDERS,
-  getShortcuts,
-  getLegacyPrefixPatterns,
-  getNativeModelPatterns,
-  getProviderByName,
+  getApiKeyEnvVars,
   getApiKeyInfo,
   getDisplayName,
   getEffectiveBaseUrl,
-  isLocalTransport,
-  isDirectApiProvider,
-  toRemoteProvider,
+  getLegacyPrefixPatterns,
+  getNativeModelPatterns,
+  getProviderByName,
+  getShortcuts,
   getShortestPrefix,
-  getApiKeyEnvVars,
+  isDirectApiProvider,
+  isLocalTransport,
+  toRemoteProvider,
 } from "./provider-definitions.js";
 
 // ---------------------------------------------------------------------------
@@ -117,47 +117,47 @@ describe("getShortcuts", () => {
   const shortcuts = getShortcuts();
 
   test("maps 'g' to 'google'", () => {
-    expect(shortcuts["g"]).toBe("google");
+    expect(shortcuts.g).toBe("google");
   });
 
   test("maps 'gemini' to 'google'", () => {
-    expect(shortcuts["gemini"]).toBe("google");
+    expect(shortcuts.gemini).toBe("google");
   });
 
   test("maps 'oai' to 'openai'", () => {
-    expect(shortcuts["oai"]).toBe("openai");
+    expect(shortcuts.oai).toBe("openai");
   });
 
   test("maps 'or' to 'openrouter'", () => {
-    expect(shortcuts["or"]).toBe("openrouter");
+    expect(shortcuts.or).toBe("openrouter");
   });
 
   test("maps 'mm' to 'minimax'", () => {
-    expect(shortcuts["mm"]).toBe("minimax");
+    expect(shortcuts.mm).toBe("minimax");
   });
 
   test("maps 'kimi' to 'kimi'", () => {
-    expect(shortcuts["kimi"]).toBe("kimi");
+    expect(shortcuts.kimi).toBe("kimi");
   });
 
   test("maps 'glm' to 'glm'", () => {
-    expect(shortcuts["glm"]).toBe("glm");
+    expect(shortcuts.glm).toBe("glm");
   });
 
   test("maps local provider shortcuts", () => {
-    expect(shortcuts["ollama"]).toBe("ollama");
-    expect(shortcuts["lms"]).toBe("lmstudio");
-    expect(shortcuts["vllm"]).toBe("vllm");
-    expect(shortcuts["mlx"]).toBe("mlx");
+    expect(shortcuts.ollama).toBe("ollama");
+    expect(shortcuts.lms).toBe("lmstudio");
+    expect(shortcuts.vllm).toBe("vllm");
+    expect(shortcuts.mlx).toBe("mlx");
   });
 
   test("maps 'poe' to 'poe'", () => {
-    expect(shortcuts["poe"]).toBe("poe");
+    expect(shortcuts.poe).toBe("poe");
   });
 
   test("maps 'litellm' to 'litellm'", () => {
-    expect(shortcuts["litellm"]).toBe("litellm");
-    expect(shortcuts["ll"]).toBe("litellm");
+    expect(shortcuts.litellm).toBe("litellm");
+    expect(shortcuts.ll).toBe("litellm");
   });
 });
 

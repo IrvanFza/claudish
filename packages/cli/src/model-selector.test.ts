@@ -142,9 +142,9 @@ describe("resolveProviderExternalId", () => {
   test("OpenRouter row uses the vendor-prefixed externalId", () => {
     // → or@openai/gpt-5
     expect(resolveProviderExternalId("openrouter", gpt5)).toBe("openai/gpt-5");
-    expect(buildExplicitModelSpec("openrouter", resolveProviderExternalId("openrouter", gpt5))).toBe(
-      "openrouter@openai/gpt-5"
-    );
+    expect(
+      buildExplicitModelSpec("openrouter", resolveProviderExternalId("openrouter", gpt5))
+    ).toBe("openrouter@openai/gpt-5");
   });
 
   test("OpenAI row uses the bare externalId", () => {
@@ -162,7 +162,12 @@ describe("resolveProviderExternalId", () => {
   });
 
   test("falls back to the bare model id when no aggregator matches the provider", () => {
-    const noAgg: ModelInfo = { id: "llama3.2:3b", name: "llama", description: "", provider: "Ollama" };
+    const noAgg: ModelInfo = {
+      id: "llama3.2:3b",
+      name: "llama",
+      description: "",
+      provider: "Ollama",
+    };
     expect(resolveProviderExternalId("ollama", noAgg)).toBe("llama3.2:3b");
     // A provider with aggregators but none for the selected provider also falls back.
     expect(resolveProviderExternalId("deepseek", gpt5)).toBe("gpt-5");
@@ -305,7 +310,9 @@ describe("CatalogClient integration for the original Zen bug", () => {
           modelId: "grok-4",
           aliases: [],
           sources: {},
-          aggregators: [{ provider: "x-ai", externalId: "grok-4", confidence: "api_official" as const }],
+          aggregators: [
+            { provider: "x-ai", externalId: "grok-4", confidence: "api_official" as const },
+          ],
         },
       ],
       models: [],

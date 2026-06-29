@@ -60,14 +60,12 @@ interface AdvisorInfo {
  *
  * Returns `null` if the payload had no advisor server tool (nothing to do).
  */
-export function swapAdvisorToolInBody(
-  payload: Record<string, unknown>,
-): AdvisorInfo | null {
+export function swapAdvisorToolInBody(payload: Record<string, unknown>): AdvisorInfo | null {
   const tools = payload.tools;
   if (!Array.isArray(tools)) return null;
 
   const idx = tools.findIndex(
-    (t) => t && typeof t === "object" && (t as any).type === ADVISOR_SERVER_TOOL_TYPE,
+    (t) => t && typeof t === "object" && (t as any).type === ADVISOR_SERVER_TOOL_TYPE
   );
   if (idx < 0) return null;
 
@@ -112,9 +110,10 @@ export function swapAdvisorToolInBody(
  * Removes `advisor-tool-2026-03-01` from a comma-separated anthropic-beta
  * header value. Returns `undefined` if the header had no advisor beta flag.
  */
-export function stripAdvisorBeta(
-  betaHeader: string | undefined,
-): { stripped: string | undefined; changed: boolean } {
+export function stripAdvisorBeta(betaHeader: string | undefined): {
+  stripped: string | undefined;
+  changed: boolean;
+} {
   if (!betaHeader) return { stripped: betaHeader, changed: false };
   const parts = betaHeader
     .split(",")
@@ -134,12 +133,9 @@ export function stripAdvisorBeta(
  * Appends a structured log entry to the configured advisor-swap log file.
  * Safe to call even if no log path is set (no-op in that case).
  */
-export function logAdvisorEvent(
-  cfg: AdvisorSwapConfig,
-  event: Record<string, unknown>,
-): void {
+export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, unknown>): void {
   if (!cfg.logPath) return;
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + "\n";
+  const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;
   try {
     appendFileSync(cfg.logPath, line);
   } catch {
@@ -156,10 +152,7 @@ export function logAdvisorEvent(
  * Set so that subsequent inbound requests containing tool_result blocks
  * for those ids can be recognized and rewritten (Stage 2).
  */
-export function recordAdvisorEventsFromChunk(
-  cfg: AdvisorSwapConfig,
-  chunkText: string,
-): void {
+export function recordAdvisorEventsFromChunk(cfg: AdvisorSwapConfig, chunkText: string): void {
   // Regardless of logPath, always try to extract advisor tool_use ids —
   // Stage 2 rewrite depends on them even when no log file is configured.
   extractAdvisorToolUseIds(chunkText);
@@ -218,13 +211,14 @@ function extractAdvisorToolUseIds(chunkText: string): void {
   const re =
     /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"\s*,\s*"name"\s*:\s*"advisor"/g;
   let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((m = re.exec(chunkText)) !== null) {
     rememberAdvisorToolUseId(m[1]);
   }
 
   // Alternate pattern where input may appear before id (defensive).
-  const re2 =
-    /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"/g;
+  const re2 = /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"/g;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((m = re2.exec(chunkText)) !== null) {
     rememberAdvisorToolUseId(m[1]);
   }
@@ -270,7 +264,7 @@ export function rewriteAdvisorToolResults(
    * model call should pre-fetch advice keyed by tool_use_id before invoking
    * this function.
    */
-  getAdviceFor: (toolUseId: string) => string,
+  getAdviceFor: (toolUseId: string) => string
 ): string[] {
   const messages = payload.messages;
   if (!Array.isArray(messages)) return [];
@@ -307,13 +301,5 @@ export function rewriteAdvisorToolResults(
  * it in the executor's continuation.
  */
 export function stubAdvisorAdvice(toolUseId: string): string {
-  return (
-    `CLAUDISH_ADVISOR_STUB_${toolUseId}: ` +
-    "Evaluation mode — this advice was supplied by a claudish proxy stub. " +
-    "For the rate-limiter design, consider a hybrid: local token bucket " +
-    "per node for burst tolerance plus a central quota coordinator for " +
-    "cross-region fairness. Use the CAP tradeoff as your framing; expose " +
-    "availability vs accuracy knobs per tenant. The single most important " +
-    "decision is your failure mode: fail-open vs fail-closed."
-  );
+  return `CLAUDISH_ADVISOR_STUB_${toolUseId}: Evaluation mode — this advice was supplied by a claudish proxy stub. For the rate-limiter design, consider a hybrid: local token bucket per node for burst tolerance plus a central quota coordinator for cross-region fairness. Use the CAP tradeoff as your framing; expose availability vs accuracy knobs per tenant. The single most important decision is your failure mode: fail-open vs fail-closed.`;
 }

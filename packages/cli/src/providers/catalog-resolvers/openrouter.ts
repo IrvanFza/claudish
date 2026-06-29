@@ -1,10 +1,10 @@
-import type { ModelCatalogResolver, RefreshOutcome } from "../model-catalog-resolver.js";
 import {
+  type DiskCacheV2,
+  type SlimModelEntry,
   readAllModelsCache,
   writeAllModelsCache,
-  type SlimModelEntry,
-  type DiskCacheV2,
 } from "../all-models-cache.js";
+import type { ModelCatalogResolver, RefreshOutcome } from "../model-catalog-resolver.js";
 
 /**
  * Firebase slim catalog endpoint. Override via:
@@ -90,14 +90,14 @@ export class OpenRouterCatalogResolver implements ModelCatalogResolver {
       const suffix = `/${userInput}`;
       for (const entry of entries) {
         const orId = this._getOpenRouterExternalId(entry);
-        if (orId && orId.endsWith(suffix)) return orId;
+        if (orId?.endsWith(suffix)) return orId;
       }
 
       // Step 4b: Case-insensitive suffix match
       const lowerSuffix = `/${userInput.toLowerCase()}`;
       for (const entry of entries) {
         const orId = this._getOpenRouterExternalId(entry);
-        if (orId && orId.toLowerCase().endsWith(lowerSuffix)) return orId;
+        if (orId?.toLowerCase().endsWith(lowerSuffix)) return orId;
       }
     }
 

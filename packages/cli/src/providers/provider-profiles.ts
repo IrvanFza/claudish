@@ -13,35 +13,33 @@
  *   proxy-server.ts. Profiles do not know about caching or invocationMode.
  */
 
+import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 import type { ComposedHandlerOptions } from "../handlers/composed-handler.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
-import type { ProviderTransport } from "./transport/types.js";
-import type { BaseAPIFormat } from "../adapters/base-api-format.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
-import { ComposedHandler } from "../handlers/composed-handler.js";
-import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
-import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
-import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
-import { OpenAIProviderTransport } from "./transport/openai.js";
-import { OpenAICodexTransport } from "./transport/openai-codex.js";
-import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
-import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AnthropicAPIFormat } from "../adapters/anthropic-api-format.js";
-import { OllamaProviderTransport } from "./transport/ollamacloud.js";
-import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
-import { LiteLLMProviderTransport } from "./transport/litellm.js";
-import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
-import { CodexAPIFormat } from "../adapters/codex-api-format.js";
-import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 import { DefaultAPIFormat } from "../adapters/base-api-format.js";
-import { OpenRouterProvider } from "./transport/openrouter.js";
+import { CodexAPIFormat } from "../adapters/codex-api-format.js";
+import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
+import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
+import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
+import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
+import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
+import { ComposedHandler } from "../handlers/composed-handler.js";
+import type { ModelHandler } from "../handlers/types.js";
+import { log, logStderr } from "../logger.js";
+import { formatProvenanceLog, resolveApiKeyProvenance } from "./api-key-provenance.js";
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
-import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
-import { log, logStderr } from "../logger.js";
-import { resolveApiKeyProvenance, formatProvenanceLog } from "./api-key-provenance.js";
-import type { ModelHandler } from "../handlers/types.js";
+import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
+import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
+import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
+import { LiteLLMProviderTransport } from "./transport/litellm.js";
+import { OllamaProviderTransport } from "./transport/ollamacloud.js";
+import { OpenAICodexTransport } from "./transport/openai-codex.js";
+import { OpenAIProviderTransport } from "./transport/openai.js";
+import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -332,7 +330,7 @@ const vertexProfile: ProviderProfile = {
       return handler;
     }
 
-    log(`[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT`);
+    log("[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT");
     return null;
   },
 };

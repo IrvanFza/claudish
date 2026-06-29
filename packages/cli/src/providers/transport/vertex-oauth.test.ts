@@ -70,7 +70,7 @@ describe("VertexProviderTransport — delegated auth", () => {
     const t = new VertexProviderTransport(config, parseVertexModel("gemini-2.5-flash"));
     await t.refreshAuth();
     const headers = await t.getHeaders();
-    expect(headers["Authorization"]).toBe("Bearer vertex-token-A");
+    expect(headers.Authorization).toBe("Bearer vertex-token-A");
 
     expect(getRequestAuthMock).toHaveBeenCalledTimes(1);
     expect(getRequestAuthMock.mock.calls[0][0]).toBe("vertex");
@@ -79,13 +79,13 @@ describe("VertexProviderTransport — delegated auth", () => {
   test("forceRefreshAuth() busts the manager cache and re-delegates the fresh token", async () => {
     const t = new VertexProviderTransport(config, parseVertexModel("gemini-2.5-flash"));
     await t.refreshAuth();
-    expect((await t.getHeaders())["Authorization"]).toBe("Bearer vertex-token-A");
+    expect((await t.getHeaders()).Authorization).toBe("Bearer vertex-token-A");
 
     await t.forceRefreshAuth();
     // Cache was busted via the shared manager (401-retry semantics preserved).
     expect(refreshTokenMock).toHaveBeenCalledTimes(1);
     // Re-delegated artifact carries the refreshed token.
-    expect((await t.getHeaders())["Authorization"]).toBe("Bearer vertex-token-B");
+    expect((await t.getHeaders()).Authorization).toBe("Bearer vertex-token-B");
   });
 
   test("getEndpoint() / getRequestInit() unchanged; anthropic transformPayload unchanged", () => {

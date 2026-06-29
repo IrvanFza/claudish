@@ -11,14 +11,14 @@
  * This format handles Codex models only. All other OpenAI models use OpenAIAPIFormat.
  */
 
+import { log } from "../logger.js";
+import type { StreamFormat } from "../providers/transport/types.js";
 import {
-  BaseAPIFormat,
   type AdapterResult,
+  BaseAPIFormat,
   type EffortLevel,
   matchesModelFamily,
 } from "./base-api-format.js";
-import { log } from "../logger.js";
-import type { StreamFormat } from "../providers/transport/types.js";
 
 /**
  * Normalize model name for ChatGPT backend API.
@@ -44,10 +44,6 @@ export function normalizeCodexModel(modelId: string | undefined): string {
 }
 
 export class CodexAPIFormat extends BaseAPIFormat {
-  constructor(modelId: string) {
-    super(modelId);
-  }
-
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
     return {
       cleanedText: textContent,

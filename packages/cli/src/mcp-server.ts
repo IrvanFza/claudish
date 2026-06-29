@@ -11,36 +11,37 @@
  * Run with: claudish --mcp (stdio transport)
  */
 
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
-import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import {
-  setupSession,
-  runModels,
-  judgeResponses,
-  getStatus,
-  validateSessionPath,
-} from "./team-orchestrator.js";
+import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
-import { wrapStateChange, watchNotificationResult, installWireTap } from "./channel/diagnostics.js";
-import { createProxyServer } from "./proxy-server.js";
-import { findAvailablePort } from "./port-manager.js";
-import type { ProxyServer } from "./types.js";
 import {
-  getRecommendedModels,
-  groupRecommendedModels,
-  collectRoutingPrefixes,
-  computeQuickPicks,
-  normalizePricingDisplay,
   FIREBASE_SLUG_TO_PROVIDER_NAME,
   type RecommendedModelGroup,
+  type RecommendedModelsDoc,
+  collectRoutingPrefixes,
+  computeQuickPicks,
+  getRecommendedModels,
+  groupRecommendedModels,
+  normalizePricingDisplay,
 } from "./model-loader.js";
+import { findAvailablePort } from "./port-manager.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { createProxyServer } from "./proxy-server.js";
+import {
+  getStatus,
+  judgeResponses,
+  runModels,
+  setupSession,
+  validateSessionPath,
+} from "./team-orchestrator.js";
+import type { ProxyServer } from "./types.js";
 
 // Load environment variables
 config();
@@ -373,7 +374,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
     inputSchema: { type: "object" },
     group: "low-level",
     handler: async () => {
-      let doc;
+      let doc: RecommendedModelsDoc;
       try {
         doc = await getRecommendedModels();
       } catch {
@@ -421,9 +422,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
 
         const prefixes = collectRoutingPrefixes(group, getNativePrefix);
         const accessLine =
-          prefixes.length > 0
-            ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ")
-            : `\`${m.id}\``;
+          prefixes.length > 0 ? prefixes.map((p) => `\`${p}@${m.id}\``).join(" · ") : `\`${m.id}\``;
 
         return [
           `### ${m.id}`,
@@ -463,16 +462,13 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
             picks.largeContext.context || "N/A"
           })`
         );
-      if (picks.mostCapable)
-        pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
-      if (picks.visionCoding)
-        pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
-      if (picks.agentic)
-        pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
+      if (picks.mostCapable) pickLines.push(`- **Most capable**: \`${picks.mostCapable.id}\``);
+      if (picks.visionCoding) pickLines.push(`- **Vision + coding**: \`${picks.visionCoding.id}\``);
+      if (picks.agentic) pickLines.push(`- **Agentic**: \`${picks.agentic.id}\``);
 
       if (pickLines.length > 0) {
         output += "## Quick picks\n\n";
-        output += pickLines.join("\n") + "\n";
+        output += `${pickLines.join("\n")}\n`;
       }
 
       return { content: [{ type: "text" as const, text: output }] };
@@ -526,8 +522,8 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
       output += "|-------|----------|---------|----------|\n";
       for (const { model } of results) {
         const provider = model.id.split("/")[0];
-        const promptPrice = parseFloat(model.pricing?.prompt || "0") * 1000000;
-        const completionPrice = parseFloat(model.pricing?.completion || "0") * 1000000;
+        const promptPrice = Number.parseFloat(model.pricing?.prompt || "0") * 1000000;
+        const completionPrice = Number.parseFloat(model.pricing?.completion || "0") * 1000000;
         const avgPrice = (promptPrice + completionPrice) / 2;
         const pricing =
           avgPrice > 0 ? `$${avgPrice.toFixed(2)}/1M` : avgPrice < 0 ? "varies" : "FREE";
@@ -594,7 +590,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         if (result.error) {
           output += `**Error:** ${result.error}\n\n`;
         } else {
-          output += result.response + "\n\n";
+          output += `${result.response}\n\n`;
           if (result.tokens) {
             output += `*Tokens: ${result.tokens.input} in, ${result.tokens.output} out*\n\n`;
           }
@@ -748,7 +744,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
         } catch {}
       }
 
-      let sessionData: Record<string, string> = {};
+      const sessionData: Record<string, string> = {};
       if (session_path) {
         const sp = session_path;
         for (const file of ["status.json", "manifest.json", "input.md"]) {
@@ -828,16 +824,15 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
               },
             ],
           };
-        } else {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: `Error report endpoint returned ${response.status}. Report was NOT sent.\n\n**Data that would have been sent (all sanitized):**\n\`\`\`json\n${reportSummary}\n\`\`\`\n\nYou can manually report this at https://github.com/anthropics/claudish/issues${autoSendHint}`,
-              },
-            ],
-          };
         }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error report endpoint returned ${response.status}. Report was NOT sent.\n\n**Data that would have been sent (all sanitized):**\n\`\`\`json\n${reportSummary}\n\`\`\`\n\nYou can manually report this at https://github.com/anthropics/claudish/issues${autoSendHint}`,
+            },
+          ],
+        };
       } catch (err) {
         return {
           content: [
@@ -1036,7 +1031,6 @@ function resolveToolGroups(mode: string): Set<ToolGroup> {
       return new Set(["agentic"]);
     case "channel":
       return new Set(["channel"]);
-    case "all":
     default:
       return new Set(["low-level", "agentic", "channel"]);
   }

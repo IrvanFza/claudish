@@ -8,8 +8,8 @@
  * - Monitors for interception
  */
 
-import { spawn, execSync } from "child_process";
-import { setTimeout } from "timers/promises";
+import { execSync, spawn } from "node:child_process";
+import { setTimeout } from "node:timers/promises";
 
 const BRIDGE_DIR = new URL("..", import.meta.url).pathname;
 
@@ -56,13 +56,15 @@ async function main() {
     output += str;
 
     // Only print key lines
-    if (str.includes("CLAUDISH_BRIDGE_PORT") ||
-        str.includes("CycleTLS") ||
-        str.includes("CONNECT") ||
-        str.includes("completion") ||
-        str.includes("403") ||
-        str.includes("200")) {
-      process.stdout.write("   " + str);
+    if (
+      str.includes("CLAUDISH_BRIDGE_PORT") ||
+      str.includes("CycleTLS") ||
+      str.includes("CONNECT") ||
+      str.includes("completion") ||
+      str.includes("403") ||
+      str.includes("200")
+    ) {
+      process.stdout.write(`   ${str}`);
     }
 
     const portMatch = str.match(/CLAUDISH_BRIDGE_PORT=(\d+)/);
@@ -91,7 +93,7 @@ async function main() {
     const res = await fetch(`http://127.0.0.1:${port}/proxy/enable`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

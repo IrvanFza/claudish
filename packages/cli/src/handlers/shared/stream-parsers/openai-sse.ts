@@ -10,10 +10,9 @@
 import type { Context } from "hono";
 import { log } from "../../../logger.js";
 import {
-  validateAndRepairToolCall,
-  inferMissingParameters,
-  extractToolCallsFromText,
   type ToolSchema,
+  extractToolCallsFromText,
+  validateAndRepairToolCall,
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
 

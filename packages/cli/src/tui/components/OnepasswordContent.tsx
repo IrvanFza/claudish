@@ -112,22 +112,34 @@ export function OnepasswordContent({
     let resultNode: ReactNode = null;
     if (tr) {
       if (tr.status === "testing") {
-        resultNode = <span fg={C.yellow} attributes={A.bold}>{"  ◌ testing"}</span>;
+        resultNode = (
+          <span fg={C.yellow} attributes={A.bold}>
+            {"  ◌ testing"}
+          </span>
+        );
       } else if (tr.status === "valid") {
         resultNode = (
           <>
-            <span fg={C.green} attributes={A.bold}>{"  ● ok"}</span>
+            <span fg={C.green} attributes={A.bold}>
+              {"  ● ok"}
+            </span>
             {tr.note && <span fg={C.fgMuted}>{`  ${tr.note}`}</span>}
           </>
         );
       } else {
-        resultNode = <span fg={C.red} attributes={A.bold}>{"  ✗ failed"}</span>;
+        resultNode = (
+          <span fg={C.red} attributes={A.bold}>
+            {"  ✗ failed"}
+          </span>
+        );
       }
     }
 
     const rowSpans = (
       <>
-        <span fg={marker.color} attributes={A.boldIf(selected)}>{marker.glyph}</span>
+        <span fg={marker.color} attributes={A.boldIf(selected)}>
+          {marker.glyph}
+        </span>
         <span fg={C.dim}>{"  "}</span>
         <span fg={kindColor(e.kind)} attributes={A.boldIf(selected)}>
           {kindLabel(e.kind).padEnd(5)}
@@ -143,7 +155,12 @@ export function OnepasswordContent({
 
     const lines: ReactNode[] = [
       selected ? (
-        <box key={`${entryKey(e)}-${idx}`} height={1} flexDirection="row" backgroundColor={C.bgHighlight}>
+        <box
+          key={`${entryKey(e)}-${idx}`}
+          height={1}
+          flexDirection="row"
+          backgroundColor={C.bgHighlight}
+        >
           <text>{rowSpans}</text>
         </box>
       ) : (
@@ -158,13 +175,13 @@ export function OnepasswordContent({
         lines.push(
           <text key={`${entryKey(e)}-${idx}-load`}>
             <span fg={C.dim}>{"        ◌ resolving keys…"}</span>
-          </text>,
+          </text>
         );
       } else if (exp.status === "error") {
         lines.push(
           <text key={`${entryKey(e)}-${idx}-err`}>
             <span fg={C.red}>{`        ✗ ${exp.message}`}</span>
-          </text>,
+          </text>
         );
       } else {
         // Align the masked tail into a column so the ••••XXXX line up.
@@ -175,7 +192,7 @@ export function OnepasswordContent({
               <span fg={C.dim}>{"        ↳ "}</span>
               <span fg={C.green}>{k.name.padEnd(nameW)}</span>
               {k.tail && <span fg={C.dim}>{`   ••••${k.tail}`}</span>}
-            </text>,
+            </text>
           );
         }
       }
@@ -227,13 +244,19 @@ export function OnepasswordContent({
         </text>
         {/* Row 2: key / set / env summary. */}
         <text>
-          <span fg={C.white} attributes={A.bold}>{String(keyCount)}</span>
+          <span fg={C.white} attributes={A.bold}>
+            {String(keyCount)}
+          </span>
           <span fg={C.fgMuted}>{` key${keyCount === 1 ? "" : "s"}`}</span>
           <span fg={C.dim}>{"   "}</span>
-          <span fg={C.white} attributes={A.bold}>{String(setCount)}</span>
+          <span fg={C.white} attributes={A.bold}>
+            {String(setCount)}
+          </span>
           <span fg={C.fgMuted}>{` set${setCount === 1 ? "" : "s"}`}</span>
           <span fg={C.dim}>{"   "}</span>
-          <span fg={C.white} attributes={A.bold}>{String(envCount)}</span>
+          <span fg={C.white} attributes={A.bold}>
+            {String(envCount)}
+          </span>
           <span fg={C.fgMuted}>{` environment${envCount === 1 ? "" : "s"}`}</span>
         </text>
       </box>
@@ -262,9 +285,7 @@ export function OnepasswordContent({
         {entries.length === 0 ? (
           <box flexDirection="column">
             <text>
-              <span fg={C.fgMuted}>
-                {"No 1Password imports yet. Press ["}
-              </span>
+              <span fg={C.fgMuted}>{"No 1Password imports yet. Press ["}</span>
               <span fg={C.green} attributes={A.bold}>
                 {"a"}
               </span>
@@ -279,9 +300,7 @@ export function OnepasswordContent({
             )}
           </box>
         ) : (
-          <box flexDirection="column">
-            {entries.flatMap((e, i) => getRowLines(e, i))}
-          </box>
+          <box flexDirection="column">{entries.flatMap((e, i) => getRowLines(e, i))}</box>
         )}
       </box>
     </box>

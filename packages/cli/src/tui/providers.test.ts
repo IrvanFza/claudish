@@ -150,9 +150,9 @@ describe("providerIsReadyForDisplay — running local counts as ready", () => {
     delete process.env.CLAUDISH_TEST_PROVIDERS_KEY;
     try {
       const openrouter = def({ name: "openrouter", catalogName: "openrouter" });
-      expect(
-        providerIsReadyForDisplay(openrouter, { apiKeys: {} }, { ollama: "running" })
-      ).toBe(false);
+      expect(providerIsReadyForDisplay(openrouter, { apiKeys: {} }, { ollama: "running" })).toBe(
+        false
+      );
     } finally {
       if (saved !== undefined) process.env.CLAUDISH_TEST_PROVIDERS_KEY = saved;
     }

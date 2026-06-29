@@ -5,25 +5,21 @@
  * Handles both streaming and non-streaming responses.
  */
 
+import type { Context, Next } from "hono";
+import { AnthropicAPIFormat } from "../../cli/src/adapters/anthropic-api-format.js";
+import { GeminiAPIFormat } from "../../cli/src/adapters/gemini-api-format.js";
+import { LocalModelAdapter } from "../../cli/src/adapters/local-adapter.js";
+import { OpenAIAPIFormat } from "../../cli/src/adapters/openai-api-format.js";
+import { OpenRouterAPIFormat } from "../../cli/src/adapters/openrouter-api-format.js";
 // Import from CLI package's internal modules (same monorepo)
 import { ComposedHandler } from "../../cli/src/handlers/composed-handler.js";
-import { GeminiApiKeyProvider } from "../../cli/src/providers/transport/gemini-apikey.js";
-import { GeminiAPIFormat } from "../../cli/src/adapters/gemini-api-format.js";
-import { OpenAIProvider } from "../../cli/src/providers/transport/openai.js";
-import { OpenAIAPIFormat } from "../../cli/src/adapters/openai-api-format.js";
+import { resolveProvider } from "../../cli/src/providers/provider-registry.js";
+import { getRegisteredRemoteProviders } from "../../cli/src/providers/remote-provider-registry.js";
 import { AnthropicCompatProvider } from "../../cli/src/providers/transport/anthropic-compat.js";
-import { AnthropicAPIFormat } from "../../cli/src/adapters/anthropic-api-format.js";
+import { GeminiApiKeyProvider } from "../../cli/src/providers/transport/gemini-apikey.js";
 import { LocalTransport } from "../../cli/src/providers/transport/local.js";
-import { LocalModelAdapter } from "../../cli/src/adapters/local-adapter.js";
+import { OpenAIProvider } from "../../cli/src/providers/transport/openai.js";
 import { OpenRouterProvider } from "../../cli/src/providers/transport/openrouter.js";
-import { OpenRouterAPIFormat } from "../../cli/src/adapters/openrouter-api-format.js";
-import {
-  getRegisteredRemoteProviders,
-} from "../../cli/src/providers/remote-provider-registry.js";
-import {
-  resolveProvider,
-} from "../../cli/src/providers/provider-registry.js";
-import type { Context, Next } from "hono";
 import type { ConfigManager } from "./config-manager.js";
 import { detectFromHeaders } from "./detection.js";
 import type { ApiKeys, DetectedApp, LogEntry } from "./types.js";
@@ -79,7 +75,9 @@ export class RoutingMiddleware {
       const modelName = model.startsWith("g/") ? model.slice(2) : model.slice(7);
       const provider = new GeminiApiKeyProvider(geminiConfig, modelName, apiKey);
       const adapter = new GeminiAPIFormat(modelName);
-      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, {
+        adapter,
+      }) as unknown as Handler;
     }
 
     // OpenAI direct API: oai/gpt-4o
@@ -92,7 +90,8 @@ export class RoutingMiddleware {
       const provider = new OpenAIProvider(openaiConfig, modelName, apiKey);
       const adapter = new OpenAIAPIFormat(modelName, openaiConfig.capabilities);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
-        adapter, tokenStrategy: "delta-aware",
+        adapter,
+        tokenStrategy: "delta-aware",
       }) as unknown as Handler;
     }
 
@@ -106,7 +105,9 @@ export class RoutingMiddleware {
       const modelName = model.slice(prefix);
       const provider = new AnthropicCompatProvider(mmConfig, apiKey);
       const adapter = new AnthropicAPIFormat(modelName, mmConfig.name);
-      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, {
+        adapter,
+      }) as unknown as Handler;
     }
 
     // Kimi/Moonshot direct API: kimi/..., moonshot/...
@@ -119,7 +120,9 @@ export class RoutingMiddleware {
       const modelName = model.slice(prefix);
       const provider = new AnthropicCompatProvider(kimiConfig, apiKey);
       const adapter = new AnthropicAPIFormat(modelName, kimiConfig.name);
-      return new ComposedHandler(provider, model, modelName, this.bridgePort, { adapter }) as unknown as Handler;
+      return new ComposedHandler(provider, model, modelName, this.bridgePort, {
+        adapter,
+      }) as unknown as Handler;
     }
 
     // GLM/Zhipu direct API: glm/..., zhipu/...
@@ -133,7 +136,8 @@ export class RoutingMiddleware {
       const provider = new OpenAIProvider(glmConfig, modelName, apiKey);
       const adapter = new OpenAIAPIFormat(modelName, glmConfig.capabilities);
       return new ComposedHandler(provider, model, modelName, this.bridgePort, {
-        adapter, tokenStrategy: "delta-aware",
+        adapter,
+        tokenStrategy: "delta-aware",
       }) as unknown as Handler;
     }
 
@@ -143,7 +147,8 @@ export class RoutingMiddleware {
       const transport = new LocalTransport(localResolved.provider, localResolved.modelName);
       const adapter = new LocalModelAdapter(localResolved.provider, localResolved.modelName);
       return new ComposedHandler(transport, model, localResolved.modelName, this.bridgePort, {
-        adapter, tokenStrategy: "local",
+        adapter,
+        tokenStrategy: "local",
       }) as unknown as Handler;
     }
 
@@ -152,7 +157,9 @@ export class RoutingMiddleware {
     if (!apiKey) throw new Error(`OpenRouter API key required for model: ${model}`);
     const orProvider = new OpenRouterProvider(apiKey);
     const orAdapter = new OpenRouterAPIFormat(model);
-    return new ComposedHandler(orProvider, model, model, this.bridgePort, { adapter: orAdapter }) as unknown as Handler;
+    return new ComposedHandler(orProvider, model, model, this.bridgePort, {
+      adapter: orAdapter,
+    }) as unknown as Handler;
   }
 
   /**

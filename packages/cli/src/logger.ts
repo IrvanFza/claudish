@@ -1,6 +1,6 @@
-import { writeFileSync, appendFile, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { appendFile, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { DiagOutput } from "./diag-output.js";
 
 let logFilePath: string | null = null;
@@ -183,7 +183,7 @@ function redactLogLine(message: string, timestamp: string): string {
 export function initLogger(
   debugMode: boolean,
   level: "debug" | "info" | "minimal" = "info",
-  noLogs: boolean = false
+  noLogs = false
 ): void {
   // Tier 1: Always-on structural logging (unless --log-off)
   if (!noLogs) {
@@ -359,7 +359,7 @@ export function getLogLevel(): "debug" | "info" | "minimal" {
 /**
  * Truncate content for logging (keeps first N chars + "...")
  */
-export function truncateContent(content: string | any, maxLength: number = 200): string {
+export function truncateContent(content: string | any, maxLength = 200): string {
   if (content === undefined || content === null) return "[empty]";
   const str = typeof content === "string" ? content : (JSON.stringify(content) ?? "[empty]");
   if (str.length <= maxLength) {

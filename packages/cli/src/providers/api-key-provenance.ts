@@ -12,8 +12,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
 import { isOpHydratedVar } from "./onepassword.js";
 
@@ -61,7 +61,7 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
   // Layer 2: ~/.claudish/config.json
   const configValue = readConfigKey(envVar);
   layers.push({
-    source: `~/.claudish/config.json`,
+    source: "~/.claudish/config.json",
     maskedValue: maskKey(configValue),
     isActive: false,
   });
@@ -131,7 +131,7 @@ export function formatProvenanceLog(p: KeyProvenance): string {
 /**
  * Format provenance for --probe TUI output (multi-line with all layers).
  */
-export function formatProvenanceProbe(p: KeyProvenance, indent: string = "    "): string[] {
+export function formatProvenanceProbe(p: KeyProvenance, indent = "    "): string[] {
   const lines: string[] = [];
 
   if (!p.effectiveValue) {

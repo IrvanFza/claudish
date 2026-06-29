@@ -79,10 +79,7 @@ export function isOpHydratedVar(name: string | undefined): boolean {
 /** Build the standard actionable auth-failure error. */
 export function buildAuthError(detail: string): Error {
   return new Error(
-    `${detail}\n` +
-      "Set OP_SERVICE_ACCOUNT_TOKEN (service account, headless) or OP_ACCOUNT " +
-      "(your 1Password account URL, e.g. my-team.1password.com) for the desktop " +
-      "app — or set `onepasswordAccount` in ~/.claudish/config.json."
+    `${detail}\nSet OP_SERVICE_ACCOUNT_TOKEN (service account, headless) or OP_ACCOUNT (your 1Password account URL, e.g. my-team.1password.com) for the desktop app — or set \`onepasswordAccount\` in ~/.claudish/config.json.`
   );
 }
 
@@ -703,8 +700,7 @@ function collectOnepasswordEntry(
     const name = envNameFromOpRef(trimmed);
     if (name === null) {
       warnings.push(
-        `[claudish] skipped 1Password ref '${trimmed}' from onepassword[] ` +
-          "(its trailing field label is not a valid env var name)"
+        `[claudish] skipped 1Password ref '${trimmed}' from onepassword[] (its trailing field label is not a valid env var name)`
       );
       return;
     }
@@ -716,8 +712,7 @@ function collectOnepasswordEntry(
   }
 
   warnings.push(
-    `[claudish] skipped 1Password entry '${trimmed}' from onepassword[] ` +
-      "(not a glob import or op:// reference)"
+    `[claudish] skipped 1Password entry '${trimmed}' from onepassword[] (not a glob import or op:// reference)`
   );
 }
 
@@ -1103,9 +1098,7 @@ export function resolveDesktopAccount(
 
   if (!accounts || accounts.length === 0) {
     return {
-      error:
-        "Could not determine which 1Password account to use (no service-account " +
-        `token, and \`op account list\` is unavailable). ${remediation}`,
+      error: `Could not determine which 1Password account to use (no service-account token, and \`op account list\` is unavailable). ${remediation}`,
     };
   }
 
@@ -1120,10 +1113,7 @@ export function resolveDesktopAccount(
 
   const listing = accounts.map((a) => `  - ${a.url}${a.email ? ` (${a.email})` : ""}`).join("\n");
   return {
-    error:
-      "Multiple 1Password accounts are available and this is a non-interactive " +
-      `session, so claudish can't prompt you to pick one. ${remediation}\n` +
-      `Accounts:\n${listing}`,
+    error: `Multiple 1Password accounts are available and this is a non-interactive session, so claudish can't prompt you to pick one. ${remediation}\nAccounts:\n${listing}`,
   };
 }
 
@@ -1177,7 +1167,7 @@ export async function resolveSdkAuth(
   if ("needsPicker" in result) {
     if (opts.onNeedsPicker) {
       const chosen = await opts.onNeedsPicker(result.needsPicker);
-      if (chosen && chosen.trim()) {
+      if (chosen?.trim()) {
         return { kind: "desktop", accountName: chosen.trim() };
       }
     }
@@ -1186,7 +1176,7 @@ export async function resolveSdkAuth(
       .map((a) => `  - ${a.url}${a.email ? ` (${a.email})` : ""}`)
       .join("\n");
     throw buildAuthError(
-      "Multiple 1Password accounts are available but none was selected.\n" + `Accounts:\n${listing}`
+      `Multiple 1Password accounts are available but none was selected.\nAccounts:\n${listing}`
     );
   }
 
@@ -1209,9 +1199,7 @@ export async function acquireSdkClient(
   const auth = opts.auth ?? detectSdkAuth(opts.env ?? process.env);
   if (!auth) {
     throw buildAuthError(
-      `1Password SDK auth is required for ${context}, but neither ` +
-        "OP_SERVICE_ACCOUNT_TOKEN nor a 1Password account (OP_ACCOUNT / " +
-        "onepasswordAccount config) is available."
+      `1Password SDK auth is required for ${context}, but neither OP_SERVICE_ACCOUNT_TOKEN nor a 1Password account (OP_ACCOUNT / onepasswordAccount config) is available.`
     );
   }
   const sdkFactory = opts.sdkFactory ?? defaultSdkClientFactory;
@@ -1332,8 +1320,7 @@ export async function readEnvironment(
   const { variables } = await client.environments.getVariables(id);
   if (!Array.isArray(variables) || variables.length === 0) {
     throw new Error(
-      `1Password Environment '${id}' resolved to no variables. ` +
-        "Check that the Environment ID is correct and contains entries."
+      `1Password Environment '${id}' resolved to no variables. Check that the Environment ID is correct and contains entries.`
     );
   }
 

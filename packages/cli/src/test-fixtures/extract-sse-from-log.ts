@@ -18,8 +18,8 @@
  *   → sse-responses/kimi-k2.5-openai-turn2.sse
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const logFile = process.argv[2];
 if (!logFile) {
@@ -98,7 +98,6 @@ for (const line of lines) {
     }
     currentTurn.format = "anthropic";
     currentTurn.events.push(anthropicMatch[1]);
-    continue;
   }
 }
 
@@ -114,7 +113,7 @@ for (let i = 0; i < turns.length; i++) {
   const filename = `${model}-${turn.format}-turn${i + 1}.sse`;
   const filepath = join(outputDir, filename);
 
-  const sseContent = turn.events.map((data) => `data: ${data}\n`).join("\n") + "\n";
+  const sseContent = `${turn.events.map((data) => `data: ${data}\n`).join("\n")}\n`;
   writeFileSync(filepath, sseContent, "utf-8");
   written++;
 

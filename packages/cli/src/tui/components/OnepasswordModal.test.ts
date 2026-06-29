@@ -11,8 +11,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildFieldOptions } from "./OnepasswordModal.js";
 import type { DiscoveredField } from "../../providers/onepassword.js";
+import { buildFieldOptions } from "./OnepasswordModal.js";
 
 const V = "Vault";
 const I = "Item";
@@ -93,8 +93,8 @@ describe("buildFieldOptions — key rows + per-section globs", () => {
     const fields = [key("OPENAI_API_KEY", "OpenAI"), key("TOPLEVEL_API_KEY", null)];
     const rows = buildFieldOptions(V, I, fields).filter((o) => o.role === "field");
     const byLeft = Object.fromEntries(rows.map((r) => [r.left, r.right]));
-    expect(byLeft["OPENAI_API_KEY"]).toBe("OpenAI");
-    expect(byLeft["TOPLEVEL_API_KEY"]).toBe(""); // sectionless → no tag
+    expect(byLeft.OPENAI_API_KEY).toBe("OpenAI");
+    expect(byLeft.TOPLEVEL_API_KEY).toBe(""); // sectionless → no tag
   });
 
   test("a multi-key section gets one '↳ all of <section>' glob; single-key sections do not", () => {

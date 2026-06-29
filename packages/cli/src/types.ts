@@ -72,7 +72,7 @@ export interface ClaudishConfig {
   inputFile?: string; // File path for prompt input (-f / --file)
 
   // Advisor mode
-  advisorModels?: string[];        // Advisor models from --advisor flag
+  advisorModels?: string[]; // Advisor models from --advisor flag
   advisorCollector?: string | null; // Collector model (null = no synthesis)
 }
 

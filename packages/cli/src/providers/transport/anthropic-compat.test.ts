@@ -11,10 +11,10 @@
 // and is not part of the Anthropic public API spec — Kimi rejects it with HTTP 400.
 // Fix: stripUnsupportedContentTypes() filters tool_reference from tool_result content arrays.
 
-import { describe, it, expect } from "bun:test";
-import { AnthropicCompatProvider } from "./anthropic-compat.js";
+import { describe, expect, it } from "bun:test";
 import { AnthropicAPIFormat } from "../../adapters/anthropic-api-format.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
+import { AnthropicCompatProvider } from "./anthropic-compat.js";
 
 const TEST_API_KEY = "test-key-abc123";
 
@@ -32,7 +32,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
     const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
     const headers = await transport.getHeaders();
 
-    expect(headers["Authorization"]).toBe(`Bearer ${TEST_API_KEY}`);
+    expect(headers.Authorization).toBe(`Bearer ${TEST_API_KEY}`);
     expect(headers["x-api-key"]).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
@@ -51,7 +51,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
-    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
 
@@ -69,7 +69,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
-    expect(headers["Authorization"]).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
 });

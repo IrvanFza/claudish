@@ -22,11 +22,12 @@
  */
 
 import {
+  type DiscoveredField,
+  type SdkAuth,
   discoverItemFields,
   filterGlobFields,
   isGlobImport,
   parseGlobImport,
-  type SdkAuth,
 } from "./providers/onepassword.js";
 
 const USAGE =
@@ -63,9 +64,7 @@ export async function opPreviewCommand(
   }
   if (!isGlobImport(path)) {
     console.error(
-      `[claudish] '${path}' is not a glob import (no '*' in the field/section ` +
-        "segment). This command previews glob imports; a single op:// reference " +
-        "resolves directly when used as a config value.\n"
+      `[claudish] '${path}' is not a glob import (no '*' in the field/section segment). This command previews glob imports; a single op:// reference resolves directly when used as a config value.\n`
     );
     console.error(USAGE);
     process.exit(1);
@@ -73,7 +72,7 @@ export async function opPreviewCommand(
 
   const glob = parseGlobImport(path);
 
-  let fields;
+  let fields: DiscoveredField[];
   try {
     fields = await discoverItemFields(glob.vault, glob.item, { auth: opts.auth });
   } catch (err) {

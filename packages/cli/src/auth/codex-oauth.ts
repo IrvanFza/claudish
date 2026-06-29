@@ -51,12 +51,7 @@ const OAUTH_CONFIG = {
   clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
   authUrl: "https://auth.openai.com/oauth/authorize",
   tokenUrl: "https://auth.openai.com/oauth/token",
-  scopes: [
-    "openid",
-    "profile",
-    "email",
-    "offline_access",
-  ],
+  scopes: ["openid", "profile", "email", "offline_access"],
 };
 
 /**
@@ -402,16 +397,16 @@ export class CodexOAuth {
     // Use + for scope separators (matching working opencode implementation)
     const scope = OAUTH_CONFIG.scopes.join("+");
     const params = [
-      `response_type=code`,
+      "response_type=code",
       `client_id=${encodeURIComponent(OAUTH_CONFIG.clientId)}`,
       `redirect_uri=${encodeURIComponent(redirectUri)}`,
       `scope=${scope}`,
       `code_challenge=${encodeURIComponent(codeChallenge)}`,
-      `code_challenge_method=S256`,
-      `id_token_add_organizations=true`,
-      `codex_cli_simplified_flow=true`,
+      "code_challenge_method=S256",
+      "id_token_add_organizations=true",
+      "codex_cli_simplified_flow=true",
       `state=${encodeURIComponent(state)}`,
-      `originator=opencode`,
+      "originator=opencode",
     ].join("&");
 
     return `${OAUTH_CONFIG.authUrl}?${params}`;

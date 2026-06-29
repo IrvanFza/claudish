@@ -10,8 +10,8 @@
  */
 
 import type { Context } from "hono";
-import { log } from "../../../logger.js";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
+import { log } from "../../../logger.js";
 
 interface AnthropicPassthroughOpts {
   modelName: string;
@@ -46,7 +46,7 @@ export function createAnthropicPassthroughStream(
       async start(controller) {
         const sendPing = () => {
           if (!isClosed) {
-            controller.enqueue(encoder.encode("event: ping\ndata: {\"type\":\"ping\"}\n\n"));
+            controller.enqueue(encoder.encode('event: ping\ndata: {"type":"ping"}\n\n'));
           }
         };
 
@@ -98,12 +98,14 @@ export function createAnthropicPassthroughStream(
                     const errMsg = data.error.message || JSON.stringify(data.error);
                     log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
                     if (!isClosed) {
-                      controller.enqueue(encoder.encode(
-                        `event: error\ndata: ${JSON.stringify({
-                          type: "error",
-                          error: { type: "api_error", message: errMsg },
-                        })}\n\n`
-                      ));
+                      controller.enqueue(
+                        encoder.encode(
+                          `event: error\ndata: ${JSON.stringify({
+                            type: "error",
+                            error: { type: "api_error", message: errMsg },
+                          })}\n\n`
+                        )
+                      );
                       isClosed = true;
                       if (pingInterval) {
                         clearInterval(pingInterval);
@@ -141,24 +143,23 @@ export function createAnthropicPassthroughStream(
                   // After suppressing N thinking blocks, subtract N from the index
                   if (typeof data.index === "number" && thinkingBlocksSuppressed > 0) {
                     const reindexed = data.index - thinkingBlocksSuppressed;
-                    const modifiedLine =
-                      "data: " + JSON.stringify({ ...data, index: reindexed });
+                    const modifiedLine = `data: ${JSON.stringify({ ...data, index: reindexed })}`;
 
                     if (!isClosed) {
-                      controller.enqueue(encoder.encode(modifiedLine + "\n"));
+                      controller.enqueue(encoder.encode(`${modifiedLine}\n`));
                     }
 
                     // Still do usage tracking below with the ORIGINAL data
                   } else {
                     // No filtering needed — pass through as-is
                     if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
+                      controller.enqueue(encoder.encode(`${line}\n`));
                     }
                   }
                 } catch {
                   // Unparseable — pass through
                   if (!isClosed) {
-                    controller.enqueue(encoder.encode(line + "\n"));
+                    controller.enqueue(encoder.encode(`${line}\n`));
                   }
                 }
               } else {
@@ -173,12 +174,14 @@ export function createAnthropicPassthroughStream(
                       const errMsg = data.error.message || JSON.stringify(data.error);
                       log(`[AnthropicSSE] In-stream error detected: ${errMsg}`);
                       if (!isClosed) {
-                        controller.enqueue(encoder.encode(
-                          `event: error\ndata: ${JSON.stringify({
-                            type: "error",
-                            error: { type: "api_error", message: errMsg },
-                          })}\n\n`
-                        ));
+                        controller.enqueue(
+                          encoder.encode(
+                            `event: error\ndata: ${JSON.stringify({
+                              type: "error",
+                              error: { type: "api_error", message: errMsg },
+                            })}\n\n`
+                          )
+                        );
                         isClosed = true;
                         if (pingInterval) {
                           clearInterval(pingInterval);
@@ -191,7 +194,7 @@ export function createAnthropicPassthroughStream(
 
                     // No error — pass through the line
                     if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
+                      controller.enqueue(encoder.encode(`${line}\n`));
                     }
 
                     // Usage/debug tracking
@@ -223,13 +226,13 @@ export function createAnthropicPassthroughStream(
                   } catch {
                     // Unparseable data line — pass through
                     if (!isClosed) {
-                      controller.enqueue(encoder.encode(line + "\n"));
+                      controller.enqueue(encoder.encode(`${line}\n`));
                     }
                   }
                 } else {
                   // Non-data lines (event: lines, blank lines) — pass through
                   if (!isClosed) {
-                    controller.enqueue(encoder.encode(line + "\n"));
+                    controller.enqueue(encoder.encode(`${line}\n`));
                   }
                 }
               }
@@ -267,8 +270,7 @@ export function createAnthropicPassthroughStream(
           }
 
           log(
-            `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}` +
-              (filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : "")
+            `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
           );
 
           if (opts.onTokenUpdate) {

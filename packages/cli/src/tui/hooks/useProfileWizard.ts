@@ -1,10 +1,5 @@
 import { useCallback, useState } from "react";
-import {
-  loadConfig,
-  loadLocalConfig,
-  saveConfig,
-  saveLocalConfig,
-} from "../../profile-config.js";
+import { loadConfig, loadLocalConfig, saveConfig, saveLocalConfig } from "../../profile-config.js";
 import { COMMON_MODELS, PROVIDER_PREFIXES } from "../constants.js";
 import type { Mode } from "../types.js";
 
@@ -140,8 +135,7 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
           if (currentMode === "edit_profile_opus") prof.models.opus = val || undefined;
           else if (currentMode === "edit_profile_sonnet") prof.models.sonnet = val || undefined;
           else if (currentMode === "edit_profile_haiku") prof.models.haiku = val || undefined;
-          else if (currentMode === "edit_profile_subagent")
-            prof.models.subagent = val || undefined;
+          else if (currentMode === "edit_profile_subagent") prof.models.subagent = val || undefined;
           prof.updatedAt = new Date().toISOString();
           saveLocalConfig(localCfg);
         }
@@ -152,8 +146,7 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
           if (currentMode === "edit_profile_opus") prof.models.opus = val || undefined;
           else if (currentMode === "edit_profile_sonnet") prof.models.sonnet = val || undefined;
           else if (currentMode === "edit_profile_haiku") prof.models.haiku = val || undefined;
-          else if (currentMode === "edit_profile_subagent")
-            prof.models.subagent = val || undefined;
+          else if (currentMode === "edit_profile_subagent") prof.models.subagent = val || undefined;
           prof.updatedAt = new Date().toISOString();
           saveConfig(cfg);
         }
@@ -197,9 +190,7 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
       const scope: Scope = isLocal ? "project" : "global";
       setProfileScope(scope);
       const localCfg = loadLocalConfig();
-      const prof = isLocal
-        ? localCfg?.profiles[selectedName]
-        : loadConfig().profiles[selectedName];
+      const prof = isLocal ? localCfg?.profiles[selectedName] : loadConfig().profiles[selectedName];
       setEditProfileName(selectedName);
       const opusVal = prof?.models?.opus ?? "";
       setEditProfileValue(opusVal);

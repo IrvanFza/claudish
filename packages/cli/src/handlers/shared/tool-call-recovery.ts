@@ -36,7 +36,8 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 0: Qwen-style function calls <function=NAME><parameter=PARAM>VALUE
   // Example: <function=SlashCommand><parameter=command>/ls -la
   const qwenPattern = /<function=([^>]+)>([\s\S]*?)(?=<function=|$)/gi;
-  let match;
+  let match: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = qwenPattern.exec(text)) !== null) {
     const funcName = match[1];
     const paramsText = match[2];
@@ -44,7 +45,8 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
     // Extract parameters: <parameter=name>value
     const paramPattern = /<parameter=([^>]+)>\s*([\s\S]*?)(?=<parameter=|<function=|$)/gi;
-    let paramMatch;
+    let paramMatch: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
     while ((paramMatch = paramPattern.exec(paramsText)) !== null) {
       const paramName = paramMatch[1];
       const paramValue = paramMatch[2].trim();
@@ -63,6 +65,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
   // Pattern 1: XML-style tool calls <tool_call>{"name": "...", "arguments": {...}}</tool_call>
   const xmlPattern = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = xmlPattern.exec(text)) !== null) {
     try {
       const parsed = JSON.parse(match[1]);
@@ -81,6 +84,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 2: Function call format {"name": "tool_name", "arguments": {...}}
   const funcCallPattern =
     /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|input|parameters)"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = funcCallPattern.exec(text)) !== null) {
     try {
       const args = JSON.parse(match[2]);
@@ -98,6 +102,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Some models (like Qwen) output this format instead
   const toolInputPattern =
     /\{\s*"tool"\s*:\s*"([^"]+)"\s*,\s*"tool_input"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = toolInputPattern.exec(text)) !== null) {
     try {
       const args = JSON.parse(match[2]);
@@ -115,6 +120,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 3: Anthropic-style tool_use blocks in text
   const anthropicPattern =
     /\{\s*"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"[^"]*"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"input"\s*:\s*(\{[\s\S]*?\})\s*\}/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = anthropicPattern.exec(text)) !== null) {
     try {
       const args = JSON.parse(match[2]);
@@ -132,6 +138,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // [{"type":"tool_call","id":"...","tool_call":{"name":"...","arguments":{...}}}]
   const openaiArrayPattern =
     /\{\s*"type"\s*:\s*"tool_call"\s*,\s*"id"\s*:\s*"[^"]*"\s*,\s*"tool_call"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}\s*\}/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = openaiArrayPattern.exec(text)) !== null) {
     try {
       const args = JSON.parse(match[2]);
@@ -149,6 +156,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
   // Pattern 4: Simple JSON objects that look like tool calls (heuristic)
   // Look for JSON with common tool parameter names
   const jsonBlockPattern = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/gi;
+  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
   while ((match = jsonBlockPattern.exec(text)) !== null) {
     try {
       const parsed = JSON.parse(match[1]);
@@ -190,6 +198,7 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
   for (const pattern of nlPatterns) {
     pattern.lastIndex = 0; // Reset regex state
+    // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
     while ((match = pattern.exec(text)) !== null) {
       const toolName = match[1];
       const paramText = match[2];
@@ -206,15 +215,17 @@ export function extractToolCallsFromText(text: string): ExtractedToolCall[] {
 
       // Extract key=value pairs
       const kvPattern = /(\w+)\s*=\s*["']?([^"',\s]+)["']?/g;
-      let kvMatch;
+      let kvMatch: RegExpExecArray | null;
+      // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
       while ((kvMatch = kvPattern.exec(paramText)) !== null) {
         args[kvMatch[1]] = kvMatch[2];
       }
 
       // Extract quoted strings as potential file paths or commands
       const quotedPattern = /["']([^"']+)["']/g;
-      let quotedMatch;
+      let quotedMatch: RegExpExecArray | null;
       const quotedValues: string[] = [];
+      // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
       while ((quotedMatch = quotedPattern.exec(paramText)) !== null) {
         quotedValues.push(quotedMatch[1]);
       }
@@ -361,7 +372,7 @@ export function inferMissingParameters(
     if (missingParams.includes("subagent_type") && !inferred.subagent_type) {
       // Default to general-purpose if not specified
       inferred.subagent_type = "general-purpose";
-      log(`[ToolRecovery] Inferred subagent_type: general-purpose`);
+      log("[ToolRecovery] Inferred subagent_type: general-purpose");
     }
 
     // Try to extract meaningful task description from context
@@ -376,7 +387,7 @@ export function inferMissingParameters(
       ];
       for (const pattern of patterns) {
         const match = context.match(pattern);
-        if (match && match[1] && match[1].length > 10) {
+        if (match?.[1] && match[1].length > 10) {
           extractedTask = match[1].trim();
           log(`[ToolRecovery] Extracted task from context: "${extractedTask.substring(0, 50)}..."`);
           break;
@@ -480,7 +491,7 @@ export function inferMissingParameters(
   if (toolName === "ToolSearch") {
     if (missingParams.includes("max_results") && inferred.max_results === undefined) {
       inferred.max_results = 5;
-      log(`[ToolRecovery] Inferred max_results: 5 (default)`);
+      log("[ToolRecovery] Inferred max_results: 5 (default)");
     }
     if (missingParams.includes("query") && !inferred.query) {
       inferred.query = inferred.search || inferred.keyword || inferred.tool || "";
@@ -519,7 +530,7 @@ export function generateRetryPrompt(
   }
 
   prompt += `You provided: ${JSON.stringify(providedArgs, null, 2)}\n\n`;
-  prompt += `Please try again with ALL required parameters included.`;
+  prompt += "Please try again with ALL required parameters included.";
 
   return prompt;
 }
