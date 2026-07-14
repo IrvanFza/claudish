@@ -3,8 +3,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { credentials } from "../auth/credentials/authority.js";
+import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { ClaudishProfileConfig } from "../profile-config.js";
-import { loadCustomEndpoints, resolveCustomEndpointApiKey } from "./custom-endpoints-loader.js";
+import {
+  loadCustomEndpoints,
+  resolveCustomEndpointApiKey,
+  resolveDeclaredEndpointKey,
+} from "./custom-endpoints-loader.js";
 import {
   clearRuntimeRegistry,
   getRuntimeProfiles,
@@ -211,6 +217,224 @@ describe("custom-endpoints-loader", () => {
       clearRuntimeRegistry();
       if (ORIGINAL === undefined) delete process.env[ENV_VAR];
       else process.env[ENV_VAR] = ORIGINAL;
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Credential authority registration.
+  //
+  // REGRESSION GUARD: a custom endpoint declaring `apiKey: "${SOME_VAR}"` (or a
+  // literal) was registered in the authority under CUSTOM_<NAME>_KEY ONLY. That
+  // env var is set by nothing except the op:// pre-resolution path, so the
+  // authority reported "no credential" and the routing pre-flight rejected the
+  // model with:
+  //   Explicit model "ep@model" could not be routed — its provider has no
+  //   credential. No API key for provider "ep".
+  // ...even though the handler could have expanded ${SOME_VAR} itself. These
+  // tests pin the authority's view, which is what routing actually consults.
+  // -------------------------------------------------------------------------
+  describe("credential authority registration", () => {
+    const VAR = "TEST_CUSTOM_EP_VAR";
+    const OP_ENV_VAR = "CUSTOM_OP_EP_KEY";
+    const ORIGINAL_VAR = process.env[VAR];
+    const ORIGINAL_OP_ENV = process.env[OP_ENV_VAR];
+    const ORIGINAL_DISABLE_OP = process.env.CLAUDISH_DISABLE_OP;
+
+    beforeEach(() => {
+      // Keep the authority's async op:// step off the real 1Password SDK/config.
+      process.env.CLAUDISH_DISABLE_OP = "1";
+      __resetSniffForTests();
+      delete process.env[VAR];
+      delete process.env[OP_ENV_VAR];
+    });
+
+    afterEach(() => {
+      clearRuntimeRegistry();
+      if (ORIGINAL_VAR === undefined) delete process.env[VAR];
+      else process.env[VAR] = ORIGINAL_VAR;
+      if (ORIGINAL_OP_ENV === undefined) delete process.env[OP_ENV_VAR];
+      else process.env[OP_ENV_VAR] = ORIGINAL_OP_ENV;
+      if (ORIGINAL_DISABLE_OP === undefined) delete process.env.CLAUDISH_DISABLE_OP;
+      else process.env.CLAUDISH_DISABLE_OP = ORIGINAL_DISABLE_OP;
+      __resetSniffForTests();
+    });
+
+    test("${VAR} apiKey with the var SET → provider is credentialed and signs with the value", async () => {
+      process.env[VAR] = "sk-expanded-from-var";
+      loadCustomEndpoints(
+        makeConfig({
+          "var-ep": {
+            kind: "simple",
+            url: "https://api.example.com/v1",
+            format: "openai",
+            apiKey: `\${${VAR}}`,
+          },
+        })
+      );
+
+      expect(await credentials.isAvailable("var-ep")).toBe(true);
+
+      const auth = await credentials.getRequestAuth("var-ep", { model: "m" });
+      expect(auth.headers.Authorization).toBe("Bearer sk-expanded-from-var");
+      // The literal template must never reach the wire.
+      expect(auth.headers.Authorization).not.toContain("${");
+    });
+
+    test("${VAR} apiKey with the var UNSET → provider is NOT credentialed", async () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "unset-ep": {
+            kind: "simple",
+            url: "https://api.example.com/v1",
+            format: "openai",
+            apiKey: `\${${VAR}}`,
+          },
+        })
+      );
+
+      expect(await credentials.isAvailable("unset-ep")).toBe(false);
+      const auth = await credentials.getRequestAuth("unset-ep", { model: "m" });
+      expect(auth.headers.Authorization).toBeUndefined();
+    });
+
+    test("literal apiKey → provider is credentialed and signs with the literal", async () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "literal-ep": {
+            kind: "simple",
+            url: "https://api.example.com/v1",
+            format: "openai",
+            apiKey: "sk-literal-key",
+          },
+        })
+      );
+
+      expect(await credentials.isAvailable("literal-ep")).toBe(true);
+      const auth = await credentials.getRequestAuth("literal-ep", { model: "m" });
+      expect(auth.headers.Authorization).toBe("Bearer sk-literal-key");
+    });
+
+    test("CUSTOM_<NAME>_KEY env (op:// pre-resolution) wins over the declared ${VAR}", async () => {
+      // The op:// path and the authority's write-through mirror both land the key
+      // in CUSTOM_<NAME>_KEY. That env value must keep precedence over the
+      // config-declared key — declaredKey is the LAST link in the sync chain.
+      process.env[VAR] = "sk-from-declaration";
+      process.env.CUSTOM_VAR_EP_KEY = "sk-from-env-mirror";
+      try {
+        loadCustomEndpoints(
+          makeConfig({
+            "var-ep": {
+              kind: "simple",
+              url: "https://api.example.com/v1",
+              format: "openai",
+              apiKey: `\${${VAR}}`,
+            },
+          })
+        );
+
+        const auth = await credentials.getRequestAuth("var-ep", { model: "m" });
+        expect(auth.headers.Authorization).toBe("Bearer sk-from-env-mirror");
+      } finally {
+        delete process.env.CUSTOM_VAR_EP_KEY;
+      }
+    });
+
+    test("op:// apiKey → signs with the pre-resolved CUSTOM_<NAME>_KEY, never the op:// literal", async () => {
+      // op:// refs are resolved by the authority's async op-source step into
+      // CUSTOM_<NAME>_KEY. resolveDeclaredEndpointKey must NOT satisfy the sync
+      // chain with the raw ref, or the "op://…" string would be sent as the key.
+      process.env[OP_ENV_VAR] = "sk-resolved-from-1password";
+      loadCustomEndpoints(
+        makeConfig({
+          "op-ep": {
+            kind: "simple",
+            url: "https://api.example.com/v1",
+            format: "openai",
+            apiKey: "op://Vault/Item/field",
+          },
+        })
+      );
+
+      expect(await credentials.isAvailable("op-ep")).toBe(true);
+      const auth = await credentials.getRequestAuth("op-ep", { model: "m" });
+      expect(auth.headers.Authorization).toBe("Bearer sk-resolved-from-1password");
+      expect(auth.headers.Authorization).not.toContain("op://");
+    });
+
+    test("complex endpoint with x-api-key authScheme → declared key signs the x-api-key header", async () => {
+      process.env[VAR] = "sk-complex-declared";
+      loadCustomEndpoints(
+        makeConfig({
+          "corp-proxy": {
+            kind: "complex",
+            displayName: "Corp Proxy",
+            transport: "anthropic",
+            baseUrl: "https://llm.corp.internal",
+            apiKey: `\${${VAR}}`,
+            authScheme: "x-api-key",
+          },
+        })
+      );
+
+      expect(await credentials.isAvailable("corp-proxy")).toBe(true);
+      const auth = await credentials.getRequestAuth("corp-proxy", { model: "m" });
+      expect(auth.headers["x-api-key"]).toBe("sk-complex-declared");
+    });
+  });
+
+  describe("resolveDeclaredEndpointKey", () => {
+    const VAR = "TEST_DECLARED_KEY_VAR";
+    const ORIGINAL = process.env[VAR];
+
+    afterEach(() => {
+      if (ORIGINAL === undefined) delete process.env[VAR];
+      else process.env[VAR] = ORIGINAL;
+    });
+
+    test("set ${VAR} → expanded value", () => {
+      process.env[VAR] = "expanded";
+      expect(
+        resolveDeclaredEndpointKey({
+          kind: "simple",
+          url: "https://x.example.com/v1",
+          format: "openai",
+          apiKey: `\${${VAR}}`,
+        })
+      ).toBe("expanded");
+    });
+
+    test("unset ${VAR} → undefined (no credential, do not fake one)", () => {
+      delete process.env[VAR];
+      expect(
+        resolveDeclaredEndpointKey({
+          kind: "simple",
+          url: "https://x.example.com/v1",
+          format: "openai",
+          apiKey: `\${${VAR}}`,
+        })
+      ).toBeUndefined();
+    });
+
+    test("literal → the literal", () => {
+      expect(
+        resolveDeclaredEndpointKey({
+          kind: "simple",
+          url: "https://x.example.com/v1",
+          format: "openai",
+          apiKey: "literal-value",
+        })
+      ).toBe("literal-value");
+    });
+
+    test("op:// ref → undefined (the async op-source step owns it)", () => {
+      expect(
+        resolveDeclaredEndpointKey({
+          kind: "simple",
+          url: "https://x.example.com/v1",
+          format: "openai",
+          apiKey: "op://Vault/Item/field",
+        })
+      ).toBeUndefined();
     });
   });
 

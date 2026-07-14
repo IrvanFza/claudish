@@ -9,10 +9,21 @@
  *   3. warmCatalogIfNeeded — dispatcher state machine (mocked resolver/cache).
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { DiskCacheV2 } from "../providers/all-models-cache.js";
 import type { RefreshOutcome } from "../providers/model-catalog-resolver.js";
 import type { ClaudishConfig } from "../types.js";
+// Value imports captured BEFORE the mock.module calls below so we can restore
+// the REAL modules in afterAll. Bun's mock.module is PROCESS-GLOBAL and
+// persists across files, so without this restore the stubs here bleed into
+// sibling suites that test the real all-models-cache / model-catalog-resolver
+// (they run in the same process). The `{...}` spread snapshots the real
+// exports into a plain object immune to the namespace repointing mock.module
+// does. Verified hoist-safe.
+import * as __realAllModelsCache from "../providers/all-models-cache.js";
+import * as __realCatalogResolver from "../providers/model-catalog-resolver.js";
+const __realAllModelsCacheExports = { ...__realAllModelsCache };
+const __realCatalogResolverExports = { ...__realCatalogResolver };
 
 // ---------------------------------------------------------------------------
 // Module mocks for dispatcher tests
@@ -56,6 +67,13 @@ mock.module("../providers/model-catalog-resolver.js", () => ({
     };
   },
 }));
+
+// Restore the real modules after this file's tests so the process-global
+// mock.module stubs above don't bleed into sibling suites.
+afterAll(() => {
+  mock.module("../providers/all-models-cache.js", () => __realAllModelsCacheExports);
+  mock.module("../providers/model-catalog-resolver.js", () => __realCatalogResolverExports);
+});
 
 // Now import the module under test. The two mocks above are wired in.
 import { classifyCatalogState, shouldWarmCatalog, warmCatalogIfNeeded } from "./catalog-warm.js";

@@ -65,10 +65,18 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
       // Register the custom endpoint in the credential authority too, so its key
       // (CUSTOM_<NAME>_KEY — including op:// values) resolves through the single
       // authority like every other provider, instead of an out-of-band env read.
+      //
+      // `declaredKey` closes over the endpoint's own `apiKey` field so a literal
+      // or `${VAR}` declaration ALSO counts as a credential. The authority is the
+      // routing pre-flight's oracle (hasCredentialsForProvider / getRequestAuth);
+      // registering only the CUSTOM_<NAME>_KEY env var made every `${VAR}` and
+      // literal endpoint look uncredentialed, so it was rejected before its
+      // handler — which could have resolved the key — was ever constructed.
       credentials.registerApiKeyProvider({
         name: def.name,
         envVar: def.apiKeyEnvVar,
         authScheme: def.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+        declaredKey: () => resolveDeclaredEndpointKey(validated),
       });
       result.registered++;
     } catch (err) {
@@ -286,6 +294,27 @@ export function resolveCustomEndpointApiKey(ep: CustomEndpoint): string {
     return process.env[match[1]] ?? "";
   }
   return literal;
+}
+
+/**
+ * The endpoint's CONFIG-DECLARED key, shaped for the credential authority's
+ * sync chain (env → aliases → config.apiKeys → declared).
+ *
+ * Returns `undefined` — meaning "no declared key, keep resolving" — for:
+ *  - an `op://` ref: the authority's ASYNC op-source step owns those (it resolves
+ *    them into CUSTOM_<NAME>_KEY). Returning the literal ref here would satisfy
+ *    the sync chain and short-circuit that step, signing requests with the
+ *    string "op://…" → 401.
+ *  - an unset `${VAR}`: resolveCustomEndpointApiKey yields "" — genuinely no
+ *    credential, so the endpoint must stay unavailable.
+ *
+ * Exported for unit testing.
+ */
+export function resolveDeclaredEndpointKey(ep: CustomEndpoint): string | undefined {
+  const declared = ep.apiKey?.trim();
+  if (!declared) return undefined;
+  if (declared.startsWith("op://")) return undefined;
+  return resolveCustomEndpointApiKey(ep) || undefined;
 }
 
 function stripTrailingSlash(url: string): string {

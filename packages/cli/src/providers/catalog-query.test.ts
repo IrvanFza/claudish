@@ -18,6 +18,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import type { DiskCacheV2, SlimModelEntry } from "./all-models-cache.js";
+// Value import captured BEFORE the mock.module below so afterAll can restore
+// the REAL module. mock.module is PROCESS-GLOBAL and bleeds across files, so
+// without this restore the stub here breaks the sibling all-models-cache.test
+// suite (same process). The spread snapshots the real exports.
+import * as __realAllModelsCache from "./all-models-cache.js";
+const __realAllModelsCacheExports = { ...__realAllModelsCache };
 
 // ---------------------------------------------------------------------------
 // Module mock for the disk-cache layer
@@ -70,6 +76,9 @@ afterAll(() => {
       // Best-effort cleanup; ignore if another test already removed it.
     }
   }
+  // Restore the real disk-cache module so the process-global stub doesn't
+  // bleed into sibling suites (e.g. all-models-cache.test.ts).
+  mock.module("./all-models-cache.js", () => __realAllModelsCacheExports);
 });
 
 // Reset the in-module memo before every test so swapping `mockReadResult`

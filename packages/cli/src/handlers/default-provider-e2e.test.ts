@@ -8,9 +8,12 @@
  *
  * Real API calls. All tests skipIf on missing credentials. No mocks.
  *
- * TODO(post-deploy): Group D's D1b aggregators-present assertion will
- * flip from soft-skip to hard-assert once the Phase 4 Firebase deploy
- * lands. Until then the test emits a "pending deploy" note and passes.
+ * Group D's D1b asserts the slim-catalog aggregators[] SHAPE (the fields
+ * claudish indexes) and that the live catalog still overlaps claudish's
+ * routing map — it does NOT police which providers the catalog carries,
+ * since that dataset is owned by the models-index repo and legitimately
+ * includes providers claudish doesn't route. The soft-skip remains only
+ * for the (now historical) case of a catalog with zero aggregators[].
  *
  * Run: bun test packages/cli/src/handlers/default-provider-e2e.test.ts
  */
@@ -20,6 +23,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveDefaultProvider } from "../default-provider.js";
+import { pickerProviderToFirebaseSlug } from "../model-selector.js";
 import { createProxyServer } from "../proxy-server.js";
 import type { ProxyServer } from "../types.js";
 
@@ -475,6 +479,16 @@ describe("Group B — real API routing", () => {
 // ---------------------------------------------------------------------------
 
 describe("Group C — custom endpoint registration", () => {
+  // The model is INCIDENTAL to Group C — these tests prove custom-endpoint
+  // registration + `${VAR}` expansion + roundtrip, and the endpoint routes
+  // through the OpenAI adapter regardless of the model name. We deliberately
+  // use a reliable non-reasoning chat model: an earlier choice of
+  // `minimax-m2.5` (a reasoning model) intermittently returned 0 visible
+  // tokens on a "say hi" prompt, which made the `text.length > 0` roundtrip
+  // assertion flaky even though the HTTP call succeeded. gpt-4o-mini returns
+  // deterministic text, so the strict assertion can stay.
+  const C_MODEL = "e2e-test-ep@openai/gpt-4o-mini";
+
   test.skipIf(!HAS_OR)(
     "C1 — custom endpoint e2e-test-ep with ${OPENROUTER_API_KEY} works",
     async () => {
@@ -496,17 +510,13 @@ describe("Group C — custom endpoint registration", () => {
       captureStderr();
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
-      const { ok, status, text, raw } = await askProxy(
-        port,
-        "e2e-test-ep@minimax/minimax-m2.5",
-        `say hi ${MARKER()}`
-      );
+      const { ok, status, text, raw } = await askProxy(port, C_MODEL, `say hi ${MARKER()}`);
       const stderr = releaseStderr();
       const elapsed = Date.now() - t0;
 
       if (!ok) console.error("[C1] failed", { status, text, raw, stderr });
       console.log(
-        `[C1] model=e2e-test-ep@minimax/minimax-m2.5 ok=${ok} elapsed=${elapsed}ms text="${text.slice(0, 60)}"`
+        `[C1] model=${C_MODEL} ok=${ok} elapsed=${elapsed}ms text="${text.slice(0, 60)}"`
       );
       // Correctness signal: the request succeeded with non-empty output, which
       // proves the custom endpoint was registered + handler created + ${VAR}
@@ -600,11 +610,7 @@ describe("Group C — custom endpoint registration", () => {
         captureStderr();
         const t0 = Date.now();
         const port = await spinProxy({ quiet: false });
-        const { ok, status, text, raw } = await askProxy(
-          port,
-          "e2e-test-ep@minimax/minimax-m2.5",
-          `hi ${MARKER()}`
-        );
+        const { ok, status, text, raw } = await askProxy(port, C_MODEL, `hi ${MARKER()}`);
         const stderr = releaseStderr();
         const elapsed = Date.now() - t0;
 
@@ -635,30 +641,16 @@ describe("Group C — custom endpoint registration", () => {
 // Group D — Firebase slim catalog aggregators[] contract
 // ---------------------------------------------------------------------------
 
-const KNOWN_PROVIDERS = new Set([
-  "openrouter",
-  "openai",
-  "anthropic",
-  "google",
-  "x-ai",
-  "mistral",
-  "moonshot",
-  "deepseek",
-  "qwen",
-  "glm",
-  "fireworks",
-  "together-ai",
-  "opencode-zen",
-  "minimax",
-  "kimi",
-  "zhipu",
-  "z-ai",
-  "litellm",
-  "groq",
-  "perplexity",
-  "cohere",
-  "vertex",
-]);
+// The Firebase provider slugs claudish can actually route an aggregator entry
+// to — derived from the REAL routing map (`pickerProviderToFirebaseSlug` in
+// model-selector.ts, consumed by `resolveProviderAggregatorEntry`), NOT a
+// hand-kept list. The catalog is owned by a DIFFERENT repo (models-index); it
+// legitimately carries providers claudish doesn't route (e.g. `mistralai` — no
+// Mistral provider here; `anthropic` — handled natively, not via the picker).
+// Those are inert by construction (unmatched → ignored), so their presence is
+// NOT a claudish defect and must never fail this suite. A stale allowlist here
+// used to hard-fail CI every time models-index shipped a new provider.
+const ROUTABLE_FIREBASE_SLUGS = new Set(Object.values(pickerProviderToFirebaseSlug));
 
 describe("Group D — Firebase slim catalog", () => {
   let cachedBody: any = null;
@@ -681,7 +673,7 @@ describe("Group D — Firebase slim catalog", () => {
     console.log(`[D1] slim catalog models count=${body.models.length}`);
   }, 15_000);
 
-  test("D1b — aggregators[] contract (soft-skip if Phase 4 not deployed)", async () => {
+  test("D1b — aggregators[] shape contract + routing-map overlap (soft-skip if Phase 4 not deployed)", async () => {
     const body = await fetchCatalog();
     const withAgg = (body.models as any[]).filter(
       (m) => Array.isArray(m?.aggregators) && m.aggregators.length > 0
@@ -691,18 +683,37 @@ describe("Group D — Firebase slim catalog", () => {
       return;
     }
     console.log(`[D1b] ${withAgg.length}/${body.models.length} models have aggregators[]`);
+
+    // (1) SHAPE is a hard contract: claudish's `resolveProviderAggregatorEntry`
+    // and `resolveProviderExternalId` index these fields directly, so a
+    // non-string provider/externalId/confidence would break consumption.
+    const seenProviders = new Set<string>();
     for (const m of withAgg) {
       for (const agg of m.aggregators) {
         expect(typeof agg.provider).toBe("string");
         expect(typeof agg.externalId).toBe("string");
         expect(typeof agg.confidence).toBe("string");
-        if (!KNOWN_PROVIDERS.has(agg.provider)) {
-          throw new Error(
-            `Unknown provider '${agg.provider}' on model '${m.id ?? m.name ?? "?"}' — contract violation`
-          );
-        }
+        seenProviders.add(agg.provider);
       }
     }
+
+    // (2) ROUTABILITY is reported, not policed. Providers claudish maps to are
+    // routable; the rest are inert catalog data owned by models-index and are
+    // simply ignored at runtime — NOT a failure of this repo.
+    const routable = [...seenProviders].filter((p) => ROUTABLE_FIREBASE_SLUGS.has(p)).sort();
+    const unroutable = [...seenProviders].filter((p) => !ROUTABLE_FIREBASE_SLUGS.has(p)).sort();
+    console.log(`[D1b] routable by claudish: ${routable.join(", ") || "(none)"}`);
+    if (unroutable.length > 0) {
+      console.log(
+        `[D1b] catalog providers claudish does not route (inert, expected): ${unroutable.join(", ")}`
+      );
+    }
+
+    // (3) DRIFT sanity: at least one aggregator provider must be routable. Zero
+    // overlap would mean the catalog's slug convention diverged from claudish's
+    // `pickerProviderToFirebaseSlug` entirely — a real, claudish-side routing
+    // break — without being brittle to any single provider coming or going.
+    expect(routable.length).toBeGreaterThan(0);
   }, 15_000);
 
   test("D2 — entries without aggregators[] parse cleanly (field is optional)", async () => {

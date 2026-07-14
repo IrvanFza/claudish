@@ -48,6 +48,20 @@ export interface ApiKeyDescriptor {
    * Mirrors ProviderDefinition.oauthFallback.
    */
   oauthFallback?: string;
+  /**
+   * SYNC resolver for a key the provider DECLARES in config rather than in an
+   * env var — currently custom endpoints, whose `apiKey` field is a literal or
+   * a `${VAR}` reference (config-schema.ts CustomEndpoint).
+   *
+   * Consulted LAST in the sync chain (after env → aliases → config.apiKeys) so
+   * an explicit env/config value still overrides the declaration, and so the
+   * op:// write-through mirror (process.env[CUSTOM_<NAME>_KEY]) keeps winning.
+   *
+   * MUST return undefined for an `op://` declaration: those are resolved by the
+   * async op-source step below, and returning the literal ref here would short-
+   * circuit it and sign requests with the string "op://…".
+   */
+  declaredKey?: () => string | undefined;
 }
 
 export class ApiKeyCredentialProvider implements CredentialProvider {
@@ -58,6 +72,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   private readonly staticHeaders: Record<string, string>;
   private readonly publicKeyFallback?: string;
   private readonly oauthFallback?: string;
+  private readonly declaredKey?: () => string | undefined;
 
   /** Memoized resolved key ("" = resolved-and-empty). undefined = not yet resolved. */
   private cachedKey: string | undefined;
@@ -72,9 +87,13 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     this.staticHeaders = descriptor.staticHeaders ?? {};
     this.publicKeyFallback = descriptor.publicKeyFallback;
     this.oauthFallback = descriptor.oauthFallback;
+    this.declaredKey = descriptor.declaredKey;
   }
 
-  /** SYNC: env → aliases → config.json apiKeys. Does NOT touch 1Password. */
+  /**
+   * SYNC: env → aliases → config.json apiKeys → declared key (custom endpoints).
+   * Does NOT touch 1Password.
+   */
   private resolveFromEnvConfig(): string | undefined {
     // NOTE: map alias names to their VALUES before .find — `aliases.find(a =>
     // process.env[a])` would return the alias NAME (a truthy string), so the
@@ -82,8 +101,18 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     return (
       process.env[this.envVar] ||
       this.aliases.map((a) => process.env[a]).find((v) => !!v) ||
-      getApiKey(this.envVar)
+      getApiKey(this.envVar) ||
+      this.resolveDeclared()
     );
+  }
+
+  /** The config-declared key (custom endpoints). Never throws. */
+  private resolveDeclared(): string | undefined {
+    try {
+      return this.declaredKey?.() || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** SYNC: does the oauthFallback credential file exist under ~/.claudish/? */

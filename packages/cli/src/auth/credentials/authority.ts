@@ -52,12 +52,19 @@ export class CredentialAuthority {
    * endpoints, which are loaded after this singleton is built. Idempotent: a
    * re-register with the same name overwrites. This keeps custom endpoints
    * inside the single authority instead of resolving their keys out-of-band.
+   *
+   * `declaredKey` carries the endpoint's CONFIG-DECLARED key (a literal or an
+   * expanded `${VAR}`). Without it a custom endpoint is only credentialed when
+   * its `CUSTOM_<NAME>_KEY` env var happens to be set — which nothing but the
+   * op:// pre-resolution path ever does — so every `${VAR}`/literal endpoint
+   * failed the routing pre-flight with "No API key for provider".
    */
   registerApiKeyProvider(descriptor: {
     name: string;
     envVar: string;
     aliases?: string[];
     authScheme?: "bearer" | "x-api-key";
+    declaredKey?: () => string | undefined;
   }): void {
     if (!descriptor.envVar) return;
     this.register(
@@ -66,6 +73,7 @@ export class CredentialAuthority {
         envVar: descriptor.envVar,
         aliases: descriptor.aliases,
         authScheme: descriptor.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+        declaredKey: descriptor.declaredKey,
       }),
       [descriptor.name]
     );

@@ -4,7 +4,13 @@
  * Run: bun test packages/cli/src/providers/catalog-resolvers/openrouter.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+// Captured BEFORE the mock.module below so afterAll can restore the REAL
+// module. mock.module is PROCESS-GLOBAL and bleeds across files, so without
+// this the stub here breaks the sibling all-models-cache.test suite. The
+// spread snapshots the real exports (hoist-safe).
+import * as __realAllModelsCache from "../all-models-cache.js";
+const __realAllModelsCacheExports = { ...__realAllModelsCache };
 
 // We need to test the resolver's resolveSync logic with controlled cache state.
 // The resolver uses module-level _memCache, so we import the class and inject test data.
@@ -175,6 +181,12 @@ mock.module("../all-models-cache.js", () => ({
   readAllModelsCache: mockRead,
   ALL_MODELS_CACHE_PATH: "/tmp/test-all-models.json",
 }));
+
+// Restore the real disk-cache module after this file so the process-global
+// stub above doesn't bleed into sibling suites (e.g. all-models-cache.test.ts).
+afterAll(() => {
+  mock.module("../all-models-cache.js", () => __realAllModelsCacheExports);
+});
 
 describe("OpenRouterCatalogResolver.refreshCatalog", () => {
   let resolver: OpenRouterCatalogResolver;
