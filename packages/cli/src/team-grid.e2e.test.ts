@@ -329,10 +329,23 @@ describe("claudish team with real models and Claude Code", () => {
   it.skipIf(!claudeUsable)(
     "interactive mode: pane running real Claude Code reaches awaiting_input",
     async () => {
-      // Launch Claude Code directly (not via claudish). This lets us validate
-      // magmux's ClaudeCodeController integration — the controller watches
-      // ~/.claude/projects/<cwd>/*.jsonl for the session transcript and
-      // reports awaiting_input once the stop_hook_summary arrives.
+      // Launch Claude Code directly (not via claudish) to validate magmux's
+      // ClaudeCodeController integration: it watches
+      // ~/.claude/projects/<cwd>/*.jsonl and tracks the live session to
+      // `awaiting_input` once claude has answered and is sitting at its prompt.
+      //
+      // HOW MAGMUX REPORTS THIS (verified against magmux v3.4.2 and v0.4.3):
+      // it emits ONE `snapshot` when the pane starts (state "starting"), and
+      // then reports the pane's TERMINAL state only in the `results` event.
+      // There is NO per-transition `snapshot` broadcast — so the old wait,
+      // `snapshot && state === "awaiting_input"`, could never be satisfied and
+      // burned its full 120s timeout on every run. The controller was working
+      // the whole time; the test was watching the wrong event type.
+      //
+      // `-w` makes magmux auto-quit once every pane is DONE. For a Claude Code
+      // pane "done" IS awaiting_input — claude has answered and is idle at the
+      // prompt, still ALIVE (dead:false) — so this observes the controller's
+      // terminal state deterministically, in ~6s, with no keystroke needed.
       const prompt = "reply with only the word hello";
       const grid = writeGridfile([
         `claude --dangerously-skip-permissions ${JSON.stringify(prompt)}`,
@@ -340,39 +353,32 @@ describe("claudish team with real models and Claude Code", () => {
       const baseline = snapshotMagmuxSockets();
 
       const handle = runInPty({
-        command: [magmuxPath, "-g", grid.path],
+        command: [magmuxPath, "-g", grid.path, "-w"],
       });
 
       let sub: MagmuxSubscription | null = null;
       try {
         sub = await subscribeToMagmuxSocket({ baseline, timeoutMs: 5_000 });
 
-        // Wait for the controller to report awaiting_input via a snapshot
-        // event (that's the DONE-equivalent for a running Claude Code TUI).
-        await sub.waitFor(
-          (events) => events.some((e) => e.type === "snapshot" && e.state === "awaiting_input"),
-          120_000
-        );
+        // magmux auto-quits when the pane is done → results + shutdown.
+        await sub.waitFor((events) => events.some((e) => e.type === "results"), 90_000);
 
-        // At least one snapshot should carry the controller name and some
-        // content (response or tool). Magmux's ClaudeCodeController parses
-        // the JSONL transcript in real time.
-        const snap = sub.events.find((e) => e.type === "snapshot" && e.state === "awaiting_input");
-        expect(snap).toBeDefined();
-        expect(snap!.controller).toBe("claude-code");
+        // The controller must have attached to the pane at start.
+        const startSnap = sub.events.find((e) => e.type === "snapshot");
+        expect(startSnap?.controller).toBe("claude-code");
 
-        // Now send 'q' so magmux gracefully shuts down.
-        handle.send("q");
-
-        await sub.waitFor((events) => events.some((e) => e.type === "shutdown"), 15_000);
-
-        // Magmux's shutdown-time results should include the pane as
-        // completed or awaiting_input.
+        // The load-bearing assertion: the ClaudeCodeController tracked a REAL
+        // Claude Code session, via its JSONL transcript, all the way to
+        // awaiting_input.
         const resultsEvent = sub.events.find((e) => e.type === "results")!;
         const panes = resultsEvent.panes as Array<Record<string, unknown>>;
         expect(panes).toHaveLength(1);
-        const state = String(panes[0].state);
-        expect(["completed", "awaiting_input"]).toContain(state);
+        expect(panes[0].controller).toBe("claude-code");
+        expect(panes[0].state).toBe("awaiting_input");
+        // awaiting_input is NOT process exit — claude is still alive at its
+        // prompt. This is what distinguishes it from the `completed` state a
+        // one-shot pane reports, and it is the whole point of the controller.
+        expect(panes[0].dead).toBe(false);
       } finally {
         await sub?.close();
         handle.kill("SIGKILL");
