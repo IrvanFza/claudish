@@ -43,8 +43,16 @@ import {
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
 
-// Load environment variables
-config();
+// Load environment variables.
+//
+// `quiet: true` is REQUIRED, not cosmetic: this process speaks MCP JSON-RPC over
+// STDOUT, and dotenv v17 otherwise prints a banner there —
+//   [dotenv@17.2.3] injecting env (0) from .env -- tip: …
+// — the moment a .env exists in the cwd. That single non-JSON line corrupts the
+// stream, so the host (Claude Code) fails to initialize the server and the user
+// silently gets NO claudish tools. index.ts already passes quiet for the same
+// reason; this call is the one the MCP path actually hits.
+config({ quiet: true });
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);

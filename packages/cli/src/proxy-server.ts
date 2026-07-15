@@ -1,10 +1,3 @@
-// MUST precede the "@hono/node-server" import: it snapshots the native fetch
-// before @hono's import-time `global.fetch = …` clobber (see
-// preserve-native-fetch.ts). restoreNativeFetch() below undoes it. @hono's
-// OTHER global mutation — the serve()-time Response/Request swap — is prevented
-// via `overrideGlobalObjects: false` on the serve() call.
-import { restoreNativeFetch } from "./preserve-native-fetch.js";
-import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
@@ -43,12 +36,6 @@ import { PoeProvider } from "./providers/transport/poe.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
-
-// Undo @hono/node-server's import-time `global.fetch` clobber (see the import
-// note above). Runs once at module load, after all imports have evaluated, so
-// the fast native fetch is what every proxy request — and the whole process —
-// uses from here on. Idempotent.
-restoreNativeFetch();
 
 /**
  * Routing failures are TERMINAL — no provider can serve the request (missing
@@ -747,23 +734,31 @@ export async function createProxyServer(
     }
   });
 
-  // `overrideGlobalObjects: false` stops @hono/node-server from doing
-  // `Object.defineProperty(global, "Response"/"Request", …)` — a process-global
-  // swap to its own classes that breaks any Bun-native consumer (most visibly a
-  // Bun.serve elsewhere, which then fails to recognize its handler's
-  // `new Response()` and serves Bun's default page). @hono still uses its own
-  // Request/Response internally for THIS server, so the proxy serves correctly;
-  // it just no longer mutates the shared globals.
-  const server = serve({
+  // Bun's NATIVE server — not @hono/node-server.
+  //
+  // claudish only ever runs under Bun (bin/claudish.cjs is a Node bootstrapper
+  // that locates bun and re-execs; the CLI uses bun:ffi / Bun.spawn and cannot
+  // run on Node), and Hono runs natively on Bun. Using the NODE adapter here was
+  // a runtime mismatch that dragged in its Node-compat global polyfills:
+  //   - at import:  an unconditional `global.fetch = …` that replaced Bun's
+  //                 native fetch with a wrapper (different streaming/abort
+  //                 semantics — every proxy outbound request went through it);
+  //   - at serve(): `Object.defineProperty(global, "Response"/"Request", …)`,
+  //                 a process-global swap to its own classes that broke any
+  //                 Bun-native consumer sharing the process.
+  // Bun.serve touches no globals, so the whole class of problem is gone rather
+  // than patched up afterwards.
+  const server = Bun.serve({
     fetch: app.fetch,
     port,
     hostname: "127.0.0.1",
-    overrideGlobalObjects: false,
+    // Streamed provider responses can outlive the default idle timeout.
+    idleTimeout: 255,
   });
 
-  // Port resolution
-  const addr = server.address();
-  const resolvedPort = typeof addr === "object" && addr?.port ? addr.port : port;
+  // Bun types `port` as optional (a unix-socket server has none); for a TCP
+  // listen it is always set. `port` 0 means "pick a free one", so read it back.
+  const resolvedPort = server.port ?? port;
 
   log(`[Proxy] Server started on port ${resolvedPort}`);
 
@@ -784,7 +779,9 @@ export async function createProxyServer(
     port: resolvedPort,
     url: `http://127.0.0.1:${resolvedPort}`,
     shutdown: async () => {
-      return new Promise<void>((resolve) => server.close(() => resolve()));
+      // `true` = close active connections too, so a streamed request in flight
+      // can't keep the port alive after shutdown resolves.
+      await server.stop(true);
     },
     invalidateHandlerCache: (providerSlug?: string) => {
       if (!providerSlug) {
