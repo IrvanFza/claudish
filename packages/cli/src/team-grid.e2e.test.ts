@@ -83,6 +83,27 @@ if (!claudeUsable) {
   );
 }
 
+// The default-mode test runs a REAL model (glm-5-turbo) through claudish in a
+// pane and asserts the pane completes. With no credential able to serve that
+// model, claudish exits non-zero within ~250ms and magmux reports the pane as
+// `failed` — a missing-key environment, not a regression. Gate on the providers
+// that can actually serve glm-5-turbo: GLM/Z.AI direct, or OpenRouter as the
+// aggregator fallback.
+const glmCapable = !!(
+  process.env.ZHIPU_API_KEY ||
+  process.env.GLM_API_KEY ||
+  process.env.ZAI_API_KEY ||
+  process.env.GLM_CODING_API_KEY ||
+  process.env.ZAI_CODING_API_KEY ||
+  process.env.OPENROUTER_API_KEY
+);
+if (!glmCapable) {
+  console.warn(
+    "[team-grid.e2e] default-mode test SKIPPED — no credential can serve glm-5-turbo " +
+      "(needs ZHIPU/GLM/ZAI/*_CODING or OPENROUTER_API_KEY)."
+  );
+}
+
 beforeAll(() => {
   magmuxPath = findMagmuxForTest();
 });
@@ -266,7 +287,7 @@ function devClaudishCommand(model: string, prompt: string): string {
 }
 
 describe("claudish team with real models and Claude Code", () => {
-  it(
+  it.skipIf(!glmCapable)(
     "default mode: pane runs a real model, magmux emits completed results",
     async () => {
       const grid = writeGridfile([
