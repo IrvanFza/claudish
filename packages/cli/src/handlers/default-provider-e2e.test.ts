@@ -329,8 +329,31 @@ describe("Group B — real API routing", () => {
       console.log(
         `[B1a] model=gpt-5.4 provider=openrouter elapsed=${elapsed}ms text="${text.slice(0, 60)}"`
       );
-      // Stderr provenance: openrouter should appear in route chain; litellm must NOT lead.
-      expect(stderr.toLowerCase()).toContain("openrouter");
+
+      // Route provenance.
+      //
+      // The proxy emits its `[Route] N providers for <model>: A → B` line ONLY
+      // when the credential-filtered chain has MORE THAN ONE candidate
+      // (proxy-server.ts: `if (!options.quiet && candidates.length > 1)`). The
+      // chain pinned above is ["openai","openrouter"], so on a machine WITHOUT
+      // an OpenAI credential it filters down to a single candidate and NO line
+      // is emitted — which is the common case for someone holding only an
+      // OpenRouter key. A bare `expect(stderr).toContain("openrouter")` therefore
+      // failed deterministically in exactly that setup, while the routing under
+      // test worked perfectly (ok + non-empty text, above, prove OpenRouter
+      // served it: it is the only credentialed provider left in the chain).
+      //
+      // This is NOT the "Bun async logging is flaky" effect the sibling tests
+      // assume — it is deterministic, and reproducible by setting/unsetting
+      // OPENAI_API_KEY. So: assert the line's CONTENT when it exists, and always
+      // guard the regression this test actually exists for.
+      const lower = stderr.toLowerCase();
+      const routeLine = lower.split("\n").find((l) => l.includes("[route]"));
+      if (routeLine) {
+        expect(routeLine).toContain("openrouter");
+      }
+      // Legacy auto-promotion guard (commit 5): litellm must NEVER lead the chain.
+      expect(routeLine ?? "").not.toMatch(/\[route\][^:]*:\s*litellm/);
     },
     90_000
   );
