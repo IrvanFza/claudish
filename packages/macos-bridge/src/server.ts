@@ -1037,6 +1037,11 @@ export class BridgeServer {
         fetch: this.app.fetch,
         port,
         hostname: "127.0.0.1", // IMPORTANT: Only bind to localhost
+        // Don't let @hono/node-server swap globalThis.Response/Request to its
+        // own classes — a process-global mutation that breaks Bun-native
+        // consumers (e.g. a Bun.serve elsewhere then can't recognize its
+        // handler's `new Response()`). It still uses its own classes internally.
+        overrideGlobalObjects: false,
       });
 
       this.server.on("listening", () => {

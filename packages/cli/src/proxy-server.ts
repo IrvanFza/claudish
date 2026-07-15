@@ -1,3 +1,9 @@
+// MUST precede the "@hono/node-server" import: it snapshots the native fetch
+// before @hono's import-time `global.fetch = …` clobber (see
+// preserve-native-fetch.ts). restoreNativeFetch() below undoes it. @hono's
+// OTHER global mutation — the serve()-time Response/Request swap — is prevented
+// via `overrideGlobalObjects: false` on the serve() call.
+import { restoreNativeFetch } from "./preserve-native-fetch.js";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -37,6 +43,12 @@ import { PoeProvider } from "./providers/transport/poe.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
+
+// Undo @hono/node-server's import-time `global.fetch` clobber (see the import
+// note above). Runs once at module load, after all imports have evaluated, so
+// the fast native fetch is what every proxy request — and the whole process —
+// uses from here on. Idempotent.
+restoreNativeFetch();
 
 /**
  * Routing failures are TERMINAL — no provider can serve the request (missing
@@ -735,7 +747,19 @@ export async function createProxyServer(
     }
   });
 
-  const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });
+  // `overrideGlobalObjects: false` stops @hono/node-server from doing
+  // `Object.defineProperty(global, "Response"/"Request", …)` — a process-global
+  // swap to its own classes that breaks any Bun-native consumer (most visibly a
+  // Bun.serve elsewhere, which then fails to recognize its handler's
+  // `new Response()` and serves Bun's default page). @hono still uses its own
+  // Request/Response internally for THIS server, so the proxy serves correctly;
+  // it just no longer mutates the shared globals.
+  const server = serve({
+    fetch: app.fetch,
+    port,
+    hostname: "127.0.0.1",
+    overrideGlobalObjects: false,
+  });
 
   // Port resolution
   const addr = server.address();

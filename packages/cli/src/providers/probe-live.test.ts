@@ -193,7 +193,12 @@ describe("probe budget", () => {
     } finally {
       server.stop(true);
     }
-  });
+    // Explicit timeout > the probeLink budget (10_000ms) below. Without it the
+    // test inherits Bun's 5_000ms default, which is SHORTER than the probe's own
+    // budget — so under full-suite load (this passes in isolation) the probe
+    // legitimately needs >5s to reach its terminal state and the test times out
+    // before the operation it asserts on can finish.
+  }, 20_000);
 
   test("probe request forces minimal reasoning effort (reasoning models emit visible text)", async () => {
     // Verified live: gpt-5-nano with default effort spends the whole probe
@@ -249,7 +254,10 @@ describe("probe budget", () => {
     } finally {
       server.stop(true);
     }
-  });
+    // Explicit timeout > the probeLink budget (10_000ms). See the sibling
+    // budget-truncation test above — Bun's 5_000ms default is shorter than the
+    // probe's own budget, so this fails under full-suite load in isolation.
+  }, 20_000);
 });
 
 // Type-level pin: ProbeResult.httpStatus carries the DISPLAYED code, which for
