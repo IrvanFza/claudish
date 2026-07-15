@@ -345,16 +345,56 @@ async function runClaudeWithMcp(
   }
 }
 
-// Check if claude CLI is available
-let claudeAvailable = false;
+// Check if claude CLI is available AND authenticated for non-interactive use.
+// Group 2 spawns real `claude -p`, which needs a working credential (an
+// ANTHROPIC_API_KEY, or a claude.ai login that headless mode can use). Merely
+// having the binary is not enough: on a machine whose only auth is an
+// interactive claude.ai session, `claude -p` prints "Not logged in · Please run
+// /login" and exits — so without this gate Group 2 FAILS where it should SKIP.
+// The probe runs one tiny headless prompt and treats a login/credential error
+// as "not usable".
+let claudeUsable = false;
 try {
   const proc = spawn("claude", ["--version"], { stdio: "pipe" });
-  const code = await new Promise<number>((r) => proc.on("exit", (c) => r(c ?? 1)));
-  claudeAvailable = code === 0;
+  const versionOk = (await new Promise<number>((r) => proc.on("exit", (c) => r(c ?? 1)))) === 0;
+  if (versionOk) {
+    const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    probe.stdout?.on("data", (c: Buffer) => {
+      out += c.toString();
+    });
+    probe.stderr?.on("data", (c: Buffer) => {
+      out += c.toString();
+    });
+    const probeCode = await new Promise<number>((r) => {
+      const t = setTimeout(() => {
+        probe.kill("SIGTERM");
+        r(-1);
+      }, 30_000);
+      probe.on("exit", (c) => {
+        clearTimeout(t);
+        r(c ?? 1);
+      });
+      probe.on("error", () => {
+        clearTimeout(t);
+        r(1);
+      });
+    });
+    claudeUsable = probeCode === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
+  }
 } catch {}
 
+if (!claudeUsable) {
+  console.warn(
+    "[e2e-channel] Group 2 SKIPPED — `claude -p` is unavailable or not authenticated " +
+      "(needs ANTHROPIC_API_KEY or a headless-usable claude.ai login)."
+  );
+}
+
 describe("Group 2: Real Claude Code — MCP tool discovery", () => {
-  test.skipIf(!claudeAvailable)(
+  test.skipIf(!claudeUsable)(
     "claude discovers claudish MCP tools and can call list_models",
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(
@@ -375,7 +415,7 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
     120_000
   );
 
-  test.skipIf(!claudeAvailable)(
+  test.skipIf(!claudeUsable)(
     "claude discovers channel tools (create_session, list_sessions)",
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(
@@ -393,7 +433,7 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
 
   const hasOpenRouterKey = !!process.env.OPENROUTER_API_KEY;
 
-  test.skipIf(!claudeAvailable || !hasOpenRouterKey)(
+  test.skipIf(!claudeUsable || !hasOpenRouterKey)(
     "claude creates a session via create_session tool",
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(

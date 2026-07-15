@@ -20,6 +20,7 @@
  */
 
 import { beforeAll, describe, expect, it } from "bun:test";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import {
   type MagmuxSubscription,
@@ -33,6 +34,54 @@ import {
 const E2E_TIMEOUT = 150_000; // per real-model test (includes cold-start slack)
 
 let magmuxPath = "";
+
+// The interactive-mode test launches REAL `claude` in a pane and waits for its
+// ClaudeCodeController to reach `awaiting_input` — which only happens once
+// `claude` actually processes the prompt, i.e. is authenticated. On a machine
+// with no headless-usable credential (`claude -p` prints "Not logged in") the
+// pane never gets past the login screen and the test would sit at its 120s
+// wait, so gate it on a real auth probe and SKIP with a clear reason instead.
+// (The sibling "default mode" test drives claudish, not `claude`, so it is
+// unaffected.) One tiny headless prompt; a login/credential error → not usable.
+async function probeClaudeUsable(): Promise<boolean> {
+  try {
+    const probe = spawn("claude", ["-p", "--dangerously-skip-permissions", "--bare", "hi"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    probe.stdout?.on("data", (c: Buffer) => {
+      out += c.toString();
+    });
+    probe.stderr?.on("data", (c: Buffer) => {
+      out += c.toString();
+    });
+    const code = await new Promise<number>((r) => {
+      const t = setTimeout(() => {
+        probe.kill("SIGTERM");
+        r(-1);
+      }, 30_000);
+      probe.on("exit", (c) => {
+        clearTimeout(t);
+        r(c ?? 1);
+      });
+      probe.on("error", () => {
+        clearTimeout(t);
+        r(1);
+      });
+    });
+    return code === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
+  } catch {
+    return false;
+  }
+}
+
+const claudeUsable = await probeClaudeUsable();
+if (!claudeUsable) {
+  console.warn(
+    "[team-grid.e2e] interactive-mode test SKIPPED — `claude -p` is unavailable or not " +
+      "authenticated (needs ANTHROPIC_API_KEY or a headless-usable claude.ai login)."
+  );
+}
 
 beforeAll(() => {
   magmuxPath = findMagmuxForTest();
@@ -259,7 +308,7 @@ describe("claudish team with real models and Claude Code", () => {
     E2E_TIMEOUT
   );
 
-  it(
+  it.skipIf(!claudeUsable)(
     "interactive mode: pane running real Claude Code reaches awaiting_input",
     async () => {
       // Launch Claude Code directly (not via claudish). This lets us validate
