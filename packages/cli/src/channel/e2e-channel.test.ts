@@ -21,10 +21,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { hasCredential } from "../test-helpers/credential-gate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const SERVER_ENTRY = join(__dirname, "../index.ts");
+
+// Asked via claudish's OWN credential authority (env → aliases →
+// ~/.claudish/config.json apiKeys → 1Password), NOT raw process.env: a key
+// configured any supported way must run these tests, exactly as it would serve
+// a real run. Module scope — describe() callbacks are sync, so no await there.
+const hasOpenRouterKey = await hasCredential("openrouter");
 
 // ─── Group 1: MCP Protocol Tests (SDK Client) ───────────────────────────────
 // Validates the MCP server itself works correctly at the protocol level.
@@ -125,7 +132,6 @@ describe("Group 1: MCP Protocol — channel capability", () => {
   });
 
   // Live session test via SDK client
-  const hasOpenRouterKey = !!process.env.OPENROUTER_API_KEY;
 
   test.skipIf(!hasOpenRouterKey)(
     "create_session → poll → get_output lifecycle",
@@ -431,7 +437,6 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
     120_000
   );
 
-  const hasOpenRouterKey = !!process.env.OPENROUTER_API_KEY;
 
   test.skipIf(!claudeUsable || !hasOpenRouterKey)(
     "claude creates a session via create_session tool",

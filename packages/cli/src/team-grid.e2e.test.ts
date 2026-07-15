@@ -30,6 +30,7 @@ import {
   subscribeToMagmuxSocket,
   writeGridfile,
 } from "./team-grid.e2e-helpers.js";
+import { hasAnyCredential } from "./test-helpers/credential-gate.js";
 
 const E2E_TIMEOUT = 150_000; // per real-model test (includes cold-start slack)
 
@@ -87,20 +88,16 @@ if (!claudeUsable) {
 // pane and asserts the pane completes. With no credential able to serve that
 // model, claudish exits non-zero within ~250ms and magmux reports the pane as
 // `failed` — a missing-key environment, not a regression. Gate on the providers
-// that can actually serve glm-5-turbo: GLM/Z.AI direct, or OpenRouter as the
-// aggregator fallback.
-const glmCapable = !!(
-  process.env.ZHIPU_API_KEY ||
-  process.env.GLM_API_KEY ||
-  process.env.ZAI_API_KEY ||
-  process.env.GLM_CODING_API_KEY ||
-  process.env.ZAI_CODING_API_KEY ||
-  process.env.OPENROUTER_API_KEY
-);
+// that can actually serve glm-5-turbo: GLM/Z.AI direct, the coding plans, or
+// OpenRouter as the aggregator fallback. Asked via claudish's OWN credential
+// authority, so a key configured in ~/.claudish/config.json or 1Password counts
+// exactly as it does for a real run — not just a raw env var.
+const glmCapable = await hasAnyCredential(["glm", "glm-coding", "z-ai", "openrouter"]);
 if (!glmCapable) {
   console.warn(
-    "[team-grid.e2e] default-mode test SKIPPED — no credential can serve glm-5-turbo " +
-      "(needs ZHIPU/GLM/ZAI/*_CODING or OPENROUTER_API_KEY)."
+    "[team-grid.e2e] default-mode test SKIPPED — claudish has no credential that can " +
+      "serve glm-5-turbo (glm / glm-coding / z-ai / openrouter, via env, " +
+      "~/.claudish/config.json apiKeys, or 1Password)."
   );
 }
 

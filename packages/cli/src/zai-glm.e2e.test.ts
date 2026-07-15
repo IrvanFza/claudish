@@ -21,10 +21,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { runPromptViaProxy } from "./mcp-server.js";
+import { hasCredential } from "./test-helpers/credential-gate.js";
 
-const HAVE_ZAI = !!process.env.ZAI_API_KEY;
-const HAVE_GC = !!process.env.GLM_CODING_API_KEY || !!process.env.ZAI_CODING_API_KEY;
-const HAVE_GLM = !!process.env.ZHIPU_API_KEY || !!process.env.GLM_API_KEY;
+// Asked via claudish's OWN credential authority (env → ~/.claudish/config.json
+// apiKeys → 1Password), not raw process.env — these tests must run whenever
+// claudish itself could serve the provider, however the user stored the key.
+const HAVE_ZAI = await hasCredential("z-ai");
+const HAVE_GC = await hasCredential("glm-coding");
+const HAVE_GLM = await hasCredential("glm");
 
 const TEST_PROMPT = "Reply with exactly the word: ok";
 const TEST_MODEL = "glm-4.6";

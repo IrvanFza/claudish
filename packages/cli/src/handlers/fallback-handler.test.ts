@@ -14,6 +14,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { createProxyServer } from "../proxy-server.js";
+import { hasAnyCredential } from "../test-helpers/credential-gate.js";
 import type { ProxyServer } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -140,20 +141,28 @@ async function sendMessage(
   return { ok: res.ok, status: res.status, body };
 }
 
-/** Check if any fallback-capable env vars are set */
+/**
+ * Can claudish serve ANY fallback-capable provider?
+ *
+ * Asked via claudish's OWN credential authority (env → aliases →
+ * ~/.claudish/config.json apiKeys → 1Password), NOT raw process.env — a key
+ * stored any supported way makes claudish able to serve the request, so these
+ * tests must run rather than silently skip. Resolved once at module load.
+ */
+const HAS_ANY_CREDENTIALS = await hasAnyCredential([
+  "minimax",
+  "minimax-coding",
+  "opencode-zen",
+  "openrouter",
+  "litellm",
+  "google",
+  "kimi",
+  "kimi-coding",
+  "openai",
+]);
+
 function hasAnyCredentials(): boolean {
-  return !!(
-    process.env.MINIMAX_API_KEY ||
-    process.env.MINIMAX_CODING_API_KEY ||
-    process.env.OPENCODE_API_KEY ||
-    process.env.OPENROUTER_API_KEY ||
-    process.env.LITELLM_BASE_URL ||
-    process.env.GEMINI_API_KEY ||
-    process.env.MOONSHOT_API_KEY ||
-    process.env.KIMI_API_KEY ||
-    process.env.KIMI_CODING_API_KEY ||
-    process.env.OPENAI_API_KEY
-  );
+  return HAS_ANY_CREDENTIALS;
 }
 
 // ---------------------------------------------------------------------------

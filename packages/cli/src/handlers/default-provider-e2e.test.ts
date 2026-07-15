@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { resolveDefaultProvider } from "../default-provider.js";
 import { pickerProviderToFirebaseSlug } from "../model-selector.js";
 import { createProxyServer } from "../proxy-server.js";
+import { hasCredential } from "../test-helpers/credential-gate.js";
 import type { ProxyServer } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -282,9 +283,15 @@ describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
 // Group B — Real API routing behavior
 // ---------------------------------------------------------------------------
 
-const HAS_OR = !!process.env.OPENROUTER_API_KEY;
-const HAS_LL = !!(process.env.LITELLM_BASE_URL && process.env.LITELLM_API_KEY);
-const HAS_XAI = !!process.env.XAI_API_KEY;
+// Asked via claudish's OWN credential authority (env → aliases →
+// ~/.claudish/config.json apiKeys → 1Password), NOT raw process.env: a key
+// stored any supported way makes claudish able to serve these models, so these
+// tests must run — an env-only gate would silently skip a suite that could
+// actually test something. LiteLLM additionally needs its base URL, which is an
+// endpoint (not a credential) and so stays an env check.
+const HAS_OR = await hasCredential("openrouter");
+const HAS_LL = !!process.env.LITELLM_BASE_URL && (await hasCredential("litellm"));
+const HAS_XAI = await hasCredential("x-ai");
 
 describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
