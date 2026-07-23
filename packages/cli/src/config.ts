@@ -20,6 +20,12 @@ export const ENV = {
   ANTHROPIC_DEFAULT_SONNET_MODEL: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   CLAUDE_CODE_SUBAGENT_MODEL: "CLAUDE_CODE_SUBAGENT_MODEL",
+  // Auto-compaction window override — set to the main-thread model's REAL
+  // per-backend context window so Claude Code compacts BEFORE a smaller-than-
+  // advertised backend (e.g. the ChatGPT Codex OAuth cap on gpt-5.6-sol,
+  // ~372K vs its 1.05M API spec) rejects the request. Claude Code clamps this
+  // to [100K, its own understood window], so it can only compact earlier.
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW: "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
   // Local provider endpoints (OpenAI-compatible)
   OLLAMA_BASE_URL: "OLLAMA_BASE_URL", // Ollama server (default: http://localhost:11434)
   OLLAMA_HOST: "OLLAMA_HOST", // Alias for OLLAMA_BASE_URL

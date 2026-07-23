@@ -12,8 +12,10 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isatty } from "node:tty";
+import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import type { ClaudishConfig } from "./types.js";
 
@@ -366,6 +368,56 @@ function mergeUserSettingsIfPresent(
 /**
  * Run Claude Code CLI with the proxy server
  */
+/**
+ * Real context window (tokens) for the model serving Claude Code's MAIN
+ * conversation thread — the value for `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
+ *
+ * Auto-compaction guards the main thread, which runs on ONE model: the `--model`
+ * default, or an explicit `--opus`/`--sonnet` role mapping. We take the MIN real
+ * per-provider window across those main-thread-eligible models so the thread
+ * never overflows whichever backend serves it. The `haiku` (small/fast) and
+ * `subagent` slots are EXCLUDED — they carry short, isolated contexts, so a tiny
+ * window there must not drag the main thread's compaction point down.
+ *
+ * The window comes from the cloud catalog (never hardcoded), resolved against the
+ * SAME provider the proxy routes to (`route().primary.provider`) — so bare
+ * `gpt-*` resolves to `openai-codex`'s reduced window, not `openai`'s full one.
+ * Explicit `provider@model` specs skip `route()` (parseModelSpec already has the
+ * provider) — that path touches no credentials / 1Password. Returns 0 when no
+ * window is known (not in the catalog cache) → caller leaves the env unset.
+ */
+export async function computeMainThreadContextWindow(
+  config: ClaudishConfig,
+  cachePath?: string
+): Promise<number> {
+  const specs = [config.model, config.modelOpus, config.modelSonnet].filter(
+    (s): s is string => typeof s === "string" && s.length > 0
+  );
+  if (specs.length === 0) return 0;
+
+  let min = Number.POSITIVE_INFINITY;
+  for (const spec of specs) {
+    try {
+      const parsed = parseModelSpec(spec);
+      let provider = parsed.provider;
+      if (!parsed.isExplicitProvider) {
+        // Bare name: resolve the backend the proxy will actually pick — the same
+        // (memoized, process-shared) routing the proxy runs on the first request.
+        const plan = await route(spec);
+        if (plan.kind !== "ok") continue;
+        provider = plan.primary.provider;
+      }
+      const win = lookupModelForProvider(parsed.model, provider, cachePath);
+      if (typeof win === "number" && win > 0) {
+        min = Math.min(min, win);
+      }
+    } catch {
+      // A routing/catalog hiccup for one slot must never block launch.
+    }
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
@@ -523,6 +575,29 @@ export async function runClaudeWithProxy(
       // Claude Code checks both API_KEY and AUTH_TOKEN for authentication
       env.ANTHROPIC_AUTH_TOKEN =
         process.env.ANTHROPIC_AUTH_TOKEN || "placeholder-token-not-used-proxy-handles-auth";
+
+      // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
+      // real context window is smaller than the model's advertised spec rejects
+      // the request. The ChatGPT Codex OAuth backend caps gpt-5.6-sol at ~372K vs
+      // its 1.05M API spec, so Claude Code (assuming the large window) never
+      // compacts and the session hard-sticks at overflow. CLAUDE_CODE_AUTO_COMPACT_WINDOW
+      // is Claude Code's documented lever for exactly this ("the gateway enforces
+      // a smaller context than the model's native window"); it clamps the value to
+      // [100K, its understood window], so this can only make it compact EARLIER —
+      // never overflow. Respect a user-set value; otherwise use the real
+      // per-provider window from the cloud catalog (never hardcoded).
+      if (!process.env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) {
+        const autoCompactWindow = await computeMainThreadContextWindow(config);
+        if (autoCompactWindow > 0) {
+          env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(autoCompactWindow);
+          if (!config.quiet) {
+            console.error(
+              `[claudish] Auto-compact window: ${autoCompactWindow.toLocaleString()} tokens ` +
+                "(Claude Code compacts before the backend's real limit)"
+            );
+          }
+        }
+      }
     }
   }
 
