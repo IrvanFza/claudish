@@ -2,25 +2,15 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
-## [7.17.0] - 2026-07-24
+## [7.17.0] - 2026-07-23
 
-### Features
+### Documentation
 
-- **Codex auto-compaction: Claude Code now compacts BEFORE the backend's real ceiling.** v7.16.0 made the reduced
-  Codex context window *visible* (`gpt-5.6-sol` is ~372K on the ChatGPT Codex OAuth backend vs its 1.05M API spec), but
-  Claude Code still assumed the large window and never auto-compacted — so long sessions hard-stuck at
-  `context_length_exceeded`, and `/compact` failed too (it re-sends the full context). Claudish now sets Claude Code's
-  documented `CLAUDE_CODE_AUTO_COMPACT_WINDOW` at launch to the **real per-provider window** of the model serving the
-  main conversation thread, drawn from the hosted catalog — **not hardcoded**. Claude Code's native auto-compaction then
-  fires below the true ceiling instead of overflowing. Claude Code clamps the value to `[100K, its own understood
-  window]`, so this can only ever make it compact *earlier* — never overflow.
-  - **Applies to every routed model, not just Codex.** The value is the `min` real per-provider window across the
-    main-thread-eligible models — the `--model` default plus explicit `--opus`/`--sonnet` role mappings — resolved
-    through the same routing the proxy uses (so bare `gpt-*` correctly resolves to Codex's reduced window, not OpenAI's
-    full one). The `haiku` (small/fast) and `subagent` slots are **excluded** so a small window there can't drag the
-    main thread's compaction point down. A value you set yourself is respected.
-  - No new 1Password activity: for Codex (OAuth) the credential check short-circuits on the OAuth fallback file before
-    any `op://` pull.
+- update CHANGELOG.md for v7.16.0([`64dcbfc`](https://github.com/MadAppGang/claudish/commit/64dcbfc32a6ffd55d4276db38081aea149ebefd9))
+
+### New Features
+
+- v7.17.0 — codex auto-compaction via CLAUDE_CODE_AUTO_COMPACT_WINDOW([`2c0f5fb`](https://github.com/MadAppGang/claudish/commit/2c0f5fb97d9e04423fff10febf1f0f45b8cd5dde))
 
 ## [7.16.0] - 2026-07-23
 
