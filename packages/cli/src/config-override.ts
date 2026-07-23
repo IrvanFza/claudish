@@ -75,3 +75,91 @@ export function activeOpConfigPaths(defaults: ConfigPathPair): ConfigPathPair {
     project: () => SUPPRESSED_PROJECT_CONFIG,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Flag planning — the pure decision half of `--config`
+// ---------------------------------------------------------------------------
+
+/**
+ * What a `--config`/`CLAUDISH_CONFIG` scan decided. Returning a plan instead of
+ * mutating global state (and calling `process.exit`) is what makes the flag
+ * logic testable: index.ts keeps the effects, this module keeps the decision.
+ */
+export type ConfigOverridePlan =
+  | { kind: "none" }
+  | { kind: "error"; message: string }
+  | {
+      kind: "apply";
+      /** Absolute path to the override file. */
+      path: string;
+      /** argv with the flag (and its value) removed — the child never sees it. */
+      argv: string[];
+      /** True when it came from the flag, false when from CLAUDISH_CONFIG. */
+      fromFlag: boolean;
+    };
+
+/**
+ * Filesystem/path seams. Passed in rather than imported so this module keeps its
+ * zero-dependency property (see the file header) — importing `node:fs` here
+ * would put an fs edge under profile-config, op-source, and onepassword-config.
+ */
+export interface ConfigOverrideDeps {
+  resolve: (p: string) => string;
+  exists: (p: string) => boolean;
+}
+
+/**
+ * Decide the override for a run. Precedence: an explicit `--config` flag wins;
+ * otherwise `CLAUDISH_CONFIG` (which is how spawned team/channel child claudish
+ * processes inherit the parent's override).
+ *
+ * Both `--config <file>` and `--config=<file>` are accepted. A flag with no
+ * usable value is an ERROR, not a silent fallback to the env var — a dangling
+ * `--config` must never leak through to parseArgs (or to the child `claude`).
+ */
+export function planConfigOverride(
+  argv: string[],
+  env: Record<string, string | undefined>,
+  deps: ConfigOverrideDeps
+): ConfigOverridePlan {
+  const flag = scanConfigFlag(argv);
+  let path: string | undefined;
+
+  if (flag) {
+    // A following token that is itself a flag is a missing value, not the path —
+    // `claudish --config --debug` is a usage error, not a file named "--debug".
+    if (!flag.value || flag.value.startsWith("-")) {
+      return { kind: "error", message: "[claudish] --config requires a file path" };
+    }
+    path = flag.value;
+  } else {
+    path = env.CLAUDISH_CONFIG || undefined;
+  }
+  if (!path) return { kind: "none" };
+
+  const resolved = deps.resolve(path);
+  if (!deps.exists(resolved)) {
+    return { kind: "error", message: `[claudish] --config file not found: ${resolved}` };
+  }
+
+  const rest = argv.slice();
+  if (flag) rest.splice(flag.dropAt, flag.dropCount);
+  return { kind: "apply", path: resolved, argv: rest, fromFlag: flag !== null };
+}
+
+/** Where `--config` sits in argv and how many tokens it occupies, or null if absent. */
+function scanConfigFlag(
+  argv: string[]
+): { value: string | undefined; dropAt: number; dropCount: number } | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--config") {
+      // A dangling `--config` at the end occupies 1 token, not 2.
+      return { value: argv[i + 1], dropAt: i, dropCount: argv[i + 1] === undefined ? 1 : 2 };
+    }
+    if (a.startsWith("--config=")) {
+      return { value: a.slice("--config=".length), dropAt: i, dropCount: 1 };
+    }
+  }
+  return null;
+}

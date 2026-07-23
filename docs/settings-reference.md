@@ -21,6 +21,7 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 |------|-------|------|---------|-------------|
 | `--model` | `-m` | string | none (prompts interactively) | Model to use. Accepts `provider@model` syntax, legacy `prefix/model`, or bare model name for auto-detection |
 | `--default-provider` | | string | none | Default provider for auto-routing (v7.0.0+). Overrides env var and config file. Valid: built-in provider names or custom endpoint names |
+| `--config` | | path | none | Use this file as the run's ONLY config, replacing both the global and project config. Consumed before `parseArgs()` — see [Config File Override](#44-config-file-override---config) |
 | `--model-opus` | | string | none | Model for Opus role (planning, complex tasks) |
 | `--model-sonnet` | | string | none | Model for Sonnet role (default coding) |
 | `--model-haiku` | | string | none | Model for Haiku role (fast tasks, background) |
@@ -296,6 +297,31 @@ Same schema as `~/.claudish/config.json`. Placed in the project root directory (
 | `kimi-oauth.json` | Kimi OAuth credentials (access + refresh tokens) | On `claudish --kimi-login` |
 | `gemini-oauth.json` | Gemini Code Assist OAuth credentials | On `claudish --gemini-login` |
 | `logs/` | Debug log files (created when `--debug-claudish` is used) | Per session |
+
+### 4.4 Config File Override (`--config`)
+
+`--config <file>` (env: `CLAUDISH_CONFIG`) makes that file the **only** config for the run. It
+replaces **both** `~/.claudish/config.json` and the project `.claudish.json` — the project file is
+not merged back in.
+
+```bash
+claudish --config ./qa-config.json --model glm@glm-4.6 "task"
+CLAUDISH_CONFIG=/abs/qa-config.json claudish --model glm@glm-4.6 "task"
+```
+
+| Detail | Behavior |
+|---|---|
+| Precedence | The `--config` flag wins over `CLAUDISH_CONFIG`; a dangling `--config` (or one followed by another flag) is a usage error, not a silent fallback |
+| Flag visibility | Consumed and stripped before `parseArgs()`, so the child `claude` process never sees it |
+| Child processes | Re-exported as an absolute `CLAUDISH_CONFIG`, so `claudish` children spawned by team and channel modes inherit the same override |
+| Writes | `claudish config` saves target the override file — the machine config is never mutated with override-derived data |
+| Env vars | Still resolve first: a shell env var or `.env` entry beats the override file's `apiKeys` |
+| Scope | Config only. OAuth credential files (`kimi-oauth.json`, `gemini-oauth.json`, …) stay machine-level |
+
+**It is substitution, not "1Password off".** The override does not suppress 1Password — it changes
+which file the 1Password sources are read from. An override file that names no `op://` source has
+no 1Password sources at all, so the lazy SDK gate never opens and no auth prompt appears. An
+override file that *does* name an `op://` ref resolves it normally.
 
 ---
 

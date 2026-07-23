@@ -19,6 +19,7 @@ import {
   activeGlobalConfigFile,
   activeOpConfigPaths,
   getConfigFileOverride,
+  planConfigOverride,
   setConfigFileOverride,
 } from "./config-override.js";
 
@@ -124,5 +125,127 @@ describe("--config override + the 1Password gate (op-source)", () => {
 
     // Not a blanket disable: an op:// ref in the override IS honored.
     expect(hasOpSources()).toBe(true);
+  });
+});
+
+describe("planConfigOverride", () => {
+  const deps = {
+    resolve: (path: string) => `/resolved${path}`,
+    exists: () => true,
+  };
+
+  function expectApply(plan: ReturnType<typeof planConfigOverride>) {
+    expect(plan.kind).toBe("apply");
+    if (plan.kind !== "apply") {
+      throw new Error(`expected apply plan, received ${plan.kind}`);
+    }
+    return plan;
+  }
+
+  test("returns none when neither the flag nor environment requests an override", () => {
+    // Normal config discovery must stay in charge when no override was requested.
+    expect(planConfigOverride(["prompt"], {}, deps)).toEqual({ kind: "none" });
+  });
+
+  test("applies and strips a separated --config flag", () => {
+    const plan = expectApply(planConfigOverride(["--config", "/path/qa.json"], {}, deps));
+
+    expect(plan.path).toBe("/resolved/path/qa.json");
+    expect(plan.fromFlag).toBe(true);
+    expect(plan.argv).toEqual([]);
+  });
+
+  test("applies and strips an equals-form --config flag", () => {
+    const plan = expectApply(planConfigOverride(["--config=/path/qa.json", "prompt"], {}, deps));
+
+    expect(plan.path).toBe("/resolved/path/qa.json");
+    expect(plan.fromFlag).toBe(true);
+    expect(plan.argv).toEqual(["prompt"]);
+  });
+
+  test("preserves surrounding argument order while stripping the flag", () => {
+    // Wrapper-only arguments must disappear without disturbing the child command.
+    const plan = expectApply(
+      planConfigOverride(["--model", "gpt-4o", "--config", "/qa.json", "prompt text"], {}, deps)
+    );
+
+    expect(plan.argv).toEqual(["--model", "gpt-4o", "prompt text"]);
+  });
+
+  test("applies CLAUDISH_CONFIG without changing argv", () => {
+    const argv = ["--model", "gpt-4o", "prompt text"];
+    const plan = expectApply(planConfigOverride(argv, { CLAUDISH_CONFIG: "/env/qa.json" }, deps));
+
+    expect(plan.path).toBe("/resolved/env/qa.json");
+    expect(plan.fromFlag).toBe(false);
+    expect(plan.argv).toEqual(argv);
+  });
+
+  test("prefers the explicit flag over CLAUDISH_CONFIG", () => {
+    // A per-invocation choice must override inherited process configuration.
+    const plan = expectApply(
+      planConfigOverride(["--config", "/flag.json"], { CLAUDISH_CONFIG: "/env.json" }, deps)
+    );
+
+    expect(plan.path).toBe("/resolved/flag.json");
+    expect(plan.fromFlag).toBe(true);
+  });
+
+  test("rejects a dangling --config flag", () => {
+    expect(planConfigOverride(["--config"], {}, deps)).toEqual({
+      kind: "error",
+      message: "[claudish] --config requires a file path",
+    });
+  });
+
+  test("rejects another flag as the --config filename", () => {
+    expect(planConfigOverride(["--config", "--debug"], {}, deps)).toEqual({
+      kind: "error",
+      message: "[claudish] --config requires a file path",
+    });
+  });
+
+  test("rejects an empty equals-form --config value", () => {
+    expect(planConfigOverride(["--config="], {}, deps)).toEqual({
+      kind: "error",
+      message: "[claudish] --config requires a file path",
+    });
+  });
+
+  test("ignores an empty CLAUDISH_CONFIG value", () => {
+    // Empty inherited variables should behave like an unset override.
+    expect(planConfigOverride([], { CLAUDISH_CONFIG: "" }, deps)).toEqual({ kind: "none" });
+  });
+
+  test("reports a missing file with its resolved path", () => {
+    const plan = planConfigOverride(
+      ["--config", "/missing.json"],
+      {},
+      {
+        ...deps,
+        exists: () => false,
+      }
+    );
+
+    expect(plan.kind).toBe("error");
+    if (plan.kind !== "error") {
+      throw new Error(`expected error plan, received ${plan.kind}`);
+    }
+    expect(plan.message).toStartWith("[claudish] --config file not found:");
+    expect(plan.message).toContain("/resolved/missing.json");
+  });
+
+  test("consumes only the first --config occurrence", () => {
+    // Later tokens may belong to a child invocation and must remain untouched.
+    const plan = expectApply(
+      planConfigOverride(
+        ["--config", "/first.json", "--config", "/second.json", "prompt"],
+        {},
+        deps
+      )
+    );
+
+    expect(plan.path).toBe("/resolved/first.json");
+    expect(plan.argv).toEqual(["--config", "/second.json", "prompt"]);
   });
 });

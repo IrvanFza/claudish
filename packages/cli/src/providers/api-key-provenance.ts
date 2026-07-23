@@ -9,13 +9,33 @@
  * Since dotenv and config.json never override, the value in process.env at runtime
  * always comes from whichever source set it first. This module inspects all three
  * sources independently so the user can see what WOULD have been used from each layer.
+ *
+ * Layer 3 follows the `--config <file>` override (config-override.ts): provenance
+ * must read the SAME file the credential authority resolves from, and the layer is
+ * labeled with the override's real path so the UI names the file actually in play.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
+import { activeGlobalConfigFile, getConfigFileOverride } from "../config-override.js";
 import { isOpHydratedVar } from "./onepassword.js";
+
+/**
+ * The global config file this run actually reads. Under a `--config` override
+ * that is the override file, NOT the machine one — provenance must inspect the
+ * same file the credential authority resolves from, or it mislabels an override
+ * key as "shell environment".
+ */
+function activeConfigPath(): string {
+  return activeGlobalConfigFile(join(homedir(), ".claudish", "config.json"));
+}
+
+/** Display label for the config layer: the real path when overridden, else the tilde form. */
+function configLayerLabel(): string {
+  return getConfigFileOverride() ? activeConfigPath() : "~/.claudish/config.json";
+}
 
 export interface KeyLayer {
   source: string;
@@ -58,10 +78,10 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
     isActive: false, // determined below
   });
 
-  // Layer 2: ~/.claudish/config.json
+  // Layer 2: the active global config (the --config override file when set)
   const configValue = readConfigKey(envVar);
   layers.push({
-    source: "~/.claudish/config.json",
+    source: configLayerLabel(),
     maskedValue: maskKey(configValue),
     isActive: false,
   });
@@ -93,7 +113,7 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
       layers[0].isActive = true;
       layers[2].isActive = false;
     } else if (configValue && configValue === runtimeValue) {
-      effectiveSource = "~/.claudish/config.json";
+      effectiveSource = configLayerLabel();
       layers[1].isActive = true;
       layers[2].isActive = false;
     } else if (isOpHydratedVar(runtimeVar)) {
@@ -170,7 +190,7 @@ function readDotenvKey(envVars: string[]): string | null {
 
 function readConfigKey(envVar: string): string | null {
   try {
-    const configPath = join(homedir(), ".claudish", "config.json");
+    const configPath = activeConfigPath();
     if (!existsSync(configPath)) return null;
     const cfg = JSON.parse(readFileSync(configPath, "utf-8")) as {
       apiKeys?: Record<string, string>;

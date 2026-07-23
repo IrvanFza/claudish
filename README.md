@@ -278,6 +278,7 @@ claudish [OPTIONS] <claude-args...>
 | `--model-haiku <model>` | | Model for Haiku role (fast tasks) | |
 | `--model-subagent <model>` | | Model for sub-agents (Task tool) | |
 | `--profile <name>` | `-p` | Named profile for model mapping | Default profile |
+| `--config <file>` | | Use this file as the run's ONLY config (replaces global + project) | |
 | `--op-env <id>` | | Load env vars from a 1Password Environment (highest priority) | |
 | `--interactive` | `-i` | Interactive mode (persistent session) | Auto when no prompt |
 | `--auto-approve` | `-y` | Skip permission prompts | `false` |

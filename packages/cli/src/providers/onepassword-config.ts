@@ -111,6 +111,17 @@ function mutateConfig(
   mutate: (cfg: Record<string, unknown>) => void
 ): void {
   const path = pathFor(scope, paths);
+  // Under a `--config` override the project scope is suppressed (empty path).
+  // Raise the intent instead of letting writeFileSync("") surface a bare ENOENT
+  // in the TUI — the override IS the config, so there is no project file to
+  // write to.
+  if (path === "") {
+    throw new Error(
+      "Cannot save to project scope while --config/CLAUDISH_CONFIG is active — " +
+        "the override file is the only config for this run. Save to global scope " +
+        "(which writes to the override file), or re-run without --config."
+    );
+  }
   const cfg = readRawConfig(path);
   mutate(cfg);
   writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`, "utf-8");
