@@ -38,6 +38,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { activeGlobalConfigFile } from "../../config-override.js";
 import {
   readAllOnepasswordEnvironments,
   readOnepasswordAccount,
@@ -220,7 +221,10 @@ export function __setOpSourceSeamsForTests(seams: OpSourceTestSeams | undefined)
 function readConfigRaw(): SniffedConfig {
   if (testSeams?.config) return testSeams.config;
   try {
-    const configPath = join(homedir(), ".claudish", "config.json");
+    // Honor a `--config` override: the sniff must read the SAME file the rest of
+    // the run reads, so an override file that names no op:// source correctly
+    // makes hasOpSources() false (no SDK, no auth prompt).
+    const configPath = activeGlobalConfigFile(join(homedir(), ".claudish", "config.json"));
     if (!existsSync(configPath)) return {};
     return JSON.parse(readFileSync(configPath, "utf-8")) as SniffedConfig;
   } catch {

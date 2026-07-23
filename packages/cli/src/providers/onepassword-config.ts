@@ -43,6 +43,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { activeOpConfigPaths } from "../config-override.js";
 
 /** The scope a 1Password config entry is written to / read from. */
 export type OpConfigScope = "global" | "project";
@@ -58,13 +59,27 @@ export interface OpConfigPaths {
   project: () => string;
 }
 
-/** The real-filesystem default paths used in production. */
-export const defaultOpConfigPaths: OpConfigPaths = {
+/** The real-filesystem paths (no override applied). */
+const realOpConfigPaths: OpConfigPaths = {
   global: () => join(homedir(), ".claudish", "config.json"),
   // cwd-relative, re-evaluated per call. Deterministic at cwd (not walk-up) so a
   // `claudish config` save lands where the user runs it. Walk-up resolution
   // lives in profile-config.ts's getLocalConfigPath for the runtime read side.
   project: () => join(process.cwd(), ".claudish.json"),
+};
+
+/**
+ * The default paths used in production, wrapped so an active `--config` override
+ * replaces BOTH scopes: global → the override file, project → suppressed. With
+ * no override active this is byte-for-byte the real paths above, so every normal
+ * run is unaffected. This makes EVERY reader that uses the defaults —
+ * `readAllOnepasswordEnvironments` (env hydration + the hasOpSources sniff) and
+ * `readOnepasswordAccount` (DesktopAuth account resolution) — honor the override
+ * with no per-call-site threading. Tests pass explicit `paths` and bypass this.
+ */
+export const defaultOpConfigPaths: OpConfigPaths = {
+  global: () => activeOpConfigPaths(realOpConfigPaths).global(),
+  project: () => activeOpConfigPaths(realOpConfigPaths).project(),
 };
 
 function pathFor(scope: OpConfigScope, paths: OpConfigPaths): string {

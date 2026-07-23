@@ -4,8 +4,8 @@
 import { config } from "dotenv";
 config({ quiet: true }); // Loads .env from current working directory
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
 import { readAllOnepasswordEnvironments } from "./providers/onepassword-config.js";
 import {
@@ -251,6 +251,73 @@ async function applyOpImport(): Promise<void> {
 //    those into hydrateOpSecrets() and call it ONLY from the routing paths
 //    (an allowlist), instead of resolving for every command and trying to
 //    deny-list the rest.
+// `--config <file>` / `CLAUDISH_CONFIG`: for THIS run only, read config from the
+// given file instead of the machine's ~/.claudish/config.json, and ignore the
+// project .claudish.json. Must run before ANY config read — parseArgs and the op
+// resolution below both load config — and the flag is stripped from argv so the
+// child `claude` never sees it. The file's `apiKeys` resolve through the normal
+// env→config chain, so it can carry literal provider keys directly.
+async function applyConfigOverride(): Promise<void> {
+  const argv = process.argv.slice(2);
+  let path: string | undefined;
+  let dropAt = -1;
+  let dropCount = 0;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--config") {
+      path = argv[i + 1];
+      dropAt = i;
+      dropCount = argv[i + 1] === undefined ? 1 : 2;
+      break;
+    }
+    if (a.startsWith("--config=")) {
+      path = a.slice("--config=".length);
+      dropAt = i;
+      dropCount = 1;
+      break;
+    }
+  }
+  if (dropAt >= 0) {
+    // Flag was given — its value is authoritative; an empty value is a usage
+    // error (don't silently leak a dangling `--config` into parseArgs).
+    if (!path) {
+      console.error("[claudish] --config requires a file path");
+      process.exit(1);
+    }
+  } else {
+    // No flag present — CLAUDISH_CONFIG is the fallback source (tests / CI, and
+    // child processes spawned by team & channel modes inherit it).
+    path = process.env.CLAUDISH_CONFIG || undefined;
+  }
+  if (!path) return;
+
+  const resolved = resolve(path);
+  if (!existsSync(resolved)) {
+    console.error(`[claudish] --config file not found: ${resolved}`);
+    process.exit(1);
+  }
+  if (dropAt >= 0) {
+    const rest = argv.slice();
+    rest.splice(dropAt, dropCount);
+    process.argv = [...process.argv.slice(0, 2), ...rest];
+  }
+  // Set the single, process-wide override authority. Every config reader
+  // (profile-config, op-source's hasOpSources sniff, onepassword-config's
+  // defaultOpConfigPaths) consults it, so applyOpEnvironment()/applyOpImport()
+  // below — and the credential authority's op:// step — read the OVERRIDE file.
+  // A file that names no op:// source makes hasOpSources() false, so 1Password
+  // is never touched: no auth prompt. This is why the override is fundamental,
+  // not a "disable 1Password" flag.
+  const { setConfigFileOverride } = await import("./config-override.js");
+  setConfigFileOverride(resolved);
+  // Propagate to the whole process tree via the (absolute) env fallback: team
+  // mode and channel sessions spawn CHILD `claudish` processes, which re-read
+  // CLAUDISH_CONFIG here and apply the same override. The child `claude` ignores
+  // it. Absolute so a child with a different cwd still resolves the same file.
+  process.env.CLAUDISH_CONFIG = resolved;
+}
+
+await traceSpan("startup:config-override", () => applyConfigOverride());
 await traceSpan("startup:op-env-flags", () => applyOpEnvironment());
 await traceSpan("startup:op-import-flag", () => applyOpImport());
 

@@ -12,11 +12,23 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
+import { activeGlobalConfigFile, getConfigFileOverride } from "./config-override.js";
 
 // Config directory and file paths
 const CONFIG_DIR = join(homedir(), ".claudish");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 const LOCAL_CONFIG_FILENAME = ".claudish.json";
+
+// Run-scoped config override (`--config <file>` / `CLAUDISH_CONFIG`) is owned by
+// config-override.ts — the single, dependency-free authority every config reader
+// consults (profile-config, op-source, onepassword-config). Re-exported here so
+// existing importers keep working; the STATE lives in exactly one place.
+export { setConfigFileOverride } from "./config-override.js";
+
+/** The active global-config path — the override if set, else the machine file. */
+export function activeConfigFile(): string {
+  return activeGlobalConfigFile(CONFIG_FILE);
+}
 
 export type ProfileScope = "local" | "global";
 
@@ -210,14 +222,17 @@ function ensureConfigDir(): void {
  * Returns default config if file doesn't exist
  */
 export function loadConfig(): ClaudishProfileConfig {
-  ensureConfigDir();
+  const activeFile = activeConfigFile();
+  // Only touch ~/.claudish when reading the real machine file — an override
+  // points elsewhere and must not create the machine dir as a side effect.
+  if (!getConfigFileOverride()) ensureConfigDir();
 
-  if (!existsSync(CONFIG_FILE)) {
+  if (!existsSync(activeFile)) {
     return { ...DEFAULT_CONFIG };
   }
 
   try {
-    const content = readFileSync(CONFIG_FILE, "utf-8");
+    const content = readFileSync(activeFile, "utf-8");
     const config = JSON.parse(content) as ClaudishProfileConfig;
 
     // Validate and merge with defaults
@@ -279,8 +294,10 @@ export function loadConfig(): ClaudishProfileConfig {
  * Save global configuration to file
  */
 export function saveConfig(config: ClaudishProfileConfig): void {
-  ensureConfigDir();
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
+  // Writes target the ACTIVE file: with a --config override, persist to that
+  // file (never mutate ~/.claudish/config.json with override-derived data).
+  if (!getConfigFileOverride()) ensureConfigDir();
+  writeFileSync(activeConfigFile(), JSON.stringify(config, null, 2), "utf-8");
 }
 
 /**
@@ -358,6 +375,10 @@ export function isProjectDirectory(): boolean {
  * Returns null if file doesn't exist
  */
 export function loadLocalConfig(): ClaudishProfileConfig | null {
+  // A --config override fully replaces machine settings, so the project
+  // .claudish.json is ignored for this run (otherwise it would merge back in).
+  if (getConfigFileOverride()) return null;
+
   const localPath = getLocalConfigPath();
 
   if (!existsSync(localPath)) {

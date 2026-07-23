@@ -1913,6 +1913,10 @@ ${h("OPTIONS")}
   ${green("--profile")} ${yellow("<name>")}         Use named profile for model mapping (default profile if omitted)
   ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (builtin or customEndpoints key)
                            ${dim("Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json")}
+  ${green("--config")} ${yellow("<file>")}          Use THIS config file for the run, fully replacing the machine
+                           ${dim("global (~/.claudish/config.json) AND project (.claudish.json).")}
+                           ${dim("A file naming no op:// source never touches 1Password (no prompt).")}
+                           ${dim("Env vars still resolve first. Env: CLAUDISH_CONFIG")}
   ${green("--op")} ${yellow("<op://glob>")}         Load API keys from a 1Password item glob (SDK-based, no op CLI)
   ${green("--op")} ${yellow("<glob>")} ${green("--list")}      Preview which fields the glob would import (names only, no values)
   ${green("--op-env")} ${yellow("<id>")}            Load env vars from a 1Password Environment (highest priority)
