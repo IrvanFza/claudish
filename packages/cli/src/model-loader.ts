@@ -88,6 +88,16 @@ export interface AggregatorEntry {
     audioInput?: number;
     batchDiscountPct?: number;
   };
+  /**
+   * True per-aggregator context window (max input tokens) for this
+   * (provider, externalId), as served by the `?catalog=slim` endpoint. Present
+   * when a serving backend enforces a DIFFERENT window than the model's headline
+   * spec — e.g. the ChatGPT Codex OAuth backend (`openai-codex`) caps gpt-5.6-sol
+   * at ~372K while the OpenAI API serves the full 1.05M. Omitted when the
+   * aggregator matches the model default; consumers fall back to the top-level
+   * `contextWindow`.
+   */
+  contextWindow?: number;
 }
 
 /**

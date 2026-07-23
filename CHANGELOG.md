@@ -2,6 +2,26 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.17.0] - 2026-07-23
+
+### Documentation
+
+- update CHANGELOG.md for v7.16.0([`64dcbfc`](https://github.com/MadAppGang/claudish/commit/64dcbfc32a6ffd55d4276db38081aea149ebefd9))
+
+### New Features
+
+- v7.17.0 — codex auto-compaction via CLAUDE_CODE_AUTO_COMPACT_WINDOW([`2c0f5fb`](https://github.com/MadAppGang/claudish/commit/2c0f5fb97d9e04423fff10febf1f0f45b8cd5dde))
+
+## [7.16.0] - 2026-07-23
+
+### Documentation
+
+- update CHANGELOG.md for v7.15.0([`4f35271`](https://github.com/MadAppGang/claudish/commit/4f35271e5cbca9853bdf769f64e518699139324c))
+
+### New Features
+
+- v7.16.0 — codex context-window handling + 1Password point-of-need([`40422ce`](https://github.com/MadAppGang/claudish/commit/40422ce1906648d91becf4b6873886bcd523e26e))
+
 ## [7.15.0] - 2026-07-17
 
 ### Documentation

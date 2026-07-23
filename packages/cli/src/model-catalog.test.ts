@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { AnthropicAPIFormat } from "./adapters/anthropic-api-format.js";
 import { GLMModelDialect } from "./adapters/glm-model-dialect.js";
 import { MiniMaxModelDialect } from "./adapters/minimax-model-dialect.js";
-import { lookupModel } from "./adapters/model-catalog.js";
+import { lookupModel, lookupModelForProvider } from "./adapters/model-catalog.js";
 
 const MINIMAX_API_KEY = process.env.MINIMAX_CODING_API_KEY || process.env.MINIMAX_API_KEY;
 const SKIP_REAL_API = !MINIMAX_API_KEY;
@@ -69,6 +69,31 @@ beforeAll(() => {
       aliases: [],
       sources: {},
       contextWindow: 256_000,
+    },
+    {
+      modelId: "gpt-5.6-sol",
+      aliases: [],
+      sources: {},
+      contextWindow: 1_050_000,
+      aggregators: [
+        {
+          provider: "openai",
+          externalId: "gpt-5.6-sol",
+          confidence: "api_official",
+          contextWindow: 1_050_000,
+        },
+        {
+          provider: "openai-codex",
+          externalId: "gpt-5.6-sol",
+          confidence: "api_official",
+          contextWindow: 372_000,
+        },
+        {
+          provider: "openrouter",
+          externalId: "openai/gpt-5.6-sol",
+          confidence: "gateway_official",
+        },
+      ],
     },
     {
       modelId: "grok-4-fast",
@@ -180,6 +205,44 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
   test("no cache file → undefined (cold start)", () => {
     const nonexistent = join(tmpDir, "does-not-exist.json");
     expect(lookupModel("glm-5", nonexistent)).toBeUndefined();
+  });
+});
+
+describe("Group 1: Model Catalog — lookupModelForProvider()", () => {
+  test("openai-codex provider → provider-specific contextWindow 372000", () => {
+    expect(lookupModelForProvider("gpt-5.6-sol", "openai-codex", mockCachePath)).toBe(
+      372_000
+    );
+  });
+
+  test("openai provider → provider-specific contextWindow 1050000", () => {
+    expect(lookupModelForProvider("gpt-5.6-sol", "openai", mockCachePath)).toBe(1_050_000);
+  });
+
+  test("aggregator without contextWindow → falls back to top-level contextWindow", () => {
+    expect(lookupModelForProvider("gpt-5.6-sol", "openrouter", mockCachePath)).toBe(1_050_000);
+  });
+
+  test("provider without matching aggregator → falls back to top-level contextWindow", () => {
+    expect(
+      lookupModelForProvider("gpt-5.6-sol", "some-other-provider", mockCachePath)
+    ).toBe(1_050_000);
+  });
+
+  test("model without aggregators → returns top-level contextWindow", () => {
+    expect(lookupModelForProvider("grok-4", "openai-codex", mockCachePath)).toBe(256_000);
+  });
+
+  test("unknown model → undefined", () => {
+    expect(
+      lookupModelForProvider("unknown-model", "openai-codex", mockCachePath)
+    ).toBeUndefined();
+  });
+
+  test("provider-routed ID throws (contract enforcement)", () => {
+    expect(() =>
+      lookupModelForProvider("cx@gpt-5.6-sol", "openai-codex", mockCachePath)
+    ).toThrow("@");
   });
 });
 

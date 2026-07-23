@@ -7,7 +7,6 @@ config({ quiet: true }); // Loads .env from current working directory
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveExplicitFlagAuth } from "./auth/credentials/op-source.js";
-import { readAllOnepasswordEnvironments } from "./providers/onepassword-config.js";
 import {
   beginSpan,
   finalizeStartupTrace,
@@ -65,64 +64,33 @@ process.on("exit", () => {
 // share op-source's memoized auth via resolveExplicitFlagAuth().
 
 /**
- * Highest-priority source: 1Password Environments. Two inputs, both OVERWRITE
- * anything already in process.env (and, being applied before loadStoredApiKeys,
- * also beat config apiKeys/onepassword[]):
- *  1. `--op-env <id>` flag — the ephemeral, inline form.
- *  2. `onepasswordEnvironments[]` config — the persisted form (local + global,
- *     deduped). The flag's environment (when present) is applied LAST so an
- *     inline `--op-env` wins over a config one with overlapping keys.
+ * 1Password Environments are now POINT-OF-NEED, not eager. This function no
+ * longer resolves anything or touches the SDK — it ONLY validates the `--op-env`
+ * flag shape. Both sources are discovered and resolved lazily by the credential
+ * authority, exactly when a routed provider's key misses env/config:
+ *   1. `onepasswordEnvironments[]` config — read directly by the resolver.
+ *   2. `--op-env <id>` flag — parsed from argv by the resolver.
+ * (see auth/credentials/op-source.ts `registeredEnvironmentIds` /
+ * `resolveEnvironmentShared`).
  *
- * Runs the SDK ONLY when at least one environment source is present, so
- * non-users never touch the `op` binary OR the 1Password SDK. Async because the
- * SDK resolver is async. On any failure (including no SDK auth) this hard-fails
- * (exit 1) — every 1Password source is explicit opt-in.
+ * Why: the old eager hydration ran the SDK (DesktopAuth prompt) at the top of
+ * EVERY process launch whenever a config environment existed — so `--update`,
+ * `--version`, `--help`, and OAuth-only (codex) sessions all prompted, and every
+ * spawned team/channel child re-prompted (the "storm"). Point-of-need touches
+ * 1Password only when a key is actually needed; no-key runs never prompt. This
+ * also changes precedence: environments are now a lazy op source (env/config
+ * already set wins), not a startup overwrite.
  */
 async function applyOpEnvironment(): Promise<void> {
   const argv = process.argv.slice(2);
-  let flagEnvId: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--op-env") {
-      flagEnvId = argv[i + 1];
-      break;
+    if (a !== "--op-env" && !a.startsWith("--op-env=")) continue;
+    const val = a === "--op-env" ? argv[i + 1] : a.slice("--op-env=".length);
+    if (val === undefined || val === "" || val.startsWith("-")) {
+      console.error("[claudish] --op-env requires a 1Password Environment ID");
+      process.exit(1);
     }
-    if (a.startsWith("--op-env=")) {
-      flagEnvId = a.slice("--op-env=".length);
-      break;
-    }
-  }
-  if (flagEnvId !== undefined && (flagEnvId === "" || flagEnvId.startsWith("-"))) {
-    console.error("[claudish] --op-env requires a 1Password Environment ID");
-    process.exit(1);
-  }
-
-  // Config-persisted environments (local + global, deduped). Config IDs resolve
-  // first; the inline flag (if any) is appended LAST so it wins on key overlap.
-  const configEnvIds = readAllOnepasswordEnvironments();
-  const envIds = [...configEnvIds];
-  if (flagEnvId !== undefined && flagEnvId !== "") envIds.push(flagEnvId);
-
-  // No environment source at all → zero cost, never invoke `op` or import the SDK.
-  if (envIds.length === 0) return;
-
-  try {
-    // Dynamic import: only pull in the onepassword resolution path (and the SDK)
-    // when an environment source is actually present.
-    const { readEnvironment, recordOpHydratedVars } = await import("./providers/onepassword.js");
-    const auth = await resolveExplicitFlagAuth();
-    for (const envId of envIds) {
-      const vars = await readEnvironment(envId, { auth });
-      for (const [key, value] of Object.entries(vars)) {
-        // Environments are the highest-priority source: overwrite unconditionally.
-        process.env[key] = value;
-      }
-      recordOpHydratedVars(Object.keys(vars));
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[claudish] 1Password Environment load failed: ${message}`);
-    process.exit(1);
   }
 }
 

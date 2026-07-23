@@ -193,6 +193,7 @@ export function resolveExplicitFlagAuth(): Promise<SdkAuth | undefined> {
 interface SniffedConfig {
   apiKeys?: Record<string, string>;
   onepassword?: string[];
+  onepasswordEnvironments?: string[];
   customEndpoints?: Record<string, unknown>;
 }
 
@@ -260,7 +261,7 @@ function computeHasOpSources(): boolean {
   ) {
     return true;
   }
-  if (readAllOnepasswordEnvironments().length > 0) return true;
+  if (configEnvironmentIds().length > 0) return true;
 
   const cfg = readConfigRaw();
   // A single op:// ref sitting in apiKeys.
@@ -364,6 +365,50 @@ const globResolutions = new Map<string, Promise<Record<string, string>>>();
 // resolve annotate its span with { globCacheHit: true } (observability only).
 const globResolvedVars = new Set<string>();
 
+// ── Single-flight per 1Password ENVIRONMENT (getVariables is all-or-nothing) ──
+// Environments (config `onepasswordEnvironments[]` + the `--op-env` flag) resolve
+// POINT-OF-NEED, mirroring globs: the FIRST provider key that misses env/config
+// triggers ONE getVariables(id) which loads the WHOLE environment into
+// resolvedCache; later keys are cache hits. No-key operations (`--update`,
+// `--version`, OAuth-only codex sessions) never resolve a key → the SDK is never
+// touched → no DesktopAuth prompt. A REJECTED resolution is evicted so the next
+// request retries. This replaces the old eager `applyOpEnvironment()` hydration
+// that prompted on every process launch (the "storm").
+const environmentResolutions = new Map<string, Promise<Record<string, string>>>();
+
+/** 1Password Environment ids passed via the `--op-env` flag (argv-derived). */
+function flagEnvironmentIds(): string[] {
+  const argv = process.argv.slice(2);
+  const ids: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--op-env") {
+      const v = argv[i + 1];
+      if (v && !v.startsWith("-")) ids.push(v);
+    } else if (a.startsWith("--op-env=")) {
+      const v = a.slice("--op-env=".length);
+      if (v) ids.push(v);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Config environment ids (`onepasswordEnvironments[]`) — SEAM-AWARE so tests can
+ * inject them like every other op source. In production reads local+global config
+ * (deduped) via readAllOnepasswordEnvironments; under a test seam reads the
+ * injected SniffedConfig. Mirrors how readConfigRaw() gates the other sources.
+ */
+function configEnvironmentIds(): string[] {
+  if (testSeams?.config) return testSeams.config.onepasswordEnvironments ?? [];
+  return readAllOnepasswordEnvironments();
+}
+
+/** All registered environment ids: config (`onepasswordEnvironments[]`) + `--op-env` flag. */
+function registeredEnvironmentIds(): string[] {
+  return [...new Set([...configEnvironmentIds(), ...flagEnvironmentIds()])];
+}
+
 /**
  * Mask a glob for a trace-span label: vault + pattern kept, long item titles
  * mid-truncated. Vault/item TITLES are allowed in spans (they already appear in
@@ -432,6 +477,47 @@ async function resolveGlobShared(
 }
 
 /**
+ * Resolve a 1Password Environment ONCE per process (single-flight + memoized),
+ * mirroring resolveGlobShared. `getVariables(id)` is all-or-nothing — it returns
+ * EVERY variable in the environment — so the first needed key pulls the whole
+ * set into `resolvedCache`; every later key (this process, or a child that
+ * inherited none) is a cache hit. Failure evicts the memo → the next request
+ * retries. Never mutates process.env — the authority owns the write-through.
+ */
+async function resolveEnvironmentShared(
+  envId: string,
+  auth: SdkAuth | undefined
+): Promise<{ resolved: Record<string, string>; cacheHit: boolean }> {
+  const existing = environmentResolutions.get(envId);
+  if (existing) return { resolved: await existing, cacheHit: true };
+
+  const spanName = `op:env-resolve(${envId})`;
+  const promise = (async () => {
+    const { readEnvironment, recordOpHydratedVars } = await import(
+      "../../providers/onepassword.js"
+    );
+    const resolved = await traceSpan(spanName, () =>
+      readEnvironment(envId, { auth, sdkFactory: testSeams?.sdkFactory })
+    );
+    addSpanMeta(spanName, { vars: Object.keys(resolved).length });
+    // Populate the shared value cache with EVERYTHING the environment holds, and
+    // record provenance so the TUI/--probe show "From: 1Password" for cache-served
+    // vars (reuse globResolvedVars as the "came from op" provenance set).
+    for (const [k, v] of Object.entries(resolved)) {
+      resolvedCache.set(k, v);
+      globResolvedVars.add(k);
+    }
+    recordOpHydratedVars(Object.keys(resolved));
+    return resolved;
+  })();
+  environmentResolutions.set(envId, promise);
+  promise.catch(() => {
+    if (environmentResolutions.get(envId) === promise) environmentResolutions.delete(envId);
+  });
+  return { resolved: await promise, cacheHit: false };
+}
+
+/**
  * Drop every memoized op resolution (resolved values, per-glob full results,
  * and the op-source sniff). Called by the TUI after a 1Password add/edit
  * (hydrate-on-add) so item edits are re-discovered without restarting claudish.
@@ -441,6 +527,7 @@ export function invalidateOpResolutionCache(): void {
   resolvedCache.clear();
   globResolutions.clear();
   globResolvedVars.clear();
+  environmentResolutions.clear();
   // The config just changed (e.g. FIRST-ever glob added) — re-sniff on next use.
   sniffed = undefined;
 }
@@ -450,6 +537,7 @@ export function __resetResolveCacheForTests(): void {
   resolvedCache.clear();
   globResolutions.clear();
   globResolvedVars.clear();
+  environmentResolutions.clear();
   opQueue = Promise.resolve();
 }
 
@@ -618,6 +706,35 @@ async function resolveOpKeyForEnvVarsInner(
           sdkFactory: testSeams?.sdkFactory,
         });
         Object.assign(out, resolved);
+      }
+    }
+
+    // 3. 1Password Environments (config `onepasswordEnvironments[]` + `--op-env`).
+    //    getVariables(id) is all-or-nothing, so each environment is fetched ONCE
+    //    (single-flight → whole set into resolvedCache) the first time a wanted key
+    //    still misses every more-specific source above; later keys are cache hits.
+    //    Environments are the broadest/lowest-priority op source → resolved LAST.
+    const stillWantedEnv = new Set([...wanted].filter((w) => !(w in out)));
+    if (stillWantedEnv.size > 0) {
+      for (const envId of registeredEnvironmentIds()) {
+        if (stillWantedEnv.size === 0) break;
+        try {
+          const { resolved, cacheHit } = await resolveEnvironmentShared(envId, auth);
+          if (cacheHit) span?.addMeta({ globCacheHit: true });
+          for (const w of [...stillWantedEnv]) {
+            const v = resolved[w];
+            if (v !== undefined) {
+              out[w] = v;
+              stillWantedEnv.delete(w);
+            }
+          }
+        } catch (envErr) {
+          // NON-FATAL (startup contract): warn + skip — a bad environment must
+          // never lock the user out. The failed resolution was evicted, so the
+          // next resolve retries it.
+          const m = envErr instanceof Error ? envErr.message : String(envErr);
+          console.error(`[claudish] 1Password environment skipped: ${m}`);
+        }
       }
     }
   } catch (err) {

@@ -45,6 +45,7 @@ import { filterIdentity } from "./shared/openai-compat.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
+import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker } from "./shared/token-tracker.js";
@@ -687,6 +688,11 @@ export class ComposedHandler implements ModelHandler {
     // Pass an onComplete callback into handleStream; it fires at the end of the stream after
     // onTokenUpdate, so token counts are available.
     // fallbackMeta was captured at the top of handle() and is available via closure.
+    // Terminal errors that ride an HTTP 200 stream (e.g. the Responses backend's
+    // `context_length_exceeded`) are invisible to the status code. The stream
+    // parser reports them via onApiError; capture it here so the turn is recorded
+    // as a failure, not a success. Per-request local — safe under concurrency.
+    let streamApiError: { code: string; message: string } | null = null;
     const onStreamComplete = () => {
       try {
         const isFreeModel = this.tokenTracker.getTotalCost() === 0;
@@ -695,7 +701,7 @@ export class ComposedHandler implements ModelHandler {
           provider_name: this.provider.name,
           stream_format: this.provider.streamFormat,
           latency_ms: latencyMs,
-          success: true,
+          success: streamApiError === null,
           http_status: httpStatus,
           input_tokens: this.tokenTracker.getInputTokens(),
           output_tokens: this.tokenTracker.getOutputTokens(),
@@ -714,7 +720,17 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    return this.handleStream(c, response, adapter, claudeRequest, toolNameMap, onStreamComplete);
+    return this.handleStream(
+      c,
+      response,
+      adapter,
+      claudeRequest,
+      toolNameMap,
+      onStreamComplete,
+      (code, message) => {
+        streamApiError = { code, message };
+      }
+    );
   }
 
   private handleStream(
@@ -723,7 +739,8 @@ export class ComposedHandler implements ModelHandler {
     adapter: BaseModelAdapter,
     claudeRequest: any,
     toolNameMap?: Map<string, string>,
-    onComplete?: () => void
+    onComplete?: () => void,
+    onApiError?: (code: string, message: string) => void
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -797,6 +814,8 @@ export class ComposedHandler implements ModelHandler {
           modelName: this.bareModelName,
           onTokenUpdate,
           toolNameMap: adapter.getToolNameMap(),
+          contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
+          onApiError,
         });
 
       case "anthropic-sse":

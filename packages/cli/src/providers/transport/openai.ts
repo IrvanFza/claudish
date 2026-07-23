@@ -17,7 +17,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
 
   protected provider: RemoteProvider;
   private apiKey: string;
-  private modelName: string;
+  protected modelName: string;
 
   constructor(provider: RemoteProvider, modelName: string, apiKey: string) {
     this.provider = provider;

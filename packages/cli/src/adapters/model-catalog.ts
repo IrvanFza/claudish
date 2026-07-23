@@ -10,7 +10,7 @@
  * constraints, not model metadata.
  */
 
-import { readAllModelsCache } from "../providers/all-models-cache.js";
+import { readAllModelsCache, type SlimModelEntry } from "../providers/all-models-cache.js";
 
 export interface ModelEntry {
   /** Model ID as stored in the slim catalog (not lowercased) */
@@ -40,9 +40,49 @@ export interface ModelEntry {
  *                  Only tests should pass this.
  */
 export function lookupModel(modelId: string, cachePath?: string): ModelEntry | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry || entry.contextWindow === undefined) return undefined;
+  return {
+    modelId: entry.modelId,
+    contextWindow: entry.contextWindow,
+    supportsVision: entry.supportsVision,
+  };
+}
+
+/**
+ * Provider-aware context window lookup.
+ *
+ * The same model id can enforce DIFFERENT windows on different serving backends
+ * (e.g. gpt-5.6-sol = 1.05M on the OpenAI API but ~372K on the ChatGPT Codex
+ * OAuth backend). The slim catalog carries the per-provider window on each
+ * `aggregators[]` entry; this returns the window for `provider` if present,
+ * else the model's top-level `contextWindow`.
+ *
+ * @param provider The resolved CLI provider name (e.g. "openai-codex").
+ * @returns The provider-specific window, the top-level window, or undefined if
+ *          the model isn't in the catalog at all.
+ */
+export function lookupModelForProvider(
+  modelId: string,
+  provider: string,
+  cachePath?: string
+): number | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry) return undefined;
+  return (
+    entry.aggregators?.find((a) => a.provider === provider)?.contextWindow ?? entry.contextWindow
+  );
+}
+
+/**
+ * Find the slim catalog entry for a model id (bare or vendor-prefixed), matching
+ * on modelId or aliases. Shared by lookupModel / lookupModelForProvider.
+ * Throws if `modelId` contains "@" — callers must strip the provider prefix.
+ */
+function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | undefined {
   if (modelId.includes("@")) {
     throw new Error(
-      `lookupModel() received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
+      `model-catalog lookup received provider-routed ID "${modelId}" — callers must strip the "@" prefix before calling`
     );
   }
 
@@ -62,12 +102,7 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
     );
 
     if (exactMatch || aliasMatch) {
-      if (entry.contextWindow === undefined) return undefined;
-      return {
-        modelId: entry.modelId,
-        contextWindow: entry.contextWindow,
-        supportsVision: entry.supportsVision,
-      };
+      return entry;
     }
   }
 

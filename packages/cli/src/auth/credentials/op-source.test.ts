@@ -319,3 +319,118 @@ describe("glob single-flight — one resolution shared by every provider", () =>
     expect(counts.itemsGet).toBe(2);
   });
 });
+
+// ===========================================================================
+// Environment point-of-need + full-result memoization
+//
+// A 1Password Environment is fetched only after a concrete provider key reaches
+// this resolver. getVariables() returns the whole environment, so one SDK call
+// must satisfy later requests for other keys from the process-wide cache.
+// ===========================================================================
+
+const ENVIRONMENT_ID = "env-abc";
+const ENVIRONMENT_VARIABLES = [
+  { name: "OPENROUTER_API_KEY", value: "sk-test-router", masked: true },
+  { name: "GEMINI_API_KEY", value: "sk-test-gemini", masked: true },
+];
+
+interface EnvironmentCallCounts {
+  getVariables: number;
+  environmentIds: string[];
+}
+
+function makeCountingEnvironmentFactory(): {
+  factory: SdkClientFactory;
+  counts: EnvironmentCallCounts;
+} {
+  const counts: EnvironmentCallCounts = { getVariables: 0, environmentIds: [] };
+  const client: SdkClientLike = {
+    secrets: {
+      async resolve(ref: string): Promise<string> {
+        return `sdk:${ref}`;
+      },
+      async resolveAll() {
+        return { individualResponses: {} };
+      },
+    },
+    vaults: {
+      async list() {
+        return [];
+      },
+    },
+    items: {
+      async list() {
+        return [];
+      },
+      async get() {
+        throw new Error("environment tests must not inspect items");
+      },
+    },
+    environments: {
+      async getVariables(id: string) {
+        counts.getVariables++;
+        counts.environmentIds.push(id);
+        return { variables: ENVIRONMENT_VARIABLES };
+      },
+    },
+  };
+  return { factory: async () => client, counts };
+}
+
+function seamWithEnvironment(factory: SdkClientFactory): void {
+  const config = {
+    onepassword: [],
+    onepasswordEnvironments: [ENVIRONMENT_ID],
+  };
+  __setOpSourceSeamsForTests({
+    config,
+    sdkFactory: factory,
+    auth: stubAuth,
+  });
+  __resetSniffForTests();
+}
+
+describe("environment point-of-need", () => {
+  it("resolves a wanted key with exactly one environment fetch", async () => {
+    const { factory, counts } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+
+    const out = await resolveOne("OPENROUTER_API_KEY");
+
+    expect(out).toEqual({ OPENROUTER_API_KEY: "sk-test-router" });
+    expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+
+  it("caches the whole environment for a later provider key", async () => {
+    const { factory, counts } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+
+    expect(await resolveOne("OPENROUTER_API_KEY")).toEqual({
+      OPENROUTER_API_KEY: "sk-test-router",
+    });
+    expect(await resolveOne("GEMINI_API_KEY")).toEqual({
+      GEMINI_API_KEY: "sk-test-gemini",
+    });
+    expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+
+  it("does not fetch a configured environment for a no-key operation", async () => {
+    const { factory, counts } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+
+    const out = await resolveOpKeyForEnvVars(new Set(), { onAuthFailure: "skip" });
+
+    expect(out).toEqual({});
+    expect(counts).toEqual({ getVariables: 0, environmentIds: [] });
+  });
+
+  it("fetches once and returns {} when the environment lacks the wanted key", async () => {
+    const { factory, counts } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+
+    const out = await resolveOne("MISSING_KEY");
+
+    expect(out).toEqual({});
+    expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+});
