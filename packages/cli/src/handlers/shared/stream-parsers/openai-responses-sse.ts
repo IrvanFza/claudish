@@ -26,6 +26,19 @@ export function createResponsesStreamHandler(
     modelName: string;
     onTokenUpdate?: (input: number, output: number) => void;
     toolNameMap?: Map<string, string>;
+    /**
+     * Real per-provider context window (tokens) for the model on THIS backend,
+     * resolved from the catalog by the caller. Used only to make the overflow
+     * message specific ("caps at ~372K"); omit/0 → the number is left out.
+     */
+    contextWindow?: number;
+    /**
+     * Fired when the Responses backend returns an in-stream error event (e.g.
+     * `context_length_exceeded`). The error arrives on an HTTP 200 stream, so the
+     * caller can't see it from the status code — this signal lets it record the
+     * turn as a failure instead of a success in telemetry.
+     */
+    onApiError?: (code: string, message: string) => void;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -290,9 +303,34 @@ export function createResponsesStreamHandler(
                 const errCode = err.code || event.code || "";
                 log(`[ResponsesSSE] API error: ${errCode} - ${errMsg}`);
 
+                // Signal the terminal error so the caller records this turn as a
+                // failure (the error rides an HTTP 200 stream, invisible to status).
+                opts.onApiError?.(errCode, errMsg);
+
                 closeReasoning();
                 closeText();
                 closeTools();
+
+                // Context-overflow gets an actionable message (with the real
+                // per-backend cap when known) instead of the bare error code —
+                // otherwise the user just sees a cryptic `context_length_exceeded`
+                // and a stuck session (/compact re-sends the same oversized input).
+                const isCtxOverflow =
+                  errCode === "context_length_exceeded" ||
+                  /context (length|window)|exceeds? the context|too long|maximum context/i.test(
+                    errMsg
+                  );
+                let errorText = `\n\n[API Error: ${errCode} ${errMsg}]`;
+                if (isCtxOverflow) {
+                  const cap =
+                    opts.contextWindow && opts.contextWindow > 0
+                      ? ` ~${Math.round(opts.contextWindow / 1000)}K tokens`
+                      : "";
+                  errorText =
+                    `\n\n[Context limit reached] This model's backend enforces a smaller context window${cap} than its API spec. ` +
+                    "Run /clear to start fresh (/compact will also fail — it re-sends the full conversation), " +
+                    `or route the model via \`oai@${opts.modelName}\` to use the full-size window.`;
+                }
 
                 const errorIdx = curIdx++;
                 send("content_block_start", {
@@ -303,7 +341,7 @@ export function createResponsesStreamHandler(
                 send("content_block_delta", {
                   type: "content_block_delta",
                   index: errorIdx,
-                  delta: { type: "text_delta", text: `\n\n[API Error: ${errCode} ${errMsg}]` },
+                  delta: { type: "text_delta", text: errorText },
                 });
                 send("content_block_stop", { type: "content_block_stop", index: errorIdx });
 

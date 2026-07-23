@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.16.0] - 2026-07-23
+
+### Features
+
+- **Codex context window: honest reporting + graceful overflow.** The ChatGPT Codex OAuth backend
+  (`chatgpt.com/backend-api/codex/responses`) enforces a much smaller context window than the model's public API spec
+  and keeps shrinking it — e.g. `gpt-5.6-sol` is capped at **~372K** tokens there versus its **1.05M** API spec. Claudish
+  read the 1.05M number, so long sessions sailed past the real ceiling and hit a cryptic `context_length_exceeded` with
+  no warning. Now:
+  - The real per-backend window is sourced from the hosted catalog (per-provider `aggregators[].contextWindow`) — **not
+    hardcoded** — via a new `lookupModelForProvider()` and `OpenAICodexTransport.getContextWindow()`. The status bar
+    reflects the true ceiling and turns red as it approaches, instead of showing a misleading ~35% full.
+  - On overflow, the bare `[API Error: context_length_exceeded]` is replaced with an actionable message naming the real
+    cap and the escape hatch (`/clear`, or route via `oai@<model>` for the full-size window). These turns are now
+    recorded as failures in telemetry instead of phantom successes (the error rides an HTTP 200 stream).
+
+- **1Password Environments are now point-of-need (fixes the auth-prompt "storm").** `onepasswordEnvironments[]` config
+  and the `--op-env` flag no longer resolve eagerly at every process launch. The credential authority fetches an
+  environment lazily (single-flight, cached; `getVariables` is all-or-nothing so the first needed key pulls the whole
+  set) only when a routed provider's key actually misses env/config. Consequences: `--update` / `--version` / `--help`
+  and OAuth-only (codex) sessions never prompt; spawned team/channel children inherit resolved keys instead of each
+  re-triggering DesktopAuth (N agents no longer = N prompts). Environments are now a lazy op source (env/config already
+  set wins) rather than a startup overwrite.
+
 ## [7.15.0] - 2026-07-17
 
 ### Documentation

@@ -16,6 +16,7 @@
  */
 
 import { normalizeCodexModel } from "../../adapters/codex-api-format.js";
+import { lookupModelForProvider } from "../../adapters/model-catalog.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { OpenAIProviderTransport } from "./openai.js";
@@ -72,5 +73,20 @@ export class OpenAICodexTransport extends OpenAIProviderTransport {
     }
     // Auth-derived store:false / include reasoning bits, only under OAuth.
     return this.cachedAuth?.transformPayload?.(normalizedPayload) ?? normalizedPayload;
+  }
+
+  /**
+   * The ChatGPT Codex OAuth backend enforces a SMALLER context window than the
+   * model's headline spec (e.g. gpt-5.6-sol: ~372K on codex vs 1.05M on the
+   * OpenAI API), and OpenAI keeps shrinking it. Return the codex-specific window
+   * from the slim catalog's per-provider (`openai-codex`) aggregator entry — so
+   * the status line reflects the true ceiling instead of the 1.05M API spec.
+   * Falls back to the model's top-level window, or 0 (unknown) when the model
+   * isn't in the catalog — matching the pre-existing TokenTracker seed, so a
+   * catalog miss is a no-op. Flows through composed-handler's transport override.
+   * NOTE: display/telemetry only — it does not change the request sent upstream.
+   */
+  getContextWindow(): number {
+    return lookupModelForProvider(this.modelName, this.name) ?? 0;
   }
 }
