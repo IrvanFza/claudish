@@ -6,37 +6,12 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
-- isolate terminal output from provider connection errors
+- v7.18.1 — isolate terminal output from provider connection errors([`dc4b0c3`](https://github.com/MadAppGang/claudish/commit/dc4b0c3518ea2e0cea15844ebb761dbc857be5e0))
+- isolate terminal output from provider connection errors([`218c358`](https://github.com/MadAppGang/claudish/commit/218c3586bcdd3842e417a3e18aa121556c57bce0))
 
-  Claude Code is spawned with `stdio: "inherit"`, so claudish's stdout/stderr
-  **are** its TTY. A connection failure printed Bun's multi-line error dump
-  straight into the frame Claude Code was painting, tearing the status line and
-  the prompt box.
+### Documentation
 
-  Three things had to be true for that to happen:
-
-  - Bun's `fetch` throws a flat `Error` with `code: "ConnectionRefused"` and no
-    `.cause`. `connection-error.ts` classified by Node/undici errno names walked
-    through a cause chain, so it never matched on the runtime claudish ships —
-    and Bun collapses DNS failure and connection-refused into that same code.
-  - `proxy-server.ts` returned `handler.handle()` un-awaited inside a
-    `try/catch`, so the rejection escaped its own error handling.
-  - It therefore reached Hono's default error handler, which is literally
-    `console.error(err)` — the leak onto the terminal.
-
-  Fixed in four layers: Bun's error vocabulary added to the connection
-  classifier (with the "refused" message now split on loopback-vs-remote, since
-  a remote `ConnectionRefused` is almost always DNS); an `app.onError` backstop
-  so no route rejection can reach a console; a `sanitizeErrorMessage()` choke
-  point that flattens every emitted error message to one control-character-free
-  line; and a terminal firewall that diverts `console.*` and direct stream
-  writes for the window between spawn and child exit.
-
-  Connection errors now return **400 instead of 503**. Both are non-retryable in
-  claudish's own fallback chain, but Claude Code *retries* a 503 — the
-  "attempt N/10" banner that buries the cause — while it renders a 400 verbatim
-  and inline. Suppressed output is recorded to the durable session log rather
-  than discarded.
+- update CHANGELOG.md for v7.18.0([`f3c8b85`](https://github.com/MadAppGang/claudish/commit/f3c8b85a5e5c4dfeaa9f2b33a256c0047166c860))
 
 ## [7.18.0] - 2026-07-26
 
