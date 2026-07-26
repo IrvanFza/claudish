@@ -1328,6 +1328,14 @@ describe("isTransientSdkError", () => {
     expect(isTransientSdkError(new Error("invalid secret reference"))).toBe(false);
     expect(isTransientSdkError(new Error("no auth"))).toBe(false);
   });
+  test("does NOT flag a user's authorization denial (cancelling the desktop prompt is terminal)", () => {
+    // The real 1Password SDK message when the user clicks Cancel/Deny. Retrying
+    // it re-opens the dialog they just dismissed — must be terminal, not transient.
+    expect(
+      isTransientSdkError(new Error("Error { msg: Denied authorization for SDK client, inner: None }"))
+    ).toBe(false);
+    expect(isTransientSdkError(new Error("Denied authorization for SDK client"))).toBe(false);
+  });
 });
 
 describe("withSdkRetry", () => {

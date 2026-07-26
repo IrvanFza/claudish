@@ -998,9 +998,16 @@ export function resetSdkClientCache(): void {
 }
 
 /** True when an error looks like a TRANSIENT desktop-IPC failure (errno -4,
- *  "IPC operation failed", "Denied", broken pipe) worth one rebuild+retry. */
+ *  "IPC operation failed", broken pipe, stale session) worth one rebuild+retry.
+ *  A user DECLINING the desktop prompt ("Denied authorization for SDK client")
+ *  is NOT transient — see the terminal guard below — because retrying it just
+ *  re-opens the dialog they just cancelled. */
 export function isTransientSdkError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // TERMINAL: the user cancelled the 1Password desktop authorization prompt.
+  // That is a deliberate decision, not a transient blip — retrying re-prompts
+  // them right after they clicked Cancel (the "second dialog" bug). Never retry.
+  if (msg.includes("denied authorization")) return false;
   return (
     msg.includes("ipc operation failed") ||
     msg.includes("ipc operation") ||
