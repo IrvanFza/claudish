@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.17.1] - 2026-07-24
+
+### Bug Fixes
+
+- v7.17.1 — surface DNS/connection failures as network errors, not 500s([`d1a3379`](https://github.com/MadAppGang/claudish/commit/d1a33795e75d7aa6a61bf1648958fcc17f86defc))
+
+### Documentation
+
+- update CHANGELOG.md for v7.17.0([`bc24326`](https://github.com/MadAppGang/claudish/commit/bc243268f73a60bac7e8bb8ab2996ab49037f418))
+
 ## [7.17.0] - 2026-07-23
 
 ### Documentation
