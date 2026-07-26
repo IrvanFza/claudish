@@ -144,6 +144,12 @@ function redactDeep(val: any, key?: string): any {
 function isStructuralLogWorthy(msg: string): boolean {
   return (
     msg.startsWith("[SSE:") ||
+    // Output the terminal firewall kept off the TTY. This is the ONLY durable
+    // record of it: the diag file is unlinked on session cleanup, so without
+    // this entry a suppressed dependency crash would vanish entirely. Matched
+    // explicitly rather than relying on the generic "error" substring below —
+    // a suppressed stdout line need not contain the word.
+    msg.startsWith("[Suppressed]") ||
     msg.startsWith("[Proxy]") ||
     msg.startsWith("[Fallback]") ||
     msg.startsWith("[Streaming] ===") || // HANDLER STARTED

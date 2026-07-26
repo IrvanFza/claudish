@@ -52,8 +52,49 @@ export function statusToErrorType(status: number): AnthropicErrorType {
   }
 }
 
+/** Hard cap on an error message. Long enough to stay actionable, short enough
+ *  that a client rendering it inline can't be pushed off-screen. */
+const MAX_ERROR_MESSAGE_LENGTH = 600;
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
+const ANSI_ESCAPE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B[@-Z\\-_]/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/g;
+
+/**
+ * Flatten an error message into a single terminal-safe line.
+ *
+ * Claude Code renders a proxy error message INLINE in its "API error · Retrying"
+ * banner, inside a TUI frame it redraws in place. A message carrying newlines,
+ * tabs, or ANSI escapes therefore doesn't just look bad — it moves the cursor
+ * and overwrites whatever the TUI had already painted, which is how a raw Bun
+ * connect-error dump (`error: …` / `path: …` / `errno: …` / `code: …`) shredded
+ * the status line and surrounding rows.
+ *
+ * claudish does not control what a provider puts in an error body, so the fix
+ * has to live at the boundary: every message we emit is collapsed to one line,
+ * stripped of control bytes, and length-capped.
+ */
+export function sanitizeErrorMessage(
+  message: string,
+  maxLength = MAX_ERROR_MESSAGE_LENGTH
+): string {
+  const flattened = String(message ?? "")
+    .replace(ANSI_ESCAPE, "") // cursor moves / colors — must go before control-char strip
+    .replace(CONTROL_CHARS, " ") // newlines, tabs, bells, backspaces → space
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (flattened.length <= maxLength) return flattened;
+  return `${flattened.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 /**
  * Create a properly formatted Anthropic error envelope.
+ *
+ * The message is always sanitized (see sanitizeErrorMessage) — this is the one
+ * choke point every proxy error response passes through, so it is the only
+ * place that can guarantee a client-rendered error can't corrupt a TUI.
  *
  * @param status         - HTTP status code (used to infer error type if not provided)
  * @param message        - Human-readable error message
@@ -68,7 +109,7 @@ export function wrapAnthropicError(
   upstreamStatus?: number
 ): AnthropicErrorEnvelope {
   const type = (errorType as AnthropicErrorType) || statusToErrorType(status);
-  const error: AnthropicErrorEnvelope["error"] = { type, message };
+  const error: AnthropicErrorEnvelope["error"] = { type, message: sanitizeErrorMessage(message) };
   if (upstreamStatus !== undefined) error.upstream_status = upstreamStatus;
   return { type: "error", error };
 }
@@ -209,17 +250,23 @@ export function buildSurfacedErrorMessage(opts: {
  */
 export function ensureAnthropicErrorFormat(status: number, body: any): AnthropicErrorEnvelope {
   // Already correct format: { type: "error", error: { type: "...", message: "..." } }
+  // Still sanitize the message: a well-formed envelope is no guarantee of a
+  // well-behaved message, and this pass-through is the one path where provider
+  // text reaches the client without claudish having composed it.
   if (
     body?.type === "error" &&
     typeof body?.error?.type === "string" &&
     typeof body?.error?.message === "string"
   ) {
-    return body;
+    return { ...body, error: { ...body.error, message: sanitizeErrorMessage(body.error.message) } };
   }
 
   // Partial format: { error: { type: "...", message: "..." } } (missing outer type)
   if (typeof body?.error?.type === "string" && typeof body?.error?.message === "string") {
-    return { type: "error", error: body.error };
+    return {
+      type: "error",
+      error: { ...body.error, message: sanitizeErrorMessage(body.error.message) },
+    };
   }
 
   // Provider returned some other JSON structure -- extract best message

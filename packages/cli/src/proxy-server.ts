@@ -108,7 +108,7 @@ export async function createProxyServer(
       log(`[Proxy] Registered ${customEpResult.registered} custom endpoint(s) from config`);
     }
     for (const err of customEpResult.errors) {
-      console.error(`[claudish] customEndpoints['${err.name}'] failed validation: ${err.message}`);
+      logStderr(`customEndpoints['${err.name}'] failed validation: ${err.message}`);
     }
   } catch (err) {
     // Config read failure should not crash the proxy — the rest of startup
@@ -263,10 +263,13 @@ export async function createProxyServer(
     const resolution = resolveModelProvider(targetModel);
 
     if (resolution.wasAutoRouted && resolution.autoRouteMessage) {
+      // logStderr, NOT console.error: this fires PER REQUEST, i.e. while Claude
+      // Code owns the inherited TTY. A raw console write here lands mid-frame.
       if (!options.quiet) {
-        console.error(`[Auto-route] ${resolution.autoRouteMessage}`);
+        logStderr(`[Auto-route] ${resolution.autoRouteMessage}`);
+      } else {
+        log(`[Auto-route] ${resolution.autoRouteMessage}`);
       }
-      log(`[Auto-route] ${resolution.autoRouteMessage}`);
     }
 
     // If resolver says use OpenRouter (including fallback cases), create the handler
@@ -308,7 +311,7 @@ export async function createProxyServer(
         // or bare-name fallback) — but warn on stderr so the registration gap
         // stays loud instead of silently masquerading as a missing key.
         if (!credentials.get(resolved.provider.name)) {
-          console.error(
+          logStderr(
             `[Proxy] No credential provider registered for "${resolved.provider.name}" — treating as missing credential (authority registration gap)`
           );
           log(
@@ -590,6 +593,21 @@ export async function createProxyServer(
   const app = new Hono();
   app.use("*", cors());
 
+  // Terminal-safety backstop. Hono's DEFAULT error handler is literally
+  // `console.error(err)` + a text/plain "Internal Server Error" (see
+  // hono/dist/hono-base.js). During an interactive session claudish's stderr IS
+  // Claude Code's TTY (claude-runner spawns with stdio: "inherit"), so that one
+  // console.error prints Bun's multi-line error dump — `error: …` / `path: …` /
+  // `errno: …` / `code: …` — directly into the frame Claude Code is painting,
+  // shredding the status line. Overriding onError means no unhandled route
+  // rejection can ever reach a console again: it goes to the log file, and the
+  // client gets a single-line Anthropic envelope it can render inline.
+  app.onError((err, c) => {
+    logStderr(`[Proxy] Unhandled error on ${c.req.method} ${c.req.path}: ${err?.message ?? err}`);
+    log(`[Proxy] Unhandled error stack: ${err?.stack ?? "(no stack)"}`);
+    return c.json(wrapAnthropicError(500, `Proxy error: ${err?.message ?? String(err)}`), 500);
+  });
+
   app.get("/", (c) =>
     c.json({
       status: "ok",
@@ -720,8 +738,11 @@ export async function createProxyServer(
       );
       const handler = await getHandlerForRequest(body.model);
 
-      // Route
-      return handler.handle(c, body);
+      // Route. The `await` is load-bearing: `return handler.handle(...)` hands
+      // the promise back BEFORE it settles, so a rejection escapes this
+      // try/catch entirely and lands in Hono's error handler instead. That is
+      // how connect failures bypassed every message we build here.
+      return await handler.handle(c, body);
     } catch (e) {
       log(`[Proxy] Error: ${e}`);
       // Routing failures are terminal — surface as a non-retryable 400 so the

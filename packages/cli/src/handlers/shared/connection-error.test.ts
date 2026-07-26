@@ -11,6 +11,10 @@ describe("classifyConnectionError", () => {
       ["ECONNRESET", "unreachable"],
       ["ENETUNREACH", "unreachable"],
       ["EHOSTUNREACH", "unreachable"],
+      ["ConnectionRefused", "refused"],
+      ["ConnectionClosed", "unreachable"],
+      ["FailedToOpenSocket", "unreachable"],
+      ["ERR_SOCKET_CLOSED", "unreachable"],
     ] as const;
 
     for (const [code, kind] of cases) {
@@ -45,6 +49,16 @@ describe("classifyConnectionError", () => {
     expect(classifyConnectionError(error)).toEqual({ kind: "dns", code: "ENOTFOUND" });
   });
 
+  test("falls back to Bun's connection message when no code is present", () => {
+    const error = new Error("Unable to connect. Is the computer able to access the url?");
+
+    expect("code" in error).toBe(false);
+    expect(classifyConnectionError(error)).toEqual({
+      kind: "refused",
+      code: "ConnectionRefused",
+    });
+  });
+
   test("returns null for non-connection errors", () => {
     expect(classifyConnectionError({ code: "ERR_INVALID_ARG_TYPE" })).toBeNull();
     expect(classifyConnectionError(new Error("ordinary failure"))).toBeNull();
@@ -74,14 +88,31 @@ describe("buildConnectionErrorMessage", () => {
     expect(message).toContain("not OpenAI Codex");
   });
 
-  test("builds an actionable connection-refused message", () => {
+  test("tells users to start a refused loopback server", () => {
+    const loopbackEndpoints = [
+      "http://localhost:11434/v1/chat/completions",
+      "http://127.0.0.1:11434/v1/chat/completions",
+      "http://[::1]:11434/v1/chat/completions",
+      "http://0.0.0.0:11434/v1/chat/completions",
+    ];
+
+    for (const endpoint of loopbackEndpoints) {
+      const message = buildConnectionErrorMessage("refused", "Local provider", endpoint);
+      expect(message).toContain("Make sure the server is running");
+    }
+  });
+
+  test("uses network and DNS guidance for a refused remote host", () => {
     const message = buildConnectionErrorMessage(
       "refused",
-      "Local provider",
-      "http://localhost:11434/v1/chat/completions"
+      "OpenAI Codex",
+      "https://chatgpt.com/backend-api/codex/responses"
     );
 
-    expect(message).toContain("Make sure the server is running");
+    expect(message).not.toContain("Make sure the server is running");
+    expect(message).toContain("network");
+    expect(message).toContain("DNS");
+    expect(message).toContain("chatgpt.com");
   });
 
   test("builds an actionable unreachable-host message", () => {

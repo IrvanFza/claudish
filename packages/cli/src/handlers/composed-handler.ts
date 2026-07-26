@@ -366,7 +366,7 @@ export class ComposedHandler implements ModelHandler {
         // moves to the next provider in the chain. 503 (connection error) would stop
         // the fallback chain since it is not retryable by design.
         return c.json(
-          { error: { type: "authentication_error", message: err.message } },
+          wrapAnthropicError(401, err.message, "authentication_error"),
           401 as any
         );
       }
@@ -458,7 +458,17 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        return c.json(wrapAnthropicError(503, msg, "connection_error"), 503 as any);
+        // Status 400, NOT 503. Both stop claudish's own fallback chain
+        // (isRetryableError treats each as terminal), but Claude Code retries a
+        // 503 as overloaded_error — ten rounds of "API error · Retrying ·
+        // attempt N/10" with the real reason buried behind the banner, which is
+        // exactly the failure this fix exists to kill. A 400 is rendered
+        // verbatim and inline by Claude Code's native error UI, so the user
+        // reads "check your network/DNS" in the transcript instead of watching
+        // a retry counter. The `connection_error` TYPE is what carries the
+        // meaning: probe-live's classifyHttpError keys off it (status-agnostic)
+        // to report "network error" rather than a generic client error.
+        return c.json(wrapAnthropicError(400, msg, "connection_error"), 400 as any);
       }
       throw error;
     }

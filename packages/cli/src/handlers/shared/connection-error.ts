@@ -25,7 +25,27 @@ const CODE_KIND: Record<string, ConnectionErrorKind> = {
   EPIPE: "unreachable", // broken pipe during connect
   UND_ERR_CONNECT_TIMEOUT: "unreachable", // undici connect timeout
   UND_ERR_SOCKET: "unreachable", // undici socket closed
+
+  // --- Bun runtime codes ---------------------------------------------------
+  // claudish RUNS on Bun, and Bun's fetch does NOT use Node's errno names and
+  // does NOT populate `.cause` — it throws a flat Error carrying its own `code`
+  // plus `path`/`errno` own-properties. Without these entries every real-world
+  // connect failure fell through classification into a raw 500 (and, via Hono's
+  // default `console.error(err)` handler, a multi-line dump onto Claude Code's
+  // TTY). Note Bun reports a DNS failure as ConnectionRefused too — see
+  // buildConnectionErrorMessage for how that ambiguity is resolved.
+  ConnectionRefused: "refused", // Bun: refused OR unresolvable host
+  ConnectionClosed: "unreachable", // Bun: peer closed mid-connect
+  FailedToOpenSocket: "unreachable", // Bun: could not open the socket
+  ERR_SOCKET_CLOSED: "unreachable", // Bun: socket closed before response
 };
+
+/**
+ * Bun's single phrasing for every connect-level failure. Bun sets a `code` in
+ * current releases, but older/compiled builds surface only this message, so we
+ * match it as a fallback.
+ */
+const BUN_CONNECT_MESSAGE = /unable to connect\. is the computer able to access the url\?/i;
 
 /**
  * Walk an error and its `cause` chain (undici's `TypeError: fetch failed` wraps
@@ -43,7 +63,18 @@ function findConnectionCode(error: unknown): string | null {
   }
   const msg = String((error as any)?.message ?? error ?? "");
   if (/getaddrinfo|ENOTFOUND|EAI_AGAIN|nodename nor servname/i.test(msg)) return "ENOTFOUND";
+  if (BUN_CONNECT_MESSAGE.test(msg)) return "ConnectionRefused";
   return null;
+}
+
+/** True when the endpoint points at this machine (loopback / unspecified). */
+function isLoopback(endpoint: string): boolean {
+  try {
+    const { hostname } = new URL(endpoint);
+    return /^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?)$/i.test(hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -78,7 +109,15 @@ export function buildConnectionErrorMessage(
     case "dns":
       return `Cannot resolve ${host} for ${displayName}. This is a DNS/network problem on your machine — check your internet connection, VPN, or DNS resolver (e.g. Tailscale MagicDNS) — not ${displayName}.`;
     case "refused":
-      return `Cannot connect to ${displayName} at ${endpoint}. Make sure the server is running.`;
+      // "Refused" is only unambiguous for a local endpoint. Bun reports an
+      // unresolvable REMOTE host as ConnectionRefused too, so "make sure the
+      // server is running" would send the user to restart chatgpt.com. For a
+      // remote host, give the DNS/network wording instead — that is the far
+      // likelier cause, and the advice is right either way.
+      if (isLoopback(endpoint)) {
+        return `Cannot connect to ${displayName} at ${endpoint}. Make sure the server is running.`;
+      }
+      return `Cannot reach ${host} for ${displayName}. This is a network problem on your machine — check your internet connection, VPN, or DNS resolver (e.g. Tailscale MagicDNS) — not ${displayName}.`;
     case "unreachable":
       return `Cannot reach ${displayName} at ${endpoint}. Check your network connection.`;
   }

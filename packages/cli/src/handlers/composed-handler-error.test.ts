@@ -164,7 +164,12 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
     expect(captured.body?.error?.message).toContain("Unauthorized");
   });
 
-  test("a thrown DNS error is surfaced as a 503 connection_error", async () => {
+  // Keep connection failures at 400: both 400 and 503 stop claudish's fallback
+  // chain, but Claude Code retries a 503 as overloaded_error and buries the real
+  // reason behind "API error - Retrying - attempt N/10". A 400 is rendered
+  // verbatim inline, while probe-live still classifies by the status-agnostic
+  // connection_error type.
+  test("a thrown DNS error is surfaced as a 400 connection_error", async () => {
     stubUpstreamThrow(
       Object.assign(new TypeError("fetch failed"), {
         cause: Object.assign(new Error("getaddrinfo ENOTFOUND host"), { code: "ENOTFOUND" }),
@@ -173,7 +178,7 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
     const { c, captured } = makeContext();
     await makeHandler().handle(c, PAYLOAD);
 
-    expect(captured.status).toBe(503);
+    expect(captured.status).toBe(400);
     expect(captured.body?.type).toBe("error");
     expect(captured.body?.error?.type).toBe("connection_error");
     expect(captured.body?.error?.message).toContain("Cannot resolve");
@@ -181,14 +186,32 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
     expect(captured.body?.error?.type).not.toBe("api_error");
   });
 
-  test("a thrown ECONNREFUSED error is surfaced as a 503 connection_error", async () => {
+  test("a thrown ECONNREFUSED error is surfaced as a 400 connection_error", async () => {
     stubUpstreamThrow(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
     const { c, captured } = makeContext();
     await makeHandler().handle(c, PAYLOAD);
 
-    expect(captured.status).toBe(503);
+    expect(captured.status).toBe(400);
     expect(captured.body?.error?.type).toBe("connection_error");
     expect(captured.body?.error?.message).toContain("Make sure the server is running");
+  });
+
+  test("a thrown connection error is surfaced with a single-line terminal-safe message", async () => {
+    stubUpstreamThrow(
+      Object.assign(
+        new Error(
+          "Unable to connect. Is the computer able to access the url?\n\t\u001b[31mconnection failed\u001b[0m"
+        ),
+        { code: "ConnectionRefused" }
+      )
+    );
+    const { c, captured } = makeContext();
+    await makeHandler().handle(c, PAYLOAD);
+
+    const message = captured.body?.error?.message;
+    expect(typeof message).toBe("string");
+    expect(message).not.toMatch(/[\r\n\t]/);
+    expect(message).not.toContain("\u001b");
   });
 
   test("a non-connection throw propagates without calling c.json", async () => {

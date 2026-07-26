@@ -14,10 +14,40 @@ import { join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
+import { logStderr } from "./logger.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
+import { beginTerminalIsolation } from "./terminal-isolation.js";
 import type { ClaudishConfig } from "./types.js";
+
+/**
+ * Terminal-isolation state for the running session. Module-level because the
+ * firewall must be lifted from two places — the normal exit path and the signal
+ * handler — and the signal handler is installed as a separate function.
+ */
+let restoreTerminal: (() => void) | null = null;
+
+/**
+ * Lift the terminal firewall.
+ *
+ * Deliberately prints NOTHING, not even a summary count: the terminal is the
+ * one channel that must stay pristine, and a trailing "N messages suppressed"
+ * line is noise the user can act on only by reading a log anyway. Suppressed
+ * output is not lost — it is recorded to the durable session log at
+ * ~/.claudish/logs/claudish_<timestamp>.log (see the "[Suppressed]" prefix in
+ * the sink below; the ephemeral ~/.claudish/diag-<pid>.log is unlinked at
+ * cleanup and cannot be the system of record).
+ *
+ * The user-facing channel for a real failure is the HTTP response body: the
+ * proxy returns a 400 with an actionable message, which Claude Code renders in
+ * its own native error UI, in the transcript, where the user is already looking.
+ */
+function releaseTerminalIsolation(): void {
+  if (!restoreTerminal) return;
+  restoreTerminal();
+  restoreTerminal = null;
+}
 
 /**
  * Check if any resolved model mapping targets a native Anthropic model (claude-*).
@@ -706,6 +736,20 @@ export async function runClaudeWithProxy(
     shell: needsShell,
   });
 
+  // From this line until the child exits, Claude Code owns the terminal. Close
+  // claudish's write channel to it so a stray console.error — ours, a
+  // dependency's, or the Bun runtime's — cannot land inside a frame the child
+  // is painting. Interactive only: in --print/--stdin mode there is no TUI to
+  // corrupt, and claudish's chatter on stderr is expected to be visible.
+  if (config.interactive) {
+    restoreTerminal = beginTerminalIsolation((entry) => {
+      // "[Suppressed]" prefix is load-bearing: logger's isStructuralLogWorthy
+      // matches it, which is what persists this line into the durable session
+      // log. logStderr also mirrors it to the diag file for a live `tail`.
+      logStderr(`[Suppressed] ${entry.source}: ${entry.text.trimEnd()}`);
+    });
+  }
+
   // Close our copy of the tty write fd once the child has inherited it. The
   // child keeps its own dup, so this doesn't disturb the running session.
   if (ttyFd !== undefined) {
@@ -729,6 +773,11 @@ export async function runClaudeWithProxy(
       resolve(code ?? 1);
     });
   });
+
+  // The child has released the terminal — claudish may speak again. Restore
+  // BEFORE any shutdown message, or the caller's "Shutting down proxy…" line
+  // would be swallowed by our own firewall.
+  releaseTerminalIsolation();
 
   // Clean up temporary settings file
   try {
@@ -757,6 +806,9 @@ function setupSignalHandlers(
 
   for (const signal of signals) {
     process.on(signal, () => {
+      // Lift the firewall first — the child is going away, and the shutdown
+      // notice below must reach the user rather than the diag log.
+      releaseTerminalIsolation();
       if (!quiet) {
         // stderr: this is claudish's own diagnostic chatter and must not land
         // on stdout, which may carry Claude Code's machine-readable output.

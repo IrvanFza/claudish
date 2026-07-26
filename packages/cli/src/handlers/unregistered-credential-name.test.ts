@@ -48,11 +48,11 @@ let savedGeminiKey: string | undefined;
 
 // ── stderr spy ───────────────────────────────────────────────────────────────
 const errLines: string[] = [];
-const realConsoleError = console.error;
+const realStderrWrite = process.stderr.write;
 
 afterEach(async () => {
   removeGap();
-  console.error = realConsoleError;
+  process.stderr.write = realStderrWrite;
   errLines.length = 0;
   if (savedGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = savedGeminiKey;
@@ -76,9 +76,10 @@ describe("unregistered credential name — warn + graceful 400, never 500", () =
     credentials.invalidate();
 
     installGap("gemini");
-    console.error = (...args: unknown[]) => {
-      errLines.push(args.map(String).join(" "));
-    };
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      errLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
 
     const port = nextPort();
     activeProxy = await createProxyServer(

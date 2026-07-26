@@ -4,9 +4,13 @@ import {
   ensureAnthropicErrorFormat,
   extractProviderMessage,
   isTerminalError,
+  sanitizeErrorMessage,
   statusToErrorType,
   wrapAnthropicError,
 } from "./anthropic-error.js";
+
+const CAPTURED_BUN_DUMP =
+  'error: Unable to connect. Is the computer able to access the url?\n  path: "https://chatgpt.com/backend-api/codex/responses",\n errno: 0,\n  code: "ConnectionRefused"\n';
 
 describe("statusToErrorType", () => {
   it("maps 400 to invalid_request_error", () => {
@@ -73,6 +77,42 @@ describe("wrapAnthropicError", () => {
     const result = wrapAnthropicError(401, "Bad key", undefined);
     expect(result.error.type).toBe("authentication_error");
   });
+
+  it("sanitizes the wrapped message", () => {
+    const result = wrapAnthropicError(500, "\u001b[31mfirst line\u001b[0m\n\tsecond line\u0007");
+
+    expect(result.error.message).toBe("first line second line");
+    expect(result.error.message).not.toMatch(/[\r\n\t]/);
+  });
+});
+
+describe("sanitizeErrorMessage", () => {
+  it("strips ANSI and C0 controls, collapses whitespace, and trims", () => {
+    const message = " \u001b[31mred\u001b[0m\n\tbell\u0007  back\u0008space \u001b raw\r\n next ";
+
+    expect(sanitizeErrorMessage(message)).toBe("red bell back space raw next");
+  });
+
+  it("collapses the real captured Bun dump to one line", () => {
+    const result = sanitizeErrorMessage(CAPTURED_BUN_DUMP);
+
+    expect(result).toBe(
+      'error: Unable to connect. Is the computer able to access the url? path: "https://chatgpt.com/backend-api/codex/responses", errno: 0, code: "ConnectionRefused"'
+    );
+    expect(result).not.toMatch(/[\r\n\t]/);
+  });
+
+  it("caps messages at 600 characters and ends truncation with an ellipsis", () => {
+    const result = sanitizeErrorMessage("x".repeat(601));
+
+    expect(result).toHaveLength(600);
+    expect(result).toBe(`${"x".repeat(599)}…`);
+  });
+
+  it("handles null and undefined input", () => {
+    expect(sanitizeErrorMessage(null as unknown as string)).toBe("");
+    expect(sanitizeErrorMessage(undefined as unknown as string)).toBe("");
+  });
 });
 
 describe("ensureAnthropicErrorFormat", () => {
@@ -85,6 +125,31 @@ describe("ensureAnthropicErrorFormat", () => {
     expect(result).toEqual(valid);
   });
 
+  it("sanitizes a full envelope while preserving its other fields", () => {
+    const full = {
+      type: "error" as const,
+      request_id: "req_123",
+      error: {
+        type: "api_error" as const,
+        message: "upstream\n\tfailed",
+        upstream_status: 502,
+        code: "upstream_failure",
+      },
+    };
+
+    const result = ensureAnthropicErrorFormat(500, full);
+    expect(result as unknown).toEqual({
+      type: "error",
+      request_id: "req_123",
+      error: {
+        type: "api_error",
+        message: "upstream failed",
+        upstream_status: 502,
+        code: "upstream_failure",
+      },
+    });
+  });
+
   it("wraps partial format (missing outer type)", () => {
     const partial = {
       error: { type: "authentication_error", message: "Invalid key" },
@@ -93,6 +158,28 @@ describe("ensureAnthropicErrorFormat", () => {
     expect(result).toEqual({
       type: "error",
       error: { type: "authentication_error", message: "Invalid key" },
+    });
+  });
+
+  it("sanitizes a partial envelope while preserving its other error fields", () => {
+    const partial = {
+      error: {
+        type: "authentication_error",
+        message: "\u001b[31minvalid\u001b[0m\n key",
+        upstream_status: 401,
+        code: "invalid_api_key",
+      },
+    };
+
+    const result = ensureAnthropicErrorFormat(401, partial);
+    expect(result as unknown).toEqual({
+      type: "error",
+      error: {
+        type: "authentication_error",
+        message: "invalid key",
+        upstream_status: 401,
+        code: "invalid_api_key",
+      },
     });
   });
 
