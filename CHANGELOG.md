@@ -2,15 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.18.0] - 2026-07-26
+
+### Documentation
+
+- update CHANGELOG.md for v7.17.1([`f6bc939`](https://github.com/MadAppGang/claudish/commit/f6bc939c6c6c414f280ff33b4251cacb1539a040))
+
+### New Features
+
+- v7.18.0 — --config override, terminal 1Password cancel, Bun.serve proxy([`90fb741`](https://github.com/MadAppGang/claudish/commit/90fb7417078b65e02cd5d76a6238b8b06559b314))
+
 ## [7.17.1] - 2026-07-24
 
 ### Bug Fixes
 
 - v7.17.1 — surface DNS/connection failures as network errors, not 500s([`d1a3379`](https://github.com/MadAppGang/claudish/commit/d1a33795e75d7aa6a61bf1648958fcc17f86defc))
+- treat a 1Password authorization denial as terminal, not transient([`aa71ce3`](https://github.com/MadAppGang/claudish/commit/aa71ce3a4f8d01398ee0c59cbe8fd233fdcecb2f))
 
 ### Documentation
 
 - update CHANGELOG.md for v7.17.0([`bc24326`](https://github.com/MadAppGang/claudish/commit/bc243268f73a60bac7e8bb8ab2996ab49037f418))
+
+### New Features
+
+- finish --config override — provenance, testable planner, docs([`ae3d47e`](https://github.com/MadAppGang/claudish/commit/ae3d47eb4fc7fe2e8b9d872a470a871708e3c732))
 
 ## [7.17.0] - 2026-07-23
 
@@ -24,6 +39,12 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.16.0] - 2026-07-23
 
+### Bug Fixes
+
+- serve the proxy with Bun.serve, and silence dotenv on the MCP stdio stream([`3086261`](https://github.com/MadAppGang/claudish/commit/3086261d37c222b408aae11a0af568bd5914123e))
+- stop @hono/node-server from clobbering Bun's native fetch/Response globals([`3a67af9`](https://github.com/MadAppGang/claudish/commit/3a67af9dad538889149864f5f158a77393076a97))
+- custom-endpoint ${VAR} apiKey credential bug + de-flake catalog/mock-bleed tests([`d8e37da`](https://github.com/MadAppGang/claudish/commit/d8e37da94de1b9a793e4d96ed4665a6030a9b8f6))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.15.0([`4f35271`](https://github.com/MadAppGang/claudish/commit/4f35271e5cbca9853bdf769f64e518699139324c))
@@ -31,6 +52,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.16.0 — codex context-window handling + 1Password point-of-need([`40422ce`](https://github.com/MadAppGang/claudish/commit/40422ce1906648d91becf4b6873886bcd523e26e))
+- --config <file> run-scoped config override (WIP)([`cb76703`](https://github.com/MadAppGang/claudish/commit/cb76703d33089ddb748c2b6c4ba192b151309e70))
 
 ## [7.15.0] - 2026-07-17
 
