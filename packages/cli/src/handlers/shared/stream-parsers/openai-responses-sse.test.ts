@@ -105,3 +105,60 @@ describe("OpenAI Responses SSE context overflow", () => {
     expect(text).not.toContain("NaN");
   });
 });
+
+test("stops keep-alive pings when the downstream reader is cancelled", async () => {
+  const capturedErrors: unknown[] = [];
+  const captureError = (error: unknown) => {
+    capturedErrors.push(error);
+  };
+  let upstreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let downstreamReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
+  process.on("uncaughtException", captureError);
+  process.on("unhandledRejection", captureError);
+
+  try {
+    const upstreamResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          upstreamController = controller;
+        },
+      }),
+      {
+        headers: { "content-type": "text/event-stream" },
+      }
+    );
+    const parsedResponse = createResponsesStreamHandler(
+      createMockContext(),
+      upstreamResponse,
+      {
+        modelName: "gpt-5.6-sol",
+      }
+    );
+
+    if (!parsedResponse.body) {
+      throw new Error("Expected the parsed response to have a body");
+    }
+    downstreamReader = parsedResponse.body.getReader();
+
+    const firstChunk = await downstreamReader.read();
+    expect(firstChunk.done).toBe(false);
+    expect(firstChunk.value).toBeInstanceOf(Uint8Array);
+
+    await downstreamReader.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 2250));
+
+    const invalidStateErrors = capturedErrors.filter((error) =>
+      /Invalid state|already closed/i.test(error instanceof Error ? error.message : String(error))
+    );
+    expect(invalidStateErrors).toEqual([]);
+  } finally {
+    await downstreamReader?.cancel().catch(() => {});
+    try {
+      upstreamController?.close();
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.off("uncaughtException", captureError);
+    process.off("unhandledRejection", captureError);
+  }
+}, 10000);

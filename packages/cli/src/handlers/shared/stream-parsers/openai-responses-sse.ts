@@ -444,6 +444,21 @@ export function createResponsesStreamHandler(
         }
       }
     },
+    // Downstream went away (client disconnect, abort, or timeout). The
+    // controller is already closed here, but none of the normal close paths
+    // above ran — so without this, `isClosed` stays false and the keep-alive
+    // `pingInterval` keeps calling `send()` → `controller.enqueue()` on a
+    // closed controller. That throws `Invalid state: Controller is already
+    // closed` from inside a timer callback, where nothing catches it, and the
+    // proxy process dies (the next request then fails with ConnectionRefused).
+    // Every sibling parser already has this handler; this one was missing it.
+    cancel() {
+      isClosed = true;
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
+      }
+    },
   });
 
   return new Response(stream, {
