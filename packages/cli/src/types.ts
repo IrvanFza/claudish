@@ -33,6 +33,12 @@ export interface ClaudishConfig {
   profile?: string; // Profile name to use for model mapping
   /** --default-provider <name> CLI flag (Phase 1 of LiteLLM-demotion refactor) */
   defaultProvider?: string;
+  /**
+   * --anthropic-api-billing: opt IN to using a real ANTHROPIC_API_KEY for native
+   * Claude models, accepting metered API billing. Default (false) hides the key
+   * so Claude Code uses the user's claude.ai subscription instead.
+   */
+  anthropicApiBilling?: boolean;
   /** --op-env <id>: load vars from a 1Password Environment (highest priority). Requires op CLI ≥ 2.35 beta. */
   opEnv?: string;
   /**
