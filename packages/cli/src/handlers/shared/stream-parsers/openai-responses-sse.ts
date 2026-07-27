@@ -18,6 +18,7 @@ import {
 } from "../../../adapters/reasoning-cache.js";
 import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
+import { messageStartUsage } from "./message-start-usage.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -39,6 +40,12 @@ export function createResponsesStreamHandler(
      * turn as a failure instead of a success in telemetry.
      */
     onApiError?: (code: string, message: string) => void;
+    /**
+     * Input tokens from the previous request on this handler. Seeds
+     * `message_start.usage` so a turn that ends without upstream usage does
+     * not report a 100-token context. See message-start-usage.ts.
+     */
+    priorInputTokens?: number;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -125,7 +132,7 @@ export function createResponsesStreamHandler(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });

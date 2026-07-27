@@ -11,6 +11,7 @@
 
 import type { Context } from "hono";
 import { log } from "../../../logger.js";
+import { messageStartUsage } from "./message-start-usage.js";
 
 export function createOllamaJsonlStream(
   _c: Context,
@@ -18,6 +19,8 @@ export function createOllamaJsonlStream(
   opts: {
     modelName: string;
     onTokenUpdate?: (input: number, output: number) => void;
+    /** Last request's context size — seeds message_start.usage (see message-start-usage.ts) */
+    priorInputTokens?: number;
   }
 ): Response {
   const encoder = new TextEncoder();
@@ -50,7 +53,7 @@ export function createOllamaJsonlStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });
@@ -75,7 +78,13 @@ export function createOllamaJsonlStream(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: "end_turn", stop_sequence: null },
-            usage: { output_tokens: completionTokens },
+            // Ollama reports the FULL context each turn in prompt_eval_count;
+            // forwarding it lets Claude Code arm auto-compaction instead of
+            // holding message_start's estimate. See message-start-usage.ts.
+            usage: {
+              ...(promptTokens > 0 ? { input_tokens: promptTokens } : {}),
+              output_tokens: completionTokens,
+            },
           });
           send("message_stop", { type: "message_stop" });
         }

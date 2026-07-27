@@ -15,6 +15,7 @@ import {
   validateAndRepairToolCall,
 } from "../tool-call-recovery.js";
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
+import { messageStartUsage } from "./message-start-usage.js";
 
 export interface StreamingState {
   usage: any;
@@ -106,7 +107,8 @@ export function createStreamingResponseHandler(
   middlewareManager: any,
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[], // Tool schemas for validation
-  toolNameMap?: Map<string, string> // Truncated → original tool name mapping
+  toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
+  priorInputTokens?: number // Last request's context size — seeds message_start.usage
 ): Response {
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
@@ -137,7 +139,7 @@ export function createStreamingResponseHandler(
             model: target,
             stop_reason: null,
             stop_sequence: null,
-            usage: { input_tokens: 100, output_tokens: 1 },
+            usage: messageStartUsage(priorInputTokens),
           },
         });
         send("ping", { type: "ping" });
@@ -292,7 +294,17 @@ export function createStreamingResponseHandler(
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
-              usage: { output_tokens: state.usage?.completion_tokens || 0 },
+              // input_tokens must ride the delta too: Claude Code takes the
+              // context size from the last assistant message, and message_start
+              // could only carry an estimate. Omitting it left the client
+              // believing every conversation was 100 tokens, which silently
+              // disabled auto-compaction on every openai-sse provider.
+              usage: {
+                ...(state.usage?.prompt_tokens
+                  ? { input_tokens: state.usage.prompt_tokens }
+                  : {}),
+                output_tokens: state.usage?.completion_tokens || 0,
+              },
             });
             send("message_stop", { type: "message_stop" });
           }
@@ -311,7 +323,10 @@ export function createStreamingResponseHandler(
               log(
                 `[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`
               );
-              onTokenUpdate(100, estimatedOutputTokens); // Use 100 as placeholder for input
+              // Carry the previous context size forward rather than a literal
+              // 100 — the status line reads this value, and 100 would make the
+              // bar collapse to "empty" on any turn the provider skips usage.
+              onTokenUpdate(priorInputTokens || 100, estimatedOutputTokens);
             }
           }
 
