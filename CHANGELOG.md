@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.19.0] - 2026-07-27
+
+### Documentation
+
+- update CHANGELOG.md for v7.18.1([`a4dcffa`](https://github.com/MadAppGang/claudish/commit/a4dcffa607009370b0357ba1abfdf145b30ae4d0))
+
+### New Features
+
+- v7.19.0 — prefer claude.ai subscription over a stray ANTHROPIC_API_KEY([`228b861`](https://github.com/MadAppGang/claudish/commit/228b861cf4e22f25807e7697ae8b68b9416dd8f2))
+
 ## [7.18.1] - 2026-07-26
 
 ### Bug Fixes
