@@ -375,6 +375,8 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         process.exit(1);
       }
       config.defaultProvider = dpArg;
+    } else if (arg === "--anthropic-api-billing") {
+      config.anthropicApiBilling = true;
     } else if (arg === "--op-env" || arg.startsWith("--op-env=")) {
       // The actual 1Password Environment read happens early in index.ts
       // (highest priority). Here we only consume the flag + its value so it
@@ -1913,6 +1915,10 @@ ${h("OPTIONS")}
   ${green("--profile")} ${yellow("<name>")}         Use named profile for model mapping (default profile if omitted)
   ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (builtin or customEndpoints key)
                            ${dim("Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json")}
+  ${green("--anthropic-api-billing")}  Use your real ANTHROPIC_API_KEY for native Claude models
+                           ${dim("(metered API billing). Default: the key is hidden so Claude Code")}
+                           ${dim("uses your claude.ai subscription. Env: CLAUDISH_ANTHROPIC_API_BILLING")}
+                           ${dim("Config: anthropicApiBilling: true")}
   ${green("--config")} ${yellow("<file>")}          Use THIS config file for the run, fully replacing the machine
                            ${dim("global (~/.claudish/config.json) AND project (.claudish.json).")}
                            ${dim("A file naming no op:// source never touches 1Password (no prompt).")}
@@ -2088,6 +2094,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("CLAUDISH_CONTEXT_WINDOW")}         Override context window size
   ${blue("CLAUDISH_DIAG_MODE")}              Diagnostic output: auto / logfile / off
   ${blue("CLAUDISH_DEBUG")}                  Always enable debug logging: 1 / true ${dim("(same as -d)")}
+  ${blue("CLAUDISH_ANTHROPIC_API_BILLING")}  Bill native Claude to your API key ${dim("(see --anthropic-api-billing)")}
   ${blue("CLAUDISH_MCP_TOOLS")}              MCP tool gating: all / low-level / agentic / channel
   ${blue("CLAUDISH_MODEL_OPUS")}             Override model for Opus role
   ${blue("CLAUDISH_MODEL_SONNET")}           Override model for Sonnet role
