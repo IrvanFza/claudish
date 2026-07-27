@@ -2,11 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeMainThreadContextWindow } from "./claude-runner.js";
+import { MIN_AUTO_COMPACT_WINDOW, computeMainThreadContextWindow } from "./claude-runner.js";
 import type { ClaudishConfig } from "./types.js";
 
 const REDUCED_WINDOW_SPEC = "cx@gpt-5.6-sol";
 const LARGER_WINDOW_SPEC = "oai@gpt-5.6-sol";
+const BELOW_AUTO_COMPACT_FLOOR_SPEC = "cx@small-context-model";
 
 let tmpDir: string;
 let mockCachePath: string;
@@ -41,6 +42,20 @@ beforeAll(() => {
         },
       ],
     },
+    {
+      modelId: "small-context-model",
+      aliases: [],
+      sources: {},
+      contextWindow: 128_000,
+      aggregators: [
+        {
+          provider: "openai-codex",
+          externalId: "small-context-model",
+          confidence: "api_official",
+          contextWindow: 128_000,
+        },
+      ],
+    },
   ];
 
   writeFileSync(
@@ -60,6 +75,19 @@ afterAll(() => {
 });
 
 describe("computeMainThreadContextWindow", () => {
+  test("exposes the Claude Code auto-compaction floor", () => {
+    expect(MIN_AUTO_COMPACT_WINDOW).toBe(200_000);
+  });
+
+  test("returns a catalog window below the floor so the caller can leave the env unset", async () => {
+    const config = { model: BELOW_AUTO_COMPACT_FLOOR_SPEC } as unknown as ClaudishConfig;
+
+    const window = await computeMainThreadContextWindow(config, mockCachePath);
+
+    expect(window).toBe(128_000);
+    expect(window).toBeLessThan(MIN_AUTO_COMPACT_WINDOW);
+  });
+
   test("returns the explicit provider's reduced window instead of the top-level window", async () => {
     const config = { model: REDUCED_WINDOW_SPEC } as unknown as ClaudishConfig;
 

@@ -30,6 +30,13 @@ export class TokenTracker {
   private sessionTotalCost = 0;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
+  /**
+   * The input-token count from the MOST RECENT request, verbatim — never a
+   * high-water mark. `sessionInputTokens` is a billing baseline that the
+   * delta-aware strategy deliberately refuses to lower (see updateWithDelta),
+   * so it is the wrong number to show a user or to seed a placeholder with.
+   */
+  private lastInputTokens = 0;
   /** Override model name in status line (e.g., after capacity fallback) */
   private modelNameOverride: string | undefined;
   /** Quota remaining fraction (0-1) for the current model */
@@ -57,7 +64,7 @@ export class TokenTracker {
 
   /** Force rewrite the token file with current state */
   rewrite(): void {
-    this.writeFile(this.sessionInputTokens, this.sessionOutputTokens);
+    this.writeFile(this.getLastInputTokens(), this.sessionOutputTokens);
   }
 
   /**
@@ -66,6 +73,7 @@ export class TokenTracker {
    */
   update(inputTokens: number, outputTokens: number): void {
     this.sessionInputTokens = inputTokens;
+    this.lastInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
@@ -83,6 +91,7 @@ export class TokenTracker {
    */
   accumulateBoth(inputTokens: number, outputTokens: number): void {
     this.sessionInputTokens += inputTokens;
+    this.lastInputTokens = this.sessionInputTokens;
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
@@ -105,12 +114,22 @@ export class TokenTracker {
   updateWithDelta(inputTokens: number, outputTokens: number): void {
     let incrementalInputTokens: number;
 
+    // The status file always reports THIS request's context, even when the
+    // billing baseline below refuses to move.
+    this.lastInputTokens = inputTokens;
+
     if (inputTokens >= this.sessionInputTokens) {
       // Normal: context grew (continuation)
       incrementalInputTokens = inputTokens - this.sessionInputTokens;
       this.sessionInputTokens = inputTokens;
     } else if (inputTokens < this.sessionInputTokens * 0.5) {
-      // Different conversation with much smaller context
+      // Different conversation with much smaller context. The baseline is left
+      // where it is on purpose: a concurrent conversation must not reset the
+      // main thread's billing high-water and get its own growth charged twice.
+      // A compaction lands here too — hence the separate lastInputTokens, which
+      // is what the status line reads. Conflating them pinned the status bar at
+      // the pre-compaction peak forever ("0% context left" after a clean
+      // /compact) because the file was written with a Math.max().
       incrementalInputTokens = inputTokens;
       log(
         `[TokenTracker] Detected concurrent conversation (${inputTokens} < ${this.sessionInputTokens}), charging full input`
@@ -132,11 +151,7 @@ export class TokenTracker {
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
     this.sessionTotalCost += cost;
 
-    this.writeFile(
-      Math.max(inputTokens, this.sessionInputTokens),
-      this.sessionOutputTokens,
-      pricing.isEstimate
-    );
+    this.writeFile(inputTokens, this.sessionOutputTokens, pricing.isEstimate);
   }
 
   /**
@@ -149,6 +164,7 @@ export class TokenTracker {
     actualCost: number | undefined
   ): void {
     this.sessionInputTokens = inputTokens;
+    this.lastInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
 
     if (typeof actualCost === "number" && actualCost > 0) {
@@ -171,6 +187,7 @@ export class TokenTracker {
   updateLocal(inputTokens: number, outputTokens: number): void {
     if (inputTokens > 0) {
       this.sessionInputTokens = inputTokens;
+      this.lastInputTokens = inputTokens;
     }
     this.sessionOutputTokens += outputTokens;
     // Local models are free
@@ -187,9 +204,18 @@ export class TokenTracker {
     return this.sessionTotalCost;
   }
 
-  /** Get current session input tokens */
+  /** Get current session input tokens (billing baseline — may lag a compaction) */
   getInputTokens(): number {
     return this.sessionInputTokens;
+  }
+
+  /**
+   * Input tokens from the most recent request — the live context size.
+   * Use this for anything user-facing or for seeding a placeholder; use
+   * getInputTokens() only for cost accounting.
+   */
+  getLastInputTokens(): number {
+    return this.lastInputTokens || this.sessionInputTokens;
   }
 
   /** Get current session output tokens */

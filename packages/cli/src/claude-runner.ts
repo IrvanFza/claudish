@@ -416,6 +416,29 @@ function mergeUserSettingsIfPresent(
  * provider) — that path touches no credentials / 1Password. Returns 0 when no
  * window is known (not in the catalog cache) → caller leaves the env unset.
  */
+/**
+ * Below this, setting `CLAUDE_CODE_AUTO_COMPACT_WINDOW` DISABLES auto-compaction
+ * instead of tightening it.
+ *
+ * Claude Code's arm predicate takes an extra branch once the window comes from a
+ * non-default source (env/settings), and that branch bails outright on a small
+ * window:
+ *
+ *   if (!hasConfiguredWindow(model, opt)) return tokens >= threshold(...)
+ *   const { window } = resolveWindow(model, opt)
+ *   if (window < 200_000) return false          // ← auto-compact silently OFF
+ *   return tokens >= threshold(...)
+ *
+ * With the var unset the window's source stays "auto", that branch never runs,
+ * and native auto-compaction behaves normally. So for any backend whose real
+ * window is under 200K, staying silent is strictly safer than being precise.
+ * (Claude Code also floors the configured value at 100K, so anything we set
+ * below that is ignored regardless.)
+ *
+ * Verified against Claude Code 2.1.220.
+ */
+export const MIN_AUTO_COMPACT_WINDOW = 200_000;
+
 export async function computeMainThreadContextWindow(
   config: ClaudishConfig,
   cachePath?: string
@@ -618,7 +641,7 @@ export async function runClaudeWithProxy(
       // per-provider window from the cloud catalog (never hardcoded).
       if (!process.env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) {
         const autoCompactWindow = await computeMainThreadContextWindow(config);
-        if (autoCompactWindow > 0) {
+        if (autoCompactWindow >= MIN_AUTO_COMPACT_WINDOW) {
           env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(autoCompactWindow);
           if (!config.quiet) {
             console.error(
@@ -626,6 +649,14 @@ export async function runClaudeWithProxy(
                 "(Claude Code compacts before the backend's real limit)"
             );
           }
+        } else if (autoCompactWindow > 0 && !config.quiet) {
+          // Setting the var here would be WORSE than leaving it unset — see
+          // MIN_AUTO_COMPACT_WINDOW.
+          console.error(
+            `[claudish] Model's real context window (${autoCompactWindow.toLocaleString()}) is below ` +
+              `Claude Code's ${MIN_AUTO_COMPACT_WINDOW.toLocaleString()}-token auto-compact floor — ` +
+              "leaving CLAUDE_CODE_AUTO_COMPACT_WINDOW unset so native auto-compaction stays on."
+          );
         }
       }
     }
