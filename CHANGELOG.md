@@ -2,52 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
-## [7.19.1] - 2026-07-28
+## [7.19.1] - 2026-07-27
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.0([`1cb9a48`](https://github.com/MadAppGang/claudish/commit/1cb9a48a61d736507f56f94fef1bafd2bd0e5f60))
+
+## [7.19.0] - 2026-07-27
 
 ### Bug Fixes
 
-- restore auto-compaction and honest context accounting
-
-  A Codex session hit `gpt-5.6-sol`'s real 372K backend cap and hard-stuck for
-  77 minutes without Claude Code ever auto-compacting. Four independent defects,
-  each verified against a live session's debug log, transcript, and a
-  disassembly of Claude Code 2.1.220's arm predicate.
-
-  - **`input_tokens` never reached the client on three of four parsers.**
-    `openai-sse`, `gemini-sse` and `ollama-jsonl` closed their streams with a
-    `message_delta` carrying only `output_tokens`. Claude Code keeps the
-    `message_start` value whenever the delta omits `input_tokens`, and that
-    value was the hardcoded placeholder — so every conversation on OpenRouter,
-    GLM, MiniMax, Gemini and Ollama looked like a permanent **100 tokens** and
-    auto-compaction could never arm at all. All three now forward the real
-    upstream count.
-
-  - **The `input_tokens: 100` placeholder blinded the check.** All four parsers
-    seeded `message_start` with a literal 100. On any turn where the backend
-    omitted usage — notably the context-overflow turn itself — Claude Code
-    recorded the conversation as 100 tokens, exactly when compaction was most
-    needed. New `messageStartUsage()` carries the previous turn's count forward;
-    100 survives only as the genuinely-unknown first-turn fallback.
-
-  - **Setting a sub-200K auto-compact window DISABLES auto-compaction.** Claude
-    Code takes an extra branch once the window comes from a non-default source
-    (our env var) and bails outright below 200,000 tokens — where leaving the
-    variable unset would have kept native compaction working. `claude-runner`
-    now refuses to set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` below
-    `MIN_AUTO_COMPACT_WINDOW`, and says so on stderr.
-
-  - **The status line pinned itself at the pre-compaction peak.**
-    `TokenTracker.updateWithDelta`'s "concurrent conversation" branch never
-    lowers the billing baseline, and the status file was written with
-    `Math.max(inputTokens, baseline)` — so after a successful `/compact` the bar
-    read `333,933 / 372,000` (0% left) while the real context was 149,033, and
-    it could never come back down. Display is now split from billing: a
-    `lastInputTokens` field tracks the live value for the status file while the
-    baseline keeps protecting concurrent conversations from double-charging.
-    This also fixes session cost, which had been charging full input every turn
-    instead of the delta.
-
-## [7.19.0] - 2026-07-27
+- v7.18.2 — restore auto-compaction and honest context accounting([`ae8c07f`](https://github.com/MadAppGang/claudish/commit/ae8c07feb99729a145616343ae1cb98d90c87a00))
 
 ### Documentation
 
