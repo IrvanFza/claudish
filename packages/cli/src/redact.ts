@@ -28,8 +28,15 @@ const MASK = "***REDACTED***";
  * claudish's own credential errors say `export ZHIPU_API_KEY='your-key-here'`.
  * Redacting that turns actionable help into noise, so these are passed through.
  */
+/*
+ * Anything beginning with "your" is instructional, not a credential — no real
+ * key starts that way. Enumerating exact phrases was too narrow: it covered
+ * `your-key-here` but not the bare `your-key`, so claudish's own remediation
+ * line `export GEMINI_API_KEY=your-key  (for google)` came back as
+ * `=***REDACTED***`, turning the fix instructions into noise.
+ */
 const PLACEHOLDER =
-  /^(['"`]?)(your[-_]?key[-_]?here|your[-_]?api[-_]?key|<[^>]*>|\.\.\.|x{3,}|\*{3,}|REDACTED|\$\{[^}]*\}|)(['"`]?)$/i;
+  /^(['"`]?)(your[-_a-z0-9]*|<[^>]*>|\.\.\.|x{3,}|\*{3,}|REDACTED|CHANGEME|TODO|\$\{[^}]*\}|)(['"`]?)$/i;
 
 function isPlaceholder(value: string): boolean {
   return PLACEHOLDER.test(value.trim());
