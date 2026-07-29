@@ -20,9 +20,23 @@ import { removeUriFormat } from "../../../transform.js";
  * - Ensure root always has type: "object".
  * - Then run removeUriFormat() for the existing uri-format sanitization.
  */
+/**
+ * The schema a tool gets when it declares no inputs.
+ *
+ * Returned fresh on every call: callers (summarizeToolParameters) mutate the
+ * object they get back, so a shared constant would leak edits between tools.
+ */
+function emptyParamsSchema(): any {
+  return { type: "object", properties: {} };
+}
+
 export function sanitizeSchemaForOpenAI(schema: any): any {
   if (!schema || typeof schema !== "object") {
-    return removeUriFormat(schema);
+    // A tool with a missing or non-object input_schema must STILL serialize a
+    // `parameters` object. Returning undefined here makes JSON.stringify drop
+    // the key entirely, and strict endpoints reject the request outright —
+    // X-ai answers HTTP 422 "tools[0]: missing field `parameters`".
+    return emptyParamsSchema();
   }
 
   let root = { ...schema };
@@ -109,7 +123,9 @@ function summarizeToolDescription(name: string, description: string): string {
  * Keeps required fields and simplifies descriptions
  */
 function summarizeToolParameters(schema: any): any {
-  if (!schema) return schema;
+  // Same contract as sanitizeSchemaForOpenAI: never return undefined, or the
+  // `parameters` key vanishes from the serialized tool and strict endpoints 422.
+  if (!schema || typeof schema !== "object") return emptyParamsSchema();
 
   const summarized = sanitizeSchemaForOpenAI({ ...schema });
 
