@@ -1,3 +1,4 @@
+import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
@@ -110,7 +111,11 @@ export function matchRoutingRule(modelName: string, rules: RoutingRules): Routin
  * Plain name "provider" uses originalModelName.
  * Explicit "provider@model" uses the specified model.
  */
-export function buildRoutingChain(entries: RoutingEntry[], originalModelName: string): Route[] {
+export function buildRoutingChain(
+  entries: RoutingEntry[],
+  originalModelName: string,
+  cachePath?: string
+): Route[] {
   const routes: Route[] = [];
 
   for (const entry of entries) {
@@ -128,6 +133,18 @@ export function buildRoutingChain(entries: RoutingEntry[], originalModelName: st
 
     // Resolve shortcut
     const provider = PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
+
+    // Subscription endpoints speak their own wire ids (Kimi Code serves `k3`,
+    // not the catalog's `kimi-k3`). When the entry didn't pin a model
+    // explicitly, translate via the catalog — and drop the candidate outright
+    // when the plan doesn't include this model, so the chain falls through to a
+    // provider that can actually serve it instead of erroring or silently
+    // handing back a different model.
+    if (atIdx === -1) {
+      const routing = resolveSubscriptionRouting(modelName, provider, cachePath);
+      if (routing.kind === "not-served") continue;
+      if (routing.kind === "serves") modelName = routing.externalId;
+    }
 
     // Build modelSpec
     let modelSpec: string;
@@ -219,7 +236,8 @@ export async function hasCredentialsForProvider(provider: string): Promise<boole
 async function routeExplicit(
   modelSpec: string,
   model: string,
-  provider: string
+  provider: string,
+  cachePath?: string
 ): Promise<RoutePlan> {
   if (!(await hasCredentialsForProvider(provider))) {
     return {
@@ -229,7 +247,7 @@ async function routeExplicit(
     };
   }
 
-  const built = buildRoutingChain([modelSpec], model)[0];
+  const built = buildRoutingChain([modelSpec], model, cachePath)[0];
   if (!built) {
     return {
       kind: "no-route",
@@ -252,7 +270,8 @@ async function routeBare(
   model: string,
   nativeProvider: string,
   rules: RoutingRules,
-  defaultProvider?: string
+  defaultProvider?: string,
+  cachePath?: string
 ): Promise<RoutePlan> {
   const matched = matchRoutingRule(model, rules) ?? [];
   const entries = [...matched];
@@ -277,7 +296,7 @@ async function routeBare(
     };
   }
 
-  const candidates = buildRoutingChain(entries, model);
+  const candidates = buildRoutingChain(entries, model, cachePath);
   const credentialed: Route[] = [];
   const skipped: string[] = [];
 
@@ -330,12 +349,13 @@ async function routeBare(
 export async function route(
   modelSpec: string,
   rulesOverride?: RoutingRules,
-  defaultProviderOverride?: string
+  defaultProviderOverride?: string,
+  cachePath?: string
 ): Promise<RoutePlan> {
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
-    return routeExplicit(modelSpec, parsed.model, parsed.provider);
+    return routeExplicit(modelSpec, parsed.model, parsed.provider, cachePath);
   }
 
   const rules = rulesOverride ?? loadRoutingRules();
@@ -349,7 +369,7 @@ export async function route(
       : rulesOverride !== undefined
         ? undefined
         : loadConfig().defaultProvider;
-  return routeBare(parsed.model, parsed.provider, rules, defaultProvider);
+  return routeBare(parsed.model, parsed.provider, rules, defaultProvider, cachePath);
 }
 
 // route() is now async; routeBare returns a Promise which is awaited by the caller.

@@ -16,6 +16,7 @@ import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
 import { logStderr } from "./logger.js";
 import { loadConfig } from "./profile-config.js";
+import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
@@ -487,7 +488,14 @@ export async function computeMainThreadContextWindow(
         if (plan.kind !== "ok") continue;
         provider = plan.primary.provider;
       }
-      const win = lookupModelForProvider(parsed.model, provider, cachePath);
+      // Live discovery wins over the catalog: for subscription endpoints the
+      // real window depends on the caller's tier (Kimi's k3 is 1M only on
+      // Allegretto+), and the authenticated /models call answers for THIS user.
+      // Providers without a modelDiscovery descriptor short-circuit to
+      // undefined without a network call, so this stays free for everyone else.
+      const win =
+        (await discoverContextWindow(provider, parsed.model)) ??
+        lookupModelForProvider(parsed.model, provider, cachePath);
       if (typeof win === "number" && win > 0) {
         min = Math.min(min, win);
       }
