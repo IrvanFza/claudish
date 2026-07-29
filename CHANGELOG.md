@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.23.0] - 2026-07-29
+
+### Documentation
+
+- update CHANGELOG.md for v7.22.0([`3e78db5`](https://github.com/MadAppGang/claudish/commit/3e78db5162711e4c2cf167986ccca51306181290))
+
+### New Features
+
+- v7.23.0 — prevent 1Password denial when claudish spawns models in parallel([`c146482`](https://github.com/MadAppGang/claudish/commit/c1464825dbd96d92f00877e4d52a705477391d53))
+
 ## [7.22.0] - 2026-07-29
 
 ### Documentation
