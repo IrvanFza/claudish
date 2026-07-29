@@ -10,6 +10,7 @@ import type { Context } from "hono";
 import type { BaseAPIFormat } from "../../../adapters/base-api-format.js";
 import { log } from "../../../logger.js";
 import type { MiddlewareManager } from "../../../middleware/manager.js";
+import { messageStartUsage } from "./message-start-usage.js";
 
 export interface GeminiSseOptions {
   modelName: string;
@@ -18,6 +19,8 @@ export interface GeminiSseOptions {
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
+  /** Last request's context size — seeds message_start.usage (see message-start-usage.ts) */
+  priorInputTokens?: number;
   /** CodeAssist wraps chunks in {response: {...}} */
   unwrapResponse?: boolean;
 }
@@ -62,7 +65,7 @@ export function createGeminiSseStream(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });
@@ -113,7 +116,13 @@ export function createGeminiSseStream(
           send("message_delta", {
             type: "message_delta",
             delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
-            usage: { output_tokens: outputTokens },
+            // input_tokens rides the delta so the client learns the real context
+            // size — without it Claude Code keeps message_start's estimate and
+            // auto-compaction never arms. See message-start-usage.ts.
+            usage: {
+              ...(inputTokens > 0 ? { input_tokens: inputTokens } : {}),
+              output_tokens: outputTokens,
+            },
           });
           send("message_stop", { type: "message_stop" });
         }

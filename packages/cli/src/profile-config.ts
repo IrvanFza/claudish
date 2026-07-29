@@ -156,6 +156,15 @@ export interface ClaudishProfileConfig {
    * opt-in, like all 1Password sources).
    */
   onepasswordEnvironments?: string[];
+  /**
+   * Opt IN to using a real ANTHROPIC_API_KEY for native Claude models, accepting
+   * metered API billing. Default (absent/false) hides the key so Claude Code
+   * uses the claude.ai subscription — a key bundled into a shared .env /
+   * 1Password Environment alongside other providers' keys must not silently
+   * switch billing. Overridden by CLAUDISH_ANTHROPIC_API_BILLING and
+   * --anthropic-api-billing.
+   */
+  anthropicApiBilling?: boolean;
   /** Built-in local providers explicitly enabled in global config. */
   localProviders?: string[];
   /** ISO timestamp when user confirmed auto-approve behavior. Absent = never confirmed. */
@@ -267,6 +276,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.onepasswordEnvironments !== undefined) {
       merged.onepasswordEnvironments = config.onepasswordEnvironments;
+    }
+    if (config.anthropicApiBilling !== undefined) {
+      merged.anthropicApiBilling = config.anthropicApiBilling;
     }
     if (config.localProviders !== undefined) {
       merged.localProviders = Array.from(new Set(config.localProviders)).sort();

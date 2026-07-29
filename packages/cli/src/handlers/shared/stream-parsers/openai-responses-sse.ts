@@ -18,6 +18,7 @@ import {
 } from "../../../adapters/reasoning-cache.js";
 import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
+import { messageStartUsage } from "./message-start-usage.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -39,6 +40,12 @@ export function createResponsesStreamHandler(
      * turn as a failure instead of a success in telemetry.
      */
     onApiError?: (code: string, message: string) => void;
+    /**
+     * Input tokens from the previous request on this handler. Seeds
+     * `message_start.usage` so a turn that ends without upstream usage does
+     * not report a 100-token context. See message-start-usage.ts.
+     */
+    priorInputTokens?: number;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -125,7 +132,7 @@ export function createResponsesStreamHandler(
           model: opts.modelName,
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: 100, output_tokens: 1 },
+          usage: messageStartUsage(opts.priorInputTokens),
         },
       });
       send("ping", { type: "ping" });
@@ -442,6 +449,21 @@ export function createResponsesStreamHandler(
             controller.close();
           } catch {}
         }
+      }
+    },
+    // Downstream went away (client disconnect, abort, or timeout). The
+    // controller is already closed here, but none of the normal close paths
+    // above ran — so without this, `isClosed` stays false and the keep-alive
+    // `pingInterval` keeps calling `send()` → `controller.enqueue()` on a
+    // closed controller. That throws `Invalid state: Controller is already
+    // closed` from inside a timer callback, where nothing catches it, and the
+    // proxy process dies (the next request then fails with ConnectionRefused).
+    // Every sibling parser already has this handler; this one was missing it.
+    cancel() {
+      isClosed = true;
+      if (pingInterval) {
+        clearInterval(pingInterval);
+        pingInterval = null;
       }
     },
   });

@@ -2,41 +2,47 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.19.2] - 2026-07-29
+
+### Bug Fixes
+
+- v7.19.2 — Responses SSE parser no longer crashes the proxy on client cancel([`24a44d6`](https://github.com/MadAppGang/claudish/commit/24a44d639ce09d97d39057299dfc198e22e905ab))
+- add missing cancel() handler to Responses SSE parser([`37f178e`](https://github.com/MadAppGang/claudish/commit/37f178efb7f05828c2e9f96c3b853c1552936aaa))
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.1([`8184231`](https://github.com/MadAppGang/claudish/commit/81842317f0506e84731caa07ed040d01d29e15e9))
+
+## [7.19.1] - 2026-07-27
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.0([`1cb9a48`](https://github.com/MadAppGang/claudish/commit/1cb9a48a61d736507f56f94fef1bafd2bd0e5f60))
+
+## [7.19.0] - 2026-07-27
+
+### Bug Fixes
+
+- v7.18.2 — restore auto-compaction and honest context accounting([`ae8c07f`](https://github.com/MadAppGang/claudish/commit/ae8c07feb99729a145616343ae1cb98d90c87a00))
+
+### Documentation
+
+- update CHANGELOG.md for v7.18.1([`a4dcffa`](https://github.com/MadAppGang/claudish/commit/a4dcffa607009370b0357ba1abfdf145b30ae4d0))
+
+### New Features
+
+- v7.19.0 — prefer claude.ai subscription over a stray ANTHROPIC_API_KEY([`228b861`](https://github.com/MadAppGang/claudish/commit/228b861cf4e22f25807e7697ae8b68b9416dd8f2))
+
 ## [7.18.1] - 2026-07-26
 
 ### Bug Fixes
 
-- isolate terminal output from provider connection errors
+- v7.18.1 — isolate terminal output from provider connection errors([`dc4b0c3`](https://github.com/MadAppGang/claudish/commit/dc4b0c3518ea2e0cea15844ebb761dbc857be5e0))
+- isolate terminal output from provider connection errors([`218c358`](https://github.com/MadAppGang/claudish/commit/218c3586bcdd3842e417a3e18aa121556c57bce0))
 
-  Claude Code is spawned with `stdio: "inherit"`, so claudish's stdout/stderr
-  **are** its TTY. A connection failure printed Bun's multi-line error dump
-  straight into the frame Claude Code was painting, tearing the status line and
-  the prompt box.
+### Documentation
 
-  Three things had to be true for that to happen:
-
-  - Bun's `fetch` throws a flat `Error` with `code: "ConnectionRefused"` and no
-    `.cause`. `connection-error.ts` classified by Node/undici errno names walked
-    through a cause chain, so it never matched on the runtime claudish ships —
-    and Bun collapses DNS failure and connection-refused into that same code.
-  - `proxy-server.ts` returned `handler.handle()` un-awaited inside a
-    `try/catch`, so the rejection escaped its own error handling.
-  - It therefore reached Hono's default error handler, which is literally
-    `console.error(err)` — the leak onto the terminal.
-
-  Fixed in four layers: Bun's error vocabulary added to the connection
-  classifier (with the "refused" message now split on loopback-vs-remote, since
-  a remote `ConnectionRefused` is almost always DNS); an `app.onError` backstop
-  so no route rejection can reach a console; a `sanitizeErrorMessage()` choke
-  point that flattens every emitted error message to one control-character-free
-  line; and a terminal firewall that diverts `console.*` and direct stream
-  writes for the window between spawn and child exit.
-
-  Connection errors now return **400 instead of 503**. Both are non-retryable in
-  claudish's own fallback chain, but Claude Code *retries* a 503 — the
-  "attempt N/10" banner that buries the cause — while it renders a 400 verbatim
-  and inline. Suppressed output is recorded to the durable session log rather
-  than discarded.
+- update CHANGELOG.md for v7.18.0([`f3c8b85`](https://github.com/MadAppGang/claudish/commit/f3c8b85a5e5c4dfeaa9f2b33a256c0047166c860))
 
 ## [7.18.0] - 2026-07-26
 

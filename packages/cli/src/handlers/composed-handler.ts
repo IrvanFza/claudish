@@ -813,6 +813,11 @@ export class ComposedHandler implements ModelHandler {
     // `message_start.message.model` for display. Passing the routed form here was the
     // latent second part of #102 — the parameter was named `modelName` but received
     // the full routed string.
+    // Seed for message_start.usage — the previous request's context size. A
+    // parser cannot know the real count until the stream ends, and Claude Code
+    // keeps whatever message_start carried whenever the closing delta omits it.
+    const priorInputTokens = this.tokenTracker.getLastInputTokens();
+
     switch (streamFormat) {
       case "openai-sse":
         return createStreamingResponseHandler(
@@ -823,7 +828,8 @@ export class ComposedHandler implements ModelHandler {
           this.middlewareManager,
           onTokenUpdate,
           claudeRequest.tools,
-          toolNameMap
+          toolNameMap,
+          priorInputTokens
         );
 
       case "openai-responses-sse":
@@ -833,6 +839,7 @@ export class ComposedHandler implements ModelHandler {
           toolNameMap: adapter.getToolNameMap(),
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
+          priorInputTokens,
         });
 
       case "anthropic-sse":
@@ -856,6 +863,7 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           onToolCall,
           unwrapResponse: this.options.unwrapGeminiResponse,
+          priorInputTokens,
         });
       }
 
@@ -863,6 +871,7 @@ export class ComposedHandler implements ModelHandler {
         return createOllamaJsonlStream(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
+          priorInputTokens,
         });
 
       default:

@@ -40,6 +40,9 @@ export const ENV = {
   CLAUDISH_SUMMARIZE_TOOLS: "CLAUDISH_SUMMARIZE_TOOLS", // Summarize tool descriptions to reduce prompt size
   CLAUDISH_DIAG_MODE: "CLAUDISH_DIAG_MODE", // Diagnostic output mode: auto (default), logfile, off
   CLAUDISH_DEBUG: "CLAUDISH_DEBUG", // Always-on claudish debug logging (equivalent to -d / --debug-claudish)
+  // Opt IN to using a real ANTHROPIC_API_KEY for native Claude models (metered
+  // API billing) instead of the claude.ai subscription. Off by default.
+  CLAUDISH_ANTHROPIC_API_BILLING: "CLAUDISH_ANTHROPIC_API_BILLING",
 } as const;
 
 // OpenRouter API Configuration

@@ -16,6 +16,7 @@ import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
 import { logStderr } from "./logger.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
+import { loadConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
@@ -64,6 +65,32 @@ function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
     config.modelSubagent,
   ];
   return models.some((m) => m && parseModelSpec(m).provider === "native-anthropic");
+}
+
+/**
+ * Does the user explicitly want their real ANTHROPIC_API_KEY used, accepting
+ * metered API billing instead of their claude.ai subscription?
+ *
+ * Opt-IN only — see the native-anthropic branch in runClaudeWithProxy for why
+ * the default is to hide the key. Precedence (highest first):
+ *   1. `--anthropic-api-billing` CLI flag
+ *   2. `CLAUDISH_ANTHROPIC_API_BILLING` env var (any value except 0/false/"")
+ *   3. `anthropicApiBilling: true` in ~/.claudish/config.json
+ *
+ * A config read failure must never block launch, so it degrades to "not opted
+ * in" — the safe direction, since that only ever avoids spending money.
+ */
+function wantsAnthropicApiBilling(config: ClaudishConfig): boolean {
+  if (config.anthropicApiBilling) return true;
+
+  const raw = process.env[ENV.CLAUDISH_ANTHROPIC_API_BILLING];
+  if (raw !== undefined && raw !== "" && raw !== "0" && raw.toLowerCase() !== "false") return true;
+
+  try {
+    return loadConfig().anthropicApiBilling === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -417,6 +444,29 @@ function mergeUserSettingsIfPresent(
  * provider) — that path touches no credentials / 1Password. Returns 0 when no
  * window is known (not in the catalog cache) → caller leaves the env unset.
  */
+/**
+ * Below this, setting `CLAUDE_CODE_AUTO_COMPACT_WINDOW` DISABLES auto-compaction
+ * instead of tightening it.
+ *
+ * Claude Code's arm predicate takes an extra branch once the window comes from a
+ * non-default source (env/settings), and that branch bails outright on a small
+ * window:
+ *
+ *   if (!hasConfiguredWindow(model, opt)) return tokens >= threshold(...)
+ *   const { window } = resolveWindow(model, opt)
+ *   if (window < 200_000) return false          // ← auto-compact silently OFF
+ *   return tokens >= threshold(...)
+ *
+ * With the var unset the window's source stays "auto", that branch never runs,
+ * and native auto-compaction behaves normally. So for any backend whose real
+ * window is under 200K, staying silent is strictly safer than being precise.
+ * (Claude Code also floors the configured value at 100K, so anything we set
+ * below that is ignored regardless.)
+ *
+ * Verified against Claude Code 2.1.220.
+ */
+export const MIN_AUTO_COMPACT_WINDOW = 200_000;
+
 export async function computeMainThreadContextWindow(
   config: ClaudishConfig,
   cachePath?: string
@@ -571,6 +621,11 @@ export async function runClaudeWithProxy(
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
   };
 
+  // Set when a real ANTHROPIC_API_KEY was hidden so native Claude models bill the
+  // claude.ai subscription instead of the API. Reported via log() further down —
+  // the user MUST be able to discover why their key stopped taking effect.
+  let hidAnthropicApiKey = false;
+
   // Remove Claude Code's nested-session guard variable.
   // When claudish is invoked from within Claude Code, CLAUDECODE is inherited
   // and causes the child Claude Code to refuse to start. Since claudish makes
@@ -600,19 +655,34 @@ export async function runClaudeWithProxy(
       env[ENV.ANTHROPIC_SMALL_FAST_MODEL] = modelId;
     }
     if (hasNativeAnthropicMapping(config)) {
-      // Native Claude model detected — let Claude Code use its real subscription
-      // credentials. Don't set placeholders, but preserve any real keys the user has.
+      // Native Claude model detected — Claude Code talks to Anthropic directly,
+      // so its own claude.ai subscription login should serve the request.
+      //
+      // A real ANTHROPIC_API_KEY in the environment silently OVERRIDES that
+      // subscription and switches the session to metered API billing. That key
+      // is usually incidental: a .env / 1Password Environment that bundles
+      // ANTHROPIC_API_KEY next to the OPENAI/GEMINI/XAI keys claudish actually
+      // needs. Reading its mere presence as "bill me per token" is an expensive
+      // misread, and the failure is silent — you find out on the invoice. So
+      // hide it by default and SAY so; opt back in explicitly when API billing
+      // is what you want. ANTHROPIC_AUTH_TOKEN is left alone — nothing bundles
+      // one incidentally, so setting it is always a deliberate act.
+      if (process.env.ANTHROPIC_API_KEY && !wantsAnthropicApiBilling(config)) {
+        delete env.ANTHROPIC_API_KEY;
+        hidAnthropicApiKey = true;
+      }
     } else {
-      // Pure alternative mode: all models go through proxy providers
-      // Use placeholder to prevent Claude Code login dialog
+      // Pure proxy mode: EVERY model goes through a claudish provider, so the
+      // session never makes a real Anthropic call and a real Anthropic key here
+      // is dead weight. Forwarding one is actively harmful: Claude Code then
+      // reports "API Usage Billing", and pairing it with the placeholder token
+      // trips "Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may
+      // not work as expected". So overwrite unconditionally with placeholders —
+      // their only job is suppressing the login dialog (#13: a placeholder API
+      // key alone still redirected to the payment page, hence the token too).
       env.ANTHROPIC_API_KEY =
-        process.env.ANTHROPIC_API_KEY ||
         "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
-
-      // Also set ANTHROPIC_AUTH_TOKEN to bypass login screen
-      // Claude Code checks both API_KEY and AUTH_TOKEN for authentication
-      env.ANTHROPIC_AUTH_TOKEN =
-        process.env.ANTHROPIC_AUTH_TOKEN || "placeholder-token-not-used-proxy-handles-auth";
+      env.ANTHROPIC_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
@@ -626,7 +696,7 @@ export async function runClaudeWithProxy(
       // per-provider window from the cloud catalog (never hardcoded).
       if (!process.env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) {
         const autoCompactWindow = await computeMainThreadContextWindow(config);
-        if (autoCompactWindow > 0) {
+        if (autoCompactWindow >= MIN_AUTO_COMPACT_WINDOW) {
           env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(autoCompactWindow);
           if (!config.quiet) {
             console.error(
@@ -634,6 +704,14 @@ export async function runClaudeWithProxy(
                 "(Claude Code compacts before the backend's real limit)"
             );
           }
+        } else if (autoCompactWindow > 0 && !config.quiet) {
+          // Setting the var here would be WORSE than leaving it unset — see
+          // MIN_AUTO_COMPACT_WINDOW.
+          console.error(
+            `[claudish] Model's real context window (${autoCompactWindow.toLocaleString()}) is below ` +
+              `Claude Code's ${MIN_AUTO_COMPACT_WINDOW.toLocaleString()}-token auto-compact floor — ` +
+              "leaving CLAUDE_CODE_AUTO_COMPACT_WINDOW unset so native auto-compaction stays on."
+          );
         }
       }
     }
@@ -656,6 +734,12 @@ export async function runClaudeWithProxy(
 
   if (!config.monitor && hasNativeAnthropicMapping(config)) {
     log("[claudish] Native Claude model detected — using Claude Code subscription credentials");
+    if (hidAnthropicApiKey) {
+      log(
+        "[claudish]   ANTHROPIC_API_KEY found but hidden so it can't override that subscription · " +
+          "use --anthropic-api-billing (or anthropicApiBilling: true) to bill the API instead"
+      );
+    }
   }
 
   if (config.interactive) {
