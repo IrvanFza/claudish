@@ -8,6 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { redactSecrets } from "./redact.js";
+import {
+  renderTeamStatsCompact,
+  statsDir,
+  tokenFileFor,
+  writeStatusFile,
+} from "./team-stats.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -17,26 +24,53 @@ export interface TeamManifest {
   shuffleOrder: string[];
 }
 
+/**
+ * Why a run is being reported as unusable.
+ *
+ * Exit code alone is a bad success oracle here: `claude -p` exits 0 on API
+ * errors and on background-task termination just as it does on real success.
+ * Classifying the failure means the caller never has to infer it from byte counts.
+ */
+export type FailureReason =
+  | "nonzero_exit"
+  | "timeout"
+  | "api_error"
+  | "background_task_ceiling"
+  | "empty_output";
+
 export interface ModelError {
   /** Model ID that failed (anonymized id used in the report). */
   model: string;
   /** The command that was run. */
   command: string;
+  /** Failure classification. */
+  reason: FailureReason;
+  /** One-line human-readable explanation of `reason`. */
+  detail: string;
   /** Tail of the captured stderr, if any. */
   stderrSnippet?: string;
+  /** Tail of the captured stdout — the failure signal often lands here, not on stderr. */
+  stdoutSnippet?: string;
   /** Path to the full error log file. */
   errorLogPath: string;
   /** Working directory the child ran in. */
   workDir: string;
 }
 
+/**
+ * EMPTY = the child exited 0 but its stdout is not a usable answer (an API
+ * error, a truncated preamble, or fewer than `minOutputBytes`). Distinct from
+ * FAILED so callers can tell "the process broke" from "the process lied".
+ */
+export type ModelState = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "TIMEOUT" | "EMPTY";
+
 export interface ModelStatus {
-  state: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "TIMEOUT";
+  state: ModelState;
   exitCode: number | null;
   startedAt: string | null;
   completedAt: string | null;
   outputSize: number;
-  /** Populated on FAILED/TIMEOUT with details for the failure report. */
+  /** Populated on FAILED/TIMEOUT/EMPTY with details for the failure report. */
   error?: ModelError;
 }
 
@@ -49,6 +83,40 @@ export interface TeamRunOptions {
   timeout?: number; // seconds, default 300
   claudeFlags?: string[]; // extra flags passed to child claudish
   onStatusChange?: (id: string, status: ModelStatus) => void;
+  /**
+   * Opt-in stub threshold: below this many stdout bytes an exit-0 run is
+   * recorded EMPTY. Default 0 (off) — see DEFAULT_MIN_OUTPUT_BYTES for why.
+   * Whitespace-only output is caught regardless of this setting.
+   */
+  minOutputBytes?: number;
+  /**
+   * Called on a timer with a rendered, colourless progress block, and once more
+   * when the run settles. Used to push live status somewhere a human can see it
+   * (MCP channel notification, terminal, log).
+   *
+   * `phase` MUST be honoured by consumers that model session lifecycle: without
+   * a terminal `"settled"` frame, a watcher sees only "running" forever and
+   * never observes the run close.
+   */
+  onProgress?: (update: {
+    rendered: string;
+    phase: "running" | "settled";
+    /** True when no model produced usable output. */
+    allFailed: boolean;
+  }) => void;
+  /**
+   * Max seconds between `onProgress` calls when NOTHING has changed. Default 60.
+   *
+   * This is a heartbeat, not a poll rate. Each frame renders as its own new line
+   * in the client, so a fixed 5s tick on a 15-minute run would print ~180 lines of
+   * near-identical text. Frames are emitted when a model's STATE changes (finishes,
+   * fails, produces output); this interval only bounds how long a quiet run can go
+   * without proving it is still alive.
+   *
+   * `status.txt` is rewritten on every internal poll regardless — it is a file, so
+   * frequency costs nothing there.
+   */
+  heartbeatSeconds?: number;
 }
 
 export interface TeamJudgeOptions {
@@ -77,6 +145,131 @@ export interface TeamVerdict {
   >;
   ranking: string[]; // response IDs sorted by score descending
   votes: VoteResult[];
+}
+
+// ─── Output Classification ────────────────────────────────────────────────────
+
+/**
+ * How many trailing stdout bytes we retain per child for diagnosis. Bounded so a
+ * 30 KB answer isn't buffered twice; exported-by-const so `classifyRunOutput`
+ * knows when the tail it was handed is the complete output.
+ */
+export const STDOUT_TAIL_LIMIT = 4000;
+
+/** Claude Code prints API failures into its stdout and still exits 0. */
+const API_ERROR_RE = /\[API Error:\s*([^\]]{0,300})\]/i;
+
+/**
+ * Claude Code's print-mode background-task ceiling. When it fires, the turn is
+ * terminated, whatever text was already emitted is flushed, and the exit code
+ * is 0 — so the run looks successful while carrying only a partial answer.
+ */
+const BG_CEILING_RE = /Background tasks still running after (\d+)s; terminating/i;
+
+/**
+ * Stub threshold, OFF by default.
+ *
+ * An earlier default of 200 produced a 2/2 false-positive rate the first time it
+ * met real short answers: two correct one-sentence replies (141 B and 96 B) were
+ * both recorded EMPTY. Re-checking the three real failures that motivated the
+ * threshold, none of them actually needs it — the 1-byte "\n" is whitespace-only,
+ * and the 98-byte API error and 195-byte preamble are both caught by their
+ * markers. So the byte threshold earned no unique detections while rejecting
+ * valid output.
+ *
+ * Callers who KNOW their answers should be long (a multi-KB review) can opt in
+ * via `minOutputBytes`. Whitespace-only output is always caught regardless.
+ */
+export const DEFAULT_MIN_OUTPUT_BYTES = 0;
+
+/**
+ * Decide whether an exit-0 run actually produced an answer.
+ * Returns null when the output looks usable.
+ */
+export function classifyRunOutput(opts: {
+  outputSize: number;
+  stdoutTail: string;
+  stderr: string;
+  minOutputBytes: number;
+}): { reason: FailureReason; detail: string } | null {
+  const { outputSize, stdoutTail, stderr, minOutputBytes } = opts;
+
+  const apiError = API_ERROR_RE.exec(stdoutTail);
+  if (apiError) {
+    return {
+      reason: "api_error",
+      detail: `Child exited 0 but stdout carries an API error: ${apiError[1]?.trim() || "unknown"}`,
+    };
+  }
+
+  const bgCeiling = BG_CEILING_RE.exec(stderr);
+  if (bgCeiling) {
+    return {
+      reason: "background_task_ceiling",
+      detail:
+        `Claude Code terminated the turn after ${bgCeiling[1]}s waiting on background tasks, ` +
+        `flushing only partial output. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 in the child ` +
+        `environment to wait indefinitely, or tell the model not to spawn background work.`,
+    };
+  }
+
+  // Nothing but whitespace is never a real answer, at any threshold. This is
+  // what actually catches the observed 1-byte "\n" run.
+  //
+  // Guarded on outputSize: `stdoutTail` holds only the LAST STDOUT_TAIL_LIMIT
+  // bytes, so a large answer that happens to end in padding would otherwise be
+  // misread as empty. Only trust the tail when it IS the whole output.
+  const tailIsWholeOutput = outputSize <= STDOUT_TAIL_LIMIT;
+  if (outputSize === 0 || (tailIsWholeOutput && stdoutTail.trim().length === 0)) {
+    return {
+      reason: "empty_output",
+      detail: `Child exited 0 but produced no non-whitespace output (${outputSize} B).`,
+    };
+  }
+
+  // Opt-in stub threshold. Off by default — see DEFAULT_MIN_OUTPUT_BYTES.
+  if (minOutputBytes > 0 && outputSize < minOutputBytes) {
+    return {
+      reason: "empty_output",
+      detail:
+        `Child exited 0 but produced only ${outputSize} B of stdout ` +
+        `(caller required at least ${minOutputBytes} B).`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Write the full diagnostic log for a run.
+ *
+ * Always called on failure, so `errorLogPath` in the status report is never a
+ * dangling reference — including for timeouts, whose stderr used to be dropped.
+ *
+ * Credentials are stripped BEFORE the bytes hit disk. Provider stderr routinely
+ * echoes key material, and the team result card now names this path for the agent
+ * to read — so an unredacted log is a credential handed straight into an agent's
+ * context. Redacting at write time is the only point that covers every reader
+ * (the agent, a human, `report_error`, a future consumer).
+ */
+function persistErrorLog(
+  errorLogPath: string,
+  header: string,
+  stderr: string,
+  stdoutTail: string
+): void {
+  const parts = [`=== ${redactSecrets(header)} ===`, ""];
+  parts.push("--- stderr ---", stderr.trim() ? redactSecrets(stderr) : "(empty)", "");
+  parts.push(
+    "--- stdout (tail) ---",
+    stdoutTail.trim() ? redactSecrets(stdoutTail) : "(empty)",
+    ""
+  );
+  try {
+    writeFileSync(errorLogPath, parts.join("\n"), "utf-8");
+  } catch {
+    // Diagnostics are best-effort — never let logging failure mask the real error.
+  }
 }
 
 // ─── Path Validation ──────────────────────────────────────────────────────────
@@ -226,7 +419,26 @@ export async function runModels(
     writeFileSync(statusPath, JSON.stringify(statusCache, null, 2), "utf-8");
   }
 
+  const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
+
+  // Each child writes its token/cost stats here (one file per model).
+  mkdirSync(statsDir(sessionPath), { recursive: true });
+
   const processes: Map<string, ChildProcess> = new Map();
+
+  /**
+   * Per-model diagnostic handles, readable from OUTSIDE the spawn closure.
+   * The timeout handler lives outside that closure and previously had no way to
+   * reach the child's stderr — which is why timed-out runs reported nothing.
+   */
+  interface ModelRuntime {
+    command: string;
+    errorLogPath: string;
+    getStderr: () => string;
+    getStdoutTail: () => string;
+    getByteCount: () => number;
+  }
+  const runtimes: Map<string, ModelRuntime> = new Map();
 
   // SIGINT handler: kill all child processes on Ctrl+C
   const sigintHandler = () => {
@@ -255,12 +467,24 @@ export async function runModels(
     const proc = spawn("claudish", args, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      env: {
+        ...process.env,
+        // Point this child's token tracker at a path WE choose, so its
+        // tokens/cost can be attributed back to this model. Without this the
+        // child writes to tokens-<its-own-port>.json and nothing links the two.
+        CLAUDISH_TOKEN_FILE: tokenFileFor(sessionPath, anonId),
+      },
     });
 
     // Count bytes flowing through stdout for accurate outputSize tracking
     let byteCount = 0;
+    // Bounded tail of stdout. Claude Code writes "[API Error: ...]" to stdout
+    // and still exits 0, so the failure signal is often here rather than on
+    // stderr. Bounded so a 30 KB answer doesn't get buffered twice.
+    let stdoutTail = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
       byteCount += chunk.length;
+      stdoutTail = (stdoutTail + chunk.toString()).slice(-STDOUT_TAIL_LIMIT);
     });
 
     // Stream stdout to disk via pipe — no memory buffering
@@ -271,6 +495,15 @@ export async function runModels(
     let stderr = "";
     proc.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
+    });
+
+    const command = `claudish ${args.join(" ")}`;
+    runtimes.set(anonId, {
+      command,
+      errorLogPath,
+      getStderr: () => stderr,
+      getStdoutTail: () => stdoutTail,
+      getByteCount: () => byteCount,
     });
 
     // Pipe input to stdin
@@ -294,22 +527,52 @@ export async function runModels(
 
         const outputSize = byteCount;
 
-        const failed = exitCode !== 0;
-        updateModelStatus(anonId, {
-          state: failed ? "FAILED" : "COMPLETED",
-          exitCode: exitCode ?? 1,
-          completedAt: new Date().toISOString(),
-          outputSize,
-          error: failed
-            ? {
-                model: anonId,
-                command: `claudish ${args.join(" ")}`,
-                stderrSnippet: stderr ? stderr.slice(-2000) : undefined,
-                errorLogPath,
-                workDir: sessionPath,
-              }
-            : undefined,
-        });
+        // A non-zero exit is an outright failure. A zero exit still has to earn
+        // it: `claude -p` exits 0 on API errors and on background-task
+        // termination, so exit code alone would file both as success.
+        const crashed = exitCode !== 0;
+        const degraded = crashed
+          ? null
+          : classifyRunOutput({ outputSize, stdoutTail, stderr, minOutputBytes });
+
+        const failed = crashed || degraded !== null;
+        const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
+
+        if (failed) {
+          const reason: FailureReason = crashed ? "nonzero_exit" : degraded!.reason;
+          const detail = crashed
+            ? `Child exited with code ${exitCode}.`
+            : degraded!.detail;
+
+          persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
+
+          updateModelStatus(anonId, {
+            state,
+            exitCode: exitCode ?? 1,
+            completedAt: new Date().toISOString(),
+            outputSize,
+            error: {
+              model: anonId,
+              command,
+              reason,
+              detail,
+              // Redacted: these land in status.json on disk and are read back
+              // by anything inspecting the run.
+              stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
+              stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
+              errorLogPath,
+              workDir: sessionPath,
+            },
+          });
+        } else {
+          updateModelStatus(anonId, {
+            state,
+            exitCode: exitCode ?? 0,
+            completedAt: new Date().toISOString(),
+            outputSize,
+            error: undefined,
+          });
+        }
 
         opts.onStatusChange?.(anonId, statusCache.models[anonId]);
         resolve();
@@ -328,7 +591,9 @@ export async function runModels(
         }
 
         if (stderr) {
-          writeFileSync(errorLogPath, stderr, "utf-8");
+          // Redacted like every other persistence point — provider stderr can
+          // echo key material and this file is read by agents.
+          writeFileSync(errorLogPath, redactSecrets(stderr), "utf-8");
         }
 
         exitCode = code;
@@ -344,6 +609,71 @@ export async function runModels(
     completionPromises.push(completionPromise);
   }
 
+  // ── Live progress ─────────────────────────────────────────────────────────
+  // Children in --quiet print mode emit nothing until they finish, so without a
+  // poll there is no signal at all between "started" and "done".
+  //
+  // Two different cadences, deliberately:
+  //   · status.txt   — rewritten every poll. It is a file; frequency is free.
+  //   · onProgress   — only when the run's state actually CHANGES, plus a slow
+  //                    heartbeat. Each frame renders as its own new line in the
+  //                    client, so a fixed short tick would bury the transcript
+  //                    in near-identical rows (a 15-min run at 5s = ~180 lines).
+  const runStartedMs = Date.now();
+  const POLL_MS = 2000;
+  const heartbeatMs = (opts.heartbeatSeconds ?? 60) * 1000;
+
+  let lastSignature = "";
+  let lastEmitMs = 0;
+
+  /**
+   * What "changed" means for emission purposes.
+   *
+   * EXCLUDES elapsed time — otherwise every poll differs and the dedupe never
+   * suppresses anything.
+   *
+   * EXCLUDES raw token counts too. Tokens tick continuously while a model
+   * streams, so keying on them re-creates the spam this dedupe exists to stop.
+   * Token totals still ride along on whatever frame does get emitted, and the
+   * heartbeat guarantees they refresh on a quiet run.
+   */
+  const stateSignature = (): string =>
+    Object.entries(statusCache.models)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, m]) => `${id}:${m.state}:${m.outputSize}`)
+      .join("|");
+
+  const emitProgress = (phase: "running" | "settled" = "running"): void => {
+    const elapsedSeconds = (Date.now() - runStartedMs) / 1000;
+    writeStatusFile(sessionPath, manifest, statusCache, { elapsedSeconds });
+    if (!opts.onProgress) return;
+
+    const signature = stateSignature();
+    const changed = signature !== lastSignature;
+    const heartbeatDue = Date.now() - lastEmitMs >= heartbeatMs;
+    // A settled run must always emit — it is the terminal frame.
+    if (phase !== "settled" && !changed && !heartbeatDue) return;
+
+    lastSignature = signature;
+    lastEmitMs = Date.now();
+
+    try {
+      const models = Object.values(statusCache.models);
+      opts.onProgress({
+        rendered: renderTeamStatsCompact(sessionPath, manifest, statusCache, { elapsedSeconds }),
+        phase,
+        allFailed: models.length > 0 && models.every((m) => m.state !== "COMPLETED"),
+      });
+    } catch {
+      // A progress consumer must never be able to fail the run.
+    }
+  };
+
+  emitProgress(); // one immediately, so status.txt exists from the start
+  const progressHandle = setInterval(() => emitProgress("running"), POLL_MS);
+  // Don't hold the event loop open on the ticker alone.
+  progressHandle.unref?.();
+
   // Wait for all processes, or until timeout fires
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -358,9 +688,37 @@ export async function runModels(
           // the parent called .kill(), not when the child exited naturally.
           if (current.state === "RUNNING") {
             if (!proc.killed) proc.kill("SIGTERM");
+
+            // Capture diagnostics BEFORE the status flips to TIMEOUT. The exit
+            // handler short-circuits on TIMEOUT, so this is the only chance to
+            // persist what the child said — previously it was all discarded.
+            const rt = runtimes.get(id);
+            const stderr = rt?.getStderr() ?? "";
+            const stdoutTail = rt?.getStdoutTail() ?? "";
+            const bytes = rt?.getByteCount() ?? 0;
+            const detail =
+              `Killed by the orchestrator after ${timeoutMs / 1000}s with ${bytes} B of stdout. ` +
+              `In --quiet print mode the child emits its answer only at the end, so 0 B means ` +
+              `"did not finish", not "produced nothing".`;
+
+            if (rt) persistErrorLog(rt.errorLogPath, `TIMEOUT: ${detail}`, stderr, stdoutTail);
+
             updateModelStatus(id, {
               state: "TIMEOUT",
               completedAt: new Date().toISOString(),
+              outputSize: bytes,
+              error: rt
+                ? {
+                    model: id,
+                    command: rt.command,
+                    reason: "timeout",
+                    detail,
+                    stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
+                    stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
+                    errorLogPath: rt.errorLogPath,
+                    workDir: sessionPath,
+                  }
+                : undefined,
             });
             opts.onStatusChange?.(id, statusCache.models[id]);
           }
@@ -371,6 +729,10 @@ export async function runModels(
   ]);
 
   if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+  clearInterval(progressHandle);
+  // Terminal frame. Without this a status-tracking consumer never sees the run
+  // close — every frame would read "running", including the last one.
+  emitProgress("settled");
 
   // Remove SIGINT handler after we're done
   process.off("SIGINT", sigintHandler);

@@ -80,7 +80,7 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
     process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
     try {
-      const status = await runModels(tempDir, { timeout: 5 });
+      const status = await runModels(tempDir, { timeout: 5, minOutputBytes: 0 });
 
       // Both models should be COMPLETED since they finish well before the 5s timeout
       for (const [, model] of Object.entries(status.models)) {
@@ -108,7 +108,7 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
     process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
     try {
-      const status = await runModels(tempDir, { timeout: 1 });
+      const status = await runModels(tempDir, { timeout: 1, minOutputBytes: 0 });
 
       const model = Object.values(status.models)[0];
       expect(model.state).toBe("COMPLETED");
@@ -183,7 +183,7 @@ exit 0
     process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
     try {
-      const status = await runModels(tempDir, { timeout: 2 });
+      const status = await runModels(tempDir, { timeout: 2, minOutputBytes: 0 });
 
       // Read manifest to find which anon ID maps to which model
       const manifest = JSON.parse(readFileSync(join(tempDir, "manifest.json"), "utf-8"));

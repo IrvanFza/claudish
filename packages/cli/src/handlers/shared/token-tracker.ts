@@ -12,7 +12,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { log } from "../../logger.js";
 import { type ModelPricing, getModelPricing } from "./remote-provider-types.js";
 
@@ -269,9 +269,15 @@ export class TokenTracker {
         data.quota_remaining = this.quotaRemaining;
       }
 
-      const claudishDir = join(homedir(), ".claudish");
-      mkdirSync(claudishDir, { recursive: true });
-      writeFileSync(join(claudishDir, `tokens-${this.port}.json`), JSON.stringify(data), "utf-8");
+      // CLAUDISH_TOKEN_FILE lets a parent process dictate where these stats land.
+      // The default path is keyed to a port the child picks for itself, so an
+      // orchestrator spawning N children has no way to tell which file belongs
+      // to which model. Pointing each child at a known path is what makes
+      // per-model token/cost reporting possible.
+      const override = process.env.CLAUDISH_TOKEN_FILE;
+      const outPath = override || join(homedir(), ".claudish", `tokens-${this.port}.json`);
+      mkdirSync(dirname(outPath), { recursive: true });
+      writeFileSync(outPath, JSON.stringify(data), "utf-8");
     } catch (e) {
       log(`[TokenTracker] Error writing token file: ${e}`);
     }

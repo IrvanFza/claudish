@@ -32,6 +32,7 @@ import {
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
+import { sanitizeForReport } from "./redact.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { createProxyServer } from "./proxy-server.js";
 import {
@@ -271,60 +272,133 @@ function fuzzyScore(text: string, query: string): number {
   return queryIndex === lowerQuery.length ? score / lowerText.length : 0;
 }
 
-function formatTeamResult(
+/**
+ * The action a caller should take for each failure class. Deterministic strings
+ * so the agent branches on a known value instead of parsing prose.
+ */
+const NEXT_STEP: Record<string, string> = {
+  nonzero_exit: "read the evidence log, then retry or drop the model",
+  timeout: "raise `timeout`, or pick a faster model",
+  api_error: "retry once, or route via a different provider (or@<model>)",
+  background_task_ceiling:
+    "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 for children, or forbid background work in the prompt",
+  empty_output: "retry once; if it repeats, drop the model",
+};
+
+/** `18864` → `18.4KB`. */
+function fmtSize(n: number): string {
+  if (n <= 0) return "0B";
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Render a team run as a compact, self-delimiting card.
+ *
+ * Deliberately does NOT emit `JSON.stringify(status)` and does NOT inline raw
+ * stderr/stdout. The previous implementation did both, which billed every
+ * snippet TWICE — once JSON-escaped in the dump, once raw in the markdown block.
+ * Measured worst case (6 models, 3 failures, both snippets at their 2000-char
+ * cap): 28,403 B delivered, 12,000 B of it pure duplication (42%).
+ *
+ * Nothing is lost. Machine-readable status stays one `mode: "status"` call away
+ * and on disk at `<session>/status.json`; full stderr/stdout stay in
+ * `<session>/errors/<id>.log`, which the card names per failure. The card itself
+ * carries reason + one-line detail + next step, which is what a caller needs to
+ * decide, without paying for evidence it may never read.
+ *
+ * Self-delimiting because MCP `resource_link` blocks arrive flattened into the
+ * text stream with no separator — a consumer must be able to see where this ends.
+ */
+export function formatTeamResult(
   status: import("./team-orchestrator.js").TeamStatus,
   sessionPath: string
 ): string {
-  const entries = Object.entries(status.models);
-  const failed = entries.filter(([, m]) => m.state === "FAILED" || m.state === "TIMEOUT");
+  const entries = Object.entries(status.models).sort(([a], [b]) => a.localeCompare(b));
+  // EMPTY belongs with the failures: the process exited 0 but produced no usable
+  // answer. Filing it under "succeeded" is what forced callers to infer failure
+  // from outputSize by hand.
+  const failed = entries.filter(
+    ([, m]) => m.state === "FAILED" || m.state === "TIMEOUT" || m.state === "EMPTY"
+  );
   const succeeded = entries.filter(([, m]) => m.state === "COMPLETED");
 
-  let result = JSON.stringify(status, null, 2);
+  const lines: string[] = [];
+  lines.push(`<<<TEAM_RESULT path="${sessionPath}">>>`);
+  lines.push(
+    `status: ${failed.length === 0 ? "ok" : succeeded.length === 0 ? "all-failed" : "partial"}` +
+      ` — ${succeeded.length}/${entries.length} succeeded`
+  );
 
-  if (failed.length > 0) {
-    result += "\n\n---\n## Failures Detected\n\n";
-    result += `${succeeded.length}/${entries.length} models succeeded, ${failed.length} failed.\n\n`;
-
-    for (const [id, m] of failed) {
-      result += `### Model ${id}: ${m.state}\n`;
-      if (m.error) {
-        result += `- **Model:** ${m.error.model}\n`;
-        result += `- **Command:** \`${m.error.command}\`\n`;
-        result += `- **Exit code:** ${m.exitCode}\n`;
-        if (m.error.stderrSnippet) {
-          result += `- **Error output:**\n\`\`\`\n${m.error.stderrSnippet}\n\`\`\`\n`;
-        }
-        result += `- **Full error log:** ${m.error.errorLogPath}\n`;
-        result += `- **Working directory:** ${m.error.workDir}\n`;
-      }
-      result += "\n";
+  if (succeeded.length > 0) {
+    lines.push("succeeded:");
+    for (const [id, m] of succeeded) {
+      lines.push(`  ${id}  ${fmtSize(m.outputSize)}  response-${id}.md`);
     }
-
-    result += "---\n";
-    result += "**To help claudish devs fix this**, use the `report_error` tool with:\n";
-    result += '- `error_type`: "provider_failure" or "team_failure"\n';
-    result += `- \`session_path\`: "${sessionPath}"\n`;
-    result += "- Copy the stderr snippet above into `stderr_snippet`\n";
-    result += "- Set `auto_send: true` to suggest enabling automatic reporting\n";
   }
 
-  return result;
+  if (failed.length > 0) {
+    lines.push("failures:");
+    for (const [id, m] of failed) {
+      const reason = m.error?.reason ?? "unknown";
+      const next = NEXT_STEP[reason] ?? "read the evidence log";
+      lines.push(`  ${id}  ${m.state}  reason=${reason}`);
+      if (m.error?.detail) lines.push(`      what: ${m.error.detail}`);
+      lines.push(`      next: ${next}`);
+      if (m.error?.errorLogPath) {
+        lines.push(`      evidence: ${m.error.errorLogPath}`);
+      } else {
+        lines.push(
+          "      evidence: NONE CAPTURED — orchestrator bug, report via report_error"
+        );
+      }
+    }
+    lines.push("actions:");
+    lines.push(`  full stderr/stdout for one failure  → Read the evidence path above`);
+    lines.push(`  machine-readable status             → team(mode="status", path="${sessionPath}")`);
+    lines.push(`  report a provider bug               → report_error(session_path="${sessionPath}")`);
+  }
+
+  lines.push("<<<END_TEAM_RESULT>>>");
+  return lines.join("\n");
 }
 
-function sanitize(text: string | undefined): string {
-  if (!text) return "";
-  return text
-    .replace(/sk-[a-zA-Z0-9_-]{10,}/g, "sk-***REDACTED***")
-    .replace(/Bearer [a-zA-Z0-9_.-]+/g, "Bearer ***REDACTED***")
-    .replace(/\/Users\/[^/\s]+/g, "/Users/***")
-    .replace(/\/home\/[^/\s]+/g, "/home/***")
-    .replace(/[A-Z_]+_API_KEY=[^\s]+/g, "***_API_KEY=REDACTED")
-    .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "***@***.***");
-}
+/**
+ * `report_error` sends data OFF this machine, so it gets the full treatment:
+ * credentials AND the personal details that identify the user.
+ *
+ * Replaces a local implementation that knew only `sk-` keys — it missed Google
+ * (`AIza…`), xAI, JWTs, GitHub tokens, and every `_TOKEN` / `_SECRET` / `_KEY`
+ * variable that wasn't literally named `*_API_KEY`.
+ */
+const sanitize = sanitizeForReport;
 
 // ─── Tool Definitions ────────────────────────────────────────────────────────
 
-function defineTools(sessionManager: SessionManager): ToolDefinition[] {
+/**
+ * Pushes a live progress frame to the client, or is a no-op when the channel
+ * capability is not enabled. `team` uses this to report per-model token/cost
+ * stats while a multi-minute run is still in flight.
+ *
+ * Channels are the ONLY measured-working push mechanism: `notifications/progress`
+ * renders nowhere on Claude Code 2.1.220 — verified empty in both the agent's
+ * context and the interactive terminal UI. See
+ * ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md.
+ */
+type ChannelNotifier = (params: {
+  content: string;
+  sessionId: string;
+  event: string;
+  model: string;
+  elapsedSeconds: number;
+  createdAt: string;
+}) => void;
+
+function defineTools(
+  sessionManager: SessionManager,
+  notifyChannel: ChannelNotifier
+): ToolDefinition[] {
   const tools: ToolDefinition[] = [];
 
   // ── Low-Level Tools ──────────────────────────────────────────────────
@@ -666,11 +740,31 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
 
         const resolved = validateSessionPath(path);
 
+        // Live per-model token/cost progress for the run modes. The session
+        // basename is a stable, human-recognisable id for the channel frames.
+        const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
+        const teamCreatedAt = new Date().toISOString();
+        const runOpts = {
+          timeout,
+          onProgress: (u: { rendered: string; phase: "running" | "settled"; allFailed: boolean }) =>
+            notifyChannel({
+              content: u.rendered,
+              sessionId: teamSessionId,
+              // A settled run must emit a TERMINAL event. Emitting "running"
+              // for the final frame leaves any status-tracking consumer
+              // believing the run never closed.
+              event: u.phase === "settled" ? (u.allFailed ? "failed" : "completed") : "running",
+              model: "team",
+              elapsedSeconds: (Date.now() - Date.parse(teamCreatedAt)) / 1000,
+              createdAt: teamCreatedAt,
+            }),
+        };
+
         switch (mode) {
           case "run": {
             if (!models?.length) throw new Error("'models' is required for 'run' mode");
             setupSession(resolved, models, input);
-            const status = await runModels(resolved, { timeout });
+            const status = await runModels(resolved, runOpts);
             return {
               content: [{ type: "text" as const, text: formatTeamResult(status, resolved) }],
             };
@@ -682,7 +776,7 @@ function defineTools(sessionManager: SessionManager): ToolDefinition[] {
           case "run-and-judge": {
             if (!models?.length) throw new Error("'models' is required for 'run-and-judge' mode");
             setupSession(resolved, models, input);
-            await runModels(resolved, { timeout });
+            await runModels(resolved, runOpts);
             const verdict = await judgeResponses(resolved, { judges });
             return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
           }
@@ -1123,8 +1217,40 @@ async function main() {
     }),
   });
 
+  // Live-progress push for long-running tools. Gated on the channel capability
+  // actually being declared — emitting a channel frame the client never
+  // registered for is silently dropped, and `team` still writes status.txt
+  // regardless, so there is always a visible path.
+  const channelEnabled = enabledGroups.has("channel");
+  const notifyChannel: ChannelNotifier = (p) => {
+    if (!channelEnabled) return;
+    try {
+      const result = server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: p.content,
+          meta: {
+            // meta keys must match [a-zA-Z0-9_]+ — Claude Code silently drops
+            // keys containing hyphens or other characters.
+            session_id: p.sessionId,
+            event: p.event,
+            model: p.model,
+            elapsed_seconds: String(Math.round(p.elapsedSeconds)),
+            task_id: p.sessionId,
+            status: mapEventToTaskStatus(p.event),
+            created_at: p.createdAt,
+            last_updated_at: new Date().toISOString(),
+          },
+        },
+      });
+      watchNotificationResult(result, { sessionId: p.sessionId, eventType: p.event });
+    } catch {
+      // Progress reporting must never fail the tool call it is describing.
+    }
+  };
+
   // Build tool registry
-  const allTools = defineTools(sessionManager);
+  const allTools = defineTools(sessionManager, notifyChannel);
   const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
   const toolMap = new Map(enabledTools.map((t) => [t.name, t]));
 
