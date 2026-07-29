@@ -19,6 +19,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
+import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
 import {
@@ -987,6 +988,13 @@ function defineTools(
         const claudishFlags = args.claude_flags
           ? (args.claude_flags as string).split(/\s+/).filter(Boolean)
           : undefined;
+
+        // Resolve the model's credential in THIS process before spawning the
+        // child. Several create_session calls in flight at once would otherwise
+        // each open their own 1Password SDK client, and the desktop app denies
+        // all but one ("Denied authorization for SDK client"). Resolving here
+        // write-throughs the key into process.env, which the child inherits.
+        await prehydrateCredentialsForSpawn([args.model as string]);
 
         const sessionId = sessionManager.createSession({
           model: args.model as string,

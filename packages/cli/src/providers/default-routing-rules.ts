@@ -39,9 +39,17 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // xAI Grok: direct API, then OpenRouter (no subscription tier).
   "grok-*": ["x-ai", "openrouter"],
 
-  // Kimi: subscription endpoint accepts only "kimi-for-coding" — provider@model
-  // rewrite handles that.
-  "kimi-*": ["kimi-coding@kimi-for-coding", "kimi", "openrouter"],
+  // Kimi: the subscription endpoint speaks its own wire ids (kimi-for-coding,
+  // kimi-for-coding-highspeed, k3, k3-256k) — NOT catalog names like
+  // "kimi-k2.7-code". No model is pinned here: buildRoutingChain translates the
+  // catalog name to the plan's wire id via `subscriptionPlans[]` +
+  // `aggregators[].externalId`, and drops the kimi-coding candidate when the
+  // plan doesn't include the model (e.g. kimi-k2.5) so it falls through to the
+  // metered Moonshot API rather than being silently answered by a different
+  // model. `k3*` needs its own rule: it doesn't match `kimi-*`, and the catalog
+  // alias would otherwise send bare `k3` to the paid OpenRouter listing.
+  "kimi-*": ["kimi-coding", "kimi", "openrouter"],
+  "k3*": ["kimi-coding", "kimi", "openrouter"],
 
   // MiniMax (matchRoutingRule is case-insensitive, so a single rule covers
   // both `MiniMax-M2.5` and `minimax-m2.5`).

@@ -22,37 +22,49 @@
  * must never include any value, masked fragment, or key material whatsoever.
  */
 
+import { type CredentialSource, describeSource } from "./auth/credentials/source.js";
 import { loadConfig } from "./profile-config.js";
-import { type AuthSource, PROVIDERS, providerAuthSource } from "./tui/providers.js";
+import { PROVIDERS } from "./tui/providers.js";
 
 interface ProviderStatus {
   slug: string;
   ready: boolean;
-  authSource: AuthSource;
+  authSource: CredentialSource;
 }
 
 /**
- * Build the provider-status list. Pure function over PROVIDERS + config so it
- * stays trivially testable and side-effect free (apart from reading config,
- * which providerAuthSource needs).
+ * Build the provider-status list.
+ *
+ * ASYNC because readiness is decided by the credential authority — the same
+ * oracle routing and sign-time use (env → aliases → config → oauth-file →
+ * 1Password). This command previously classified with the SYNC TUI helper,
+ * which structurally cannot see a 1Password-only key, so every op-sourced
+ * provider was reported `ready: false` and the profiles app concluded the
+ * machine had no credentials at all.
+ *
+ * `describeSource` resolves all providers concurrently; resolution is serialized
+ * behind the op queue and a 1Password Environment is fetched once per process,
+ * so this is ONE handshake for the whole list rather than one per provider.
  */
-export function collectProviderStatuses(
+export async function collectProviderStatuses(
   config: { apiKeys?: Record<string, string>; localProviders?: string[] } = loadConfig()
-): ProviderStatus[] {
-  return PROVIDERS.map((p) => {
-    const authSource = providerAuthSource(p, config);
-    return {
-      // Canonical provider name — the slug the profiles app round-trips back
-      // as `provider` in serve's models.json.
-      slug: p.catalogName,
-      ready: authSource !== null,
-      authSource,
-    };
-  });
+): Promise<ProviderStatus[]> {
+  return Promise.all(
+    PROVIDERS.map(async (p) => {
+      const authSource = await describeSource(p, config);
+      return {
+        // Canonical provider name — the slug the profiles app round-trips back
+        // as `provider` in serve's models.json.
+        slug: p.catalogName,
+        ready: authSource !== null,
+        authSource,
+      };
+    })
+  );
 }
 
 export async function providersCommand(opts: { json: boolean }): Promise<void> {
-  const providers = collectProviderStatuses();
+  const providers = await collectProviderStatuses();
 
   if (opts.json) {
     // Stable, machine-readable output. No key material anywhere — only the

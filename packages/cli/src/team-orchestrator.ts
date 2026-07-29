@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { redactSecrets } from "./redact.js";
 import {
   renderTeamStatsCompact,
@@ -410,6 +411,15 @@ export async function runModels(
 
   const inputPath = join(sessionPath, "input.md");
   const inputContent = readFileSync(inputPath, "utf-8");
+
+  // Resolve every model's credential HERE, before the spawn loop below fires N
+  // children at once. Each child would otherwise open its own 1Password SDK
+  // client, and the desktop app authorizes exactly one of them and denies the
+  // rest ("Denied authorization for SDK client") — silently losing whichever
+  // models depend on 1Password rather than a shell env var. Resolving in the
+  // parent write-throughs the keys into process.env, which the children
+  // inherit. See auth/credentials/prehydrate.ts for the measured repro.
+  await prehydrateCredentialsForSpawn(Object.values(manifest.models).map((m) => m.model));
 
   // In-memory status cache to eliminate read-modify-write races
   const statusCache: TeamStatus = JSON.parse(readFileSync(statusPath, "utf-8"));

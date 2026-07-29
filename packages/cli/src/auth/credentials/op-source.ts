@@ -47,6 +47,38 @@ import {
 import type { AccountInfo, SdkAuth, SdkClientFactory } from "../../providers/onepassword.js";
 import { type SpanMeta, addSpanMeta, beginQueuedSpan, traceSpan } from "../../startup-trace.js";
 
+/**
+ * Warn ONCE per process for each distinct op failure message.
+ *
+ * A bare model name credential-filters a routing CHAIN, so one child process
+ * asks the authority about several candidate providers. When 1Password is
+ * failing (e.g. the desktop app denied this process's SDK client), every one of
+ * those asks fails identically and used to print its own line — a single child
+ * emitted four consecutive
+ *
+ *   "[claudish] 1Password environment skipped: ... Denied authorization ..."
+ *
+ * lines. Repetition reads as a cascade of distinct failures and it showed up in
+ * the error logs of models that ultimately SUCCEEDED (the candidate that got
+ * used had its key in env all along), which is a large part of why this bug
+ * looked like "claudish ignores my 1Password config". One line per distinct
+ * failure is the whole signal; the rest is noise.
+ *
+ * Message text only — no key material is ever part of these strings.
+ */
+const warnedMessages = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (warnedMessages.has(message)) return;
+  warnedMessages.add(message);
+  console.error(message);
+}
+
+/** Test-only: forget which warnings have been emitted. */
+export function __resetWarnOnceForTests(): void {
+  warnedMessages.clear();
+}
+
 /** Thrown when no usable 1Password SDK auth can be resolved. */
 export class OpAuthError extends Error {
   constructor(message: string) {
@@ -626,16 +658,25 @@ async function resolveOpKeyForEnvVarsInner(
       auth = await getSdkAuth(allowPrompt);
     } catch (err) {
       if (err instanceof OpAuthError && onAuthFailure === "skip") {
-        console.error(`[claudish] 1Password auth unavailable, skipping op:// keys: ${err.message}`);
+        warnOnce(`[claudish] 1Password auth unavailable, skipping op:// keys: ${err.message}`);
+        // Record before returning: this run's keys may live in 1Password, and
+        // the missing-key error downstream must not tell the user to `export`
+        // a credential they already store there.
+        //
+        // warnOnce de-duplicates the USER-FACING line (a bare model name asks the
+        // authority about several candidate providers, so one failure used to
+        // print several identical lines). The RECORD is not de-duplicated —
+        // provenance must see every failure.
+        const { recordOpFailure } = await import("../../providers/onepassword.js");
+        recordOpFailure({ kind: "auth", message: err.message });
         return {};
       }
       throw err;
     }
   }
 
-  const { collectConfigImports, resolveSecrets, recordOpHydratedVars } = await import(
-    "../../providers/onepassword.js"
-  );
+  const { collectConfigImports, resolveSecrets, recordOpHydratedVars, recordOpFailure } =
+    await import("../../providers/onepassword.js");
 
   const cfg = readConfigRaw();
   const out: Record<string, string> = {};
@@ -684,7 +725,8 @@ async function resolveOpKeyForEnvVarsInner(
         // the user out. The failed resolution was evicted from the memo map, so
         // the NEXT resolve retries it.
         const m = globErr instanceof Error ? globErr.message : String(globErr);
-        console.error(`[claudish] 1Password import skipped: ${m}`);
+        warnOnce(`[claudish] 1Password import skipped: ${m}`);
+        recordOpFailure({ kind: "import", source: globPath, message: m });
       }
     }
 
@@ -733,17 +775,20 @@ async function resolveOpKeyForEnvVarsInner(
           // never lock the user out. The failed resolution was evicted, so the
           // next resolve retries it.
           const m = envErr instanceof Error ? envErr.message : String(envErr);
-          console.error(`[claudish] 1Password environment skipped: ${m}`);
+          warnOnce(`[claudish] 1Password environment skipped: ${m}`);
+          recordOpFailure({ kind: "environment", source: envId, message: m });
         }
       }
     }
   } catch (err) {
     if (err instanceof OpAuthError && onAuthFailure === "skip") {
-      console.error(`[claudish] 1Password resolution skipped: ${err.message}`);
+      warnOnce(`[claudish] 1Password resolution skipped: ${err.message}`);
+      recordOpFailure({ kind: "auth", message: err.message });
       return out;
     }
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[claudish] 1Password secret resolution failed: ${message}`);
+    warnOnce(`[claudish] 1Password secret resolution failed: ${message}`);
+    recordOpFailure({ kind: "reference", message });
     if (onAuthFailure === "throw") throw err;
   }
 

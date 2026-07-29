@@ -12,12 +12,68 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_ROUTING_RULES,
   validateDefaultRoutingRules,
   validateRoutingRulesAgainstProviders,
 } from "./default-routing-rules.js";
+import { writeAllModelsCache, type DiskCacheV2 } from "./all-models-cache.js";
 import { buildRoutingChain, matchRoutingRule } from "./routing-rules.js";
+
+function makeTempCatalog(
+  model: {
+    modelId: string;
+    externalId?: string;
+    subscriptionPlans?: string[];
+  },
+  /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
+  plans: string[] = model.subscriptionPlans ?? []
+): { path: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
+  const path = join(dir, "all-models.json");
+  const entries: DiskCacheV2["entries"] = [];
+
+  // Plan-owner entries: a provider is only treated as a subscription plan if
+  // some catalog entry lists it in subscriptionPlans[]. Add markers so tests can
+  // model the "model is not in this plan" drop path without duplicating real
+  // plan members.
+  for (const plan of plans) {
+    entries.push({
+      modelId: `${plan}-plan-marker`,
+      aliases: [],
+      sources: {},
+      subscriptionPlans: [plan],
+      aggregators: [{ provider: plan, externalId: "any", confidence: "scrape_verified" as const }],
+    });
+  }
+
+  entries.push({
+    modelId: model.modelId,
+    aliases: [],
+    sources: {},
+    subscriptionPlans: model.subscriptionPlans ?? [],
+    aggregators:
+      model.externalId && model.subscriptionPlans
+        ? model.subscriptionPlans.map((provider) => ({
+            provider,
+            externalId: model.externalId!,
+            confidence: "scrape_verified" as const,
+          }))
+        : undefined,
+  });
+
+  const cache: DiskCacheV2 = {
+    version: 2,
+    lastUpdated: new Date().toISOString(),
+    entries,
+    models: [],
+  };
+  writeAllModelsCache(cache, path);
+  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 // ---------------------------------------------------------------------------
 // Pattern matching against the shipped rules
@@ -54,22 +110,81 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["x-ai", "openrouter"]);
   });
 
-  test("'kimi-k2.5' matches kimi-* → [kimi-coding@kimi-for-coding, kimi, openrouter]", () => {
+  test("'kimi-k2.5' matches kimi-* → [kimi-coding, kimi, openrouter] (no pinned model)", () => {
     const matched = matchRoutingRule("kimi-k2.5", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["kimi-coding@kimi-for-coding", "kimi", "openrouter"]);
+    expect(matched).toEqual(["kimi-coding", "kimi", "openrouter"]);
   });
 
-  test("kimi-* @model rewrite reaches buildRoutingChain correctly", () => {
-    const matched = matchRoutingRule("kimi-k2.5", DEFAULT_ROUTING_RULES);
-    expect(matched).not.toBeNull();
-    const routes = buildRoutingChain(matched!, "kimi-k2.5");
-    expect(routes).toHaveLength(3);
-    // First entry uses kimi-coding's prefix and the rewritten model name
-    expect(routes[0].provider).toBe("kimi-coding");
-    expect(routes[0].modelSpec).toBe("kc@kimi-for-coding");
-    // Second entry inherits original model name on direct kimi
-    expect(routes[1].provider).toBe("kimi");
-    expect(routes[1].modelSpec).toBe("kimi@kimi-k2.5");
+  test("kimi-coding candidate drops when model is not in its subscription plan", () => {
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k2.5",
+        // kimi-k2.5 is not part of the kimi-coding subscription plan in this
+        // catalog snapshot, so the subscription candidate is dropped rather than
+        // being silently answered by a different model.
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const matched = matchRoutingRule("kimi-k2.5", DEFAULT_ROUTING_RULES);
+      expect(matched).not.toBeNull();
+      const routes = buildRoutingChain(matched!, "kimi-k2.5", path);
+      expect(routes).toHaveLength(2);
+      // kimi-coding is dropped because the plan doesn't serve this model
+      expect(routes[0].provider).toBe("kimi");
+      expect(routes[0].modelSpec).toBe("kimi@kimi-k2.5");
+      expect(routes[1].provider).toBe("openrouter");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("kimi-coding candidate translates K3 to the plan's wire id", () => {
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k3",
+        externalId: "k3",
+        subscriptionPlans: ["kimi-coding"],
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const matched = matchRoutingRule("kimi-k3", DEFAULT_ROUTING_RULES);
+      expect(matched).not.toBeNull();
+      const routes = buildRoutingChain(matched!, "kimi-k3", path);
+      expect(routes).toHaveLength(3);
+      // catalog translates the subscription model to its wire id
+      expect(routes[0].provider).toBe("kimi-coding");
+      expect(routes[0].modelSpec).toBe("kc@k3");
+      expect(routes[1].provider).toBe("kimi");
+      expect(routes[1].modelSpec).toBe("kimi@kimi-k3");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("k3 bare name matches k3* rule and uses the plan wire id", () => {
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k3",
+        externalId: "k3",
+        subscriptionPlans: ["kimi-coding"],
+      },
+      ["kimi-coding"]
+    );
+    try {
+      // bare `k3` doesn't match `kimi-*`, so the dedicated `k3*` rule handles it
+      const matched = matchRoutingRule("k3", DEFAULT_ROUTING_RULES);
+      expect(matched).toEqual(["kimi-coding", "kimi", "openrouter"]);
+      const routes = buildRoutingChain(matched!, "k3", path);
+      expect(routes).toHaveLength(3);
+      expect(routes[0].provider).toBe("kimi-coding");
+      expect(routes[0].modelSpec).toBe("kc@k3");
+      expect(routes[1].provider).toBe("kimi");
+      expect(routes[1].modelSpec).toBe("kimi@k3");
+    } finally {
+      cleanup();
+    }
   });
 
   test("'minimax-m2.5' matches minimax-* → [minimax-coding, minimax, openrouter]", () => {

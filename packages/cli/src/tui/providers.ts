@@ -3,8 +3,8 @@
  * Derived from BUILTIN_PROVIDERS — single source of truth.
  */
 
+import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
-import { isLocalProviderEnabled } from "../profile-config.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
 import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";
 
@@ -62,56 +62,27 @@ function toProviderDef(def: ProviderDefinition): ProviderDef {
   };
 }
 
-/**
- * Compute the authentication source for a provider: where the credentials
- * actually come from. Used for the AUTH column on the Providers tab and
- * for sorting "configured first".
- *
- * Priority depends on whether the provider has OAuth login support:
- *
- *   For OAuth-capable providers (gemini-codeassist, openai-codex,
- *   kimi-coding): OAuth wins over env/cfg. These products are designed
- *   around the OAuth flow as the canonical auth path; an env key is
- *   usually a stale leftover or sideband override and shouldn't be the
- *   advertised method in the UI.
- *
- *   Local providers are ready only when explicitly enabled in global
- *   ~/.claudish/config.json; for all other providers: env > cfg > (no OAuth path).
- *
- * Returns:
- *   "local"  - local provider explicitly enabled in global config
- *   "oauth"  - valid OAuth credentials on disk (OAuth-capable providers)
- *   "e+c"    - both env var AND config-file key present
- *   "env"    - env var only
- *   "cfg"    - config-file key only
- *   "public" - no user credential, but the provider ships a public/free key
- *              (publicKeyFallback) so it's usable as-is (e.g. OpenCode Zen)
- *   null     - no credentials of any kind
- *
- * "public" is checked LAST among the ready sources: a real env/cfg/oauth key
- * always takes precedence in the display, and the public-key affordance only
- * fills in when nothing else is set. Keeping it as a non-null source is what
- * makes the "configured first" sort, the "not configured" divider, the status
- * dot, and Test All all AGREE with providerIsReady (which already honors
- * publicKeyFallback via credentials.isAuthenticated).
- */
-export type AuthSource = "e+c" | "env" | "cfg" | "oauth" | "local" | "public" | null;
+/** Re-exported from the credential layer, which owns the classification rules. */
+export type AuthSource = CredentialSource;
 
+/**
+ * SYNC source classification for React render paths.
+ *
+ * This is a thin delegate — the rules live in auth/credentials/source.ts, which
+ * is also what the async `describeSource` (used by `claudish providers --json`)
+ * classifies with. Keeping one implementation is the point: this file used to
+ * carry its own copy, and every credential rule then had to be written twice or
+ * the TUI and the CLI would disagree about the same provider.
+ *
+ * Sync means no 1Password. A 1Password-only key reads as absent here until the
+ * authority has resolved and write-through'd it — which is why anything that
+ * CAN await should call `describeSource` instead.
+ */
 export function providerAuthSource(
   p: ProviderDef,
   config: { apiKeys?: Record<string, string>; localProviders?: string[] }
 ): AuthSource {
-  if (p.isLocal) return isLocalProviderEnabled(p.catalogName, config) ? "local" : null;
-  // OAuth wins for OAuth-capable providers when credentials exist.
-  if (p.oauthSlug && hasOAuthCredentials(p.catalogName)) return "oauth";
-  const hasCfg = !!p.apiKeyEnvVar && !!config.apiKeys?.[p.apiKeyEnvVar];
-  const hasEnv = !!p.apiKeyEnvVar && !!process.env[p.apiKeyEnvVar];
-  if (hasEnv && hasCfg) return "e+c";
-  if (hasEnv) return "env";
-  if (hasCfg) return "cfg";
-  // Keyless/free providers are usable without any user credential.
-  if (p.publicKeyFallback) return "public";
-  return null;
+  return describeSourceSync(p, config);
 }
 
 /**
@@ -131,10 +102,11 @@ export function providerAuthSource(
  * just-typed readiness signal. Because this is strictly additive, it never marks
  * a previously-ready provider un-ready.
  *
- * NOTE (deferred): providerAuthSource / providerAuthCapabilities still read
- * process.env / config directly for the SOURCE/capability breakdown they report
- * (env vs cfg vs oauth vs local) — the authority's isAuthenticated() only yields a
- * bool. Collapsing those onto a richer AuthStatus is out of scope for this step.
+ * The classification RULES now live in auth/credentials/source.ts and are shared
+ * with the async `describeSource` that `claudish providers --json` uses, so this
+ * sync path and the CLI can no longer drift. What remains inherent (not
+ * duplication) is that this entry point does not await, and therefore cannot
+ * consult 1Password — React render paths have no other option.
  */
 export function providerIsReady(
   p: ProviderDef,

@@ -64,6 +64,41 @@ export interface ApiKeyDescriptor {
   declaredKey?: () => string | undefined;
 }
 
+/**
+ * An UNEXPANDED `${VAR}` placeholder is not a key.
+ *
+ * A host that launches claudish from a declarative config can pass an env entry
+ * through VERBATIM when the referenced shell variable is unset. Claude Code does
+ * exactly this with the claudish plugin's `.mcp.json`
+ * (`"OPENROUTER_API_KEY": "${OPENROUTER_API_KEY}"`): an MCP server started from a
+ * shell without that variable receives the literal 21-character string
+ * `${OPENROUTER_API_KEY}` as its "key".
+ *
+ * That string is truthy, so it used to win step 1 of the resolution chain,
+ * shadow 1Password entirely, and get signed into the Authorization header — a
+ * 401 that reads as "claudish ignored my 1Password config". Treating it as
+ * absent lets resolution fall through to config and 1Password, which is what the
+ * user configured.
+ *
+ * Deliberately anchored and brace-only: a real key never has this shape, and a
+ * key that merely CONTAINS `${` (unlikely but not impossible) is left alone.
+ */
+const UNEXPANDED_PLACEHOLDER = /^\$\{[^}]*\}$/;
+
+/**
+ * The value, or undefined when it is an unexpanded `${VAR}` placeholder.
+ *
+ * Exported because the SYNC readiness classifier (tui/providers.ts
+ * `providerAuthSource`) reads `process.env` directly rather than going through
+ * this credential. Both must apply the SAME rule or the reports diverge:
+ * `claudish providers --json` would call a provider ready on the strength of a
+ * placeholder that sign-time correctly refuses to use.
+ */
+export function realValue(v: string | undefined): string | undefined {
+  if (!v) return undefined;
+  return UNEXPANDED_PLACEHOLDER.test(v.trim()) ? undefined : v;
+}
+
 export class ApiKeyCredentialProvider implements CredentialProvider {
   readonly catalogName: string;
   private readonly envVar: string;
@@ -98,11 +133,14 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     // NOTE: map alias names to their VALUES before .find — `aliases.find(a =>
     // process.env[a])` would return the alias NAME (a truthy string), so the
     // credential would send the literal env-var name as the API key → 401.
+    // realValue() drops unexpanded `${VAR}` placeholders at EVERY step — a host
+    // can leak one into env, and a config/declared value can carry one whose
+    // referenced variable is unset. A placeholder must never shadow 1Password.
     return (
-      process.env[this.envVar] ||
-      this.aliases.map((a) => process.env[a]).find((v) => !!v) ||
-      getApiKey(this.envVar) ||
-      this.resolveDeclared()
+      realValue(process.env[this.envVar]) ||
+      this.aliases.map((a) => realValue(process.env[a])).find((v) => !!v) ||
+      realValue(getApiKey(this.envVar)) ||
+      realValue(this.resolveDeclared())
     );
   }
 

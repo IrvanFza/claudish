@@ -43,6 +43,14 @@ describe("providerAuthSource", () => {
     expect(providerAuthSource(def({}), EMPTY)).toBe<AuthSource>("env");
   });
 
+  test("an unexpanded env placeholder is null and not ready", () => {
+    process.env[ENV] = `\${${ENV}}`;
+    const provider = def({});
+
+    expect(providerAuthSource(provider, EMPTY)).toBeNull();
+    expect(providerIsReady(provider, EMPTY)).toBe(false);
+  });
+
   test("'cfg' when only a config key is set", () => {
     expect(providerAuthSource(def({}), { apiKeys: { [ENV]: "sk-cfg" } })).toBe<AuthSource>("cfg");
   });

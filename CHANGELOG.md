@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.23.0] - 2026-07-29
+
+### Documentation
+
+- update CHANGELOG.md for v7.22.0([`3e78db5`](https://github.com/MadAppGang/claudish/commit/3e78db5162711e4c2cf167986ccca51306181290))
+
+### New Features
+
+- v7.23.0 — prevent 1Password denial when claudish spawns models in parallel([`c146482`](https://github.com/MadAppGang/claudish/commit/c1464825dbd96d92f00877e4d52a705477391d53))
+
+## [7.22.0] - 2026-07-29
+
+### Documentation
+
+- update CHANGELOG.md for v7.20.1([`598a6da`](https://github.com/MadAppGang/claudish/commit/598a6da842cc1ae415bc2440250db5f165f81937))
+
+### New Features
+
+- v7.22.0 — retry Codex faults that ride an HTTP 200 stream([`40d2432`](https://github.com/MadAppGang/claudish/commit/40d2432cc085d2dec581edd0aefd7f2d4caafe1e))
+
+### Other Changes
+
+- disable two plugins, bump browser-use to 1.4.0([`948070e`](https://github.com/MadAppGang/claudish/commit/948070e73a0e3699a33d40fa110ab772175491dc))
+
+## [7.20.0] - 2026-07-29
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.2([`8d71cbd`](https://github.com/MadAppGang/claudish/commit/8d71cbdf7b116208156f30bd317c51112cdb1125))
+
+### New Features
+
+- v7.20.0 — Kimi K3 subscription routing, live discovery, context-window fix([`42b4e81`](https://github.com/MadAppGang/claudish/commit/42b4e81e50e4daddd1cdbd80930c9d017750dc35))
+- v7.21.0 — recover from a 1Password denial caused by a locked Mac([`d201f2a`](https://github.com/MadAppGang/claudish/commit/d201f2a33e01d859d6aabcd922b856a5d9c7d85b))
+
 ## [7.19.2] - 2026-07-29
 
 ### Bug Fixes
