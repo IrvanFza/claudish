@@ -11,6 +11,9 @@
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
+// Type-only import — erased at compile time, so no runtime import cycle with
+// model-discovery.ts (which imports getProviderByName from here).
+import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -73,12 +76,13 @@ export interface ProviderDefinition {
   /** Native model patterns for auto-detection (when no provider prefix) */
   nativeModelPatterns?: Array<{ pattern: RegExp }>;
   /**
-   * Single fixed model this provider serves. When set, the interactive picker
-   * skips the model prompt entirely and auto-selects this model — used by
-   * single-model subscription endpoints (e.g. Kimi Coding only serves
-   * `kimi-for-coding`). Leave unset for multi-model providers.
+   * Opt in to live, per-subscription model discovery. When set, claudish calls
+   * the provider's own authenticated model-listing endpoint to learn the real
+   * roster and per-model context windows for THIS user's plan, instead of
+   * trusting a static list. Required for subscription endpoints whose context
+   * window varies by tier (see providers/model-discovery.ts).
    */
-  fixedModel?: string;
+  modelDiscovery?: ModelDiscoveryDescriptor;
   /** Provider capabilities */
   capabilities?: ProviderCapabilities;
   /** Custom HTTP headers to include with requests */
@@ -307,10 +311,14 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     shortcuts: ["kc"],
     shortestPrefix: "kc",
     legacyPrefixes: [{ prefix: "kc/", stripPrefix: true }],
-    nativeModelPatterns: [{ pattern: /^kimi-for-coding$/i }],
-    // Single-model subscription: the coding endpoint only serves this one
-    // model, so the picker auto-selects it and skips the model prompt.
-    fixedModel: "kimi-for-coding",
+    // Namespace ownership only — WHICH models exist is discovered live, never
+    // listed here. `kimi-for-coding` is K2.7 Coding (+ `-highspeed`); `k3*`
+    // covers K3 and its context-capped SKUs (k3-256k).
+    nativeModelPatterns: [{ pattern: /^kimi-for-coding/i }, { pattern: /^k3(-|$)/i }],
+    // The coding endpoint serves several models whose context windows depend on
+    // the subscriber's tier (k3 is 1M only on Allegretto+). Ask the endpoint
+    // itself — the call is authenticated, so it answers for THIS user's plan.
+    modelDiscovery: { path: "/models", format: "openai-models-list" },
     isDirectApi: true,
     description: "Kimi Coding Plan (kc@)",
   },

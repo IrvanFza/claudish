@@ -46,6 +46,14 @@ export interface SlimModelEntry {
    * files may not include this field.
    */
   aggregators?: AggregatorEntry[];
+  /**
+   * Subscription plan ids that include this model (e.g. `["kimi-coding"]`).
+   * Populated by Firebase ingest. Used by routing to decide whether a
+   * subscription endpoint can serve a given model at all — a plan that doesn't
+   * list the model would reject it, so the candidate is dropped rather than
+   * silently substituted. Optional — older cache files may not include it.
+   */
+  subscriptionPlans?: string[];
 }
 
 /**

@@ -75,6 +75,59 @@ export function lookupModelForProvider(
 }
 
 /**
+ * Whether a subscription endpoint can serve a model, and under which wire id.
+ *
+ * - `serves`     — the plan includes this model; send `externalId` (the wire id
+ *                  the endpoint accepts, e.g. `k3` for catalog `kimi-k3`).
+ * - `not-served` — the provider IS a subscription plan, but this model isn't in
+ *                  it. Routing should DROP the candidate: sending the model
+ *                  anyway is a guaranteed rejection, and silently substituting a
+ *                  different model gives the user something they didn't ask for.
+ * - `unknown`    — not a subscription plan, or the model isn't in the catalog.
+ *                  Caller keeps its existing behaviour.
+ */
+export type SubscriptionRouting =
+  | { kind: "serves"; externalId: string }
+  | { kind: "not-served" }
+  | { kind: "unknown" };
+
+/**
+ * Resolve how a subscription provider should route a model, from catalog data
+ * alone (`subscriptionPlans[]` + `aggregators[].externalId`).
+ *
+ * Nothing about which models a plan includes is hardcoded — that is exactly the
+ * data that goes stale. Kimi Code shipping K3 while the CLI pinned
+ * `kimi-for-coding` is the worked example.
+ */
+export function resolveSubscriptionRouting(
+  modelId: string,
+  provider: string,
+  cachePath?: string
+): SubscriptionRouting {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry) return { kind: "unknown" };
+
+  if (entry.subscriptionPlans?.includes(provider)) {
+    const agg = entry.aggregators?.find((a) => a.provider === provider);
+    // A plan membership without an aggregator entry has no wire id to send;
+    // treat it as unknown rather than inventing one.
+    return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
+  }
+
+  // The model doesn't list this plan. Only call that "not served" once we've
+  // confirmed the provider really is a subscription plan somewhere in the
+  // catalog — otherwise a provider with no plan data would lose every route.
+  return isSubscriptionPlan(provider, cachePath) ? { kind: "not-served" } : { kind: "unknown" };
+}
+
+/** True if any catalog entry lists `provider` as a subscription plan. */
+function isSubscriptionPlan(provider: string, cachePath?: string): boolean {
+  const cache = readAllModelsCache(cachePath);
+  if (!cache) return false;
+  return cache.entries.some((e) => e.subscriptionPlans?.includes(provider));
+}
+
+/**
  * Find the slim catalog entry for a model id (bare or vendor-prefixed), matching
  * on modelId or aliases. Shared by lookupModel / lookupModelForProvider.
  * Throws if `modelId` contains "@" — callers must strip the provider prefix.

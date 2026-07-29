@@ -9,15 +9,68 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RoutingRules } from "../profile-config.js";
+import { writeAllModelsCache, type DiskCacheV2 } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { buildRoutingChain, matchRoutingRule, mergeRoutingRules, route } from "./routing-rules.js";
+
+function makeTempCatalog(
+  model: {
+    modelId: string;
+    externalId?: string;
+    subscriptionPlans?: string[];
+  },
+  /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
+  plans: string[] = model.subscriptionPlans ?? []
+): { path: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
+  const path = join(dir, "all-models.json");
+  const entries: DiskCacheV2["entries"] = [];
+
+  // Plan-owner entries: a provider is only treated as a subscription plan if
+  // some catalog entry lists it in subscriptionPlans[]. Add markers so tests can
+  // model the "model is not in this plan" drop path without duplicating real
+  // plan members.
+  for (const plan of plans) {
+    entries.push({
+      modelId: `${plan}-plan-marker`,
+      aliases: [],
+      sources: {},
+      subscriptionPlans: [plan],
+      aggregators: [{ provider: plan, externalId: "any", confidence: "scrape_verified" as const }],
+    });
+  }
+
+  entries.push({
+    modelId: model.modelId,
+    aliases: [],
+    sources: {},
+    subscriptionPlans: model.subscriptionPlans ?? [],
+    aggregators:
+      model.externalId && model.subscriptionPlans
+        ? model.subscriptionPlans.map((provider) => ({
+            provider,
+            externalId: model.externalId!,
+            confidence: "scrape_verified" as const,
+          }))
+        : undefined,
+  });
+
+  const cache: DiskCacheV2 = {
+    version: 2,
+    lastUpdated: new Date().toISOString(),
+    entries,
+    models: [],
+  };
+  writeAllModelsCache(cache, path);
+  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 // ---------------------------------------------------------------------------
 // matchRoutingRule — pattern matching
@@ -465,13 +518,89 @@ describe("route()", () => {
     expect(plan.primary.provider).toBe("openai-codex");
   });
 
-  test("kimi-k2.5 (bare) with KIMI_CODING_API_KEY → primary kimi-coding with rewritten model", async () => {
+  test("kimi-k3 (bare) with KIMI_CODING_API_KEY uses subscription wire id k3", async () => {
     process.env.KIMI_CODING_API_KEY = "kc-test";
-    const plan = await route("kimi-k2.5", DEFAULT_ROUTING_RULES);
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("kimi-coding");
-    expect(plan.primary.modelSpec).toBe("kc@kimi-for-coding");
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k3",
+        externalId: "k3",
+        subscriptionPlans: ["kimi-coding"],
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const plan = await route("kimi-k3", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("kimi-coding");
+      expect(plan.primary.modelSpec).toBe("kc@k3");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("k3 (bare) with KIMI_CODING_API_KEY uses subscription wire id k3", async () => {
+    process.env.KIMI_CODING_API_KEY = "kc-test";
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k3",
+        externalId: "k3",
+        subscriptionPlans: ["kimi-coding"],
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const plan = await route("k3", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("kimi-coding");
+      expect(plan.primary.modelSpec).toBe("kc@k3");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("k3-256k (bare) with KIMI_CODING_API_KEY uses subscription wire id k3-256k", async () => {
+    process.env.KIMI_CODING_API_KEY = "kc-test";
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k3-256k",
+        externalId: "k3-256k",
+        subscriptionPlans: ["kimi-coding"],
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const plan = await route("k3-256k", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("kimi-coding");
+      expect(plan.primary.modelSpec).toBe("kc@k3-256k");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("kimi-k2.5 (bare) with KIMI_CODING_API_KEY falls through to kimi when not in coding plan", async () => {
+    process.env.KIMI_CODING_API_KEY = "kc-test";
+    process.env.KIMI_API_KEY = "kimi-test";
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "kimi-k2.5",
+        // No subscriptionPlans — this model is not part of the kimi-coding plan,
+        // so the subscription candidate is dropped instead of silently substituting.
+      },
+      ["kimi-coding"]
+    );
+    try {
+      const plan = await route("kimi-k2.5", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("kimi");
+      expect(plan.primary.modelSpec).toBe("kimi@kimi-k2.5");
+    } finally {
+      cleanup();
+    }
   });
 
   test("user disables catch-all with '*' = [] → no-route for unknown bare names", async () => {

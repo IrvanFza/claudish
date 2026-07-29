@@ -184,8 +184,6 @@ describe("resolveProviderDisplayPrice", () => {
   });
 });
 
-// ─── fixedModel single-model subscription providers (Kimi Coding) ────────────
-
 // ─── CatalogClient integration: picker → modelsByVendor("opencode-zen") ──────
 
 describe("CatalogClient integration for the original Zen bug", () => {

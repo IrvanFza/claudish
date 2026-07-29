@@ -27,6 +27,7 @@ import {
   type CatalogModel,
   createCatalogClient,
 } from "./providers/model-catalog.js";
+import { discoverProviderModels, rankDiscoveredModels } from "./providers/model-discovery.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
 
@@ -1053,13 +1054,33 @@ async function selectModelFromProvider(
   const prefix = PROVIDER_MODEL_PREFIX[provider] || `${provider}@`;
   const displayName = getPickerDisplayName(provider);
 
-  // Single-model subscription providers (e.g. Kimi Coding) serve exactly one
-  // model. Skip the model prompt entirely and auto-select it — showing the
-  // owner's full multi-model catalog and letting the user pick a model the
-  // endpoint can't serve is both confusing and broken.
+  // Subscription providers (e.g. Kimi Coding) serve a roster that only their
+  // own authenticated endpoint knows — the owner's public catalog lists models
+  // the subscription can't serve, and the per-tier context windows aren't in it
+  // at all. Ask the endpoint, and offer exactly what this user's plan allows.
   const def = getProviderByName(provider);
-  if (def?.fixedModel) {
-    return buildExplicitModelSpec(provider, def.fixedModel);
+  if (def?.modelDiscovery) {
+    const discovered = rankDiscoveredModels(await discoverProviderModels(provider));
+    if (discovered.length > 0) {
+      // Ranked largest-context-first, so the head is the strongest model the
+      // subscription can actually serve — that becomes the default.
+      const discoveredModels: ModelInfo[] = discovered.map((m) => ({
+        id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
+        name: m.displayName || m.id,
+        description: m.contextWindow
+          ? `${m.displayName ?? m.id} · ${Math.round(m.contextWindow / 1024)}K context`
+          : (m.displayName ?? m.id),
+        provider: displayName,
+        supportsTools: true,
+        isFree: true, // covered by the subscription — no per-token charge
+        source: displayName,
+      }));
+      const picked = await pickModelFromList(provider, displayName, tierName, discoveredModels);
+      if (picked) return picked;
+      // picked === null → user chose the custom-entry hatch; fall through.
+    }
+    // Discovery unavailable (offline / no credentials) → fall through to the
+    // cloud catalog rather than blocking model selection.
   }
 
   // Ollama (local): Firebase has no catalog, but the daemon lists installed
