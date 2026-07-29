@@ -184,6 +184,16 @@ All 1Password logic lives in `packages/cli/src/providers/onepassword.ts` (depend
 ### Auth resolution (DesktopAuth account selection)
 `detectSdkAuth(env)` is env-only: `OP_SERVICE_ACCOUNT_TOKEN` → token; else `OP_ACCOUNT` → DesktopAuth. The richer `resolveSdkAuth(opts)` (async, called once by `index.ts` and memoized via `getSdkAuth()`, so a multi-account user is prompted at most once per run) resolves in order: **token → `OP_ACCOUNT` → `onepasswordAccount` config (global `~/.claudish/config.json`, local `.claudish.json` wins) → single auto-detected account (`op account list`) → interactive picker (multiple accounts + TTY; the choice is saved to global config) → hard-fail** (multiple accounts non-interactive, or `op` absent). The account **URL** (e.g. `my-team.1password.com`) is the saved/`OP_ACCOUNT` value — it's unique even when two accounts share an email. The SDK cannot reuse an interactive `op signin` session, so an `op signin`-only setup must now set `OP_ACCOUNT` (DesktopAuth) or a service-account token.
 
+### Locked-screen denial recovery (v7.20.0+)
+1Password returns the SAME error for two different situations: the user saw the desktop approval dialog and clicked **Cancel** (a decision), and the Mac was **locked** so the dialog could not be shown at all and 1Password auto-denied (an environmental condition). Both read `Denied authorization for SDK client`, which is why `isTransientSdkError` pins any denial as TERMINAL — retrying a Cancel re-opens the dialog the user just dismissed (the "second dialog" bug, commit `aa71ce3`). That guard is **unchanged**.
+
+The ambiguity is resolved from OUTSIDE the error, by probing screen-lock state: `defaultScreenLockProbe` runs `ioreg -n Root -d1 -a` and matches `CGSSessionScreenIsLocked` (present only while locked; ~15ms; darwin-only — other platforms return false and keep terminal behavior). `isLockedDenial(err, env)` = denial **&&** no `OP_SERVICE_ACCOUNT_TOKEN` (token auth never shows a desktop prompt, so waiting would be theatre) **&&** screen locked. `withSdkRetry` now **wraps** the transient-IPC loop (`withSdkTransientRetry`) in an OUTER lock-round loop, keeping the two time domains separate: the inner loop owns millisecond-scale IPC blips (150ms·attempt), the outer owns the human-scale "go unlock your Mac" wait. Every non-locked-denial error propagates from the inner loop unchanged.
+
+On a locked denial the user gets a friendly explanation (printed ONCE, on round 1 — re-explaining every 10s reads as nagging) plus a 10-second countdown, up to `LOCK_RETRY_ROUNDS` (3) → 3 retries ≈ 30s. The countdown **breaks early** the moment the probe reports unlocked, so approving is immediately followed by the prompt. Cancellation degrades by CAPABILITY, not by mode (interactive and non-interactive must behave identically — an explicit product decision): TTY stdin → Esc/q/Ctrl-C; otherwise Ctrl-C via SIGINT. The live `\r\x1b[2K` redraw and ANSI styling apply ONLY when `process.stderr.isTTY` (checked at call time, not module load) — under an MCP host or channel session stderr is a captured pipe, which gets one static line per round instead. Test seams: `setScreenLockProbe()` and `setLockRetryTiming({seconds, tickMs})` — the latter is MANDATORY in tests or the suite gains 30 real seconds.
+
+### 1Password failure provenance
+Every op-source failure is deliberately NON-FATAL (warn + skip, so a broken import can never lock the user out). That meant a denied authorization surfaced downstream as a plain "missing key" error telling the user to `export` a credential they already store in 1Password. `recordOpFailure()` / `getOpFailures()` / `renderOpFailureNotice(envVar)` in `onepassword.ts` are the negative counterpart to `recordOpHydratedVars` (same run-scoped, in-memory rationale), recorded at all four non-fatal catch sites in `op-source.ts`. `getMissingKeyError` splices the notice ABOVE the generic remediation and switches its header to "Or set the key directly:" — when a key lives in 1Password, approving is the fix and exporting a literal is the bypass. The record is deliberately COARSE (run-scoped, not per-env-var): an Environment fetch is all-or-nothing, so when it fails claudish genuinely cannot know which variables it would have supplied. Output is byte-identical to the old error when no failure was recorded, so non-1Password users see no change.
+
 ### Glob field import
 A top-level `onepassword: string[]` config array holds glob paths. `isGlobImport()` detects a `*` in the post-item path segment(s); `resolveGlobImport()` does three phases: **discover** field names via the SDK (`vaults.list` → `items.list` → `items.get`, matching by title; duplicate titles → first-match + stderr warn) → **filter** by section-glob + field-glob (`globToRegExp`) → **resolve** only survivors via `resolveSecrets` (batched, in-memory). The SDK's `ItemField` has no ready-made `reference`, so each field's `op://` ref is **synthesized** from the vault/item/section/field titles. The SDK decrypts every field value to list names — no different from `op item get`, which also decrypts everything in-process; we keep only a `hasValue` flag, never the value. Field labels are trimmed; invalid env-var names are skipped with a warning.
 
@@ -461,13 +471,20 @@ When releasing a new version, update ALL of these locations:
 
 The fallback VERSION in version.ts ensures compiled binaries (Homebrew, standalone) display the correct version when package.json isn't available. The `packages/cli/package.json` version is what npm publishes - if it's not updated, npm publish will fail.
 
+## Session Artifacts
+
+Write research/planning artifacts to `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` — not `/tmp` (cleared on reboot). Referenced docs live there, e.g. `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`.
+
 ## Learned Preferences
 
 ### Tools & Commands
 <!-- learned: 2026-03-28 session: 03cd7cc5 source: repeated_pattern -->
 - Use `bun` for all package management and scripts (`bun run build`, `bun test`, etc.) — not npm or yarn
 <!-- learned: 2026-04-06 session: df311293 source: repeated_pattern -->
-- Use Grep/grep tool for code investigation instead of mnemex — prefer built-in search tools during investigation phases
+<!-- revised: 2026-07-26 — root cause was a missing Ollama embedding model, not mnemex itself -->
+- Prefer mnemex AST lookups over grep for symbol/caller questions: `mnemex --agent symbol|callers|callees "Name"`
+- Semantic search is `mnemex --agent search "concept"` — NOT `map`, which ignores its argument entirely and always dumps the same PageRank overview
+- `search` needs Ollama serving `nomic-embed-text` — without it embeddings are zero-length, so search is useless and `status` panics with a lance divide-by-zero. Fix: `ollama pull nomic-embed-text` → `rm -rf .mnemex/vectors` → `mnemex index`
 
 ### Workflow
 <!-- learned: 2026-04-06 session: df311293 source: explicit_rule -->

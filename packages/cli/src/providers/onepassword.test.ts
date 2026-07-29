@@ -10,7 +10,7 @@
  * CI without 1Password installed or signed in.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   __configureStartupTraceForTests,
   __getStartupSpansForTests,
@@ -29,8 +29,10 @@ import {
   discoverItemFields,
   envNameFromOpRef,
   filterGlobFields,
+  getOpFailures,
   globToRegExp,
   isGlobImport,
+  isLockedDenial,
   isOpHydratedVar,
   isOpReference,
   isTransientSdkError,
@@ -38,15 +40,22 @@ import {
   parseGlobImport,
   parseOpFlag,
   readEnvironment,
+  recordOpFailure,
   recordOpHydratedVars,
+  renderOpFailureNotice,
+  resetOpFailures,
   resolveDesktopAccount,
   resolveGlobImport,
   resolveGlobImportAll,
   resolveGlobImportForEnvVars,
   resolveSdkAuth,
   resolveSecrets,
+  setLockRetryTiming,
+  setScreenLockProbe,
+  wasOpAuthorizationDenied,
   withSdkRetry,
 } from "./onepassword.js";
+import { type ProviderResolution, getMissingKeyError } from "./provider-resolver.js";
 
 describe("isOpReference / OP_REF_RE", () => {
   test("true for a full op:// reference", () => {
@@ -1412,5 +1421,248 @@ describe("withSdkRetry startup-trace instrumentation", () => {
   });
   afterEach(() => {
     __resetStartupTraceForTests();
+  });
+});
+
+const SDK_DENIAL_MESSAGE =
+  "An error occurred when processing SDK request: Error { msg: Denied authorization for SDK client, inner: None }";
+
+describe("withSdkRetry locked-screen denial recovery", () => {
+  let originalServiceAccountToken: string | undefined;
+
+  beforeEach(() => {
+    originalServiceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    resetOpFailures();
+  });
+
+  afterEach(() => {
+    setLockRetryTiming();
+    setScreenLockProbe(undefined);
+    resetOpFailures();
+    if (originalServiceAccountToken === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = originalServiceAccountToken;
+    }
+  });
+
+  test("unlocked denial is terminal without countdown output", async () => {
+    setScreenLockProbe(() => false);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      await expect(
+        withSdkRetry(async () => {
+          calls++;
+          throw new Error(SDK_DENIAL_MESSAGE);
+        })
+      ).rejects.toThrow(SDK_DENIAL_MESSAGE);
+
+      expect(calls).toBe(1);
+      expect(stderrWrite).not.toHaveBeenCalled();
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("locked denial retries three rounds, then throws after four total attempts", async () => {
+    setLockRetryTiming({ seconds: 2, tickMs: 1 });
+    setScreenLockProbe(() => true);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      await expect(
+        withSdkRetry(async () => {
+          calls++;
+          throw new Error(SDK_DENIAL_MESSAGE);
+        })
+      ).rejects.toThrow(SDK_DENIAL_MESSAGE);
+
+      expect(calls).toBe(4);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("unlocking during the countdown retries immediately and can recover", async () => {
+    setLockRetryTiming({ seconds: 2, tickMs: 1 });
+    let probeCalls = 0;
+    setScreenLockProbe(() => ++probeCalls === 1);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      const result = await withSdkRetry(async () => {
+        calls++;
+        if (calls === 1) throw new Error(SDK_DENIAL_MESSAGE);
+        return "recovered";
+      });
+
+      expect(result).toBe("recovered");
+      expect(calls).toBe(2);
+      expect(probeCalls).toBe(2);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("service-account denial never probes or waits", async () => {
+    process.env.OP_SERVICE_ACCOUNT_TOKEN = "ops_test";
+    let probeCalls = 0;
+    setScreenLockProbe(() => {
+      probeCalls++;
+      return true;
+    });
+    let calls = 0;
+
+    await expect(
+      withSdkRetry(async () => {
+        calls++;
+        throw new Error(SDK_DENIAL_MESSAGE);
+      })
+    ).rejects.toThrow(SDK_DENIAL_MESSAGE);
+
+    expect(calls).toBe(1);
+    expect(probeCalls).toBe(0);
+  });
+
+  test("persistent non-denial IPC errors keep the existing three-attempt behavior", async () => {
+    let probeCalls = 0;
+    setScreenLockProbe(() => {
+      probeCalls++;
+      return true;
+    });
+    let calls = 0;
+
+    await expect(
+      withSdkRetry(async () => {
+        calls++;
+        throw new Error("IPC operation failed: -4");
+      })
+    ).rejects.toThrow("IPC operation failed: -4");
+
+    expect(calls).toBe(3);
+    expect(probeCalls).toBe(0);
+  });
+
+  test("genuine errors remain terminal after one call", async () => {
+    let probeCalls = 0;
+    setScreenLockProbe(() => {
+      probeCalls++;
+      return true;
+    });
+    let calls = 0;
+
+    await expect(
+      withSdkRetry(async () => {
+        calls++;
+        throw new Error("vault not found");
+      })
+    ).rejects.toThrow("vault not found");
+
+    expect(calls).toBe(1);
+    expect(probeCalls).toBe(0);
+  });
+});
+
+describe("isLockedDenial", () => {
+  afterEach(() => {
+    setLockRetryTiming();
+    setScreenLockProbe(undefined);
+    resetOpFailures();
+  });
+
+  test("requires a denial, a locked screen, and no service-account token", () => {
+    const denial = new Error(SDK_DENIAL_MESSAGE);
+
+    setScreenLockProbe(() => true);
+    expect(isLockedDenial(denial, {})).toBe(true);
+    expect(isLockedDenial(new Error("vault not found"), {})).toBe(false);
+
+    setScreenLockProbe(() => false);
+    expect(isLockedDenial(denial, {})).toBe(false);
+
+    setScreenLockProbe(() => true);
+    expect(isLockedDenial(denial, { OP_SERVICE_ACCOUNT_TOKEN: "ops_test" })).toBe(false);
+  });
+
+  test("non-denial errors return false even while locked", () => {
+    setScreenLockProbe(() => true);
+    expect(isLockedDenial(new Error("IPC operation failed: -4"), {})).toBe(false);
+  });
+});
+
+describe("1Password failure provenance and missing-key remediation", () => {
+  const missingOpenAiKey: ProviderResolution = {
+    category: "direct-api",
+    providerName: "OpenAI",
+    catalogName: "openai",
+    modelName: "gpt-4o",
+    fullModelId: "openai@gpt-4o",
+    requiredApiKeyEnvVar: "OPENAI_API_KEY",
+    apiKeyAvailable: false,
+    apiKeyDescription: "OpenAI API Key",
+    apiKeyUrl: "https://platform.openai.com/api-keys",
+  };
+
+  beforeEach(() => {
+    resetOpFailures();
+  });
+
+  afterEach(() => {
+    setLockRetryTiming();
+    setScreenLockProbe(undefined);
+    resetOpFailures();
+  });
+
+  test("renders no notice when no 1Password failures were recorded", () => {
+    expect(getOpFailures()).toEqual([]);
+    expect(renderOpFailureNotice("OPENAI_API_KEY")).toEqual([]);
+  });
+
+  test("denial notice names the environment and explains desktop and headless recovery", () => {
+    const failure = {
+      kind: "environment" as const,
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    };
+    recordOpFailure(failure);
+
+    expect(getOpFailures()).toEqual([failure]);
+    expect(wasOpAuthorizationDenied()).toBe(true);
+
+    const notice = renderOpFailureNotice("OPENAI_API_KEY").join("\n");
+    expect(notice).toContain("environment production-env");
+    expect(notice).toMatch(/unlock/i);
+    expect(notice).toMatch(/approve/i);
+    expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  test("missing-key output is byte-identical to the legacy output without failures", () => {
+    expect(getMissingKeyError(missingOpenAiKey)).toBe(
+      [
+        'Error: OpenAI API Key is required for model "openai@gpt-4o"',
+        "",
+        "Set it with:",
+        "  export OPENAI_API_KEY='your-key-here'",
+        "",
+        "Get your API key from: https://platform.openai.com/api-keys",
+      ].join("\n")
+    );
+  });
+
+  test('missing-key remediation switches to "Or set the key directly:" after a failure', () => {
+    recordOpFailure({
+      kind: "environment",
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    });
+
+    const output = getMissingKeyError(missingOpenAiKey);
+    expect(output).toContain("\nOr set the key directly:\n");
+    expect(output).not.toContain("\nSet it with:\n");
   });
 });

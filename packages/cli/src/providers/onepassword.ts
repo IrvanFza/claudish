@@ -77,6 +77,97 @@ export function isOpHydratedVar(name: string | undefined): boolean {
   return !!name && opHydratedVars.has(name);
 }
 
+/**
+ * Run-scoped record of 1Password sources that FAILED this run — the negative
+ * counterpart to `opHydratedVars`, with the same in-memory rationale (resolution
+ * and error rendering happen in one process).
+ *
+ * Why this exists: every op-source failure is deliberately NON-FATAL (a broken
+ * import must never lock the user out — see op-source.ts). It warns and moves
+ * on. But the downstream missing-key error is built from the provider
+ * resolution alone, so it had no way to know 1Password had been consulted and
+ * denied — and told the user to `export` a key they already store in 1Password.
+ * Recording the failure here lets `getMissingKeyError` name the real cause.
+ *
+ * The record is deliberately COARSE (run-scoped, not per-env-var): an
+ * Environment fetch is all-or-nothing, so when it fails we cannot know which
+ * variables it would have supplied. "1Password failed this run" is the honest
+ * claim; attributing it to a specific key would be a guess.
+ */
+export interface OpSourceFailure {
+  /** Which kind of op source failed. */
+  kind: "auth" | "environment" | "import" | "reference";
+  /** Identifier for the source — an environment id or op:// path. NEVER a value. */
+  source?: string;
+  /** The underlying SDK/auth error message. */
+  message: string;
+}
+
+const opSourceFailures: OpSourceFailure[] = [];
+
+/** Record a non-fatal 1Password source failure for later error rendering. */
+export function recordOpFailure(failure: OpSourceFailure): void {
+  const dup = opSourceFailures.some(
+    (f) => f.kind === failure.kind && f.source === failure.source && f.message === failure.message
+  );
+  if (!dup) opSourceFailures.push(failure);
+}
+
+/** All 1Password source failures recorded this run (empty when none). */
+export function getOpFailures(): readonly OpSourceFailure[] {
+  return opSourceFailures;
+}
+
+/** Test seam: clear the run-scoped failure record. */
+export function resetOpFailures(): void {
+  opSourceFailures.length = 0;
+}
+
+/**
+ * True when a recorded failure is the user (or a locked Mac) declining the
+ * 1Password desktop authorization prompt, as opposed to a missing token,
+ * unreachable app, or bad reference. This distinction drives the remediation:
+ * a denial means the credential is reachable and just needs approval.
+ */
+export function wasOpAuthorizationDenied(): boolean {
+  return opSourceFailures.some((f) => /denied authorization/i.test(f.message));
+}
+
+/**
+ * Render the "1Password was consulted and failed" block for a missing-key
+ * error. Returns [] when 1Password played no part this run, so the caller can
+ * splice unconditionally and non-op users see no change.
+ *
+ * Placed ABOVE the generic `export FOO=...` remediation by the caller: when a
+ * key lives in 1Password, "approve the prompt" is the fix and exporting a
+ * literal is the bypass — showing them in the other order taught the wrong
+ * lesson (this is the bug from the locked-Mac SSH report).
+ */
+export function renderOpFailureNotice(envVar: string): string[] {
+  if (opSourceFailures.length === 0) return [];
+
+  const lines: string[] = [`1Password was consulted for ${envVar} this run and failed:`];
+  for (const f of opSourceFailures) {
+    const where = f.source ? `${f.kind} ${f.source}` : f.kind;
+    lines.push(`  ${where} — ${f.message.split("\n")[0]}`);
+  }
+  lines.push("");
+
+  if (wasOpAuthorizationDenied()) {
+    lines.push("  The 1Password desktop app declined to release secrets. This happens when");
+    lines.push("  the approval prompt was dismissed, or when your Mac is locked and the");
+    lines.push("  prompt cannot be shown at all.");
+    lines.push("");
+    lines.push("  Fix: unlock the Mac, approve the 1Password prompt, and re-run.");
+    lines.push("  Headless (no desktop app): export OP_SERVICE_ACCOUNT_TOKEN='ops_...'");
+  } else {
+    lines.push("  Fix: check the reference resolves — claudish config → 1Password tab.");
+    lines.push("  Headless (no desktop app): export OP_SERVICE_ACCOUNT_TOKEN='ops_...'");
+  }
+
+  return lines;
+}
+
 /** Build the standard actionable auth-failure error. */
 export function buildAuthError(detail: string): Error {
   return new Error(
@@ -1074,6 +1165,174 @@ function sdkSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Locked-screen denial recovery ───────────────────────────────────────────
+// 1Password returns the SAME error ("Denied authorization for SDK client") for
+// two very different situations:
+//   (a) the user was shown the approval dialog and clicked Cancel — a decision;
+//   (b) the Mac was LOCKED, so the dialog could not be shown at all and
+//       1Password auto-denied — an environmental condition.
+// The error alone cannot distinguish them, which is why the denial is pinned
+// TERMINAL in isTransientSdkError (retrying (a) re-opens a dialog the user just
+// dismissed — the "second dialog" bug). Probing the screen-lock state resolves
+// the ambiguity from the OUTSIDE: if the screen is locked, nobody could have
+// clicked Cancel, so a retry is legitimate and we wait for the user to unlock.
+
+/** How many unlock countdowns (and therefore retries) a locked denial gets. */
+const LOCK_RETRY_ROUNDS = 3;
+/** Seconds per countdown — 3 × 10s ≈ 30s total to unlock and approve. */
+const LOCK_RETRY_SECONDS = 10;
+
+// The countdown is deliberately human-paced, which makes the full 3-round path
+// a 30-second wall-clock event — unacceptable inside a test suite. This seam
+// lets tests compress the clock without weakening what they cover: rounds and
+// per-round seconds stay independent, so the round COUNT is still asserted
+// against the real constant while the seconds shrink to milliseconds.
+let lockRetrySeconds = LOCK_RETRY_SECONDS;
+let lockTickMs = 1000;
+
+/** Test seam: compress the unlock countdown. Call with no args to restore. */
+export function setLockRetryTiming(opts?: { seconds?: number; tickMs?: number }): void {
+  lockRetrySeconds = opts?.seconds ?? LOCK_RETRY_SECONDS;
+  lockTickMs = opts?.tickMs ?? 1000;
+}
+
+// Styling is applied ONLY when stderr is a real terminal. Under an MCP host or
+// a channel session stderr is a captured pipe, where raw escape codes turn a
+// helpful message into noise in the log.
+const styled = (code: string, s: string): string =>
+  process.stderr.isTTY === true ? `\x1b[${code}m${s}\x1b[0m` : s;
+const bold = (s: string): string => styled("1", s);
+const dim = (s: string): string => styled("2", s);
+
+/** Probe returning true when the macOS screen is locked. Injectable for tests. */
+export type ScreenLockProbe = () => boolean;
+
+/**
+ * macOS screen-lock probe. `ioreg -n Root -d1 -a` renders the console session
+ * as an XML plist; `CGSSessionScreenIsLocked` is present ONLY while the screen
+ * is locked (absent entirely when unlocked). ~15ms, no dependencies, and it
+ * only ever runs on the denial path — zero cost on a normal run.
+ *
+ * Non-darwin returns false: DesktopAuth exists on other platforms, but there is
+ * no equivalent probe, so those users keep today's terminal behavior.
+ */
+export const defaultScreenLockProbe: ScreenLockProbe = () => {
+  if (process.platform !== "darwin") return false;
+  try {
+    const res = spawnSync("ioreg", ["-n", "Root", "-d1", "-a"], {
+      encoding: "utf-8",
+      timeout: 2000,
+    });
+    if (res.status !== 0 || typeof res.stdout !== "string") return false;
+    return /CGSSessionScreenIsLocked<\/key>\s*(?:<true\/>|<integer>1<\/integer>)/.test(res.stdout);
+  } catch {
+    // Probe failure must never invent a lock — fall back to terminal behavior.
+    return false;
+  }
+};
+
+let screenLockProbe: ScreenLockProbe = defaultScreenLockProbe;
+
+/** Test seam: swap the screen-lock probe. Pass undefined to restore the default. */
+export function setScreenLockProbe(probe: ScreenLockProbe | undefined): void {
+  screenLockProbe = probe ?? defaultScreenLockProbe;
+}
+
+/** True when the macOS screen is currently locked. */
+export function isScreenLocked(): boolean {
+  return screenLockProbe();
+}
+
+/**
+ * True when an error is a denial that the user could plausibly still approve —
+ * i.e. a desktop-app denial issued while the screen was locked.
+ *
+ * A service-account token short-circuits this: token auth never shows a desktop
+ * prompt, so a denial under a token means something else entirely (revoked
+ * token, vault access) and waiting for an unlock would be theatre.
+ */
+export function isLockedDenial(err: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (!msg.includes("denied authorization")) return false;
+  if (env.OP_SERVICE_ACCOUNT_TOKEN) return false;
+  return isScreenLocked();
+}
+
+/**
+ * Explain the locked denial, then count down before retrying — giving the user
+ * time to walk over, unlock, and approve. Returns "cancel" if they bail out.
+ *
+ * Cancellation degrades by capability rather than by mode (interactive and
+ * non-interactive must behave identically): with a TTY stdin, Esc/q/Ctrl-C
+ * cancel; without one (e.g. `--stdin < file`), Ctrl-C still works via SIGINT.
+ * The countdown itself always renders, so a piped run shows the same story.
+ *
+ * The live `\r` redraw is used ONLY when stderr is a TTY. Under an MCP host or
+ * a channel session stderr is a captured pipe, where carriage returns produce
+ * an unreadable log — those get one static line per round instead.
+ */
+async function countdownForUnlock(round: number, rounds: number): Promise<"retry" | "cancel"> {
+  const ttyOut = process.stderr.isTTY === true;
+  const ttyIn = process.stdin.isTTY === true;
+  let cancelled = false;
+
+  // The explanation prints ONCE, on the first round. Rounds 2 and 3 get only
+  // the countdown line — re-explaining the same situation every 10 seconds
+  // reads as nagging, and the user is (hopefully) already walking to their Mac.
+  if (round === 1) {
+    process.stderr.write(
+      `\n${bold("🔐 1Password needs your OK — but your Mac is locked, so it can't ask.")}\n   Unlock your Mac and approve the popup. Claudish picks it up from there.\n\n`
+    );
+  }
+
+  let restoreInput = () => {};
+  if (ttyIn) {
+    const onKey = (buf: Buffer) => {
+      const k = buf.toString();
+      // Esc, q, or Ctrl-C — Ctrl-C is handled here too so raw mode can't eat it.
+      if (k === "\x1b" || k === "q" || k === "\x03") cancelled = true;
+    };
+    const wasRaw = process.stdin.isRaw === true;
+    try {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.on("data", onKey);
+      restoreInput = () => {
+        process.stdin.off("data", onKey);
+        process.stdin.setRawMode(wasRaw);
+        process.stdin.pause();
+      };
+    } catch {
+      restoreInput = () => {};
+    }
+  }
+
+  const stop = ttyIn ? "Esc to stop waiting" : "Ctrl-C to stop waiting";
+  const line = (secs: number) =>
+    dim(`   waiting ${secs}s · try ${round} of ${rounds} · ${stop}`);
+  if (!ttyOut) process.stderr.write(`${line(lockRetrySeconds)}\n`);
+
+  try {
+    for (let remaining = lockRetrySeconds; remaining > 0; remaining--) {
+      if (cancelled) break;
+      // Unlocked early? Don't make the user wait out the clock — retry now, so
+      // approving is immediately followed by the prompt they expect.
+      if (!isScreenLocked()) break;
+      if (ttyOut) process.stderr.write(`\r\x1b[2K${line(remaining)}`);
+      await sdkSleep(lockTickMs);
+    }
+  } finally {
+    restoreInput();
+    if (ttyOut) process.stderr.write("\r\x1b[2K");
+  }
+
+  if (cancelled) {
+    process.stderr.write("   OK, not waiting. You can unlock and re-run any time.\n");
+    return "cancel";
+  }
+  return "retry";
+}
+
 /**
  * Run an SDK operation SERIALIZED (never concurrent with another SDK op) and,
  * on a TRANSIENT IPC error, evict the client cache (fresh desktop handshake),
@@ -1087,6 +1346,25 @@ function sdkSleep(ms: number): Promise<void> {
  * { attempts, retried, cacheReset } so a retry storm is visible in the metrics.
  */
 export async function withSdkRetry<T>(op: () => Promise<T>, label = "op:sdk-op"): Promise<T> {
+  // OUTER loop: locked-screen denial recovery. Wrapping (rather than folding
+  // into the transient loop) keeps the two concerns separate — the inner loop
+  // still owns millisecond-scale IPC blips, while this one owns the
+  // human-scale "go unlock your Mac" wait. Every non-locked-denial error
+  // propagates from the inner loop completely unchanged.
+  for (let round = 1; ; round++) {
+    try {
+      return await withSdkTransientRetry(op, label);
+    } catch (err) {
+      if (round > LOCK_RETRY_ROUNDS || !isLockedDenial(err)) throw err;
+      if ((await countdownForUnlock(round, LOCK_RETRY_ROUNDS)) === "cancel") throw err;
+      // Fresh handshake for the retry — the denied client is spent.
+      resetSdkClientCache();
+    }
+  }
+}
+
+/** The transient-IPC retry loop (see withSdkRetry for the full contract). */
+async function withSdkTransientRetry<T>(op: () => Promise<T>, label: string): Promise<T> {
   const MAX_ATTEMPTS = 3;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
