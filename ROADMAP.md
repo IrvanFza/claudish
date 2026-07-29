@@ -52,15 +52,82 @@ We considered emitting `notifications/progress` from `team`'s child-completion c
 
 So implementing this not only adds code that fires into a void — it would actively destabilize `team`. Two independent reasons not to do it.
 
-**Trigger condition for un-parking** (both must hold):
-1. Claude Code's MCP SDK fixes the strict-token-validation bug (the underlying cause of `Figma-Context-MCP#362`); look for changes in `@modelcontextprotocol/sdk` Client to ignore unknown progress tokens instead of treating them as fatal.
-2. Claude Code ships UI/agent rendering for progress notifications from custom MCP servers (issue `anthropics/claude-code#4157`).
+### Re-measured 2026-07-29 against Claude Code **2.1.220** — one blocker is gone, one is confirmed harder
+
+Probes: `packages/cli/src/channel/test-helpers/capability-probe.ts` (agent context, `-p`) and
+`progress-regression-mock.ts` driven through an interactive tmux session (terminal UI).
+Full findings: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`.
+
+- ✅ **Blocker 2 (transport kill) is FIXED.** Emitting 3 progress notifications no longer tears down
+  stdio: the immediately-following `probe_ping` call returned `pong`, with no `STDIN_END` and no emit
+  errors. The stated reason for parking — that `team`'s concurrent `progressToken`s would destabilize
+  the transport — no longer holds. **Caveat:** the probe emitted from ONE tool call; true N-concurrent
+  emission across simultaneous children is still unproven.
+- ❌ **Blocker 1 (no rendering) CONFIRMED, now on both surfaces.** Previously only agent context was
+  tested. Now both:
+  - *Agent context* (`-p`): agent answered **NO** to seeing any of `PROBE-STEP-1/2/3` while the server
+    log shows all 3 emitted.
+  - *Interactive terminal UI*: sampled the screen every 1.2 s for 31 s, spanning the full 7.5 s
+    emission window of `slow_with_many_progress`. The tool row rendered as a static
+    `⏺ pmock - slow_with_many_progress (MCP)` across 20 consecutive samples. **Not one** of the five
+    messages ("scanning files", "parsing AST", "running checks", "aggregating results",
+    "writing output") ever appeared.
+
+This matches `anthropics/claude-code#51713` — MCP tool calls are unconditionally collapsed, showing
+only the server/tool name with no streaming output. Per that issue, progress DID render up to
+**2.1.101** and regressed by **2.1.116**; our original 2.1.133 measurement therefore landed inside the
+regression window. **#51713 is closed, but the regression is still live in 2.1.220.**
+
+Note `notifications/progress` is not entirely inert — it still resets the client's request timeout.
+It simply has no display.
+
+**Superseded by**: `team` now reports live per-model stats over `notifications/claude/channel`
+(measured working) plus a `status.txt` in the session directory. See "Live team progress" below.
+
+**Trigger condition for un-parking** (only #2 remains):
+1. ~~Claude Code's MCP SDK fixes the strict-token-validation bug~~ — **met 2026-07-29** (verified on 2.1.220).
+2. Claude Code ships UI/agent rendering for progress notifications from custom MCP servers
+   (`anthropics/claude-code#4157`, `#51713`). Re-run both probes on each client upgrade to detect it.
 
 **References**:
 - Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
 - Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/`
-- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`
+- Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`
+- Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
 - Field evidence of the still-active bug: <https://github.com/GLips/Figma-Context-MCP/issues/362>
+
+---
+
+## Live team progress — shipped
+
+`team` runs take minutes and, in `--quiet` print mode, children emit nothing until they finish. There
+was previously no signal at all between "started" and "done". Two transports now carry live per-model
+stats, chosen because they are the two that actually reach a reader:
+
+| Transport | Reaches | Requires |
+|---|---|---|
+| `notifications/claude/channel` | the agent's context (renders as a `<channel>` block) | the channel gating in CLAUDE.md — `--channels`, interactive, `.mcp.json` |
+| `<session>/status.txt` | a human, via `tail -f` | nothing; works headless and in CI |
+
+`notifications/progress` was NOT used — measured to render nowhere on 2.1.220 (see above).
+
+**How per-model attribution works.** `token-tracker.ts` writes tokens/cost to
+`~/.claudish/tokens-<port>.json`, keyed to a port each child picks for itself, so an orchestrator
+spawning N children could not tell which file belonged to which model. `CLAUDISH_TOKEN_FILE` now
+overrides that path, and `runModels` points each child at `<session>/stats/<id>.json`.
+
+**Format** — plain ASCII, no ANSI (channel frames render escapes literally):
+
+```
+team: 2 models, 2 done, 7s, 102.9k tok, $0.104
+  01 or@gemini-3.6-fla… done    160B    48.1k/234  $0.049
+  02 grok-4.5           done    118B     54.6k/19  $0.055
+```
+
+**Knobs**: `onProgress` (callback) and `progressIntervalSeconds` (default 5) on `TeamRunOptions`.
+
+**Implementation**: `packages/cli/src/team-stats.ts`, wired in `team-orchestrator.ts` (ticker +
+child env) and `mcp-server.ts` (`ChannelNotifier` passed into `defineTools`).
 
 ---
 
