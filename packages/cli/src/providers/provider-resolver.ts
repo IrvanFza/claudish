@@ -37,6 +37,7 @@ import {
 } from "./provider-definitions.js";
 import { parseUrlModel, resolveProvider } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
+import { renderOpFailureNotice } from "./onepassword.js";
 import { buildCredentialHint } from "./routing-hints.js";
 
 /**
@@ -430,8 +431,19 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
   );
   lines.push("");
 
+  // 1Password context FIRST when it applies. Every op-source failure is
+  // non-fatal by design (warn + skip, so a broken import can't lock the user
+  // out), which meant a denied desktop authorization surfaced here as a plain
+  // "missing key" and sent the user off to export a credential they already
+  // store in 1Password. Empty for everyone who doesn't use 1Password.
+  const opNotice = renderOpFailureNotice(resolution.requiredApiKeyEnvVar);
+  if (opNotice.length > 0) {
+    lines.push(...opNotice);
+    lines.push("");
+  }
+
   // How to fix
-  lines.push("Set it with:");
+  lines.push(opNotice.length > 0 ? "Or set the key directly:" : "Set it with:");
   lines.push(`  export ${resolution.requiredApiKeyEnvVar}='your-key-here'`);
 
   // Where to get it

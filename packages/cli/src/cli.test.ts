@@ -158,9 +158,20 @@ describe("Group 4: Mixed ordering edge cases", () => {
 
 describe("Group 6: Monitor mode", () => {
   test("monitor mode without --model does not set modelId", async () => {
-    const config = await parseArgs(["--monitor", "hello"]);
-    expect(config.monitor).toBe(true);
-    expect(config.model).toBeUndefined();
+    // parseArgs reads CLAUDISH_MODEL / ANTHROPIC_MODEL; keep the test hermetic
+    // so host shell defaults don't leak into the assertion.
+    const savedClaudish = process.env.CLAUDISH_MODEL;
+    const savedAnthropic = process.env.ANTHROPIC_MODEL;
+    delete process.env.CLAUDISH_MODEL;
+    delete process.env.ANTHROPIC_MODEL;
+    try {
+      const config = await parseArgs(["--monitor", "hello"]);
+      expect(config.monitor).toBe(true);
+      expect(config.model).toBeUndefined();
+    } finally {
+      if (savedClaudish !== undefined) process.env.CLAUDISH_MODEL = savedClaudish;
+      if (savedAnthropic !== undefined) process.env.ANTHROPIC_MODEL = savedAnthropic;
+    }
   });
 
   test("monitor mode with explicit --model preserves it", async () => {

@@ -103,6 +103,19 @@ export function createResponsesStreamHandler(
         }
       };
 
+      // cancel() (downstream disconnect) closes the controller without running any
+      // of the normal completion paths, so those paths can still reach a close()
+      // on an already-closed controller — `ERR_INVALID_STATE`. Harmless in itself,
+      // but it surfaces as a bogus "[ResponsesSSE] Stream error" in the debug log
+      // that reads like a translation failure. Every close goes through here.
+      const safeClose = () => {
+        try {
+          controller.close();
+        } catch {
+          // Already closed by cancel(); nothing left to do.
+        }
+      };
+
       const closeReasoning = () => {
         if (reasoningIdx >= 0) {
           send("content_block_stop", { type: "content_block_stop", index: reasoningIdx });
@@ -364,7 +377,7 @@ export function createResponsesStreamHandler(
                   pingInterval = null;
                 }
                 if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-                controller.close();
+                safeClose();
                 return;
               }
             } catch (parseError) {
@@ -408,7 +421,7 @@ export function createResponsesStreamHandler(
 
         isClosed = true;
         if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-        controller.close();
+        safeClose();
       } catch (error) {
         if (pingInterval) {
           clearInterval(pingInterval);
@@ -445,9 +458,7 @@ export function createResponsesStreamHandler(
 
           isClosed = true;
           if (opts.onTokenUpdate) opts.onTokenUpdate(inputTokens, outputTokens);
-          try {
-            controller.close();
-          } catch {}
+          safeClose();
         }
       }
     },

@@ -43,6 +43,7 @@ import {
 } from "./shared/anthropic-error.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { filterIdentity } from "./shared/openai-compat.js";
+import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
@@ -50,6 +51,13 @@ import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker } from "./shared/token-tracker.js";
+
+/**
+ * Backoff schedule for a retryable error that arrived inside an HTTP 200 stream.
+ * Progressive rather than tight: the Codex capacity outage that motivated this
+ * lasted minutes, so the useful attempts are the late ones.
+ */
+const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -696,8 +704,56 @@ export class ComposedHandler implements ModelHandler {
       c.header("X-Dropped-Params", droppedParams.join(", "));
     }
 
+    // 7b. Codex-class backends report capacity faults INSIDE a 200 stream, past
+    // every status-code retry hook (see stream-head-sniffer.ts). Peek at the head
+    // while the status is still ours to choose: retry transient faults, and only
+    // when all of them fail hand back a 503 the client will retry itself. Without
+    // this, `server_is_overloaded` became an assistant text block with
+    // stop_reason end_turn — a retryable failure frozen into the transcript.
+    if (this.resolveStreamFormat() === "openai-responses-sse") {
+      const settled = await this.settleResponsesStreamHead(response, () =>
+        this.provider.enqueueRequest ? this.provider.enqueueRequest(doFetch) : doFetch()
+      );
+      if (settled.kind === "exhausted") {
+        const waited = STREAM_RETRY_DELAYS_MS.slice(0, settled.attempts).reduce(
+          (sum, ms) => sum + ms,
+          0
+        );
+        const surfaced =
+          `${this.provider.displayName} is overloaded upstream (${settled.code}): ${settled.message} ` +
+          `claudish retried ${settled.attempts}× over ${Math.round(waited / 1000)}s without success.`;
+        logStderr(`Error: ${surfaced}`);
+        try {
+          recordStats({
+            model_id: this.targetModel,
+            provider_name: this.provider.name,
+            stream_format: this.provider.streamFormat,
+            latency_ms: Math.round(performance.now() - startTime),
+            success: false,
+            http_status: 503,
+            error_class: "server_error",
+            error_code: settled.code,
+            token_strategy: this.options.tokenStrategy ?? "standard",
+            adapter_name: this.getActiveAdapterName(),
+            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+            fallback_used: fallbackMeta !== undefined,
+            fallback_chain: fallbackMeta?.chain,
+            fallback_attempts: fallbackMeta?.attempts,
+            invocation_mode: this.options.invocationMode ?? "auto-route",
+          });
+        } catch {
+          // Stats must never crash claudish
+        }
+        return c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+      }
+      response = settled.response;
+    }
+
     // 8. Parse streaming response based on provider's format
-    // latency_ms = time-to-first-byte (response received before stream consumed)
+    // latency_ms = time-to-first-byte (response received before stream consumed).
+    // When 7b retried a transient in-stream fault this also covers the backoff
+    // waits — that is deliberate: the honest figure is time-to-USABLE-response,
+    // and a turn that silently cost 48s of retries should not report 2s.
     latencyMs = Math.round(performance.now() - startTime);
     const httpStatus = response.status;
 
@@ -750,6 +806,112 @@ export class ComposedHandler implements ModelHandler {
     );
   }
 
+  /**
+   * Settle a Responses-format stream head: retry transient upstream faults that
+   * arrive inside an HTTP 200 body, before any of it reaches the client.
+   *
+   * Backoff is progressive (3s → 15s → 30s). The Codex outage this was built for
+   * ran ~6.5 minutes, so tight retries would only have burned attempts; the long
+   * tail is where recovery actually happens.
+   *
+   * Returns `exhausted` when every attempt failed — the caller turns that into a
+   * 503 so Claude Code runs its own retry loop against the same pinned model.
+   * (A 503 is safe here specifically because fallback-handler's isRetryableError
+   * does NOT list 503, so this cannot silently switch the user off the model they
+   * pinned; it reaches Claude Code untouched.)
+   */
+  private async settleResponsesStreamHead(
+    initial: Response,
+    reissue: () => Promise<Response>
+  ): Promise<
+    | { kind: "ok"; response: Response }
+    | { kind: "exhausted"; code: string; message: string; attempts: number }
+  > {
+    let response = initial;
+
+    for (let attempt = 0; ; attempt++) {
+      const verdict = await sniffResponsesStreamHead(response, { log });
+      if (verdict.kind === "clean") return { kind: "ok", response: verdict.response };
+
+      const delayMs = STREAM_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        log(
+          `[${this.provider.displayName}] in-stream ${verdict.code} persisted after ` +
+            `${attempt} retries — surfacing 503 so the client can retry`
+        );
+        return {
+          kind: "exhausted",
+          code: verdict.code,
+          message: verdict.message,
+          attempts: attempt,
+        };
+      }
+
+      log(
+        `[${this.provider.displayName}] in-stream ${verdict.code} before any output — ` +
+          `retry ${attempt + 1}/${STREAM_RETRY_DELAYS_MS.length} in ${delayMs / 1000}s`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      let next: Response;
+      try {
+        next = await reissue();
+      } catch (error) {
+        log(`[${this.provider.displayName}] retry fetch failed: ${error}`);
+        return {
+          kind: "exhausted",
+          code: verdict.code,
+          message: `${verdict.message} (retry could not reach the provider: ${error})`,
+          attempts: attempt + 1,
+        };
+      }
+
+      // The fault graduated to a status-level failure. The !response.ok handling
+      // is already behind us, so stop here rather than re-entering it.
+      if (!next.ok) {
+        const body = await next.text().catch(() => "");
+        log(`[${this.provider.displayName}] retry returned HTTP ${next.status}`);
+        return {
+          kind: "exhausted",
+          code: `http_${next.status}`,
+          message: body.slice(0, 500) || `HTTP ${next.status}`,
+          attempts: attempt + 1,
+        };
+      }
+
+      response = next;
+    }
+  }
+
+  /**
+   * Resolve which stream parser this request's bytes should go to.
+   *
+   * Priority:
+   *   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
+   *   2. Explicit format adapter (provider profile passes it, e.g. AnthropicAPIFormat
+   *      for Z.AI, CodexAPIFormat for OpenAI Codex) — this is the layer that KNOWS
+   *      the wire protocol.
+   *   3. Model dialect — only reached if no explicit adapter was passed. Dialects like
+   *      GLMModelDialect/GrokModelDialect handle model quirks (context window, thinking
+   *      block stripping), NOT wire format. Their inherited default "openai-sse" must
+   *      NOT override the explicit adapter — that was #102.
+   *
+   * Previous ordering (pre-fix) put modelAdapter at tier 2, causing GLMModelDialect's
+   * inherited "openai-sse" to silently override AnthropicAPIFormat's "anthropic-sse"
+   * for zai@glm-* — the Anthropic SSE was then fed to the OpenAI parser and dropped.
+   *
+   * Resolved in one place because handle() needs it BEFORE handleStream() runs, to
+   * decide whether the response head is worth sniffing for retryable errors.
+   */
+  private resolveStreamFormat(): string {
+    return (
+      this.provider.overrideStreamFormat?.() ??
+      this.explicitAdapter?.getStreamFormat() ??
+      this.modelAdapter?.getStreamFormat() ??
+      this.getAdapter().getStreamFormat()
+    );
+  }
+
   private handleStream(
     c: Context,
     response: Response,
@@ -790,24 +952,7 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    // Stream format priority:
-    //   1. Transport override (aggregators like LiteLLM/OpenRouter normalize server-side)
-    //   2. Explicit format adapter (provider profile passes it, e.g. AnthropicAPIFormat
-    //      for Z.AI, CodexAPIFormat for OpenAI Codex) — this is the layer that KNOWS
-    //      the wire protocol.
-    //   3. Model dialect — only reached if no explicit adapter was passed. Dialects like
-    //      GLMModelDialect/GrokModelDialect handle model quirks (context window, thinking
-    //      block stripping), NOT wire format. Their inherited default "openai-sse" must
-    //      NOT override the explicit adapter — that was #102.
-    //
-    // Previous ordering (pre-fix) put modelAdapter at tier 2, causing GLMModelDialect's
-    // inherited "openai-sse" to silently override AnthropicAPIFormat's "anthropic-sse"
-    // for zai@glm-* — the Anthropic SSE was then fed to the OpenAI parser and dropped.
-    const streamFormat =
-      this.provider.overrideStreamFormat?.() ??
-      this.explicitAdapter?.getStreamFormat() ??
-      this.modelAdapter?.getStreamFormat() ??
-      this.getAdapter().getStreamFormat();
+    const streamFormat = this.resolveStreamFormat();
     // Stream parsers receive bareModelName: it is used both as the middleware-identity
     // key (must match beforeRequest() / getActiveNames()) AND as the value echoed in
     // `message_start.message.model` for display. Passing the routed form here was the
