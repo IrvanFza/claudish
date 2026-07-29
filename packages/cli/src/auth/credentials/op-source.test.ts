@@ -22,7 +22,7 @@
  * auth), mirroring onepassword.test.ts's SdkClientFactory idiom.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { SdkAuth, SdkClientFactory, SdkClientLike } from "../../providers/onepassword.js";
 import {
   __configureStartupTraceForTests,
@@ -31,7 +31,9 @@ import {
 } from "../../startup-trace.js";
 import {
   __resetResolveCacheForTests,
+  __resetSdkAuthForTests,
   __resetSniffForTests,
+  __resetWarnOnceForTests,
   __setOpSourceSeamsForTests,
   hasOpSources,
   invalidateOpResolutionCache,
@@ -49,6 +51,8 @@ beforeEach(() => {
   delete process.env.CLAUDISH_DISABLE_OP;
   __resetSniffForTests();
   __resetResolveCacheForTests();
+  __resetSdkAuthForTests();
+  __resetWarnOnceForTests();
   __setOpSourceSeamsForTests(undefined);
 });
 
@@ -58,6 +62,8 @@ afterEach(() => {
   else process.env.CLAUDISH_DISABLE_OP = savedDisableOp;
   __resetSniffForTests();
   __resetResolveCacheForTests();
+  __resetSdkAuthForTests();
+  __resetWarnOnceForTests();
   __setOpSourceSeamsForTests(undefined);
 });
 
@@ -432,5 +438,73 @@ describe("environment point-of-need", () => {
 
     expect(out).toEqual({});
     expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+});
+
+describe("1Password failure warnings", () => {
+  it("prints each distinct environment failure message only once across a routing chain", async () => {
+    const repeatedFailure = "Denied authorization for SDK client (test)";
+    const distinctFailure = "1Password desktop bridge unavailable (test)";
+    const client: SdkClientLike = {
+      secrets: {
+        async resolve(ref: string): Promise<string> {
+          return `sdk:${ref}`;
+        },
+        async resolveAll() {
+          return { individualResponses: {} };
+        },
+      },
+      vaults: {
+        async list() {
+          return [];
+        },
+      },
+      items: {
+        async list() {
+          return [];
+        },
+        async get() {
+          throw new Error("warning test must not inspect items");
+        },
+      },
+      environments: {
+        async getVariables(id: string) {
+          throw new Error(id === "env-denied" ? repeatedFailure : distinctFailure);
+        },
+      },
+    };
+    __setOpSourceSeamsForTests({
+      config: {
+        onepassword: [],
+        onepasswordEnvironments: ["env-denied", "env-unavailable"],
+      },
+      sdkFactory: async () => client,
+      auth: stubAuth,
+    });
+    __resetSniffForTests();
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // A bare model's routing chain asks for several different provider vars.
+      // Both environment resolutions fail on every ask; only the first copy of
+      // each distinct message should reach stderr.
+      for (const envVar of [
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+      ]) {
+        expect(await resolveOne(envVar)).toEqual({});
+      }
+
+      const messages = errorSpy.mock.calls.map(([message]) => String(message));
+      const repeatedWarning = `[claudish] 1Password environment skipped: ${repeatedFailure}`;
+      const distinctWarning = `[claudish] 1Password environment skipped: ${distinctFailure}`;
+      expect(messages.filter((message) => message === repeatedWarning)).toHaveLength(1);
+      expect(messages.filter((message) => message === distinctWarning)).toHaveLength(1);
+      expect(messages).toHaveLength(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
