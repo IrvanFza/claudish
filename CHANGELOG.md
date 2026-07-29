@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.19.2] - 2026-07-29
+
+### Bug Fixes
+
+- v7.19.2 — Responses SSE parser no longer crashes the proxy on client cancel([`24a44d6`](https://github.com/MadAppGang/claudish/commit/24a44d639ce09d97d39057299dfc198e22e905ab))
+- add missing cancel() handler to Responses SSE parser([`37f178e`](https://github.com/MadAppGang/claudish/commit/37f178efb7f05828c2e9f96c3b853c1552936aaa))
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.1([`8184231`](https://github.com/MadAppGang/claudish/commit/81842317f0506e84731caa07ed040d01d29e15e9))
+
 ## [7.19.1] - 2026-07-27
 
 ### Documentation
