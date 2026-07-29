@@ -2,6 +2,12 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.20.1] - 2026-07-29
+
+### Documentation
+
+- update CHANGELOG.md for v7.19.2([`8d71cbd`](https://github.com/MadAppGang/claudish/commit/8d71cbdf7b116208156f30bd317c51112cdb1125))
+
 ## [7.19.2] - 2026-07-29
 
 ### Bug Fixes
@@ -32,6 +38,12 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.19.0 — prefer claude.ai subscription over a stray ANTHROPIC_API_KEY([`228b861`](https://github.com/MadAppGang/claudish/commit/228b861cf4e22f25807e7697ae8b68b9416dd8f2))
+
+## [7.20.0] - 2026-07-29
+
+### New Features
+
+- v7.20.0 — Kimi K3 subscription routing, live discovery, context-window fix([`42b4e81`](https://github.com/MadAppGang/claudish/commit/42b4e81e50e4daddd1cdbd80930c9d017750dc35))
 
 ## [7.18.1] - 2026-07-26
 
