@@ -477,18 +477,25 @@ async function resolveGlobShared(
 
   const spanName = `op:glob-resolve(${maskGlobForTrace(globPath)})`;
   const promise = (async () => {
-    const { resolveGlobImportAll, recordOpHydratedVars } = await import(
+    const { resolveGlobImportAll, recordOpHydratedVars, withSdkRetry } = await import(
       "../../providers/onepassword.js"
     );
     // The warn sink surfaces per-field diagnostics (duplicate titles, an
     // unresolvable field like a `tooManyMatchingFields` duplicate label). The
     // resolution runs ONCE per process, so these print at most once per launch.
+    //
+    // Wrapped for lock recovery — see resolveEnvironmentShared for why the wrap
+    // is here and not inside the onepassword.ts function.
     const resolved = await traceSpan(spanName, () =>
-      resolveGlobImportAll(globPath, {
-        auth,
-        sdkFactory: testSeams?.sdkFactory,
-        warn: (m) => console.error(m),
-      })
+      withSdkRetry(
+        () =>
+          resolveGlobImportAll(globPath, {
+            auth,
+            sdkFactory: testSeams?.sdkFactory,
+            warn: (m) => console.error(m),
+          }),
+        spanName
+      )
     );
     addSpanMeta(spanName, { vars: Object.keys(resolved).length });
     // Populate the shared value cache with EVERYTHING the glob holds, and record
@@ -525,11 +532,25 @@ async function resolveEnvironmentShared(
 
   const spanName = `op:env-resolve(${envId})`;
   const promise = (async () => {
-    const { readEnvironment, recordOpHydratedVars } = await import(
+    const { readEnvironment, recordOpHydratedVars, withSdkRetry } = await import(
       "../../providers/onepassword.js"
     );
+    // withSdkRetry HERE, not inside readEnvironment: the config TUI already wraps
+    // its own calls, and runSdkExclusive is a promise-chain queue — a nested
+    // wrap would enqueue behind the op that is waiting for it and deadlock.
+    // Wrapping at the credential-path call site keeps the two paths disjoint.
+    //
+    // This is what makes lock recovery reachable from a NORMAL run. Until now
+    // withSdkRetry was called only from tui/App.tsx, so the whole
+    // locked-denial countdown existed but could never fire for
+    // `claudish --model X` or `team` — exactly where a silent denial costs the
+    // most, because it presents as "API key required" for a key that is in
+    // 1Password and the run has already been abandoned by then.
     const resolved = await traceSpan(spanName, () =>
-      readEnvironment(envId, { auth, sdkFactory: testSeams?.sdkFactory })
+      withSdkRetry(
+        () => readEnvironment(envId, { auth, sdkFactory: testSeams?.sdkFactory }),
+        spanName
+      )
     );
     addSpanMeta(spanName, { vars: Object.keys(resolved).length });
     // Populate the shared value cache with EVERYTHING the environment holds, and
@@ -675,8 +696,13 @@ async function resolveOpKeyForEnvVarsInner(
     }
   }
 
-  const { collectConfigImports, resolveSecrets, recordOpHydratedVars, recordOpFailure } =
-    await import("../../providers/onepassword.js");
+  const {
+    collectConfigImports,
+    resolveSecrets,
+    recordOpHydratedVars,
+    recordOpFailure,
+    withSdkRetry,
+  } = await import("../../providers/onepassword.js");
 
   const cfg = readConfigRaw();
   const out: Record<string, string> = {};
@@ -695,10 +721,12 @@ async function resolveOpKeyForEnvVarsInner(
       if (wanted.has(envVar)) wantedRefs[envVar] = ref;
     }
     if (Object.keys(wantedRefs).length > 0) {
-      const resolved = await resolveSecrets(wantedRefs, {
-        auth,
-        sdkFactory: testSeams?.sdkFactory,
-      });
+      // Wrapped for lock recovery — see the note at resolveEnvironmentShared for
+      // why the wrap lives at the call site rather than inside resolveSecrets.
+      const resolved = await withSdkRetry(
+        () => resolveSecrets(wantedRefs, { auth, sdkFactory: testSeams?.sdkFactory }),
+        "op:resolve-refs"
+      );
       Object.assign(out, resolved);
     }
 
@@ -743,10 +771,10 @@ async function resolveOpKeyForEnvVarsInner(
         if (wanted.has(envVar) && !(envVar in out)) customRefs[envVar] = apiKey;
       }
       if (Object.keys(customRefs).length > 0) {
-        const resolved = await resolveSecrets(customRefs, {
-          auth,
-          sdkFactory: testSeams?.sdkFactory,
-        });
+        const resolved = await withSdkRetry(
+          () => resolveSecrets(customRefs, { auth, sdkFactory: testSeams?.sdkFactory }),
+          "op:resolve-custom-endpoint-refs"
+        );
         Object.assign(out, resolved);
       }
     }

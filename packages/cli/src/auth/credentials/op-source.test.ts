@@ -25,6 +25,11 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { SdkAuth, SdkClientFactory, SdkClientLike } from "../../providers/onepassword.js";
 import {
+  setAppLockProbe,
+  setLockRetryTiming,
+  setScreenLockProbe,
+} from "../../providers/onepassword.js";
+import {
   __configureStartupTraceForTests,
   __getStartupSpansForTests,
   __resetStartupTraceForTests,
@@ -54,6 +59,9 @@ beforeEach(() => {
   __resetSdkAuthForTests();
   __resetWarnOnceForTests();
   __setOpSourceSeamsForTests(undefined);
+  setLockRetryTiming({ seconds: 0.01, tickMs: 1 });
+  setScreenLockProbe(() => false);
+  setAppLockProbe(() => false);
 });
 
 afterEach(() => {
@@ -65,6 +73,9 @@ afterEach(() => {
   __resetSdkAuthForTests();
   __resetWarnOnceForTests();
   __setOpSourceSeamsForTests(undefined);
+  setLockRetryTiming();
+  setScreenLockProbe(undefined);
+  setAppLockProbe(undefined);
 });
 
 describe("hasOpSources() — the sync laziness gate", () => {

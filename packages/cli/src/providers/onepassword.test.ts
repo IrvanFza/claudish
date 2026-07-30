@@ -23,7 +23,9 @@ import {
   type SdkAuth,
   type SdkClientFactory,
   type SdkClientLike,
+  appLockedFromSettings,
   buildAuthError,
+  classifyLockedDenial,
   collectConfigImports,
   detectSdkAuth,
   discoverItemFields,
@@ -50,6 +52,7 @@ import {
   resolveGlobImportForEnvVars,
   resolveSdkAuth,
   resolveSecrets,
+  setAppLockProbe,
   setLockRetryTiming,
   setScreenLockProbe,
   wasOpAuthorizationDenied,
@@ -1433,12 +1436,14 @@ describe("withSdkRetry locked-screen denial recovery", () => {
   beforeEach(() => {
     originalServiceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
     delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    setAppLockProbe(() => false);
     resetOpFailures();
   });
 
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
+    setAppLockProbe(undefined);
     resetOpFailures();
     if (originalServiceAccountToken === undefined) {
       delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
@@ -1568,30 +1573,317 @@ describe("withSdkRetry locked-screen denial recovery", () => {
   });
 });
 
-describe("isLockedDenial", () => {
+describe("appLockedFromSettings", () => {
+  const ENABLED = "developers.sdkSharedLockState.enabled";
+  const LAST_UNLOCK = "security.authenticatedUnlock.deviceBasedUnlock.lastUnlock";
+  const ASK_UNLOCK_AFTER =
+    "security.authenticatedUnlock.deviceBasedUnlock.askUnlockAfter";
+
+  function settings(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      [ENABLED]: true,
+      [LAST_UNLOCK]: 500,
+      [ASK_UNLOCK_AFTER]: 480,
+      ...overrides,
+    };
+  }
+
+  test("returns true when idle time is greater than askUnlockAfter", () => {
+    expect(appLockedFromSettings(settings(), 981)).toBe(true);
+  });
+
+  test("returns false when idle time is less than askUnlockAfter", () => {
+    expect(appLockedFromSettings(settings(), 979)).toBe(false);
+  });
+
+  test("returns false when idle time is exactly askUnlockAfter", () => {
+    expect(appLockedFromSettings(settings(), 980)).toBe(false);
+  });
+
+  test("returns false when shared SDK lock state is disabled despite excessive idle time", () => {
+    expect(appLockedFromSettings(settings({ [ENABLED]: false }), 10_000)).toBe(false);
+  });
+
+  test("returns false when shared SDK lock state is missing", () => {
+    expect(
+      appLockedFromSettings(
+        {
+          [LAST_UNLOCK]: 500,
+          [ASK_UNLOCK_AFTER]: 480,
+        },
+        10_000
+      )
+    ).toBe(false);
+  });
+
+  test("returns false when shared SDK lock state is truthy but not exactly true", () => {
+    expect(appLockedFromSettings(settings({ [ENABLED]: "true" }), 10_000)).toBe(false);
+    expect(appLockedFromSettings(settings({ [ENABLED]: 1 }), 10_000)).toBe(false);
+  });
+
+  test("returns false when lastUnlock is missing", () => {
+    expect(
+      appLockedFromSettings(
+        {
+          [ENABLED]: true,
+          [ASK_UNLOCK_AFTER]: 480,
+        },
+        10_000
+      )
+    ).toBe(false);
+  });
+
+  test("returns false when askUnlockAfter is missing", () => {
+    expect(
+      appLockedFromSettings(
+        {
+          [ENABLED]: true,
+          [LAST_UNLOCK]: 500,
+        },
+        10_000
+      )
+    ).toBe(false);
+  });
+
+  test("returns false when lastUnlock or askUnlockAfter is not a number", () => {
+    expect(appLockedFromSettings(settings({ [LAST_UNLOCK]: "500" }), 10_000)).toBe(false);
+    expect(appLockedFromSettings(settings({ [LAST_UNLOCK]: null }), 10_000)).toBe(false);
+    expect(
+      appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: "480" }), 10_000)
+    ).toBe(false);
+    expect(appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: null }), 10_000)).toBe(
+      false
+    );
+  });
+
+  test("returns false when settings is null", () => {
+    expect(appLockedFromSettings(null, 10_000)).toBe(false);
+  });
+
+  test("returns false for primitive and array settings without the required named keys", () => {
+    expect(appLockedFromSettings("settings", 10_000)).toBe(false);
+    expect(appLockedFromSettings(42, 10_000)).toBe(false);
+    expect(appLockedFromSettings([], 10_000)).toBe(false);
+  });
+
+  test("returns true for the captured settings after 3,912 seconds idle", () => {
+    expect(
+      appLockedFromSettings(
+        settings({
+          [LAST_UNLOCK]: 1_785_367_799,
+          [ASK_UNLOCK_AFTER]: 480,
+        }),
+        1_785_371_711
+      )
+    ).toBe(true);
+  });
+});
+
+describe("withSdkRetry app-locked denial recovery", () => {
+  let originalServiceAccountToken: string | undefined;
+
+  beforeEach(() => {
+    originalServiceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    setLockRetryTiming({ seconds: 3, tickMs: 1 });
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => false);
+  });
+
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
+    setAppLockProbe(undefined);
+    resetOpFailures();
+    if (originalServiceAccountToken === undefined) {
+      delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    } else {
+      process.env.OP_SERVICE_ACCOUNT_TOKEN = originalServiceAccountToken;
+    }
+  });
+
+  test("an app-locked denial retries and resolves when the next operation succeeds", async () => {
+    setAppLockProbe(() => true);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      const result = await withSdkRetry(async () => {
+        calls++;
+        if (calls === 1) throw new Error(SDK_DENIAL_MESSAGE);
+        return "recovered";
+      });
+
+      expect(result).toBe("recovered");
+      expect(calls).toBe(2);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("the app unlocking mid-countdown breaks the wait early", async () => {
+    let probeCalls = 0;
+    setAppLockProbe(() => ++probeCalls === 1);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      const result = await withSdkRetry(async () => {
+        calls++;
+        if (calls === 1) throw new Error(SDK_DENIAL_MESSAGE);
+        return "recovered";
+      });
+
+      expect(result).toBe("recovered");
+      expect(calls).toBe(2);
+      expect(probeCalls).toBe(2);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("a persistent app lock gets three countdowns and rethrows the original error", async () => {
+    const originalError = new Error(SDK_DENIAL_MESSAGE);
+    setAppLockProbe(() => true);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+    let thrown: unknown;
+
+    try {
+      await withSdkRetry(async () => {
+        calls++;
+        throw originalError;
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      stderrWrite.mockRestore();
+    }
+
+    expect(calls).toBe(4);
+    expect(thrown).toBe(originalError);
+  });
+
+  test("re-classifies a screen lock as an app lock between retry rounds", async () => {
+    let calls = 0;
+    let screenProbeCalls = 0;
+    let appProbeCalls = 0;
+    setScreenLockProbe(() => {
+      screenProbeCalls++;
+      return calls === 1;
+    });
+    setAppLockProbe(() => {
+      appProbeCalls++;
+      return calls === 2;
+    });
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const result = await withSdkRetry(async () => {
+        calls++;
+        if (calls <= 2) throw new Error(SDK_DENIAL_MESSAGE);
+        return "recovered";
+      });
+
+      expect(result).toBe("recovered");
+      expect(calls).toBe(3);
+      expect(screenProbeCalls).toBe(5);
+      expect(appProbeCalls).toBe(4);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("a non-denial error propagates immediately without probing or counting down", async () => {
+    let screenProbeCalls = 0;
+    let appProbeCalls = 0;
+    setScreenLockProbe(() => {
+      screenProbeCalls++;
+      return true;
+    });
+    setAppLockProbe(() => {
+      appProbeCalls++;
+      return true;
+    });
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const error = new Error("model not found");
+    let calls = 0;
+    let thrown: unknown;
+
+    try {
+      await withSdkRetry(async () => {
+        calls++;
+        throw error;
+      });
+    } catch (caught) {
+      thrown = caught;
+    } finally {
+      stderrWrite.mockRestore();
+    }
+
+    expect(thrown).toBe(error);
+    expect(calls).toBe(1);
+    expect(screenProbeCalls).toBe(0);
+    expect(appProbeCalls).toBe(0);
+    expect(stderrWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe("classifyLockedDenial / isLockedDenial", () => {
+  afterEach(() => {
+    setLockRetryTiming();
+    setScreenLockProbe(undefined);
+    setAppLockProbe(undefined);
     resetOpFailures();
   });
 
-  test("requires a denial, a locked screen, and no service-account token", () => {
-    const denial = new Error(SDK_DENIAL_MESSAGE);
+  function expectClassification(
+    error: unknown,
+    env: NodeJS.ProcessEnv,
+    expected: "screen" | "app" | null
+  ): void {
+    expect(classifyLockedDenial(error, env)).toBe(expected);
+    expect(isLockedDenial(error, env)).toBe(expected !== null);
+  }
 
+  test("screen lock takes precedence when both the screen and app are locked", () => {
     setScreenLockProbe(() => true);
-    expect(isLockedDenial(denial, {})).toBe(true);
-    expect(isLockedDenial(new Error("vault not found"), {})).toBe(false);
-
-    setScreenLockProbe(() => false);
-    expect(isLockedDenial(denial, {})).toBe(false);
-
-    setScreenLockProbe(() => true);
-    expect(isLockedDenial(denial, { OP_SERVICE_ACCOUNT_TOKEN: "ops_test" })).toBe(false);
+    setAppLockProbe(() => true);
+    expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, "screen");
   });
 
-  test("non-denial errors return false even while locked", () => {
+  test("classifies an app lock when the screen is unlocked", () => {
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => true);
+    expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, "app");
+  });
+
+  test("returns null when neither the screen nor app is locked", () => {
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => false);
+    expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, null);
+  });
+
+  test("service-account denial is terminal even when both locks are reported", () => {
     setScreenLockProbe(() => true);
-    expect(isLockedDenial(new Error("IPC operation failed: -4"), {})).toBe(false);
+    setAppLockProbe(() => true);
+    expectClassification(
+      new Error(SDK_DENIAL_MESSAGE),
+      { OP_SERVICE_ACCOUNT_TOKEN: "ops_test" },
+      null
+    );
+  });
+
+  test("non-denial errors return null regardless of both locks", () => {
+    setScreenLockProbe(() => true);
+    setAppLockProbe(() => true);
+    expectClassification(new Error("model not found"), {}, null);
+  });
+
+  test("matches denied authorization case-insensitively", () => {
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => true);
+    expectClassification(new Error("dEnIeD aUtHoRiZaTiOn for SDK client"), {}, "app");
   });
 });
 
@@ -1610,11 +1902,14 @@ describe("1Password failure provenance and missing-key remediation", () => {
 
   beforeEach(() => {
     resetOpFailures();
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => false);
   });
 
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
+    setAppLockProbe(undefined);
     resetOpFailures();
   });
 
@@ -1623,21 +1918,65 @@ describe("1Password failure provenance and missing-key remediation", () => {
     expect(renderOpFailureNotice("OPENAI_API_KEY")).toEqual([]);
   });
 
-  test("denial notice names the environment and explains desktop and headless recovery", () => {
+  test("app-locked denial names the lock and Touch ID without claiming a prompt exists", () => {
     const failure = {
       kind: "environment" as const,
       source: "production-env",
       message: SDK_DENIAL_MESSAGE,
     };
     recordOpFailure(failure);
+    setAppLockProbe(() => true);
 
     expect(getOpFailures()).toEqual([failure]);
     expect(wasOpAuthorizationDenied()).toBe(true);
 
     const notice = renderOpFailureNotice("OPENAI_API_KEY").join("\n");
     expect(notice).toContain("environment production-env");
-    expect(notice).toMatch(/unlock/i);
+    expect(notice).toContain("LOCKED");
+    expect(notice).toContain("Touch ID");
+    expect(notice).not.toMatch(/Fix:.*approve.*prompt/i);
+    expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  test("screen-locked denial tells the user to unlock the Mac and approve", () => {
+    recordOpFailure({
+      kind: "environment",
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    });
+    setScreenLockProbe(() => true);
+
+    const notice = renderOpFailureNotice("OPENAI_API_KEY").join("\n");
+    expect(notice).toMatch(/unlock the Mac/i);
     expect(notice).toMatch(/approve/i);
+    expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  test("screen lock takes precedence over app lock in the denial notice", () => {
+    recordOpFailure({
+      kind: "environment",
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    });
+    setScreenLockProbe(() => true);
+    setAppLockProbe(() => true);
+
+    const notice = renderOpFailureNotice("OPENAI_API_KEY").join("\n");
+    expect(notice).toMatch(/unlock the Mac/i);
+    expect(notice).toMatch(/approve/i);
+    expect(notice).not.toContain("Fix: unlock 1Password");
+    expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  test("dismissed denial says the approval prompt was dismissed", () => {
+    recordOpFailure({
+      kind: "environment",
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    });
+
+    const notice = renderOpFailureNotice("OPENAI_API_KEY").join("\n");
+    expect(notice).toMatch(/prompt\s+was most likely dismissed/i);
     expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
   });
 

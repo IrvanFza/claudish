@@ -39,6 +39,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { addSpanMeta, beginQueuedSpan, setStartupAuthKind, traceSpan } from "../startup-trace.js";
 import { VERSION } from "../version.js";
 
@@ -154,11 +157,30 @@ export function renderOpFailureNotice(envVar: string): string[] {
   lines.push("");
 
   if (wasOpAuthorizationDenied()) {
-    lines.push("  The 1Password desktop app declined to release secrets. This happens when");
-    lines.push("  the approval prompt was dismissed, or when your Mac is locked and the");
-    lines.push("  prompt cannot be shown at all.");
-    lines.push("");
-    lines.push("  Fix: unlock the Mac, approve the 1Password prompt, and re-run.");
+    // Name the SPECIFIC cause when a probe can still see it. A denial has four
+    // causes with four different fixes, and "the app declined" sends the user
+    // hunting for a prompt that, in the app-locked case, was never shown.
+    //
+    // Precedence comes from currentLockCause() so this message and the retry
+    // classifier can never disagree about which lock to name.
+    const cause = currentLockCause();
+    if (cause === "screen") {
+      lines.push("  Your Mac is locked, so the 1Password approval prompt cannot be shown.");
+      lines.push("");
+      lines.push("  Fix: unlock the Mac, approve the prompt, and re-run.");
+    } else if (cause === "app") {
+      lines.push("  The 1Password app is LOCKED. With shared lock state (the default) a locked");
+      lines.push("  app refuses the SDK outright — no approval prompt is ever shown, which is");
+      lines.push("  why nothing appeared on screen.");
+      lines.push("");
+      lines.push("  Fix: unlock 1Password (Touch ID is enough) and re-run.");
+      lines.push("  To stop it re-locking mid-session, raise Settings → Security → auto-lock.");
+    } else {
+      lines.push("  The 1Password desktop app declined to release secrets. The approval prompt");
+      lines.push("  was most likely dismissed.");
+      lines.push("");
+      lines.push("  Fix: re-run and approve the 1Password prompt.");
+    }
     lines.push("  Headless (no desktop app): export OP_SERVICE_ACCOUNT_TOKEN='ops_...'");
   } else {
     lines.push("  Fix: check the reference resolves — claudish config → 1Password tab.");
@@ -1243,19 +1265,136 @@ export function isScreenLocked(): boolean {
   return screenLockProbe();
 }
 
+// ─── 1Password APP lock (a FOURTH denial cause) ──────────────────────────────
+//
+// `Denied authorization for SDK client` has a fourth cause, distinct from the
+// three above (Cancel / screen locked / concurrent spawn): the 1Password APP
+// itself is locked.
+//
+// When `developers.sdkSharedLockState.enabled` is on — it is by default — the SDK
+// is authorized only while the app is unlocked. Once the app auto-locks, the SDK
+// is denied IMMEDIATELY and NO dialog is shown, so:
+//   · the screen-lock probe stays silent (the screen is unlocked)
+//   · it is not a Cancel (nobody was asked)
+//   · so the denial was classified terminal, and the user got
+//     "GLM/Zhipu API Key is required — export ZHIPU_API_KEY" for a key that
+//     is sitting in 1Password.
+//
+// Measured 2026-07-30: app unlocked 09:29:59, askUnlockAfter 480s, probed at
+// 10:35 after 65 min idle → locked; screen unlocked; no 1Password window on
+// screen; the SDK call failed in well under the time a human prompt would take.
+//
+// This is the CHEAPEST of the probes — a single JSON read, no subprocess — and
+// like the others it only ever runs on the denial path.
+
+/** Probe returning true when the 1Password app is locked. Injectable for tests. */
+export type AppLockProbe = () => boolean;
+
+/** Where the desktop app persists its settings (macOS). */
+const OP_SETTINGS_PATH = join(
+  "Library",
+  "Group Containers",
+  "2BUA8C4S2C.com.1password",
+  "Library",
+  "Application Support",
+  "1Password",
+  "Data",
+  "settings",
+  "settings.json"
+);
+
 /**
- * True when an error is a denial that the user could plausibly still approve —
- * i.e. a desktop-app denial issued while the screen was locked.
+ * The lock decision, as a PURE function of the settings object and the clock.
  *
- * A service-account token short-circuits this: token auth never shows a desktop
- * prompt, so a denial under a token means something else entirely (revoked
- * token, vault access) and waiting for an unlock would be theatre.
+ * Split out from the file read so the rule is testable without touching the
+ * developer's real 1Password settings — reading those would make the result
+ * depend on whether the machine's app happened to be locked when the suite ran.
+ */
+export function appLockedFromSettings(settings: unknown, nowSeconds: number): boolean {
+  if (typeof settings !== "object" || settings === null) return false;
+  const s = settings as Record<string, unknown>;
+
+  // If the SDK does NOT share the app's lock state, app lock cannot be the cause
+  // of an SDK denial — say so rather than sending the user to unlock something
+  // irrelevant.
+  if (s["developers.sdkSharedLockState.enabled"] !== true) return false;
+
+  const last = s["security.authenticatedUnlock.deviceBasedUnlock.lastUnlock"];
+  const after = s["security.authenticatedUnlock.deviceBasedUnlock.askUnlockAfter"];
+  if (typeof last !== "number" || typeof after !== "number") return false;
+
+  return nowSeconds - last > after;
+}
+
+export const defaultAppLockProbe: AppLockProbe = () => {
+  if (process.platform !== "darwin") return false;
+  try {
+    const raw = readFileSync(join(homedir(), OP_SETTINGS_PATH), "utf-8");
+    return appLockedFromSettings(JSON.parse(raw), Date.now() / 1000);
+  } catch {
+    // Probe failure must never invent a lock — fall back to terminal behavior.
+    return false;
+  }
+};
+
+let appLockProbe: AppLockProbe = defaultAppLockProbe;
+
+/** Test seam: swap the app-lock probe. Pass undefined to restore the default. */
+export function setAppLockProbe(probe: AppLockProbe | undefined): void {
+  appLockProbe = probe ?? defaultAppLockProbe;
+}
+
+/** True when the 1Password app is locked AND that gates the SDK. */
+export function isAppLocked(): boolean {
+  return appLockProbe();
+}
+
+/** Which recoverable lock caused a denial, or null when it is terminal. */
+export type LockCause = "screen" | "app";
+
+/**
+ * Which lock is currently blocking, in the order the user must clear them.
+ *
+ * SINGLE source of the precedence rule — both the retry classifier and the error
+ * notice call this, so they cannot drift. They already had: an earlier version
+ * checked screen-first for retries and app-first for the message, which told a
+ * user with a locked Mac to "unlock 1Password", a step they cannot take until
+ * the Mac is open.
+ *
+ * Screen first is the correct order: a locked Mac makes the app unreachable
+ * regardless of the app's own state, so the Mac is the actionable blocker.
+ */
+export function currentLockCause(): LockCause | null {
+  if (isScreenLocked()) return "screen";
+  if (isAppLocked()) return "app";
+  return null;
+}
+
+/**
+ * Classify a denial into the lock the user can still clear, or null if none.
+ *
+ * A service-account token short-circuits everything: token auth never shows a
+ * desktop prompt, so a denial under a token means something else entirely
+ * (revoked token, vault access) and waiting for an unlock would be theatre.
+ */
+export function classifyLockedDenial(
+  err: unknown,
+  env: NodeJS.ProcessEnv = process.env
+): LockCause | null {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (!msg.includes("denied authorization")) return null;
+  if (env.OP_SERVICE_ACCOUNT_TOKEN) return null;
+  return currentLockCause();
+}
+
+/**
+ * True when an error is a denial the user could plausibly still approve.
+ *
+ * Retained as the boolean form of `classifyLockedDenial` — callers that only ask
+ * "is this worth waiting on?" keep working unchanged.
  */
 export function isLockedDenial(err: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  if (!msg.includes("denied authorization")) return false;
-  if (env.OP_SERVICE_ACCOUNT_TOKEN) return false;
-  return isScreenLocked();
+  return classifyLockedDenial(err, env) !== null;
 }
 
 /**
@@ -1271,7 +1410,11 @@ export function isLockedDenial(err: unknown, env: NodeJS.ProcessEnv = process.en
  * a channel session stderr is a captured pipe, where carriage returns produce
  * an unreadable log — those get one static line per round instead.
  */
-async function countdownForUnlock(round: number, rounds: number): Promise<"retry" | "cancel"> {
+async function countdownForUnlock(
+  round: number,
+  rounds: number,
+  cause: LockCause
+): Promise<"retry" | "cancel"> {
   const ttyOut = process.stderr.isTTY === true;
   const ttyIn = process.stdin.isTTY === true;
   let cancelled = false;
@@ -1279,11 +1422,21 @@ async function countdownForUnlock(round: number, rounds: number): Promise<"retry
   // The explanation prints ONCE, on the first round. Rounds 2 and 3 get only
   // the countdown line — re-explaining the same situation every 10 seconds
   // reads as nagging, and the user is (hopefully) already walking to their Mac.
+  //
+  // The two causes need DIFFERENT instructions. Telling someone to "approve the
+  // popup" when the app is locked is wrong twice over: there is no popup (a
+  // locked app denies silently), and the action they need is to unlock 1Password.
   if (round === 1) {
-    process.stderr.write(
-      `\n${bold("🔐 1Password needs your OK — but your Mac is locked, so it can't ask.")}\n   Unlock your Mac and approve the popup. Claudish picks it up from there.\n\n`
-    );
+    const explain =
+      cause === "screen"
+        ? `${bold("🔐 1Password needs your OK — but your Mac is locked, so it can't ask.")}\n   Unlock your Mac and approve the popup. Claudish picks it up from there.`
+        : `${bold("🔐 1Password is locked, so it turned claudish away without asking you.")}\n   Unlock 1Password (Touch ID is enough). Claudish retries on its own —\n   no popup will appear until it's unlocked.`;
+    process.stderr.write(`\n${explain}\n\n`);
   }
+
+  // Wait on the lock that actually caused this denial. Polling the wrong one
+  // would either never clear or clear while the real blocker remains.
+  const stillLocked = () => (cause === "screen" ? isScreenLocked() : isAppLocked());
 
   let restoreInput = () => {};
   if (ttyIn) {
@@ -1317,7 +1470,7 @@ async function countdownForUnlock(round: number, rounds: number): Promise<"retry
       if (cancelled) break;
       // Unlocked early? Don't make the user wait out the clock — retry now, so
       // approving is immediately followed by the prompt they expect.
-      if (!isScreenLocked()) break;
+      if (!stillLocked()) break;
       if (ttyOut) process.stderr.write(`\r\x1b[2K${line(remaining)}`);
       await sdkSleep(lockTickMs);
     }
@@ -1355,8 +1508,13 @@ export async function withSdkRetry<T>(op: () => Promise<T>, label = "op:sdk-op")
     try {
       return await withSdkTransientRetry(op, label);
     } catch (err) {
-      if (round > LOCK_RETRY_ROUNDS || !isLockedDenial(err)) throw err;
-      if ((await countdownForUnlock(round, LOCK_RETRY_ROUNDS)) === "cancel") throw err;
+      // Re-classified every round: the user may unlock the Mac and leave
+      // 1Password itself locked, which turns a "screen" round into an "app"
+      // round. Pinning the cause once would then wait on a lock that already
+      // cleared while the real blocker stayed put.
+      const cause = classifyLockedDenial(err);
+      if (round > LOCK_RETRY_ROUNDS || cause === null) throw err;
+      if ((await countdownForUnlock(round, LOCK_RETRY_ROUNDS, cause)) === "cancel") throw err;
       // Fresh handshake for the retry — the denied client is spent.
       resetSdkClientCache();
     }
