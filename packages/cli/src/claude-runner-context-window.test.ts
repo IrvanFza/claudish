@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MIN_AUTO_COMPACT_WINDOW, computeMainThreadContextWindow } from "./claude-runner.js";
+import {
+  MIN_AUTO_COMPACT_WINDOW,
+  computeMainThreadContextWindow,
+  resolveContextWindowEnv,
+} from "./claude-runner.js";
+import { ENV } from "./config.js";
 import type { ClaudishConfig } from "./types.js";
 
 const REDUCED_WINDOW_SPEC = "cx@gpt-5.6-sol";
@@ -133,5 +138,102 @@ describe("computeMainThreadContextWindow", () => {
     const config = { model: "cx@unknown-model" } as unknown as ClaudishConfig;
 
     expect(await computeMainThreadContextWindow(config, mockCachePath)).toBe(0);
+  });
+});
+
+describe("resolveContextWindowEnv", () => {
+  test("regression: setting the max-context cap fails without the clamp fix", () => {
+    const { vars } = resolveContextWindowEnv(1_048_576, {});
+
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe("1048576");
+  });
+
+  test("sets the auto-compact window and reports the token count", () => {
+    const realWindow = 1_048_576;
+
+    const { vars, notice } = resolveContextWindowEnv(realWindow, {});
+
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1048576");
+    expect(notice).toContain(`${realWindow.toLocaleString()} tokens`);
+  });
+
+  test("sets the max-context cap below the auto-compact floor without setting the window", () => {
+    const realWindow = 128_000;
+
+    const { vars, notice } = resolveContextWindowEnv(realWindow, {});
+
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe("128000");
+    expect(vars).not.toHaveProperty(ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+    expect(notice).toContain(
+      `below Claude Code's ${MIN_AUTO_COMPACT_WINDOW.toLocaleString()}-token auto-compact floor`
+    );
+  });
+
+  test("sets both variables exactly at the auto-compact floor", () => {
+    const { vars } = resolveContextWindowEnv(MIN_AUTO_COMPACT_WINDOW, {});
+    const expectedWindow = String(MIN_AUTO_COMPACT_WINDOW);
+
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe(expectedWindow);
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe(expectedWindow);
+  });
+
+  test("returns no variables or notice for zero and negative windows", () => {
+    const zeroWindow = resolveContextWindowEnv(0, {});
+    const negativeWindow = resolveContextWindowEnv(-1, {});
+
+    expect(zeroWindow.vars).toEqual({});
+    expect(zeroWindow.notice).toBeUndefined();
+    expect(negativeWindow.vars).toEqual({});
+    expect(negativeWindow.notice).toBeUndefined();
+  });
+
+  test("preserves a user auto-compact override while still raising the max-context cap", () => {
+    const processEnv = {
+      [ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]: "300000",
+    };
+
+    const { vars, notice } = resolveContextWindowEnv(1_048_576, processEnv);
+
+    expect(vars).not.toHaveProperty(ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe("1048576");
+    expect(notice).toBeUndefined();
+  });
+
+  test("preserves a user max-context override while still setting the auto-compact window", () => {
+    const processEnv = {
+      [ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]: "500000",
+    };
+
+    const { vars } = resolveContextWindowEnv(1_048_576, processEnv);
+
+    expect(vars).not.toHaveProperty(ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
+    expect(vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]).toBe("1048576");
+  });
+
+  test("returns no variables or notice when both values are user-overridden", () => {
+    const processEnv = {
+      [ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]: "300000",
+      [ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]: "500000",
+    };
+
+    const { vars, notice } = resolveContextWindowEnv(1_048_576, processEnv);
+
+    expect(vars).toEqual({});
+    expect(notice).toBeUndefined();
+  });
+
+  test("does not mutate an explicit frozen environment or the ambient environment", () => {
+    const processEnv = Object.freeze({
+      [ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]: "300000",
+    });
+    const processEnvSnapshot = { ...processEnv };
+    const ambientEnvSnapshot = { ...process.env };
+
+    const { vars } = resolveContextWindowEnv(1_048_576, processEnv);
+
+    expect(processEnv).toEqual(processEnvSnapshot);
+    expect(process.env).toEqual(ambientEnvSnapshot);
+    expect(vars).not.toHaveProperty(ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+    expect(vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]).toBe("1048576");
   });
 });

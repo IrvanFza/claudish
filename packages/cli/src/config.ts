@@ -26,6 +26,14 @@ export const ENV = {
   // ~372K vs its 1.05M API spec) rejects the request. Claude Code clamps this
   // to [100K, its own understood window], so it can only compact earlier.
   CLAUDE_CODE_AUTO_COMPACT_WINDOW: "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+  // The "its own understood window" half of that clamp. Claude Code resolves the
+  // compaction point as min(CLAUDE_CODE_AUTO_COMPACT_WINDOW, maxContextTokens),
+  // and for a model name it doesn't recognise — every proxied model — that
+  // second term falls back to a hardcoded 200K. So the window override alone is
+  // silently clamped to 200K. This var is the lever that moves the cap; Claude
+  // Code honours it ONLY for model names that don't start with `claude-`, which
+  // is exactly the pure-proxy case where claudish sets it.
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS: "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
   // Local provider endpoints (OpenAI-compatible)
   OLLAMA_BASE_URL: "OLLAMA_BASE_URL", // Ollama server (default: http://localhost:11434)
   OLLAMA_HOST: "OLLAMA_HOST", // Alias for OLLAMA_BASE_URL
