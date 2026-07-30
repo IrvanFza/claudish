@@ -39,9 +39,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { addSpanMeta, beginQueuedSpan, setStartupAuthKind, traceSpan } from "../startup-trace.js";
 import { VERSION } from "../version.js";
 
@@ -1290,21 +1287,11 @@ export function isScreenLocked(): boolean {
 /** Probe returning true when the 1Password app is locked. Injectable for tests. */
 export type AppLockProbe = () => boolean;
 
-/** Where the desktop app persists its settings (macOS). */
-const OP_SETTINGS_PATH = join(
-  "Library",
-  "Group Containers",
-  "2BUA8C4S2C.com.1password",
-  "Library",
-  "Application Support",
-  "1Password",
-  "Data",
-  "settings",
-  "settings.json"
-);
-
 /**
  * The lock decision, as a PURE function of the settings object and the clock.
+ *
+ * ⚠️ FALSIFIED — retained only as documentation of an approach that does NOT work.
+ * `defaultAppLockProbe` no longer calls this. See its comment for the evidence.
  *
  * Split out from the file read so the rule is testable without touching the
  * developer's real 1Password settings — reading those would make the result
@@ -1326,16 +1313,36 @@ export function appLockedFromSettings(settings: unknown, nowSeconds: number): bo
   return nowSeconds - last > after;
 }
 
-export const defaultAppLockProbe: AppLockProbe = () => {
-  if (process.platform !== "darwin") return false;
-  try {
-    const raw = readFileSync(join(homedir(), OP_SETTINGS_PATH), "utf-8");
-    return appLockedFromSettings(JSON.parse(raw), Date.now() / 1000);
-  } catch {
-    // Probe failure must never invent a lock — fall back to terminal behavior.
-    return false;
-  }
-};
+/**
+ * INERT: always reports "not locked". App-lock detection is unimplemented.
+ *
+ * A first attempt derived it from the desktop app's settings.json, computing
+ * `now - security.authenticatedUnlock.deviceBasedUnlock.lastUnlock >
+ * ...askUnlockAfter`. Direct observation falsified it on 2026-07-30:
+ *
+ *   · settings.json's mtime was 09:29:59 and `lastUnlock` read 09:29:59 — the file
+ *     is not rewritten on unlock, so the timestamp is frozen at the last settings
+ *     SAVE, not the last unlock. It is not a live signal at all.
+ *   · At 13:04 the same app served every secret through the user's op-backed
+ *     .env pipe while that formula computed "locked, 13006s idle".
+ *   · `askUnlockAfter` (480s) is the device-unlock re-prompt grace, NOT the app
+ *     auto-lock — that is `security.autolock.minutes` (60). Two different things.
+ *
+ * A probe must never INVENT a lock: a false positive relabels an unrelated denial
+ * as "go unlock 1Password" and adds a ~30s countdown the user cannot resolve that
+ * way, which is worse than the plain error. So this returns false until a signal
+ * is verified, and the `LockCause`/countdown/messaging plumbing around it stays
+ * ready for one to drop in via `setAppLockProbe`.
+ *
+ * Candidates not yet validated: `op whoami` behaviour while
+ * `developers.cliSharedLockState.enabled` is on (it did report "account is not
+ * signed in" during a denial, but that needs the `op` binary and may itself
+ * prompt); the agent socket; or timing — a denial returned faster than any human
+ * could answer a dialog implies nobody was asked.
+ *
+ * NOTE the underlying denial was real; only this attribution of its cause was not.
+ */
+export const defaultAppLockProbe: AppLockProbe = () => false;
 
 let appLockProbe: AppLockProbe = defaultAppLockProbe;
 
