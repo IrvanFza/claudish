@@ -1,7 +1,6 @@
 {
   "enabledPlugins": {
     "code-analysis@magus": true,
-    "multimodel@magus": true,
     "dev@magus": true,
     "terminal@magus": true,
     "code-review@claude-plugins-official": true,
@@ -13,7 +12,6 @@
     "designer@magus": true,
     "browser-use@magus": true,
     "kanban@magus": true,
-    "seo@magus": true,
     "claudish@magus": true,
     "mnemex@magus": true
   },
