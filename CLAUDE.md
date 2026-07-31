@@ -309,6 +309,43 @@ This is the one place the 400-not-503 doctrine (`composed-handler.ts` ~line 461)
 
 `latency_ms` for a retried turn includes the backoff waits by design: the honest figure is time-to-usable-response.
 
+## Layer 4: Behavior Compatibility Layer (`behavior/`)
+
+Layers 1-3 translate the wire format, the model dialect, and the transport. Layer 4 translates **harness behavioral conventions** — the unwritten protocols Claude Code expects an agent to follow. A foreign model can speak the wire format perfectly, use every tool correctly, and still break Claude Code by violating one.
+
+**The motivating case.** CC 2.1.220's `ExitPlanModeV2` takes **no** `plan` parameter — its advertised schema is `{allowedPrompts?}` and its description says "This tool does NOT take the plan content as a parameter - it will read the plan from the file you wrote". `normalizeToolInput` injects `plan` from disk at the session's assigned path. So `ExitPlanMode({})` is **correct**; the failure is upstream. gpt-5.6-sol wrote a complete 12.9 KB plan under a filename it invented, CC read the assigned path, found nothing, and returned `plan: null` — which downgrades the approval dialog from the rich form (`Yes, and bypass permissions` / `Yes, auto-accept edits` / `Yes, manually approve edits`) to a bare "Exit plan mode?" yes/no. That rich dialog is the **only** surface offering permission elevation on exit, so the session always falls back to `prePlanMode ?? "default"` = manual approval.
+
+Measured over 115 recorded `ExitPlanMode` calls: native Claude 87/87 carried a plan, Kimi-via-claudish 4/4, gpt-5.6-sol 17/24 empty. The discriminator is exact — sessions that wrote to the assigned path got the rich dialog 7/7, sessions that did not got the degraded one 17/17 — and failures ran at ~1.75x the context (178K vs 102K median input tokens). **Not a translation bug**: the same model through the same proxy got the random CC slug right in a shorter session.
+
+### Two pipeline defects this required fixing first
+
+- **`beforeRequest` ran after `buildPayload`.** It is now step **3b**, before step 4. On Chat Completions the old order worked only by accident (`payload.messages = messages` aliases); on **Codex/Responses** `buildPayload` deep-copies both arrays and lifts system into `payload.instructions`, so every middleware mutation was silently discarded on exactly the path gpt-5.x uses. Keep 3b ahead of 4.
+- **`openai-responses-sse.ts` had no hooks at all** — no middleware, no `tool-call-recovery`, while `openai-sse.ts` had both. Now wired.
+
+### Design
+
+Rules **return** actions; the engine applies them. Nothing else in the layer mutates the request, which is what makes severity levels meaningful and every change attributable to a rule id.
+
+- **Severity is linter semantics**: `off` / `warn` (log, don't apply) / `fix` (apply). Config resolution is exact id → longest glob → the rule's own default, so `{"plan-mode/*": "off", "plan-mode/plan-file-path": "fix"}` works.
+- **`RuleAction` is a closed union** (`injectSystemNote`, `rewriteToolDescription`, `repairToolArgs`, `warn`). An open "run this callback" action would make rule effects unauditable and defeat severity.
+- **Sessions, not instance state.** `ComposedHandler` is cached per model and can serve overlapping requests, so detected harness facts live on a per-request `BehaviorSession` captured by the stream-parser closure. Two in-flight turns cannot read each other's plan path.
+- **`armed(facts)` gates buffering.** `repairToolArgs` is only possible if a tool's arguments are withheld until the call completes (the Responses parser streams `input_json_delta` the instant each fragment arrives). Buffering is therefore opt-in per tool AND per request: outside plan mode nothing is buffered and streaming is byte-for-byte unchanged. Without `armed`, intercepting `Write` would suppress incremental file-content delivery on every foreign-model request.
+- **Off for native Claude** (`claude-*` or provider `anthropic`) — a naming rule, not a pinned roster.
+- **Anchors live in `harness.ts` only.** `PLAN_MODE_HINT` is a cheap pre-test and **must stay a superset of the anchors** — an earlier version omitted "create your plan at" and short-circuited a valid anchor away. Never assume `~/.claude/plans`: CC has a `planDir` setting, so the path is always taken from the reminder.
+
+### Config
+
+```json
+{ "behavior": {
+    "rules": { "plan-mode/plan-file-path": "fix" },
+    "hooks": ["./.claudish/hooks/my-rule.ts"],
+    "observer": { "enabled": true, "mode": "suggest" } } }
+```
+
+Hooks are user modules exporting `BehaviorRule`s, namespaced `hook:<file>/<id>` so they can never shadow a built-in; load failures warn and skip. The **observer** is a small local model (vision-proxy contract: hard timeout, `null` on failure, never blocks) that sees only a **digest** — tool names, harness facts, the proposed call's argument keys plus path-like values — never conversation text. Its model is **discovered** via `ollama-discovery` (smallest non-embedding), never pinned, and ids outside the rule vocabulary are discarded as hallucinations.
+
+`behavior/observer/corpus.ts` replays recorded CC transcripts offline to build a **labelled** divergence corpus with no live traffic: CC records `toolUseResult.filePath` (the path it actually read) and `plan: null` (whether it found anything), so every replayed session is known-good or known-degraded for free. Over 1129 local transcripts it independently reproduced the diagnosis — 11 degraded, all gpt-5.6-sol, all four Claude models and all three Kimi models clean, and the rule would have caught 11/11.
+
 ## Debug Logging
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.

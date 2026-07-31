@@ -13,6 +13,8 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
+import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
+import { loadHookRules } from "./behavior/hooks.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import {
   ensureCatalogReady,
@@ -116,6 +118,18 @@ export async function createProxyServer(
     log(
       `[Proxy] customEndpoints load skipped: ${err instanceof Error ? err.message : String(err)}`
     );
+  }
+
+  // Load behavior-layer hook rules before any handler is constructed: the
+  // engine is memoized on first use, and registering rules after that point
+  // would leave already-built handlers on a stale rule set.
+  try {
+    const hookRules = await loadHookRules(parseBehaviorConfig(loadConfig().behavior).hooks);
+    if (hookRules.length > 0) registerHookRules(hookRules);
+  } catch (err) {
+    // Same posture as customEndpoints: a broken optional extension warns and is
+    // skipped, it never blocks startup.
+    log(`[Proxy] behavior hooks load skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Define handlers for different roles

@@ -196,6 +196,13 @@ export interface ClaudishProfileConfig {
    * Validation of entries happens at the consumption site (Phase 3) via Zod, not here.
    */
   customEndpoints?: Record<string, unknown>;
+
+  /**
+   * Layer 4 behavior-compatibility settings (rule severities, hooks, observer).
+   * Validated at the consumption site via Zod in behavior/config.ts, not here —
+   * `loadConfig` runs on lightweight startup paths and stays Zod-free.
+   */
+  behavior?: Record<string, unknown>;
 }
 
 /**
@@ -294,6 +301,9 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.customEndpoints !== undefined) {
       merged.customEndpoints = config.customEndpoints;
+    }
+    if (config.behavior !== undefined) {
+      merged.behavior = config.behavior;
     }
     return merged;
   } catch (error) {
