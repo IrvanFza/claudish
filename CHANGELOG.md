@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.24.0] - 2026-07-30
+
+### Documentation
+
+- update CHANGELOG.md for v7.23.0([`91507e9`](https://github.com/MadAppGang/claudish/commit/91507e9704cd7c1962939a702777f5d0aadcd60f))
+
+### New Features
+
+- v7.24.0 — stop compacting a 1M-window model at 200K, and stop demanding keys routing won't use([`ffac9b3`](https://github.com/MadAppGang/claudish/commit/ffac9b3c33c4671a04e5db9d395411ab314b36bb))
+
 ## [7.23.0] - 2026-07-29
 
 ### Documentation

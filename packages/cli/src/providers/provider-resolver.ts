@@ -39,6 +39,8 @@ import { parseUrlModel, resolveProvider } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
 import { renderOpFailureNotice } from "./onepassword.js";
 import { buildCredentialHint } from "./routing-hints.js";
+// routing-rules does NOT import provider-resolver, so this stays acyclic.
+import { type RoutePlan, route } from "./routing-rules.js";
 
 /**
  * Provider category types
@@ -381,7 +383,54 @@ export async function validateApiKeysForModels(
     })
   );
 
+  await rescueRoutableResolutions(resolutions);
+
   return resolutions;
+}
+
+/** The routing oracle `rescueRoutableResolutions` consults (test seam). */
+export type RouteOracle = (spec: string) => Promise<RoutePlan>;
+
+/**
+ * Let the routing chain overturn a "missing API key" verdict.
+ *
+ * The credential authority answers "is THIS provider credentialed", but it is
+ * asked about whichever provider `resolveModelProvider` picked — and for a BARE
+ * model name that is not necessarily the provider that will serve the request.
+ * `route()` owns that decision, and the two resolvers genuinely disagree: bare
+ * `glm-5-turbo` resolves to `glm` (needs ZHIPU_API_KEY) while `route()` serves it
+ * from `glm-coding` with an `openrouter` fallback. With only an OpenRouter key
+ * configured, startup died demanding a key for a provider it was never going to
+ * call.
+ *
+ * `route()` returns `kind: "ok"` only when at least one provider in the chain is
+ * credentialed — exactly the question being asked here — so it gets the last word.
+ *
+ * Deliberately a RESCUE, not a replacement: it only ever CLEARS a missing-key
+ * verdict, never creates one. So every path `resolveModelProvider` already gets
+ * right (local transports, native Anthropic, custom endpoints, unknown providers)
+ * is untouched, and explicit `provider@model` specs stay strict for free —
+ * `routeExplicit` probes only the pinned provider and never falls back, so a
+ * pinned provider without credentials still returns `no-route` and still fails.
+ *
+ * Mutates the resolutions in place, mirroring the authority pass above.
+ */
+export async function rescueRoutableResolutions(
+  resolutions: ProviderResolution[],
+  router: RouteOracle = route
+): Promise<void> {
+  await Promise.all(
+    resolutions.map(async (r) => {
+      if (!r.requiredApiKeyEnvVar || r.apiKeyAvailable) return;
+      try {
+        const plan = await router(r.fullModelId);
+        if (plan.kind === "ok") r.apiKeyAvailable = true;
+      } catch {
+        // Routing is best-effort here — a hiccup must not turn a servable model
+        // into a hard startup failure, and must not mask a genuine missing key.
+      }
+    })
+  );
 }
 
 /**

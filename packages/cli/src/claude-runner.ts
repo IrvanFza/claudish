@@ -506,6 +506,75 @@ export async function computeMainThreadContextWindow(
   return Number.isFinite(min) ? min : 0;
 }
 
+/** The env claudish hands Claude Code to describe the main thread's context. */
+export interface ContextWindowEnv {
+  /** Variables to merge into the child environment. */
+  vars: Record<string, string>;
+  /** Message for the user, or undefined when there is nothing worth saying. */
+  notice?: string;
+}
+
+/**
+ * Decide what to tell Claude Code about the main-thread model's context window.
+ *
+ * Two DIFFERENT levers, and the well-known one is useless without the other:
+ * Claude Code resolves the compaction point as
+ * `min(CLAUDE_CODE_AUTO_COMPACT_WINDOW, maxContextTokens(model))`, and for a
+ * model name it has never heard of — every model claudish proxies —
+ * `maxContextTokens` falls back to a hardcoded 200K. So passing only the window
+ * override is silently clamped: a 1M-window Kimi subscription compacted at 200K
+ * no matter what we sent, while the status line counted "% until auto-compact"
+ * down against the clamped 180K. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` moves the cap.
+ * Verified against Claude Code 2.1.220 (`SZc` resolves the max, `aY` applies the
+ * `Math.min`).
+ *
+ * `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is set whenever the window is KNOWN, including
+ * below `MIN_AUTO_COMPACT_WINDOW`: an accurate small window makes Claude Code
+ * compact before a 128K backend overflows, where its 200K default overshoots.
+ * That path leaves the window "unconfigured" from Claude Code's perspective
+ * (its window source stays `"auto"`), so it does NOT trip the small-window bail
+ * documented on `MIN_AUTO_COMPACT_WINDOW`. Claude Code also ignores the var
+ * entirely for model names starting with `claude-`, so it can never disturb a
+ * native Anthropic session.
+ *
+ * A user-set value for either var always wins — this only fills gaps.
+ */
+export function resolveContextWindowEnv(
+  realWindow: number,
+  processEnv: NodeJS.ProcessEnv = process.env
+): ContextWindowEnv {
+  const vars: Record<string, string> = {};
+  if (!(realWindow > 0)) return { vars };
+
+  if (!processEnv[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS]) {
+    vars[ENV.CLAUDE_CODE_MAX_CONTEXT_TOKENS] = String(realWindow);
+  }
+
+  if (processEnv[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) return { vars };
+
+  if (realWindow >= MIN_AUTO_COMPACT_WINDOW) {
+    vars[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(realWindow);
+    return {
+      vars,
+      notice:
+        `[claudish] Auto-compact window: ${realWindow.toLocaleString()} tokens ` +
+        "(Claude Code compacts before the backend's real limit)",
+    };
+  }
+
+  // Setting the window var here would be WORSE than leaving it unset — see
+  // MIN_AUTO_COMPACT_WINDOW. CLAUDE_CODE_MAX_CONTEXT_TOKENS still carries the
+  // real window, so native auto-compaction now fires against the true limit
+  // instead of Claude Code's 200K default.
+  return {
+    vars,
+    notice:
+      `[claudish] Model's real context window (${realWindow.toLocaleString()}) is below ` +
+      `Claude Code's ${MIN_AUTO_COMPACT_WINDOW.toLocaleString()}-token auto-compact floor — ` +
+      "leaving CLAUDE_CODE_AUTO_COMPACT_WINDOW unset so native auto-compaction stays on.",
+  };
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
@@ -694,25 +763,11 @@ export async function runClaudeWithProxy(
       // [100K, its understood window], so this can only make it compact EARLIER —
       // never overflow. Respect a user-set value; otherwise use the real
       // per-provider window from the cloud catalog (never hardcoded).
-      if (!process.env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW]) {
-        const autoCompactWindow = await computeMainThreadContextWindow(config);
-        if (autoCompactWindow >= MIN_AUTO_COMPACT_WINDOW) {
-          env[ENV.CLAUDE_CODE_AUTO_COMPACT_WINDOW] = String(autoCompactWindow);
-          if (!config.quiet) {
-            console.error(
-              `[claudish] Auto-compact window: ${autoCompactWindow.toLocaleString()} tokens ` +
-                "(Claude Code compacts before the backend's real limit)"
-            );
-          }
-        } else if (autoCompactWindow > 0 && !config.quiet) {
-          // Setting the var here would be WORSE than leaving it unset — see
-          // MIN_AUTO_COMPACT_WINDOW.
-          console.error(
-            `[claudish] Model's real context window (${autoCompactWindow.toLocaleString()}) is below ` +
-              `Claude Code's ${MIN_AUTO_COMPACT_WINDOW.toLocaleString()}-token auto-compact floor — ` +
-              "leaving CLAUDE_CODE_AUTO_COMPACT_WINDOW unset so native auto-compaction stays on."
-          );
-        }
+      const realWindow = await computeMainThreadContextWindow(config);
+      const contextEnv = resolveContextWindowEnv(realWindow, process.env);
+      Object.assign(env, contextEnv.vars);
+      if (contextEnv.notice && !config.quiet) {
+        console.error(contextEnv.notice);
       }
     }
   }
