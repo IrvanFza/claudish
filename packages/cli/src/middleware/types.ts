@@ -20,6 +20,26 @@ export interface RequestContext {
 
   /** Whether this is a streaming request */
   stream: boolean;
+
+  /**
+   * The normalized Claude-format request.
+   *
+   * This is the ONLY place the system prompt is reachable: the Codex/Responses
+   * adapter reads `claudeRequest.system` into `payload.instructions` rather than
+   * taking it from `messages`, so a middleware that wants to inject a system-level
+   * note must edit this. Mutable.
+   */
+  claudeRequest: any;
+
+  /**
+   * Claude-format tool definitions (`{name, description, input_schema}`),
+   * BEFORE conversion to the target wire format.
+   *
+   * Rewrite descriptions here rather than on `tools`: conversion runs
+   * `sanitizeSchemaForOpenAI` and, on Codex, rebuilds every tool object, so edits
+   * made to the converted array are the ones most likely to be dropped. Mutable.
+   */
+  claudeTools: any[];
 }
 
 /**

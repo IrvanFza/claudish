@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.25.0] - 2026-07-31
+
+### Documentation
+
+- update CHANGELOG.md for v7.24.0([`9c29cfa`](https://github.com/MadAppGang/claudish/commit/9c29cfac10869f6ec3061181a0705dca8a1d0d48))
+
+### New Features
+
+- v7.25.0 — Layer 4 behavior compatibility layer for foreign models([`0fb80e4`](https://github.com/MadAppGang/claudish/commit/0fb80e48b660cf12acc25f00c41ffcd92e12e902))
+
 ## [7.24.0] - 2026-07-30
 
 ### Documentation

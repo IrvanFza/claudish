@@ -9,11 +9,15 @@
  *   1. transformOpenAIToClaude(payload)          — normalize incoming request
  *   2. adapter.convertMessages(claudeRequest)    — Claude → target format
  *   3. adapter.convertTools(claudeRequest)        — tool schema conversion
+ *   3b. middleware.beforeRequest(...)             — pre-flight hooks
  *   4. adapter.buildPayload(...)                  — assemble full request body
  *   5. adapter.prepareRequest(payload, original)  — tool name truncation, etc.
- *   6. middleware.beforeRequest(...)               — pre-flight hooks
- *   7. fetch via provider (with optional queue)   — HTTP request
- *   8. stream parser by provider.streamFormat     — response → Claude SSE
+ *   6. fetch via provider (with optional queue)   — HTTP request
+ *   7. stream parser by provider.streamFormat     — response → Claude SSE
+ *
+ * Step 3b must stay ahead of step 4: buildPayload does not reliably alias
+ * `messages`/`tools`, so hooks that run after it are silently discarded on the
+ * Codex/Responses path.
  */
 
 import type { Context } from "hono";
@@ -24,6 +28,8 @@ import type { ModelHandler } from "./types.js";
 type BaseModelAdapter = BaseAPIFormat;
 import { DialectManager } from "../adapters/dialect-manager.js";
 import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
+import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
+import { getBehaviorEngine } from "../behavior/index.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import {
@@ -90,6 +96,7 @@ export class ComposedHandler implements ModelHandler {
   /** Model-specific adapter (GLM, Grok, etc.) — handles model quirks independent of provider */
   private modelAdapter?: BaseModelAdapter;
   private middlewareManager: MiddlewareManager;
+  private behaviorEngine: BehaviorEngine;
   private tokenTracker: TokenTracker;
   /** Full routed model string (e.g. "zai@glm-4.7"). Used for provider routing and display echo. */
   private targetModel: string;
@@ -150,6 +157,11 @@ export class ComposedHandler implements ModelHandler {
     this.middlewareManager
       .initialize()
       .catch((err) => log(`[ComposedHandler:${this.bareModelName}] Middleware init error: ${err}`));
+
+    // Layer 4: harness-convention conformance. The engine is stateless and
+    // process-wide; per-request state lives on the session created in handle(),
+    // because this handler is cached per model and can serve overlapping requests.
+    this.behaviorEngine = getBehaviorEngine();
 
     // Initialize token tracker — model adapter knows the real context window
     this.tokenTracker = new TokenTracker(port, {
@@ -321,6 +333,41 @@ export class ComposedHandler implements ModelHandler {
       }
     }
 
+    // 3b. Middleware before request.
+    //
+    // MUST run before buildPayload. buildPayload is not guaranteed to keep a
+    // reference to `messages`/`tools`: the Chat Completions adapter assigns them
+    // straight onto the payload (so in-place edits happened to survive), but the
+    // Codex/Responses adapter deep-copies both (convertMessagesToResponsesAPI +
+    // .map()) and lifts the system prompt out of `claudeRequest.system` into
+    // `payload.instructions`. Running this hook after buildPayload therefore
+    // discarded every mutation on exactly the path gpt-5.x uses, silently.
+    //
+    // Use bareModelName — must match the key used by getActiveNames() and
+    // afterStreamComplete() so the same set of middlewares is selected at both ends.
+    await this.middlewareManager.beforeRequest({
+      modelId: this.bareModelName,
+      messages,
+      tools,
+      stream: true,
+      claudeRequest,
+      claudeTools: claudeRequest.tools ?? [],
+    });
+
+    // 3c. Layer 4 — harness-convention conformance. Session is per-request so
+    // two concurrent turns on this cached handler cannot share detected state.
+    const behaviorSession = this.behaviorEngine.startSession({
+      modelId: this.bareModelName,
+      providerName: this.provider.name,
+      // A naming rule, not a pinned roster: Claude models are `claude-*`, and
+      // they already follow these conventions (measured 87/87 on plan mode).
+      isNativeAnthropic:
+        /^claude[-.]/i.test(this.bareModelName) || this.provider.name === "anthropic",
+    });
+    if (!behaviorSession.isNoop) {
+      behaviorSession.applyRequest(claudeRequest, claudeRequest.tools ?? [], tools, messages);
+    }
+
     // 4. Build request payload
     let requestPayload = adapter.buildPayload(claudeRequest, messages, tools);
 
@@ -390,15 +437,8 @@ export class ComposedHandler implements ModelHandler {
       requestPayload = this.provider.transformPayload(requestPayload);
     }
 
-    // 6. Middleware before request.
-    // Use bareModelName — must match the key used by getActiveNames() and
-    // afterStreamComplete() so the same set of middlewares is selected at both ends.
-    await this.middlewareManager.beforeRequest({
-      modelId: this.bareModelName,
-      messages,
-      tools,
-      stream: true,
-    });
+    // (Middleware beforeRequest ran at step 3b, before buildPayload — see the
+    // note there for why it cannot run at this point.)
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
     const headers = await this.provider.getHeaders();
@@ -802,7 +842,8 @@ export class ComposedHandler implements ModelHandler {
       onStreamComplete,
       (code, message) => {
         streamApiError = { code, message };
-      }
+      },
+      behaviorSession
     );
   }
 
@@ -919,7 +960,8 @@ export class ComposedHandler implements ModelHandler {
     claudeRequest: any,
     toolNameMap?: Map<string, string>,
     onComplete?: () => void,
-    onApiError?: (code: string, message: string) => void
+    onApiError?: (code: string, message: string) => void,
+    behaviorSession?: BehaviorSession
   ): Response {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
@@ -985,6 +1027,9 @@ export class ComposedHandler implements ModelHandler {
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
           priorInputTokens,
+          middlewareManager: this.middlewareManager,
+          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
+          onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
         });
 
       case "anthropic-sse":
