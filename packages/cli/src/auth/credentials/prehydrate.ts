@@ -37,12 +37,21 @@
  * 1Password Environment is fetched once per process (single-flight), so this
  * costs ONE handshake regardless of how many models are being spawned.
  *
- * Note this does not cover two INDEPENDENT claudish processes launched at the
- * same instant by unrelated sessions — that would need a cross-process lock.
- * It covers every spawn site claudish itself owns.
+ * Pre-hydration is the cheap path, not the whole fix. It covers the keys
+ * 1Password CAN supply, at every spawn site claudish owns. Two other gaps are
+ * handled elsewhere:
+ *
+ *   · Keys 1Password does NOT hold still send each child to the SDK →
+ *     `publishOpSkipList` below tells children not to bother.
+ *   · Two INDEPENDENT claudish processes launched at the same instant by
+ *     unrelated sessions cannot be reached by any parent/child protocol →
+ *     `providers/onepassword-handshake-lock.ts` serializes the handshake
+ *     across processes.
  */
 
+import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
+import { OP_UNAVAILABLE_ENV, getOpUnavailableVars } from "./op-source.js";
 
 /**
  * Resolve credentials for `models` into `process.env` before spawning children.
@@ -62,7 +71,33 @@ export async function prehydrateCredentialsForSpawn(models: (string | undefined)
   if (wanted.length === 0) return;
   try {
     await validateApiKeysForModels(wanted);
+    publishOpSkipList();
   } catch {
     // Non-fatal by contract — see above.
   }
+}
+
+/**
+ * Tell children which env vars 1Password answered it does NOT hold, so they
+ * skip the SDK for those entirely.
+ *
+ * Pre-hydration alone cannot silence the race. It hands children every key
+ * 1Password CAN supply — but a bare model name filters a CHAIN, and each child
+ * walks that chain from the top. The candidates 1Password has nothing for are
+ * still a miss in env, so each child opens its own SDK client for them, all at
+ * the same instant. Observed in ai-docs/sessions/opverify3: 3/3 models
+ * succeeded on inherited keys, and two children still logged
+ * "Denied authorization for SDK client" chasing a key that does not exist.
+ *
+ * ONLY published when the run recorded NO op failures. A denial also produces
+ * an empty resolve, and publishing that would teach every child that a key the
+ * user really does store in 1Password is permanently absent — turning one
+ * transient denial into a run-wide outage. With failures present we publish
+ * nothing and children behave exactly as before.
+ */
+function publishOpSkipList(): void {
+  if (getOpFailures().length > 0) return;
+  const unavailable = getOpUnavailableVars();
+  if (unavailable.length === 0) return;
+  process.env[OP_UNAVAILABLE_ENV] = unavailable.join(",");
 }

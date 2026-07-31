@@ -41,6 +41,7 @@
 import { spawnSync } from "node:child_process";
 import { addSpanMeta, beginQueuedSpan, setStartupAuthKind, traceSpan } from "../startup-trace.js";
 import { VERSION } from "../version.js";
+import { withHandshakeLock } from "./onepassword-handshake-lock.js";
 
 /** Matches a full `op://...` secret reference (no embedded whitespace). */
 export const OP_REF_RE = /^op:\/\/[^\s]+$/;
@@ -1076,14 +1077,21 @@ export const defaultSdkClientFactory: SdkClientFactory = async (auth) => {
     });
     // Startup-trace: the DesktopAuth handshake can block on the USER clicking
     // "Authorize" in the 1Password app — hence mayIncludeUserPrompt.
+    //
+    // DesktopAuth ONLY: 1Password arbitrates this handshake across the whole
+    // machine and denies every concurrent peer, so sibling claudish processes
+    // must take turns — see onepassword-handshake-lock.ts for the measurements.
+    // A service-account TOKEN is authorized by the value alone, with no desktop
+    // app in the loop and nothing to arbitrate, so it never pays for the lock.
+    const build = () =>
+      createClient({
+        auth: auth.kind === "token" ? auth.token : new DesktopAuth(auth.accountName),
+        integrationName: "claudish",
+        integrationVersion: VERSION || "1.0.0",
+      });
     const client = await traceSpan(
       "op:client-handshake",
-      () =>
-        createClient({
-          auth: auth.kind === "token" ? auth.token : new DesktopAuth(auth.accountName),
-          integrationName: "claudish",
-          integrationVersion: VERSION || "1.0.0",
-        }),
+      () => (auth.kind === "token" ? build() : withHandshakeLock(build)),
       { mayIncludeUserPrompt: true, authKind: auth.kind }
     );
     // The real Client structurally satisfies SdkClientLike (secrets / vaults /

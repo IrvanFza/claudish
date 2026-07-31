@@ -25,6 +25,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { SdkAuth, SdkClientFactory, SdkClientLike } from "../../providers/onepassword.js";
 import {
+  getOpFailures,
+  resetOpFailures,
   setAppLockProbe,
   setLockRetryTiming,
   setScreenLockProbe,
@@ -35,18 +37,23 @@ import {
   __resetStartupTraceForTests,
 } from "../../startup-trace.js";
 import {
+  OP_UNAVAILABLE_ENV,
+  __resetOpUnavailableForTests,
   __resetResolveCacheForTests,
   __resetSdkAuthForTests,
   __resetSniffForTests,
   __resetWarnOnceForTests,
   __setOpSourceSeamsForTests,
+  getOpUnavailableVars,
   hasOpSources,
   invalidateOpResolutionCache,
+  recordOpUnavailableVars,
   resolveOpKeyForEnvVars,
 } from "./op-source.js";
 
 let savedArgv: string[];
 let savedDisableOp: string | undefined;
+let savedOpUnavailable: string | undefined;
 
 beforeEach(() => {
   savedArgv = process.argv;
@@ -54,10 +61,14 @@ beforeEach(() => {
   // hasOpSources()=false and short-circuit before the seams are consulted).
   savedDisableOp = process.env.CLAUDISH_DISABLE_OP;
   delete process.env.CLAUDISH_DISABLE_OP;
+  savedOpUnavailable = process.env[OP_UNAVAILABLE_ENV];
+  delete process.env[OP_UNAVAILABLE_ENV];
   __resetSniffForTests();
   __resetResolveCacheForTests();
   __resetSdkAuthForTests();
   __resetWarnOnceForTests();
+  __resetOpUnavailableForTests();
+  resetOpFailures();
   __setOpSourceSeamsForTests(undefined);
   setLockRetryTiming({ seconds: 0.01, tickMs: 1 });
   setScreenLockProbe(() => false);
@@ -68,10 +79,14 @@ afterEach(() => {
   process.argv = savedArgv;
   if (savedDisableOp === undefined) delete process.env.CLAUDISH_DISABLE_OP;
   else process.env.CLAUDISH_DISABLE_OP = savedDisableOp;
+  if (savedOpUnavailable === undefined) delete process.env[OP_UNAVAILABLE_ENV];
+  else process.env[OP_UNAVAILABLE_ENV] = savedOpUnavailable;
   __resetSniffForTests();
   __resetResolveCacheForTests();
   __resetSdkAuthForTests();
   __resetWarnOnceForTests();
+  __resetOpUnavailableForTests();
+  resetOpFailures();
   __setOpSourceSeamsForTests(undefined);
   setLockRetryTiming();
   setScreenLockProbe(undefined);
@@ -117,6 +132,76 @@ describe("resolveOpKeyForEnvVars() — short-circuits (no SDK touched)", () => {
     expect(hasOpSources()).toBe(true);
     const out = await resolveOpKeyForEnvVars(new Set(), { onAuthFailure: "skip" });
     expect(out).toEqual({});
+  });
+});
+
+describe("CLAUDISH_OP_UNAVAILABLE skip-list", () => {
+  it("records sorted, deduplicated non-empty names and resets them", () => {
+    recordOpUnavailableVars(["ZHIPU_API_KEY", "", "OPENAI_API_KEY", "ZHIPU_API_KEY"]);
+
+    expect(getOpUnavailableVars()).toEqual(["OPENAI_API_KEY", "ZHIPU_API_KEY"]);
+
+    __resetOpUnavailableForTests();
+    expect(getOpUnavailableVars()).toEqual([]);
+  });
+
+  it("skips the SDK when every wanted name was inherited as unavailable", async () => {
+    let sdkFactoryCalls = 0;
+    const factory: SdkClientFactory = async () => {
+      sdkFactoryCalls++;
+      throw new Error("SDK factory must not run for inherited unavailable vars");
+    };
+    seamWithEnvironment(factory);
+    process.env[OP_UNAVAILABLE_ENV] = " SKIPPED_A_KEY,SKIPPED_B_KEY, ";
+
+    const out = await resolveOpKeyForEnvVars(new Set(["SKIPPED_A_KEY", "SKIPPED_B_KEY"]), {
+      onAuthFailure: "skip",
+    });
+
+    expect(out).toEqual({});
+    expect(sdkFactoryCalls).toBe(0);
+  });
+
+  it("still resolves a wanted name that is not in the inherited skip-list", async () => {
+    const { factory, counts } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+    process.env[OP_UNAVAILABLE_ENV] = "OPENROUTER_API_KEY";
+
+    const out = await resolveOne("GEMINI_API_KEY");
+
+    expect(out).toEqual({ GEMINI_API_KEY: "sk-test-gemini" });
+    expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+
+  it("records a clean missing name as unavailable", async () => {
+    const { factory } = makeCountingEnvironmentFactory();
+    seamWithEnvironment(factory);
+
+    expect(await resolveOne("CLEAN_MISSING_KEY")).toEqual({});
+    expect(getOpUnavailableVars()).toEqual(["CLEAN_MISSING_KEY"]);
+    expect(getOpFailures()).toEqual([]);
+  });
+
+  it("records a source failure instead of publishing an auth-failure miss", async () => {
+    const denial = "Denied authorization for SDK client (test)";
+    let sdkFactoryCalls = 0;
+    seamWithEnvironment(async () => {
+      sdkFactoryCalls++;
+      throw new Error(denial);
+    });
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await resolveOne("AUTH_FAILURE_KEY")).toEqual({});
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(getOpUnavailableVars()).toEqual(["AUTH_FAILURE_KEY"]);
+    expect(sdkFactoryCalls).toBe(1);
+    expect(getOpFailures()).toHaveLength(1);
+    expect(getOpFailures()[0]?.message).toContain(denial);
+    expect(process.env[OP_UNAVAILABLE_ENV]).toBeUndefined();
   });
 });
 

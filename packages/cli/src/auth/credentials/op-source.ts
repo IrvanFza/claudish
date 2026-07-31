@@ -79,6 +79,70 @@ export function __resetWarnOnceForTests(): void {
   warnedMessages.clear();
 }
 
+// ── The parent→child "1Password does not have this" skip-list ───────────────
+
+/**
+ * Env vars this process asked 1Password for and 1Password answered it does not
+ * hold. Run-scoped, names only — the negative counterpart to
+ * `recordOpHydratedVars`.
+ *
+ * WHY: a bare model name credential-filters a CHAIN of candidate providers. The
+ * parent short-circuits at the first credentialed candidate, but each spawned
+ * child walks its own chain from the top — so it misses e.g. ZHIPU_API_KEY in
+ * env and opens its OWN SDK client for it, concurrently with its siblings.
+ * That is precisely the handshake race (onepassword-handshake-lock.ts). The
+ * keys 1Password CAN supply are already handled: pre-hydration puts them in
+ * env and the child never asks. It is the keys 1Password does NOT have that
+ * keep sending children to the SDK for a value that was never going to be
+ * there.
+ *
+ * `prehydrateCredentialsForSpawn` publishes this set to children through
+ * CLAUDISH_OP_UNAVAILABLE so they can skip those vars outright.
+ */
+const opUnavailableVars = new Set<string>();
+
+/** Env var carrying the skip-list from a parent claudish to its children. */
+export const OP_UNAVAILABLE_ENV = "CLAUDISH_OP_UNAVAILABLE";
+
+/** Record env vars that a CLEAN 1Password resolve came back empty for. */
+export function recordOpUnavailableVars(names: Iterable<string>): void {
+  for (const n of names) {
+    if (typeof n === "string" && n.length > 0) opUnavailableVars.add(n);
+  }
+}
+
+/** The names 1Password answered it does not hold, this run. */
+export function getOpUnavailableVars(): readonly string[] {
+  return [...opUnavailableVars].sort();
+}
+
+/** Test-only: forget this run's unavailable-var record. */
+export function __resetOpUnavailableForTests(): void {
+  opUnavailableVars.clear();
+}
+
+/**
+ * The skip-list INHERITED from a parent process — never this process's own
+ * record.
+ *
+ * The distinction is deliberate. Within a process a miss is intentionally NOT
+ * cached (`api-key-credential.ts`): it may be a transient auth failure, and
+ * caching it would mark a provider permanently unavailable off one blip. The
+ * inherited list is different in kind — the parent only publishes it after
+ * confirming 1Password answered with NO failures recorded, so "absent" there
+ * means genuinely absent, not "we were denied".
+ */
+function inheritedUnavailable(): Set<string> {
+  const raw = process.env[OP_UNAVAILABLE_ENV];
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+  );
+}
+
 /** Thrown when no usable 1Password SDK auth can be resolved. */
 export class OpAuthError extends Error {
   constructor(message: string) {
@@ -626,6 +690,12 @@ export async function resolveOpKeyForEnvVars(
     if (hit !== undefined) cached[w] = hit;
     else stillWanted.add(w);
   }
+
+  // Drop names our PARENT already established 1Password does not hold. Asking
+  // again cannot produce a value; it can only build an SDK client that races
+  // this process's siblings for the machine-wide DesktopAuth handshake.
+  for (const skip of inheritedUnavailable()) stillWanted.delete(skip);
+
   if (stillWanted.size === 0) return cached;
 
   // Everything below runs inside the serialized critical section. The span
@@ -655,6 +725,11 @@ export async function resolveOpKeyForEnvVars(
       resolvedCache.set(k, v);
       out[k] = v;
     }
+    // Names we asked about and got nothing back for. Recorded, NOT acted on
+    // here — a miss may still be a swallowed auth failure, and this process
+    // must keep retrying it. Only `prehydrateCredentialsForSpawn` acts on the
+    // record, and only after confirming the run logged no op failures at all.
+    recordOpUnavailableVars([...wantNow].filter((w) => !(w in resolved)));
     return out;
   }, label);
 }
