@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.26.0] - 2026-07-31
+
+### Documentation
+
+- update CHANGELOG.md for v7.25.0([`160554e`](https://github.com/MadAppGang/claudish/commit/160554eae164283ca86880f4bac55f3dd2e39cc8))
+
+### Other Changes
+
+- release as v7.26.0 — v7.25.0 was taken mid-flight([`fe78ee4`](https://github.com/MadAppGang/claudish/commit/fe78ee491a412904dd4095310fdf04a493da3307))
+
 ## [7.25.0] - 2026-07-31
 
 ### Documentation
@@ -11,8 +21,14 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.25.0 — Layer 4 behavior compatibility layer for foreign models([`0fb80e4`](https://github.com/MadAppGang/claudish/commit/0fb80e48b660cf12acc25f00c41ffcd92e12e902))
+- v7.25.0 — stop claudish from denying its own 1Password requests([`31d5a02`](https://github.com/MadAppGang/claudish/commit/31d5a02527bf7a7640c4d9a1fcd870a8bdc5d709))
 
 ## [7.24.0] - 2026-07-30
+
+### Bug Fixes
+
+- make the app-lock probe inert — the heuristic was falsified *(1password)* ([`32eb641`](https://github.com/MadAppGang/claudish/commit/32eb64150594b42b54ae486d59a92f08d6d28074))
+- stop redacting `your-key` out of credential help text([`4618d6c`](https://github.com/MadAppGang/claudish/commit/4618d6c2b0bed789f25b9d8057f2ccbe313b8ccc))
 
 ### Documentation
 
@@ -21,6 +37,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - v7.24.0 — stop compacting a 1M-window model at 200K, and stop demanding keys routing won't use([`ffac9b3`](https://github.com/MadAppGang/claudish/commit/ffac9b3c33c4671a04e5db9d395411ab314b36bb))
+- serialize the DesktopAuth handshake across processes *(1password)* ([`fa3b988`](https://github.com/MadAppGang/claudish/commit/fa3b98861c4fbb77501728b3dc9fc0f832878219))
+- detect a locked APP, and make lock recovery reachable at all *(1password)* ([`6f933d7`](https://github.com/MadAppGang/claudish/commit/6f933d786d4d89ffcaaa0bed75648c2c082ce24d))
 
 ## [7.23.0] - 2026-07-29
 
@@ -48,6 +66,11 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.20.0] - 2026-07-29
 
+### Bug Fixes
+
+- make failures observable, bounded, and safe; add live progress *(team)* ([`056ae29`](https://github.com/MadAppGang/claudish/commit/056ae2904fd131bf8d0236d7eab73f10e94c264f))
+- always serialize tool `parameters` so X-ai stops rejecting requests([`7016311`](https://github.com/MadAppGang/claudish/commit/7016311bb17f10539c46634e3030611bf079a65e))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.19.2([`8d71cbd`](https://github.com/MadAppGang/claudish/commit/8d71cbdf7b116208156f30bd317c51112cdb1125))
@@ -56,6 +79,11 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - v7.20.0 — Kimi K3 subscription routing, live discovery, context-window fix([`42b4e81`](https://github.com/MadAppGang/claudish/commit/42b4e81e50e4daddd1cdbd80930c9d017750dc35))
 - v7.21.0 — recover from a 1Password denial caused by a locked Mac([`d201f2a`](https://github.com/MadAppGang/claudish/commit/d201f2a33e01d859d6aabcd922b856a5d9c7d85b))
+- add two-level redaction for diagnostics([`118650e`](https://github.com/MadAppGang/claudish/commit/118650ed9256d909f0ee874354a4a36dfcb49148))
+
+### Other Changes
+
+- add MCP client capability probes; correct the progress ROADMAP entry([`b214860`](https://github.com/MadAppGang/claudish/commit/b2148607d61ec59537780078f057dfd1345015c2))
 
 ## [7.19.2] - 2026-07-29
 
