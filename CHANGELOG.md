@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.27.0] - 2026-08-01
+
+### Documentation
+
+- update CHANGELOG.md for v7.26.0([`3e5ec85`](https://github.com/MadAppGang/claudish/commit/3e5ec85ee133c7bffb0bbaabfca6ca3c46bb81c7))
+
+### New Features
+
+- v7.27.0 — behavior-layer tool repair on every stream format([`d1ebe49`](https://github.com/MadAppGang/claudish/commit/d1ebe49a78ccb8bab222d027c40c7d037896d29c))
+
 ## [7.26.0] - 2026-07-31
 
 ### Documentation
