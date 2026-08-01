@@ -1016,7 +1016,11 @@ export class ComposedHandler implements ModelHandler {
           onTokenUpdate,
           claudeRequest.tools,
           toolNameMap,
-          priorInputTokens
+          priorInputTokens,
+          behaviorSession && {
+            shouldBufferTool: (name) => behaviorSession.interceptsTool(name),
+            onToolCall: (name, argsJson) => behaviorSession.repairToolCall(name, argsJson),
+          }
         );
 
       case "openai-responses-sse":
@@ -1037,6 +1041,9 @@ export class ComposedHandler implements ModelHandler {
           modelName: this.bareModelName,
           onTokenUpdate,
           adapter: adapter as BaseAPIFormat,
+          shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
+          repairToolArgs: (name, argsJson) =>
+            behaviorSession?.repairToolCall(name, argsJson) ?? null,
         });
 
       case "gemini-sse": {
@@ -1052,6 +1059,8 @@ export class ComposedHandler implements ModelHandler {
           middlewareManager: this.middlewareManager,
           onTokenUpdate,
           onToolCall,
+          repairToolArgs: (name, argsJson) =>
+            behaviorSession?.repairToolCall(name, argsJson) ?? null,
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
         });
