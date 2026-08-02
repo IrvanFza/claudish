@@ -155,7 +155,7 @@ function isWindows(): boolean {
  * Create a cross-platform Node.js script for status line
  * This replaces the bash script to work on Windows
  */
-function createStatusLineScript(tokenFilePath: string): string {
+export function createStatusLineScript(tokenFilePath: string): string {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
   const timestamp = Date.now();
@@ -182,6 +182,25 @@ function formatTokens(n) {
   if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace(/\\.0$/, '') + 'M';
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\\.0$/, '') + 'k';
   return String(n);
+}
+
+// The window Claude Code will actually enforce, which is not always the model's spec
+// window: it compacts at min(CLAUDE_CODE_AUTO_COMPACT_WINDOW, maxContextTokens), and
+// maxContextTokens falls back to a fixed default for model names it does not know —
+// every model claudish proxies. This script runs inside Claude Code's environment, so
+// it reads the governing values first-hand.
+function effectiveWindow(specWindow) {
+  if (!(specWindow > 0)) return 0;
+  const num = (v, dflt) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n > 0 ? n : dflt;
+  };
+  let w = specWindow;
+  const maxCtx = num(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, ${CLAUDE_CODE_DEFAULT_MAX_CONTEXT});
+  if (maxCtx > 0 && maxCtx < w) w = maxCtx;
+  const autoCompact = num(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, 0);
+  if (autoCompact > 0 && autoCompact < w) w = autoCompact;
+  return w;
 }
 
 let input = '';
@@ -227,17 +246,24 @@ process.stdin.on('end', () => {
     }
     const modelDisplay = providerName ? providerName + ' ' + model : model;
     // Format context display as progress bar: [████░░░░░░] 116k/1M
+    const effWindow = effectiveWindow(contextWindow);
+    if (effWindow > 0 && inputTokens > 0) {
+      ctx = Math.max(0, Math.min(100, Math.round(((effWindow - inputTokens) / effWindow) * 100)));
+    }
     let ctxDisplay = '';
-    if (ctx < 0 || contextWindow <= 0) {
+    if (ctx < 0 || effWindow <= 0) {
       // Unknown context window — show token count only
       ctxDisplay = inputTokens > 0 ? formatTokens(inputTokens) + ' tokens' : 'N/A';
-    } else if (inputTokens > 0 && contextWindow > 0) {
+    } else if (inputTokens > 0) {
       const usedPct = 100 - ctx; // ctx is "left", so used = 100 - left
       const barWidth = 15;
       const filled = Math.round((usedPct / 100) * barWidth);
       const empty = barWidth - filled;
       const bar = '█'.repeat(filled) + '░'.repeat(empty);
-      ctxDisplay = '[' + bar + '] ' + formatTokens(inputTokens) + '/' + formatTokens(contextWindow);
+      // When Claude Code enforces less than the model advertises, show both — the
+      // gap is the whole reason this line exists.
+      const clamped = effWindow < contextWindow ? ' of ' + formatTokens(contextWindow) : '';
+      ctxDisplay = '[' + bar + '] ' + formatTokens(inputTokens) + '/' + formatTokens(effWindow) + clamped;
     } else {
       ctxDisplay = ctx + '%';
     }
@@ -260,6 +286,24 @@ process.stdin.on('end', () => {
 }
 
 /**
+ * What Claude Code assumes a model's context window is when it has never heard of
+ * the model — which is every model claudish proxies.
+ *
+ * In Claude Code 2.1.220 the resolver ends:
+ *
+ *   let n = env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+ *   if (n !== undefined && n > 0 && !model.startsWith("claude-")) return n
+ *   return 200_000                              // ← this constant
+ *
+ * Numerically equal to `MIN_AUTO_COMPACT_WINDOW` today, but a DIFFERENT quantity:
+ * that one is the arm-predicate cutoff below which configuring a window turns
+ * auto-compaction off. They are free to drift, so they get separate names.
+ *
+ * Used only to render an honest status line — never to set anything.
+ */
+export const CLAUDE_CODE_DEFAULT_MAX_CONTEXT = 200_000;
+
+/**
  * Create a temporary settings file with custom status line for this instance
  * This ensures each Claudish instance has its own status line without affecting
  * global Claude Code settings or other running instances
@@ -267,7 +311,7 @@ process.stdin.on('end', () => {
  * Note: We use ~/.claudish/ instead of system temp directory to avoid Claude Code's
  * file watcher trying to watch socket files in /tmp (which causes UNKNOWN errors)
  */
-function createTempSettingsFile(
+export function createTempSettingsFile(
   _modelDisplay: string,
   port: string,
   proxyAuthMode: boolean
@@ -308,7 +352,16 @@ function createTempSettingsFile(
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
     const formatTokensBash = `fmt_tok() { local n=\${1:-0}; if [ "$n" -ge 1000000 ]; then echo "$((n/1000000))M"; elif [ "$n" -ge 1000 ]; then echo "$((n/1000))k"; else echo "$n"; fi; }`;
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=-1 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && TOKEN_MODEL="" && IN_TOK=0 && CTX_WIN=0 && ${formatTokensBash} && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":-\\?[0-9]*' | grep -o '\\-\\?[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IN_TOK=$(echo "$TOKENS" | grep -o '"input_tokens":[0-9]*' | grep -o '[0-9]*') && CTX_WIN=$(echo "$TOKENS" | grep -o '"context_window":[0-9]*' | grep -o '[0-9]*') && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4) && TOKEN_MODEL=$(echo "$TOKENS" | grep -o '"model_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$CTX_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null && [ "$CTX_WIN" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX%"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    // The window Claude Code will ACTUALLY enforce, not the model's spec window.
+    // Claude Code compacts at min(CLAUDE_CODE_AUTO_COMPACT_WINDOW, maxContextTokens),
+    // and maxContextTokens falls back to a hardcoded 200,000 for any model name it
+    // does not recognise — which is every model claudish proxies. So the model's real
+    // window can be silently halved on arrival, and a status line that shows only the
+    // spec window reports free space the session cannot use. This script runs inside
+    // Claude Code's environment, so it can read the governing values directly rather
+    // than have them plumbed through the proxy; when they clamp, say so out loud.
+    const effWinBash = `eff_win() { local w=\${1:-0}; local m=\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}; local a=\${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}; case "$m" in ''|*[!0-9]*) m=${CLAUDE_CODE_DEFAULT_MAX_CONTEXT};; esac; case "$a" in ''|*[!0-9]*) a=0;; esac; case "$w" in ''|*[!0-9]*) w=0;; esac; if [ "$w" -gt 0 ]; then if [ "$m" -gt 0 ] && [ "$m" -lt "$w" ]; then w=$m; fi; if [ "$a" -gt 0 ] && [ "$a" -lt "$w" ]; then w=$a; fi; fi; echo "$w"; }`;
+    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=-1 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && TOKEN_MODEL="" && IN_TOK=0 && CTX_WIN=0 && ${formatTokensBash} && ${effWinBash} && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":-\\?[0-9]*' | grep -o '\\-\\?[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IN_TOK=$(echo "$TOKENS" | grep -o '"input_tokens":[0-9]*' | grep -o '[0-9]*') && CTX_WIN=$(echo "$TOKENS" | grep -o '"context_window":[0-9]*' | grep -o '[0-9]*') && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4) && TOKEN_MODEL=$(echo "$TOKENS" | grep -o '"model_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && EFF_WIN=$(eff_win $CTX_WIN) && if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi && if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
   }
 
   const statusLine = {

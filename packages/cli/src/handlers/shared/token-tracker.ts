@@ -240,9 +240,19 @@ export class TokenTracker {
     try {
       const total = inputTokens + outputTokens;
       const cw = this.config.contextWindow;
+      // Context occupancy is the CURRENT conversation size, which is `inputTokens` —
+      // every strategy passes the latest request's context here (see lastInputTokens).
+      // `outputTokens` is a session-CUMULATIVE counter, so folding it in made this
+      // percentage decay with session AGE instead of with context use: once lifetime
+      // output passed the window the value pinned at 0 and stopped carrying any signal.
+      // Measured on a 3-day session: input 94,018 against a 372,000 window, output
+      // 2,280,419 cumulative — reported 0% left when 75% was free, which is why a
+      // 200K compaction clamp went unnoticed for three days. `total` stays cumulative
+      // for `total_tokens`, which is a billing figure and genuinely session-wide.
+      //
       // context_left_percent: -1 means "unknown" (no catalog entry for this model)
       const leftPct =
-        cw > 0 ? Math.max(0, Math.min(100, Math.round(((cw - total) / cw) * 100))) : -1;
+        cw > 0 ? Math.max(0, Math.min(100, Math.round(((cw - inputTokens) / cw) * 100))) : -1;
 
       const pricing = this.getPricing();
       const isFreeModel =
