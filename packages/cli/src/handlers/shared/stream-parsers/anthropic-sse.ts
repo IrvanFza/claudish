@@ -32,6 +32,25 @@ interface AnthropicPassthroughOpts {
 }
 
 /**
+ * Payload of an SSE `data:` line, or null when the line isn't one.
+ *
+ * The SSE spec makes the space after the colon OPTIONAL — `data:{...}` and
+ * `data: {...}` are both valid, and a conforming parser strips at most ONE
+ * leading space. Every anthropic-transport provider we had fixtures for
+ * (MiniMax, Z.AI) emits the spaced form, so the older
+ * `startsWith("data: ")` gate silently skipped every line from Alibaba Model
+ * Studio (qwen-cloud), which emits the bare form. The stream still reached
+ * Claude Code verbatim, so sessions worked — but claudish's own inspection
+ * (token accounting, in-stream error detection, thinking re-indexing,
+ * Layer-4 repairToolArgs) never ran.
+ */
+function sseDataPayload(line: string): string | null {
+  if (!line.startsWith("data:")) return null;
+  const rest = line.slice(5);
+  return rest.startsWith(" ") ? rest.slice(1) : rest;
+}
+
+/**
  * Build the tool-repair frame interceptor for one stream.
  *
  * Returns a function that maps a parsed frame to the exact bytes to enqueue
@@ -135,11 +154,42 @@ export function createAnthropicPassthroughStream(
 
   const interceptToolFrame = createToolRepairInterceptor(opts);
 
+  /**
+   * An `event:` line held back until we know whether its `data:` line survives.
+   *
+   * An SSE frame is `event: X\ndata: {...}\n\n`, and the event line arrives
+   * FIRST. Any filter that drops a data line must therefore drop the event line
+   * that introduced it, or the client receives an event with no data. Claude
+   * Code rejects that outright — the whole turn dies with
+   * `Could not parse message into JSON: From chunk: [ "event:content_block_start" ]`.
+   * Since the verdict isn't known until the data line is read, the event line is
+   * buffered for exactly one line rather than emitted eagerly.
+   *
+   * Only ever set on the thinking-filter path, so streams that filter nothing
+   * keep byte-identical output.
+   */
+  let pendingEventLine: string | null = null;
+
+  /** Emit a held `event:` line. Call immediately before emitting its data line. */
+  const flushPendingEvent = (controller: any): void => {
+    if (pendingEventLine !== null && !isClosed) {
+      controller.enqueue(encoder.encode(`${pendingEventLine}\n`));
+    }
+    pendingEventLine = null;
+  };
+
   /** Enqueue a parsed data line through the tool interceptor. */
   const enqueueData = (controller: any, data: any, line: string): void => {
     if (isClosed) return;
     const out = interceptToolFrame(data, line);
-    if (out !== null) controller.enqueue(encoder.encode(out));
+    if (out === null) {
+      // Frame withheld by the tool interceptor — discard its event line too,
+      // for the same reason the thinking filter must.
+      pendingEventLine = null;
+      return;
+    }
+    flushPendingEvent(controller);
+    controller.enqueue(encoder.encode(out));
   };
 
   return c.body(
@@ -174,6 +224,8 @@ export function createAnthropicPassthroughStream(
           let insideThinkingBlock = false;
           /** How many thinking blocks have been suppressed so far. */
           let thinkingBlocksSuppressed = 0;
+          /** A frame was just dropped — swallow its trailing blank separator too. */
+          let suppressedFrame = false;
 
           while (true) {
             const { done, value } = await reader.read();
@@ -186,10 +238,13 @@ export function createAnthropicPassthroughStream(
             for (const line of lines) {
               totalLines++;
 
+              // Tolerates both `data: {...}` and the bare `data:{...}` form.
+              const payload = sseDataPayload(line);
+
               // ── Thinking-block filtering ──────────────────────────────
-              if (filterThinking && line.startsWith("data: ")) {
+              if (filterThinking && payload !== null) {
                 try {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(payload);
 
                   // ── In-stream error detection (GitHub #106) ──
                   // Some anthropic-compat providers (Z.AI, MiniMax, Kimi) return
@@ -225,18 +280,24 @@ export function createAnthropicPassthroughStream(
                     insideThinkingBlock = true;
                     thinkingBlocksSuppressed++;
                     log(`[AnthropicSSE] Filtering thinking block at index ${data.index}`);
+                    pendingEventLine = null;
+                    suppressedFrame = true;
                     continue; // suppress this line
                   }
 
                   // Track: exiting a thinking block
                   if (insideThinkingBlock && data.type === "content_block_stop") {
                     insideThinkingBlock = false;
+                    pendingEventLine = null;
+                    suppressedFrame = true;
                     continue; // suppress this line
                   }
 
                   // Suppress all deltas while inside a thinking block
                   // (thinking_delta, signature_delta)
                   if (insideThinkingBlock) {
+                    pendingEventLine = null;
+                    suppressedFrame = true;
                     continue;
                   }
 
@@ -247,6 +308,7 @@ export function createAnthropicPassthroughStream(
                     const modifiedLine = `data: ${JSON.stringify({ ...data, index: reindexed })}`;
 
                     if (!isClosed) {
+                      flushPendingEvent(controller);
                       controller.enqueue(encoder.encode(`${modifiedLine}\n`));
                     }
 
@@ -259,15 +321,16 @@ export function createAnthropicPassthroughStream(
                 } catch {
                   // Unparseable — pass through
                   if (!isClosed) {
+                    flushPendingEvent(controller);
                     controller.enqueue(encoder.encode(`${line}\n`));
                   }
                 }
               } else {
                 // Non-data lines (event: lines, blank lines) or no filtering
-                if (!filterThinking && line.startsWith("data: ")) {
+                if (!filterThinking && payload !== null) {
                   // Parse data lines BEFORE enqueuing to detect in-stream errors
                   try {
-                    const data = JSON.parse(line.slice(6));
+                    const data = JSON.parse(payload);
 
                     // ── In-stream error detection (GitHub #106) ──
                     if (data.error) {
@@ -328,6 +391,18 @@ export function createAnthropicPassthroughStream(
                       controller.enqueue(encoder.encode(`${line}\n`));
                     }
                   }
+                } else if (filterThinking) {
+                  // Non-data line on the FILTERING path. An `event:` line cannot
+                  // be shipped before its `data:` line is adjudicated, and the
+                  // blank separator of a dropped frame must go with it —
+                  // otherwise the client sees a header with no body.
+                  if (line.startsWith("event:")) {
+                    pendingEventLine = line;
+                  } else if (line.trim() === "" && suppressedFrame) {
+                    suppressedFrame = false;
+                  } else if (!isClosed) {
+                    controller.enqueue(encoder.encode(`${line}\n`));
+                  }
                 } else {
                   // Non-data lines (event: lines, blank lines) — pass through
                   if (!isClosed) {
@@ -339,9 +414,9 @@ export function createAnthropicPassthroughStream(
               // ── Usage/debug tracking for filtered path ────────────────
               // We need this even when filtering, but the data was already parsed
               // above in the filterThinking branch. Re-parse for tracking only.
-              if (filterThinking && line.startsWith("data: ")) {
+              if (filterThinking && payload !== null) {
                 try {
-                  const data = JSON.parse(line.slice(6));
+                  const data = JSON.parse(payload);
                   if (data.message?.usage) {
                     inputTokens = data.message.usage.input_tokens || inputTokens;
                     outputTokens = data.message.usage.output_tokens || outputTokens;

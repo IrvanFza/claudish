@@ -3,16 +3,23 @@
  *
  * Handles Qwen-specific quirks:
  * - Strips special tokens from output
- * - Maps thinking → enable_thinking + thinking_budget params
+ * - Maps Claude Code's effort onto DashScope's OpenAI-compatible reasoning
+ *   knob (`enable_thinking` + `thinking_budget`).
+ *
+ * Qwen is reachable over TWO wires — DashScope's OpenAI-compatible API and Qwen
+ * Plan's Anthropic-compatible endpoint (/apps/anthropic/v1/messages) — and they
+ * do not share a reasoning knob. Only the DashScope half lives here: the
+ * Anthropic half is a property of the WIRE, not of the Qwen family, so it lives
+ * in BaseAPIFormat.applyAnthropicWireReasoning() where every dialect inherits
+ * it. (Qwen Plan serves glm-5.2 and deepseek-v4-* over the same endpoint, so a
+ * Qwen-only implementation left those two emitting knobs that endpoint ignores.)
+ *
+ * `applyNativeReasoning` is not called at all on the Anthropic wire, so nothing
+ * here needs to branch on `wireFormat`.
  */
 
 import { log } from "../logger.js";
-import {
-  type AdapterResult,
-  BaseAPIFormat,
-  type EffortLevel,
-  matchesModelFamily,
-} from "./base-api-format.js";
+import { type AdapterResult, BaseAPIFormat, matchesModelFamily } from "./base-api-format.js";
 
 // Qwen special tokens that should be stripped from output
 const QWEN_SPECIAL_TOKENS = [
@@ -55,55 +62,37 @@ export class QwenModelDialect extends BaseAPIFormat {
   }
 
   /**
-   * Handle request preparation — map Claude Code's effort to Qwen's
-   * `enable_thinking` + `thinking_budget`. Qwen has no discrete effort enum;
-   * none/minimal disable thinking, everything else enables it with a token
-   * budget derived from the level (claudish conventions, research §4.3).
+   * DashScope OpenAI-compatible wire: `enable_thinking` + `thinking_budget`.
+   *
+   * This is the long-standing path and is deliberately left byte-identical,
+   * including the `delete request.thinking` cleanup — on this wire a raw
+   * Anthropic `thinking` object is meaningless and would double-send. It is
+   * also deliberately NOT catalog-driven: DashScope accepts this pair for the
+   * whole Qwen family, it is in production use today, and re-deriving it from
+   * catalog metadata would be a behaviour change with no defect behind it.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
     const effort = this.resolveEffortLevel(originalRequest);
+    if (!effort) return request;
 
-    if (effort) {
-      if (effort === "none" || effort === "minimal") {
-        request.enable_thinking = false;
-        log(`[QwenModelDialect] effort ${effort} -> enable_thinking: false for ${this.modelId}`);
-      } else {
-        request.enable_thinking = true;
-        const budget = this.effortToThinkingBudget(effort);
-        if (budget !== undefined) {
-          request.thinking_budget = budget;
-        }
-        log(
-          `[QwenModelDialect] effort ${effort} -> enable_thinking: true, thinking_budget: ${budget ?? "(model max)"} for ${this.modelId}`
-        );
+    if (effort === "none" || effort === "minimal") {
+      request.enable_thinking = false;
+      log(`[QwenModelDialect] effort ${effort} -> enable_thinking: false for ${this.modelId}`);
+    } else {
+      request.enable_thinking = true;
+      const budget = this.effortToThinkingTokenBudget(effort);
+      if (budget !== undefined) {
+        request.thinking_budget = budget;
       }
-
-      // Cleanup: remove raw thinking object so it doesn't double-send.
-      if (originalRequest.thinking) delete request.thinking;
+      log(
+        `[QwenModelDialect] effort ${effort} -> enable_thinking: true, thinking_budget: ${budget ?? "(model max)"} for ${this.modelId}`
+      );
     }
+
+    // Cleanup: remove raw thinking object so it doesn't double-send.
+    if (originalRequest.thinking) delete request.thinking;
 
     return request;
-  }
-
-  /**
-   * Qwen `thinking_budget` per effort level (claudish convention). `max` omits
-   * the budget so Qwen uses the model's full max CoT length.
-   */
-  private effortToThinkingBudget(effort: EffortLevel): number | undefined {
-    switch (effort) {
-      case "low":
-        return 2048;
-      case "medium":
-        return 8192;
-      case "high":
-        return 24576;
-      case "xhigh":
-        return 38912;
-      case "max":
-        return undefined; // omit → model max
-      default:
-        return 8192;
-    }
   }
 
   shouldHandle(modelId: string): boolean {

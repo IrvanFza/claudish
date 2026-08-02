@@ -93,7 +93,7 @@ export class GrokModelDialect extends BaseAPIFormat {
    * they run without effort rather than 400 on every request). See
    * effortToReasoningEffort.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
     const effort = this.resolveEffortLevel(originalRequest);
 
     if (effort) {

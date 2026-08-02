@@ -754,6 +754,66 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Sakana Fugu Subscription (sc@)",
   },
 
+  // ── Qwen Plan (must be before Qwen — /^qwen/i would swallow it) ──
+  // Alibaba Cloud Model Studio's subscription ("Qwen Plan"), served over
+  // a NATIVE Anthropic-compatible endpoint (it exists so Claude Code can point
+  // at it directly), so responses arrive as real Anthropic SSE — `thinking`
+  // blocks included — and ride the anthropic-sse passthrough parser.
+  //
+  // baseUrl is the BARE HOST with `/apps/anthropic` folded into apiPath, the
+  // same shape as minimax-coding. That's deliberate: modelDiscovery's path is
+  // `/compatible-mode/v1/models`, which is a SIBLING of `/apps/anthropic`, not
+  // a child. Folding the prefix into apiPath keeps both on one origin so a
+  // single baseUrl override (QWEN_CLOUD_PLAN_BASE_URL) redirects messages AND
+  // discovery together.
+  //
+  // NO apiKeyAliases, and specifically none onto DASHSCOPE_API_KEY /
+  // QWEN_API_KEY. Like the sakana-subscription precedent, the BILLING MODE is
+  // fixed when the key is minted: a plan key authenticates ONLY against
+  // token-plan.ap-southeast-1.maas.aliyuncs.com. Probed live 2026-08-02, the
+  // sibling Alibaba hosts reject it outright — coding-intl.dashscope.aliyuncs.com
+  // → 401 invalid_api_key; dashscope.aliyuncs.com (Beijing) and
+  // dashscope-intl.aliyuncs.com → 403 invalid api-key. An alias could only ever
+  // send the wrong key to the wrong host, or bill the wrong plan.
+  //
+  // The ROSTER is discovered, never listed. Alibaba's docs claim this host has
+  // no model-list endpoint and then name the wrong models: the docs say
+  // qwen3.6-plus/qwen3.6-flash, but qwen3.6-plus answers 403 "Access to model
+  // denied" while qwen3.7-plus answers 200. `/compatible-mode/v1/models` does
+  // exist (OpenAI-shaped list) and is authenticated, so it reports what THIS
+  // subscription is entitled to — including the non-Qwen models the plan also
+  // carries (glm-5.2, deepseek-v4-*). Ask the endpoint; hardcode nothing.
+  //
+  // nativeModelPatterns is NAMESPACE ownership only, not a pinned roster.
+  // Alibaba Model Studio names releases with DOTTED versions (qwen3.7-plus,
+  // qwen3.8-max-preview) whereas OpenRouter/HuggingFace use hyphenated ones
+  // (qwen3-coder-next). `/^qwen3\.\d/i` is therefore a structural discriminator
+  // between the two naming worlds, and it keeps working as new dotted versions
+  // ship. This entry MUST stay above `qwen` below, whose `/^qwen/i` matches
+  // first-wins on array order and would otherwise claim these names.
+  {
+    name: "qwen-cloud",
+    displayName: "Qwen Plan",
+    transport: "anthropic",
+    baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com",
+    baseUrlEnvVars: ["QWEN_CLOUD_PLAN_BASE_URL"],
+    apiPath: "/apps/anthropic/v1/messages",
+    // The DISPLAY name is "Qwen Plan", but the env var deliberately keeps the
+    // longer QWEN_CLOUD_PLAN_ prefix (same for QWEN_CLOUD_PLAN_BASE_URL) for
+    // back-compat with existing setups — do NOT rename it to match the label.
+    apiKeyEnvVar: "QWEN_CLOUD_PLAN_API_KEY",
+    apiKeyDescription: "Qwen Plan API Key",
+    apiKeyUrl: "https://www.alibabacloud.com/help/en/model-studio/claude-code",
+    authScheme: "bearer",
+    shortcuts: ["qc"],
+    shortestPrefix: "qc",
+    legacyPrefixes: [{ prefix: "qc/", stripPrefix: true }],
+    nativeModelPatterns: [{ pattern: /^qwen3\.\d/i }],
+    modelDiscovery: { path: "/compatible-mode/v1/models", format: "openai-models-list" },
+    isDirectApi: true,
+    description: "Qwen Plan (qc@)",
+  },
+
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
   {
     name: "qwen",

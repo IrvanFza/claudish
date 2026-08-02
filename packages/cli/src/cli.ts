@@ -1250,7 +1250,7 @@ async function probeModelRouting(
         hasCredentials = true;
       } else {
         provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
-        hasCredentials = !!provenance.effectiveValue;
+        hasCredentials = provenance.hasValue;
         if (!hasCredentials && keyInfo.aliases) {
           hasCredentials = keyInfo.aliases.some((a) => !!process.env[a]);
         }
@@ -1368,7 +1368,14 @@ async function probeModelRouting(
     let formatAdapterName = "OpenAIAPIFormat";
     let declaredStreamFormat = "openai-sse";
 
-    const anthropicCompatProviders = ["minimax", "minimax-coding", "kimi", "kimi-coding", "z-ai"];
+    const anthropicCompatProviders = [
+      "minimax",
+      "minimax-coding",
+      "kimi",
+      "kimi-coding",
+      "qwen-cloud",
+      "z-ai",
+    ];
     const isMinimaxModel = modelName.toLowerCase().includes("minimax");
 
     if (anthropicCompatProviders.includes(providerName)) {

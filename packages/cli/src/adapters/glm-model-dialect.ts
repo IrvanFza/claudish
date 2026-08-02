@@ -21,7 +21,20 @@ export class GLMModelDialect extends BaseAPIFormat {
     };
   }
 
-  override prepareRequest(request: any, originalRequest: any): any {
+  /**
+   * GLM's OWN (Zhipu OpenAI-compatible) reasoning knob. This IS the path taken
+   * by `glm@` AND by `gc@` (GLM Coding Plan): both map to glmProfile, i.e.
+   * OpenAIProviderTransport + OpenAIAPIFormat — `gc@` just points at
+   * /api/coding/paas/v4/chat/completions. Easy to get wrong, because `gc@` and
+   * `zai@` both serve Z.AI GLM models; they differ in the WIRE, not the vendor.
+   *
+   * Not called on the Anthropic wire, which is `zai@` (z-ai →
+   * anthropicCompatProfile, /api/anthropic/v1/messages) and `qc@glm-5.2` (Qwen
+   * Plan, also anthropicCompatProfile, serves GLM alongside Qwen). There
+   * BaseAPIFormat.applyAnthropicWireReasoning() takes over and drives the knob
+   * from catalog metadata instead of this 4.5/4.6 name test.
+   */
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
     const effort = this.resolveEffortLevel(originalRequest);
 
     // GLM-4.5 family + GLM-4.6 are HYBRID: they accept a boolean-style

@@ -14,7 +14,10 @@
  */
 
 import { confirm, input, search, select } from "@inquirer/prompts";
+import { lookupModel } from "./adapters/model-catalog.js";
 import { credentials } from "./auth/credentials/authority.js";
+import { resolveCatalogContextWindow } from "./handlers/shared/context-window-fallback.js";
+import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type AggregatorEntry,
   type ModelDoc,
@@ -27,9 +30,14 @@ import {
   type CatalogModel,
   createCatalogClient,
 } from "./providers/model-catalog.js";
-import { discoverProviderModels, rankDiscoveredModels } from "./providers/model-discovery.js";
+import {
+  type DiscoveredModel,
+  discoverProviderModels,
+  rankDiscoveredModels,
+} from "./providers/model-discovery.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
+import { isChatCapable } from "./providers/transport/probe-discovery.js";
 
 /**
  * Model data structure
@@ -96,6 +104,16 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   "opencode-zen": "opencode-zen",
   "opencode-zen-go": "opencode-zen-go",
   ollamacloud: "ollamacloud",
+  // NOTE: "qwen-cloud" is deliberately absent. `selectModelFromProvider` tries
+  // `modelDiscovery` BEFORE this map, and the plan's /compatible-mode/v1/models
+  // endpoint is authenticated — it answers with exactly what the subscription
+  // is entitled to. The catalog's "qwen" vendor would be a bad fall-through
+  // anyway: it lists hyphenated aggregator names (qwen3-coder-next) that the
+  // plan host does not serve. Adding it would also poison
+  // `firebaseSlugToProviderName`, whose reverse lookup takes the FIRST picker
+  // value for a slug — with no canonical `qwen` entry above it, every plain
+  // catalog Qwen model would render as "Qwen Plan". Discovery failure
+  // already degrades to the free-text prompt below, which is the right answer.
 };
 
 /**
@@ -224,6 +242,101 @@ function formatAveragePricing(pricing?: ModelDoc["pricing"]): ModelInfo["pricing
     output: outputStr,
     average: avg === 0 ? "FREE" : `$${avg.toFixed(2)}/1M`,
   };
+}
+
+/**
+ * Flat-rate plans have no per-token rate to show. `SUB` is the label the rest
+ * of the codebase already uses for that (see `getModelPricing`'s
+ * `isSubscription` branch), so the picker reuses it verbatim.
+ */
+const SUBSCRIPTION_PRICING: ModelInfo["pricing"] = {
+  input: "SUB",
+  output: "SUB",
+  average: "SUB",
+};
+
+/**
+ * Context window for a live-discovered model row, from the two OFFLINE sources.
+ *
+ * The endpoint's own number wins whenever it reports one: it is answered for
+ * THIS subscription, so it beats any catalog (Kimi Coding reports it; Qwen
+ * Plan does not). On a miss, fall back to the Firebase slim catalog, which
+ * already knows most of these models — that is a read of the local
+ * `~/.claudish/all-models.json`, never a network call, so the picker never
+ * blocks on it. Still-unknown stays 0; `resolveMissingContextWindows` then gets
+ * one bounded shot at the full cloud catalog before it renders as "N/A".
+ */
+function resolveDiscoveredContextLength(m: DiscoveredModel): number {
+  if (typeof m.contextWindow === "number" && m.contextWindow > 0) return m.contextWindow;
+  try {
+    return lookupModel(m.id)?.contextWindow ?? 0;
+  } catch {
+    // lookupModel refuses provider-routed ids ("prov@model"). A discovered
+    // wire id should never be one, but an unknown window is not worth throwing.
+    return 0;
+  }
+}
+
+/**
+ * How long the picker will wait on the cloud catalog for the windows it still
+ * doesn't know. Short on purpose: a hung model list is worse than a missing
+ * number, and every row is already renderable without it.
+ */
+const DISCOVERY_CONTEXT_LOOKUP_TIMEOUT_MS = 1500;
+
+/**
+ * Last-resort context windows, for the ids that BOTH the endpoint and the local
+ * slim catalog missed.
+ *
+ * The slim catalog is capped and OpenRouter-derived (`?catalog=slim&limit=1000`),
+ * so a plan-only or preview model can be absent from it while the FULL catalog
+ * knows it — `qwen3.8-max-preview` is exactly that: 1M context upstream, no slim
+ * entry, so the row read "N/A" for the one model the user was running.
+ *
+ * Properties this deliberately has:
+ *   - **Only the misses.** Never a fan-out over the roster; for Qwen Plan it is
+ *     a single id, and zero requests when the slim catalog already answered.
+ *   - **Concurrent.** All misses go out at once, so N ids cost one round trip's
+ *     latency, not N.
+ *   - **Bounded.** Races a short budget; on expiry the rows render "N/A" exactly
+ *     as they do today. The in-flight lookups are memoized per model id per
+ *     process, so a late answer still lands for the next call.
+ *   - **Silent.** Any failure → no entry. `resolveCatalogContextWindow` never
+ *     throws and is disabled under `NODE_ENV=test` unless a fetcher is injected.
+ */
+async function resolveMissingContextWindows(
+  ids: string[],
+  timeoutMs: number = DISCOVERY_CONTEXT_LOOKUP_TIMEOUT_MS
+): Promise<Map<string, number>> {
+  const resolved = new Map<string, number>();
+  if (ids.length === 0) return resolved;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+    // Never hold the event loop open for a number the picker can live without.
+    timer.unref?.();
+  });
+
+  try {
+    const lookups = Promise.all(
+      ids.map(async (id) => [id, await resolveCatalogContextWindow(id)] as const)
+    );
+    const settled = await Promise.race([lookups, budget]);
+    if (settled) {
+      for (const [id, contextWindow] of settled) {
+        if (typeof contextWindow === "number" && contextWindow > 0) {
+          resolved.set(id, contextWindow);
+        }
+      }
+    }
+  } catch {
+    // Fail-soft: an unresolved window renders as "N/A", exactly as before.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  return resolved;
 }
 
 function modelDocToModelInfo(model: ModelDoc): ModelInfo {
@@ -486,6 +599,8 @@ const PROVIDER_FILTER_ALIASES: Record<string, string> = {
   fugu: "sakana",
   "sakana-subscription": "sakana-subscription",
   sc: "sakana-subscription",
+  "qwen-cloud": "qwen-cloud",
+  qc: "qwen-cloud",
 };
 
 /**
@@ -788,6 +903,12 @@ const ALL_PROVIDER_CHOICES: Array<{
     description: "Coding subscription",
     provider: "kimi-coding",
   },
+  {
+    name: "Qwen Plan",
+    value: "qwen-cloud",
+    description: "Alibaba Model Studio subscription",
+    provider: "qwen-cloud",
+  },
   { name: "GLM / Zhipu", value: "glm", description: "Direct API", provider: "glm" },
   {
     name: "GLM Coding Plan",
@@ -866,6 +987,7 @@ const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   kimi: "kimi@",
   "minimax-coding": "mmc@",
   "kimi-coding": "kc@",
+  "qwen-cloud": "qc@",
   glm: "glm@",
   "glm-coding": "gc@",
   "z-ai": "z-ai@",
@@ -1041,6 +1163,77 @@ async function pickModelFromList(
 }
 
 /**
+ * Picker rows for a provider that lists its own models at runtime
+ * (`modelDiscovery`), largest context window first.
+ *
+ * Two things the raw discovery result can't be rendered without:
+ *
+ *  - **Not everything served is chat.** Alibaba's plan host answers with image
+ *    and TTS models alongside chat ones. Filtered with the SAME predicate the
+ *    probe path uses, so the picker and `--probe` agree on what is chat-capable
+ *    — a name-based rule, never a model-id skip list. An all-non-chat roster
+ *    returns [] so the caller falls through to the catalog / free-text path
+ *    instead of showing an empty list.
+ *  - **Neither price nor (always) context is reported.** Context comes from the
+ *    endpoint when it reports one, else the local slim catalog, else — only for
+ *    the ids both missed, concurrently and on a short budget — the full cloud
+ *    catalog. Price is `SUB` for a flat-rate plan; a per-token figure there
+ *    would be misleading.
+ *
+ * Exported for unit tests.
+ */
+export async function buildDiscoveredModelRows(
+  provider: string,
+  displayName: string,
+  catalog: CatalogClient
+): Promise<ModelInfo[]> {
+  const discovered = rankDiscoveredModels(await discoverProviderModels(provider)).filter((m) =>
+    isChatCapable(m.id)
+  );
+  if (discovered.length === 0) return [];
+
+  const subscription = isSubscriptionProvider(provider);
+  // A non-subscription discovery provider bills per token, so show the real
+  // rate — the live endpoint doesn't report one and the slim catalog carries
+  // no prices, so ask the vendor catalog. Skipped entirely for subscription
+  // plans (they render SUB), which is every discovery provider today, so
+  // nothing pays for this lookup.
+  const pricingById = subscription
+    ? new Map<string, ModelInfo["pricing"]>()
+    : new Map(
+        (await loadModelsForPickerProvider(provider, catalog)).map((m) => [
+          m.id.toLowerCase(),
+          m.pricing,
+        ])
+      );
+
+  // Endpoint → local slim catalog (both offline), then one bounded, concurrent
+  // cloud lookup for whatever is still unknown.
+  const offlineContext = new Map(discovered.map((m) => [m.id, resolveDiscoveredContextLength(m)]));
+  const cloudContext = await resolveMissingContextWindows(
+    discovered.filter((m) => !offlineContext.get(m.id)).map((m) => m.id)
+  );
+
+  return discovered.map((m) => {
+    const contextLength = offlineContext.get(m.id) || cloudContext.get(m.id) || 0;
+    return {
+      id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
+      name: m.displayName || m.id,
+      description: contextLength
+        ? `${m.displayName ?? m.id} · ${Math.round(contextLength / 1024)}K context`
+        : (m.displayName ?? m.id),
+      provider: displayName,
+      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(m.id.toLowerCase()),
+      context: formatContextLength(contextLength),
+      contextLength,
+      supportsTools: true,
+      isFree: subscription, // covered by the subscription — no per-token charge
+      source: displayName,
+    };
+  });
+}
+
+/**
  * Select a model from a specific provider with filterable search.
  * Rely on Firebase for model data via CatalogClient — no per-provider branching.
  */
@@ -1060,27 +1253,14 @@ async function selectModelFromProvider(
   // at all. Ask the endpoint, and offer exactly what this user's plan allows.
   const def = getProviderByName(provider);
   if (def?.modelDiscovery) {
-    const discovered = rankDiscoveredModels(await discoverProviderModels(provider));
-    if (discovered.length > 0) {
-      // Ranked largest-context-first, so the head is the strongest model the
-      // subscription can actually serve — that becomes the default.
-      const discoveredModels: ModelInfo[] = discovered.map((m) => ({
-        id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
-        name: m.displayName || m.id,
-        description: m.contextWindow
-          ? `${m.displayName ?? m.id} · ${Math.round(m.contextWindow / 1024)}K context`
-          : (m.displayName ?? m.id),
-        provider: displayName,
-        supportsTools: true,
-        isFree: true, // covered by the subscription — no per-token charge
-        source: displayName,
-      }));
+    const discoveredModels = await buildDiscoveredModelRows(provider, displayName, catalog);
+    if (discoveredModels.length > 0) {
       const picked = await pickModelFromList(provider, displayName, tierName, discoveredModels);
       if (picked) return picked;
       // picked === null → user chose the custom-entry hatch; fall through.
     }
-    // Discovery unavailable (offline / no credentials) → fall through to the
-    // cloud catalog rather than blocking model selection.
+    // Discovery unavailable / nothing chat-capable in the roster → fall through
+    // to the cloud catalog rather than showing an empty list.
   }
 
   // Ollama (local): Firebase has no catalog, but the daemon lists installed

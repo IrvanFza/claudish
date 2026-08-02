@@ -48,6 +48,7 @@ import {
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
+import { requestCatalogContextWindow } from "./shared/context-window-fallback.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
@@ -138,7 +139,20 @@ export class ComposedHandler implements ModelHandler {
     // Initialize dialect manager for automatic dialect/format selection.
     // Always pass the bare modelName — passing routed strings here was the root
     // cause of #102 (zai@glm-4.7 false-matching GLMModelDialect).
-    this.adapterManager = new DialectManager(this.bareModelName);
+    //
+    // The second argument is the REQUEST wire format, which only this class
+    // knows: dialects self-select by model name, and the same model can be
+    // served over different wires by different providers (Qwen: DashScope
+    // OpenAI-compatible vs. Qwen Plan's Anthropic Messages endpoint),
+    // each with a differently-named reasoning knob. The Layer 1 FormatConverter
+    // decides the request shape, so its getStreamFormat() is the signal — NOT
+    // provider.overrideStreamFormat(), which only re-labels the RESPONSE for
+    // aggregators. Undefined when no explicit converter was passed (the dialect
+    // is then also the converter) → dialects fall back to the OpenAI default.
+    this.adapterManager = new DialectManager(
+      this.bareModelName,
+      this.explicitAdapter?.getStreamFormat()
+    );
 
     // Always resolve model-specific adapter (GLM, Grok, DeepSeek, etc.)
     // This handles model quirks independent of provider transport (LiteLLM, OpenRouter, etc.)
@@ -432,9 +446,28 @@ export class ComposedHandler implements ModelHandler {
       }
     }
     // Update context window if provider dynamically discovered it
-    // (e.g., from OpenRouter model catalog or local model API)
+    // (e.g., from OpenRouter model catalog or local model API).
+    //
+    // Only a POSITIVE number is applied. A transport returns 0 to mean "I have
+    // no opinion" — OpenRouterProviderTransport says so in as many words, and
+    // OpenAICodexTransport falls back to 0 on a catalog miss. Applying that 0
+    // unconditionally overwrote the window the model dialect had already
+    // resolved from the catalog, so every OpenRouter-routed model wrote
+    // `"context_window": "unknown"` and lost its context field in the status
+    // line. 0 must be a no-op, not a reset.
     if (this.provider.getContextWindow) {
-      this.tokenTracker.setContextWindow(this.provider.getContextWindow());
+      const providerWindow = this.provider.getContextWindow();
+      if (providerWindow > 0) {
+        this.tokenTracker.setContextWindow(providerWindow);
+      }
+    }
+
+    // Still nothing? Ask the cloud catalog for this one model id, off the hot
+    // path. Memoized per model id; a miss leaves today's behaviour untouched.
+    if (this.tokenTracker.getContextWindow() <= 0) {
+      requestCatalogContextWindow(this.bareModelName, (cw) =>
+        this.tokenTracker.setContextWindow(cw)
+      );
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)
@@ -1045,7 +1078,17 @@ export class ComposedHandler implements ModelHandler {
         return createAnthropicPassthroughStream(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
-          adapter: adapter as BaseAPIFormat,
+          // Layer 2 dialect wins over the Layer 1 converter — the same
+          // precedence as getModelContextWindow()/getModelSupportsVision().
+          // This opt is consulted for ONE thing, shouldFilterThinking(), and
+          // that is a per-MODEL/per-wire fact only the dialect knows. Every
+          // anthropic-sse provider passes an explicit AnthropicAPIFormat, so
+          // `adapter` here is always Layer 1 and always answers the base
+          // default `false` — which silently made the one dialect override of
+          // it (MiniMaxModelDialect's `true`) unreachable dead code, and would
+          // do the same to the base's wire-keyed `true` for every other model
+          // on this wire (qc@'s qwen / glm / deepseek rosters).
+          adapter: (this.modelAdapter ?? adapter) as BaseAPIFormat,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           repairToolArgs: (name, argsJson) =>
             behaviorSession?.repairToolCall(name, argsJson) ?? null,

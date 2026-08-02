@@ -5,6 +5,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getConfigFileOverride } from "../config-override.js";
+import { setConfigFileOverride } from "../profile-config.js";
 import {
   BUILTIN_PROVIDERS,
   getApiKeyEnvVars,
@@ -44,6 +48,29 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     // Sibling subscription plans also keep their key isolated from PAYG.
     const kimiCoding = BUILTIN_PROVIDERS.find((d) => d.name === "kimi-coding");
     expect(kimiCoding!.apiKeyAliases ?? []).not.toContain("MOONSHOT_API_KEY");
+  });
+
+  test("qwen-cloud keeps Qwen Plan credentials isolated and uses Anthropic transport", () => {
+    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-cloud");
+    expect(plan).toBeDefined();
+    expect(plan!.apiKeyEnvVar).toBe("QWEN_CLOUD_PLAN_API_KEY");
+    expect(plan!.apiKeyAliases).toBeUndefined();
+    expect(plan!.transport).toBe("anthropic");
+    expect(plan!.authScheme).toBe("bearer");
+  });
+
+  test("qwen-cloud composes message and discovery URLs on the same origin", () => {
+    const plan = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-cloud")!;
+    const messagesUrl = plan.baseUrl + plan.apiPath;
+    const modelsUrl = plan.baseUrl + plan.modelDiscovery!.path;
+
+    expect(messagesUrl).toBe(
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1/messages"
+    );
+    expect(modelsUrl).toBe(
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models"
+    );
+    expect(new URL(messagesUrl).origin).toBe(new URL(modelsUrl).origin);
   });
 });
 
@@ -231,6 +258,31 @@ describe("getEffectiveBaseUrl", () => {
   test("returns base URL for provider without env overrides", () => {
     const def = getProviderByName("openrouter")!;
     expect(getEffectiveBaseUrl(def)).toBe("https://openrouter.ai");
+  });
+
+  test("QWEN_CLOUD_PLAN_BASE_URL overrides the qwen-cloud default host", () => {
+    const envVar = "QWEN_CLOUD_PLAN_BASE_URL";
+    const previousEnv = process.env[envVar];
+    const previousConfigOverride = getConfigFileOverride();
+    const missingConfig = join(
+      tmpdir(),
+      `claudish-qwen-cloud-provider-definitions-${process.pid}-missing.json`
+    );
+
+    setConfigFileOverride(missingConfig);
+    process.env[envVar] = "https://qwen-cloud.test.invalid";
+    try {
+      const def = getProviderByName("qwen-cloud")!;
+      expect(def.baseUrlEnvVars).toEqual([envVar]);
+      expect(getEffectiveBaseUrl(def)).toBe("https://qwen-cloud.test.invalid");
+    } finally {
+      setConfigFileOverride(previousConfigOverride);
+      if (previousEnv === undefined) {
+        delete process.env[envVar];
+      } else {
+        process.env[envVar] = previousEnv;
+      }
+    }
   });
 });
 

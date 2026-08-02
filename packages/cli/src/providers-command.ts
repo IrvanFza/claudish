@@ -18,8 +18,11 @@
  * TUI-facing alias: e.g. slug is "google", not the picker label "gemini".)
  *
  * SECURITY: this command emits credential PRESENCE and SOURCE only. It must
- * never touch the --probe provenance path (which prints unmasked keys) and
- * must never include any value, masked fragment, or key material whatsoever.
+ * never include any value, masked fragment, or key material whatsoever — a
+ * stricter bar than the --probe provenance path, which is allowed to show a
+ * masked prefix. (--probe used to serialize the PLAINTEXT key under
+ * `chain[].provenance.effectiveValue`; that field is gone — see the
+ * KeyProvenance doc comment in providers/api-key-provenance.ts.)
  */
 
 import { type CredentialSource, describeSource } from "./auth/credentials/source.js";

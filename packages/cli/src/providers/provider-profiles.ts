@@ -410,6 +410,9 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   "minimax-coding": anthropicCompatProfile,
   kimi: anthropicCompatProfile,
   "kimi-coding": anthropicCompatProfile,
+  // Alibaba Model Studio's plan endpoint is natively Anthropic-compatible
+  // (/apps/anthropic/v1/messages), so it needs no dialect translation.
+  "qwen-cloud": anthropicCompatProfile,
   "z-ai": anthropicCompatProfile,
   glm: glmProfile,
   "glm-coding": glmProfile,

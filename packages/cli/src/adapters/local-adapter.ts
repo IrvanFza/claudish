@@ -133,7 +133,7 @@ export class LocalModelAdapter extends BaseAPIFormat {
 
   // ─── Request post-processing ────────────────────────────────────────
 
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override prepareRequestCommon(request: any, originalRequest: any): any {
     // Delegate to inner adapter (Qwen tool name truncation, etc.)
     this.innerAdapter.prepareRequest(request, originalRequest);
 

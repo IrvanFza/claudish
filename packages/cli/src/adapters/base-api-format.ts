@@ -10,9 +10,10 @@
 
 import type { ModelPricing } from "../handlers/shared/remote-provider-types.js";
 import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
+import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { APIFormat } from "./api-format.js";
-import { lookupModel } from "./model-catalog.js";
+import { type ReasoningCapability, lookupModel, lookupModelReasoning } from "./model-catalog.js";
 import type { ModelDialect } from "./model-dialect.js";
 import { truncateToolName } from "./tool-name-utils.js";
 
@@ -49,6 +50,36 @@ export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhig
 /** The seven canonical levels, ascending — also the membership set for validation. */
 const EFFORT_ORDER: EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
+/**
+ * The canonical levels in ascending order. Exported so dialects can CLAMP a
+ * requested level into whatever subset a model actually advertises (the slim
+ * catalog's `reasoning.efforts`) instead of sending a level the model has no
+ * mode for.
+ */
+export const EFFORT_LEVELS: readonly EffortLevel[] = EFFORT_ORDER;
+
+/** Narrow an arbitrary catalog/config string to a canonical {@link EffortLevel}. */
+export function isEffortLevel(value: unknown): value is EffortLevel {
+  return typeof value === "string" && EFFORT_ORDER.includes(value as EffortLevel);
+}
+
+/**
+ * Reasoning knobs that belong to an OpenAI-shaped wire and must never ride an
+ * Anthropic Messages request.
+ *
+ * Two of them (`enable_thinking`, `thinking_budget`) are DashScope's; the third
+ * (`reasoning_effort`) is OpenAI's and is also accepted by DeepSeek's and xAI's
+ * own APIs. Measured against Qwen Plan's Anthropic endpoint on 2026-08-02:
+ * a top-level `reasoning_effort` of `"max"` AND of `"banana"` both return 200,
+ * i.e. the field is silently ignored — a dialect emitting it there believes it
+ * set the depth and did nothing.
+ */
+const NON_ANTHROPIC_REASONING_FIELDS = [
+  "reasoning_effort",
+  "enable_thinking",
+  "thinking_budget",
+] as const;
+
 export interface AdapterResult {
   /** Cleaned text content (with XML/special formats removed) */
   cleanedText: string;
@@ -62,18 +93,47 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   protected modelId: string;
 
   /**
+   * The WIRE FORMAT this instance is composed with — i.e. the shape of the
+   * payload a Layer 2 dialect is being handed, which is decided by the Layer 1
+   * FormatConverter, not by the model's name.
+   *
+   * A dialect is auto-selected by model name (see DialectManager), so on its
+   * own it cannot tell whether the same model is being reached over the
+   * OpenAI/Chat-Completions wire or the Anthropic Messages wire. Providers do
+   * exist that serve one model family over both (Qwen: DashScope
+   * OpenAI-compatible vs. Qwen Plan's /apps/anthropic/v1/messages), and their
+   * reasoning knobs are named differently on each.
+   *
+   * DIALECTS SHOULD NOT READ THIS. It is consumed by {@link prepareRequest}'s
+   * template and by {@link shouldFilterThinking}, which is what makes the
+   * Anthropic-wire behaviour automatic for every dialect — including ones
+   * written before the endpoint existed. A dialect that branches on it is
+   * re-creating the bug this replaced (see the qwen-cloud session log).
+   *
+   * `undefined` means "not composed / caller didn't say" — treat it as the
+   * historical OpenAI default so nothing changes for existing call sites.
+   */
+  protected readonly wireFormat?: StreamFormat;
+
+  /**
    * Map of truncated tool names back to original names.
    * Populated during prepareRequest() when tool names are truncated.
    */
   protected toolNameMap: Map<string, string> = new Map();
 
-  constructor(modelId: string) {
+  constructor(modelId: string, wireFormat?: StreamFormat) {
     this.modelId = modelId;
+    this.wireFormat = wireFormat;
   }
 
   /** The model ID this format/dialect was constructed for. */
   getModelId(): string {
     return this.modelId;
+  }
+
+  /** The composed wire format, or undefined when none was supplied. */
+  getWireFormat(): StreamFormat | undefined {
+    return this.wireFormat;
   }
 
   /**
@@ -130,14 +190,256 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
-   * Handle any request preparation before sending to the model
-   * Useful for mapping parameters like thinking budget -> reasoning_effort
-   * @param request - The OpenRouter payload being prepared
+   * Handle any request preparation before sending to the model.
+   *
+   * TEMPLATE METHOD — do NOT override this in a dialect or format. Override
+   * {@link prepareRequestCommon} (wire-agnostic work: tool-name truncation,
+   * temperature clamping, …) and/or {@link applyNativeReasoning} (the reasoning
+   * knob of the model's OWN provider API) instead.
+   *
+   * The split exists because WHICH reasoning knob a request must carry is a
+   * property of the WIRE, not of the model family — and dialects are selected
+   * by model NAME (see DialectManager), so a dialect cannot know the wire.
+   * Alibaba's Qwen Plan is the worked example: one Anthropic-compatible
+   * endpoint serving qwen3.x AND glm-5.2 AND deepseek-v4-*, i.e. three
+   * different dialects reaching the SAME wire. Before this hoist only
+   * QwenModelDialect had been taught the wire, so glm/deepseek on that endpoint
+   * emitted their own APIs' knobs — which that endpoint silently ignores — and
+   * leaked their reasoning into the chat as prose.
+   *
+   * On the Anthropic wire the base therefore has the LAST WORD: the dialect's
+   * native reasoning emission is skipped, OpenAI-shaped knobs are stripped even
+   * if some other hook set them, and {@link applyAnthropicWireReasoning}
+   * (catalog-driven) supplies the knob. Every other wire is byte-identical to
+   * the pre-hoist behaviour.
+   *
+   * @param request - The provider payload being prepared
    * @param originalRequest - The original Claude-format request
    * @returns The modified request payload
    */
-  prepareRequest(request: any, _originalRequest: any): any {
+  prepareRequest(request: any, originalRequest: any): any {
+    const prepared = this.prepareRequestCommon(request, originalRequest) ?? request;
+
+    if (!this.isAnthropicWire()) {
+      return this.applyNativeReasoning(prepared, originalRequest) ?? prepared;
+    }
+
+    this.stripNonAnthropicReasoningFields(prepared);
+    return this.applyAnthropicWireReasoning(prepared, originalRequest) ?? prepared;
+  }
+
+  /**
+   * Wire-agnostic request preparation — runs on EVERY wire.
+   *
+   * This is where non-reasoning quirks belong: tool-name truncation, tool-count
+   * caps, temperature clamping, delegation to an inner adapter. Anything that
+   * emits a reasoning knob belongs in {@link applyNativeReasoning} instead, so
+   * the Anthropic wire can substitute its own.
+   */
+  protected prepareRequestCommon(request: any, _originalRequest: any): any {
     return request;
+  }
+
+  /**
+   * The reasoning knob of the model's OWN provider API (DashScope's
+   * `enable_thinking`, OpenAI/xAI/DeepSeek's `reasoning_effort`, GLM's
+   * `thinking` toggle, …). Runs on every wire EXCEPT `anthropic-sse`.
+   *
+   * Override this in a dialect. Do not branch on the wire inside it — that is
+   * precisely the coupling this split removes.
+   */
+  protected applyNativeReasoning(request: any, _originalRequest: any): any {
+    return request;
+  }
+
+  /** True when this instance was composed with the Anthropic Messages wire. */
+  protected isAnthropicWire(): boolean {
+    return this.wireFormat === "anthropic-sse";
+  }
+
+  /**
+   * Remove reasoning knobs that only exist on OpenAI-shaped wires.
+   *
+   * Belt-and-braces: with the hook split nothing should set them here, but a
+   * dialect that puts its reasoning emission in the wrong hook (or an inner
+   * adapter reached through delegation) would otherwise ship a field the
+   * Anthropic endpoint ignores while believing depth was set.
+   */
+  protected stripNonAnthropicReasoningFields(request: any): void {
+    if (!request) return;
+    for (const field of NON_ANTHROPIC_REASONING_FIELDS) {
+      if (request[field] !== undefined) delete request[field];
+    }
+  }
+
+  /**
+   * Reasoning knob for the Anthropic Messages wire — the SINGLE place to tune
+   * it, for every dialect.
+   *
+   * The SHAPE of the knob is a PER-MODEL fact read from the slim catalog's
+   * `reasoning` record, never from a table here. Alibaba's Qwen Plan roster is
+   * why a fixed ladder is wrong: `qwen3.7-plus` is `control: "toggle"` (it
+   * exposes no depth parameter at all, so a `budget_tokens` would be an
+   * invented field), while `glm-5.2` and `deepseek-v4-pro` on the SAME endpoint
+   * are `control: "effort"` with their own restricted level sets
+   * (`["xhigh","high"]`, `["max","high"]`) that do not contain every claudish
+   * level.
+   *
+   * `output_config.effort` is the field Claude Code itself sends to an
+   * Anthropic Messages endpoint and which AnthropicAPIFormat drops when
+   * rebuilding the payload. Restoring it (clamped) is how a discrete level
+   * reaches a model whose only other knob is `budget_tokens`, which these
+   * models do not accept. Verified live 2026-08-02 against Qwen Plan:
+   * `output_config.effort: "high"` → 200, `"banana"` → 400 naming the seven
+   * accepted levels, so the field IS read.
+   *
+   * Fail-soft by construction: an unknown model / cold cache yields `undefined`
+   * metadata and falls through to the generic budget ladder. No path throws and
+   * no request is ever blocked on catalog data.
+   *
+   * Override only for an endpoint whose enable value is outside the Anthropic
+   * vocabulary (MiniMax answers `adaptive`, not `enabled`).
+   */
+  protected applyAnthropicWireReasoning(request: any, originalRequest: any): any {
+    const reasoning = this.lookupReasoningCapability();
+
+    // Catalog is explicit that the model cannot reason — never switch it on.
+    if (reasoning?.supported === false) {
+      request.thinking = { type: "disabled" };
+      log(`[${this.getName()}] ${this.modelId} reports no reasoning support -> thinking: disabled`);
+      return request;
+    }
+
+    const effort = this.resolveEffortLevel(originalRequest);
+    // No effort signal at all: leave whatever Claude Code sent untouched. The
+    // endpoint's own default is a better answer than a level we invented.
+    if (!effort) return request;
+
+    if (effort === "none" || effort === "minimal") {
+      request.thinking = { type: "disabled" };
+      log(`[${this.getName()}] effort ${effort} -> thinking.type: disabled for ${this.modelId}`);
+      return request;
+    }
+
+    // A token budget is only legitimate where the catalog says the model takes
+    // one (`control: "budget"` / `supportsBudgetTokens`).
+    if (reasoning && (reasoning.control === "budget" || reasoning.supportsBudgetTokens)) {
+      return this.enableAnthropicThinkingWithBudget(request, effort, "catalog: budget-controlled");
+    }
+
+    // A discrete level: clamp into what this model actually advertises.
+    const advertised = reasoning?.efforts?.length ? reasoning : undefined;
+    if (advertised) {
+      const level = this.clampToAdvertisedEffort(effort, advertised);
+      request.thinking = { type: "enabled" };
+      if (level) {
+        request.output_config = { ...(request.output_config ?? {}), effort: level };
+      }
+      log(
+        `[${this.getName()}] effort ${effort} -> thinking: enabled, output_config.effort: ${level ?? "(none advertised)"} for ${this.modelId} (advertised: ${advertised.efforts?.join("/")})`
+      );
+      return request;
+    }
+
+    // `control: "toggle"` (or an unrecognized control with no level list):
+    // reasoning is on/off only. Emit the switch and nothing else.
+    if (reasoning) {
+      request.thinking = { type: "enabled" };
+      log(
+        `[${this.getName()}] effort ${effort} -> thinking: enabled (no depth knob; catalog control=${reasoning.control ?? "unknown"}) for ${this.modelId}`
+      );
+      return request;
+    }
+
+    // No catalog entry at all (cold cache, or a model newer than the catalog —
+    // qwen3.8-max-preview is exactly this today). No information means keep the
+    // generic behaviour rather than guess a narrower one.
+    return this.enableAnthropicThinkingWithBudget(request, effort, "no catalog entry");
+  }
+
+  /** Enable Anthropic-wire thinking with the generic token-budget ladder. */
+  private enableAnthropicThinkingWithBudget(request: any, effort: EffortLevel, why: string): any {
+    const budget = this.effortToThinkingTokenBudget(effort);
+    request.thinking =
+      budget === undefined ? { type: "enabled" } : { type: "enabled", budget_tokens: budget };
+    log(
+      `[${this.getName()}] effort ${effort} -> thinking: enabled, budget_tokens: ${budget ?? "(model max)"} for ${this.modelId} (${why})`
+    );
+    return request;
+  }
+
+  /**
+   * Clamp a requested level into the set a model actually advertises.
+   *
+   * - Advertised exactly → send it.
+   * - Otherwise → the nearest advertised level, ties resolved UPWARD so a model
+   *   is never silently under-driven (asking `low` of a model whose floor is
+   *   `high` must get `high`, not nothing).
+   * - No usable level list → the catalog's `defaultEffort`, else undefined
+   *   (caller then sends the plain on-switch).
+   *
+   * Levels the catalog reports but claudish has no name for are ignored rather
+   * than passed through — the vocabulary is {@link EFFORT_LEVELS}.
+   */
+  protected clampToAdvertisedEffort(
+    requested: EffortLevel,
+    reasoning: ReasoningCapability
+  ): EffortLevel | undefined {
+    const advertised = (reasoning.efforts ?? []).filter(isEffortLevel);
+    if (advertised.length === 0) {
+      return isEffortLevel(reasoning.defaultEffort) ? reasoning.defaultEffort : undefined;
+    }
+    if (advertised.includes(requested)) return requested;
+
+    const target = EFFORT_ORDER.indexOf(requested);
+    let best = advertised[0];
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of advertised) {
+      const distance = Math.abs(EFFORT_ORDER.indexOf(candidate) - target);
+      // `<=` semantics: break ties toward the later (higher) level, since
+      // `advertised` is scanned in catalog order which is not guaranteed sorted.
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance && EFFORT_ORDER.indexOf(candidate) > EFFORT_ORDER.indexOf(best))
+      ) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  /** Slim-catalog reasoning metadata for this model, or undefined. Never throws. */
+  protected lookupReasoningCapability(): ReasoningCapability | undefined {
+    try {
+      return lookupModelReasoning(this.modelId);
+    } catch {
+      // lookupModelReasoning throws only on a provider-routed id, which a
+      // dialect should never see. Stay fail-soft regardless.
+      return undefined;
+    }
+  }
+
+  /**
+   * Effort → token budget (claudish convention), shared by DashScope's
+   * `thinking_budget` and Anthropic's `thinking.budget_tokens`. `max` omits the
+   * budget so the model uses its full max CoT length.
+   */
+  protected effortToThinkingTokenBudget(effort: EffortLevel): number | undefined {
+    switch (effort) {
+      case "low":
+        return 2048;
+      case "medium":
+        return 8192;
+      case "high":
+        return 24576;
+      case "xhigh":
+        return 38912;
+      case "max":
+        return undefined; // omit → model max
+      default:
+        return 8192;
+    }
   }
 
   /**
@@ -260,10 +562,44 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
 
   /**
    * Whether thinking blocks should be filtered from the SSE response.
-   * Override to return true for providers whose thinking blocks leak to the user.
+   *
+   * TRUE ON THE ANTHROPIC WIRE, for every dialect — unsigned thinking is a
+   * property of the ENDPOINT, not of any model family.
+   *
+   * An Anthropic `thinking` block carries a cryptographic `signature` that
+   * Claude Code verifies and round-trips on later turns. A third-party
+   * Anthropic-compatible endpoint cannot produce one: captured live from Qwen
+   * Plan (/apps/anthropic/v1/messages) for qwen3.8-max-preview and
+   * qwen3.7-plus,
+   *
+   *     content_block_start: (index 0, type 'thinking', signature '')
+   *     signature_delta count: 1, total signature length: 0
+   *
+   * so block[0] is a structurally valid thinking block with an EMPTY signature.
+   * Claude Code cannot treat that as a first-class thinking block, so the
+   * reasoning degrades into ordinary inline prose in the chat. We cannot forge a
+   * signature, so the only correct move is to drop the block:
+   * `createAnthropicPassthroughStream` strips it and RE-INDEXES the remaining
+   * content blocks to a contiguous 0,1,2… sequence.
+   *
+   * Gating on the WIRE rather than a model roster is deliberate — a hardcoded
+   * list would silently miss the next model added to a multi-vendor plan, which
+   * is exactly how `qc@glm-5.2` and `qc@deepseek-v4-pro` kept leaking after
+   * `qc@qwen3.7-plus` was fixed. `wireFormat` is the composition hint
+   * ComposedHandler supplies from `explicitAdapter.getStreamFormat()`.
+   *
+   * NOTE this is keyed on the composed `wireFormat`, which is supplied ONLY by
+   * DialectManager (to every adapter it builds, Layer 1 formats included).
+   * AnthropicAPIFormat is never built there — the provider profiles construct
+   * it explicitly — so it keeps `false`, and a genuinely Anthropic backend
+   * reached through it (Vertex serving real `claude-*`, whose signatures are
+   * valid) is untouched.
+   *
+   * Override to force `true` on a provider that is only ever reached over this
+   * wire and therefore need not depend on the hint being supplied (MiniMax).
    */
   shouldFilterThinking(): boolean {
-    return false;
+    return this.isAnthropicWire();
   }
 
   /**

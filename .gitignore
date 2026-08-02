@@ -94,3 +94,27 @@ gtd/sessions/
 
 # Added by claudeup
 # Local claudemem indexes are generated from the repo and should not be committed.
+
+# Added by claudeup
+# Local claudemem indexes are generated from the repo and should not be committed.
+
+# Added by claudeup
+# Local claudemem indexes are generated from the repo and should not be committed.
+
+# Added by claudeup
+# A managed rule says this path should stay tracked in git.
+!/.claude/
+!/.claude/profiles.json
+# A managed rule says this path should stay out of git.
+.claude/_profiles/
+# Statusline worktree markers are local runtime state.
+.claude/.statusline-worktree-*
+# Claude cache contents are local generated data and can grow quickly.
+.claude/cache/
+# Local claudemem indexes are generated from the repo and should not be committed.
+
+# Added by claudeup
+# Team MCP configuration should be committed so shared tools are discoverable.
+!/.mcp.json
+/.claude/.coaching
+/.claude/gtd

@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseModelSpec } from "./model-parser.js";
 import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
+import { PROVIDER_PROFILES } from "./provider-profiles.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,13 @@ describe("parseModelSpec — shortcut resolution", () => {
 
     const parsed2 = parseModelSpec("OR@some-model");
     expect(parsed2.provider).toBe("openrouter");
+  });
+
+  test("qc@qwen3.7-plus resolves to qwen-cloud", () => {
+    const parsed = parseModelSpec("qc@qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-cloud");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isExplicitProvider).toBe(true);
   });
 });
 
@@ -67,6 +75,13 @@ describe("parseModelSpec — legacy prefix patterns", () => {
     const parsed = parseModelSpec("ollama:llama3.2");
     expect(parsed.provider).toBe("ollama");
     expect(parsed.model).toBe("llama3.2");
+  });
+
+  test("qc/qwen3.7-plus resolves to qwen-cloud", () => {
+    const parsed = parseModelSpec("qc/qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-cloud");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isLegacySyntax).toBe(true);
   });
 });
 
@@ -127,6 +142,19 @@ describe("parseModelSpec — native model auto-detection", () => {
     expect(parsed.provider).toBe("qwen");
   });
 
+  test("qwen3.7-plus auto-detects as qwen-cloud before the general qwen provider", () => {
+    const parsed = parseModelSpec("qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-cloud");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isExplicitProvider).toBe(false);
+  });
+
+  test("hyphenated qwen3-coder-next remains owned by qwen, not qwen-cloud", () => {
+    const parsed = parseModelSpec("qwen3-coder-next");
+    expect(parsed.provider).toBe("qwen");
+    expect(parsed.provider).not.toBe("qwen-cloud");
+  });
+
   test("llama3 auto-detects as ollamacloud", () => {
     const parsed = parseModelSpec("llama3");
     expect(parsed.provider).toBe("ollamacloud");
@@ -160,6 +188,16 @@ describe("parseModelSpec — native model auto-detection", () => {
 // ---------------------------------------------------------------------------
 // Section 3: Provider profiles
 // ---------------------------------------------------------------------------
+
+describe("Provider profiles", () => {
+  test("qwen-cloud shares the Anthropic-compatible profile", () => {
+    const profile = PROVIDER_PROFILES["qwen-cloud"];
+    expect(profile).toBeDefined();
+    expect(profile).toBe(PROVIDER_PROFILES["minimax-coding"]);
+    expect(profile).toBe(PROVIDER_PROFILES["kimi-coding"]);
+    expect(profile).toBe(PROVIDER_PROFILES["z-ai"]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Section 4: Edge cases

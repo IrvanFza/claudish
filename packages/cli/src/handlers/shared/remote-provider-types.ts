@@ -81,7 +81,24 @@ export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
 const FREE_PROVIDERS = new Set(["opencode-zen", "zen"]);
 
 // Subscription providers — display "SUB" instead of cost
-const SUBSCRIPTION_PROVIDERS = new Set(["minimax-coding", "kimi-coding", "glm-coding"]);
+const SUBSCRIPTION_PROVIDERS = new Set([
+  "minimax-coding",
+  "kimi-coding",
+  "glm-coding",
+  "qwen-cloud",
+]);
+
+/**
+ * Whether a provider bills a flat subscription rather than per token.
+ *
+ * The single sanctioned answer to that question — `getModelPricing` below uses
+ * it, and so does the interactive picker, which renders "SUB" instead of a
+ * per-token figure. Showing a dollar rate for a flat-rate plan would be
+ * actively misleading, so both surfaces must agree on one list.
+ */
+export function isSubscriptionProvider(provider: string): boolean {
+  return SUBSCRIPTION_PROVIDERS.has(provider.toLowerCase());
+}
 
 /** Map provider aliases to canonical names used in PROVIDER_DEFAULTS */
 const PROVIDER_ALIAS: Record<string, string> = {
@@ -129,7 +146,7 @@ export function getModelPricing(provider: string, modelName: string): ModelPrici
   }
 
   // 1b. Subscription providers
-  if (SUBSCRIPTION_PROVIDERS.has(p)) {
+  if (isSubscriptionProvider(p)) {
     return { inputCostPer1M: 0, outputCostPer1M: 0, isSubscription: true };
   }
 

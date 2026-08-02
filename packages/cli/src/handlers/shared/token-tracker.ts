@@ -24,6 +24,20 @@ export interface TokenTrackerConfig {
   providerDisplayName?: string;
 }
 
+/**
+ * Strip a `provider@` routing prefix from a model spec.
+ *
+ * The status line renders `"<provider_name> <model_name>"`, so a model_name that
+ * still carries its routing prefix names the provider twice — `qc@qwen3.7-plus`
+ * under the "Qwen Plan" label reads as "Qwen Plan qc@qwen3.7-plus".
+ * ComposedHandler already enforces a bare `modelName`, but a fallback override
+ * comes from a transport and this is cheap insurance.
+ */
+export function stripProviderPrefix(name: string): string {
+  const at = name.indexOf("@");
+  return at === -1 ? name : name.slice(at + 1);
+}
+
 export class TokenTracker {
   private port: number;
   private config: TokenTrackerConfig;
@@ -199,6 +213,11 @@ export class TokenTracker {
     this.config.contextWindow = contextWindow;
   }
 
+  /** Current context window in tokens. 0 means "not resolved yet / unknown". */
+  getContextWindow(): number {
+    return this.config.contextWindow;
+  }
+
   /** Get the current session total cost */
   getTotalCost(): number {
     return this.sessionTotalCost;
@@ -270,9 +289,17 @@ export class TokenTracker {
         is_free: isFreeModel,
         is_estimated: isEstimate || false,
       };
-      // When a fallback model is active, include it so the status line shows the actual model
-      if (this.modelNameOverride) {
-        data.model_name = this.modelNameOverride;
+      // model_name is ALWAYS written, not just when a fallback override is active.
+      // The status line's fallback for a missing key is $CLAUDISH_ACTIVE_MODEL_NAME,
+      // which is the full routed spec (`qc@qwen3.7-plus`) — rendered next to the
+      // provider label that produces "Qwen Plan qc@qwen3.7-plus". The override
+      // still wins when set, because a capacity fallback legitimately needs to show
+      // the SUBSTITUTED model rather than the one the user asked for.
+      const displayModel = stripProviderPrefix(
+        this.modelNameOverride || this.config.modelName || ""
+      );
+      if (displayModel) {
+        data.model_name = displayModel;
       }
       // Include quota remaining if available (e.g., from Gemini Code Assist)
       if (this.quotaRemaining !== undefined) {

@@ -26,15 +26,9 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
   }
 
   /**
-   * Handle request preparation — clamp temperature to MiniMax's accepted range,
-   * and map Claude Code's effort to MiniMax's `thinking` toggle.
-   *
-   * MiniMax's enable value is `adaptive` (NOT "enabled"). On the Anthropic-compat
-   * endpoint: none → `{type:"disabled"}` (effective only on M3; M2.x is
-   * always-on and ignores it); every other level → `{type:"adaptive"}`. The raw
-   * <think> round-trip in history is NOT touched here — only the request knob.
+   * Clamp temperature to MiniMax's accepted range. Wire-agnostic.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override prepareRequestCommon(request: any, _originalRequest: any): any {
     if (request.temperature !== undefined) {
       if (request.temperature < TEMPERATURE_RANGE.min) {
         log(
@@ -49,6 +43,26 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
       }
     }
 
+    return request;
+  }
+
+  /**
+   * MiniMax's `thinking` toggle. Every DIRECT MiniMax provider is
+   * Anthropic-compatible (`mm@`, `mmc@`, and the minimax branch of
+   * `zen@`/`zgo@`), so this is wired into BOTH reasoning hooks — the
+   * Anthropic-wire one, which it OVERRIDES, and the native one, which still
+   * runs for a composition that supplied no wire hint and for aggregator
+   * routes (`or@minimax/…`, `ll@`) that reach MiniMax over the OpenAI wire.
+   *
+   * The override exists because MiniMax's enable value is `adaptive`, NOT the
+   * Anthropic `enabled` the catalog-driven base rule emits, and because MiniMax
+   * disables at `none` only — `minimal` still reasons. Neither fact is
+   * expressible in the catalog's `reasoning` vocabulary (MiniMax is recorded as
+   * `control: "toggle"`), so the generic rule would send it a value its API does
+   * not define. The raw <think> round-trip in history is NOT touched here —
+   * only the request knob.
+   */
+  private applyMiniMaxThinking(request: any, originalRequest: any): any {
     const effort = this.resolveEffortLevel(originalRequest);
     if (effort) {
       const type = effort === "none" ? "disabled" : "adaptive";
@@ -57,6 +71,14 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
     }
 
     return request;
+  }
+
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
+    return this.applyMiniMaxThinking(request, originalRequest);
+  }
+
+  protected override applyAnthropicWireReasoning(request: any, originalRequest: any): any {
+    return this.applyMiniMaxThinking(request, originalRequest);
   }
 
   /**
@@ -79,6 +101,13 @@ export class MiniMaxModelDialect extends BaseAPIFormat {
   /**
    * MiniMax's Anthropic-compatible endpoint returns thinking blocks that leak
    * to the user when passed through. Filter them from the SSE stream.
+   *
+   * Unconditional, unlike the base rule (which keys on the composed
+   * `wireFormat`): every direct MiniMax provider (`mm@`, `mmc@`, `zen@`/`zgo@`)
+   * is Anthropic-compatible, so the answer is true whether or not a caller
+   * supplied the composition hint. Harmless on an aggregator route
+   * (`or@minimax/…`, `ll@`), which is OpenAI-wire — this is only ever read by
+   * createAnthropicPassthroughStream.
    */
   override shouldFilterThinking(): boolean {
     return true;

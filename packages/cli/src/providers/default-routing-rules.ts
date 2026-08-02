@@ -58,6 +58,20 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // GLM: coding plan, direct, OpenRouter.
   "glm-*": ["glm-coding", "glm", "openrouter"],
 
+  // Qwen Plan (Alibaba Model Studio subscription), then OpenRouter.
+  // `globMatch` is a literal prefix/suffix split, so the "." is matched
+  // literally: this claims the DOTTED Model Studio names (qwen3.7-plus) and
+  // deliberately NOT the hyphenated aggregator names (qwen3-coder-next).
+  //
+  // The plan ALSO serves glm-5.2 and deepseek-v4-*, but their chains are left
+  // untouched on purpose. Routing filters by CREDENTIAL availability, not by
+  // model availability — putting qwen-cloud in front of "glm-*" would send
+  // glm-4.6 to Alibaba on the strength of the plan key alone, earn a
+  // `400 Model not exist`, and stop there, because 400 is deliberately
+  // non-retryable in fallback-handler.ts. Cross-vendor access to the plan
+  // stays explicit: `qc@glm-5.2`.
+  "qwen3.*": ["qwen-cloud", "openrouter"],
+
   // Z.AI native models.
   "z-ai-*": ["z-ai", "openrouter"],
 

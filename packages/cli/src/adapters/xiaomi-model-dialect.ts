@@ -23,17 +23,21 @@ export class XiaomiModelDialect extends BaseAPIFormat {
     return 64;
   }
 
-  override prepareRequest(request: any, originalRequest: any): any {
-    // Xiaomi doesn't support thinking params
-    if (originalRequest.thinking) {
-      log("[XiaomiModelDialect] Stripping thinking object (not supported by Xiaomi API)");
-      delete request.thinking;
-    }
-
-    // Truncate tool names to 64 chars
+  protected override prepareRequestCommon(request: any, _originalRequest: any): any {
+    // Truncate tool names to 64 chars — a wire-agnostic API constraint.
     this.truncateToolNames(request);
     if (request.messages) {
       this.truncateToolNamesInMessages(request.messages);
+    }
+
+    return request;
+  }
+
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
+    // Xiaomi's own API doesn't support thinking params.
+    if (originalRequest.thinking) {
+      log("[XiaomiModelDialect] Stripping thinking object (not supported by Xiaomi API)");
+      delete request.thinking;
     }
 
     return request;

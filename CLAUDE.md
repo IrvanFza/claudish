@@ -49,6 +49,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `gc@` → GLM Coding Plan
 - `sakana@`, `fugu@` → Sakana Fugu
 - `sc@` → Sakana Fugu Subscription
+- `qc@` → Qwen Plan (Alibaba Cloud Model Studio)
 - `llama@`, `oc@` → OllamaCloud
 - `litellm@`, `ll@` → LiteLLM (requires LITELLM_BASE_URL)
 - `ollama@` → Ollama (local)

@@ -10,7 +10,13 @@
  * constraints, not model metadata.
  */
 
-import { readAllModelsCache, type SlimModelEntry } from "../providers/all-models-cache.js";
+import {
+  readAllModelsCache,
+  type ReasoningCapability,
+  type SlimModelEntry,
+} from "../providers/all-models-cache.js";
+
+export type { ReasoningCapability, ReasoningControl } from "../providers/all-models-cache.js";
 
 export interface ModelEntry {
   /** Model ID as stored in the slim catalog (not lowercased) */
@@ -47,6 +53,24 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
     contextWindow: entry.contextWindow,
     supportsVision: entry.supportsVision,
   };
+}
+
+/**
+ * Reasoning capability for a model, straight from the slim catalog.
+ *
+ * Separate from {@link lookupModel} on purpose: that one gates on
+ * `contextWindow` being present (its callers want a window), whereas reasoning
+ * metadata is useful on its own — a model can carry `reasoning` with no window.
+ *
+ * Returns undefined for a cold cache or an unknown model. Callers MUST treat
+ * that as "no information" and keep their existing behaviour; it is never an
+ * error, and it must never block a request.
+ */
+export function lookupModelReasoning(
+  modelId: string,
+  cachePath?: string
+): ReasoningCapability | undefined {
+  return findCacheEntry(modelId, cachePath)?.reasoning;
 }
 
 /**

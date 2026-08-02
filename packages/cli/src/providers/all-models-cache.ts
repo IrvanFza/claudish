@@ -30,6 +30,43 @@ import type { AggregatorEntry } from "../model-loader.js";
  * This is the multi-aggregator routing index used by `CatalogClient` to
  * answer "which vendors serve model X?" without a Firebase round-trip.
  */
+/**
+ * How a model exposes its reasoning depth, as reported by the slim catalog.
+ *
+ * - `toggle`   — reasoning is on/off only; there is no depth parameter.
+ * - `effort`   — a discrete level from the model's own `efforts` list.
+ * - `adaptive` — the model chooses; a level may optionally be suggested.
+ * - `budget`   — a token budget (`budget_tokens`).
+ *
+ * Kept as a string union of what Firebase currently emits, but consumers must
+ * treat an unrecognized value as "no information" rather than an error —
+ * the catalog is external data and may grow new kinds.
+ */
+export type ReasoningControl = "toggle" | "effort" | "adaptive" | "budget";
+
+/**
+ * Per-model reasoning capability from the Firebase slim catalog.
+ *
+ * This is the ONLY sanctioned source for "does this model take an effort
+ * level / a token budget / just an on-switch?". Hardcoding that per model is
+ * exactly the data that goes stale (a `control: "toggle"` model handed a
+ * `budget_tokens` is being sent a parameter it does not expose).
+ */
+export interface ReasoningCapability {
+  /** Whether the model can reason at all. */
+  supported: boolean;
+  /** Which knob the model exposes. Absent = unknown. */
+  control?: ReasoningControl;
+  /** Whether reasoning cannot be turned off. */
+  mandatory?: boolean;
+  /** The discrete levels this model advertises (catalog vocabulary). */
+  efforts?: string[];
+  /** The level the provider applies when none is requested. */
+  defaultEffort?: string;
+  /** Whether an explicit `budget_tokens` is accepted. */
+  supportsBudgetTokens?: boolean;
+}
+
 export interface SlimModelEntry {
   modelId: string;
   aliases: string[];
@@ -38,6 +75,12 @@ export interface SlimModelEntry {
   releaseDate?: string;
   /** Context window in tokens (present when Firebase has it) */
   contextWindow?: number;
+  /**
+   * Reasoning capability (present when Firebase has it). Already carried by the
+   * on-disk `?catalog=slim` payload; the type previously dropped it, so every
+   * consumer had to guess a model's reasoning knob instead of reading it.
+   */
+  reasoning?: ReasoningCapability;
   /** Whether model supports vision/image input (present when Firebase has it) */
   supportsVision?: boolean;
   /**

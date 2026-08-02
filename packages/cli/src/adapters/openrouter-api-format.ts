@@ -148,7 +148,10 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
 
   // ─── Delegate prepareRequest to inner adapter ──────────────────────
 
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override prepareRequestCommon(request: any, originalRequest: any): any {
+    // Delegation runs the inner dialect's FULL template (its own common work
+    // plus its own reasoning knob). OpenRouter always re-labels the wire to
+    // openai-sse, so the Anthropic branch is unreachable here either way.
     return this.innerAdapter.prepareRequest(request, originalRequest);
   }
 

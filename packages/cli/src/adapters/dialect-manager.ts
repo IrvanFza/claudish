@@ -8,6 +8,7 @@
  * - DeepSeek, GLM, etc.: thinking param stripping / mapping
  */
 
+import type { StreamFormat } from "../providers/transport/types.js";
 import { type BaseAPIFormat, DefaultAPIFormat } from "./base-api-format.js";
 import { CodexAPIFormat } from "./codex-api-format.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
@@ -23,20 +24,32 @@ export class DialectManager {
   private adapters: BaseAPIFormat[];
   private defaultAdapter: DefaultAPIFormat;
 
-  constructor(modelId: string) {
+  /**
+   * @param modelId     Bare model name — dialects self-select on it.
+   * @param wireFormat  The wire format of the Layer 1 FormatConverter this
+   *   dialect will be composed with (ComposedHandler knows it; the dialect
+   *   cannot, because selection is by model NAME). BaseAPIFormat — not the
+   *   dialect — consumes it, substituting the Anthropic Messages reasoning knob
+   *   and enabling unsigned-thinking filtering on `anthropic-sse`. That is why
+   *   a multi-vendor Anthropic endpoint (Alibaba's Qwen Plan serves qwen3.x,
+   *   glm-5.2 and deepseek-v4-* over one URL, i.e. three different dialects)
+   *   works without each dialect opting in. Omit for "unknown" → the OpenAI
+   *   default, which keeps every pre-existing call site byte-identical.
+   */
+  constructor(modelId: string, wireFormat?: StreamFormat) {
     // Register all available dialects/formats
     this.adapters = [
-      new GrokModelDialect(modelId),
-      new GeminiAPIFormat(modelId),
-      new CodexAPIFormat(modelId), // Must be before OpenAIAPIFormat (codex matches first)
-      new OpenAIAPIFormat(modelId),
-      new QwenModelDialect(modelId),
-      new MiniMaxModelDialect(modelId),
-      new DeepSeekModelDialect(modelId),
-      new GLMModelDialect(modelId),
-      new XiaomiModelDialect(modelId),
+      new GrokModelDialect(modelId, wireFormat),
+      new GeminiAPIFormat(modelId, wireFormat),
+      new CodexAPIFormat(modelId, wireFormat), // Must be before OpenAIAPIFormat (codex matches first)
+      new OpenAIAPIFormat(modelId, wireFormat),
+      new QwenModelDialect(modelId, wireFormat),
+      new MiniMaxModelDialect(modelId, wireFormat),
+      new DeepSeekModelDialect(modelId, wireFormat),
+      new GLMModelDialect(modelId, wireFormat),
+      new XiaomiModelDialect(modelId, wireFormat),
     ];
-    this.defaultAdapter = new DefaultAPIFormat(modelId);
+    this.defaultAdapter = new DefaultAPIFormat(modelId, wireFormat);
   }
 
   /**

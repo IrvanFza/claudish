@@ -688,7 +688,7 @@ function formatContextWindow(ctx: number): string {
 function buildKeyLine(activeEntry?: ChainEntry, directKeyVar?: string): string {
   if (activeEntry?.provenance) {
     const p = activeEntry.provenance;
-    if (p.effectiveValue) {
+    if (p.hasValue) {
       return `${pc.bold}Key${pc.reset}  $${p.envVar}  ${pc.dim}(${p.effectiveSource})${pc.reset}`;
     }
     return `${pc.bold}Key${pc.reset}  $${p.envVar}  ${pc.dim}(not set)${pc.reset}`;

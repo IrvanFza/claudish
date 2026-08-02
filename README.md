@@ -37,6 +37,7 @@
 | **MiniMax** | `claudish --model mm@minimax-m2.1` |
 | **OllamaCloud** | `claudish --model oc@qwen3-next` |
 | **OpenCode Zen Go** | `claudish --model zgo@glm-5` |
+| **Qwen Plan** | `claudish --model qc@qwen3.7-plus` |
 
 **100% Offline Option — Your code never leaves your machine:**
 ```bash
@@ -333,6 +334,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `ZAI_API_KEY` | Z.AI (`zai@`) | |
 | `SAKANA_API_KEY` | Sakana Fugu (`sakana@`, `fugu@`) | |
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` |
+| `QWEN_CLOUD_PLAN_API_KEY` | Qwen Plan (`qc@`) — Alibaba Cloud Model Studio | _(none — billing mode is fixed when the key is minted)_ |
 | `OLLAMA_API_KEY` | OllamaCloud (`oc@`) | |
 | `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — optional for free models | |
 | `LITELLM_API_KEY` | LiteLLM (`ll@`) — requires `LITELLM_BASE_URL` | |
@@ -380,6 +382,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot | `https://api.moonshot.ai` |
 | `ZHIPU_BASE_URL` | GLM/Zhipu | `https://open.bigmodel.cn` |
 | `ZAI_BASE_URL` | Z.AI | `https://api.z.ai` |
+| `QWEN_CLOUD_PLAN_BASE_URL` | Qwen Plan | `https://token-plan.ap-southeast-1.maas.aliyuncs.com` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server | _(required with LITELLM_API_KEY)_ |
@@ -561,6 +564,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `zai@` | Z.AI Direct | `ZAI_API_KEY` | `zai@glm-4` |
 | `sakana@`, `fugu@` | Sakana Fugu | `SAKANA_API_KEY` | `fugu@fugu-ultra` |
 | `sc@` | Sakana Fugu Subscription | `SAKANA_CODING_API_KEY` | `sc@fugu-ultra` |
+| `qc@` | Qwen Plan | `QWEN_CLOUD_PLAN_API_KEY` | `qc@qwen3.7-plus` |
 | `llama@`, `lc@`, `meta@` | OllamaCloud | `OLLAMA_API_KEY` | `llama@llama-3.1-70b` |
 | `oc@` | OllamaCloud | `OLLAMA_API_KEY` | `oc@llama-3.1-70b` |
 | `zen@` | OpenCode Zen (free/paid) | `OPENCODE_API_KEY` _(optional)_ | `zen@gpt-5-nano` |
@@ -586,9 +590,12 @@ When no provider is specified, Claudish auto-detects from model name:
 | `kimi-*`, `moonshot-*` | Kimi Direct | `kimi-k2` |
 | `glm-*`, `zhipu/*` | GLM Direct | `glm-4` |
 | `fugu-*`, `sakana/*` | Sakana Fugu | `fugu-ultra` |
+| `qwen3.*` (dotted Model Studio names) | Qwen Plan, then OpenRouter | `qwen3.7-plus` |
 | `poe:*` | Poe | `poe:GPT-4o` |
 | `claude-*`, `anthropic/*` | Native Anthropic | `claude-sonnet-4` |
 | **Unknown `vendor/model`** | **Error** | Use `openrouter@vendor/model` |
+
+**Qwen Plan roster**: discovered live from the plan's own model endpoint, never hardcoded — Alibaba's published docs both deny that endpoint exists and name models the host does not serve, and entitlement differs per subscription. The plan also serves `glm-5.2` and `deepseek-v4-*`, reachable only as an explicit `qc@glm-5.2`; bare `glm-*` / `deepseek-*` names keep their existing routing.
 
 ### Examples
 
@@ -610,6 +617,11 @@ claudish --model oc@llama-3.2-vision "analyze image"
 # Vertex AI - Google Cloud
 VERTEX_API_KEY=... claudish --model v@gemini-2.5-flash "task"
 VERTEX_PROJECT=my-project claudish --model vertex@gemini-2.5-flash "OAuth mode"
+
+# Qwen Plan - Alibaba Cloud Model Studio subscription
+claudish --model qc@qwen3.7-plus "implement feature"
+claudish --model qwen3.7-plus "implement feature"   # bare dotted qwen3.* routes here
+claudish --model qc@glm-5.2 "review"                # plan also serves GLM/DeepSeek, explicit qc@ only
 
 # Local models with concurrency control
 claudish --model ollama@llama3.2:3 "review"     # 3 concurrent requests

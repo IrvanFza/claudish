@@ -6,15 +6,19 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
-import { logStderr } from "./logger.js";
+// Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
+// console printer), and an unaliased import would be shadowed inside it.
+import { log as debugLog, logStderr } from "./logger.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
@@ -285,6 +289,104 @@ process.stdin.on('end', () => {
   return scriptPath;
 }
 
+/** A token file older than this is from a dead session and is safe to remove. */
+export const STALE_TOKEN_FILE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Upper bound on how many directory entries the opportunistic sweep will stat.
+ * ~/.claudish accumulates one token file per port ever bound (2601 on the
+ * developer's machine at the time of writing), and this runs on the launch
+ * path — it must be cheap and predictably bounded, not exhaustive. Whatever the
+ * sweep doesn't reach this run, it reaches the next one.
+ */
+const MAX_TOKEN_FILES_SCANNED = 4000;
+
+/**
+ * Blank the port-keyed token file before Claude Code starts.
+ *
+ * `~/.claudish/tokens-<port>.json` is keyed by PORT, not by session, and nothing
+ * used to initialise it. Ports get reused, so a new session that happened to
+ * bind a port some long-dead run had used inherited that run's numbers: a fresh
+ * LM Studio-free session displayed `cli • LMStudio qc@qwen3.7-plus • $0.000 •
+ * 0% (36k/32k)`, where every figure came from a five-week-old leftover file.
+ *
+ * The zeroed record is deliberately NEUTRAL rather than pre-populated: no
+ * `provider_name` and no `model_name`, so the status line falls back to
+ * `$CLAUDISH_ACTIVE_MODEL_NAME` and renders no provider label until the first
+ * real response arrives. `context_window: "unknown"` / `context_left_percent:
+ * -1` is the same "not known yet" pair TokenTracker itself writes, which the
+ * status line renders as `N/A`.
+ *
+ * Best-effort: an I/O failure here must never block a launch.
+ */
+export function initializeTokenFile(tokenFilePath: string): void {
+  try {
+    mkdirSync(dirname(tokenFilePath), { recursive: true });
+    writeFileSync(
+      tokenFilePath,
+      JSON.stringify({
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        total_cost: 0,
+        context_window: "unknown",
+        context_left_percent: -1,
+        updated_at: Date.now(),
+        is_free: false,
+        is_estimated: false,
+      }),
+      "utf-8"
+    );
+  } catch (e) {
+    debugLog(`[claude-runner] Could not initialize token file ${tokenFilePath}: ${e}`);
+  }
+}
+
+/**
+ * Remove `tokens-*.json` files whose mtime is older than `STALE_TOKEN_FILE_MS`.
+ *
+ * Purely opportunistic housekeeping for the orphans the port-keyed naming leaves
+ * behind. Anything newer than the cutoff is left alone — a concurrent claudish
+ * on another port owns a live file, and deleting it would blank a running
+ * session's status line.
+ *
+ * Never throws; returns the number of files removed (for tests/logging).
+ */
+export function cleanupStaleTokenFiles(
+  dir: string,
+  now: number = Date.now(),
+  maxAgeMs: number = STALE_TOKEN_FILE_MS
+): number {
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+
+  const cutoff = now - maxAgeMs;
+  let scanned = 0;
+  for (const name of entries) {
+    if (scanned >= MAX_TOKEN_FILES_SCANNED) break;
+    if (!name.startsWith("tokens-") || !name.endsWith(".json")) continue;
+    scanned++;
+    const full = join(dir, name);
+    try {
+      if (statSync(full).mtimeMs >= cutoff) continue;
+      unlinkSync(full);
+      removed++;
+    } catch {
+      // Raced with another process, or not ours to delete. Skip it.
+    }
+  }
+
+  if (removed > 0) {
+    debugLog(`[claude-runner] Removed ${removed} stale token file(s) from ${dir}`);
+  }
+  return removed;
+}
+
 /**
  * What Claude Code assumes a model's context window is when it has never heard of
  * the model — which is every model claudish proxies.
@@ -332,6 +434,13 @@ export function createTempSettingsFile(
   // Token file path - also in .claudish directory
   const tokenFilePath = join(claudishDir, `tokens-${port}.json`);
 
+  // Sweep the orphans FIRST (so this session's fresh file is never a candidate),
+  // then blank the file for the port we are about to use. Without this the
+  // status line can show a dead session's provider, cost and context — the file
+  // is keyed by port, and ports are recycled.
+  cleanupStaleTokenFiles(claudishDir);
+  initializeTokenFile(tokenFilePath);
+
   let statusCommand: string;
 
   if (isWindows()) {
@@ -352,16 +461,39 @@ export function createTempSettingsFile(
     // Both cost and context percentage come from our token file
     // Helper function to format tokens with k/M suffix (pure bash, no awk)
     const formatTokensBash = `fmt_tok() { local n=\${1:-0}; if [ "$n" -ge 1000000 ]; then echo "$((n/1000000))M"; elif [ "$n" -ge 1000 ]; then echo "$((n/1000))k"; else echo "$n"; fi; }`;
-    // The window Claude Code will ACTUALLY enforce, not the model's spec window.
-    // Claude Code compacts at min(CLAUDE_CODE_AUTO_COMPACT_WINDOW, maxContextTokens),
-    // and maxContextTokens falls back to a hardcoded 200,000 for any model name it
-    // does not recognise — which is every model claudish proxies. So the model's real
-    // window can be silently halved on arrival, and a status line that shows only the
-    // spec window reports free space the session cannot use. This script runs inside
-    // Claude Code's environment, so it can read the governing values directly rather
-    // than have them plumbed through the proxy; when they clamp, say so out loud.
+    // Two independent fixes live in this one script; both must hold.
+    //
+    // (a) Report the window Claude Code will ACTUALLY enforce, not the model's spec
+    //     window. Claude Code compacts at min(CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+    //     maxContextTokens), and maxContextTokens falls back to a hardcoded 200,000
+    //     for any model name it does not recognise — which is every model claudish
+    //     proxies. So the model's real window can be silently halved on arrival, and
+    //     a status line that shows only the spec window reports free space the
+    //     session cannot use. This script runs inside Claude Code's environment, so
+    //     eff_win() reads the governing values directly rather than have them plumbed
+    //     through the proxy; when they clamp, say so out loud. The percentage is
+    //     RECOMPUTED from the live EFF_WIN and input tokens instead of trusting the
+    //     token file's stored context_left_percent, which is measured against the
+    //     spec window and decays with session age.
+    //
+    // (b) Three reader properties, each learned the hard way:
+    //
+    //      1. Fields are read into a scratch `V` and only committed when non-empty,
+    //         with `;` (not `&&`) between top-level steps. Chained with `&&`, ONE
+    //         field that doesn't match aborts every field after it: `context_window`
+    //         holds the string "unknown" whenever the window is unresolved, the
+    //         numeric grep then emits nothing, and under GNU grep that non-zero exit
+    //         silently dropped provider_name and model_name too. (macOS BSD grep
+    //         exits 0, which is why it was invisible locally.)
+    //      2. Only newlines are stripped, never spaces. `tr -d ' '` mangled every
+    //         value containing one — "Qwen Plan" rendered as "QwenPlan". The patterns
+    //         instead tolerate optional whitespace after each colon, so a
+    //         pretty-printed token file still parses.
+    //      3. The "unknown" sentinel keeps working: an unmatched numeric field leaves
+    //         CTX_WIN at its 0 default, eff_win 0 returns 0, and the first display
+    //         branch renders a bare token count (or N/A), never a bogus percentage.
     const effWinBash = `eff_win() { local w=\${1:-0}; local m=\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}; local a=\${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}; case "$m" in ''|*[!0-9]*) m=${CLAUDE_CODE_DEFAULT_MAX_CONTEXT};; esac; case "$a" in ''|*[!0-9]*) a=0;; esac; case "$w" in ''|*[!0-9]*) w=0;; esac; if [ "$w" -gt 0 ]; then if [ "$m" -gt 0 ] && [ "$m" -lt "$w" ]; then w=$m; fi; if [ "$a" -gt 0 ] && [ "$a" -lt "$w" ]; then w=$a; fi; fi; echo "$w"; }`;
-    statusCommand = `JSON=$(cat) && DIR=$(basename "$(pwd)") && [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true && CTX=-1 && COST="0" && IS_FREE="false" && IS_EST="false" && PROVIDER="" && TOKEN_MODEL="" && IN_TOK=0 && CTX_WIN=0 && ${formatTokensBash} && ${effWinBash} && if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d ' \\n') && REAL_CTX=$(echo "$TOKENS" | grep -o '"context_left_percent":-\\?[0-9]*' | grep -o '\\-\\?[0-9]*') && if [ ! -z "$REAL_CTX" ]; then CTX="$REAL_CTX"; fi && REAL_COST=$(echo "$TOKENS" | grep -o '"total_cost":[0-9.]*' | cut -d: -f2) && if [ ! -z "$REAL_COST" ]; then COST="$REAL_COST"; fi && IN_TOK=$(echo "$TOKENS" | grep -o '"input_tokens":[0-9]*' | grep -o '[0-9]*') && CTX_WIN=$(echo "$TOKENS" | grep -o '"context_window":[0-9]*' | grep -o '[0-9]*') && IS_FREE=$(echo "$TOKENS" | grep -o '"is_free":[a-z]*' | cut -d: -f2) && IS_EST=$(echo "$TOKENS" | grep -o '"is_estimated":[a-z]*' | cut -d: -f2) && PROVIDER=$(echo "$TOKENS" | grep -o '"provider_name":"[^"]*"' | cut -d'"' -f4) && TOKEN_MODEL=$(echo "$TOKENS" | grep -o '"model_name":"[^"]*"' | cut -d'"' -f4); fi && if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi && MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}" && if [ ! -z "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi && EFF_WIN=$(eff_win $CTX_WIN) && if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi && if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi && printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    statusCommand = `JSON=$(cat); DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi; printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
   }
 
   const statusLine = {

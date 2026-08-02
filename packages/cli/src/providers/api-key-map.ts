@@ -25,6 +25,10 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
     envVar: "SAKANA_SUBSCRIPTION_API_KEY",
     aliases: ["SAKANA_CODING_API_KEY"],
   },
+  // No alias by design: a Qwen Plan key authenticates ONLY against the
+  // plan host; the DashScope/PAYG hosts reject it (401/403), so aliasing onto
+  // DASHSCOPE_API_KEY / QWEN_API_KEY could only mis-route or mis-bill.
+  "qwen-cloud": { envVar: "QWEN_CLOUD_PLAN_API_KEY" },
   ollamacloud: { envVar: "OLLAMA_API_KEY" },
   "opencode-zen": { envVar: "OPENCODE_API_KEY" },
   "opencode-zen-go": { envVar: "OPENCODE_API_KEY" },

@@ -24,6 +24,7 @@ const PROVIDER_REASONS: Record<string, string> = {
   "minimax-coding": "MiniMax Coding Plan",
   glm: "Native GLM API",
   "glm-coding": "GLM Coding Plan",
+  "qwen-cloud": "Qwen Plan",
   google: "Direct Gemini API",
   openai: "Direct OpenAI API",
   "openai-codex": "OpenAI Codex (Responses API)",

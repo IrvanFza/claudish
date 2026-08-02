@@ -215,6 +215,25 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["glm-coding", "glm", "openrouter"]);
   });
 
+  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, openrouter]", () => {
+    const matched = matchRoutingRule("qwen3.7-plus", DEFAULT_ROUTING_RULES);
+    expect(matched).toEqual(["qwen-cloud", "openrouter"]);
+  });
+
+  test("'qwen3-coder-next' does not match the dotted Qwen Plan rule", () => {
+    const matched = matchRoutingRule("qwen3-coder-next", DEFAULT_ROUTING_RULES);
+    expect(matched).toEqual(["openrouter"]);
+    expect(matched).not.toContain("qwen-cloud");
+  });
+
+  test("cross-vendor default chains never include qwen-cloud", () => {
+    for (const model of ["glm-4.6", "glm-5.2", "deepseek-v4-pro"]) {
+      const matched = matchRoutingRule(model, DEFAULT_ROUTING_RULES);
+      expect(matched).not.toBeNull();
+      expect(matched!).not.toContain("qwen-cloud");
+    }
+  });
+
   test("'z-ai-glm-4.6' matches z-ai-* → [z-ai, openrouter]", () => {
     const matched = matchRoutingRule("z-ai-glm-4.6", DEFAULT_ROUTING_RULES);
     expect(matched).toEqual(["z-ai", "openrouter"]);

@@ -9,7 +9,10 @@
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import { discoverProviderModels, rankDiscoveredModels } from "../model-discovery.js";
+import { getProviderByName } from "../provider-definitions.js";
 import { isTerminal429 } from "./openai.js";
+import { type DiscoveryOutcome, isChatCapable } from "./probe-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 
 export class AnthropicProviderTransport implements ProviderTransport {
@@ -75,6 +78,75 @@ export class AnthropicProviderTransport implements ProviderTransport {
   }
 
   /**
+   * Discover a probe-friendly model from the provider's OWN authenticated
+   * model list.
+   *
+   * Why this transport needs it at all: several Anthropic-compat providers are
+   * SUBSCRIPTIONS (Qwen Plan, Kimi Coding). The cloud /probeModels
+   * catalog fundamentally cannot know which models a given key is entitled to
+   * — that is a property of the caller's plan, not of the provider — so the
+   * TUI falls back to GET /v1/probe-discover, which requires this method.
+   * Without it the Test column reads "no probe model: transport does not
+   * support discovery" for every subscription provider.
+   *
+   * Source of truth is the provider's own `modelDiscovery` descriptor (already
+   * declared by qwen-cloud and kimi-coding), reached through the shared
+   * `discoverProviderModels()` — the same authenticated call the picker and
+   * the context-window resolver use, so it shares their cache and their
+   * credential-authority auth path. No new HTTP path is introduced here.
+   *
+   * Ordering: `rankDiscoveredModels()` (largest live context window first,
+   * alphabetical tiebreak) — the same order the picker defaults to, so the
+   * probe exercises the model the user would actually get.
+   *
+   * Non-chat rows are dropped with the shared `isChatCapable()` filter rather
+   * than a per-provider skip list: qwen-cloud's roster mixes image/TTS models
+   * (`wan2.7-image`, `qwen-audio-3.0-tts-plus`) in with the text models, and
+   * hardcoding model ids here would rot the moment Alibaba ships the next one.
+   */
+  async discoverProbeModel(exclude?: ReadonlySet<string>): Promise<DiscoveryOutcome> {
+    const def = getProviderByName(this.provider.name);
+    if (!def?.modelDiscovery) {
+      return {
+        model: null,
+        reason: `${this.displayName} publishes no live model list (no modelDiscovery endpoint) — its probe model must come from the cloud catalog`,
+      };
+    }
+
+    const discovered = await discoverProviderModels(this.provider.name);
+    if (discovered.length === 0) {
+      return {
+        model: null,
+        reason: `${this.displayName} listed no models at ${def.modelDiscovery.path} — check the API key and that the subscription is active`,
+      };
+    }
+
+    // Rank by live capability first, then drop anything that can't answer a
+    // chat probe (image / TTS / embedding rows).
+    const ranked = rankDiscoveredModels(discovered)
+      .map((m) => m.id)
+      .filter(isChatCapable);
+    if (ranked.length === 0) {
+      return {
+        model: null,
+        reason: `no chat-capable model among the ${discovered.length} listed by ${this.displayName}`,
+      };
+    }
+
+    // `exclude` carries the models this probe round already tried, so a
+    // transient per-model failure advances to the next candidate instead of
+    // failing the provider outright.
+    const pick = ranked.find((m) => !exclude?.has(m));
+    if (!pick) {
+      return {
+        model: null,
+        reason: `all ${ranked.length} candidate model(s) already tried`,
+      };
+    }
+    return { model: pick };
+  }
+
+  /**
    * Retry 429 responses with bounded backoff. Anthropic-compat providers
    * (Kimi, MiniMax, Z.AI) throttle aggressively; one quick retry helps
    * recover transient bursts. The retry budget is intentionally tight
@@ -129,6 +201,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
       "minimax-coding": "MiniMax Coding",
       kimi: "Kimi",
       "kimi-coding": "Kimi Coding",
+      "qwen-cloud": "Qwen Plan",
       moonshot: "Kimi",
       "z-ai": "Z.AI",
     };

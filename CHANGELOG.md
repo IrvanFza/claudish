@@ -2,6 +2,12 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## Unreleased
+
+### New Features
+
+- add `qc@` — Qwen Plan (Alibaba Cloud Model Studio), a native Anthropic-compatible subscription endpoint. Key: `QWEN_CLOUD_PLAN_API_KEY`, base URL override: `QWEN_CLOUD_PLAN_BASE_URL`. The model roster is discovered live from the plan endpoint rather than hardcoded, since entitlement differs per subscription. Bare dotted `qwen3.*` names route to the plan, then OpenRouter; the plan also serves `glm-5.2` / `deepseek-v4-*`, reachable only as an explicit `qc@glm-5.2` so bare `glm-*` / `deepseek-*` keep their existing routing.
+
 ## [7.30.0] - 2026-08-04
 
 ### Documentation

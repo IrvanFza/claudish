@@ -38,10 +38,20 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     return 128;
   }
 
+  /** Tool name truncation — a wire-agnostic API constraint. */
+  protected override prepareRequestCommon(request: any, _originalRequest: any): any {
+    this.truncateToolNames(request);
+    if (request.messages) {
+      this.truncateToolNamesInMessages(request.messages);
+    }
+
+    return request;
+  }
+
   /**
-   * Handle request preparation — reasoning parameters and tool name truncation
+   * OpenAI's own reasoning knob. Not called on the Anthropic wire.
    */
-  override prepareRequest(request: any, originalRequest: any): any {
+  protected override applyNativeReasoning(request: any, originalRequest: any): any {
     // Map Claude Code's effort (output_config.effort, or legacy
     // thinking.budget_tokens) → OpenAI reasoning_effort for reasoning-capable
     // models. Only set it if buildPayload hasn't already (it builds the payload
@@ -55,12 +65,6 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       }
     }
     if (request.thinking) delete request.thinking;
-
-    // Truncate tool names if model has a limit
-    this.truncateToolNames(request);
-    if (request.messages) {
-      this.truncateToolNamesInMessages(request.messages);
-    }
 
     return request;
   }

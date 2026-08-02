@@ -37,15 +37,33 @@ function configLayerLabel(): string {
   return getConfigFileOverride() ? activeConfigPath() : "~/.claudish/config.json";
 }
 
+/**
+ * A single resolution layer.
+ *
+ * SECURITY: `maskedValue` is the ONLY value-derived field. A raw secret must
+ * never be stored here — `KeyLayer` is embedded in `KeyProvenance`, which is
+ * serialized wholesale by `--probe --json`.
+ */
 export interface KeyLayer {
   source: string;
   maskedValue: string | null;
   isActive: boolean;
 }
 
+/**
+ * Where an API key comes from — a REPORTING record, not a credential carrier.
+ *
+ * SECURITY: this object is serialized wholesale (`--probe --json` prints it via
+ * `JSON.stringify`), so it must NEVER hold plaintext key material. It carries
+ * presence (`hasValue`), a display mask (`effectiveMasked`), the env-var NAME,
+ * and the source label — nothing else. Callers that genuinely need the secret
+ * must read it from the credential authority (`auth/credentials/`) directly;
+ * do not reintroduce a value field here under any name.
+ */
 export interface KeyProvenance {
   envVar: string;
-  effectiveValue: string | null;
+  /** True when a key resolved from some layer. Presence only — never the value. */
+  hasValue: boolean;
   effectiveMasked: string | null;
   effectiveSource: string;
   layers: KeyLayer[];
@@ -129,9 +147,11 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
     }
   }
 
+  // NOTE: `runtimeValue` stays local. It is deliberately NOT placed on the
+  // returned record — see the KeyProvenance doc comment.
   return {
     envVar: runtimeVar,
-    effectiveValue: runtimeValue,
+    hasValue: !!runtimeValue,
     effectiveMasked: maskKey(runtimeValue),
     effectiveSource,
     layers,
@@ -142,7 +162,7 @@ export function resolveApiKeyProvenance(envVar: string, aliases?: string[]): Key
  * Format provenance for debug log output (single line).
  */
 export function formatProvenanceLog(p: KeyProvenance): string {
-  if (!p.effectiveValue) {
+  if (!p.hasValue) {
     return `${p.envVar}=(not set)`;
   }
   return `${p.envVar}=${p.effectiveMasked} [from: ${p.effectiveSource}]`;
@@ -154,7 +174,7 @@ export function formatProvenanceLog(p: KeyProvenance): string {
 export function formatProvenanceProbe(p: KeyProvenance, indent = "    "): string[] {
   const lines: string[] = [];
 
-  if (!p.effectiveValue) {
+  if (!p.hasValue) {
     lines.push(`${indent}${p.envVar}: not set`);
     return lines;
   }
