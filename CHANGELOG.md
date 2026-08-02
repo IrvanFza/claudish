@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.28.0] - 2026-08-02
+
+### Documentation
+
+- update CHANGELOG.md for v7.27.0([`466dfce`](https://github.com/MadAppGang/claudish/commit/466dfcea4ab1468ab99ca39b0b049680b0b0aee0))
+
+### New Features
+
+- v7.28.0 — make the status line report the context window Claude Code enforces([`a3123c5`](https://github.com/MadAppGang/claudish/commit/a3123c5bc8ef5ad543f124408cfd6a9187945b89))
+
 ## [7.27.0] - 2026-08-01
 
 ### Documentation
