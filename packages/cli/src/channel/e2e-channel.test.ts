@@ -152,8 +152,16 @@ describe("Group 1: MCP Protocol — channel capability", () => {
       const { session_id: sid } = JSON.parse((res.content as any)[0].text);
       expect(sid).toBeDefined();
 
-      // Poll until done
-      for (let i = 0; i < 60; i++) {
+      // Poll until the session reaches a terminal state. Use a wall-clock
+      // budget so scheduler contention cannot turn a slow session into a
+      // misleading empty-output failure.
+      const terminalStatuses = new Set(["completed", "failed", "timeout"]);
+      const pollStartedAt = Date.now();
+      const pollBudgetMs = 120_000;
+      let lastObservedStatus = "not found";
+      let reachedTerminal = false;
+
+      while (Date.now() - pollStartedAt < pollBudgetMs) {
         await new Promise((r) => setTimeout(r, 1000));
         const list = await client.callTool({
           name: "list_sessions",
@@ -161,7 +169,19 @@ describe("Group 1: MCP Protocol — channel capability", () => {
         });
         const sessions = JSON.parse((list.content as any)[0].text).sessions;
         const s = sessions.find((x: any) => x.sessionId === sid);
-        if (s && ["completed", "failed", "timeout"].includes(s.status)) break;
+        lastObservedStatus = s?.status ?? "not found";
+        if (s && terminalStatuses.has(s.status)) {
+          reachedTerminal = true;
+          break;
+        }
+      }
+
+      const pollElapsedMs = Date.now() - pollStartedAt;
+      if (!reachedTerminal) {
+        throw new Error(
+          `Session ${sid} did not reach a terminal status within ${pollElapsedMs}ms ` +
+            `(last observed status: ${lastObservedStatus})`
+        );
       }
 
       const out = await client.callTool({ name: "get_output", arguments: { session_id: sid } });
@@ -190,7 +210,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
       const firstTerminalIdx = events.findIndex((e: string) => e === "completed" || e === "failed");
       expect(firstTerminalIdx).toBeGreaterThan(firstRunningIdx);
     },
-    90000
+    150_000
   );
 });
 
@@ -264,12 +284,26 @@ describe("Group 1b: MCP Protocol — low-level-only tools", () => {
 // Spawns `claude -p` with our MCP server registered via --mcp-config.
 // Validates that Claude Code sees our tools and can call them.
 
+function hasNonEmptyContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some(hasNonEmptyContent);
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasNonEmptyContent);
+  }
+  return value !== undefined && value !== null;
+}
+
 /**
  * Run `claude -p` with our MCP server and return stdout.
  */
 async function runClaudeWithMcp(
   prompt: string,
-  opts?: { timeout?: number; extraEnv?: Record<string, string> }
+  opts?: {
+    timeout?: number;
+    extraEnv?: Record<string, string>;
+    outputFormat?: "text" | "json" | "stream-json";
+    bare?: boolean;
+  }
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const timeout = opts?.timeout ?? 60_000;
 
@@ -304,7 +338,9 @@ async function runClaudeWithMcp(
           configPath,
           "--strict-mcp-config",
           "--dangerously-skip-permissions",
-          "--bare",
+          ...(opts?.bare === false ? [] : ["--bare"]),
+          ...(opts?.outputFormat ? ["--output-format", opts.outputFormat] : []),
+          ...(opts?.outputFormat === "stream-json" ? ["--verbose"] : []),
           prompt,
         ],
         {
@@ -312,6 +348,7 @@ async function runClaudeWithMcp(
           stdio: ["pipe", "pipe", "pipe"],
         }
       );
+      proc.stdin?.end();
 
       proc.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
@@ -405,18 +442,42 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(
         "Use the list_models tool from the claudish MCP server and show me the results. Just call the tool and output the result, nothing else.",
-        { timeout: 90_000 }
+        { timeout: 90_000, outputFormat: "stream-json", bare: false }
       );
 
-      // Claude should have called list_models and included model data in output
       expect(exitCode).toBe(0);
       expect(stdout.length).toBeGreaterThan(0);
-      // The output should contain model-related content (either model names or "no recommended models")
-      const hasModels =
-        stdout.includes("Recommended Models") ||
-        stdout.includes("recommended models") ||
-        stdout.includes("search_models");
-      expect(hasModels).toBe(true);
+
+      const events = stdout
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as Record<string, any>];
+          } catch {
+            return [];
+          }
+        });
+
+      // system/init is a pre-handshake snapshot that races the MCP server's ~2s startup.
+      // The linked tool_use/tool_result pair below is deterministic evidence of both
+      // discovery and successful invocation.
+      const contentBlocks = events.flatMap((event) => {
+        const content = event.message?.content;
+        return Array.isArray(content) ? content : [];
+      });
+      const listModelsUse = contentBlocks.find(
+        (block) => block.type === "tool_use" && block.name === "mcp__claudish__list_models"
+      );
+
+      expect(listModelsUse).toBeDefined();
+      expect(listModelsUse.id).toBeDefined();
+
+      const listModelsResult = contentBlocks.find(
+        (block) => block.type === "tool_result" && block.tool_use_id === listModelsUse?.id
+      );
+      expect(listModelsResult).toBeDefined();
+      expect(hasNonEmptyContent(listModelsResult?.content)).toBe(true);
     },
     120_000
   );
@@ -426,13 +487,42 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
     async () => {
       const { stdout, exitCode } = await runClaudeWithMcp(
         "Call the list_sessions tool from the claudish MCP server with include_completed=true. Output the raw JSON result.",
-        { timeout: 90_000 }
+        { timeout: 90_000, outputFormat: "stream-json", bare: false }
       );
 
       expect(exitCode).toBe(0);
       expect(stdout.length).toBeGreaterThan(0);
-      // Claude should have called list_sessions and shown the result
-      expect(stdout).toContain("sessions");
+
+      const events = stdout
+        .split(/\r?\n/)
+        .filter((line) => line.trim().length > 0)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as Record<string, any>];
+          } catch {
+            return [];
+          }
+        });
+
+      // system/init is a pre-handshake snapshot that races the MCP server's ~2s startup.
+      // The linked tool_use/tool_result pair below is deterministic evidence of both
+      // discovery and successful invocation.
+      const contentBlocks = events.flatMap((event) => {
+        const content = event.message?.content;
+        return Array.isArray(content) ? content : [];
+      });
+      const listSessionsUse = contentBlocks.find(
+        (block) => block.type === "tool_use" && block.name === "mcp__claudish__list_sessions"
+      );
+
+      expect(listSessionsUse).toBeDefined();
+      expect(listSessionsUse?.id).toBeDefined();
+
+      const listSessionsResult = contentBlocks.find(
+        (block) => block.type === "tool_result" && block.tool_use_id === listSessionsUse?.id
+      );
+      expect(listSessionsResult).toBeDefined();
+      expect(hasNonEmptyContent(listSessionsResult?.content)).toBe(true);
     },
     120_000
   );

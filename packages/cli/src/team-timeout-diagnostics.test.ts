@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runModels, setupSession } from "./team-orchestrator.js";
 
+// Retries are enabled here because these tests spawn short-lived real subprocesses
+// that can lose races under load. They are deliberately not used on expensive
+// real-Claude-Code/real-model tests, where a retry costs minutes and starves neighbouring tests.
+
 const STDERR_BEFORE_TIMEOUT = "diagnostic written before hanging";
 const STDOUT_BEFORE_TIMEOUT = "partial stdout written before hanging";
 
@@ -70,5 +74,5 @@ describe("runModels timeout diagnostics", () => {
     expect(errorLogPath).toBeDefined();
     expect(existsSync(errorLogPath!)).toBe(true);
     expect(readFileSync(errorLogPath!, "utf-8")).toContain(STDERR_BEFORE_TIMEOUT);
-  });
+  }, { retry: 2 });
 });

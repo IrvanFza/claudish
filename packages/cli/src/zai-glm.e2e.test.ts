@@ -22,6 +22,10 @@
 import { describe, expect, test } from "bun:test";
 import { runPromptViaProxy } from "./mcp-server.js";
 import { hasCredential } from "./test-helpers/credential-gate.js";
+import {
+  PROVIDER_QUOTA_GUIDANCE,
+  isConfirmedProviderQuotaError,
+} from "./test-helpers/provider-quota.js";
 
 // Asked via claudish's OWN credential authority (env → ~/.claudish/config.json
 // apiKeys → 1Password), not raw process.env — these tests must run whenever
@@ -36,6 +40,23 @@ const TEST_MODEL = "glm-4.6";
 // Generous timeout — model cold start + real HTTP round trip
 const TEST_TIMEOUT = 60_000;
 
+async function runPromptUnlessAccountDrained(
+  model: string,
+  providerName: string
+): Promise<Awaited<ReturnType<typeof runPromptViaProxy>> | null> {
+  try {
+    return await runPromptViaProxy(model, TEST_PROMPT);
+  } catch (error) {
+    if (!isConfirmedProviderQuotaError(error)) throw error;
+
+    console.warn(
+      `[zai-glm.e2e] ${providerName} SKIPPED — ${PROVIDER_QUOTA_GUIDANCE}; ` +
+        "the provider reported HTTP 429 and/or insufficient balance."
+    );
+    return null;
+  }
+}
+
 describe.skipIf(!HAVE_ZAI)("Real API — Z.AI GLM via claudish proxy (#102 regression guard)", () => {
   test(
     `zai@${TEST_MODEL} produces non-empty text through full pipeline`,
@@ -44,7 +65,11 @@ describe.skipIf(!HAVE_ZAI)("Real API — Z.AI GLM via claudish proxy (#102 regre
       // Before the fix, matchesModelFamily("zai@glm-4.6", "glm-") → true →
       // GLMModelDialect.getStreamFormat() → "openai-sse" → Anthropic-shape SSE
       // silently dropped → runPromptViaProxy throws "Model returned empty response".
-      const result = await runPromptViaProxy(`zai@${TEST_MODEL}`, TEST_PROMPT);
+      const result = await runPromptUnlessAccountDrained(
+        `zai@${TEST_MODEL}`,
+        "Z.AI GLM (zai@)"
+      );
+      if (!result) return;
 
       expect(result.content).toBeDefined();
       expect(result.content.length).toBeGreaterThan(0);
@@ -69,7 +94,11 @@ describe.skipIf(!HAVE_GC)(
         // Sibling test: exercises the OpenAI SSE parser path on api.z.ai, catching
         // regressions that break the other stream format while leaving anthropic-sse
         // working. Uses a completely different code path from the zai@ test above.
-        const result = await runPromptViaProxy(`gc@${TEST_MODEL}`, TEST_PROMPT);
+        const result = await runPromptUnlessAccountDrained(
+          `gc@${TEST_MODEL}`,
+          "GLM Coding Plan (gc@)"
+        );
+        if (!result) return;
 
         expect(result.content).toBeDefined();
         expect(result.content.length).toBeGreaterThan(0);
@@ -89,7 +118,11 @@ describe.skipIf(!HAVE_GLM)("Real API — standard GLM via claudish proxy (Zhipu 
     async () => {
       // Third sibling test: standard GLM provider at open.bigmodel.cn.
       // Different host, same OpenAI SSE parser, exercises yet another code path.
-      const result = await runPromptViaProxy(`glm@${TEST_MODEL}`, TEST_PROMPT);
+      const result = await runPromptUnlessAccountDrained(
+        `glm@${TEST_MODEL}`,
+        "Zhipu GLM (glm@)"
+      );
+      if (!result) return;
 
       expect(result.content).toBeDefined();
       expect(result.content.length).toBeGreaterThan(0);

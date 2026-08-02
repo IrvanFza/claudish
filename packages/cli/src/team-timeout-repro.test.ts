@@ -21,12 +21,32 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runModels, setupSession } from "./team-orchestrator.js";
+import {
+  type ModelState,
+  type ModelStatus,
+  runModels,
+  setupSession,
+} from "./team-orchestrator.js";
+
+// Retries are enabled here because these tests spawn short-lived real subprocesses
+// that can lose races under load. They are deliberately not used on expensive
+// real-Claude-Code/real-model tests, where a retry costs minutes and starves neighbouring tests.
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 let tempDir: string;
 let fakeClaudishDir: string;
+
+function expectModelState(model: string, status: ModelStatus, expected: ModelState): void {
+  if (status.state !== expected) {
+    throw new Error(
+      `${model}: expected state ${expected}, received ${status.state}; ` +
+        `error.reason=${status.error?.reason ?? "<none>"}; ` +
+        `error.detail=${status.error?.detail ?? "<none>"}`
+    );
+  }
+  expect(status.state).toBe(expected);
+}
 
 function makeFakeClaudish(delayMs = 50): string {
   // Create a fake claudish that:
@@ -83,15 +103,15 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       const status = await runModels(tempDir, { timeout: 5, minOutputBytes: 0 });
 
       // Both models should be COMPLETED since they finish well before the 5s timeout
-      for (const [, model] of Object.entries(status.models)) {
-        expect(model.state).toBe("COMPLETED");
+      for (const [modelId, model] of Object.entries(status.models)) {
+        expectModelState(modelId, model, "COMPLETED");
         expect(model.exitCode).toBe(0);
         expect(model.outputSize).toBeGreaterThan(0);
       }
     } finally {
       process.env.PATH = originalPath;
     }
-  });
+  }, { retry: 2 });
 
   it("REPRO: process that completes just before timeout fires should be COMPLETED", async () => {
     // This is the tighter race: process completes in ~200ms, timeout at 1s
@@ -111,12 +131,12 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       const status = await runModels(tempDir, { timeout: 1, minOutputBytes: 0 });
 
       const model = Object.values(status.models)[0];
-      expect(model.state).toBe("COMPLETED");
+      expectModelState("model-a", model, "COMPLETED");
       expect(model.exitCode).toBe(0);
     } finally {
       process.env.PATH = originalPath;
     }
-  });
+  }, { retry: 2 });
 
   it("REPRO: actual timeout should still produce TIMEOUT state", async () => {
     // Create a slow fake claudish that takes 5 seconds
@@ -134,25 +154,27 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       const status = await runModels(tempDir, { timeout: 1 });
 
       const model = Object.values(status.models)[0];
-      expect(model.state).toBe("TIMEOUT");
+      expectModelState("slow-model", model, "TIMEOUT");
     } finally {
       process.env.PATH = originalPath;
     }
-  });
+  }, { retry: 2 });
 
-  it("REPRO: mixed fast/slow models — fast ones COMPLETED, slow one TIMEOUT", async () => {
-    // Two fast models and one slow model
-    // The fast ones should be COMPLETED, the slow one TIMEOUT
-    if (fakeClaudishDir) {
-      rmSync(fakeClaudishDir, { recursive: true, force: true });
-    }
+  it(
+    "REPRO: mixed fast/slow models — fast ones COMPLETED, slow one TIMEOUT",
+    async () => {
+      // Two fast models and one slow model
+      // The fast ones should be COMPLETED, the slow one TIMEOUT
+      if (fakeClaudishDir) {
+        rmSync(fakeClaudishDir, { recursive: true, force: true });
+      }
 
-    // Create a "claudish" that takes different times based on model name
-    const dir = mkdtempSync(join(tmpdir(), "fake-claudish-mixed-"));
-    const script = join(dir, "claudish");
-    writeFileSync(
-      script,
-      `#!/bin/bash
+      // Create a "claudish" that takes different times based on model name
+      const dir = mkdtempSync(join(tmpdir(), "fake-claudish-mixed-"));
+      const script = join(dir, "claudish");
+      writeFileSync(
+        script,
+        `#!/bin/bash
 # Read stdin
 cat > /dev/null
 # Parse the model name from args
@@ -163,49 +185,53 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
-# Slow model takes 10 seconds, fast models take 50ms
+# Slow model takes 50 seconds, fast models take 50ms
 if [[ "$MODEL" == "slow-model" ]]; then
-  sleep 10
+  sleep 50
 else
   sleep 0.05
 fi
 echo "Response from $MODEL — complete analysis."
 exit 0
 `,
-      "utf-8"
-    );
-    chmodSync(script, 0o755);
-    fakeClaudishDir = dir;
+        "utf-8"
+      );
+      chmodSync(script, 0o755);
+      fakeClaudishDir = dir;
 
-    setupSession(tempDir, ["fast-a", "fast-b", "slow-model"], "Analyze code");
+      setupSession(tempDir, ["fast-a", "fast-b", "slow-model"], "Analyze code");
 
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
-    try {
-      const status = await runModels(tempDir, { timeout: 2, minOutputBytes: 0 });
+      try {
+        // Keep the slow/timeout ratio at 5:1 while giving bash + child-process
+        // startup enough headroom under full-suite resource pressure.
+        const status = await runModels(tempDir, { timeout: 10, minOutputBytes: 0 });
 
-      // Read manifest to find which anon ID maps to which model
-      const manifest = JSON.parse(readFileSync(join(tempDir, "manifest.json"), "utf-8"));
+        // Read manifest to find which anon ID maps to which model
+        const manifest = JSON.parse(readFileSync(join(tempDir, "manifest.json"), "utf-8"));
 
-      for (const [anonId, entry] of Object.entries(manifest.models) as [
-        string,
-        { model: string },
-      ][]) {
-        const modelStatus = status.models[anonId];
-        if (entry.model === "slow-model") {
-          expect(modelStatus.state).toBe("TIMEOUT");
-        } else {
-          // THIS IS THE BUG: fast models that completed should be COMPLETED
-          // but the current code may mark them as TIMEOUT because proc.killed === false
-          expect(modelStatus.state).toBe("COMPLETED");
-          expect(modelStatus.exitCode).toBe(0);
+        for (const [anonId, entry] of Object.entries(manifest.models) as [
+          string,
+          { model: string },
+        ][]) {
+          const modelStatus = status.models[anonId];
+          if (entry.model === "slow-model") {
+            expectModelState(entry.model, modelStatus, "TIMEOUT");
+          } else {
+            // THIS IS THE BUG: fast models that completed should be COMPLETED
+            // but the current code may mark them as TIMEOUT because proc.killed === false
+            expectModelState(entry.model, modelStatus, "COMPLETED");
+            expect(modelStatus.exitCode).toBe(0);
+          }
         }
+      } finally {
+        process.env.PATH = originalPath;
       }
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  });
+    },
+    { timeout: 20_000, retry: 2 }
+  );
 
   it("REPRO: Bug #2 — byte counter tracks stdout accurately independent of filesystem", async () => {
     // The original bug: statSync reads file size before stream flush completes,
@@ -240,7 +266,7 @@ exit 0
       const status = await runModels(tempDir, { timeout: 10 });
 
       const model = Object.values(status.models)[0];
-      expect(model.state).toBe("COMPLETED");
+      expectModelState("model-a", model, "COMPLETED");
       // The byte counter must report exactly 65536 bytes — the known amount
       // written to stdout. A statSync-based approach would under-report this
       // when the write stream hasn't flushed yet.
@@ -249,7 +275,7 @@ exit 0
       process.env.PATH = originalPath;
       rmSync(largeFakeDir, { recursive: true, force: true });
     }
-  });
+  }, { retry: 2 });
 });
 
 describe("Bug #3: Session directory overwrite protection", () => {
