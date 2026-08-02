@@ -19,6 +19,16 @@ export interface GeminiSseOptions {
   onTokenUpdate?: (input: number, output: number) => void;
   /** Store tool call info (id, name, thoughtSignature) for future request context */
   onToolCall?: (toolId: string, name: string, thoughtSignature?: string) => void;
+  /**
+   * Behavior layer (Layer 4) tool-call repair. Deliberately NOT merged into
+   * `onToolCall` above, which is an unrelated pre-existing hook for recording
+   * thought signatures.
+   *
+   * No buffering is needed on this path: Gemini delivers each `functionCall`
+   * with its complete `args` object in one part, so the full arguments are
+   * always in hand at emit time.
+   */
+  repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
   /** Last request's context size — seeds message_start.usage (see message-start-usage.ts) */
   priorInputTokens?: number;
   /** CodeAssist wraps chunks in {response: {...}} */
@@ -247,7 +257,19 @@ export function createGeminiSseStream(
                     const toolIdx = toolCalls.size;
                     const toolId = `toolu_${Date.now()}_${toolIdx}`;
                     const blockIndex = curIdx++;
-                    const args = JSON.stringify(part.functionCall.args || {});
+                    let args = JSON.stringify(part.functionCall.args || {});
+                    if (opts.repairToolArgs) {
+                      try {
+                        const repaired = opts.repairToolArgs(part.functionCall.name, args);
+                        if (typeof repaired === "string" && repaired !== args) {
+                          log(`[GeminiSSE] tool call repaired: ${part.functionCall.name}`);
+                          args = repaired;
+                        }
+                      } catch (err) {
+                        // A failing rule must never corrupt the stream.
+                        log(`[GeminiSSE] repairToolArgs threw for ${part.functionCall.name}: ${err}`);
+                      }
+                    }
 
                     const t = {
                       id: toolId,

@@ -108,8 +108,44 @@ export function createStreamingResponseHandler(
   onTokenUpdate?: (input: number, output: number) => void,
   toolSchemas?: any[], // Tool schemas for validation
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
-  priorInputTokens?: number // Last request's context size — seeds message_start.usage
+  priorInputTokens?: number, // Last request's context size — seeds message_start.usage
+  /**
+   * Behavior layer (Layer 4) tool-call interception. Grouped into one object
+   * rather than two more positional parameters — this signature already carries
+   * nine.
+   *
+   * Unlike the Responses parser, this path already buffers tool arguments
+   * whenever the request carries tools (see `buffered` below), so hooking repair
+   * in costs nothing extra: the complete argument object is assembled here
+   * regardless. `shouldBufferTool` only matters for the rare case of a rule
+   * wanting a tool the schema-validation path would not have buffered.
+   */
+  behavior?: {
+    shouldBufferTool?: (name: string) => boolean;
+    onToolCall?: (name: string, argsJson: string) => string | null | undefined;
+  }
 ): Response {
+  /**
+   * Offer a COMPLETE argument object to the behavior layer.
+   *
+   * Only ever called where the full object is in hand. The incremental
+   * `partial_json` fragment path must never route through here — repairing a
+   * fragment would emit malformed JSON.
+   */
+  const repairArgs = (toolName: string, argsJson: string): string => {
+    if (!behavior?.onToolCall) return argsJson;
+    try {
+      const repaired = behavior.onToolCall(toolName, argsJson);
+      if (typeof repaired === "string" && repaired !== argsJson) {
+        log(`[Streaming] tool call repaired by behavior layer: ${toolName}`);
+        return repaired;
+      }
+    } catch (err) {
+      // A failing rule must never corrupt the stream.
+      log(`[Streaming] behavior onToolCall threw for ${toolName}: ${err}`);
+    }
+    return argsJson;
+  };
   log(`[Streaming] ===== HANDLER STARTED for ${target} =====`);
   let isClosed = false;
   let ping: NodeJS.Timeout | null = null;
@@ -190,7 +226,10 @@ export function createStreamingResponseHandler(
               send("content_block_delta", {
                 type: "content_block_delta",
                 index: toolIdx,
-                delta: { type: "input_json_delta", partial_json: JSON.stringify(tc.arguments) },
+                delta: {
+                  type: "input_json_delta",
+                  partial_json: repairArgs(tc.name, JSON.stringify(tc.arguments)),
+                },
               });
               send("content_block_stop", { type: "content_block_stop", index: toolIdx });
             }
@@ -218,8 +257,9 @@ export function createStreamingResponseHandler(
                 );
 
                 if (validation.valid || (validation.repaired && validation.repairedArgs)) {
-                  const argsJson = JSON.stringify(
-                    validation.repaired ? validation.repairedArgs : validation.parsedArgs
+                  const argsJson = repairArgs(
+                    t.name,
+                    JSON.stringify(validation.repaired ? validation.repairedArgs : validation.parsedArgs)
                   );
                   log(
                     `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
@@ -248,7 +288,7 @@ export function createStreamingResponseHandler(
                 }
               } else {
                 // No schemas to validate against — send as-is
-                const argsJson = t.arguments || "{}";
+                const argsJson = repairArgs(t.name, t.arguments || "{}");
                 log(
                   `[Streaming] Sending buffered tool call (no validation): ${t.name} with args: ${argsJson}`
                 );
@@ -516,7 +556,12 @@ export function createStreamingResponseHandler(
                             started: false,
                             closed: false,
                             arguments: "", // Initialize arguments accumulator
-                            buffered: !!toolSchemas && toolSchemas.length > 0, // Buffer if we have schemas to validate
+                            // Buffer if we have schemas to validate, OR if a behavior
+                            // rule wants to rewrite this call — repair is only
+                            // possible while the arguments are still withheld.
+                            buffered:
+                              (!!toolSchemas && toolSchemas.length > 0) ||
+                              behavior?.shouldBufferTool?.(restoredName) === true,
                           };
                           state.tools.set(idx, t);
                           if (isWebSearchToolCall(restoredName)) {
@@ -569,7 +614,10 @@ export function createStreamingResponseHandler(
                           log(
                             `[Streaming] Tool call ${t.name} was repaired with inferred parameters`
                           );
-                          const repairedJson = JSON.stringify(validation.repairedArgs);
+                          const repairedJson = repairArgs(
+                            t.name,
+                            JSON.stringify(validation.repairedArgs)
+                          );
                           log(
                             `[Streaming] Sending repaired tool call: ${t.name} with args: ${repairedJson}`
                           );
@@ -657,7 +705,10 @@ export function createStreamingResponseHandler(
 
                         // Valid tool call - send if buffered, close if not
                         if (t.buffered && !t.started) {
-                          const argsJson = JSON.stringify(validation.parsedArgs);
+                          const argsJson = repairArgs(
+                            t.name,
+                            JSON.stringify(validation.parsedArgs)
+                          );
                           send("content_block_start", {
                             type: "content_block_start",
                             index: t.blockIndex,

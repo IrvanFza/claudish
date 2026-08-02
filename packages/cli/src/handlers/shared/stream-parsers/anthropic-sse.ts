@@ -18,6 +18,98 @@ interface AnthropicPassthroughOpts {
   onTokenUpdate?: (input: number, output: number) => void;
   /** Optional adapter — used to check shouldFilterThinking(). */
   adapter?: BaseAPIFormat;
+  /**
+   * Behavior layer (Layer 4) tool-call repair.
+   *
+   * This parser is a byte-level passthrough, so interception here is strictly
+   * opt-in per tool: only a tool that `shouldBufferTool` names has its
+   * `input_json_delta` frames withheld and rewritten. Every other block — text,
+   * thinking, and any tool no rule cares about — is forwarded untouched, so the
+   * passthrough contract is preserved for everything the layer is not targeting.
+   */
+  shouldBufferTool?: (name: string) => boolean;
+  repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
+}
+
+/**
+ * Build the tool-repair frame interceptor for one stream.
+ *
+ * Returns a function that maps a parsed frame to the exact bytes to enqueue
+ * (trailing newline included, matching the passthrough's `${line}\n`
+ * convention), or null to suppress the frame.
+ *
+ * Only three frame shapes are ever diverted, and only for tools a rule named
+ * via `shouldBufferTool`. Everything else — text, thinking, and any untargeted
+ * tool — round-trips byte-for-byte, which is what keeps this a passthrough.
+ *
+ * Module-level (not nested in the stream closure) so it is independently
+ * testable and does not inflate the stream function's complexity.
+ */
+function createToolRepairInterceptor(
+  opts: Pick<AnthropicPassthroughOpts, "shouldBufferTool" | "repairToolArgs">
+): (data: any, line: string) => string | null {
+  /** Withheld tool blocks, keyed by the content-block index upstream assigned. */
+  const heldTools = new Map<number, { name: string; args: string }>();
+
+  const flush = (index: number, stopFrame: string): string => {
+    const held = heldTools.get(index);
+    if (!held) return stopFrame;
+    heldTools.delete(index);
+
+    let finalArgs = held.args;
+    try {
+      const repaired = opts.repairToolArgs?.(held.name, finalArgs);
+      if (typeof repaired === "string" && repaired !== finalArgs) {
+        log(`[AnthropicSSE] tool call repaired: ${held.name}`);
+        finalArgs = repaired;
+      }
+    } catch (err) {
+      // A failing rule must never corrupt the stream — emit what the model sent.
+      log(`[AnthropicSSE] repairToolArgs threw for ${held.name}: ${err}`);
+    }
+
+    const deltaFrame = `event: content_block_delta\ndata: ${JSON.stringify({
+      type: "content_block_delta",
+      index,
+      delta: { type: "input_json_delta", partial_json: finalArgs },
+    })}\n\n`;
+    return `${deltaFrame}${stopFrame}`;
+  };
+
+  /** Start withholding a tool block if a rule named it. */
+  const noteToolStart = (data: any): void => {
+    if (data.content_block?.type !== "tool_use") return;
+    const name = data.content_block.name;
+    if (typeof name !== "string") return;
+    if (!opts.shouldBufferTool?.(name)) return;
+    heldTools.set(data.index, { name, args: "" });
+  };
+
+  /** Accumulate a withheld fragment. Returns true if the frame was swallowed. */
+  const absorbFragment = (data: any): boolean => {
+    if (data.delta?.type !== "input_json_delta") return false;
+    const held = heldTools.get(data.index);
+    if (!held) return false;
+    held.args += data.delta.partial_json ?? "";
+    return true;
+  };
+
+  return (data: any, line: string): string | null => {
+    const asIs = `${line}\n`;
+    if (!opts.repairToolArgs || !opts.shouldBufferTool) return asIs;
+
+    switch (data?.type) {
+      case "content_block_start":
+        noteToolStart(data);
+        return asIs; // the start frame itself is always forwarded
+      case "content_block_delta":
+        return absorbFragment(data) ? null : asIs;
+      case "content_block_stop":
+        return heldTools.has(data.index) ? flush(data.index, asIs) : asIs;
+      default:
+        return asIs;
+    }
+  };
 }
 
 /**
@@ -40,6 +132,15 @@ export function createAnthropicPassthroughStream(
   let pingInterval: ReturnType<typeof setInterval> | null = null;
 
   const filterThinking = opts.adapter?.shouldFilterThinking() ?? false;
+
+  const interceptToolFrame = createToolRepairInterceptor(opts);
+
+  /** Enqueue a parsed data line through the tool interceptor. */
+  const enqueueData = (controller: any, data: any, line: string): void => {
+    if (isClosed) return;
+    const out = interceptToolFrame(data, line);
+    if (out !== null) controller.enqueue(encoder.encode(out));
+  };
 
   return c.body(
     new ReadableStream({
@@ -151,10 +252,9 @@ export function createAnthropicPassthroughStream(
 
                     // Still do usage tracking below with the ORIGINAL data
                   } else {
-                    // No filtering needed — pass through as-is
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(`${line}\n`));
-                    }
+                    // No filtering needed — pass through (via the tool interceptor,
+                    // which is a no-op unless a rule asked for this tool).
+                    enqueueData(controller, data, line);
                   }
                 } catch {
                   // Unparseable — pass through
@@ -192,10 +292,9 @@ export function createAnthropicPassthroughStream(
                       return; // stop processing further lines
                     }
 
-                    // No error — pass through the line
-                    if (!isClosed) {
-                      controller.enqueue(encoder.encode(`${line}\n`));
-                    }
+                    // No error — pass through (via the tool interceptor, which is
+                    // a no-op unless a rule asked for this tool).
+                    enqueueData(controller, data, line);
 
                     // Usage/debug tracking
                     if (data.message?.usage) {

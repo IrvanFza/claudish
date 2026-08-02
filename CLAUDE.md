@@ -352,6 +352,15 @@ Rules **return** actions; the engine applies them. Nothing else in the layer mut
 - **`RuleAction` is a closed union** (`injectSystemNote`, `rewriteToolDescription`, `repairToolArgs`, `warn`). An open "run this callback" action would make rule effects unauditable and defeat severity.
 - **Sessions, not instance state.** `ComposedHandler` is cached per model and can serve overlapping requests, so detected harness facts live on a per-request `BehaviorSession` captured by the stream-parser closure. Two in-flight turns cannot read each other's plan path.
 - **`armed(facts)` gates buffering.** `repairToolArgs` is only possible if a tool's arguments are withheld until the call completes (the Responses parser streams `input_json_delta` the instant each fragment arrives). Buffering is therefore opt-in per tool AND per request: outside plan mode nothing is buffered and streaming is byte-for-byte unchanged. Without `armed`, intercepting `Write` would suppress incremental file-content delivery on every foreign-model request.
+- **Repair is wired into every stream format that carries tool calls**, so it is not a Codex-only feature:
+
+| Parser | Providers | How repair lands |
+|---|---|---|
+| `openai-sse` | GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter, LiteLLM | Already buffers whenever the request carries tools (`toolSchemas`), so repair hooks the 6 sites that emit a COMPLETE argument object. The incremental `partial_json` fragment path is deliberately **not** hooked — repairing a fragment would emit malformed JSON. |
+| `openai-responses-sse` | Codex / gpt-5.x | Streams fragments immediately, so buffering is opt-in per tool via `shouldBufferTool`. |
+| `anthropic-sse` | MiniMax, Kimi direct, Z.AI | Byte-level passthrough, so interception is strictly opt-in: only a named tool has its `input_json_delta` frames withheld and rewritten. Verified byte-identical output for untargeted tools. |
+| `gemini-sse` | Gemini | No buffering needed — Gemini delivers each `functionCall` with complete `args` in one part. Uses `repairToolArgs`, deliberately separate from the pre-existing `onToolCall` thought-signature hook. |
+| `ollama-jsonl` | Ollama local | Not wired — this parser has no tool-call handling at all. |
 - **Off for native Claude** (`claude-*` or provider `anthropic`) — a naming rule, not a pinned roster.
 - **Anchors live in `harness.ts` only.** `PLAN_MODE_HINT` is a cheap pre-test and **must stay a superset of the anchors** — an earlier version omitted "create your plan at" and short-circuited a valid anchor away. Never assume `~/.claude/plans`: CC has a `planDir` setting, so the path is always taken from the reminder.
 
