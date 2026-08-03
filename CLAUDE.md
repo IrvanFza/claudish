@@ -36,7 +36,9 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 ```
 
 ### Provider Shortcuts
-- `g@`, `google@` → Google Gemini
+- `g@`, `google@` → Google Gemini (direct API, `GEMINI_API_KEY`)
+- `ag@`, `antigravity@` → Antigravity (Gemini via your Antigravity subscription — see "Antigravity Provider" below)
+- `go@` → **deprecated alias → `ag@`** (Gemini Code Assist for individuals was retired by Google; prints a one-line deprecation notice)
 - `oai@` → OpenAI Direct
 - `cx@`, `codex@` → OpenAI Codex (Responses API)
 - `or@`, `openrouter@` → OpenRouter
@@ -52,6 +54,28 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 - Custom endpoint names also work as provider prefixes (e.g., `my-vllm@model-name`) — see "Custom Endpoints" below
+
+### Antigravity Provider (`ag@`) — Gemini via your Antigravity subscription
+
+Two separate Gemini flows, deliberately split:
+
+| Flow | Prefix | Auth | Backend | Billing |
+|---|---|---|---|---|
+| Direct Gemini API | `g@` / `google@` | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` | pay-per-use |
+| **Antigravity** | `ag@` / `antigravity@` | your Antigravity OAuth token (shared with the `agy` CLI) | `cloudcode-pa.googleapis.com/v1internal` | your Antigravity subscription (free / Pro / Ultra) |
+
+`go@` is a **deprecated alias → `ag@`**. Google retired the old "Gemini Code Assist for individuals" tier for gemini-cli's OAuth client (`UNSUPPORTED_CLIENT`); that product is dead, so `go@` now routes to Antigravity with a one-line deprecation notice.
+
+**Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**.
+
+**Token lifecycle** (`auth/antigravity-token.ts`, macOS):
+- **Shared store**: the same keychain item the `agy` CLI uses — `service=gemini, account=antigravity`, value `go-keyring-base64:<base64(JSON)>` (zalando/go-keyring). claudish reads AND writes it, so both tools reuse one live token.
+- **Self-refresh**: when the token is expired, POST `oauth2/token` with `grant_type=refresh_token`. The Antigravity client_id/secret are **never shipped** — they're extracted at runtime from the user's own local `agy` binary (`strings` for the `…apps.googleusercontent.com` id + `GOCSPX-` secret; the working combo is discovered by first-200 and cached). The refreshed (and possibly rotated) token is written back to the shared store.
+- **Degradation**: no store (agy not installed / not signed in) or non-macOS → actionable error pointing at `g@` + `GEMINI_API_KEY`.
+
+**Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a roster. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
+
+**Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md`.
 
 ### Default Provider Configuration (v7.0.0+)
 

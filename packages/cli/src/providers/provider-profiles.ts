@@ -33,6 +33,7 @@ import { formatProvenanceLog, resolveApiKeyProvenance } from "./api-key-provenan
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
+import { AntigravityProviderTransport } from "./transport/antigravity.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
@@ -107,6 +108,20 @@ const geminiCodeAssistProfile: ProviderProfile = {
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Gemini Code Assist handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
+
+const antigravityProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new AntigravityProviderTransport(ctx.modelName);
+    const adapter = new GeminiAPIFormat(ctx.modelName);
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      unwrapGeminiResponse: true,
+      ...ctx.sharedOpts,
+    });
+    log(`[Proxy] Created Antigravity handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };
@@ -376,6 +391,7 @@ const vertexProfile: ProviderProfile = {
 export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: geminiProfile,
   "gemini-codeassist": geminiCodeAssistProfile,
+  antigravity: antigravityProfile,
   openai: openaiProfile,
   "openai-codex": openaiCodexProfile,
   // xAI's API is OpenAI Chat-Completions compatible. Without this entry

@@ -1,27 +1,40 @@
 /**
- * GeminiCodeAssistProvider — Gemini Code Assist (gemini-cli backend) via OAuth.
+ * AntigravityProviderTransport — Antigravity (cloudcode-pa backend) via the
+ * SHARED Antigravity OAuth token.
+ *
+ * Adapted from providers/transport/gemini-codeassist.ts. It keeps ALL of that
+ * transport's hardening — the 429 classification (RATE_LIMIT_EXCEEDED retry /
+ * MODEL_CAPACITY_EXHAUSTED fallback / QUOTA_EXHAUSTED terminal), the live
+ * served-set discovery, the capacity fallback chain, and the served-set-aware
+ * 404 rewrite (F1–F7) — and differs only in identity and model handling:
+ *
+ * - Auth token comes from getValidAntigravityAccessToken() (the shared agy
+ *   keychain item, self-refreshed), NOT the gemini-cli login token.
+ * - Identity is ALWAYS Antigravity: the antigravity UA + ideType ANTIGRAVITY,
+ *   independent of CLAUDISH_GEMINI_ANTIGRAVITY.
+ * - The requested model id is resolved to a LIVE-served id
+ *   (resolveAntigravityModelId over getServedAntigravityModels) before the
+ *   envelope is built.
  *
  * Transport concerns:
- * - OAuth access token via getValidAccessToken()
- * - Project ID via setupGeminiUser()
+ * - OAuth access token via getValidAntigravityAccessToken()
+ * - Project ID + tier via setupAntigravityUser()
  * - Fixed endpoint: cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse
- * - Wraps payload in CodeAssist envelope: {model, project, user_prompt_id, request: <payload>}
+ * - Wraps payload in the CodeAssist envelope: {model, project, user_prompt_id, request}
  * - GeminiRequestQueue for rate limiting
- * - 429 classification: RATE_LIMIT_EXCEEDED (retry), MODEL_CAPACITY_EXHAUSTED (model fallback), QUOTA_EXHAUSTED (terminal)
  * - gemini-sse stream format (with response wrapper)
  */
 
 import { randomUUID } from "node:crypto";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
+import { getValidAntigravityAccessToken } from "../../auth/antigravity-token.js";
 import {
-  buildCodeAssistUserAgent,
-  CODE_ASSIST_FALLBACK_CHAIN,
-  getGeminiTierDisplayName,
-  getServedCodeAssistModels,
-  getValidAccessToken,
+  buildAntigravityUserAgent,
+  getAntigravityTierDisplayName,
+  getServedAntigravityModels,
   retrieveUserQuota,
-  setupGeminiUser,
+  setupAntigravityUser,
 } from "../../auth/gemini-oauth.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
@@ -32,15 +45,84 @@ const CODE_ASSIST_ENDPOINT = `${CODE_ASSIST_BASE}/v1internal:streamGenerateConte
 
 /** Max retry attempts for retryable 429s (RATE_LIMIT_EXCEEDED) */
 const MAX_RETRY_ATTEMPTS = 3;
-/** Default retry delay when server doesn't specify one (matches opencode-gemini-auth) */
+/** Default retry delay when server doesn't specify one */
 const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
 
-/** Generate a short random request ID (matches gemini-cli activity logger) */
+// ---------------------------------------------------------------------------
+// Model-id resolution (live served set — NO hardcoded model ids)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reasoning-tier RANK — the ONLY literals allowed here (a rule, like
+ * rankCodeAssistModel, not a roster). Lower number = stronger reasoning tier.
+ * Anything unrecognized ranks last. Used ONLY to choose among a family's
+ * live-served variants when the backend gives no default; never a list of
+ * concrete model ids.
+ */
+const REASONING_TIER_RANK: Record<string, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+  "extra-low": 3,
+  tiered: 4,
+};
+
+/** Rank a reasoning-tier suffix (the part after the family name). */
+function rankReasoningSuffix(suffix: string): number {
+  const rank = REASONING_TIER_RANK[suffix.toLowerCase()];
+  return rank === undefined ? Number.MAX_SAFE_INTEGER : rank;
+}
+
+/**
+ * Resolve a user-supplied model id to the id the Antigravity backend serves,
+ * using ONLY the LIVE served set (from fetchAvailableModels). No pinned model
+ * ids — the served ids and the default come from the account's own subscription.
+ *
+ * Rules (pure, exported for testing):
+ *  1. Exact hit — `servedIds` contains `requested` → return it.
+ *  2. Family variants — served ids that extend `requested-` (e.g.
+ *     `gemini-3.6-flash-high` for `gemini-3.6-flash`). If any exist:
+ *       - if the backend `defaultId` is one of them → return `defaultId`;
+ *       - else return the variant with the strongest reasoning tier
+ *         (high > medium > low > extra-low > tiered > anything else) by suffix
+ *         RANK — not by matching a hardcoded model list.
+ *  3. Otherwise — return `requested` unchanged and let the backend 404, which
+ *     the served-set-aware 404 rewrite (F1–F7) turns into an actionable error.
+ */
+export function resolveAntigravityModelId(
+  requested: string,
+  servedIds: string[],
+  defaultId: string | null
+): string {
+  const req = requested.trim();
+
+  if (servedIds.includes(req)) return req;
+
+  const familyPrefix = `${req}-`;
+  const variants = servedIds.filter((id) => id.startsWith(familyPrefix));
+  if (variants.length > 0) {
+    if (defaultId && variants.includes(defaultId)) return defaultId;
+    let best = variants[0];
+    let bestRank = rankReasoningSuffix(best.slice(familyPrefix.length));
+    for (const variant of variants.slice(1)) {
+      const rank = rankReasoningSuffix(variant.slice(familyPrefix.length));
+      if (rank < bestRank) {
+        best = variant;
+        bestRank = rank;
+      }
+    }
+    return best;
+  }
+
+  return req;
+}
+
+/** Generate a short random request ID (matches the Antigravity CLI activity logger) */
 function createActivityRequestId(): string {
   return Math.random().toString(36).substring(7);
 }
 
-/** Classification of 429 responses from Code Assist API */
+/** Classification of 429 responses from the Code Assist API */
 interface QuotaClassification {
   /** Whether this 429 is terminal (don't retry) */
   terminal: boolean;
@@ -52,7 +134,6 @@ interface QuotaClassification {
 
 /**
  * Classify a 429 response to determine retry behavior.
- * Mirrors gemini-cli / opencode-gemini-auth behavior:
  * - RATE_LIMIT_EXCEEDED → retryable (short-window per-minute limit)
  * - QUOTA_EXHAUSTED → terminal (daily limit hit)
  * - MODEL_CAPACITY_EXHAUSTED → terminal (triggers model fallback instead)
@@ -60,17 +141,14 @@ interface QuotaClassification {
 function classify429(responseBody: string): QuotaClassification | null {
   try {
     const raw = JSON.parse(responseBody);
-    // Handle both {error: {details: [...]}} and [{error: {details: [...]}}] formats
     const error = Array.isArray(raw) ? raw[0]?.error : raw?.error;
     const details = Array.isArray(error?.details) ? error.details : [];
 
-    // Extract RetryInfo delay hint
     const retryInfo = details.find(
       (d: any) => d["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
     );
     let retryDelayMs = parseRetryDelay(retryInfo?.retryDelay);
 
-    // Also try extracting from error message: "Please retry in 2.5s"
     if (retryDelayMs === undefined && typeof error?.message === "string") {
       const match = error.message.match(/retry in ([\d.]+)(ms|s)/i);
       if (match) {
@@ -79,7 +157,6 @@ function classify429(responseBody: string): QuotaClassification | null {
       }
     }
 
-    // Extract ErrorInfo reason
     const errorInfo = details.find(
       (d: any) => d["@type"] === "type.googleapis.com/google.rpc.ErrorInfo"
     );
@@ -92,11 +169,9 @@ function classify429(responseBody: string): QuotaClassification | null {
       return { terminal: false, retryDelayMs: retryDelayMs ?? DEFAULT_RATE_LIMIT_DELAY_MS, reason };
     }
     if (reason === "MODEL_CAPACITY_EXHAUSTED") {
-      // Terminal for retry purposes — model fallback handles this separately
       return { terminal: true, retryDelayMs, reason };
     }
 
-    // Check QuotaFailure violations for daily vs per-minute hints
     const quotaFailure = details.find(
       (d: any) => d["@type"] === "type.googleapis.com/google.rpc.QuotaFailure"
     );
@@ -113,7 +188,6 @@ function classify429(responseBody: string): QuotaClassification | null {
       }
     }
 
-    // Unknown 429 — default to retryable
     return { terminal: false, retryDelayMs, reason };
   } catch {
     return null;
@@ -136,15 +210,18 @@ function parseRetryDelay(value: any): number | undefined {
   return undefined;
 }
 
-export class GeminiCodeAssistProviderTransport implements ProviderTransport {
-  readonly name = "gemini-codeassist";
-  private _displayName = "GeminiCA";
+export class AntigravityProviderTransport implements ProviderTransport {
+  readonly name = "antigravity";
+  private _displayName = "Antigravity";
   get displayName(): string {
     return this._displayName;
   }
   readonly streamFormat: StreamFormat = "gemini-sse";
 
+  /** The user-supplied model id (for messages + the credential ctx). */
   private modelName: string;
+  /** The served id actually sent to the backend (mapped from modelName). */
+  private servedModelName: string;
   private accessToken: string | null = null;
   private projectId: string | null = null;
   private tierId: string | null = null;
@@ -153,9 +230,8 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
    * The delegated per-request auth artifact (headers + CodeAssist-envelope
    * transform) from the credential authority, populated by refreshAuth(). The
    * PRIMARY request's headers + envelope come from here. The local
-   * accessToken/projectId/tierId above are kept in lockstep (from the same
-   * module-cached oauth leaf functions) purely for the 429 fallback chain and
-   * quota logic, which are request-routing concerns, not auth.
+   * accessToken/projectId/tierId below are kept in lockstep purely for the 429
+   * fallback chain and quota logic (request-routing concerns, not auth).
    */
   private cachedAuth: RequestAuth | null = null;
 
@@ -166,20 +242,22 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   private _activeModelName: string | undefined;
 
   /**
-   * Models this account's Code Assist tier currently serves, discovered LIVE in
-   * refreshAuth() via getServedCodeAssistModels() (read from retrieveUserQuota
-   * buckets). The set varies by tier AND changes over time, so it cannot be
-   * hardcoded.
-   * Used for the capacity-fallback chain and the model-not-found hint. Empty
-   * until refreshAuth() has run (composed-handler awaits refreshAuth before any
-   * request, so it is always populated by the time enqueueRequest needs it).
+   * Model ids this account's Antigravity subscription currently serves,
+   * discovered LIVE in refreshAuth() via getServedAntigravityModels()
+   * (fetchAvailableModels). Used for model-id resolution, the capacity-fallback
+   * chain, and the model-not-found hint.
    */
   private servedModels: string[] = [];
 
+  /** The backend-provided default served model id (from fetchAvailableModels). */
+  private defaultServedModel: string | null = null;
+
   constructor(modelName: string) {
     this.modelName = modelName;
-    // Fallback candidates are resolved live in refreshAuth(); nothing to compute
-    // synchronously here.
+    // Resolved against the LIVE served set in refreshAuth(); until then the raw
+    // name is a safe placeholder (composed-handler always awaits refreshAuth
+    // before any request).
+    this.servedModelName = modelName;
   }
 
   getActiveModelName(): string | undefined {
@@ -200,66 +278,72 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   }
 
   /**
-   * Build the Gemini Code Assist headers from local OAuth state. Used by the
-   * 429 fallback chain (handleCapacityExhausted), which needs a fresh
+   * Build the Antigravity headers from local OAuth state. Used by the 429
+   * fallback chain (handleCapacityExhausted), which needs a fresh
    * x-activity-request-id per attempt. The PRIMARY request uses the delegated
    * artifact's headers instead (see getHeaders()).
    */
   private buildLocalHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.accessToken}`,
-      "User-Agent": buildCodeAssistUserAgent(this.modelName),
+      "User-Agent": buildAntigravityUserAgent(),
       "x-activity-request-id": createActivityRequestId(),
     };
   }
 
   /**
-   * Refresh auth before each request. The transport no longer manages OAuth
-   * itself — it delegates the request artifact (headers + CodeAssist envelope)
-   * to the credential authority. It still mirrors accessToken/projectId/tierId
-   * locally (from the module-cached oauth leaf functions — a cache hit, no extra
-   * network round-trip) so the 429 fallback chain and quota logic keep working.
+   * Refresh auth before each request. The transport delegates the request
+   * artifact (headers + CodeAssist envelope) to the credential authority. It
+   * still mirrors accessToken/projectId/tierId locally (cache-hit reads) so the
+   * 429 fallback chain and quota logic keep working.
    */
   async refreshAuth(): Promise<void> {
-    this.cachedAuth = await credentials.getRequestAuth("gemini-codeassist", {
+    this.cachedAuth = await credentials.getRequestAuth("antigravity", {
       model: this.modelName,
     });
     // Mirror local state for the fallback chain + quota (cache-hit reads).
-    this.accessToken = await getValidAccessToken();
-    const { projectId, tierId } = await setupGeminiUser(this.accessToken);
+    this.accessToken = await getValidAntigravityAccessToken();
+    const { projectId, tierId } = await setupAntigravityUser(this.accessToken);
     this.projectId = projectId;
     this.tierId = tierId;
-    this._displayName = getGeminiTierDisplayName();
+    this._displayName = getAntigravityTierDisplayName();
     // Discover the live served-model set (cache-hit after the first request) so
-    // the capacity fallback + model-not-found hint reflect what this account's
-    // tier actually serves today, not a hardcoded roster that drifts.
-    this.servedModels = await getServedCodeAssistModels(this.accessToken, this.projectId);
+    // model-id resolution + the capacity fallback + the model-not-found hint all
+    // reflect what THIS subscription actually serves today.
+    const served = await getServedAntigravityModels(this.accessToken, this.projectId);
+    this.servedModels = served.servedIds;
+    this.defaultServedModel = served.defaultId;
+    // Resolve the requested id to a served id against the live set (mirrors the
+    // credential provider, which builds the primary envelope).
+    this.servedModelName = resolveAntigravityModelId(
+      this.modelName,
+      this.servedModels,
+      this.defaultServedModel
+    );
     log(
-      `[GeminiCodeAssist] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, served: ${this.servedModels.join(",") || "(none)"}`
+      `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +
+        `model: ${this.modelName} -> ${this.servedModelName}, served: ${this.servedModels.join(",") || "(none)"}`
     );
   }
 
   /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
-   * The inner payload (contents, generationConfig, systemInstruction, tools)
-   * is built by GeminiAdapter.buildPayload().
    *
    * Stores the envelope for potential fallback retries in enqueueRequest.
    */
   transformPayload(payload: any): any {
     // PRIMARY request: the CodeAssist envelope comes from the delegated auth
-    // artifact. Fall back to the local builder if delegation hasn't run.
+    // artifact (which maps the model id). Fall back to the local builder if
+    // delegation hasn't run.
     const envelope = this.cachedAuth?.transformPayload
       ? this.cachedAuth.transformPayload(payload)
-      : this.buildEnvelope(payload, this.modelName);
-    // Store for capacity-fallback retries, which rebuild envelopes for other
-    // models via buildEnvelope (using the local projectId/tierId).
+      : this.buildEnvelope(payload, this.servedModelName);
     this.lastEnvelope = envelope;
     return envelope;
   }
 
   /**
-   * Build the CodeAssist envelope for a given model name.
+   * Build the CodeAssist envelope for a given (already-served) model name.
    */
   private buildEnvelope(innerPayload: any, model: string): any {
     const envelope: any = {
@@ -268,7 +352,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       user_prompt_id: randomUUID(),
       request: innerPayload,
     };
-    // Paid tiers: enable Google One AI credits for capacity routing (matches gemini-cli)
+    // Paid tiers: enable Google One AI credits for capacity routing.
     if (this.tierId && this.tierId !== "free-tier") {
       envelope.enabled_credit_types = ["GOOGLE_ONE_AI"];
     }
@@ -278,7 +362,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   /**
    * Rate-limited request via GeminiRequestQueue singleton.
    *
-   * 429 classification (matches gemini-cli / opencode-gemini-auth):
+   * 429 classification:
    * - RATE_LIMIT_EXCEEDED → retry with backoff (up to 3 attempts)
    * - MODEL_CAPACITY_EXHAUSTED → model fallback chain
    * - QUOTA_EXHAUSTED → terminal, return error (daily limit)
@@ -287,16 +371,13 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
     const queue = GeminiRequestQueue.getInstance();
 
-    // Retry loop for RATE_LIMIT_EXCEEDED (transient per-minute limits)
     let lastResponse: Response | null = null;
     for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
       const response = attempt === 1 ? await queue.enqueue(fetchFn) : await queue.enqueue(fetchFn);
 
       if (response.status !== 429) {
         // A 404 usually means this model is not served by the tier we are on.
-        // Only rewrite when the live served set CONFIRMS that — otherwise a
-        // served model that 404s transiently would be reported as permanently
-        // unavailable, sending the user to fix the wrong thing.
+        // Only rewrite when the live served set CONFIRMS that.
         if (response.status === 404) {
           return this.rewriteModelNotFound(response);
         }
@@ -308,35 +389,30 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       lastResponse = response;
 
       if (!classification) {
-        // Can't parse — return as-is
-        log("[GeminiCodeAssist] 429 response could not be classified, returning to caller");
+        log("[Antigravity] 429 response could not be classified, returning to caller");
         return response;
       }
 
       log(
-        `[GeminiCodeAssist] 429 classified: reason=${classification.reason}, terminal=${classification.terminal}, delay=${classification.retryDelayMs}ms`
+        `[Antigravity] 429 classified: reason=${classification.reason}, terminal=${classification.terminal}, delay=${classification.retryDelayMs}ms`
       );
 
-      // MODEL_CAPACITY_EXHAUSTED → model fallback chain (below)
       if (classification.reason === "MODEL_CAPACITY_EXHAUSTED") {
         return this.handleCapacityExhausted(response, queue);
       }
 
-      // QUOTA_EXHAUSTED → terminal, daily limit
       if (classification.terminal) {
         logStderr(
-          `[GeminiCodeAssist] Quota exhausted (${classification.reason || "daily limit"}). Check plan limits.`
+          `[Antigravity] Quota exhausted (${classification.reason || "daily limit"}). Check plan limits.`
         );
         return response;
       }
 
-      // RATE_LIMIT_EXCEEDED or unknown retryable → retry with backoff
       if (attempt < MAX_RETRY_ATTEMPTS) {
         const delay = classification.retryDelayMs ?? DEFAULT_RATE_LIMIT_DELAY_MS;
         logStderr(
-          `[GeminiCodeAssist] Rate limited (${classification.reason || "unknown"}), retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_RETRY_ATTEMPTS})`
+          `[Antigravity] Rate limited (${classification.reason || "unknown"}), retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt}/${MAX_RETRY_ATTEMPTS})`
         );
-        // On first rate limit, fetch and display quota info
         if (attempt === 1) {
           await this.logQuotaInfo();
         }
@@ -344,53 +420,48 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       }
     }
 
-    // All retry attempts exhausted
-    logStderr(`[GeminiCodeAssist] Rate limit persisted after ${MAX_RETRY_ATTEMPTS} retries`);
+    logStderr(`[Antigravity] Rate limit persisted after ${MAX_RETRY_ATTEMPTS} retries`);
     return lastResponse!;
   }
 
   /**
    * Handle MODEL_CAPACITY_EXHAUSTED by trying the other LIVE-served models.
    *
-   * Candidates come from `this.servedModels` (discovered from retrieveUserQuota
-   * buckets in refreshAuth), ordered by rankCodeAssistModel, excluding the model
-   * that just exhausted. A candidate that 404s (briefly unserved mid-tier-roll)
-   * or rate-limits is skipped and the next is tried — previously a 404 on a
-   * hardcoded-chain candidate was returned immediately, surfacing a raw 404.
+   * Candidates come from `this.servedModels` (discovered in refreshAuth),
+   * ordered by rank, excluding the model that just exhausted. A candidate that
+   * 404s (briefly unserved mid-tier-roll) or rate-limits is skipped.
    */
   private async handleCapacityExhausted(
     originalResponse: Response,
     queue: GeminiRequestQueue
   ): Promise<Response> {
-    const candidates = this.servedModels.filter((m) => m !== this.modelName);
+    const candidates = this.servedModels.filter((m) => m !== this.servedModelName);
 
     if (candidates.length === 0) {
-      log(`[GeminiCodeAssist] ${this.modelName} capacity exhausted, no fallback models available`);
+      log(`[Antigravity] ${this.servedModelName} capacity exhausted, no fallback models available`);
       return originalResponse;
     }
 
     if (!this.lastEnvelope) {
       log(
-        `[GeminiCodeAssist] ${this.modelName} capacity exhausted but no stored envelope for retry`
+        `[Antigravity] ${this.servedModelName} capacity exhausted but no stored envelope for retry`
       );
       return originalResponse;
     }
 
-    log(`[GeminiCodeAssist] Model ${this.modelName} capacity exhausted, starting fallback chain`);
-    logStderr(`[GeminiCodeAssist] ${this.modelName} capacity exhausted, trying fallback models...`);
+    log(`[Antigravity] Model ${this.servedModelName} capacity exhausted, starting fallback chain`);
+    logStderr(`[Antigravity] ${this.servedModelName} capacity exhausted, trying fallback models...`);
 
     let lastResponse = originalResponse;
     const innerPayload = this.lastEnvelope.request;
     const endpoint = this.getEndpoint();
-    const tried: string[] = [this.modelName];
+    const tried: string[] = [this.servedModelName];
 
     for (const fallbackModel of candidates) {
-      log(`[GeminiCodeAssist] Trying fallback model: ${fallbackModel}`);
+      log(`[Antigravity] Trying fallback model: ${fallbackModel}`);
       tried.push(fallbackModel);
 
       const fallbackEnvelope = this.buildEnvelope(innerPayload, fallbackModel);
-      // Fallback attempts mint fresh headers (new x-activity-request-id) from
-      // local OAuth state — not the cached primary artifact.
       const headers = this.buildLocalHeaders();
       headers["Content-Type"] = "application/json";
 
@@ -405,14 +476,13 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
       if (fallbackResponse.status === 200) {
         this._activeModelName = fallbackModel;
         logStderr(
-          `[GeminiCodeAssist] Using fallback model: ${fallbackModel} (${this.modelName} had no capacity)`
+          `[Antigravity] Using fallback model: ${fallbackModel} (${this.servedModelName} had no capacity)`
         );
         return fallbackResponse;
       }
 
       if (fallbackResponse.status === 404) {
-        // Briefly unserved (tier roll) — skip to the next candidate, don't surface.
-        log(`[GeminiCodeAssist] ${fallbackModel} returned 404, skipping to next fallback`);
+        log(`[Antigravity] ${fallbackModel} returned 404, skipping to next fallback`);
         lastResponse = fallbackResponse;
         continue;
       }
@@ -421,23 +491,18 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
         const fallbackBodyText = await fallbackResponse.clone().text();
         const classification = classify429(fallbackBodyText);
         if (classification?.reason === "MODEL_CAPACITY_EXHAUSTED") {
-          log(`[GeminiCodeAssist] ${fallbackModel} also capacity exhausted, trying next...`);
+          log(`[Antigravity] ${fallbackModel} also capacity exhausted, trying next...`);
           lastResponse = fallbackResponse;
           continue;
         }
-        // Other 429 (rate limit) — return as-is; outer loop retries on next request.
         return fallbackResponse;
       }
 
-      // Any other status — surface it rather than mask with another attempt.
       return fallbackResponse;
     }
 
-    log("[GeminiCodeAssist] All fallback models exhausted");
-    logStderr(`[GeminiCodeAssist] All models capacity exhausted (tried: ${tried.join(" -> ")})`);
-    // If every candidate 404'd, the last response is a raw "entity not found".
-    // Route it through the same rewrite the primary path uses so the surface is
-    // consistent no matter which attempt produced the final 404.
+    log("[Antigravity] All fallback models exhausted");
+    logStderr(`[Antigravity] All models capacity exhausted (tried: ${tried.join(" -> ")})`);
     if (lastResponse.status === 404) {
       return this.rewriteModelNotFound(lastResponse, true);
     }
@@ -447,49 +512,46 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   /**
    * Rewrite a 404 into an actionable error naming what this tier actually
    * serves and how to reach the model anyway. Status stays 404 (terminal), so
-   * composed-handler remaps it to a 400 surfaced verbatim — the user sees the
-   * guidance instead of a bare "Requested entity was not found."
+   * composed-handler remaps it to a 400 surfaced verbatim.
    *
-   * Returns the response UNTOUCHED when the live served set contains the model:
-   * that 404 is not an entitlement problem, and claiming otherwise would send
-   * the user off to fix a subscription that is working fine.
+   * Returns the response UNTOUCHED when the live served set contains the model.
    */
   private rewriteModelNotFound(response: Response, capacityFallbacksExhausted = false): Response {
-    const served =
-      this.servedModels.length > 0 ? this.servedModels : CODE_ASSIST_FALLBACK_CHAIN.slice();
+    // The served set is the LIVE fetchAvailableModels result — no hardcoded seed.
+    const served = this.servedModels;
 
-    if (!capacityFallbacksExhausted && served.includes(this.modelName)) {
+    if (!capacityFallbacksExhausted && served.includes(this.servedModelName)) {
       log(
-        `[GeminiCodeAssist] 404 for ${this.modelName}, which IS in the served set — passing through unmodified`
+        `[Antigravity] 404 for ${this.servedModelName}, which IS in the served set — passing through unmodified`
       );
       return response;
     }
 
     // Drain the original so the connection body isn't left hanging.
     response.text().catch(() => {});
-    const list = served.join(", ");
-    const tier = this._displayName || "Gemini Code Assist";
+    // Only name the served set when we actually have one (the live fetch may
+    // have failed); otherwise stay honest about not knowing.
+    const servesClause = served.length > 0 ? `That tier currently serves: ${served.join(", ")}. ` : "";
+    const tier = this._displayName || "Antigravity";
     const reason = capacityFallbacksExhausted
-      ? `${this.modelName} could not be served after every Gemini Code Assist capacity fallback failed (${tier}, via go@). ` +
-        `That tier currently reports: ${list}. `
-      : `${this.modelName} is not served by your Gemini Code Assist tier (${tier}, via go@). ` +
-        `That tier currently serves: ${list}. `;
+      ? `${this.modelName} could not be served after every Antigravity capacity fallback failed (${tier}, via ag@). ` +
+        servesClause
+      : `${this.modelName} is not served by your Antigravity tier (${tier}, via ag@). ` + servesClause;
     const message =
       reason +
       `To use ${this.modelName}, go through the direct Gemini API instead — ` +
       `set GEMINI_API_KEY (get one at https://aistudio.google.com/app/apikey) and run ` +
       `google@${this.modelName}.`;
+    const list = served.join(", ");
     const body = JSON.stringify({
       error: { code: 404, status: "NOT_FOUND", message },
     });
     if (capacityFallbacksExhausted) {
       logStderr(
-        `[GeminiCodeAssist] ${this.modelName} capacity fallbacks exhausted (404). Reported models: ${list}`
+        `[Antigravity] ${this.modelName} capacity fallbacks exhausted (404). Reported models: ${list}`
       );
     } else {
-      logStderr(
-        `[GeminiCodeAssist] ${this.modelName} not served by ${tier} (404). Serves: ${list}`
-      );
+      logStderr(`[Antigravity] ${this.modelName} not served by ${tier} (404). Serves: ${list}`);
     }
     return new Response(body, {
       status: 404,
@@ -523,7 +585,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
         lines.push(`  ${bucket.modelId}: ${pct} remaining (resets ${reset})`);
       }
       if (lines.length > 0) {
-        logStderr(`[GeminiCodeAssist] Quota status:\n${lines.join("\n")}`);
+        logStderr(`[Antigravity] Quota status:\n${lines.join("\n")}`);
       }
     } catch {
       // Non-fatal: quota check is informational only
@@ -531,7 +593,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
   }
 
   /**
-   * Get quota remaining for a specific model from Code Assist API.
+   * Get quota remaining for a specific model from the Code Assist API.
    */
   async getQuotaRemaining(modelName: string): Promise<number | undefined> {
     if (!this.accessToken || !this.projectId) return undefined;
@@ -545,7 +607,3 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
     }
   }
 }
-
-// Backward-compatible alias
-/** @deprecated Use GeminiCodeAssistProviderTransport */
-export { GeminiCodeAssistProviderTransport as GeminiCodeAssistProvider };

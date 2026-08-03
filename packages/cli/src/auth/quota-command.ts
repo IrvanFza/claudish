@@ -11,9 +11,9 @@
 
 import { getModelByIdFromFirebase, getRecommendedModels } from "../model-loader.js";
 import {
-  CODE_ASSIST_FALLBACK_CHAIN,
   getGeminiTierFullName,
   getValidAccessToken,
+  rankCodeAssistModel,
   retrieveUserQuota,
   setupGeminiUser,
 } from "./gemini-oauth.js";
@@ -182,14 +182,21 @@ async function geminiQuotaHandler(): Promise<void> {
       console.log("");
     }
 
-    // Fallback chain with live quota status
+    // Fallback chain: LIVE served models (read from the quota buckets we already
+    // fetched), ranked by preference, with live quota status. The served subset
+    // drifts as Google changes the free tier, so we derive it here rather than
+    // from a hardcoded roster.
+    const fallbackChain = quota.buckets
+      .map((b) => b.modelId)
+      .filter((m): m is string => typeof m === "string" && m.length > 0)
+      .sort((a, b) => rankCodeAssistModel(a) - rankCodeAssistModel(b));
     console.log(`  ${B}${CYN}Fallback Chain${R} ${D}(on capacity exhaustion)${R}`);
-    for (let i = 0; i < CODE_ASSIST_FALLBACK_CHAIN.length; i++) {
-      const model = CODE_ASSIST_FALLBACK_CHAIN[i];
+    for (let i = 0; i < fallbackChain.length; i++) {
+      const model = fallbackChain[i];
       const rem = remainingByModel.get(model);
       const pct = rem !== undefined ? `${((1 - rem) * 100).toFixed(0)}%` : "?";
       const color = rem === undefined ? GRY : rem > 0.5 ? GRN : rem > 0.2 ? YEL : RED;
-      const arrow = i < CODE_ASSIST_FALLBACK_CHAIN.length - 1 ? ` ${GRY}\u2192${R}` : "";
+      const arrow = i < fallbackChain.length - 1 ? ` ${GRY}\u2192${R}` : "";
       const marker = i === 0 ? `${CYN}\u25b8${R} ` : "  ";
       console.log(`  ${marker}${WHT}${model}${R} ${color}${pct}${R}${arrow}`);
     }

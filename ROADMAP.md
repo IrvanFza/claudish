@@ -147,6 +147,52 @@ Reference: research findings under `ai-docs/sessions/dev-research-channel-config
 
 ---
 
+## Gemini Code Assist: use `fetchAvailableModels` for the served set
+
+**Status**: not started
+
+`getServedCodeAssistModels()` in `auth/gemini-oauth.ts` infers which models a
+tier serves by reading the bucket list from `retrieveUserQuota`. That is an
+inference, not an answer: it only reports models that have a quota bucket, and it
+costs a quota round-trip on the auth path.
+
+The backend exposes a purpose-built endpoint, `v1internal:fetchAvailableModels`.
+Probing on 2026-08-01 confirmed it exists on both `cloudcode-pa.googleapis.com`
+and `daily-cloudcode-pa.googleapis.com` — both answered HTTP 400 *"Unknown name
+metadata: Cannot find field"* rather than 404, so the method is real and only its
+request shape is unknown. Antigravity's logs show it in normal use.
+
+**Trigger condition**: the quota-bucket inference produces a wrong served set in
+practice (a served model missing from the list, or a listed model that 404s), OR
+someone captures the correct `fetchAvailableModels` request shape.
+
+**Effort estimate**: small once the payload shape is known — one function swap
+behind the existing `getServedCodeAssistModels()` seam, with the quota-bucket
+path kept as the fallback.
+
+---
+
+## Gemini Code Assist: individuals/Ultra tier needs an Antigravity-issued token
+
+**Status**: SHIPPED — the `antigravity` provider (`ag@`) reuses the Antigravity
+CLI's own token. See CLAUDE.md → "Antigravity Provider (ag@)".
+
+The finding that unblocked it: the two backend checks are independent —
+`loadCodeAssist` gates on request IDENTITY (`User-Agent` + `metadata.ideType`),
+but `streamGenerateContent` gates on the TOKEN'S OAuth CLIENT (headers can't fake
+it — 403 PERMISSION_DENIED for a gemini-cli token no matter the identity). So
+claudish does NOT spoof its way in; it **reuses the user's own Antigravity token**
+(the same one the `agy` CLI mints) from the shared macOS keychain store, and
+self-refreshes with client creds extracted at runtime from the user's local `agy`
+binary — never shipped. Verified end-to-end on Google AI Ultra with
+`gemini-3.6-flash-high`.
+
+**Remaining follow-ups** (own items when triggered): Linux/Windows keyring
+backends (macOS `security` only today); a `claudish login antigravity` that does
+its own OAuth so Antigravity need not be installed.
+
+---
+
 ## Adding a new roadmap item
 
 Each item should follow the structure above:

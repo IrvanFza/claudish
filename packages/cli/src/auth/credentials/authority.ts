@@ -13,6 +13,7 @@
  */
 
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
+import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { GeminiCodeAssistCredentialProvider } from "./gemini-credential.js";
@@ -141,6 +142,10 @@ export class CredentialAuthority {
     // request-path name "gemini". Aliasing "google" here made a GEMINI_API_KEY-
     // only user look uncredentialed and left "gemini" unregistered (probe 500).
     authority.register(new GeminiCodeAssistCredentialProvider(), ["gemini-codeassist"]);
+    // Antigravity is its OWN product: auth comes from the SHARED Antigravity
+    // token (the agy keychain item), not a GEMINI_API_KEY. Registered under its
+    // own name so `ag@`/`go@` requests resolve here (and never onto "google").
+    authority.register(new AntigravityCredentialProvider(), ["antigravity"]);
     authority.register(makeKimiCredential(), ["kimi"]);
     // kimi-coding is a SEPARATE product with its own endpoint + KIMI_CODING_API_KEY.
     // It must NOT alias onto the regular Kimi credential, or the coding endpoint
@@ -157,6 +162,7 @@ export class CredentialAuthority {
     const alreadyRegistered = new Set<string>([
       "openai-codex",
       "gemini-codeassist",
+      "antigravity",
       "kimi",
       "kimi-coding",
       "vertex",

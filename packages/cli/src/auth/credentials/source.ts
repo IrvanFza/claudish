@@ -41,6 +41,7 @@
  */
 
 import { isLocalProviderEnabled } from "../../profile-config.js";
+import { hasSharedAntigravityToken } from "../antigravity-token.js";
 import { hasOAuthCredentials } from "../oauth-registry.js";
 import { realValue } from "./api-key-credential.js";
 import { credentials } from "./authority.js";
@@ -100,6 +101,11 @@ export function describeSourceSync(p: SourceClassifiable, config: SourceConfig):
   if (p.isLocal) return isLocalProviderEnabled(p.catalogName, config) ? "local" : null;
   // OAuth wins for OAuth-capable providers when credentials exist.
   if (p.oauthSlug && hasOAuthCredentials(p.catalogName)) return "oauth";
+  // Antigravity's OAuth token lives in the SHARED keychain store (populated by
+  // the `agy` CLI), not a ~/.claudish/*-oauth.json file — so hasOAuthCredentials
+  // (file-based) can't see it. Check the keychain directly so the config TUI
+  // shows it ready when a token is present. Memoized; safe on the render path.
+  if (p.catalogName === "antigravity" && hasSharedAntigravityToken()) return "oauth";
   // realValue() drops an unexpanded `${VAR}` placeholder — the literal string a
   // host passes through when the referenced shell variable is unset. Sign-time
   // refuses to use one, so it must not count as a credential here either.

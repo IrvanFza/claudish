@@ -417,13 +417,18 @@ export class ComposedHandler implements ModelHandler {
           isInteractive: this.isInteractive,
           authType: "oauth",
         });
+        // A terminal setup failure (misconfiguration, revoked entitlement) can
+        // never succeed on retry. Answering 401 sent the client into ~11 retries
+        // over two minutes of backoff, with the actionable message hidden behind
+        // "API error · Retrying". 400 is not retryable, so the explanation lands
+        // inline on the first attempt.
+        if (err?.terminal) {
+          return c.json(wrapAnthropicError(400, err.message, "invalid_request_error"), 400 as any);
+        }
         // Return 401 (auth failure) so FallbackHandler treats this as retryable and
         // moves to the next provider in the chain. 503 (connection error) would stop
         // the fallback chain since it is not retryable by design.
-        return c.json(
-          wrapAnthropicError(401, err.message, "authentication_error"),
-          401 as any
-        );
+        return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
       }
     }
     // Update context window if provider dynamically discovered it

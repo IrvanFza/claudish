@@ -25,6 +25,7 @@ export type TransportType =
   | "anthropic"
   | "gemini"
   | "gemini-oauth"
+  | "antigravity"
   | "openrouter"
   | "ollamacloud"
   | "kimi-coding"
@@ -140,7 +141,36 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     // subscription endpoint below, not this one.
   },
 
+  // ── Antigravity (shared OAuth token — subscription) ────────────────
+  // The individuals/Ultra subscription flow. Auth = the SHARED Antigravity
+  // token (the `agy` keychain item), NOT a GEMINI_API_KEY. `go@` is retained as
+  // a DEPRECATED alias that routes here (see model-parser.ts).
+  {
+    name: "antigravity",
+    displayName: "Antigravity",
+    transport: "antigravity",
+    baseUrl: "https://cloudcode-pa.googleapis.com",
+    apiPath: "/v1internal:streamGenerateContent?alt=sse",
+    apiKeyEnvVar: "",
+    apiKeyDescription: "Antigravity (shared OAuth token)",
+    apiKeyUrl: "https://antigravity.google/",
+    oauthLoginSlug: "gemini",
+    // "go" is the DEPRECATED alias — kept last so ag@ is the canonical prefix.
+    shortcuts: ["ag", "antigravity", "go"],
+    shortestPrefix: "ag",
+    legacyPrefixes: [
+      { prefix: "ag/", stripPrefix: true },
+      { prefix: "antigravity/", stripPrefix: true },
+      { prefix: "go/", stripPrefix: true },
+    ],
+    isDirectApi: true,
+    description: "Antigravity subscription (ag@; go@ deprecated)",
+  },
+
   // ── Gemini Code Assist (OAuth) ─────────────────────────────────────
+  // The legacy gemini-cli OAuth subscription target. Still reachable via the
+  // `gemini-*` default routing chain; no longer owns a user-facing `@` prefix
+  // (the `go@` alias now routes to the Antigravity provider above).
   {
     name: "gemini-codeassist",
     displayName: "Gemini Code Assist",
@@ -151,11 +181,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyDescription: "Gemini Code Assist (OAuth)",
     apiKeyUrl: "https://cloud.google.com/code-assist",
     oauthLoginSlug: "gemini",
-    shortcuts: ["go"],
-    shortestPrefix: "go",
-    legacyPrefixes: [{ prefix: "go/", stripPrefix: true }],
+    shortcuts: [],
+    shortestPrefix: "gemini-codeassist",
+    legacyPrefixes: [],
     isDirectApi: true,
-    description: "Gemini Code Assist OAuth (go@)",
+    description: "Gemini Code Assist OAuth (routing fallback for gemini-*)",
   },
 
   // ── OpenAI (direct API) ────────────────────────────────────────────

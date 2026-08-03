@@ -4,6 +4,7 @@
  */
 
 import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
+import { hasSharedAntigravityToken } from "../auth/antigravity-token.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
 import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";
@@ -175,7 +176,12 @@ export function providerAuthCapabilities(
   const apiKeySet =
     apiKeySupported && (!!process.env[p.apiKeyEnvVar] || !!config.apiKeys?.[p.apiKeyEnvVar]);
   const oauthSupported = !!p.oauthSlug;
-  const oauthSet = oauthSupported && hasOAuthCredentials(p.catalogName);
+  // Antigravity's OAuth token is in the shared keychain, not an oauth-file — so
+  // hasOAuthCredentials can't see it; check the keychain directly (memoized).
+  const oauthSet =
+    oauthSupported &&
+    (hasOAuthCredentials(p.catalogName) ||
+      (p.catalogName === "antigravity" && hasSharedAntigravityToken()));
   return {
     apiKey: { supported: apiKeySupported, set: apiKeySet },
     oauth: { supported: oauthSupported, set: oauthSet },

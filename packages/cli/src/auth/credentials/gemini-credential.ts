@@ -11,20 +11,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { GeminiOAuth, getValidAccessToken, setupGeminiUser } from "../gemini-oauth.js";
+import {
+  buildCodeAssistUserAgent,
+  GeminiOAuth,
+  getValidAccessToken,
+  setupGeminiUser,
+} from "../gemini-oauth.js";
 import { hasOAuthCredentials } from "../oauth-registry.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
-
-/**
- * Build the GeminiCLI User-Agent header (matches gemini-cli format / the
- * transport's buildGeminiCliUserAgent). Without it the backend applies stricter
- * rate limits.
- */
-function buildGeminiCliUserAgent(model?: string): string {
-  const version = "0.5.6"; // gemini-cli version we're compatible with
-  const modelSegment = model || "gemini-code-assist";
-  return `GeminiCLI/${version}/${modelSegment} (${process.platform}; ${process.arch})`;
-}
 
 /** Generate a short random request ID (matches gemini-cli activity logger). */
 function createActivityRequestId(): string {
@@ -44,7 +38,7 @@ export class GeminiCodeAssistCredentialProvider implements CredentialProvider {
     return {
       headers: {
         Authorization: `Bearer ${token}`,
-        "User-Agent": buildGeminiCliUserAgent(ctx.model),
+        "User-Agent": buildCodeAssistUserAgent(ctx.model),
         "x-activity-request-id": createActivityRequestId(),
       },
       transformPayload: (inner: any) => {

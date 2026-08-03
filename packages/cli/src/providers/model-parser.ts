@@ -22,7 +22,8 @@
  *   oc            -> ollamacloud
  *   zen           -> opencode-zen
  *   v, vertex     -> vertex
- *   go            -> gemini-codeassist (OAuth)
+ *   ag, antigravity -> antigravity (shared OAuth token)
+ *   go            -> antigravity (DEPRECATED alias — prints a notice)
  *
  * Local provider shortcuts:
  *   ollama        -> ollama (local)
@@ -74,6 +75,20 @@ import {
 } from "./provider-definitions.js";
 
 export const PROVIDER_SHORTCUTS: Record<string, string> = _getShortcuts();
+
+/**
+ * `go@` deprecation notice — printed ONCE per process when the deprecated `go`
+ * alias is used. `go@` now routes to the Antigravity provider (the gemini-cli
+ * OAuth client Google retired for individuals); `ag@` is the canonical prefix.
+ */
+let _goDeprecationWarned = false;
+function warnGoAliasDeprecatedOnce(): void {
+  if (_goDeprecationWarned) return;
+  _goDeprecationWarned = true;
+  process.stderr.write(
+    "[claudish] go@ is deprecated — use ag@<model> (Antigravity). Routing there.\n"
+  );
+}
 
 /**
  * Local providers (no API key needed) — derived from BUILTIN_PROVIDERS.
@@ -144,6 +159,9 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
     // Resolve provider shortcut
     const provider = PROVIDER_SHORTCUTS[providerPart] || providerPart;
 
+    // `go@` is a deprecated alias that now routes to Antigravity.
+    if (providerPart === "go") warnGoAliasDeprecatedOnce();
+
     return {
       provider,
       model: modelPart,
@@ -159,6 +177,9 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
   for (const { prefix, provider, stripPrefix } of LEGACY_PREFIX_PATTERNS) {
     if (lowerSpec.startsWith(prefix)) {
       const model = stripPrefix ? modelSpec.slice(prefix.length) : modelSpec;
+
+      // `go/` is a deprecated alias that now routes to Antigravity.
+      if (prefix === "go/") warnGoAliasDeprecatedOnce();
 
       // Check for concurrency suffix on local providers
       let concurrency: number | undefined;
