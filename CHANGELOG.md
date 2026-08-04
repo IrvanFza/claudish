@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.29.0] - 2026-08-04
+
+### Documentation
+
+- update CHANGELOG.md for v7.28.0([`3a1489e`](https://github.com/MadAppGang/claudish/commit/3a1489e547d7f667ca60191f5991f1c334650642))
+
+### New Features
+
+- v7.29.0 — behavior layer introspection, working observer, decision journal([`20acadc`](https://github.com/MadAppGang/claudish/commit/20acadcdf2b0ef1938540e4bedbec5ecae065f7f))
+
 ## [7.28.0] - 2026-08-02
 
 ### Documentation
