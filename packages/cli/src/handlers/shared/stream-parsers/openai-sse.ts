@@ -123,6 +123,13 @@ export function createStreamingResponseHandler(
   behavior?: {
     shouldBufferTool?: (name: string) => boolean;
     onToolCall?: (name: string, argsJson: string) => string | null | undefined;
+    /**
+     * Layer 4 observation. Normalized text, so rules never parse this parser's
+     * event shape.
+     */
+    onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+    onToolCallObserved?: (name: string) => void;
+    onTurnEnd?: () => void;
   }
 ): Response {
   /**
@@ -346,7 +353,8 @@ export function createStreamingResponseHandler(
                 output_tokens: state.usage?.completion_tokens || 0,
               },
             });
-            send("message_stop", { type: "message_stop" });
+            behavior?.onTurnEnd?.();
+          send("message_stop", { type: "message_stop" });
           }
 
           // Update token counts - use actual usage if available, otherwise estimate
@@ -431,6 +439,7 @@ export function createStreamingResponseHandler(
 
                   // Handle reasoning_content (Kimi, DeepSeek thinking models via LiteLLM)
                   if (delta.reasoning_content) {
+                    behavior?.onAssistantText?.(delta.reasoning_content, "reasoning");
                     state.lastActivity = Date.now();
                     if (!state.reasoningStarted) {
                       state.reasoningIdx = state.curIdx++;
@@ -450,6 +459,7 @@ export function createStreamingResponseHandler(
 
                   // Handle text content
                   const txt = delta.content || "";
+                  if (txt) behavior?.onAssistantText?.(txt, "text");
                   log(
                     `[Streaming] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
                   );

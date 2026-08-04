@@ -13,7 +13,12 @@
  * without a way to run it, "look at the evidence first" is not actionable advice.
  */
 
-import { BUILTIN_RULES, buildCorpus, parseBehaviorConfig, resolveSeverity } from "./behavior/index.js";
+import {
+  BUILTIN_RULES,
+  buildCorpus,
+  parseBehaviorConfig,
+  resolveSeverity,
+} from "./behavior/index.js";
 import { loadConfig } from "./profile-config.js";
 
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -44,7 +49,8 @@ function showRules(json: boolean): void {
 
   console.log(bold("\nBehavior rules\n"));
   for (const r of rows) {
-    const overridden = r.severity !== r.defaultSeverity ? dim(` (default ${r.defaultSeverity})`) : "";
+    const overridden =
+      r.severity !== r.defaultSeverity ? dim(` (default ${r.defaultSeverity})`) : "";
     console.log(`  ${severityColor(r.severity).padEnd(18)} ${r.id}${overridden}`);
     console.log(`  ${dim(r.description)}`);
     if (r.intercepts.length > 0) {
@@ -61,6 +67,29 @@ function showRules(json: boolean): void {
   const obsState = obs?.enabled ? (obs.mode ?? "suggest") : "off";
   console.log(`  observer: ${obsState === "off" ? dim("off") : green(obsState)}`);
   if (obs?.model) console.log(`  ${dim(`observer model: ${obs.model}`)}`);
+  console.log();
+}
+
+/** Per-model breakdown — the actionable part: it says WHICH models need a rule. */
+function printByModel(records: { model?: string; outcome: string }[]): void {
+  const byModel = new Map<string, { ok: number; degraded: number }>();
+  for (const r of records) {
+    const m = r.model ?? "unknown";
+    const e = byModel.get(m) ?? { ok: 0, degraded: 0 };
+    if (r.outcome === "degraded") e.degraded++;
+    else e.ok++;
+    byModel.set(m, e);
+  }
+  if (byModel.size === 0) return;
+
+  console.log(bold("  by model (degraded / ok)\n"));
+  const ranked = [...byModel.entries()].sort(
+    (a, b) => b[1].degraded - a[1].degraded || b[1].ok - a[1].ok
+  );
+  for (const [model, v] of ranked) {
+    const flag = v.degraded > 0 ? yellow(String(v.degraded)) : dim(String(v.degraded));
+    console.log(`    ${model.padEnd(26)} ${flag} / ${v.ok}`);
+  }
   console.log();
 }
 
@@ -83,25 +112,7 @@ function showCorpus(write: boolean, json: boolean): void {
   console.log(`  ${yellow("degraded (no plan)")}  : ${degraded.length}`);
   console.log(`  of those, a rule would have fired on ${catchable.length}\n`);
 
-  // Per-model breakdown is the actionable part: it says WHICH models need a rule.
-  const byModel = new Map<string, { ok: number; degraded: number }>();
-  for (const r of result.records) {
-    const m = r.model ?? "unknown";
-    const e = byModel.get(m) ?? { ok: 0, degraded: 0 };
-    if (r.outcome === "degraded") e.degraded++;
-    else e.ok++;
-    byModel.set(m, e);
-  }
-  if (byModel.size > 0) {
-    console.log(bold("  by model (degraded / ok)\n"));
-    for (const [model, v] of [...byModel.entries()].sort(
-      (a, b) => b[1].degraded - a[1].degraded || b[1].ok - a[1].ok
-    )) {
-      const flag = v.degraded > 0 ? yellow(String(v.degraded)) : dim("0");
-      console.log(`    ${model.padEnd(26)} ${flag} / ${v.ok}`);
-    }
-    console.log();
-  }
+  printByModel(result.records);
 
   if (result.outputPath) {
     console.log(dim(`  appended to ${result.outputPath}\n`));
@@ -125,12 +136,12 @@ export async function behaviorCommand(argv: string[]): Promise<void> {
       showCorpus(write, json);
       return;
     default:
-      console.error(
-        `Unknown action "${action}".\n\n` +
-          "Usage:\n" +
-          "  claudish behavior rules  [--json]\n" +
-          "  claudish behavior corpus [--write] [--json]\n"
-      );
+      console.error(`Unknown action "${action}".
+
+Usage:
+  claudish behavior rules  [--json]
+  claudish behavior corpus [--write] [--json]
+`);
       process.exit(1);
   }
 }

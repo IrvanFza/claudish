@@ -5,13 +5,13 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   JOURNAL_SCHEMA_VERSION,
+  MAX_JOURNAL_BYTES,
   classifyPath,
   recordDecision,
   toUploadable,
@@ -155,16 +155,55 @@ describe("recordDecision", () => {
     });
   });
 
-  it("does not append when the existing journal is larger than 32 MB", async () => {
+  it("prunes an over-cap journal, resolves, and appends a valid entry", async () => {
     await inTempDir(async (dir) => {
       const path = join(dir, "journal.jsonl");
-      writeFileSync(path, "seed");
-      truncateSync(path, 32 * 1024 * 1024 + 1);
-      const sizeBefore = statSync(path).size;
+      const entry = journalEntry();
+      const serializedEntry = `${JSON.stringify(entry)}\n`;
+      writeFileSync(path, `${JSON.stringify({ padding: "x".repeat(MAX_JOURNAL_BYTES) })}\n`);
 
-      await recordDecision(journalEntry(), path);
+      await expect(recordDecision(entry, path)).resolves.toBeUndefined();
 
-      expect(statSync(path).size).toBe(sizeBefore);
+      const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+      expect(JSON.parse(lines.at(-1)!)).toEqual(entry);
+      expect(statSync(path).size).toBeLessThan(MAX_JOURNAL_BYTES);
+      expect(statSync(path).size).toBeLessThanOrEqual(
+        Math.floor(MAX_JOURNAL_BYTES * 0.6) + Buffer.byteLength(serializedEntry)
+      );
+    });
+  });
+
+  it("evicts the oldest entries and preserves a valid contiguous suffix", async () => {
+    await inTempDir(async (dir) => {
+      const path = join(dir, "journal.jsonl");
+      const padding = "x".repeat(4096);
+      const sequenceCount = Math.ceil(MAX_JOURNAL_BYTES / padding.length) + 64;
+      const originalLines = Array.from({ length: sequenceCount }, (_, seq) =>
+        JSON.stringify({ seq, padding })
+      );
+      const seed = `${originalLines.join("\n")}\n`;
+      expect(Buffer.byteLength(seed)).toBeGreaterThan(MAX_JOURNAL_BYTES);
+      writeFileSync(path, seed);
+
+      const entry = journalEntry({ ts: "2026-08-04T00:00:02.000Z" });
+      await expect(recordDecision(entry, path)).resolves.toBeUndefined();
+
+      const parsed = readFileSync(path, "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(parsed.at(-1)).toEqual(entry);
+
+      const survivingSeqs = parsed.slice(0, -1).map(({ seq }) => seq as number);
+      const firstSurvivingSeq = survivingSeqs[0];
+      expect(firstSurvivingSeq).toBeGreaterThan(0);
+      expect(survivingSeqs.at(-1)).toBe(sequenceCount - 1);
+      expect(survivingSeqs).toEqual(
+        Array.from(
+          { length: sequenceCount - firstSurvivingSeq },
+          (_, offset) => firstSurvivingSeq + offset
+        )
+      );
     });
   });
 });

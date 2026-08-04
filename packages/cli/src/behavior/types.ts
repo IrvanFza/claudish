@@ -47,6 +47,21 @@ export interface HarnessFacts {
   planFilePath?: string;
   /** Directory portion of `planFilePath`, for "is this write in the plan dir" tests. */
   planDir?: string;
+  /** Claude Code session id — stable across turns of one session. */
+  sessionId?: string;
+  /**
+   * Skills Claude Code offered this turn, in listing order.
+   *
+   * Empty means "no listing found", NOT "the user has no skills" — a rule must
+   * not conclude anything from an empty list.
+   */
+  skills?: AvailableSkill[];
+}
+
+/** A skill Claude Code offered the model. */
+export interface AvailableSkill {
+  name: string;
+  description: string;
 }
 
 /** Request-time context handed to `onRequest`. All mutable fields are live. */
@@ -63,6 +78,37 @@ export interface BehaviorContext {
   tools: any[];
   /** Converted, target-format messages. Mutable. */
   messages: any[];
+  /**
+   * The system prompt as text.
+   *
+   * Carries CLAUDE.md, the user's project rules, and the skill listing — all of
+   * which already arrive on every request. A rule reads this to decide that a
+   * skill or a user rule applies, then INJECTS the relevant content rather than
+   * instructing the model to go and fetch it.
+   */
+  systemText: string;
+  harness: HarnessFacts;
+}
+
+/**
+ * What the model said this turn, handed to `onModelOutput` once the stream ends.
+ *
+ * Deliberately NORMALIZED text rather than raw stream events: the four parsers
+ * deliver four different shapes (a Chat Completions `delta`, a Responses API
+ * event, an Anthropic frame, a Gemini part), and making every rule understand
+ * all four would guarantee that rules silently work on some providers and not
+ * others. Each parser knows its own shape; rules see prose.
+ */
+export interface ModelOutputContext {
+  modelId: string;
+  providerName: string;
+  /** Assistant text for the turn, concatenated in order. */
+  text: string;
+  /** Reasoning/thinking text, where the provider exposes it separately. */
+  reasoning: string;
+  /** Tool names called during this turn, in order. Lets a rule see "claimed
+   *  done but never called a test-running tool". */
+  toolsCalled: string[];
   harness: HarnessFacts;
 }
 
@@ -140,6 +186,18 @@ export interface BehaviorRule {
   appliesTo(ctx: { modelId: string; providerName: string; isNativeAnthropic: boolean }): boolean;
   onRequest?(ctx: BehaviorContext): RuleAction[];
   onToolCall?(ctx: ToolCallContext): RuleAction[];
+  /**
+   * Runs once per turn, after the model's response has been fully streamed.
+   *
+   * This is where shortcut and rule-violation detection lives — those show up in
+   * what the model SAYS ("this should work", "tests would pass") and in what it
+   * did NOT do, not in any single tool call's arguments.
+   *
+   * The response has already reached the client by the time this runs, so it
+   * cannot alter the current turn. Emit `warn` to record, or `injectSystemNote`
+   * to correct on the NEXT request (see `pendingCorrections`).
+   */
+  onModelOutput?(ctx: ModelOutputContext): RuleAction[];
 }
 
 /** User-facing config, read from the `behavior` key of ~/.claudish/config.json. */

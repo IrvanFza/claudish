@@ -1058,6 +1058,9 @@ export class ComposedHandler implements ModelHandler {
           behaviorSession && {
             shouldBufferTool: (name) => behaviorSession.interceptsTool(name),
             onToolCall: (name, argsJson) => behaviorSession.repairToolCall(name, argsJson),
+            onAssistantText: (text, kind) => behaviorSession.observeText(text, kind),
+            onToolCallObserved: (name) => behaviorSession.observeToolCall(name),
+            onTurnEnd: () => behaviorSession.finishTurn(),
           }
         );
 
@@ -1072,6 +1075,9 @@ export class ComposedHandler implements ModelHandler {
           middlewareManager: this.middlewareManager,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
+          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
+          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
       case "anthropic-sse":
@@ -1092,6 +1098,9 @@ export class ComposedHandler implements ModelHandler {
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           repairToolArgs: (name, argsJson) =>
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
+          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
+          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
       case "gemini-sse": {
@@ -1109,6 +1118,9 @@ export class ComposedHandler implements ModelHandler {
           onToolCall,
           repairToolArgs: (name, argsJson) =>
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
+          onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
+          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onTurnEnd: () => behaviorSession?.finishTurn(),
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
         });

@@ -70,6 +70,13 @@ export function createResponsesStreamHandler(
      * incrementally, so the default path keeps its current latency profile.
      */
     shouldBufferTool?: (name: string) => boolean;
+    /**
+     * Behavior-layer observation (Layer 4). Called with normalized text so rules
+     * never have to understand this parser's event shape.
+     */
+    onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+    onToolCallObserved?: (name: string) => void;
+    onTurnEnd?: () => void;
   }
 ): Response {
   const reader = response.body?.getReader();
@@ -244,6 +251,7 @@ export function createResponsesStreamHandler(
               }
 
               if (event.type === "response.output_text.delta") {
+                opts.onAssistantText?.(event.delta ?? "", "text");
                 closeReasoning();
                 if (textIdx < 0) {
                   textIdx = curIdx++;
@@ -284,6 +292,7 @@ export function createResponsesStreamHandler(
                     functionCalls.set(itemId, fnCallData);
                   }
                   openToolBlocks.add(fnCallData);
+                  opts.onToolCallObserved?.(fnName);
 
                   // Bind the reasoning that led to this call, keyed by the id the
                   // client will echo back, so the next request can replay it.
@@ -300,6 +309,7 @@ export function createResponsesStreamHandler(
                   hasToolUse = true;
                 }
               } else if (event.type === "response.reasoning_summary_text.delta") {
+                opts.onAssistantText?.(event.delta ?? "", "reasoning");
                 // Reasoning is the model's chain of thought, not its answer — it
                 // belongs in a thinking block, or Claude Code renders it as the reply.
                 const summaryIndex =
@@ -508,6 +518,7 @@ export function createResponsesStreamHandler(
         if (opts.middlewareManager) {
           await opts.middlewareManager.afterStreamComplete(opts.modelName, streamMetadata);
         }
+        opts.onTurnEnd?.();
         safeClose();
       } catch (error) {
         if (pingInterval) {

@@ -65,22 +65,73 @@ export function parseBehaviorConfig(raw: unknown): BehaviorConfig {
 export function resolveSeverity(
   ruleId: string,
   defaultSeverity: Severity,
-  config: BehaviorConfig
+  config: BehaviorConfig,
+  modelId?: string
 ): Severity {
   const rules = config.rules;
   if (!rules) return defaultSeverity;
 
-  const exact = rules[ruleId];
-  if (exact) return exact;
-
-  let best: { len: number; severity: Severity } | null = null;
-  for (const [pattern, severity] of Object.entries(rules)) {
-    if (!pattern.includes("*")) continue;
-    if (!globMatches(pattern, ruleId)) continue;
-    const len = pattern.replace(/\*/g, "").length;
-    if (!best || len > best.len) best = { len, severity };
+  // Model-scoped keys beat unscoped ones. Nothing transfers between models — a
+  // rule proven on one is a hypothesis on the next — so a user must be able to
+  // arm a rule for the model that needs it without arming it for every model:
+  //
+  //   { "plan-mode/*": "warn", "gpt-5.6-*:plan-mode/plan-file-path": "fix" }
+  //
+  // Pass 1 considers only `model:rule` keys, pass 2 only unscoped keys.
+  if (modelId) {
+    const scoped = bestMatch(rules, ruleId, modelId);
+    if (scoped) return scoped;
   }
-  return best ? best.severity : defaultSeverity;
+  return bestMatch(rules, ruleId, undefined) ?? defaultSeverity;
+}
+
+/**
+ * Best matching severity within one scope tier.
+ *
+ * Specificity wins: an exact match beats a glob, and a longer glob beats a
+ * shorter one, so `{"plan-mode/*":"off","plan-mode/plan-file-path":"fix"}`
+ * re-enables the single rule.
+ */
+function bestMatch(
+  rules: Record<string, Severity>,
+  ruleId: string,
+  modelId: string | undefined
+): Severity | null {
+  let best: { score: number; severity: Severity } | null = null;
+
+  for (const [key, severity] of Object.entries(rules)) {
+    const { model: keyModel, rule: keyRule } = parseRuleKey(key);
+    if (!scopeMatches(keyModel, modelId)) continue;
+    if (!globMatches(keyRule, ruleId)) continue;
+    const score = specificity(keyRule);
+    if (!best || score > best.score) best = { score, severity };
+  }
+
+  return best ? best.severity : null;
+}
+
+/**
+ * Split a config key into its optional model scope and its rule pattern.
+ *
+ * A `:` only introduces a model scope when it precedes the rule namespace. Rule
+ * ids themselves never contain one, but HOOK ids look like `hook:file/rule` —
+ * an unanchored split would silently mis-read every hook rule as model-scoped.
+ */
+function parseRuleKey(key: string): { model?: string; rule: string } {
+  const sep = key.indexOf(":");
+  if (sep <= 0 || key.startsWith("hook:")) return { rule: key };
+  return { model: key.slice(0, sep), rule: key.slice(sep + 1) };
+}
+
+/** Scoped keys match only in the scoped pass, unscoped keys only in the unscoped pass. */
+function scopeMatches(keyModel: string | undefined, modelId: string | undefined): boolean {
+  if (modelId === undefined) return keyModel === undefined;
+  return keyModel !== undefined && globMatches(keyModel, modelId);
+}
+
+/** Exact beats glob; among globs, more literal characters wins. */
+function specificity(pattern: string): number {
+  return pattern.includes("*") ? pattern.replace(/\*/g, "").length : Number.MAX_SAFE_INTEGER;
 }
 
 /** `*` matches any run of characters, including `/`. Anchored at both ends. */

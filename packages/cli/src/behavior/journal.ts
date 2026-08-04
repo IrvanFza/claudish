@@ -33,7 +33,7 @@
  * silently reusing it to ship behavioural records would be consent laundering.
  */
 
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { log } from "../logger.js";
@@ -134,14 +134,54 @@ export function journalPath(): string {
 }
 
 /**
- * Size ceiling. The journal is append-only and a busy user generates entries on
- * every tool call, so it needs a bound or it grows without limit. At the cap we
- * stop writing rather than rotate: silently discarding the OLDEST records would
- * throw away exactly the history the dream session wants, and a loud stop is
- * easier to notice than a quiet truncation.
+ * Size ceiling for the local journal. It is append-only and a busy session
+ * writes an entry per watched tool call, so it needs a bound.
  */
-const MAX_JOURNAL_BYTES = 32 * 1024 * 1024;
-let capWarned = false;
+export const MAX_JOURNAL_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Prune target. Dropping to well under the cap rather than just below it means
+ * the (relatively expensive) rewrite happens once per many appends instead of
+ * on nearly every write once the file is full.
+ */
+const PRUNE_TO_BYTES = Math.floor(MAX_JOURNAL_BYTES * 0.6);
+
+/**
+ * Drop the oldest entries until the file fits under PRUNE_TO_BYTES.
+ *
+ * Oldest-first is the right eviction order here: the value of a decision record
+ * decays: recent entries describe the models and rules currently in play, while
+ * a record from six months and four claudish versions ago describes a system
+ * that no longer exists.
+ *
+ * Written to a temp file and renamed so a reader never observes a half-pruned
+ * journal. A concurrent append from another claudish process during the rewrite
+ * can be lost — acceptable for diagnostic data, and far preferable to holding a
+ * cross-process lock on the request path.
+ */
+async function prune(path: string): Promise<void> {
+  const content = await readFile(path, "utf8");
+  const lines = content.split("\n").filter(Boolean);
+
+  // Walk backwards from the newest, keeping lines until the budget is spent.
+  let kept = 0;
+  let firstKept = lines.length;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const cost = Buffer.byteLength(lines[i]) + 1;
+    if (kept + cost > PRUNE_TO_BYTES) break;
+    kept += cost;
+    firstKept = i;
+  }
+
+  const survivors = lines.slice(firstKept);
+  const tmp = `${path}.pruning`;
+  await writeFile(tmp, survivors.length ? `${survivors.join("\n")}\n` : "");
+  await rename(tmp, path);
+  log(
+    `[behavior:journal] pruned ${lines.length - survivors.length} of ${lines.length} entries ` +
+      `to stay under ${Math.round(MAX_JOURNAL_BYTES / 1e6)}MB`
+  );
+}
 
 /**
  * Append one decision. Never throws, never awaited by the request path.
@@ -152,17 +192,10 @@ export async function recordDecision(entry: JournalEntry, path = journalPath()):
       (s) => s.size,
       () => 0
     );
-    if (size > MAX_JOURNAL_BYTES) {
-      if (!capWarned) {
-        capWarned = true;
-        log(
-          `[behavior:journal] ${path} exceeded ${Math.round(MAX_JOURNAL_BYTES / 1e6)}MB — ` +
-            "no longer recording. Archive or delete it to resume."
-        );
-      }
-      return;
-    }
     if (size === 0) await mkdir(dirname(path), { recursive: true }).catch(() => {});
+    if (size > MAX_JOURNAL_BYTES) {
+      await prune(path).catch((err) => log(`[behavior:journal] prune failed: ${err}`));
+    }
     await appendFile(path, `${JSON.stringify(entry)}\n`);
   } catch (err) {
     // Journalling is diagnostic. It must never affect the user's request.

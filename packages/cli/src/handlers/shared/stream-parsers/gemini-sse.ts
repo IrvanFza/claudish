@@ -29,6 +29,14 @@ export interface GeminiSseOptions {
    * always in hand at emit time.
    */
   repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
+  /**
+   * Behavior-layer observation (Layer 4). Called with normalized text so rules
+   * never have to understand this parser's event shape.
+   */
+  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+  onToolCallObserved?: (name: string) => void;
+  onTurnEnd?: () => void;
+
   /** Last request's context size — seeds message_start.usage (see message-start-usage.ts) */
   priorInputTokens?: number;
   /** CodeAssist wraps chunks in {response: {...}} */
@@ -134,6 +142,7 @@ export function createGeminiSseStream(
               output_tokens: outputTokens,
             },
           });
+          opts.onTurnEnd?.();
           send("message_stop", { type: "message_stop" });
         }
 
@@ -257,6 +266,7 @@ export function createGeminiSseStream(
                     const toolIdx = toolCalls.size;
                     const toolId = `toolu_${Date.now()}_${toolIdx}`;
                     const blockIndex = curIdx++;
+                    opts.onToolCallObserved?.(part.functionCall.name);
                     let args = JSON.stringify(part.functionCall.args || {});
                     if (opts.repairToolArgs) {
                       try {

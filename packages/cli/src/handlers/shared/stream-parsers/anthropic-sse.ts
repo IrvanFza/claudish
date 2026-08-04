@@ -29,6 +29,10 @@ interface AnthropicPassthroughOpts {
    */
   shouldBufferTool?: (name: string) => boolean;
   repairToolArgs?: (name: string, argsJson: string) => string | null | undefined;
+  /** Layer 4 observation — normalized text, not raw frames. */
+  onAssistantText?: (text: string, kind?: "text" | "reasoning") => void;
+  onToolCallObserved?: (name: string) => void;
+  onTurnEnd?: () => void;
 }
 
 /**
@@ -370,6 +374,7 @@ export function createAnthropicPassthroughStream(
                     }
                     if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
                       const txt = data.delta.text || "";
+                      opts.onAssistantText?.(txt, "text");
                       textChunks++;
                       log(
                         `[AnthropicSSE] Text chunk: "${txt.substring(0, 30).replace(/\n/g, "\\n")}" (${txt.length} chars)`
@@ -380,6 +385,7 @@ export function createAnthropicPassthroughStream(
                       data.content_block?.type === "tool_use"
                     ) {
                       toolUseBlocks++;
+                      opts.onToolCallObserved?.(data.content_block.name);
                       log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
                     }
                     if (data.type === "message_delta" && data.delta?.stop_reason) {
@@ -426,6 +432,7 @@ export function createAnthropicPassthroughStream(
                     outputTokens = data.usage.output_tokens || outputTokens;
                   }
                   if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
+                    opts.onAssistantText?.(data.delta.text || "", "text");
                     textChunks++;
                   }
                   if (
@@ -433,6 +440,7 @@ export function createAnthropicPassthroughStream(
                     data.content_block?.type === "tool_use"
                   ) {
                     toolUseBlocks++;
+                    opts.onToolCallObserved?.(data.content_block.name);
                     log(`[AnthropicSSE] Tool use: ${data.content_block.name}`);
                   }
                   if (data.type === "message_delta" && data.delta?.stop_reason) {
@@ -446,6 +454,8 @@ export function createAnthropicPassthroughStream(
           log(
             `[AnthropicSSE] Stream complete for ${opts.modelName}: ${totalLines} lines, ${textChunks} text chunks, ${toolUseBlocks} tool_use blocks, stop_reason=${stopReason}${filterThinking ? `, filtered ${thinkingBlocksSuppressed} thinking blocks` : ""}`
           );
+
+          opts.onTurnEnd?.();
 
           if (opts.onTokenUpdate) {
             opts.onTokenUpdate(inputTokens, outputTokens);

@@ -429,14 +429,45 @@ Practical consequences for future rules:
 
 *Related reading, as one illustration of the same class from another team: Vercel's [AGENTS.md outperforms Skills in our agent evals](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals) found a skill went uninvoked in 56% of cases, with always-in-context docs scoring 100% against 53% for skills. Single model, and a narrow eval targeting APIs absent from training data — so it is an anecdote about one symptom, not a basis for this design.*
 
+### The four surfaces a rule can observe
+
+| Hook | When | Can it change the turn? |
+|---|---|---|
+| `onRequest` | before `buildPayload` | yes — `injectSystemNote`, `rewriteToolDescription` |
+| `onToolCall` | tool arguments fully accumulated | yes — `repairToolArgs` (requires buffering) |
+| `onModelOutput` | after the response stream completes | **no** — the turn is already on the wire |
+| `armed(facts)` | gate | decides whether the rule participates at all |
+
+`onModelOutput` receives **normalized** text, reasoning, and the ordered list of tool names the turn called — never raw stream events. The four parsers deliver four different shapes (a Chat Completions `delta`, a Responses API event, an Anthropic frame, a Gemini part); making every rule understand all four would produce rules that silently work on some providers and not others. Each parser knows its own shape, rules see prose.
+
+Because the response has already reached the client, an `injectSystemNote` returned from `onModelOutput` is **queued for the next request** rather than applied. This is what makes shortcut detection actionable: "you claimed the tests pass but called no command this turn" can only be judged once the turn is over.
+
+**Cross-turn state is keyed by the Claude Code session id.** CC sends it nested inside `metadata.user_id`, which is itself a JSON *string*:
+
+```
+metadata.user_id = '{"device_id":"073c…","account_uuid":"","session_id":"ce7d…"}'
+```
+
+`extractSessionId()` returns only `session_id`. **`device_id` is a stable machine identifier and must never be journalled or uploaded** — it would defeat the journal's entire no-paths design in a single field. Queued corrections live on the engine keyed by session id (not per-model, or two concurrent conversations against the same model would leak into each other), bounded to 64 conversations with oldest-first eviction.
+
+### Reading the system prompt
+
+`BehaviorContext.systemText` and `harness.skills` expose what already arrives on every request: CLAUDE.md, the user's project rules, and the skill listing. A rule reads these to decide a skill or user rule applies, then **injects the relevant content** — it does not tell the model to go and load a skill, for the reason set out above. `extractAvailableSkills()` returns `[]` when no listing is present, which means *unknown*, not "the user has no skills".
+
 ### Config
 
 ```json
 { "behavior": {
-    "rules": { "plan-mode/plan-file-path": "fix" },
+    "rules": {
+      "plan-mode/*": "warn",
+      "gpt-5.6-*:plan-mode/plan-file-path": "fix"
+    },
     "hooks": ["./.claudish/hooks/my-rule.ts"],
-    "observer": { "enabled": true, "mode": "suggest" } } }
+    "observer": { "enabled": true, "mode": "suggest" },
+    "telemetry": { "enabled": false } } }
 ```
+
+Rule keys may be **model-scoped** as `modelGlob:ruleId`. Scoped keys beat unscoped ones, and within each tier an exact id beats a glob and a longer glob beats a shorter one. This exists because nothing transfers between models — a rule proven on one is a hypothesis on the next — so a rule can be armed for the model that needs it without arming it everywhere. (`hook:` ids also contain a colon and are deliberately *not* parsed as model-scoped.)
 
 Hooks are user modules exporting `BehaviorRule`s, namespaced `hook:<file>/<id>` so they can never shadow a built-in; load failures warn and skip. The **observer** is a small local model (vision-proxy contract: hard timeout, `null` on failure, never blocks) that sees only a **digest** — tool names, harness facts, the proposed call's argument keys plus path-like values — never conversation text. Its model is **discovered** via `ollama-discovery` (smallest non-embedding), never pinned, and ids outside the rule vocabulary are discarded as hallucinations.
 

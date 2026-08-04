@@ -1,6 +1,6 @@
-import { describe, it, expect } from "bun:test";
-import { planFilePathRule } from "./plan-mode.js";
+import { describe, expect, it } from "bun:test";
 import type { BehaviorContext, ToolCallContext } from "../types.js";
+import { planFilePathRule } from "./plan-mode.js";
 
 const assignedPath = "/workspace/.custom-plans/assigned-session.md";
 const planDir = "/workspace/.custom-plans";
@@ -14,6 +14,7 @@ function requestContext(overrides: Partial<BehaviorContext> = {}): BehaviorConte
     claudeTools: [{ name: "ExitPlanMode", description: "Exit plan mode" }],
     tools: [],
     messages: [],
+    systemText: "",
     harness: {
       planModeActive: true,
       planFilePath: assignedPath,
@@ -23,7 +24,7 @@ function requestContext(overrides: Partial<BehaviorContext> = {}): BehaviorConte
   };
 }
 
-function toolCallContext(args: Record<string, any>): ToolCallContext {
+function toolCallContext(args: Record<string, unknown>): ToolCallContext {
   return {
     modelId: "gpt-5.6-codex",
     toolName: "Write",
@@ -62,7 +63,9 @@ describe("planFilePathRule.onRequest", () => {
       throw new Error("expected rewriteToolDescription action");
     }
     expect(actions[0].tool).toBe("ExitPlanMode");
-    expect(actions[0].append).toContain(`Your plan MUST be written to exactly this path:\n${assignedPath}`);
+    expect(actions[0].append).toContain(
+      `Your plan MUST be written to exactly this path:\n${assignedPath}`
+    );
   });
 });
 

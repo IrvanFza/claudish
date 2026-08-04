@@ -14,16 +14,30 @@
 
 import { log } from "../logger.js";
 import { resolveSeverity } from "./config.js";
-import { detectHarnessFacts } from "./harness.js";
+import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
 import { type Decision, type Surface, classifyPath, recordDecision } from "./journal.js";
 import type {
   BehaviorConfig,
   BehaviorContext,
   BehaviorRule,
   HarnessFacts,
+  ModelOutputContext,
   RuleAction,
   Severity,
 } from "./types.js";
+
+/**
+ * Caps on per-turn observation. A long turn can emit megabytes; holding all of
+ * it to run rules at the end is a bad trade for a diagnostic feature.
+ */
+const MAX_OBSERVED_CHARS = 64 * 1024;
+const MAX_OBSERVED_TOOLS = 200;
+
+/** The slice of BehaviorEngine a session needs for cross-turn state. */
+interface CorrectionStore {
+  queueCorrection(key: string, text: string): void;
+  drainCorrections(key: string): string[];
+}
 
 interface ActiveRule {
   rule: BehaviorRule;
@@ -39,11 +53,27 @@ export class BehaviorSession {
    */
   private bufferedTools = new Set<string>();
 
+  /** Accumulated assistant output for the current turn. */
+  private textBuf = "";
+  private reasoningBuf = "";
+  private toolsCalled: string[] = [];
+  /** Claude Code session id — stable across turns, the key for cross-turn state. */
+  private sessionId?: string;
+  /** System prompt text for this request (CLAUDE.md, user rules, skill listing). */
+  private systemText = "";
+
+  /** True when any active rule actually inspects model output. */
+  private get watchesOutput(): boolean {
+    return this.active.some((a) => typeof a.rule.onModelOutput === "function");
+  }
+
   constructor(
     private readonly active: ActiveRule[],
     private readonly modelId: string,
     private readonly providerName: string,
-    private readonly config: BehaviorConfig = {}
+    private readonly config: BehaviorConfig = {},
+    /** Owns cross-turn state; a session is per-request and cannot hold it. */
+    private readonly engine: CorrectionStore = { queueCorrection() {}, drainCorrections: () => [] }
   ) {}
 
   /** True when the observer should be consulted on this run. */
@@ -104,7 +134,36 @@ export class BehaviorSession {
     if (this.active.length === 0) return;
 
     this.facts = detectHarnessFacts(claudeRequest);
+    this.sessionId = extractSessionId(claudeRequest);
+    this.systemText =
+      typeof claudeRequest?.system === "string" ? claudeRequest.system : String(claudeRequest?.system ?? "");
+    this.facts.sessionId = this.sessionId;
+    this.facts.skills = extractAvailableSkills(this.systemText);
     this.armBuffering();
+
+    // Apply anything an output rule queued at the end of a PREVIOUS turn of this
+    // same Claude Code session. Keyed by the session id Claude Code sends, so
+    // two concurrent conversations against the same model cannot cross over.
+    if (this.sessionId) {
+      for (const text of this.engine.drainCorrections(this.sessionId)) {
+        this.applyAction(
+          "behavior/pending-correction",
+          "fix",
+          { type: "injectSystemNote", text },
+          {
+            modelId: this.modelId,
+            providerName: this.providerName,
+            isNativeAnthropic: false,
+            claudeRequest,
+            claudeTools,
+            tools,
+            messages,
+            systemText: this.systemText,
+            harness: this.facts,
+          }
+        );
+      }
+    }
 
     const ctx: BehaviorContext = {
       modelId: this.modelId,
@@ -114,6 +173,7 @@ export class BehaviorSession {
       claudeTools,
       tools,
       messages,
+      systemText: this.systemText,
       harness: this.facts,
     };
 
@@ -134,6 +194,80 @@ export class BehaviorSession {
   /** Whether this tool's arguments must be buffered so a repair can land. */
   interceptsTool(toolName: string): boolean {
     return this.bufferedTools.has(toolName);
+  }
+
+  /**
+   * Accumulate assistant output as it streams.
+   *
+   * Bounded: a long turn can emit megabytes, and holding all of it to run a
+   * regex at the end is a poor trade. The cap keeps the head, because the
+   * claims worth catching ("I've verified…", "tests pass") are overwhelmingly
+   * stated up front rather than buried after 200KB of code.
+   */
+  observeText(text: string, kind: "text" | "reasoning" = "text"): void {
+    if (!this.watchesOutput || !text) return;
+    const buf = kind === "reasoning" ? this.reasoningBuf : this.textBuf;
+    if (buf.length >= MAX_OBSERVED_CHARS) return;
+    if (kind === "reasoning") this.reasoningBuf += text;
+    else this.textBuf += text;
+  }
+
+  /** Record a tool call by name, so output rules can see what the turn actually did. */
+  observeToolCall(toolName: string): void {
+    if (!this.watchesOutput) return;
+    if (this.toolsCalled.length < MAX_OBSERVED_TOOLS) this.toolsCalled.push(toolName);
+  }
+
+  /**
+   * Run output rules. Called once the response stream has completed.
+   *
+   * The turn is already on the wire, so nothing here can change it — actions are
+   * recorded, and `injectSystemNote` is held for the NEXT request instead.
+   */
+  finishTurn(): void {
+    if (!this.watchesOutput) return;
+    const ctx: ModelOutputContext = {
+      modelId: this.modelId,
+      providerName: this.providerName,
+      text: this.textBuf,
+      reasoning: this.reasoningBuf,
+      toolsCalled: this.toolsCalled,
+      harness: this.facts,
+    };
+
+    for (const { rule, severity } of this.active) {
+      if (!rule.onModelOutput) continue;
+      let actions: RuleAction[] = [];
+      try {
+        actions = rule.onModelOutput(ctx) ?? [];
+      } catch (err) {
+        log(`[behavior] rule ${rule.id} onModelOutput threw: ${err}`);
+        continue;
+      }
+      for (const action of actions) {
+        if (action.type === "warn") {
+          log(`[behavior] ${rule.id} (output): ${action.message}`);
+          this.journal("model_output", "warned", { ruleId: rule.id, note: action.message });
+          continue;
+        }
+        if (action.type !== "injectSystemNote") continue;
+        if (severity !== "fix") {
+          this.journal("model_output", "warned", { ruleId: rule.id, note: "correction withheld" });
+          continue;
+        }
+        // Carried into the next request rather than applied now — the response
+        // this rule reacted to has already reached the client. Stored on the
+        // engine under the Claude Code session id, because THIS session object
+        // is destroyed when the request completes.
+        if (this.sessionId) this.engine.queueCorrection(this.sessionId, action.text);
+        this.journal("model_output", "matched", { ruleId: rule.id, note: "correction queued" });
+        log(`[behavior] ${rule.id} queued a correction for the next request`);
+      }
+    }
+
+    this.textBuf = "";
+    this.reasoningBuf = "";
+    this.toolsCalled = [];
   }
 
   /**
@@ -355,11 +489,47 @@ export class BehaviorSession {
   }
 }
 
+/**
+ * Corrections queued by one turn and applied to the next.
+ *
+ * These CANNOT live on the session: a session is per-request, so anything an
+ * output rule queues at the end of turn N is destroyed before turn N+1 is built.
+ * They also cannot live per-model, because two concurrent conversations against
+ * the same model would leak corrections into each other.
+ *
+ * So they are keyed by a conversation fingerprint — see `conversationKey()`.
+ * Bounded, because a long-running proxy would otherwise accumulate one entry per
+ * conversation it has ever seen.
+ */
+const MAX_TRACKED_CONVERSATIONS = 64;
+
 export class BehaviorEngine {
+  private readonly corrections = new Map<string, string[]>();
+
   constructor(
     private readonly config: BehaviorConfig,
     private readonly rules: BehaviorRule[]
   ) {}
+
+  /** Queue a correction for the next request in this conversation. */
+  queueCorrection(key: string, text: string): void {
+    const list = this.corrections.get(key) ?? [];
+    list.push(text);
+    this.corrections.set(key, list);
+    // Evict oldest — Map preserves insertion order.
+    while (this.corrections.size > MAX_TRACKED_CONVERSATIONS) {
+      const oldest = this.corrections.keys().next().value;
+      if (oldest === undefined) break;
+      this.corrections.delete(oldest);
+    }
+  }
+
+  /** Drain corrections for a conversation. */
+  drainCorrections(key: string): string[] {
+    const list = this.corrections.get(key) ?? [];
+    this.corrections.delete(key);
+    return list;
+  }
 
   /**
    * Build the per-request session.
@@ -378,7 +548,7 @@ export class BehaviorEngine {
     // layer stays off for them so a no-op layer is genuinely a no-op.
     if (!params.isNativeAnthropic) {
       for (const rule of this.rules) {
-        const severity = resolveSeverity(rule.id, rule.defaultSeverity, this.config);
+        const severity = resolveSeverity(rule.id, rule.defaultSeverity, this.config, params.modelId);
         if (severity === "off") continue;
         let applies = false;
         try {
@@ -398,6 +568,6 @@ export class BehaviorEngine {
       );
     }
 
-    return new BehaviorSession(active, params.modelId, params.providerName, this.config);
+    return new BehaviorSession(active, params.modelId, params.providerName, this.config, this);
   }
 }
