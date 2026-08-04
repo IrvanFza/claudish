@@ -9,6 +9,8 @@
  */
 
 import { select } from "@inquirer/prompts";
+import { AntigravityOAuth } from "./antigravity-oauth.js";
+import { hasSharedAntigravityToken } from "./antigravity-token.js";
 import { CodexOAuth } from "./codex-oauth.js";
 import { GeminiOAuth } from "./gemini-oauth.js";
 import { KimiOAuth } from "./kimi-oauth.js";
@@ -28,6 +30,13 @@ interface OAuthProvider {
 }
 
 const AUTH_PROVIDERS: OAuthProvider[] = [
+  {
+    name: "antigravity",
+    displayName: "Antigravity",
+    prefix: "ag@, antigravity@",
+    getInstance: () => AntigravityOAuth.getInstance(),
+    registryKeys: ["antigravity"],
+  },
   {
     name: "gemini",
     displayName: "Gemini Code Assist",
@@ -52,7 +61,11 @@ const AUTH_PROVIDERS: OAuthProvider[] = [
 ];
 
 function getAuthStatus(provider: OAuthProvider): string {
-  const hasCredentials = provider.registryKeys.some((k) => hasOAuthCredentials(k));
+  // Antigravity's token lives in the SHARED keychain, not a ~/.claudish/*-oauth.json
+  // file, so hasOAuthCredentials can't see it — check the keychain directly.
+  const hasCredentials =
+    provider.registryKeys.some((k) => hasOAuthCredentials(k)) ||
+    (provider.name === "antigravity" && hasSharedAntigravityToken());
   return hasCredentials ? "logged in" : "not logged in";
 }
 

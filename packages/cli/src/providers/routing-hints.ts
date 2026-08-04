@@ -20,6 +20,8 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   kimi: { loginFlag: "login kimi", apiKeyEnvVar: "MOONSHOT_API_KEY" },
   google: { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
   "gemini-codeassist": { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
+  // Antigravity auth is OAuth-only (shared keychain token) — no API key env var.
+  antigravity: { loginFlag: "login antigravity" },
   openai: { apiKeyEnvVar: "OPENAI_API_KEY" },
   "openai-codex": { loginFlag: "login codex", apiKeyEnvVar: "OPENAI_CODEX_API_KEY" },
   minimax: { apiKeyEnvVar: "MINIMAX_API_KEY" },

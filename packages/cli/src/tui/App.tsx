@@ -132,7 +132,7 @@ interface AppProps {
    * and re-enters startConfigTui when the child exits. App.tsx just
    * signals intent; lifecycle is the wrapper's responsibility.
    */
-  requestLogin?: (slug: "gemini" | "codex" | "kimi") => void;
+  requestLogin?: (slug: "gemini" | "codex" | "kimi" | "antigravity") => void;
 }
 
 export function App({ requestLogin }: AppProps = {}) {

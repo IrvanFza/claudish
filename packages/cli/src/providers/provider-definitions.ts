@@ -100,7 +100,7 @@ export interface ProviderDefinition {
    * Single source of truth: keep this in sync with AUTH_PROVIDERS in
    * src/auth/auth-commands.ts.
    */
-  oauthLoginSlug?: "gemini" | "codex" | "kimi";
+  oauthLoginSlug?: "gemini" | "codex" | "kimi" | "antigravity";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -154,7 +154,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "",
     apiKeyDescription: "Antigravity (shared OAuth token)",
     apiKeyUrl: "https://antigravity.google/",
-    oauthLoginSlug: "gemini",
+    // Dedicated login: `claudish login antigravity` (OAuth PKCE → shared keychain
+    // store). NOT the gemini-cli login, which mints a token the Antigravity
+    // backend rejects for generation.
+    oauthLoginSlug: "antigravity",
     // "go" is the DEPRECATED alias — kept last so ag@ is the canonical prefix.
     shortcuts: ["ag", "antigravity", "go"],
     shortestPrefix: "ag",

@@ -36,7 +36,7 @@ export interface ProviderDef {
    * If set, this provider supports OAuth login via `claudish login {slug}`.
    * Used by the Providers tab `l` keybinding.
    */
-  oauthSlug?: "gemini" | "codex" | "kimi";
+  oauthSlug?: "gemini" | "codex" | "kimi" | "antigravity";
 }
 
 // Skip virtual providers that have no API key and no TUI presence

@@ -2,6 +2,15 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.33.0] - 2026-08-04
+
+### Features
+
+- **`claudish login antigravity`** — sign in to Antigravity without leaving claudish. It delegates entirely to the Antigravity CLI (`agy`): installs `agy` via the official installer if missing (with confirmation), then triggers agy's own browser sign-in, which writes the token to the shared keychain that `ag@` reads. claudish ships **no** Antigravity client secret — agy owns the whole credential lifecycle (the secret is baked per agy release and rotates on auto-update, so embedding it is impossible).
+  - **Refresh** delegates to agy too: an expired `ag@` token is refreshed by running `agy models` (lightweight, no quota), which refreshes the shared token with agy's own always-current secret. Rotation-proof, no secret handling in claudish.
+  - **`claudish logout antigravity`** fully clears the session — the shared keychain token (agy's live session) and agy's on-disk token artifact.
+  - Login success prints a real, live-discovered model to try (e.g. `ag@gemini-3.6-flash-high`, from the backend's own default), not a placeholder.
+
 ## [7.32.0] - 2026-08-04
 
 ### Documentation

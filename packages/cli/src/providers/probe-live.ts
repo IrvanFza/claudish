@@ -228,9 +228,11 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
   const loginCommand =
     provider === "gemini-codeassist"
       ? "claudish login gemini"
-      : provider === "vertex"
-        ? "gcloud auth application-default login"
-        : undefined;
+      : provider === "antigravity"
+        ? "claudish login antigravity"
+        : provider === "vertex"
+          ? "gcloud auth application-default login"
+          : undefined;
 
   if (!loginCommand) return result;
 

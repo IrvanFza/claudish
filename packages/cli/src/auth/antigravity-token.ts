@@ -3,10 +3,13 @@
  *
  * Antigravity's own CLI (`agy`) stores its OAuth token in the macOS login
  * keychain, and claudish shares that SAME store so a single sign-in covers both
- * tools (Jack's explicit requirement). claudish also owns the refresh lifecycle:
- * when the access token is expired or near-expiry it refreshes against Google's
- * token endpoint and writes the fresh (possibly rotated) token back, so `agy`
- * picks it up too.
+ * tools (Jack's explicit requirement). agy OWNS the refresh lifecycle too:
+ * claudish never handles the Antigravity client secret in ANY form (no embed, no
+ * scrape, no token exchange). When the shared token is expired, claudish asks agy
+ * to refresh it — running `agy models` (a lightweight authed command that lists
+ * served models, no generation quota) makes agy mint a fresh token with ITS OWN
+ * current secret and write it back to the shared store. claudish then simply
+ * RE-READS the store.
  *
  * Store layout (macOS login keychain):
  *   service = "gemini", account = "antigravity"
@@ -14,14 +17,16 @@
  *   JSON    = { token: { access_token, token_type, refresh_token, expiry(RFC3339) },
  *               id_token, auth_method }
  *
- * SECURITY: claudish never ships Antigravity's OAuth client_id / client_secret.
- * They are extracted at runtime from the user's OWN `agy` binary (the same
- * install we read the token from) and the working pair is discovered by trying
- * combos against the refresh endpoint until one returns 200.
+ * Why delegate refresh: Antigravity's client_secret is a static literal baked
+ * into the `agy` binary, and agy AUTO-UPDATES — each release rotates the secret
+ * and Google revokes the old one — so any secret claudish embedded or scraped
+ * would break within days, and there's no dynamic client registration. Letting
+ * agy do the refresh means claudish is always current, holds no secret, and stays
+ * out of the OAuth-client business entirely.
  *
- * Every side effect (keychain read/write, cred extraction, HTTP, clock) is
- * behind an injectable `deps` object so the module is fully testable with no
- * real keychain or network.
+ * Every side effect (keychain read/write/delete, the agy refresh command, clock)
+ * is behind an injectable `deps` object so the module is fully testable with no
+ * real keychain and no real agy process.
  */
 
 import { execFileSync } from "node:child_process";
@@ -40,10 +45,10 @@ const KC_SERVICE = "gemini";
 const KC_ACCOUNT = "antigravity";
 /** go-keyring single-item value prefix. Chunked values use other prefixes (unsupported). */
 const PREFIX = "go-keyring-base64:";
-/** Google's OAuth2 token endpoint (refresh grant). */
-const REFRESH_ENDPOINT = "https://oauth2.googleapis.com/token";
 /** Refresh when the access token is within this window of its expiry (~2 min). */
 const EXPIRY_SKEW_MS = 120_000;
+/** Max time to wait for `agy models` to refresh the shared token. */
+const AGY_REFRESH_TIMEOUT_MS = 40_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,28 +71,25 @@ interface SharedStoreRecord {
   [key: string]: unknown;
 }
 
-/** A candidate OAuth client credential pair extracted from the agy binary. */
-export interface ClientCred {
-  clientId: string;
-  clientSecret: string;
-}
-
-/** Minimal fetch signature (avoids depending on the global's extra `preconnect`). */
-type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-
 /**
- * Injectable side-effect seams. Tests supply fakes so no real keychain, binary,
- * network, or clock is ever touched.
+ * Injectable side-effect seams. Tests supply fakes so no real keychain, agy
+ * process, or clock is ever touched.
  */
 export interface AntigravityTokenDeps {
   /** Read the raw keychain value (with the `go-keyring-base64:` prefix), or null. */
   readStore: () => string | null;
   /** Write the raw keychain value (with the prefix). */
   writeStore: (rawValue: string) => void;
-  /** Best-effort candidate client-cred pairs extracted from the local agy binary. */
-  extractCreds: () => ClientCred[];
-  /** HTTP client (defaults to global fetch). */
-  fetch: FetchFn;
+  /** Delete the shared keychain item entirely (logout). Optional; defaults to `security delete-generic-password`. */
+  deleteStore?: () => void;
+  /**
+   * Ask the Antigravity CLI to refresh the shared token — the real implementation
+   * runs `agy models` (a lightweight authed command), which makes agy mint a fresh
+   * token with its OWN current secret and write it back to the shared store. A
+   * no-op when agy isn't installed (the caller then re-reads, finds it still
+   * stale, and throws). claudish never touches the client secret itself.
+   */
+  runAgyRefresh: () => void;
   /** Current time in ms since epoch (defaults to Date.now). */
   now: () => number;
 }
@@ -130,8 +132,12 @@ function defaultWriteStore(rawValue: string): void {
   );
 }
 
-/** Locate the user's agy binary: `which agy`, else ~/.local/bin/agy. */
-function locateAgyBinary(): string | null {
+/**
+ * Locate the user's agy binary: `which agy`, else ~/.local/bin/agy.
+ * Exported so the login-delegation flow (antigravity-oauth.ts) uses the SAME
+ * locator as the refresh scrape.
+ */
+export function locateAgyBinary(): string | null {
   try {
     const p = execFileSync("which", ["agy"], { encoding: "utf8" }).trim();
     if (p.length > 0) return p;
@@ -142,47 +148,46 @@ function locateAgyBinary(): string | null {
   return existsSync(fallback) ? fallback : null;
 }
 
-/**
- * Extract OAuth client-cred candidates from the agy binary via `strings`.
- * Returns the cartesian product of discovered client-ids × secrets, deduped.
- * Best-effort: any failure yields an empty list (self-refresh is then
- * unavailable, but a still-valid token keeps working).
- */
-function defaultExtractCreds(): ClientCred[] {
-  const agy = locateAgyBinary();
-  if (!agy) {
-    logStderr("[Antigravity] Could not locate the `agy` binary — self-refresh is unavailable.");
-    return [];
-  }
-  let dump: string;
+/** Delete the shared token via macOS `security` (idempotent — missing item is fine). */
+function defaultDeleteStore(): void {
+  if (process.platform !== "darwin") return;
   try {
-    dump = execFileSync("strings", [agy], {
-      encoding: "utf8",
-      // agy is a large Go binary; allow a generous buffer for the strings dump.
-      maxBuffer: 128 * 1024 * 1024,
+    execFileSync("security", ["delete-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT], {
+      stdio: ["ignore", "ignore", "ignore"],
     });
   } catch {
-    logStderr("[Antigravity] `strings` failed on the agy binary — self-refresh is unavailable.");
-    return [];
+    // Item not found / already gone — logout is idempotent.
   }
-  const clientIds = Array.from(
-    new Set(dump.match(/[0-9]{6,}-[a-z0-9]+\.apps\.googleusercontent\.com/g) ?? [])
-  );
-  const secrets = Array.from(new Set(dump.match(/GOCSPX-[A-Za-z0-9_-]{20,}/g) ?? []));
-  const combos: ClientCred[] = [];
-  for (const clientId of clientIds) {
-    for (const clientSecret of secrets) {
-      combos.push({ clientId, clientSecret });
-    }
+}
+
+/**
+ * Ask the Antigravity CLI to refresh the shared token.
+ *
+ * `agy models` is a lightweight authed command (lists served models — no
+ * generation quota). Running it when the stored token is expired makes agy mint a
+ * fresh token with ITS OWN current secret and write it back to the shared store;
+ * claudish then simply re-reads it. No-op (silent) when agy isn't installed — the
+ * caller re-reads, sees the token is still stale, and throws an actionable error.
+ * claudish never handles the client secret in any form.
+ */
+function defaultRunAgyRefresh(): void {
+  const agy = locateAgyBinary();
+  if (!agy) return;
+  try {
+    execFileSync(agy, ["models"], {
+      stdio: ["ignore", "ignore", "ignore"],
+      timeout: AGY_REFRESH_TIMEOUT_MS,
+    });
+  } catch {
+    // Non-zero exit / timeout — the caller re-reads the store and decides.
   }
-  return combos;
 }
 
 const defaultDeps: AntigravityTokenDeps = {
   readStore: defaultReadStore,
   writeStore: defaultWriteStore,
-  extractCreds: defaultExtractCreds,
-  fetch: (input, init) => fetch(input, init),
+  deleteStore: defaultDeleteStore,
+  runAgyRefresh: defaultRunAgyRefresh,
   now: () => Date.now(),
 };
 
@@ -254,7 +259,8 @@ export function hasSharedAntigravityToken(deps: AntigravityTokenDeps = defaultDe
 /**
  * Write an updated Antigravity token back to the shared store, PRESERVING every
  * other field (id_token / auth_method / unknown keys) — only the token's
- * access_token / refresh_token / expiry / token_type are replaced.
+ * access_token / refresh_token / expiry / token_type are replaced. This is the
+ * refresh write-back; agy owns the FULL record on first login.
  */
 export function writeSharedAntigravityToken(
   tok: AntigravityToken,
@@ -269,6 +275,16 @@ export function writeSharedAntigravityToken(
   deps.writeStore(encodeRecord(merged));
 }
 
+/**
+ * Delete the shared Antigravity token (logout). Idempotent — a missing item is
+ * not an error. Also clears the memoized presence flag so the config TUI reflects
+ * the logout immediately.
+ */
+export function deleteSharedAntigravityToken(deps: AntigravityTokenDeps = defaultDeps): void {
+  (deps.deleteStore ?? defaultDeleteStore)();
+  _resetAntigravityTokenState();
+}
+
 // ---------------------------------------------------------------------------
 // Refresh
 // ---------------------------------------------------------------------------
@@ -279,70 +295,6 @@ function needsRefresh(tok: AntigravityToken, now: number): boolean {
   // An unparseable/absent expiry is treated as needing refresh (fail safe).
   if (Number.isNaN(expMs)) return true;
   return now >= expMs - EXPIRY_SKEW_MS;
-}
-
-/** The client-cred pair proven to work this process — cached after first success. */
-let cachedCred: ClientCred | null = null;
-
-/**
- * Refresh the access token. The client-cred combo is discovered AS the refresh:
- * each candidate is tried against the token endpoint and the first 200 both
- * proves the pair (cached for subsequent refreshes) and yields the new token.
- * The refresh_token may ROTATE — the response's is written back when present.
- */
-async function refreshToken(
-  tok: AntigravityToken,
-  deps: AntigravityTokenDeps
-): Promise<AntigravityToken> {
-  const combos = cachedCred ? [cachedCred] : deps.extractCreds();
-  if (combos.length === 0) {
-    throw new Error(
-      "[Antigravity] Access token expired and no OAuth client credentials could be extracted " +
-        "from the `agy` binary to refresh it. Re-run the Antigravity CLI to refresh your session, " +
-        "or use g@<model> with GEMINI_API_KEY."
-    );
-  }
-
-  let lastStatus = 0;
-  let lastBody = "";
-  for (const cred of combos) {
-    const res = await deps.fetch(REFRESH_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: cred.clientId,
-        client_secret: cred.clientSecret,
-        refresh_token: tok.refresh_token,
-        grant_type: "refresh_token",
-      }),
-    });
-
-    if (res.ok) {
-      cachedCred = cred;
-      const j = (await res.json()) as {
-        access_token: string;
-        expires_in: number;
-        refresh_token?: string;
-      };
-      const expiry = new Date(deps.now() + j.expires_in * 1000).toISOString();
-      return {
-        access_token: j.access_token,
-        token_type: tok.token_type || "Bearer",
-        // Google may rotate the refresh token — keep the new one when returned.
-        refresh_token: j.refresh_token || tok.refresh_token,
-        expiry,
-      };
-    }
-
-    lastStatus = res.status;
-    lastBody = await res.text().catch(() => "");
-  }
-
-  throw new Error(
-    `[Antigravity] Token refresh failed for all ${combos.length} client-cred combo(s) ` +
-      `(last HTTP ${lastStatus}${lastBody ? `: ${lastBody.slice(0, 200)}` : ""}). ` +
-      "Re-run the Antigravity CLI to refresh your session, or use g@<model> with GEMINI_API_KEY."
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,29 +315,40 @@ async function resolveValidToken(deps: AntigravityTokenDeps): Promise<string> {
   const rec = parseRecord(deps.readStore());
   if (!rec) {
     throw new Error(
-      "[Antigravity] No Antigravity session found. Install Antigravity and sign in " +
-        "(the `agy` CLI), or use g@<model> with GEMINI_API_KEY " +
+      "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
+        "or use g@<model> with GEMINI_API_KEY " +
         "(get one at https://aistudio.google.com/app/apikey)."
     );
   }
 
-  const tok = rec.token;
-  if (!needsRefresh(tok, deps.now())) {
-    return tok.access_token;
+  if (!needsRefresh(rec.token, deps.now())) {
+    return rec.token.access_token;
   }
 
-  log("[Antigravity] Access token expired/near-expiry — refreshing.");
-  const refreshed = await refreshToken(tok, deps);
-  writeSharedAntigravityToken(refreshed, deps);
-  log("[Antigravity] Token refreshed and written back to the shared store.");
-  return refreshed.access_token;
+  // Expired/near-expiry → ask agy to refresh (it owns the secret). Running `agy
+  // models` mints a fresh token into the shared store; we then RE-READ it.
+  log("[Antigravity] Access token expired/near-expiry — asking the Antigravity CLI to refresh.");
+  deps.runAgyRefresh();
+
+  const refreshedRec = parseRecord(deps.readStore());
+  if (refreshedRec && !needsRefresh(refreshedRec.token, deps.now())) {
+    log("[Antigravity] Shared token refreshed by the Antigravity CLI.");
+    return refreshedRec.token.access_token;
+  }
+
+  // agy wasn't installed, or ran but the token is still stale (revoked session).
+  throw new Error(
+    "[Antigravity] Antigravity session expired and couldn't be refreshed. " +
+      "Run `claudish login antigravity` (installs/authenticates the Antigravity CLI)."
+  );
 }
 
 /**
- * Read → refresh-if-needed → write-back → return a valid Antigravity access
- * token. Single-flight: concurrent callers share one in-flight resolution so a
- * refresh never races itself. Throws a clear, actionable error when the store is
- * missing (agy not installed / not signed in) or on a non-macOS platform.
+ * Read → refresh-if-needed (via agy) → return a valid Antigravity access token.
+ * Single-flight: concurrent callers share one in-flight resolution so only ONE
+ * `agy models` refresh runs even under a parallel spawn. Throws a clear,
+ * actionable error when the store is missing (not signed in), when agy can't
+ * refresh it, or on a non-macOS platform.
  */
 export function getValidAntigravityAccessToken(
   deps: AntigravityTokenDeps = defaultDeps
@@ -401,9 +364,8 @@ export function getValidAntigravityAccessToken(
 // Test seam
 // ---------------------------------------------------------------------------
 
-/** Clear the in-flight promise and the cached client-cred (between tests). */
+/** Clear the in-flight promise and the memoized presence flag (between tests). */
 export function _resetAntigravityTokenState(): void {
   inFlight = null;
-  cachedCred = null;
   cachedHasToken = null;
 }

@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
+import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
 import { reloadGeminiCredentials } from "../auth/gemini-oauth.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
@@ -32,9 +33,11 @@ export async function startConfigTui(): Promise<void> {
   // screen (the renderer can't invalidate cells it didn't draw).
   setStderrQuiet(true);
 
-  const loginRequest: { slug: "gemini" | "codex" | "kimi" | null } = { slug: null };
+  const loginRequest: { slug: "gemini" | "codex" | "kimi" | "antigravity" | null } = {
+    slug: null,
+  };
 
-  const requestLogin = (slug: "gemini" | "codex" | "kimi"): void => {
+  const requestLogin = (slug: "gemini" | "codex" | "kimi" | "antigravity"): void => {
     loginRequest.slug = slug;
   };
 
@@ -81,7 +84,13 @@ export async function startConfigTui(): Promise<void> {
       // provider keeps failing auth until claudish is fully relaunched. Also drop
       // the probe-proxy's per-provider handler cache so the next test rebuilds
       // the transport with the fresh credential.
-      if (slug === "gemini") {
+      if (slug === "antigravity") {
+        // The login child wrote the shared keychain token. Drop the memoized
+        // presence flag so the re-entered TUI sees it immediately, and rebuild
+        // the probe handler with the fresh credential.
+        _resetAntigravityTokenState();
+        invalidateProbeProxyHandlers("antigravity");
+      } else if (slug === "gemini") {
         reloadGeminiCredentials();
         invalidateProbeProxyHandlers("google");
         invalidateProbeProxyHandlers("gemini-codeassist");
