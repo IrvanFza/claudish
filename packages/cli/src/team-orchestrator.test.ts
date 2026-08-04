@@ -15,7 +15,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { VoteResult } from "./team-orchestrator.js";
+import type {
+  ModelStatus,
+  TeamManifest,
+  TeamStatus,
+  VoteResult,
+} from "./team-orchestrator.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
 //     until the tests actually run) ──────────────────────────────────────────
@@ -34,32 +39,6 @@ function makeTempDir(): string {
 /** Parse JSON file from disk, or return null on failure. */
 function readJson<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf-8")) as T;
-}
-
-// ─── Types mirroring architecture.md public contracts ────────────────────────
-
-interface ManifestModelEntry {
-  model: string;
-  assignedAt: string;
-}
-
-interface TeamManifest {
-  created: string;
-  models: Record<string, ManifestModelEntry>;
-  shuffleOrder?: string[];
-}
-
-interface ModelStatus {
-  state: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "TIMEOUT";
-  exitCode: number | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  outputSize: number;
-}
-
-interface TeamStatus {
-  startedAt: string;
-  models: Record<string, ModelStatus>;
 }
 
 // ─── Test state ───────────────────────────────────────────────────────────────
