@@ -15,6 +15,7 @@
 import { log } from "../logger.js";
 import { resolveSeverity } from "./config.js";
 import { detectHarnessFacts } from "./harness.js";
+import { type Decision, type Surface, classifyPath, recordDecision } from "./journal.js";
 import type {
   BehaviorConfig,
   BehaviorContext,
@@ -41,8 +42,26 @@ export class BehaviorSession {
   constructor(
     private readonly active: ActiveRule[],
     private readonly modelId: string,
-    private readonly providerName: string
+    private readonly providerName: string,
+    private readonly config: BehaviorConfig = {}
   ) {}
+
+  /** True when the observer should be consulted on this run. */
+  private get observerOn(): boolean {
+    return this.config.observer?.enabled === true && (this.config.observer.mode ?? "suggest") !== "off";
+  }
+
+  /**
+   * Tools the observer watches when enabled.
+   *
+   * The observer exists to find divergences the RULES do not yet encode, so it
+   * cannot be limited to tools a rule already intercepts — that would only ever
+   * show it calls that are already handled. Buffering these costs incremental
+   * delivery, which is why the observer is opt-in and off by default.
+   */
+  private observerWatchList(): string[] {
+    return this.config.observer?.watchTools ?? ["Write", "Edit", "NotebookEdit", "ExitPlanMode"];
+  }
 
   /**
    * Decide which tools need buffering, now that harness state is known.
@@ -59,6 +78,11 @@ export class BehaviorSession {
       if (severity !== "fix") continue;
       if (rule.armed && !rule.armed(this.facts)) continue;
       for (const t of rule.interceptsTools ?? []) armed.add(t);
+    }
+    // The observer needs to SEE calls to say anything about them, and the only
+    // hook that carries a completed call is the repair seam.
+    if (this.observerOn) {
+      for (const t of this.observerWatchList()) armed.add(t);
     }
     this.bufferedTools = armed;
   }
@@ -159,6 +183,16 @@ export class BehaviorSession {
           log(`[behavior] ${rule.id} (warn-only, not applied): ${action.reason}`);
           continue;
         }
+        // Capture the path relation BEFORE overwriting args — afterwards the
+        // observed value is gone and the classification cannot be reconstructed.
+        this.journal("tool_call", "repaired", {
+          ruleId: rule.id,
+          toolName,
+          argKeys: Object.keys(args),
+          observedPath: typeof args.file_path === "string" ? args.file_path : undefined,
+          expectedPath: this.facts.planFilePath,
+          note: action.reason,
+        });
         args = action.args;
         changed = true;
         // Deliberately log-file only, not stderr: claudish shares stdio with the
@@ -167,7 +201,102 @@ export class BehaviorSession {
       }
     }
 
+    // A call that reached a rule and was left alone is still a decision, and the
+    // dream session needs the negatives as much as the positives — a rule that
+    // never fires looks identical to a rule that is not needed without them.
+    if (!changed) {
+      this.journal("tool_call", "ignored", {
+        toolName,
+        argKeys: Object.keys(args),
+        observedPath: typeof args.file_path === "string" ? args.file_path : undefined,
+        expectedPath: this.facts.planFilePath,
+      });
+    }
+
+    // Ask the observer about calls the deterministic rules did NOT change —
+    // those are the candidates for rules that do not exist yet.
+    //
+    // Fire-and-forget by necessity: this method is called synchronously from the
+    // stream parsers, which use its return value immediately. An advisory model
+    // must never sit between the model and the client, so its verdict lands in
+    // the divergence log rather than in this turn.
+    if (this.observerOn && !changed) {
+      void this.consultObserver(toolName, args);
+    }
+
     return changed ? JSON.stringify(args) : null;
+  }
+
+  /**
+   * Record one decision. Fire-and-forget — journalling must never sit between
+   * the model and the client.
+   */
+  private journal(
+    surface: Surface,
+    decision: Decision,
+    detail: {
+      ruleId?: string;
+      toolName?: string;
+      argKeys?: string[];
+      observedPath?: string;
+      expectedPath?: string;
+      note?: string;
+    }
+  ): void {
+    void recordDecision({
+      ts: new Date().toISOString(),
+      model: this.modelId,
+      provider: this.providerName,
+      surface,
+      decision,
+      ruleId: detail.ruleId,
+      toolName: detail.toolName,
+      argKeys: detail.argKeys,
+      pathRelation: classifyPath(detail.observedPath, detail.expectedPath),
+      // Full detail stays local; toUploadable() drops this wholesale.
+      local: {
+        observedPath: detail.observedPath,
+        expectedPath: detail.expectedPath,
+        note: detail.note,
+      },
+    });
+  }
+
+  /** Advisory only. Never awaited, never throws into the request path. */
+  private async consultObserver(toolName: string, args: Record<string, any>): Promise<void> {
+    try {
+      const { buildDigest } = await import("./observer/digest.js");
+      const { observe } = await import("./observer/client.js");
+      const { recordLiveDivergence } = await import("./observer/live-log.js");
+
+      const digest = buildDigest({
+        model: this.modelId,
+        toolNames: [...this.bufferedTools],
+        harness: this.facts,
+        ruleVocabulary: this.active.map((a) => a.rule.id),
+        call: { name: toolName, args },
+      });
+
+      const verdict = await observe(digest, this.config);
+      if (!verdict?.ruleId) return; // nothing to report
+
+      log(
+        `[behavior:observer] flagged ${toolName} as ${verdict.ruleId} ` +
+          `(confidence ${verdict.confidence})${verdict.note ? `: ${verdict.note}` : ""}`
+      );
+      await recordLiveDivergence({
+        source: "observer",
+        ts: new Date().toISOString(),
+        model: this.modelId,
+        toolName,
+        ruleId: verdict.ruleId,
+        confidence: verdict.confidence,
+        note: verdict.note,
+        paths: digest.proposedCall?.paths,
+      });
+    } catch (err) {
+      log(`[behavior:observer] consult failed: ${err}`);
+    }
   }
 
   private applyAction(
@@ -269,6 +398,6 @@ export class BehaviorEngine {
       );
     }
 
-    return new BehaviorSession(active, params.modelId, params.providerName);
+    return new BehaviorSession(active, params.modelId, params.providerName, this.config);
   }
 }

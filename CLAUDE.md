@@ -374,6 +374,36 @@ Rules **return** actions; the engine applies them. Nothing else in the layer mut
 - **Off for native Claude** (`claude-*` or provider `anthropic`) — a naming rule, not a pinned roster.
 - **Anchors live in `harness.ts` only.** `PLAN_MODE_HINT` is a cheap pre-test and **must stay a superset of the anchors** — an earlier version omitted "create your plan at" and short-circuited a valid anchor away. Never assume `~/.claude/plans`: CC has a `planDir` setting, so the path is always taken from the reminder.
 
+### Why the layer is a SUPERVISOR, not a hint system
+
+Claudish routes **arbitrary models, in arbitrary combinations** — a `team` run mixes vendors in one session, and any of them may be swapped tomorrow. There is no capability floor to design against. Specifically, none of the following can be assumed of a model claudish is asked to drive:
+
+- that it follows an instruction it was given many turns ago, under context pressure
+- that it invokes a skill, plugin, or tool that is merely *available* to it
+- that it knows Claude Code's conventions at all, let alone the current release's
+- that it honours the user's own rules (CLAUDE.md, project conventions) rather than taking a shortcut
+- that a capability present in one model of a team is present in its siblings
+
+So conformance cannot be delegated to the model's judgement. That is what makes this a supervisor: it enforces from outside rather than asking nicely from inside.
+
+**The measurement this is built on** (plan mode, 115 recorded `ExitPlanMode` calls across 8 models): the plan-file path was in the conversation the whole time — CC re-injects it every turn — and gpt-5.6-sol still wrote to a self-invented filename in 17 of 24 calls, while native Claude was 87/87 correct and Kimi 4/4. The discriminator was context pressure: failures ran at ~178K median input tokens against ~102K for successes. The information was present and the model stopped acting on it, and *which* model it was mattered more than anything else.
+
+The design rule that follows:
+
+> **Put the fact where the decision is made, deterministically. Do not ask the model to go and get it.**
+
+Hence `plan-mode/plan-file-path` rewrites the **ExitPlanMode tool description** rather than re-stating the reminder: a tool description is re-read at the instant the model decides to call the tool, while a system reminder sits 178K tokens away.
+
+Practical consequences for future rules:
+
+- Prefer **injecting content** over instructing the model to fetch it. If a skill matters for the task, inline what it says rather than telling the model to load it.
+- Prefer **deterministic repair** over guidance whenever the correct value is knowable.
+- Treat "the model was told" as **no evidence** of compliance. Rules are validated by outcome — did the plan file exist at the assigned path — never by whether the instruction was delivered.
+- Assume **nothing transfers between models**. A rule proven on one model is a hypothesis on the next; the corpus is per-model for that reason.
+- Scoped to **foreign models**. Native Claude honours CC's own mechanisms (hooks, skills, output styles), so the layer stays off for `claude-*` rather than competing with a harness that already works.
+
+*Related reading, as one illustration of the same class from another team: Vercel's [AGENTS.md outperforms Skills in our agent evals](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals) found a skill went uninvoked in 56% of cases, with always-in-context docs scoring 100% against 53% for skills. Single model, and a narrow eval targeting APIs absent from training data — so it is an anecdote about one symptom, not a basis for this design.*
+
 ### Config
 
 ```json

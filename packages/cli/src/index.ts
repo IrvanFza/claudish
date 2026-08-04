@@ -294,6 +294,8 @@ const isConfigCommand = firstPositional === "config";
 const isServeCommand = firstPositional === "serve";
 // Providers subcommand: claudish providers --json (credential presence, no key material)
 const isProvidersCommand = firstPositional === "providers";
+// Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
+const isBehaviorCommand = firstPositional === "behavior";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -318,6 +320,16 @@ if (isMcpMode) {
   import("./serve-command.js").then((m) =>
     m.serveCommand(args.slice(serveArgIndex + 1)).catch((e) => {
       console.error(`[claudish serve] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
+} else if (isBehaviorCommand) {
+  // Layer 4 introspection: claudish behavior rules|corpus. Read-only unless
+  // --write is passed to `corpus`.
+  const behaviorArgIndex = args.indexOf("behavior");
+  import("./behavior-command.js").then((m) =>
+    m.behaviorCommand(args.slice(behaviorArgIndex + 1)).catch((e) => {
+      console.error(`[claudish behavior] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );

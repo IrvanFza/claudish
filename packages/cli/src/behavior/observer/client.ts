@@ -36,6 +36,23 @@ Reply with ONLY a JSON object, no prose:
 
 Return ruleId null unless you are confident. A false positive is worse than a miss.`;
 
+/**
+ * Floor below which a reported size cannot be a real set of local weights.
+ *
+ * Ollama lists CLOUD-hosted models alongside local ones, and a cloud entry is a
+ * stub: `gemma4:31b-cloud` reports 312 BYTES. "Smallest wins" therefore picked a
+ * 31B model served over the network, which promptly blew the observer's timeout
+ * — measured live, 2026-08-02. The observer's whole premise is a fast local
+ * model, so a stub must never win.
+ */
+const MIN_LOCAL_MODEL_BYTES = 50 * 1024 * 1024;
+
+/** Reject cloud-hosted entries by both name and implausible size. */
+function isGenuinelyLocal(model: { name: string; size?: number }): boolean {
+  if (/[-:]cloud$/i.test(model.name)) return false;
+  return (model.size ?? 0) >= MIN_LOCAL_MODEL_BYTES;
+}
+
 /** Resolved once per process — discovery costs an HTTP round trip. */
 let cachedModel: string | null | undefined;
 
@@ -45,7 +62,7 @@ async function resolveObserverModel(config: BehaviorConfig): Promise<string | nu
 
   try {
     const models = await fetchOllamaModels({ enrichCapabilities: false });
-    const usable = models.filter((m) => !m.isEmbeddingModel);
+    const usable = models.filter((m) => !m.isEmbeddingModel && isGenuinelyLocal(m));
     if (usable.length === 0) {
       log("[behavior:observer] No local Ollama models found — observer disabled for this run");
       cachedModel = null;

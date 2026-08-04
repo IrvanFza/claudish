@@ -17,14 +17,21 @@ const SeveritySchema = z.enum(["off", "warn", "fix"]);
 
 export const BehaviorConfigSchema = z.object({
   preset: z.string().optional(),
+  // Separate from `stats.enabled` on purpose — see the note on BehaviorConfig.
+  telemetry: z.object({ enabled: z.boolean().optional() }).optional(),
   rules: z.record(z.string(), SeveritySchema).optional(),
   hooks: z.array(z.string()).optional(),
   observer: z
     .object({
       enabled: z.boolean().optional(),
-      mode: z.enum(["off", "suggest", "enforce"]).optional(),
+      // "enforce" is deliberately NOT accepted — see the note on BehaviorConfig.
+      // Rejecting it is better than accepting it and quietly behaving as
+      // "suggest": a user who asks for enforcement should be told it does not
+      // exist, not left believing their calls are being gated.
+      mode: z.enum(["off", "suggest"]).optional(),
       model: z.string().optional(),
       timeoutMs: z.number().int().positive().optional(),
+      watchTools: z.array(z.string()).optional(),
     })
     .optional(),
 });

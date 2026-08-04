@@ -145,15 +145,46 @@ export interface BehaviorRule {
 /** User-facing config, read from the `behavior` key of ~/.claudish/config.json. */
 export interface BehaviorConfig {
   preset?: string;
+  /**
+   * Uploading behaviour decisions to claudish's servers for aggregate analysis.
+   *
+   * Its own opt-in, deliberately NOT sharing the existing `stats.enabled`
+   * consent: that was granted for usage statistics, and reusing it to ship
+   * behavioural records would be consent laundering. Default off.
+   *
+   * Local journalling is unaffected by this and always on — it is the user's own
+   * data on their own disk, like `logs/`.
+   *
+   * Only the allow-listed `UploadableEntry` projection is ever sent: model,
+   * provider, surface, decision, rule id, tool name, argument KEY names, and a
+   * categorical path relation. No paths, no argument values, no message text.
+   */
+  telemetry?: {
+    enabled?: boolean;
+  };
   /** Rule id (or glob, e.g. "plan-mode/*") → severity. */
   rules?: Record<string, Severity>;
   /** Paths to user modules exporting BehaviorRule(s). */
   hooks?: string[];
   observer?: {
     enabled?: boolean;
-    mode?: "off" | "suggest" | "enforce";
+    /**
+     * `suggest` logs what it sees to the divergence log.
+     *
+     * There is deliberately no `enforce`. The tool-call seam the observer hangs
+     * off is synchronous — stream parsers consume its return value immediately —
+     * so an async model cannot gate a call without putting a network round-trip
+     * between the model and the client. Config validation REJECTS `enforce`
+     * rather than accepting it and quietly behaving as `suggest`.
+     */
+    mode?: "off" | "suggest";
     /** Omit to auto-discover a local model. Never defaulted to a pinned id. */
     model?: string;
     timeoutMs?: number;
+    /**
+     * Tools whose calls the observer is shown. Buffering these costs incremental
+     * delivery, which is why the observer is off by default.
+     */
+    watchTools?: string[];
   };
 }
