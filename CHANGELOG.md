@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.32.0] - 2026-08-04
+
+### Documentation
+
+- update CHANGELOG.md for v7.31.0([`8516c8c`](https://github.com/MadAppGang/claudish/commit/8516c8cba4c443babf81828063cb945f764b9c01))
+
+### New Features
+
+- v7.32.0 — the behavior layer can see model output, read the system prompt, and scope rules per model([`f94a07b`](https://github.com/MadAppGang/claudish/commit/f94a07bda0b8ef4223a7703cbaae3f97520687e3))
+
 ## [7.31.0] - 2026-08-04
 
 ### Documentation
