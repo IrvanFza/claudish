@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.29.1] - 2026-08-04
+
+### Bug Fixes
+
+- v7.29.1 — probe checks that passed on the wrong signal([`4197ec4`](https://github.com/MadAppGang/claudish/commit/4197ec49d203fa5fd084ddb7c9a024b5704c0c3c))
+
+### Documentation
+
+- update CHANGELOG.md for v7.29.0([`932cf4e`](https://github.com/MadAppGang/claudish/commit/932cf4e1116f7c63c48f04a1f97a9f6b9e9404c4))
+
 ## [7.29.0] - 2026-08-04
 
 ### Documentation
