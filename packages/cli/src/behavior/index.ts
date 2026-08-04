@@ -20,6 +20,19 @@ export { observe, resetObserverModelCache } from "./observer/client.js";
 export type { ObserverVerdict } from "./observer/client.js";
 export { buildCorpus, replayTranscript } from "./observer/corpus.js";
 export type { CorpusResult, Divergence } from "./observer/corpus.js";
+export {
+  TELEMETRY_SCHEMA_VERSION,
+  contextBucket,
+  outboxPath,
+  pendingReports,
+  recordTelemetryDecision,
+  recordTelemetryTurn,
+  resetTelemetryState,
+  setTelemetryConsent,
+  spoolPendingSync,
+} from "./telemetry/aggregate.js";
+export type { ContextBucket, SessionReport } from "./telemetry/aggregate.js";
+export { drainOutbox, resetDrainState } from "./telemetry/upload.js";
 export type {
   BehaviorConfig,
   BehaviorContext,

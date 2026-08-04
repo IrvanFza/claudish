@@ -16,6 +16,11 @@ import { log } from "../logger.js";
 import { resolveSeverity } from "./config.js";
 import { detectHarnessFacts, extractAvailableSkills, extractSessionId } from "./harness.js";
 import { type Decision, type Surface, classifyPath, recordDecision } from "./journal.js";
+import {
+  recordTelemetryDecision,
+  recordTelemetryTurn,
+  setTelemetryConsent,
+} from "./telemetry/aggregate.js";
 import type {
   BehaviorConfig,
   BehaviorContext,
@@ -78,7 +83,9 @@ export class BehaviorSession {
 
   /** True when the observer should be consulted on this run. */
   private get observerOn(): boolean {
-    return this.config.observer?.enabled === true && (this.config.observer.mode ?? "suggest") !== "off";
+    return (
+      this.config.observer?.enabled === true && (this.config.observer.mode ?? "suggest") !== "off"
+    );
   }
 
   /**
@@ -136,7 +143,9 @@ export class BehaviorSession {
     this.facts = detectHarnessFacts(claudeRequest);
     this.sessionId = extractSessionId(claudeRequest);
     this.systemText =
-      typeof claudeRequest?.system === "string" ? claudeRequest.system : String(claudeRequest?.system ?? "");
+      typeof claudeRequest?.system === "string"
+        ? claudeRequest.system
+        : String(claudeRequest?.system ?? "");
     this.facts.sessionId = this.sessionId;
     this.facts.skills = extractAvailableSkills(this.systemText);
     this.armBuffering();
@@ -194,6 +203,26 @@ export class BehaviorSession {
   /** Whether this tool's arguments must be buffered so a repair can land. */
   interceptsTool(toolName: string): boolean {
     return this.bufferedTools.has(toolName);
+  }
+
+  /**
+   * Note that a turn finished on the wire, with the context size it ran at.
+   *
+   * Separate from `finishTurn()`, which runs output RULES and only fires when a
+   * rule watches output. This runs on every turn, because a session where no
+   * rule ever fired is the denominator every violation-rate question needs — a
+   * rule that fires twice means nothing without knowing whether it saw 3 turns
+   * or 300.
+   *
+   * Counts only; the token figure never leaves as anything finer than a bucket.
+   */
+  noteTurnComplete(inputTokens?: number): void {
+    recordTelemetryTurn({
+      sessionId: this.sessionId,
+      model: this.modelId,
+      provider: this.providerName,
+      inputTokens,
+    });
   }
 
   /**
@@ -377,6 +406,22 @@ export class BehaviorSession {
       note?: string;
     }
   ): void {
+    const pathRelation = classifyPath(detail.observedPath, detail.expectedPath);
+
+    // Same call site as the local journal, so the two can never disagree about
+    // what happened. This one only counts — no paths, no values; see
+    // telemetry/aggregate.ts. It is a no-op unless telemetry is opted in.
+    recordTelemetryDecision({
+      sessionId: this.sessionId,
+      model: this.modelId,
+      provider: this.providerName,
+      surface,
+      decision,
+      ruleId: detail.ruleId,
+      toolName: detail.toolName,
+      pathRelation,
+    });
+
     void recordDecision({
       ts: new Date().toISOString(),
       model: this.modelId,
@@ -386,7 +431,7 @@ export class BehaviorSession {
       ruleId: detail.ruleId,
       toolName: detail.toolName,
       argKeys: detail.argKeys,
-      pathRelation: classifyPath(detail.observedPath, detail.expectedPath),
+      pathRelation,
       // Full detail stays local; toUploadable() drops this wholesale.
       local: {
         observedPath: detail.observedPath,
@@ -509,7 +554,21 @@ export class BehaviorEngine {
   constructor(
     private readonly config: BehaviorConfig,
     private readonly rules: BehaviorRule[]
-  ) {}
+  ) {
+    // The engine owns the parsed config, so consent is pushed to the collector
+    // from here rather than re-read on the request path.
+    const optedIn = config.telemetry?.enabled === true;
+    setTelemetryConsent(optedIn);
+
+    // Deliver anything a PREVIOUS session spooled at exit. Done here, in the
+    // background of a live process, because shutdown is synchronous and cannot
+    // await a POST. Never awaited, never allowed to throw.
+    if (optedIn) {
+      void import("./telemetry/upload.js")
+        .then((m) => m.drainOutbox())
+        .catch((err) => log(`[behavior:telemetry] drain unavailable: ${err}`));
+    }
+  }
 
   /** Queue a correction for the next request in this conversation. */
   queueCorrection(key: string, text: string): void {
@@ -548,7 +607,12 @@ export class BehaviorEngine {
     // layer stays off for them so a no-op layer is genuinely a no-op.
     if (!params.isNativeAnthropic) {
       for (const rule of this.rules) {
-        const severity = resolveSeverity(rule.id, rule.defaultSeverity, this.config, params.modelId);
+        const severity = resolveSeverity(
+          rule.id,
+          rule.defaultSeverity,
+          this.config,
+          params.modelId
+        );
         if (severity === "off") continue;
         let applies = false;
         try {

@@ -869,6 +869,15 @@ export class ComposedHandler implements ModelHandler {
       } catch {
         // Stats must never crash claudish
       }
+      try {
+        // Layer 4 turn denominator. getInputTokens() is the FULL conversation
+        // context for this request (assignment, not accumulation — see the
+        // context-tracking note in CLAUDE.md), which is exactly the figure the
+        // context bucket wants. No-op unless behaviour telemetry is opted in.
+        behaviorSession?.noteTurnComplete(this.tokenTracker.getInputTokens());
+      } catch {
+        // Telemetry must never crash claudish
+      }
     };
 
     return this.handleStream(

@@ -13,13 +13,15 @@
  * without a way to run it, "look at the evidence first" is not actionable advice.
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   BUILTIN_RULES,
   buildCorpus,
+  outboxPath,
   parseBehaviorConfig,
   resolveSeverity,
 } from "./behavior/index.js";
-import { loadConfig } from "./profile-config.js";
+import { getConfigPath, loadConfig } from "./profile-config.js";
 
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
@@ -123,6 +125,98 @@ function showCorpus(write: boolean, json: boolean): void {
   }
 }
 
+/**
+ * Flip `behavior.telemetry.enabled` in the global config, preserving every other
+ * key byte-for-byte.
+ *
+ * Reads and writes the file directly rather than going through
+ * `saveConfig(loadConfig())`: `loadConfig` merges through an ALLOW-LIST, so any
+ * key it does not enumerate — a hand-added setting, a field from a newer
+ * claudish — would be dropped on save. Toggling one boolean must not be able to
+ * damage the rest of a user's config.
+ */
+function setTelemetryEnabled(value: boolean): void {
+  const path = getConfigPath();
+  let cfg: Record<string, unknown> = {};
+  try {
+    if (existsSync(path)) {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        cfg = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    // Garbled file → start from empty rather than crash. Matches readRawConfig.
+  }
+
+  const behavior =
+    cfg.behavior && typeof cfg.behavior === "object" && !Array.isArray(cfg.behavior)
+      ? { ...(cfg.behavior as Record<string, unknown>) }
+      : {};
+  behavior.telemetry = { enabled: value };
+  cfg.behavior = behavior;
+
+  writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\n`, "utf-8");
+}
+
+/**
+ * Show — and change — the behaviour-telemetry opt-in.
+ *
+ * A consent flag reachable only by hand-editing config is not a consent flag, so
+ * this is the surface that makes it one. It states the retention period and the
+ * never-send list up front, because consent to something unstated is not consent.
+ */
+function showTelemetry(action: "status" | "enable" | "disable", json: boolean): void {
+  if (action !== "status") {
+    // RAW read-modify-write, deliberately NOT saveConfig(loadConfig()).
+    // `loadConfig` is an allow-list that copies known keys and silently drops
+    // everything else, so saving what it returns would delete any key it does
+    // not know about. Same reasoning as onepassword-config.ts's mutateConfig.
+    setTelemetryEnabled(action === "enable");
+  }
+
+  const config = parseBehaviorConfig(loadConfig().behavior);
+  const on = config.telemetry?.enabled === true;
+
+  // Reported so "I turned it on and nothing happened" has an answer. Reports are
+  // spooled at exit and delivered by a LATER run, so a non-zero count here is
+  // normal rather than a symptom.
+  let pending = 0;
+  try {
+    const path = outboxPath();
+    if (existsSync(path)) {
+      pending = readFileSync(path, "utf8").split("\n").filter(Boolean).length;
+    }
+  } catch {
+    // Unreadable outbox is not worth failing a status command over.
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ enabled: on, pendingReports: pending }, null, 2));
+    return;
+  }
+
+  console.log(bold("\nBehavior telemetry\n"));
+  console.log(`  status  : ${on ? green("enabled") : dim("disabled")}`);
+  console.log(`  pending : ${pending} session report(s) awaiting delivery\n`);
+
+  if (!on) {
+    console.log("  Opting in shares which models violate Claude Code conventions,");
+    console.log("  so rules can be written for models we cannot test ourselves.\n");
+    console.log(dim("  Sent    : model, provider, rule id, tool name, decision counts,"));
+    console.log(dim("            a coarse context bucket, and categorical path relations"));
+    console.log(dim("  Never   : file paths, argument values, prompts, code, model output,"));
+    console.log(dim("            credentials, or repo/branch/project names"));
+    console.log(dim("  Session : identified by a salted hash, unlinkable across sessions"));
+    console.log(dim("  Kept    : 12 months, then non-identifying weekly aggregates only\n"));
+    console.log(`  Enable with ${bold("claudish behavior telemetry --enable")}\n`);
+    return;
+  }
+
+  console.log(dim("  Local journalling is always on and unaffected by this setting.\n"));
+  console.log(`  Disable with ${bold("claudish behavior telemetry --disable")}\n`);
+}
+
 export async function behaviorCommand(argv: string[]): Promise<void> {
   const json = argv.includes("--json");
   const write = argv.includes("--write");
@@ -135,12 +229,19 @@ export async function behaviorCommand(argv: string[]): Promise<void> {
     case "corpus":
       showCorpus(write, json);
       return;
+    case "telemetry":
+      showTelemetry(
+        argv.includes("--enable") ? "enable" : argv.includes("--disable") ? "disable" : "status",
+        json
+      );
+      return;
     default:
       console.error(`Unknown action "${action}".
 
 Usage:
-  claudish behavior rules  [--json]
-  claudish behavior corpus [--write] [--json]
+  claudish behavior rules     [--json]
+  claudish behavior corpus    [--write] [--json]
+  claudish behavior telemetry [--enable | --disable] [--json]
 `);
       process.exit(1);
   }

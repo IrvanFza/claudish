@@ -473,6 +473,20 @@ Hooks are user modules exporting `BehaviorRule`s, namespaced `hook:<file>/<id>` 
 
 `behavior/observer/corpus.ts` replays recorded CC transcripts offline to build a **labelled** divergence corpus with no live traffic: CC records `toolUseResult.filePath` (the path it actually read) and `plan: null` (whether it found anything), so every replayed session is known-good or known-degraded for free. Over 1129 local transcripts it independently reproduced the diagnosis — 11 degraded, all gpt-5.6-sol, all four Claude models and all three Kimi models clean, and the rule would have caught 11/11.
 
+### Telemetry — the cross-user corpus (v7.35.0+)
+
+The corpus above is one developer's models on one developer's projects. A rule for a model the maintainer never runs needs evidence from someone who does, which is what `POST https://claudish.com/v1/behavior` collects. Contract and intent: `docs/specs/behavior-telemetry-backend.md`; server-side retention is 12 months, then non-identifying weekly aggregates.
+
+**Opt-in, default off**, via `behavior.telemetry.enabled` or `claudish behavior telemetry --enable`. Deliberately NOT sharing `stats.enabled` — that consent was granted for usage statistics, and reusing it for behavioural records would be consent laundering. Local journalling is unaffected and always on.
+
+- **Session aggregates, not decision records.** One payload per session, counters only, so the server never holds a raw per-decision row. Emitted by `telemetry/aggregate.ts` alongside the local journal write at the same call site, so the two can never disagree.
+- **Safety is structural, not promised.** `toUploadable()` is an allow-list projection — a field a future contributor adds to the journal cannot leak, it has to be added explicitly. `pathRelation` is the pattern: `same_dir_wrong_name` is the exact discriminator the plan-mode rule keys off and carries no path. Categorical instead of literal, everywhere.
+- **`session_id` is a salted SHA-256** (the server rejects a raw CC UUID). The salt is **per-process and never persisted** — strictly stronger than a stored one: no key on disk to steal, and no way for anyone including us to reverse a delivered id. The model id is folded in, so a session routing to several models yields one aggregate per model rather than colliding on an id the server would treat as a duplicate.
+- **`context_bucket` is a CLOSED set** (`0-50k` … `200k+`) validated server-side. Adding a value — e.g. splitting `200k+` for 1M-context models — is a spec change, not a client change.
+- **Delivery is spool-then-upload, and it has to be.** A session ends when claudish exits, and `process.on("exit")` is SYNCHRONOUS — a `fetch` started there never completes, and blocking shutdown on a round-trip is not an option when the user is waiting on their prompt. So exit does the one thing it reliably can (`appendFileSync` to `~/.claudish/behavior-outbox.jsonl`) and a LATER run drains it in the background. Same trade `stats-buffer.ts` makes, and a hard kill loses nothing.
+- **The drain timeout is 15s, not the 3s `/v1/report` uses.** That endpoint is fire-and-forget on the request path where slowness costs the user; this one blocks nothing. Measured against the deployed service: warm ≈600ms, but a **cold start exceeds 3s** — at 3s the first drain after any idle period fails every time and reports only ever land on a second run. Found by running the real client against the real endpoint; the payload was never the problem.
+- 429 is **not** honoured by waiting. A background drain must not sit on a 60s timer, and deferring to the next run is the same outcome, later.
+
 ## Debug Logging
 
 Debug logging is behind the `--debug` flag and outputs to `logs/` directory. It's disabled by default.
