@@ -4,24 +4,22 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.34.0] - 2026-08-04
 
-Mostly bug fixes that were invisible until the compiler could see them.
-
 ### Bug Fixes
 
-- **`bun run typecheck` never checked the macOS bridge.** The root script had `bun --cwd packages/macos-bridge run typecheck` — `--cwd` before `run`, which Bun rejects by printing its usage text and exiting **0**, so the `&&` chain passed. Fixed the arg order; added `tsconfig.typecheck.json` (extends the build config, drops `rootDir`/`references`) since `rootDir` is meaningless under `--noEmit` and the `../cli` project reference was vestigial; raised the bridge `lib` to ES2023. 27 errors surfaced and were fixed([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
-- **Local models via the macOS bridge never worked.** `routing-middleware.ts` constructed `new LocalModelAdapter(provider, modelName)` against `constructor(modelId, providerName)` — arguments swapped, so the object reached `matchesModelFamily`'s `.toLowerCase()` and threw a TypeError at construction. Now matches `proxy-server.ts:222`([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
-- **Every intercepted completion reported failure.** `connect-handler.ts`'s `streamTransformedResponse` read `sourceModel` and `startTime` declared in a different method — a ReferenceError thrown after streaming, swallowed by the catch, which then emitted an SSE `error` to Claude Desktop. No `LogEntry` was ever recorded. They are now parameters([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
-- **The CycleTLS retry path returned an empty body.** `cycletls-manager.ts:178` read `retryResponse.body`, which does not exist on `CycleTLSResponse`, so a request that failed once then succeeded returned `""` with the upstream `Content-Length` — malformed([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
-- **Repeated HTTP headers were comma-joined.** `buildHTTPResponse` interpolated a `string[]` value into a single header line, and the sibling serializer in `forwardViaCycleTLS` kept only `v[0]` and dropped the rest. Both now emit one line per value. `Set-Cookie` was the visible casualty — HTTP requires one line per cookie, and cookie `Expires` values contain commas of their own, so a comma-joined line cannot be re-parsed([`6d26898`](https://github.com/MadAppGang/claudish/commit/6d26898))
+- v7.34.0 — bridge bugs that were invisible until the compiler could see them([`323c5f5`](https://github.com/MadAppGang/claudish/commit/323c5f511c6a4bf35d9346b0c1856f53689c9f92))
+- emit one line per value for repeated HTTP headers *(bridge)* ([`6d26898`](https://github.com/MadAppGang/claudish/commit/6d268987b8db19986849aa33966a2122a5fbf387))
+- make `bun run typecheck` a real gate — the macOS bridge was never checked([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966b59d5ae323ec8635fe7c2588d897388d0))
+- stop 1Password failures from being invisible under MCP, guard ${OP_ACCOUNT}([`d09d6c5`](https://github.com/MadAppGang/claudish/commit/d09d6c59afbc90fc77babb2e9e43e4e6777328c5))
+- resolve the 1Password account from `op` when there is no TTY([`1fe6d6a`](https://github.com/MadAppGang/claudish/commit/1fe6d6a57efa7486384ec82a0cf7c3868d6d0f52))
+- import the real orchestrator types instead of shadowing them *(test)* ([`9479032`](https://github.com/MadAppGang/claudish/commit/947903281cbf63628f92a719c88df4f3a1dd0e96))
 
-## [7.33.0] - 2026-08-04
+### Documentation
 
-### Features
+- update CHANGELOG.md for v7.32.0([`76db990`](https://github.com/MadAppGang/claudish/commit/76db990c48f584ba24432577776b3e45127519ee))
 
-- **`claudish login antigravity`** — sign in to Antigravity without leaving claudish. It delegates entirely to the Antigravity CLI (`agy`): installs `agy` via the official installer if missing (with confirmation), then triggers agy's own browser sign-in, which writes the token to the shared keychain that `ag@` reads. claudish ships **no** Antigravity client secret — agy owns the whole credential lifecycle (the secret is baked per agy release and rotates on auto-update, so embedding it is impossible).
-  - **Refresh** delegates to agy too: an expired `ag@` token is refreshed by running `agy models` (lightweight, no quota), which refreshes the shared token with agy's own always-current secret. Rotation-proof, no secret handling in claudish.
-  - **`claudish logout antigravity`** fully clears the session — the shared keychain token (agy's live session) and agy's on-disk token artifact.
-  - Login success prints a real, live-discovered model to try (e.g. `ag@gemini-3.6-flash-high`, from the backend's own default), not a placeholder.
+### New Features
+
+- v7.33.0 — claudish login antigravity (delegates to agy)([`d549575`](https://github.com/MadAppGang/claudish/commit/d549575a8078bfbdb0bf7be28d1c1a92d351d361))
 
 ## [7.32.0] - 2026-08-04
 
