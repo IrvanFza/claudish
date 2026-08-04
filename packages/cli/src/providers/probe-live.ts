@@ -203,6 +203,23 @@ export async function probeLink(
  * a parser error that mentions OAuth usually means the user needs to
  * re-authenticate — surface the exact command instead of leaving them to
  * guess.
+ *
+ * NOT on a 403. `classifyHttpError` buckets 401 and 403 into the same
+ * "auth-failed" state, but they answer different questions: 401 is "I don't
+ * know who you are" (a credential problem, which logging in fixes) while 403 is
+ * "I know who you are and you are not allowed this" (an entitlement problem,
+ * which logging in cannot touch). Prescribing a re-login for the second is an
+ * actionably WRONG instruction, and the user burns time on the credential
+ * they already hold.
+ *
+ * Both OAuth providers here follow Google's own status mapping, so the code is
+ * a reliable discriminator: an expired/absent ADC token is UNAUTHENTICATED/401,
+ * while a missing IAM role, a disabled API, or a region gate is
+ * PERMISSION_DENIED/403 — `gcloud auth application-default login` does nothing
+ * for any of the latter. We key off the status rather than sniffing the body:
+ * prose heuristics are the same class of guess that produced the bug this
+ * guards against, and `describeProbeState` now renders the provider's own
+ * message anyway, so suppressing the hint leaves the real explanation visible.
  */
 function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boolean): ProbeResult {
   if (!isOAuth) return result;
@@ -216,6 +233,9 @@ function annotateOAuthHint(result: ProbeResult, provider: string, isOAuth: boole
         : undefined;
 
   if (!loginCommand) return result;
+
+  // Entitlement failure — re-authenticating cannot fix it, so no hint.
+  if (result.httpStatus === 403) return result;
 
   const looksLikeAuthFailure =
     result.state === "auth-failed" ||
@@ -610,33 +630,50 @@ function isContentEvent(parsed: any, eventType: string): boolean {
   return false;
 }
 
+/**
+ * Append the upstream's own explanation to a status line when we have one.
+ *
+ * Every failure state carries the provider's `errorMessage`, but only "error"
+ * used to render it — the status-bearing states printed the code and threw the
+ * message away. That silently hid the one sentence that says what to DO: an
+ * OpenCode Zen Go probe against a region-locked model answered 403 with
+ * "only available hosted in China and requires explicit opt in: <url>", and the
+ * row read a bare "auth failed · 403" on a key that was working fine. A 4xx is
+ * a bucket, not a diagnosis; the body is the diagnosis.
+ */
+function withDetail(base: string, message?: string): string {
+  return message ? `${base} — ${message}` : base;
+}
+
 export function describeProbeState(result: ProbeResult): string {
+  const status = result.httpStatus ?? "";
+  const latency = result.latencyMs ? ` · ${result.latencyMs}ms` : "";
   switch (result.state) {
     case "live":
       return `live · ${result.latencyMs}ms`;
     case "key-missing":
       return result.errorMessage ? `missing (${result.errorMessage})` : "missing";
     case "auth-failed":
-      return `auth failed · ${result.httpStatus ?? ""}${result.latencyMs ? ` · ${result.latencyMs}ms` : ""}`.trim();
+      return withDetail(`auth failed · ${status}${latency}`.trim(), result.errorMessage);
     case "model-not-found":
-      return `model not found · ${result.httpStatus ?? ""}${result.latencyMs ? ` · ${result.latencyMs}ms` : ""}`.trim();
+      return withDetail(`model not found · ${status}${latency}`.trim(), result.errorMessage);
     case "rate-limited":
-      return `rate limited · ${result.latencyMs}ms`;
+      return withDetail(`rate limited · ${result.latencyMs}ms`, result.errorMessage);
     case "out-of-credit":
-      return `out of credit · ${result.httpStatus ?? ""}${result.latencyMs ? ` · ${result.latencyMs}ms` : ""}`.trim();
+      return withDetail(`out of credit · ${status}${latency}`.trim(), result.errorMessage);
     case "server-error":
-      return `server error · ${result.httpStatus ?? ""} · ${result.latencyMs}ms`;
+      return withDetail(`server error · ${status} · ${result.latencyMs}ms`, result.errorMessage);
     case "timeout":
-      return `timeout · ${result.latencyMs}ms`;
+      return withDetail(`timeout · ${result.latencyMs}ms`, result.errorMessage);
     case "network-error":
-      return `network error · ${result.latencyMs}ms`;
+      return withDetail(`network error · ${result.latencyMs}ms`, result.errorMessage);
     case "error": {
       // Append the specific cause when present. Without this, a contentless
       // stream (e.g. a reasoning model that spent its whole budget before any
       // visible text — HTTP 200, so no status code) rendered as a bare
       // "error · Nms" with the explanatory errorMessage silently dropped.
-      const base = `error${result.httpStatus ? ` · ${result.httpStatus}` : ""}${result.latencyMs ? ` · ${result.latencyMs}ms` : ""}`;
-      return result.errorMessage ? `${base} — ${result.errorMessage}` : base;
+      const base = `error${result.httpStatus ? ` · ${result.httpStatus}` : ""}${latency}`;
+      return withDetail(base, result.errorMessage);
     }
   }
 }

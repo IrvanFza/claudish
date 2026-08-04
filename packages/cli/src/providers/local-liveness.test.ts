@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { localBaseUrl, pingLocalProvider } from "./local-liveness.js";
+import { isHtmlResponse, localBaseUrl, pingLocalProvider } from "./local-liveness.js";
+
+const viteHtmlBody = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/assets/favicon-C5W4yrKp.ico" />
+  </head>
+</html>`;
 
 describe("localBaseUrl", () => {
   const ENVS = ["OLLAMA_BASE_URL", "OLLAMA_HOST", "LMSTUDIO_BASE_URL"];
@@ -40,9 +48,68 @@ describe("localBaseUrl", () => {
 });
 
 describe("pingLocalProvider", () => {
-  test("'unknown' for a provider that isn't a known local one", async () => {
-    expect(await pingLocalProvider("openrouter")).toBe("unknown");
-    expect(await pingLocalProvider("does-not-exist")).toBe("unknown");
+  let originalMlxBaseUrl: string | undefined;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    originalMlxBaseUrl = process.env.MLX_BASE_URL;
+  });
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    if (originalMlxBaseUrl === undefined) delete process.env.MLX_BASE_URL;
+    else process.env.MLX_BASE_URL = originalMlxBaseUrl;
+  });
+
+  function serveMlx(fetch: (req: Request) => Response): void {
+    server = Bun.serve({ port: 0, fetch });
+    process.env.MLX_BASE_URL = `http://localhost:${server.port}`;
+  }
+
+  test("'down' for a 200 HTML page served by an unrelated web app", async () => {
+    serveMlx((req) => {
+      if (new URL(req.url).pathname !== "/v1/models") {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(viteHtmlBody, {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    });
+
+    expect(await pingLocalProvider("mlx")).toBe("down");
+  });
+
+  test("'running' for a JSON model-list response", async () => {
+    serveMlx(
+      () =>
+        new Response('{"data":[{"id":"some-model"}]}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+    );
+
+    expect(await pingLocalProvider("mlx")).toBe("running");
+  });
+
+  for (const status of [401, 404]) {
+    test(`'running' for an HTTP ${status} response`, async () => {
+      serveMlx(() => new Response(null, { status }));
+      expect(await pingLocalProvider("mlx")).toBe("running");
+    });
+  }
+
+  test("'down' when the configured MLX port refuses the connection", async () => {
+    const stoppedServer = Bun.serve({
+      port: 0,
+      fetch: () => new Response(null, { status: 204 }),
+    });
+    const stoppedPort = stoppedServer.port;
+    stoppedServer.stop(true);
+    process.env.MLX_BASE_URL = `http://localhost:${stoppedPort}`;
+
+    expect(await pingLocalProvider("mlx", 300)).toBe("down");
   });
 
   test("'down' for a local pointed at an unreachable host (short timeout)", async () => {
@@ -56,5 +123,30 @@ describe("pingLocalProvider", () => {
       if (saved === undefined) delete process.env.OLLAMA_BASE_URL;
       else process.env.OLLAMA_BASE_URL = saved;
     }
+  });
+
+  test("'unknown' for a provider that isn't a known local one", async () => {
+    expect(await pingLocalProvider("openrouter")).toBe("unknown");
+    expect(await pingLocalProvider("not-a-real-provider")).toBe("unknown");
+  });
+});
+
+describe("isHtmlResponse", () => {
+  for (const contentType of ["text/html", "text/html; charset=utf-8", "application/xhtml+xml"]) {
+    test(`returns true for ${contentType}`, () => {
+      expect(isHtmlResponse(new Response(null, { headers: { "Content-Type": contentType } }))).toBe(
+        true
+      );
+    });
+  }
+
+  test("returns false for application/json", () => {
+    expect(
+      isHtmlResponse(new Response(null, { headers: { "Content-Type": "application/json" } }))
+    ).toBe(false);
+  });
+
+  test("returns false when Content-Type is missing", () => {
+    expect(isHtmlResponse(new Response(null))).toBe(false);
   });
 });

@@ -6,7 +6,7 @@
  * Run: bun test src/providers/transport/probe-discovery.test.ts
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import {
   _clearProbeDiscoveryCache,
@@ -234,9 +234,134 @@ describe("discoverViaOpenAIModels", () => {
 
 describe("discoverViaOllama", () => {
   const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    _clearProbeDiscoveryCache();
+  });
   afterEach(() => {
     globalThis.fetch = realFetch;
     _clearProbeDiscoveryCache();
+  });
+
+  const embedderOnlyPsBody =
+    '{"models":[{"name":"nomic-embed-text:latest","model":"nomic-embed-text:latest","size":370031984,"digest":"0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f","details":{"parent_model":"","format":"gguf","family":"nomic-bert","families":["nomic-bert"],"parameter_size":"137M","quantization_level":"F16"},"expires_at":"2026-08-03T15:49:20.497918+10:00","size_vram":370031984,"context_length":2048}]}';
+  const tagsBody = `{"models":[
+ {"name":"nomic-embed-text:latest","size":370031984},
+ {"name":"gemma4:31b-cloud","size":312},
+ {"name":"qwen3.5:0.8b-mlx","size":1244127078},
+ {"name":"vl-bu-30b-a3b-preview:Q4_K_M","size":19715685721}
+]}`;
+  const loadedChatPsBody =
+    '{"models":[{"name":"vl-bu-30b-a3b-preview:Q4_K_M","size":19715685721}]}';
+  const emptyModelsBody = '{"models":[]}';
+  const embedderOnlyTagsBody = '{"models":[{"name":"nomic-embed-text:latest","size":370031984}]}';
+
+  function serveOllama(psBody: string, allTagsBody: string) {
+    return Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/api/ps") {
+          return new Response(psBody, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (path === "/api/tags") {
+          return new Response(allTagsBody, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+  }
+
+  test("falls through from a loaded embedder to chat models on disk", async () => {
+    const server = serveOllama(embedderOnlyPsBody, tagsBody);
+    try {
+      const outcome = await discoverViaOllama(`http://localhost:${server.port}`, {
+        key: "embedder-loaded-tags-chat",
+      });
+      expect(outcome.model).not.toBeNull();
+      expect(outcome.reason ?? "").not.toMatch(/only embedding\/non-chat/);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("prefers a loaded chat model over smaller models on disk", async () => {
+    const server = serveOllama(loadedChatPsBody, tagsBody);
+    try {
+      const outcome = await discoverViaOllama(`http://localhost:${server.port}`, {
+        key: "loaded-before-smaller-tags",
+      });
+      expect(outcome.model).toBe("vl-bu-30b-a3b-preview:Q4_K_M");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("falls through the cached ranked list when the loaded model is excluded", async () => {
+    const server = serveOllama(loadedChatPsBody, tagsBody);
+    try {
+      const baseUrl = `http://localhost:${server.port}`;
+      const cacheKey = "exclude-loaded-from-cached-list";
+      expect((await discoverViaOllama(baseUrl, { key: cacheKey })).model).toBe(
+        "vl-bu-30b-a3b-preview:Q4_K_M"
+      );
+
+      // Reuse the same key: exclude must walk the ranked list cached above.
+      const outcome = await discoverViaOllama(baseUrl, {
+        key: cacheKey,
+        exclude: new Set(["vl-bu-30b-a3b-preview:Q4_K_M"]),
+      });
+      expect(outcome.model).not.toBeNull();
+      expect(["gemma4:31b-cloud", "qwen3.5:0.8b-mlx", "vl-bu-30b-a3b-preview:Q4_K_M"]).toContain(
+        outcome.model!
+      );
+      expect(outcome.model).not.toBe("vl-bu-30b-a3b-preview:Q4_K_M");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("prefers the smallest chat model within the unloaded tier", async () => {
+    const server = serveOllama(emptyModelsBody, tagsBody);
+    try {
+      const outcome = await discoverViaOllama(`http://localhost:${server.port}`, {
+        key: "smallest-unloaded-chat",
+      });
+      expect(outcome.model).toBe("gemma4:31b-cloud");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("reports a clear error when both Ollama endpoints are empty", async () => {
+    const server = serveOllama(emptyModelsBody, emptyModelsBody);
+    try {
+      const outcome = await discoverViaOllama(`http://localhost:${server.port}`, {
+        key: "genuinely-empty",
+      });
+      expect(outcome.model).toBeNull();
+      expect(outcome.reason).toContain("no models on");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("keeps the non-chat reason when every Ollama model is an embedder", async () => {
+    const server = serveOllama(embedderOnlyPsBody, embedderOnlyTagsBody);
+    try {
+      const outcome = await discoverViaOllama(`http://localhost:${server.port}`, {
+        key: "embedder-only-everywhere",
+      });
+      expect(outcome.model).toBeNull();
+      expect(outcome.reason).toMatch(/only embedding\/non-chat/);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("prefers smaller loaded model from /api/ps", async () => {

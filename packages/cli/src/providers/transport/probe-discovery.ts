@@ -336,8 +336,26 @@ interface OllamaModel {
 }
 
 /**
- * Discover via Ollama-native API: prefer currently-loaded models from
- * /api/ps, fall back to /api/tags for all available.
+ * Order one tier of Ollama models cheapest-first.
+ *
+ * Both /api/ps and /api/tags report a byte size (VRAM and disk respectively),
+ * and in both cases smaller means a faster probe. Models the endpoint didn't
+ * size are appended via the shared name heuristic rather than dropped — an
+ * unsized model is still a usable probe candidate, and discarding it shrinks
+ * the fall-through list the probe loop depends on.
+ */
+function orderByCost(models: OllamaModel[]): string[] {
+  const sized = models.filter((m) => typeof m.size === "number");
+  const unsized = models.filter((m) => typeof m.size !== "number");
+  const bySize = [...sized]
+    .sort((a, b) => (a.size ?? Number.POSITIVE_INFINITY) - (b.size ?? Number.POSITIVE_INFINITY))
+    .map((m) => m.name);
+  return [...bySize, ...rankProbeCandidates(unsized.map((m) => m.name))];
+}
+
+/**
+ * Discover via Ollama-native API: rank currently-loaded models from /api/ps
+ * ahead of everything on disk from /api/tags.
  *
  * @param baseUrl   Ollama base URL (no trailing slash, no path)
  * @param cacheKey  Unique per endpoint
@@ -349,53 +367,56 @@ export async function discoverViaOllama(
   const cached = cacheGet(cacheKey.key, cacheKey.exclude);
   if (cached !== undefined) return cached;
 
-  // Try /api/ps first (loaded models). If it errors at the connection level,
-  // capture the reason so we can surface a useful error if /api/tags also
-  // fails — otherwise both falling back to empty would look like "no models"
-  // when the real problem is "ollama isn't running."
-  let connectionError: string | undefined;
-  let loadedRaw: OllamaModel[] = [];
-  try {
-    loadedRaw = await fetchOllamaModels(`${baseUrl}/api/ps`);
-  } catch (e: unknown) {
-    connectionError = classifyFetchError(e, `${baseUrl}/api/ps`);
-  }
+  // Fetch BOTH lists. /api/ps is what's loaded in VRAM (fastest to probe),
+  // /api/tags is everything on disk. Connection-level errors are captured so
+  // we can surface a useful reason if both come back empty — otherwise
+  // "ollama isn't running" would render as "no models".
+  //
+  // The /api/tags fetch used to be gated on `loaded.length === 0` — the RAW
+  // count, taken BEFORE the chat-capability filter. A box whose only loaded
+  // model was an embedder (nomic-embed-text pinned by a background indexer, a
+  // common setup) therefore reported "only embedding/non-chat models" while
+  // dozens of chat models sat unlisted on disk. Both lists also feed the ranked
+  // candidate array that the probe loop falls through on, so one broken model
+  // no longer fails the whole row.
+  // Issued in PARALLEL — they're independent reads of the same daemon, so
+  // serializing them would bill their latencies additively for nothing.
+  const [psResult, tagsResult] = await Promise.allSettled([
+    fetchOllamaModels(`${baseUrl}/api/ps`),
+    fetchOllamaModels(`${baseUrl}/api/tags`),
+  ]);
 
-  let allRaw = loadedRaw;
-  if (allRaw.length === 0) {
-    try {
-      allRaw = await fetchOllamaModels(`${baseUrl}/api/tags`);
-    } catch (e: unknown) {
-      connectionError ??= classifyFetchError(e, `${baseUrl}/api/tags`);
-    }
-  }
+  const loadedRaw = psResult.status === "fulfilled" ? psResult.value : [];
+  const tagsRaw = tagsResult.status === "fulfilled" ? tagsResult.value : [];
+  // /api/ps's error wins when both fail: same daemon, same cause, and it's the
+  // first URL we'd have tried. Only consulted if we end up with no candidates.
+  const connectionError =
+    psResult.status === "rejected"
+      ? classifyFetchError(psResult.reason, `${baseUrl}/api/ps`)
+      : tagsResult.status === "rejected"
+        ? classifyFetchError(tagsResult.reason, `${baseUrl}/api/tags`)
+        : undefined;
 
   // Filter out embedding/image/TTS models — they're listed in /api/tags
   // alongside chat models but will 404 on /v1/chat/completions.
-  const candidates = allRaw.filter((m) => isChatCapable(m.name));
+  const loaded = loadedRaw.filter((m) => isChatCapable(m.name));
+  const loadedNames = new Set(loaded.map((m) => m.name));
+  const rest = tagsRaw.filter((m) => isChatCapable(m.name) && !loadedNames.has(m.name));
 
-  if (candidates.length === 0) {
+  if (loaded.length === 0 && rest.length === 0) {
     const reason =
       connectionError ??
-      (allRaw.length === 0
+      (loadedRaw.length === 0 && tagsRaw.length === 0
         ? `no models on ${baseUrl} (pull one: ollama pull llama3.2)`
         : `only embedding/non-chat models on ${baseUrl}`);
     cacheSetFailure(cacheKey.key, reason);
     return { model: null, reason };
   }
 
-  // Build the ranked list: smallest first by size if available, then by
-  // name heuristic. This becomes the cached candidate sequence — the probe
-  // loop can fall through by exclude'ing failed models.
-  const sized = candidates.filter((m) => typeof m.size === "number");
-  let ranked: string[];
-  if (sized.length > 0) {
-    ranked = [...sized]
-      .sort((a, b) => (a.size ?? Number.POSITIVE_INFINITY) - (b.size ?? Number.POSITIVE_INFINITY))
-      .map((m) => m.name);
-  } else {
-    ranked = rankProbeCandidates(candidates.map((m) => m.name));
-  }
+  // Loaded models first (already in VRAM → fastest probe), then the rest.
+  // This becomes the cached candidate sequence — the probe loop can fall
+  // through by exclude'ing failed models.
+  const ranked = [...orderByCost(loaded), ...orderByCost(rest)];
   if (ranked.length === 0) {
     const reason = "no chat-capable model on Ollama endpoint";
     cacheSetFailure(cacheKey.key, reason);

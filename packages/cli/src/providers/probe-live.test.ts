@@ -137,6 +137,125 @@ describe("classifyHttpError — remapped terminal errors (upstream_status)", () 
   });
 });
 
+describe("probeLink — OAuth login hints", () => {
+  const permissionDeniedBody =
+    '{"error":{"status":"PERMISSION_DENIED","message":"Permission \'aiplatform.endpoints.predict\' denied on resource"}}';
+  const unauthenticatedBody =
+    '{"error":{"status":"UNAUTHENTICATED","message":"Request had invalid authentication credentials"}}';
+
+  async function probeHttpError(
+    provider: string,
+    hasCredentials: boolean,
+    status: number,
+    body: string
+  ): Promise<ProbeResult> {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(body, {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    try {
+      return await probeLink(
+        `http://localhost:${server.port}`,
+        { provider, modelSpec: `${provider}@test-model`, hasCredentials },
+        1000
+      );
+    } finally {
+      server.stop(true);
+    }
+  }
+
+  test("gemini-codeassist suppresses the login hint on 403 without hiding the entitlement failure", async () => {
+    const result = await probeHttpError("gemini-codeassist", false, 403, permissionDeniedBody);
+    expect(result.actionHint).toBeUndefined();
+    expect(result.state).toBe("auth-failed");
+    expect(result.errorMessage).toContain("Permission 'aiplatform.endpoints.predict' denied");
+  });
+
+  test("gemini-codeassist keeps the login hint on 401", async () => {
+    const result = await probeHttpError("gemini-codeassist", false, 401, unauthenticatedBody);
+    expect(result.actionHint).toBe("run: claudish login gemini");
+    expect(result.state).toBe("auth-failed");
+  });
+
+  test("vertex suppresses the login hint on 403", async () => {
+    const result = await probeHttpError("vertex", false, 403, permissionDeniedBody);
+    expect(result.actionHint).toBeUndefined();
+  });
+
+  test("vertex keeps the login hint on 401", async () => {
+    const result = await probeHttpError("vertex", false, 401, unauthenticatedBody);
+    expect(result.actionHint).toBe("run: gcloud auth application-default login");
+  });
+
+  test("a non-OAuth provider does not get a login hint on 403", async () => {
+    const result = await probeHttpError("openrouter", true, 403, permissionDeniedBody);
+    expect(result.actionHint).toBeUndefined();
+  });
+});
+
+describe("describeProbeState — upstream error details", () => {
+  test("auth-failed includes the upstream region opt-in message", () => {
+    const line = describeProbeState({
+      state: "auth-failed",
+      httpStatus: 403,
+      latencyMs: 711,
+      errorMessage:
+        "The latest version of this model is only available hosted in China and requires explicit opt in: https://opencode.ai/workspace/wrk_01KK0EAEMKQZZN68V8YN1WAJ33/go",
+    });
+    expect(line).toContain("auth failed · 403");
+    expect(line).toContain("only available hosted in China");
+  });
+
+  test("auth-failed without an error message keeps the status-only line", () => {
+    expect(describeProbeState({ state: "auth-failed", httpStatus: 401, latencyMs: 120 })).toBe(
+      "auth failed · 401 · 120ms"
+    );
+  });
+
+  const detailCases: Array<{
+    result: ProbeResult;
+    statusOnly: string;
+  }> = [
+    {
+      result: { state: "model-not-found", httpStatus: 404, latencyMs: 130 },
+      statusOnly: "model not found · 404 · 130ms",
+    },
+    {
+      result: { state: "out-of-credit", httpStatus: 402, latencyMs: 140 },
+      statusOnly: "out of credit · 402 · 140ms",
+    },
+    {
+      result: { state: "server-error", httpStatus: 503, latencyMs: 150 },
+      statusOnly: "server error · 503 · 150ms",
+    },
+    {
+      result: { state: "network-error", latencyMs: 160 },
+      statusOnly: "network error · 160ms",
+    },
+  ];
+
+  for (const { result, statusOnly } of detailCases) {
+    test(`${result.state} appends a message and otherwise stays unchanged`, () => {
+      expect(describeProbeState(result)).toBe(statusOnly);
+      expect(describeProbeState({ ...result, errorMessage: "upstream detail" })).toBe(
+        `${statusOnly} — upstream detail`
+      );
+    });
+  }
+
+  test("live never includes an error detail suffix", () => {
+    expect(
+      describeProbeState({ state: "live", latencyMs: 90, errorMessage: "must be ignored" })
+    ).toBe("live · 90ms");
+  });
+});
+
 describe("probe budget", () => {
   test("describeProbeState surfaces errorMessage for a code-less error (contentless 200)", () => {
     // Regression: a reasoning model that spends its whole budget before any
