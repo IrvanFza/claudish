@@ -1194,6 +1194,15 @@ export class CONNECTHandler {
     for (const [key, value] of Object.entries(headers)) {
       // Skip transfer-encoding as we're sending full body
       if (key.toLowerCase() === "transfer-encoding") continue;
+      // A repeated header must be emitted as one line per value. Interpolating
+      // the array directly would comma-join it, which is unparseable for
+      // Set-Cookie (cookie Expires values contain commas of their own).
+      if (Array.isArray(value)) {
+        for (const single of value) {
+          response += `${key}: ${single}\r\n`;
+        }
+        continue;
+      }
       response += `${key}: ${value}\r\n`;
     }
 
@@ -1296,15 +1305,18 @@ export class CONNECTHandler {
       const statusText = this.getStatusText(response.status);
       const statusLine = `HTTP/1.1 ${response.status} ${statusText}\r\n`;
 
-      // Build headers - CycleTLS returns arrays, flatten them
+      // Build headers - CycleTLS returns arrays for repeated headers, so emit
+      // one line per value. Taking only v[0] silently dropped every cookie
+      // after the first; joining them onto one line is equally unparseable.
       // Skip Content-Encoding since CycleTLS already decompresses the body
       const headers = Object.entries(response.headers)
         .filter(([k]) => k.toLowerCase() !== "content-encoding")
-        .map(([k, v]) => {
-          // CycleTLS returns header values as arrays - take first value
-          const value = Array.isArray(v) ? v[0] : String(v);
-          const sanitized = value.replace(/[\r\n]/g, "");
-          return `${k}: ${sanitized}`;
+        .flatMap(([k, v]) => {
+          const values = Array.isArray(v) ? v : [v];
+          return values.map((single) => {
+            const sanitized = String(single).replace(/[\r\n]/g, "");
+            return `${k}: ${sanitized}`;
+          });
         })
         .join("\r\n");
 
