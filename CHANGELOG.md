@@ -4,18 +4,13 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.30.0] - 2026-08-04
 
-### Features
+### Documentation
 
-- **Antigravity provider (`ag@` / `antigravity@`)** — Gemini via your Antigravity subscription (free/Pro/Ultra). Google retired the "Gemini Code Assist for individuals" tier for gemini-cli's OAuth client (`UNSUPPORTED_CLIENT`), so the OAuth/subscription flow is repointed at Antigravity and cleanly separated from the direct API:
-  - `g@` / `google@` — direct Gemini API (`GEMINI_API_KEY`), unchanged.
-  - `ag@` / `antigravity@` — Antigravity backend, reusing the same OAuth token the `agy` CLI stores (shared macOS keychain), self-refreshed with client creds extracted at runtime from the local `agy` binary (never shipped in source).
-  - `go@` — deprecated alias → `ag@` (one-line notice).
-- Antigravity model ids resolve by **live per-account discovery** (`fetchAvailableModels`) — served ids + backend default variant — with no hardcoded model map. The config TUI now reflects the shared keychain token as a ready/authenticated Antigravity provider.
+- update CHANGELOG.md for v7.29.1([`6a12e54`](https://github.com/MadAppGang/claudish/commit/6a12e54e478f6f6e9a6fb206951203fc2db87831))
 
-### Bug Fixes
+### New Features
 
-- Gemini Code Assist errors now surface Google's verbatim tier verdict and return a terminal config error as `400` inline (was 11 retries over ~183s → 1 attempt / ~6s).
-- A Gemini config-terminal `400` in a bare-name fallback chain now advances to the next provider (e.g. OpenRouter) instead of aborting the chain.
+- v7.30.0 — Antigravity provider (ag@), split Gemini into two flows([`17abfcd`](https://github.com/MadAppGang/claudish/commit/17abfcd9b361e45789636c3f05b2d0bcba6be880))
 
 ## [7.29.1] - 2026-08-04
 
