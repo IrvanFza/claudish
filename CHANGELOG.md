@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.35.0] - 2026-08-04
+
+### Documentation
+
+- update CHANGELOG.md for v7.34.0([`b20a191`](https://github.com/MadAppGang/claudish/commit/b20a1919fc161f0893ded649237fbc7dca2852e2))
+
+### New Features
+
+- v7.35.0 — the behavior layer can report what it learns, without reporting you([`f6fdd31`](https://github.com/MadAppGang/claudish/commit/f6fdd31d45240798707cb5c27a35455138ea1bc0))
+
 ## [7.34.0] - 2026-08-04
 
 ### Bug Fixes
