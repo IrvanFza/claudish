@@ -25,6 +25,12 @@ export interface ModelEntry {
   contextWindow: number;
   /** Whether model supports vision/image input (may be undefined if Firebase didn't specify) */
   supportsVision?: boolean;
+  /**
+   * Curated release date (ISO `YYYY-MM-DD`), when Firebase has one. The
+   * authoritative freshness signal — pickers prefer it over any date a provider
+   * endpoint reports, which is a roster-added timestamp, not a release.
+   */
+  releaseDate?: string;
 }
 
 /**
@@ -52,6 +58,7 @@ export function lookupModel(modelId: string, cachePath?: string): ModelEntry | u
     modelId: entry.modelId,
     contextWindow: entry.contextWindow,
     supportsVision: entry.supportsVision,
+    releaseDate: entry.releaseDate,
   };
 }
 

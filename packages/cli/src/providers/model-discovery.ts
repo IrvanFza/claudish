@@ -35,6 +35,17 @@ export interface DiscoveredModel {
   displayName?: string;
   /** Real context window for THIS subscription, if reported. */
   contextWindow?: number;
+  /**
+   * ISO date (`YYYY-MM-DD`) derived from the endpoint's `created` timestamp,
+   * when it reports a plausible one.
+   *
+   * NOT an authoritative release date — it is whenever the provider added the
+   * model to this account's roster — but for a plan endpoint whose models the
+   * public catalog may not list at all, it is the only freshness signal there
+   * is, and it orders a roster correctly. The catalog's own `releaseDate` wins
+   * wherever it exists; this covers the rest.
+   */
+  releaseDate?: string;
 }
 
 /**
@@ -46,9 +57,10 @@ export interface ModelDiscoveryDescriptor {
   path: string;
   /**
    * Response shape.
-   * - `openai-models-list`: `{ data: [{ id, context_length?, display_name? }] }`
-   *   Also accepts `context_window` / `max_context_length` spellings, since
-   *   OpenAI-compatible endpoints disagree on the field name.
+   * - `openai-models-list`: `{ data: [{ id, context_length?, display_name?,
+   *   created? }] }`. Also accepts `context_window` / `max_context_length`
+   *   spellings, since OpenAI-compatible endpoints disagree on the field name.
+   *   `created` is unix seconds and feeds `DiscoveredModel.releaseDate`.
    */
   format: "openai-models-list";
 }
@@ -87,6 +99,32 @@ function readContextWindow(row: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
+/**
+ * Earliest/latest `created` values we will believe, as unix SECONDS:
+ * 2000-01-01 .. 2100-01-01. Anything outside is not a seconds-scale timestamp
+ * we can use — notably millisecond values (~1.7e12) land far past the ceiling
+ * and are rejected rather than silently read as the year 55000.
+ */
+const MIN_CREATED_SECONDS = 946_684_800;
+const MAX_CREATED_SECONDS = 4_102_444_800;
+
+/**
+ * Pull an ISO date out of a model row's `created` field (unix seconds).
+ *
+ * Deliberately strict-but-silent: absent, zero, non-numeric, or implausible
+ * values yield undefined rather than a bogus date. A wrong date would sort the
+ * picker wrongly and look authoritative doing it, whereas a missing one just
+ * falls back to the catalog / id ordering.
+ */
+function readCreatedDate(row: Record<string, unknown>): string | undefined {
+  const raw = row.created;
+  const seconds = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(seconds)) return undefined;
+  if (seconds < MIN_CREATED_SECONDS || seconds > MAX_CREATED_SECONDS) return undefined;
+  const iso = new Date(seconds * 1000).toISOString();
+  return iso.slice(0, 10);
+}
+
 /** Parse an OpenAI-style `{ data: [...] }` model list. */
 function parseOpenAIModelsList(body: unknown): DiscoveredModel[] {
   const data = (body as { data?: unknown })?.data;
@@ -100,7 +138,12 @@ function parseOpenAIModelsList(body: unknown): DiscoveredModel[] {
     if (typeof id !== "string" || id.trim().length === 0) continue;
 
     const displayName = typeof row.display_name === "string" ? row.display_name : undefined;
-    models.push({ id, displayName, contextWindow: readContextWindow(row) });
+    models.push({
+      id,
+      displayName,
+      contextWindow: readContextWindow(row),
+      releaseDate: readCreatedDate(row),
+    });
   }
   return models;
 }
@@ -198,6 +241,11 @@ export async function discoverContextWindow(
  * rot into exactly the `fixedModel: "kimi-for-coding"` bug this replaces —
  * stale the moment the provider ships its next model. A capability-ordered
  * list upgrades itself.
+ *
+ * This is the PROBE-candidate ordering (`discoverProbeModel`), where widest
+ * window first is the point. The model PICKER does not use it for presentation
+ * — a plan whose whole roster is 1M collapses to alphabetical — and sorts its
+ * rows by release date instead; see `buildDiscoveredModelRows`.
  */
 export function rankDiscoveredModels(models: DiscoveredModel[]): DiscoveredModel[] {
   return [...models].sort((a, b) => {

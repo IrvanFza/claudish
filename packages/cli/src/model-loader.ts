@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { FIREBASE_CACHE_TTL_HOURS } from "./providers/cache-ttl.js";
+import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import type { OpenRouterModel } from "./types.js";
 
 // ─── Firebase Model Catalog Types ────────────────────────────────────────────
@@ -25,6 +26,12 @@ export interface RecommendedModelEntry {
     average: string;
   };
   context: string;
+  /**
+   * ISO release date, when the backend supplies one. Optional — the current
+   * `?catalog=recommended` payload omits it, in which case the freshness
+   * tiebreak in `groupRecommendedModels` degrades to version-parts-in-id.
+   */
+  releaseDate?: string;
   maxOutputTokens?: number | null;
   modality?: string;
   supportsTools?: boolean;
@@ -250,16 +257,34 @@ export interface RecommendedModelGroup {
  *   - "fast"                                  → "fast"
  * Subscription-only groups (no non-subscription primary) are defensively
  * classified as "fast" — shouldn't happen in practice but keeps them visible.
+ *
+ * **Ordering.** The backend's curated ranking stays PRIMARY; freshness is only
+ * the tiebreak (the repo-wide model-ordering rule). The curated ranking is two
+ * keys, not one: `priority` restarts at 1 for every `category`, so sorting on
+ * the bare number would interleave tiers (flagship #1, lightweight #1,
+ * flagship #2, …). The sort key is therefore:
+ *
+ *   1. order of first appearance of the entry's `category` in the doc
+ *   2. `priority` ascending within that category
+ *   3. `compareByReleaseDateDesc` — newest first, only on a genuine tie
+ *
+ * Keys 1+2 reproduce the doc's own order exactly for a well-formed doc, so on
+ * real data this is a no-op and key 3 never fires. It engages only when the
+ * backend leaves two same-category entries at the same priority. As a bonus,
+ * the explicit sort makes the output independent of any in-place reordering of
+ * the shared cached doc (`getAvailableModels` sorts `data.models` in place).
  */
 export function groupRecommendedModels(entries: RecommendedModelEntry[]): {
   flagship: RecommendedModelGroup[];
   fast: RecommendedModelGroup[];
 } {
   const byId = new Map<string, RecommendedModelEntry[]>();
+  const categoryOrder = new Map<string, number>();
   for (const entry of entries) {
     const list = byId.get(entry.id);
     if (list) list.push(entry);
     else byId.set(entry.id, [entry]);
+    if (!categoryOrder.has(entry.category)) categoryOrder.set(entry.category, categoryOrder.size);
   }
 
   const flagship: RecommendedModelGroup[] = [];
@@ -278,6 +303,20 @@ export function groupRecommendedModels(entries: RecommendedModelEntry[]): {
     if (bucket === "flagship") flagship.push(group);
     else fast.push(group);
   }
+
+  const byCuratedPriorityThenFreshness = (
+    a: RecommendedModelGroup,
+    b: RecommendedModelGroup
+  ): number => {
+    const aCat = categoryOrder.get(a.primary.category) ?? Number.MAX_SAFE_INTEGER;
+    const bCat = categoryOrder.get(b.primary.category) ?? Number.MAX_SAFE_INTEGER;
+    if (aCat !== bCat) return aCat - bCat;
+    if (a.primary.priority !== b.primary.priority) return a.primary.priority - b.primary.priority;
+    return compareByReleaseDateDesc(a.primary, b.primary);
+  };
+
+  flagship.sort(byCuratedPriorityThenFreshness);
+  fast.sort(byCuratedPriorityThenFreshness);
 
   return { flagship, fast };
 }

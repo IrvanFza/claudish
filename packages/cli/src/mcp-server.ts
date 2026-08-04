@@ -34,6 +34,7 @@ import {
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
 import { sanitizeForReport } from "./redact.js";
+import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
 import { createProxyServer } from "./proxy-server.js";
 import {
@@ -274,6 +275,31 @@ function fuzzyScore(text: string, query: string): number {
 }
 
 /**
+ * Two `fuzzyScore` results this close count as EQUAL relevance, and the
+ * freshness tiebreak decides. Chosen well below the smallest meaningful gap
+ * fuzzyScore can produce (its subsequence branch is `matched / text.length`,
+ * so distinct scores differ by at least ~1e-3 for realistic id lengths) and
+ * well above float noise.
+ */
+const SCORE_TIE_EPSILON = 1e-6;
+
+/**
+ * Project a raw model record onto the shape `compareByReleaseDateDesc` reads.
+ * `loadAllModels` returns the OpenRouter `/api/v1/models` shape, which dates a
+ * model with a unix-seconds `created` rather than an ISO `releaseDate`; the
+ * Firebase-derived cache rows use `releaseDate`. Accept either.
+ */
+function orderingKey(model: any): { releaseDate?: string; id?: string } {
+  const releaseDate =
+    typeof model?.releaseDate === "string"
+      ? model.releaseDate
+      : typeof model?.created === "number" && Number.isFinite(model.created)
+        ? new Date(model.created * 1000).toISOString()
+        : undefined;
+  return { releaseDate, id: typeof model?.id === "string" ? model.id : "" };
+}
+
+/**
  * The action a caller should take for each failure class. Deterministic strings
  * so the agent branches on a known value instead of parsing prose.
  */
@@ -350,15 +376,17 @@ export function formatTeamResult(
       if (m.error?.errorLogPath) {
         lines.push(`      evidence: ${m.error.errorLogPath}`);
       } else {
-        lines.push(
-          "      evidence: NONE CAPTURED — orchestrator bug, report via report_error"
-        );
+        lines.push("      evidence: NONE CAPTURED — orchestrator bug, report via report_error");
       }
     }
     lines.push("actions:");
     lines.push(`  full stderr/stdout for one failure  → Read the evidence path above`);
-    lines.push(`  machine-readable status             → team(mode="status", path="${sessionPath}")`);
-    lines.push(`  report a provider bug               → report_error(session_path="${sessionPath}")`);
+    lines.push(
+      `  machine-readable status             → team(mode="status", path="${sessionPath}")`
+    );
+    lines.push(
+      `  report a provider bug               → report_error(session_path="${sessionPath}")`
+    );
   }
 
   lines.push("<<<END_TEAM_RESULT>>>");
@@ -593,7 +621,17 @@ function defineTools(
           return { model, score: Math.max(nameScore, idScore, descScore) };
         })
         .filter((item: any) => item.score > 0.2)
-        .sort((a: any, b: any) => b.score - a.score)
+        // RELEVANCE stays primary — a search must never rank a stale exact
+        // match below a fresh fuzzy one. Freshness is the TIEBREAK, which is
+        // what decides the many exact ties fuzzyScore produces (1 for an exact
+        // match, 0.8 for any substring hit). Scores are floats, so compare them
+        // with an epsilon rather than `===`; otherwise a 1e-17 difference
+        // between two "equal" subsequence scores would silently keep the old
+        // arbitrary insertion order.
+        .sort((a: any, b: any) => {
+          if (Math.abs(a.score - b.score) > SCORE_TIE_EPSILON) return b.score - a.score;
+          return compareByReleaseDateDesc(orderingKey(a.model), orderingKey(b.model));
+        })
         .slice(0, maxResults);
       if (results.length === 0) {
         return {
@@ -647,6 +685,9 @@ function defineTools(
       const systemPrompt = args.system_prompt as string | undefined;
       const maxTokens = args.max_tokens as number | undefined;
 
+      // Ordering: ARGUMENT order, deliberately. The caller chose this sequence
+      // and reads the comparison against it, so the repo-wide newest-first
+      // display rule does NOT apply here.
       const results: Array<{
         model: string;
         response: string;

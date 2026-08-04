@@ -30,6 +30,7 @@ import {
   type CatalogModel,
   createCatalogClient,
 } from "./providers/model-catalog.js";
+import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import {
   type DiscoveredModel,
   discoverProviderModels,
@@ -177,20 +178,25 @@ function formatFirebaseProviderLabel(slug: string): string {
 async function loadRecommendedModels(forceRefresh = false): Promise<ModelInfo[]> {
   try {
     const doc = await getRecommendedModels({ forceRefresh });
-    return doc.models.map((model: RecommendedModelEntry) => ({
-      id: model.id,
-      name: model.name,
-      description: model.description,
-      provider: formatFirebaseProviderLabel(model.provider),
-      providerSlug: model.provider.toLowerCase(),
-      pricing: model.pricing,
-      context: model.context,
-      contextLength: parseContextString(model.context),
-      supportsTools: model.supportsTools,
-      supportsReasoning: model.supportsReasoning,
-      supportsVision: model.supportsVision,
-      source: formatFirebaseProviderLabel(model.provider),
-    }));
+    // Newest-first, like every other picker list. This list is DISPLAYED as the
+    // picker's catalog when the top-100 fetch fails (see `selectModel`), so it
+    // must not fall back to raw doc order there.
+    return sortModelsNewestFirst(
+      doc.models.map((model: RecommendedModelEntry) => ({
+        id: model.id,
+        name: model.name,
+        description: model.description,
+        provider: formatFirebaseProviderLabel(model.provider),
+        providerSlug: model.provider.toLowerCase(),
+        pricing: model.pricing,
+        context: model.context,
+        contextLength: parseContextString(model.context),
+        supportsTools: model.supportsTools,
+        supportsReasoning: model.supportsReasoning,
+        supportsVision: model.supportsVision,
+        source: formatFirebaseProviderLabel(model.provider),
+      }))
+    );
   } catch {
     return [];
   }
@@ -275,6 +281,25 @@ function resolveDiscoveredContextLength(m: DiscoveredModel): number {
     // wire id should never be one, but an unknown window is not worth throwing.
     return 0;
   }
+}
+
+/**
+ * Release date for a live-discovered model row, catalog first.
+ *
+ * The Firebase slim catalog carries curated RELEASE dates, so it wins wherever
+ * it has an entry. The endpoint's date is a roster-added timestamp, which is
+ * the only signal available for the models the slim catalog never listed —
+ * `qwen3.8-max-preview` is exactly that, and without the fallback one of the
+ * newest models on the plan would sort to the very bottom as undated.
+ */
+function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
+  try {
+    const catalogDate = lookupModel(m.id)?.releaseDate;
+    if (catalogDate) return catalogDate;
+  } catch {
+    // lookupModel refuses provider-routed ids; an unknown date is not fatal.
+  }
+  return m.releaseDate;
 }
 
 /**
@@ -397,87 +422,14 @@ function dedupeModels(models: ModelInfo[]): ModelInfo[] {
   return deduped;
 }
 
-function extractVersionParts(modelId: string): number[] {
-  const tokens = modelId.toLowerCase().split(/[\/_-]+/);
-  let started = false;
-  const parts: number[] = [];
-
-  for (const token of tokens) {
-    const match = token.match(/\d+(?:\.\d+)*/);
-    if (!match) {
-      if (started) break;
-      continue;
-    }
-
-    if (!started) {
-      started = true;
-      for (const part of match[0].split(".")) {
-        parts.push(Number.parseInt(part, 10));
-      }
-
-      if (!/^\d+(?:\.\d+)*$/.test(token)) {
-        break;
-      }
-
-      continue;
-    }
-
-    if (!/^\d{1,2}(?:\.\d+)?$/.test(token)) {
-      break;
-    }
-
-    for (const part of token.split(".")) {
-      parts.push(Number.parseInt(part, 10));
-    }
-  }
-
-  return parts;
-}
-
-function compareVersionPartsDesc(a: number[], b: number[]): number {
-  const maxLength = Math.max(a.length, b.length);
-  for (let i = 0; i < maxLength; i++) {
-    const aPart = a[i] ?? -1;
-    const bPart = b[i] ?? -1;
-    if (aPart !== bPart) {
-      return bPart - aPart;
-    }
-  }
-  return 0;
-}
-
 /**
- * Compare two records by `releaseDate` (desc), then by version-parts in id
- * (desc), then by id (asc). Records without a `releaseDate` sort BEFORE
- * dated records — they default to epoch 0. Used by every list/picker that
- * shows models so the newest is always at the top.
- *
- * Exported so cli.ts can apply the same ordering to ModelDoc-shaped lists
- * (`--models`, `--models-top`, etc.) without duplicating the logic.
+ * Re-exported from `providers/model-ordering.ts` so existing importers
+ * (cli.ts) keep working. The comparator itself had to move out of this module:
+ * `model-loader.ts` and `mcp-server.ts` both need it, and importing it from
+ * here would create a `model-loader -> model-selector -> model-loader` cycle
+ * (and drag the inquirer picker into the MCP stdio path).
  */
-export function compareByReleaseDateDesc(
-  a: { releaseDate?: string; id?: string; modelId?: string },
-  b: { releaseDate?: string; id?: string; modelId?: string }
-): number {
-  const aReleaseRaw = a.releaseDate ? Date.parse(a.releaseDate) : 0;
-  const bReleaseRaw = b.releaseDate ? Date.parse(b.releaseDate) : 0;
-  const aRelease = Number.isNaN(aReleaseRaw) ? 0 : aReleaseRaw;
-  const bRelease = Number.isNaN(bReleaseRaw) ? 0 : bReleaseRaw;
-  if (aRelease !== bRelease) {
-    return bRelease - aRelease;
-  }
-
-  const aId = a.id ?? a.modelId ?? "";
-  const bId = b.id ?? b.modelId ?? "";
-  const versionCompare = compareVersionPartsDesc(
-    extractVersionParts(aId),
-    extractVersionParts(bId)
-  );
-  if (versionCompare !== 0) {
-    return versionCompare;
-  }
-  return aId.localeCompare(bId);
-}
+export { compareByReleaseDateDesc };
 
 function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
   return [...models].sort(compareByReleaseDateDesc);
@@ -1214,7 +1166,7 @@ export async function buildDiscoveredModelRows(
     discovered.filter((m) => !offlineContext.get(m.id)).map((m) => m.id)
   );
 
-  return discovered.map((m) => {
+  const rows = discovered.map((m) => {
     const contextLength = offlineContext.get(m.id) || cloudContext.get(m.id) || 0;
     return {
       id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
@@ -1223,6 +1175,7 @@ export async function buildDiscoveredModelRows(
         ? `${m.displayName ?? m.id} · ${Math.round(contextLength / 1024)}K context`
         : (m.displayName ?? m.id),
       provider: displayName,
+      releaseDate: resolveDiscoveredReleaseDate(m),
       pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(m.id.toLowerCase()),
       context: formatContextLength(contextLength),
       contextLength,
@@ -1231,6 +1184,13 @@ export async function buildDiscoveredModelRows(
       source: displayName,
     };
   });
+
+  // Present newest-first, with the SAME comparator the catalog path uses, so
+  // every picker in claudish orders identically. `rankDiscoveredModels` above
+  // is only a stable, deterministic input order — its widest-window-first rule
+  // is meaningful for probe candidates, but for a plan whose entire roster is
+  // 1M it collapses to alphabetical, which is what made the picker look unsorted.
+  return sortModelsNewestFirst(rows);
 }
 
 /**
@@ -1269,15 +1229,20 @@ async function selectModelFromProvider(
   // through to free-text below when the daemon is unreachable or has no models.
   if (provider === "ollama") {
     const ollamaModels = await fetchOllamaModels({ enrichCapabilities: false });
-    const chatModels: ModelInfo[] = ollamaModels.map((m) => ({
-      id: m.name, // bare name, e.g. "llama3.2:3b" — prefix added by buildExplicitModelSpec
-      name: m.name,
-      description: m.description,
-      provider: displayName,
-      supportsTools: m.supportsTools,
-      isFree: true,
-      source: displayName,
-    }));
+    // Daemon order (/api/tags) is not meaningful to the user. Apply the shared
+    // ordering rule so this picker matches every other one; with no release
+    // dates locally the comparator degrades to newest-version-first, then id.
+    const chatModels: ModelInfo[] = sortModelsNewestFirst(
+      ollamaModels.map((m) => ({
+        id: m.name, // bare name, e.g. "llama3.2:3b" — prefix added by buildExplicitModelSpec
+        name: m.name,
+        description: m.description,
+        provider: displayName,
+        supportsTools: m.supportsTools,
+        isFree: true,
+        source: displayName,
+      }))
+    );
     if (chatModels.length > 0) {
       const picked = await pickModelFromList(provider, displayName, tierName, chatModels);
       if (picked) return picked;

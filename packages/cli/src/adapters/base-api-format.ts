@@ -380,6 +380,35 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    *
    * Levels the catalog reports but claudish has no name for are ignored rather
    * than passed through — the vocabulary is {@link EFFORT_LEVELS}.
+   *
+   * ## Why clamping is load-bearing, not cosmetic (GLM-5.2)
+   *
+   * An endpoint ACCEPTING a level is not the same as the model DISTINGUISHING
+   * it. Verified 2026-08-02 against the Z.AI coding endpoint: every one of the
+   * seven canonical levels (`none`…`max`) is accepted — `reasoning_effort:
+   * "banana"` returns a 400 that lists all seven — yet GLM-5.2 documents
+   * exactly TWO (https://docs.z.ai/guides/llm/glm-5.2): `max` and `high`, with
+   * `max` the default, and explicitly states that **any value other than
+   * `high` runs at Max**.
+   *
+   * So the model's real behaviour is a one-bit test — "is this string `high`?"
+   * — and passing an unadvertised level through unchanged INVERTS the user's
+   * intent: a request for `low` is not `high`, therefore it runs at Max, and
+   * asking for less thinking buys the most. Clamping `low → high` is what keeps
+   * "less effort" from meaning "maximum effort". This is also why ties resolve
+   * upward rather than downward: the failure mode of guessing too high is a
+   * slower turn, the failure mode of falling off the advertised set entirely is
+   * a silent jump to the endpoint's default.
+   *
+   * ## Known catalog discrepancy (fix belongs in models-index, not here)
+   *
+   * The slim catalog currently reports `efforts: ["xhigh","high"]`,
+   * `defaultEffort: "high"` for glm-5.2, while the vendor docs say
+   * `["max","high"]` with default `max`. `xhigh` is harmless TODAY only by
+   * accident — anything that isn't `high` means Max, so `xhigh` and `max`
+   * produce the same behaviour. It is still wrong data. The correction belongs
+   * in the models-index catalog; do NOT hardcode a per-model override here, or
+   * claudish stops reflecting the catalog it is supposed to be driven by.
    */
   protected clampToAdvertisedEffort(
     requested: EffortLevel,

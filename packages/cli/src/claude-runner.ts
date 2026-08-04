@@ -16,12 +16,14 @@ import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
+import { resolveCatalogContextWindow } from "./handlers/shared/context-window-fallback.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
 import { loadConfig } from "./profile-config.js";
 import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
@@ -406,6 +408,161 @@ export function cleanupStaleTokenFiles(
 export const CLAUDE_CODE_DEFAULT_MAX_CONTEXT = 200_000;
 
 /**
+ * Seconds a chained user status-line command is allowed to run.
+ *
+ * Applied via `timeout`/`gtimeout` when either is on PATH, and skipped when
+ * neither is (see `buildChainedStatusCommand`). Claude Code re-renders the status
+ * line on a short cadence, so a script that blocks forever would wedge the line
+ * permanently; 3s is far longer than any reasonable status script and short
+ * enough that a hang is a blip rather than a freeze.
+ */
+export const USER_STATUS_LINE_TIMEOUT_SECONDS = 3;
+
+/**
+ * Parse a `--settings` value. Claude Code accepts either an inline JSON object
+ * or a path to a JSON file, and so must we. Throws on unreadable/invalid input.
+ */
+function parseSettingsArg(value: string): Record<string, unknown> {
+  if (value.trimStart().startsWith("{")) {
+    return JSON.parse(value) as Record<string, unknown>;
+  }
+  return JSON.parse(readFileSync(value, "utf-8")) as Record<string, unknown>;
+}
+
+/** Same, but swallows every failure — discovery must never break a launch. */
+function parseSettingsArgSafe(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = parseSettingsArg(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The settings files Claude Code merges below the CLI-args tier, LOWEST
+ * precedence first. Anything a later file defines replaces the earlier value —
+ * `statusLine` is a whole-object key, not a deep merge.
+ */
+function userSettingsFileCandidates(cwd: string): string[] {
+  return [
+    join(homedir(), ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.json"),
+    join(cwd, ".claude", "settings.local.json"),
+  ];
+}
+
+/**
+ * Find the status-line command the user would have seen had claudish not been
+ * in the picture, so it can be CHAINED rather than clobbered.
+ *
+ * Resolution follows Claude Code's own precedence (later wins): user settings →
+ * project settings → project local settings → an explicit `--settings` value.
+ * Only `type: "command"` can be chained — an `agent`-type or absent status line
+ * has no stdout for us to append to, so those keep claudish's own line.
+ *
+ * Returns null (→ claudish's line, unchanged) on anything unexpected: this runs
+ * on the launch path and a malformed settings file must never be fatal.
+ */
+export function discoverUserStatusLineCommand(
+  claudeArgs: string[] = [],
+  cwd: string = process.cwd()
+): string | null {
+  const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
+
+  const idx = claudeArgs.indexOf("--settings");
+  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
+  if (settingsArg) sources.push(settingsArg);
+
+  let effective: unknown;
+  for (const source of sources) {
+    const layer = parseSettingsArgSafe(source);
+    if (layer && "statusLine" in layer) effective = layer.statusLine;
+  }
+
+  return chainableCommandOf(effective);
+}
+
+/** The chainable command inside a resolved `statusLine` value, or null. */
+function chainableCommandOf(statusLine: unknown): string | null {
+  if (!statusLine || typeof statusLine !== "object") return null;
+  const { type, command } = statusLine as { type?: unknown; command?: unknown };
+  if (type !== "command" || typeof command !== "string") return null;
+
+  const trimmed = command.trim();
+  if (!trimmed) return null;
+
+  // Refuse to chain a claudish-generated line onto itself. A previous session's
+  // temp settings can end up copied into a user settings file, and chaining
+  // would then render the model/cost/context segment twice.
+  if (trimmed.includes("CLAUDISH_ACTIVE_MODEL_NAME") || trimmed.includes("CLAUDISH_IS_LOCAL")) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+/**
+ * Wrap the user's status-line command so its output comes first and claudish's
+ * segment is appended to it, instead of replacing it.
+ *
+ * Properties this has to have, each learned from how the pieces actually behave:
+ *
+ *  - **stdin is read exactly once, then replayed.** Claude Code pipes a JSON
+ *    payload (model, workspace, cost…) into the status command, and the user's
+ *    script reads it — `~/.claude/statusline-command.sh` style scripts jq it for
+ *    the model name. A pipeline can only consume that stream once, so the
+ *    wrapper captures it into `$JSON` and feeds the same bytes back to the user
+ *    command via `printf '%s'`.
+ *  - **The user's command is single-quoted**, with embedded quotes escaped, so
+ *    spaces, `$`, backticks and quotes in it cannot break the wrapper or get
+ *    expanded a second time by our shell.
+ *  - **Failure is invisible.** stderr goes to /dev/null and the exit status is
+ *    ignored; an empty capture (missing command, non-zero exit, no output) falls
+ *    through to claudish's segment alone. The status line must never show an
+ *    error, and must never disappear.
+ *  - **ANSI is passed through byte for byte** — `$(...)` + `printf '%s'` neither
+ *    strips nor re-wraps the user's colour codes.
+ *  - **Multi-line output keeps its shape**: only the LAST line gets the suffix.
+ *  - **No directory segment, and no model name.** claudish's own line leads with
+ *    the basename of the cwd and names the model, but a custom status line
+ *    already shows location/branch AND the model — repeating either wastes width
+ *    and reads as a duplicate. Chaining appends only what is genuinely claudish's
+ *    and genuinely absent from the user's line: provider, cost, context.
+ */
+export function buildChainedStatusCommand(
+  userCommand: string,
+  claudishBody: string,
+  claudishSegment: string
+): string {
+  const quotedUser = `'${userCommand.replace(/'/g, `'\\''`)}'`;
+  const ESC = "\u001b";
+  // Literal ESC bytes (JSON-encoded as \u001b in the settings file) rather than
+  // a printf subshell — this runs on every status-line repaint.
+  const separator = `SEP=' ${ESC}[2m•${ESC}[0m '`;
+
+  // `timeout` is NOT part of the macOS base system (it arrives with Homebrew
+  // coreutils, sometimes only as `gtimeout`), so the guard is discovered at
+  // render time with the `command -v` builtin — no fork, and it follows the PATH
+  // the status line actually runs under. When neither exists we run the user's
+  // command unguarded rather than inventing a background-kill scheme: a
+  // watchdog-and-wait dance in a script that fires several times a second is a
+  // worse failure mode than the hang it protects against, and Claude Code has
+  // its own ceiling on how long it waits for a status line.
+  const runUser = `if command -v timeout >/dev/null 2>&1; then _CT="timeout ${USER_STATUS_LINE_TIMEOUT_SECONDS}"; elif command -v gtimeout >/dev/null 2>&1; then _CT="gtimeout ${USER_STATUS_LINE_TIMEOUT_SECONDS}"; else _CT=""; fi; USER_OUT=$(printf '%s' "$JSON" | $_CT bash -c ${quotedUser} 2>/dev/null)`;
+
+  // `${USER_OUT##*$'\n'}` is everything after the last newline (the last line);
+  // `${USER_OUT%$'\n'*}` is everything before it. Equal to the whole capture ⇒
+  // single-line output, the common case.
+  const emit = `if [ -n "$USER_OUT" ]; then LAST="\${USER_OUT##*$'\\n'}"; if [ "$LAST" = "$USER_OUT" ]; then printf '%s%s%s\\n' "$USER_OUT" "$SEP" "$SEG"; else printf '%s\\n%s%s%s\\n' "\${USER_OUT%$'\\n'*}" "$LAST" "$SEP" "$SEG"; fi; else printf '%s\\n' "$SEG"; fi`;
+
+  // `$(...)` around the segment, not a bare printf: the chained segment is a
+  // conditional (the provider field is omitted when unknown), and command
+  // substitution runs a compound statement just as happily as a single command.
+  return `JSON=$(cat); ${runUser}; ${claudishBody}; SEG=$(${claudishSegment}); ${separator}; ${emit}`;
+}
+
+/**
  * Create a temporary settings file with custom status line for this instance
  * This ensures each Claudish instance has its own status line without affecting
  * global Claude Code settings or other running instances
@@ -416,8 +573,13 @@ export const CLAUDE_CODE_DEFAULT_MAX_CONTEXT = 200_000;
 export function createTempSettingsFile(
   _modelDisplay: string,
   port: string,
-  proxyAuthMode: boolean
-): { path: string; statusLine: { type: string; command: string; padding: number } } {
+  proxyAuthMode: boolean,
+  userStatusLineCommand?: string | null
+): {
+  path: string;
+  statusLine: { type: string; command: string; padding: number };
+  tokenFilePath: string;
+} {
   const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir();
   const claudishDir = join(homeDir, ".claudish");
 
@@ -493,7 +655,30 @@ export function createTempSettingsFile(
     //         CTX_WIN at its 0 default, eff_win 0 returns 0, and the first display
     //         branch renders a bare token count (or N/A), never a bogus percentage.
     const effWinBash = `eff_win() { local w=\${1:-0}; local m=\${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}; local a=\${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}; case "$m" in ''|*[!0-9]*) m=${CLAUDE_CODE_DEFAULT_MAX_CONTEXT};; esac; case "$a" in ''|*[!0-9]*) a=0;; esac; case "$w" in ''|*[!0-9]*) w=0;; esac; if [ "$w" -gt 0 ]; then if [ "$m" -gt 0 ] && [ "$m" -lt "$w" ]; then w=$m; fi; if [ "$a" -gt 0 ] && [ "$a" -lt "$w" ]; then w=$a; fi; fi; echo "$w"; }`;
-    statusCommand = `JSON=$(cat); DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi; printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    // The command is assembled from three reusable pieces so the chained variant
+    // (see buildChainedStatusCommand) can reuse the state reader verbatim and swap
+    // only the rendering: no leading directory segment, no model name (the user's
+    // own line already shows it), and the result captured into a variable instead
+    // of printed.
+    const dirPrelude = `DIR=$(basename "$(pwd)"); [ \${#DIR} -gt 15 ] && DIR="\${DIR:0:12}..." || true; `;
+    const readState = `CTX=-1; COST="0"; IS_FREE="false"; IS_EST="false"; PROVIDER=""; TOKEN_MODEL=""; IN_TOK=0; CTX_WIN=0; ${formatTokensBash}; ${effWinBash}; if [ -f "${tokenFilePath}" ]; then TOKENS=$(cat "${tokenFilePath}" 2>/dev/null | tr -d '\\n\\r'); V=$(echo "$TOKENS" | grep -o '"context_left_percent": *-\\?[0-9]*' | grep -o '\\-\\?[0-9]*'); [ -n "$V" ] && CTX="$V"; V=$(echo "$TOKENS" | grep -o '"total_cost": *[0-9.]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && COST="$V"; V=$(echo "$TOKENS" | grep -o '"input_tokens": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && IN_TOK="$V"; V=$(echo "$TOKENS" | grep -o '"context_window": *[0-9]*' | grep -o '[0-9]*'); [ -n "$V" ] && CTX_WIN="$V"; V=$(echo "$TOKENS" | grep -o '"is_free": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_FREE="$V"; V=$(echo "$TOKENS" | grep -o '"is_estimated": *[a-z]*' | cut -d: -f2 | tr -d ' '); [ -n "$V" ] && IS_EST="$V"; V=$(echo "$TOKENS" | grep -o '"provider_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && PROVIDER="$V"; V=$(echo "$TOKENS" | grep -o '"model_name": *"[^"]*"' | cut -d'"' -f4); [ -n "$V" ] && TOKEN_MODEL="$V"; fi; if [ "$CLAUDISH_IS_LOCAL" = "true" ]; then COST_DISPLAY="LOCAL"; elif [ "$IS_FREE" = "true" ]; then COST_DISPLAY="FREE"; elif [ "$IS_EST" = "true" ]; then COST_DISPLAY=$(printf "~\\$%.3f" "$COST"); else COST_DISPLAY=$(printf "\\$%.3f" "$COST"); fi; MODEL_DISPLAY="\${TOKEN_MODEL:-$CLAUDISH_ACTIVE_MODEL_NAME}"; if [ -n "$PROVIDER" ]; then MODEL_DISPLAY="$PROVIDER $MODEL_DISPLAY"; fi; EFF_WIN=$(eff_win $CTX_WIN); if [ "$EFF_WIN" -gt 0 ] 2>/dev/null && [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX=$(( ((EFF_WIN - IN_TOK) * 200 / EFF_WIN + 1) / 2 )); if [ "$CTX" -lt 0 ]; then CTX=0; fi; fi; if [ "$CTX" -lt 0 ] 2>/dev/null || [ "$EFF_WIN" -le 0 ] 2>/dev/null; then if [ "$IN_TOK" -gt 0 ] 2>/dev/null; then CTX_DISPLAY="$(fmt_tok $IN_TOK) tokens"; else CTX_DISPLAY="N/A"; fi; elif [ "$IN_TOK" -gt 0 ] 2>/dev/null; then if [ "$EFF_WIN" -lt "$CTX_WIN" ] 2>/dev/null; then CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN) of $(fmt_tok $CTX_WIN))"; else CTX_DISPLAY="$CTX% ($(fmt_tok $IN_TOK)/$(fmt_tok $EFF_WIN))"; fi; else CTX_DISPLAY="$CTX%"; fi`;
+    const segmentWithDir = `printf "${CYAN}${BOLD}%s${RESET} ${DIM}•${RESET} ${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$DIR" "$MODEL_DISPLAY" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    // The CHAINED segment deliberately drops the model name that
+    // segmentWithDir shows. It is appended to the user's OWN status line, which
+    // already renders the model — printing it again produced
+    // "… qc@qwen3.8-max … • qc@qwen3.8-max • $0.000 • N/A". The provider
+    // ("Qwen Plan") is the part the user's line cannot know, so it takes the
+    // slot instead. When the token file hasn't reported one yet (a fresh
+    // session, before the first response), the field is omitted ENTIRELY rather
+    // than falling back to the model name or emitting an empty segment with a
+    // dangling separator.
+    const segmentNoDirWithProvider = `printf "${YELLOW}%s${RESET} ${DIM}•${RESET} ${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$PROVIDER" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    const segmentNoDirNoProvider = `printf "${GREEN}%s${RESET} ${DIM}•${RESET} ${MAGENTA}%s${RESET}\\n" "$COST_DISPLAY" "$CTX_DISPLAY"`;
+    const segmentNoDir = `if [ -n "$PROVIDER" ]; then ${segmentNoDirWithProvider}; else ${segmentNoDirNoProvider}; fi`;
+
+    statusCommand = userStatusLineCommand
+      ? buildChainedStatusCommand(userStatusLineCommand, readState, segmentNoDir)
+      : `JSON=$(cat); ${dirPrelude}${readState}; ${segmentWithDir}`;
   }
 
   const statusLine = {
@@ -514,7 +699,10 @@ export function createTempSettingsFile(
   const settings = buildClaudishSettingsOverlay(statusLine, proxyAuthMode);
 
   writeFileSync(tempPath, JSON.stringify(settings, null, 2), "utf-8");
-  return { path: tempPath, statusLine };
+  // tokenFilePath is RETURNED rather than recomputed by the caller: the child env
+  // publishes it as CLAUDISH_TOKEN_FILE, and two independent `join(claudishDir,
+  // \`tokens-${port}.json\`)` expressions could silently diverge.
+  return { path: tempPath, statusLine, tokenFilePath };
 }
 
 /**
@@ -568,16 +756,13 @@ function mergeUserSettingsIfPresent(
 
   try {
     // Claude Code accepts --settings as either a file path or an inline JSON string.
-    // Detect inline JSON (starts with '{') vs file path.
-    let userSettings: Record<string, unknown>;
-    if (userSettingsValue.trimStart().startsWith("{")) {
-      userSettings = JSON.parse(userSettingsValue);
-    } else {
-      const rawUserSettings = readFileSync(userSettingsValue, "utf-8");
-      userSettings = JSON.parse(rawUserSettings);
-    }
+    const userSettings = parseSettingsArg(userSettingsValue);
 
-    // Inject claudish statusLine into user settings (overrides any existing statusLine)
+    // Install the claudish statusLine. This replaces any statusLine the user's
+    // --settings carried — but it is not a loss: discoverUserStatusLineCommand()
+    // already read that same value (it is the top precedence tier it consults),
+    // so when it is a `type: "command"` line the statusLine being installed here
+    // is the CHAINED one that runs the user's command first.
     userSettings.statusLine = statusLine;
 
     // Default claude.ai connectors off (suppresses the proxy-mode warning) —
@@ -652,6 +837,98 @@ function mergeUserSettingsIfPresent(
  */
 export const MIN_AUTO_COMPACT_WINDOW = 200_000;
 
+/**
+ * How long `computeMainThreadContextWindow` will wait on the cloud catalog before
+ * giving up and launching with today's behaviour (window unknown → env unset).
+ *
+ * This runs on the launch path, between the user pressing Enter and Claude Code
+ * appearing, so it is a hard budget rather than a best-effort one. A slow or
+ * unreachable catalog costs at most this much; the session still starts, just
+ * with Claude Code's hardcoded 200K assumption, exactly as before this fallback
+ * existed. 1.5s is comfortably above a warm `queryModels` round-trip and well
+ * under the point where a launch feels stalled.
+ */
+export const CATALOG_WINDOW_TIMEOUT_MS = 1_500;
+
+/**
+ * Race `promise` against `ms`, resolving to `null` on expiry. Never rejects.
+ * The timer is unref'd + cleared so a pending lookup can't hold the process open.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+  });
+}
+
+/**
+ * Resolve ONE model spec's window from the local sources only (live provider
+ * discovery, then the slim catalog cache), plus the bare model id so a miss can
+ * be retried against the cloud catalog. Returns null when the spec is unroutable.
+ */
+async function resolveLocalContextWindow(
+  spec: string,
+  cachePath: string | undefined
+): Promise<{ modelId: string; window: number | null } | null> {
+  const parsed = parseModelSpec(spec);
+  let provider = parsed.provider;
+  if (!parsed.isExplicitProvider) {
+    // Bare name: resolve the backend the proxy will actually pick — the same
+    // (memoized, process-shared) routing the proxy runs on the first request.
+    const plan = await route(spec);
+    if (plan.kind !== "ok") return null;
+    provider = plan.primary.provider;
+  }
+  // Live discovery wins over the catalog: for subscription endpoints the
+  // real window depends on the caller's tier (Kimi's k3 is 1M only on
+  // Allegretto+), and the authenticated /models call answers for THIS user.
+  // Providers without a modelDiscovery descriptor short-circuit to
+  // undefined without a network call, so this stays free for everyone else.
+  const win =
+    (await discoverContextWindow(provider, parsed.model)) ??
+    lookupModelForProvider(parsed.model, provider, cachePath);
+  return {
+    modelId: parsed.model,
+    window: typeof win === "number" && win > 0 ? win : null,
+  };
+}
+
+/**
+ * Last resort for the slim-cache misses only: ask the FULL cloud catalog, which
+ * knows models the slim cache never carried. Queried concurrently (a two-slot
+ * profile must not pay two serial round-trips) under ONE shared deadline, since
+ * this sits between the user pressing Enter and Claude Code appearing.
+ *
+ * Returns +Infinity — the identity for `Math.min` — when there is nothing to ask,
+ * the deadline expires, or the catalog knows none of them. That is exactly
+ * today's behaviour: the caller keeps whatever the local path resolved, which for
+ * a single unknown model is nothing, so the env stays unset.
+ */
+async function catalogWindowMin(modelIds: string[]): Promise<number> {
+  const misses = [...new Set(modelIds)];
+  if (misses.length === 0) return Number.POSITIVE_INFINITY;
+
+  const windows = await withDeadline(
+    Promise.all(misses.map((id) => resolveCatalogContextWindow(id).catch(() => null))),
+    CATALOG_WINDOW_TIMEOUT_MS
+  );
+
+  let min = Number.POSITIVE_INFINITY;
+  for (const win of windows ?? []) {
+    if (typeof win === "number" && win > 0) min = Math.min(min, win);
+  }
+  return min;
+}
+
 export async function computeMainThreadContextWindow(
   config: ClaudishConfig,
   cachePath?: string
@@ -662,32 +939,23 @@ export async function computeMainThreadContextWindow(
   if (specs.length === 0) return 0;
 
   let min = Number.POSITIVE_INFINITY;
+  // Model ids the local slim catalog had nothing for. That cache is
+  // OpenRouter-derived and capped, so plan-exclusive and preview models
+  // (`qwen3.8-max-preview`, say) are simply absent from it — and a miss here
+  // used to mean a 1M-token model got compacted at Claude Code's hardcoded 200K.
+  const unresolved: string[] = [];
   for (const spec of specs) {
     try {
-      const parsed = parseModelSpec(spec);
-      let provider = parsed.provider;
-      if (!parsed.isExplicitProvider) {
-        // Bare name: resolve the backend the proxy will actually pick — the same
-        // (memoized, process-shared) routing the proxy runs on the first request.
-        const plan = await route(spec);
-        if (plan.kind !== "ok") continue;
-        provider = plan.primary.provider;
-      }
-      // Live discovery wins over the catalog: for subscription endpoints the
-      // real window depends on the caller's tier (Kimi's k3 is 1M only on
-      // Allegretto+), and the authenticated /models call answers for THIS user.
-      // Providers without a modelDiscovery descriptor short-circuit to
-      // undefined without a network call, so this stays free for everyone else.
-      const win =
-        (await discoverContextWindow(provider, parsed.model)) ??
-        lookupModelForProvider(parsed.model, provider, cachePath);
-      if (typeof win === "number" && win > 0) {
-        min = Math.min(min, win);
-      }
+      const resolved = await resolveLocalContextWindow(spec, cachePath);
+      if (!resolved) continue;
+      if (resolved.window !== null) min = Math.min(min, resolved.window);
+      else unresolved.push(resolved.modelId);
     } catch {
       // A routing/catalog hiccup for one slot must never block launch.
     }
   }
+
+  min = Math.min(min, await catalogWindowMin(unresolved));
   return Number.isFinite(min) ? min : 0;
 }
 
@@ -799,12 +1067,17 @@ export async function runClaudeWithProxy(
     return 1;
   }
 
+  // Chain, don't clobber: find the status line the user would otherwise have
+  // seen so claudish's segment can be appended to it. Must run BEFORE
+  // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
+  const userStatusLineCommand = discoverUserStatusLineCommand(config.claudeArgs);
+
   // Create temporary settings file with custom status line for this instance
-  const { path: tempSettingsPath, statusLine } = createTempSettingsFile(
-    modelId ?? "default",
-    port,
-    proxyAuthMode
-  );
+  const {
+    path: tempSettingsPath,
+    statusLine,
+    tokenFilePath,
+  } = createTempSettingsFile(modelId ?? "default", port, proxyAuthMode, userStatusLineCommand);
 
   // Merge user's --settings into our temp settings file if user provided one
   mergeUserSettingsIfPresent(config, tempSettingsPath, statusLine, proxyAuthMode);
@@ -873,7 +1146,27 @@ export async function runClaudeWithProxy(
     [ENV.CLAUDISH_ACTIVE_MODEL_NAME]: modelDisplayName,
     // Indicate if this is a local model (for status line to show "LOCAL" instead of cost)
     CLAUDISH_IS_LOCAL: isLocalModel ? "true" : "false",
+    // Publish this session's token file so ANY status line — claudish's own or a
+    // chained user/plugin one — can read live usage from the same source instead
+    // of guessing a path, and can tell that the session is proxied (and therefore
+    // that Anthropic plan/rate-limit numbers describe the wrong account).
+    [ENV.CLAUDISH_TOKEN_FILE]: tokenFilePath,
   };
+
+  // Provider display name, best-effort and FREE. Only an explicit `provider@model`
+  // spec names its provider without routing, and route() would touch credentials /
+  // 1Password — an unacceptable cost on the spawn path. A bare model name therefore
+  // leaves this UNSET rather than guessing; consumers fall back to the token file's
+  // `provider_name`, which the token tracker writes after the first response.
+  if (modelId) {
+    const parsedSpec = parseModelSpec(modelId);
+    const providerDisplayName = parsedSpec.isExplicitProvider
+      ? getProviderByName(parsedSpec.provider)?.displayName
+      : undefined;
+    if (providerDisplayName) {
+      env[ENV.CLAUDISH_PROVIDER_NAME] = providerDisplayName;
+    }
+  }
 
   // Set when a real ANTHROPIC_API_KEY was hidden so native Claude models bill the
   // claude.ai subscription instead of the API. Reported via log() further down —
