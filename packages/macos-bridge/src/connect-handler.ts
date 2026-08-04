@@ -64,6 +64,22 @@ export interface RoutingConfig {
 }
 
 /**
+ * A single entry of a conversation's `chat_messages` array.
+ *
+ * Entries come from two sources with no shared schema guarantee: the upstream
+ * claude.ai response (arbitrary parsed JSON) and our own injected messages.
+ * Every field the bridge reads is therefore optional, and the index signature
+ * preserves the fields we pass through untouched.
+ */
+interface ConversationChatMessage {
+  uuid?: string;
+  sender?: string;
+  index?: number;
+  parent_message_uuid?: string;
+  [key: string]: unknown;
+}
+
+/**
  * Handles HTTP CONNECT requests for forward proxy mode
  *
  * Flow:
@@ -1017,7 +1033,10 @@ export class CONNECTHandler {
       }
 
       // Parse the JSON response
-      let conversationData: { chat_messages?: unknown[]; [key: string]: unknown };
+      let conversationData: {
+        chat_messages?: ConversationChatMessage[];
+        [key: string]: unknown;
+      };
       try {
         conversationData = JSON.parse(response.body);
       } catch {
@@ -1058,9 +1077,7 @@ export class CONNECTHandler {
       // Inject our messages into chat_messages array
       if (Array.isArray(conversationData.chat_messages)) {
         // Check if messages are already there (by UUID)
-        const existingUuids = new Set(
-          conversationData.chat_messages.map((m: { uuid?: string }) => m.uuid)
-        );
+        const existingUuids = new Set(conversationData.chat_messages.map((m) => m.uuid));
 
         for (const msg of injectedMsgs) {
           if (!existingUuids.has(msg.uuid)) {
@@ -1072,9 +1089,7 @@ export class CONNECTHandler {
         }
 
         // Sort messages by index to maintain order
-        conversationData.chat_messages.sort(
-          (a: { index?: number }, b: { index?: number }) => (a.index || 0) - (b.index || 0)
-        );
+        conversationData.chat_messages.sort((a, b) => (a.index || 0) - (b.index || 0));
       } else {
         // No chat_messages array, create one with our messages
         conversationData.chat_messages = [...injectedMsgs];
@@ -1168,7 +1183,11 @@ export class CONNECTHandler {
   /**
    * Build HTTP response string from status, headers, and body
    */
-  private buildHTTPResponse(status: number, headers: Record<string, string>, body: string): string {
+  private buildHTTPResponse(
+    status: number,
+    headers: Record<string, string | string[]>,
+    body: string
+  ): string {
     const statusText = status === 200 ? "OK" : status === 404 ? "Not Found" : "Error";
     let response = `HTTP/1.1 ${status} ${statusText}\r\n`;
 
@@ -1797,6 +1816,8 @@ export class CONNECTHandler {
         tlsSocket,
         response,
         targetModel,
+        sourceModel,
+        startTime,
         claudeDesktopRequest,
         conversationId
       );
@@ -2032,6 +2053,8 @@ export class CONNECTHandler {
     tlsSocket: tls.TLSSocket,
     providerResponse: Response,
     targetModel: string,
+    sourceModel: string,
+    startTime: number,
     originalRequest?: { parent_message_uuid?: string; prompt?: string },
     conversationId?: string
   ): Promise<void> {
@@ -2410,25 +2433,6 @@ export class CONNECTHandler {
       writeEvent("error", { type: "error", error: { type: "api_error", message: String(err) } });
       tlsSocket.write("0\r\n\r\n");
     }
-  }
-
-  /**
-   * Write error response to client
-   */
-  private writeErrorResponse(tlsSocket: tls.TLSSocket, err: unknown): void {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    const response = JSON.stringify({
-      type: "error",
-      error: {
-        type: "api_error",
-        message: errorMsg,
-      },
-    });
-
-    tlsSocket.write(
-      `HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(response)}\r\nConnection: close\r\n\r\n${response}`
-    );
-    tlsSocket.end();
   }
 
   /**

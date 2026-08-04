@@ -1,7 +1,14 @@
 {
+  // BUILD config. `rootDir` and `references` below are wrong for typechecking
+  // this package (TS6059 / TS6306), because the bridge imports the cli through
+  // relative paths (../../cli/src/...) that sit outside ./src. `bun run
+  // typecheck` therefore uses tsconfig.typecheck.json, which extends this file
+  // and drops both. Keep them here — `rootDir` governs emit layout.
   "compilerOptions": {
+    // ES2023 so cli sources shared via those relative imports typecheck
+    // (e.g. Array.prototype.findLast). Node >=18 and Bun both support it.
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2023"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "outDir": "./dist",

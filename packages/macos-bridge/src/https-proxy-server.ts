@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import https from "node:https";
-import type net from "node:net";
+import net from "node:net";
 import tls, { type SecureContext } from "node:tls";
 import type { CertificateManager } from "./certificate-manager";
 
@@ -93,6 +93,16 @@ export class HTTPSProxyServer {
       // Handle CONNECT requests for HTTP tunneling (proxy mode)
       this.server.on("connect", (req, socket, head) => {
         console.log(`[HTTPSProxyServer] CONNECT request for ${req.url}`);
+
+        // Node types the 'connect' socket as a bare stream.Duplex, but the tunnel
+        // handler needs the net.Socket API (pipe target, destroy, write). At
+        // runtime it always is one — tls.TLSSocket extends net.Socket.
+        if (!(socket instanceof net.Socket)) {
+          console.error("[HTTPSProxyServer] CONNECT socket is not a net.Socket, closing");
+          socket.destroy();
+          return;
+        }
+
         if (this.connectHandler) {
           this.connectHandler(req, socket, head);
         } else {

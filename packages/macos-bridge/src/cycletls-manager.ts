@@ -5,7 +5,7 @@
  * non-completion requests to claude.ai
  */
 
-import initCycleTLS from "cycletls";
+import initCycleTLS, { type CycleTLSResponse } from "cycletls";
 
 type CycleTLSClient = Awaited<ReturnType<typeof initCycleTLS>>;
 
@@ -19,6 +19,28 @@ export interface Response {
   status: number;
   headers: Record<string, string | string[]>;
   body: string;
+}
+
+/**
+ * HTTP methods CycleTLS accepts as its positional `method` argument.
+ * Mirrors the union in CycleTLSClient's call signature.
+ */
+const CYCLETLS_METHODS = [
+  "head",
+  "get",
+  "post",
+  "put",
+  "delete",
+  "trace",
+  "options",
+  "connect",
+  "patch",
+] as const;
+
+type CycleTLSMethod = (typeof CYCLETLS_METHODS)[number];
+
+function isCycleTLSMethod(value: string): value is CycleTLSMethod {
+  return (CYCLETLS_METHODS as readonly string[]).includes(value);
 }
 
 export class CycleTLSManager {
@@ -53,10 +75,68 @@ export class CycleTLSManager {
   }
 
   /**
+   * Normalize a CycleTLS response into our own `Response` shape.
+   *
+   * CycleTLS carries the payload on `data`, whose runtime type depends on the
+   * response content type (parsed object, Buffer, serialized Buffer, or string),
+   * and exposes `text()` for responses that carry no `data`. It never sets a
+   * `body` property.
+   */
+  private async toResponse(response: CycleTLSResponse): Promise<Response> {
+    let body = "";
+
+    // Check if response has data
+    if (response.data !== undefined && response.data !== null) {
+      const data = response.data;
+
+      // Check if it's a Buffer
+      if (Buffer.isBuffer(data)) {
+        body = data.toString("utf8");
+        console.error("[CycleTLSManager] Using response.data (Buffer -> string)");
+      }
+      // Check if it looks like a serialized Buffer object
+      else if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) {
+        body = Buffer.from(data.data).toString("utf8");
+        console.error("[CycleTLSManager] Using response.data (Buffer object -> string)");
+      }
+      // If it's already a string, use it directly
+      else if (typeof data === "string") {
+        body = data;
+        console.error("[CycleTLSManager] Using response.data (string)");
+      }
+      // Otherwise stringify as JSON
+      else {
+        body = JSON.stringify(data);
+        console.error("[CycleTLSManager] Using response.data (JSON)");
+      }
+    } else if (typeof response.text === "function") {
+      // Text response
+      body = await response.text();
+      console.error("[CycleTLSManager] Using response.text()");
+    }
+
+    // Update Content-Length to match actual body size
+    const headers: Record<string, string | string[]> = { ...response.headers };
+    if (body) {
+      headers["Content-Length"] = [String(Buffer.byteLength(body, "utf8"))];
+    }
+
+    return { status: response.status, headers, body };
+  }
+
+  /**
    * Make HTTP request with Chrome TLS fingerprint
    * Automatically initializes if not already initialized
    */
   async request(url: string, options: RequestOptions): Promise<Response> {
+    const method = options.method.toLowerCase();
+    if (!isCycleTLSMethod(method)) {
+      throw new Error(
+        `[CycleTLSManager] Unsupported HTTP method "${options.method}" ` +
+          `(CycleTLS accepts: ${CYCLETLS_METHODS.join(", ")})`
+      );
+    }
+
     // Lazy initialization
     if (!this.initialized) {
       await this.initialize();
@@ -74,72 +154,27 @@ export class CycleTLSManager {
       const response = await this.cycleTLS(
         url,
         {
-          method: options.method,
+          // NOTE: the HTTP method travels as the third positional argument below.
+          // CycleTLS builds its payload as `{ ...options, method }`, so a `method`
+          // key inside this object is always overwritten and is not part of
+          // CycleTLSRequestOptions.
           headers: options.headers,
           body: options.body,
           ja3: this.CHROME_JA3,
           userAgent: this.CHROME_USER_AGENT,
         },
-        options.method.toLowerCase()
+        method
       );
 
       console.error(`[CycleTLSManager] Response #${this.requestCount}: ${response.status}`);
 
-      // CycleTLS returns data differently depending on content type:
-      // - JSON responses: response.data is a parsed object
-      // - HTML/text responses: response.data may be a Buffer
-      // - Other responses: use response.text() function
-      let body = "";
-
-      // Check if response has data
-      if (response.data !== undefined && response.data !== null) {
-        const data = response.data;
-
-        // Check if it's a Buffer
-        if (Buffer.isBuffer(data)) {
-          body = data.toString("utf8");
-          console.error("[CycleTLSManager] Using response.data (Buffer -> string)");
-        }
-        // Check if it looks like a serialized Buffer object
-        else if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) {
-          body = Buffer.from(data.data).toString("utf8");
-          console.error("[CycleTLSManager] Using response.data (Buffer object -> string)");
-        }
-        // If it's already a string, use it directly
-        else if (typeof data === "string") {
-          body = data;
-          console.error("[CycleTLSManager] Using response.data (string)");
-        }
-        // Otherwise stringify as JSON
-        else {
-          body = JSON.stringify(data);
-          console.error("[CycleTLSManager] Using response.data (JSON)");
-        }
-      } else if (typeof response.text === "function") {
-        // Text response
-        body = await response.text();
-        console.error("[CycleTLSManager] Using response.text()");
-      } else if (response.body) {
-        // Fallback to body
-        body = response.body;
-        console.error("[CycleTLSManager] Using response.body");
-      }
-
-      // Update Content-Length to match actual body size
-      const headers = { ...response.headers };
-      if (body) {
-        headers["Content-Length"] = [String(Buffer.byteLength(body, "utf8"))];
-      }
+      const result = await this.toResponse(response);
 
       console.error(
-        `[CycleTLSManager] Body length: ${body.length}, preview: ${body.substring(0, 200)}`
+        `[CycleTLSManager] Body length: ${result.body.length}, preview: ${result.body.substring(0, 200)}`
       );
 
-      return {
-        status: response.status,
-        headers,
-        body,
-      };
+      return result;
     } catch (err) {
       this.errorCount++;
       console.error(
@@ -161,22 +196,18 @@ export class CycleTLSManager {
         const retryResponse = await this.cycleTLS(
           url,
           {
-            method: options.method,
+            // The method travels as the positional argument below, same as above.
             headers: options.headers,
             body: options.body,
             ja3: this.CHROME_JA3,
             userAgent: this.CHROME_USER_AGENT,
           },
-          options.method.toLowerCase()
+          method
         );
 
         console.error(`[CycleTLSManager] Retry successful: ${retryResponse.status}`);
 
-        return {
-          status: retryResponse.status,
-          headers: retryResponse.headers,
-          body: retryResponse.body || "",
-        };
+        return await this.toResponse(retryResponse);
       } catch (retryErr) {
         console.error(
           `[CycleTLSManager] Retry failed for request #${this.requestCount}:`,
