@@ -2,6 +2,18 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.34.0] - 2026-08-04
+
+Mostly bug fixes that were invisible until the compiler could see them.
+
+### Bug Fixes
+
+- **`bun run typecheck` never checked the macOS bridge.** The root script had `bun --cwd packages/macos-bridge run typecheck` — `--cwd` before `run`, which Bun rejects by printing its usage text and exiting **0**, so the `&&` chain passed. Fixed the arg order; added `tsconfig.typecheck.json` (extends the build config, drops `rootDir`/`references`) since `rootDir` is meaningless under `--noEmit` and the `../cli` project reference was vestigial; raised the bridge `lib` to ES2023. 27 errors surfaced and were fixed([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
+- **Local models via the macOS bridge never worked.** `routing-middleware.ts` constructed `new LocalModelAdapter(provider, modelName)` against `constructor(modelId, providerName)` — arguments swapped, so the object reached `matchesModelFamily`'s `.toLowerCase()` and threw a TypeError at construction. Now matches `proxy-server.ts:222`([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
+- **Every intercepted completion reported failure.** `connect-handler.ts`'s `streamTransformedResponse` read `sourceModel` and `startTime` declared in a different method — a ReferenceError thrown after streaming, swallowed by the catch, which then emitted an SSE `error` to Claude Desktop. No `LogEntry` was ever recorded. They are now parameters([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
+- **The CycleTLS retry path returned an empty body.** `cycletls-manager.ts:178` read `retryResponse.body`, which does not exist on `CycleTLSResponse`, so a request that failed once then succeeded returned `""` with the upstream `Content-Length` — malformed([`f982966`](https://github.com/MadAppGang/claudish/commit/f982966))
+- **Repeated HTTP headers were comma-joined.** `buildHTTPResponse` interpolated a `string[]` value into a single header line, and the sibling serializer in `forwardViaCycleTLS` kept only `v[0]` and dropped the rest. Both now emit one line per value. `Set-Cookie` was the visible casualty — HTTP requires one line per cookie, and cookie `Expires` values contain commas of their own, so a comma-joined line cannot be re-parsed([`6d26898`](https://github.com/MadAppGang/claudish/commit/6d26898))
+
 ## [7.33.0] - 2026-08-04
 
 ### Features
