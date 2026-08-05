@@ -232,7 +232,9 @@ process.stdin.on('end', () => {
       isEstimated = tokens.is_estimated || false;
       providerName = tokens.provider_name || '';
       if (tokens.model_name) model = tokens.model_name;
-      var quotaRemaining = tokens.quota_remaining;
+      // Plan usage for the subscription actually being spent. Replaces the old
+      // scalar quota_remaining, which only ever covered a single model.
+      var plan = tokens.plan;
     } catch (e) {
       try {
         const json = JSON.parse(input);
@@ -274,11 +276,18 @@ process.stdin.on('end', () => {
       ctxDisplay = ctx + '%';
     }
     let quotaDisplay = '';
-    if (typeof quotaRemaining === 'number') {
-      const usedPct = ((1 - quotaRemaining) * 100).toFixed(0);
-      const remainPct = (quotaRemaining * 100).toFixed(0);
-      const qColor = quotaRemaining > 0.5 ? GREEN : quotaRemaining > 0.2 ? YELLOW : RED;
-      quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + remainPct + '% quota' + RESET;
+    if (plan && Array.isArray(plan.windows)) {
+      // Show the window closest to its limit — the one that cuts you off first.
+      let worst = null;
+      for (const w of plan.windows) {
+        if (!w || typeof w.used_pct !== 'number') continue;
+        if (!worst || w.used_pct > worst.used_pct) worst = w;
+      }
+      if (worst) {
+        const usedPct = Math.round(worst.used_pct);
+        const qColor = usedPct < 50 ? GREEN : usedPct < 80 ? YELLOW : RED;
+        quotaDisplay = ' ' + DIM + '•' + RESET + ' ' + qColor + worst.id + ':' + usedPct + '%' + RESET;
+      }
     }
     console.log(\`\${CYAN}\${BOLD}\${dir}\${RESET} \${DIM}•\${RESET} \${YELLOW}\${modelDisplay}\${RESET} \${DIM}•\${RESET} \${GREEN}\${costDisplay}\${RESET} \${DIM}•\${RESET} \${MAGENTA}\${ctxDisplay}\${RESET}\${quotaDisplay}\`);
   } catch (e) {

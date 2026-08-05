@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
+import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import type { ModelHandler } from "./types.js";
 
 export interface FallbackCandidate {
@@ -152,6 +153,16 @@ export class FallbackHandler implements ModelHandler {
  * billing context) do NOT — they'd likely fail on any provider.
  */
 function isRetryableError(status: number, errorBody: string): boolean {
+  // An exhausted subscription is TERMINAL, even though it arrives on a status
+  // that is otherwise retryable.
+  //
+  // The next candidate in a chain like ["kimi-coding", "kimi", "openrouter"] is
+  // the same vendor billed per-token. Advancing past a spent allowance would
+  // silently move the user from their subscription onto pay-per-use — a change
+  // to what they are charged, made without asking. Stopping here surfaces
+  // "plan exhausted", which is the actionable truth.
+  if (isQuotaExhaustionError(status, errorBody)) return false;
+
   // Auth errors — different provider might have valid credentials
   if (status === 401 || status === 403) return true;
 
