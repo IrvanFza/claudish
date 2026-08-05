@@ -23,7 +23,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultOpAccountLister, defaultOpDefaultAccountProbe } from "../providers/onepassword.js";
+import { defaultOpAccountLister } from "../providers/onepassword.js";
 import type { ArmConfigSpec } from "./types.js";
 
 /** The real global config. Read-only, always — never a write target. */
@@ -106,24 +106,6 @@ export function buildArmEnv(opts: {
   return out;
 }
 
-/**
- * The account URL `op` itself would use, or undefined.
- *
- * Reuses the product's own probe + lister rather than re-shelling to `op`, so
- * the harness and `resolveDesktopAccount` can never disagree about which account
- * "the default" means.
- */
-function discoverDefaultAccountUrl(): string | undefined {
-  try {
-    const uuid = defaultOpDefaultAccountProbe();
-    if (!uuid) return undefined;
-    const accounts = defaultOpAccountLister();
-    return accounts?.find((a) => a.account_uuid === uuid)?.url;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The real config, parsed. `{}` when absent or garbled — never throws. */
 export function readRealConfig(): Record<string, unknown> {
   try {
@@ -152,19 +134,13 @@ export function buildArmConfig(spec: ArmConfigSpec): Record<string, unknown> {
 
   const account = spec.onepasswordAccount;
   if (account === "inherit") {
-    // "inherit" means "this arm tests the CONFIGURED-account path". Since the
-    // account fix landed, a healthy machine may legitimately have no
-    // `onepasswordAccount` at all — and then inheriting nothing would silently
-    // turn this arm into a duplicate of `op-no-account`, quietly dropping
-    // coverage of the path it was written for. So fall back to the machine's own
-    // default account: the arm still pins "an account is configured and used",
-    // and stays distinct from the arm that pins the fallback.
+    // "inherit" means "this arm tests the CONFIGURED-account path", so the
+    // machine must actually have `onepasswordAccount` set. checkPreconditions
+    // enforces that: without it this arm would inherit nothing and silently
+    // become a duplicate of `op-no-account`, dropping the coverage it exists
+    // for while still passing.
     const v = real.onepasswordAccount;
     if (typeof v === "string" && v.trim()) cfg.onepasswordAccount = v;
-    else {
-      const discovered = discoverDefaultAccountUrl();
-      if (discovered) cfg.onepasswordAccount = discovered;
-    }
   } else if (typeof account === "string") {
     cfg.onepasswordAccount = account;
   }
@@ -191,12 +167,25 @@ export function checkPreconditions(): string[] {
   const problems: string[] = [];
   const real = readRealConfig();
 
-  // `onepasswordAccount` is deliberately NOT required. It used to be — a
-  // multi-account machine could not select an account without a TTY, so every
-  // arm failed. `resolveDesktopAccount` now falls back to `op account get`, so
-  // an unset account is a SUPPORTED state and the suite must run in it. That is
-  // the state `op-no-account` exists to cover; requiring it here would refuse to
-  // run in exactly the configuration the fix makes work.
+  // `onepasswordAccount` IS required on a multi-account machine, because that is
+  // now the only way an account gets chosen — claudish no longer infers one.
+  // Only demand it when it would actually matter: a single-account machine
+  // resolves unambiguously without it, and a service-account token needs no
+  // desktop account at all.
+  if (
+    !process.env.OP_SERVICE_ACCOUNT_TOKEN &&
+    !process.env.OP_ACCOUNT &&
+    typeof real.onepasswordAccount !== "string" &&
+    (defaultOpAccountLister()?.length ?? 0) > 1
+  ) {
+    problems.push(
+      "This machine has several 1Password accounts and `~/.claudish/config.json` " +
+        "has no `onepasswordAccount`. claudish no longer guesses which one holds " +
+        "your keys, so every op arm would fail at account selection. Run " +
+        "`claudish config`, pick an account (it saves), or set OP_ACCOUNT."
+    );
+  }
+
   const envs = real.onepasswordEnvironments;
   if (!Array.isArray(envs) || envs.length === 0) {
     problems.push(

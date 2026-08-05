@@ -20,7 +20,6 @@ import {
   type AccountInfo,
   OP_REF_RE,
   type OpAccountLister,
-  type OpDefaultAccountProbe,
   type SdkAuth,
   type SdkClientFactory,
   type SdkClientLike,
@@ -243,10 +242,6 @@ function lister(accounts: AccountInfo[] | null): OpAccountLister {
   return () => accounts;
 }
 
-function probe(uuid: string | null): OpDefaultAccountProbe {
-  return () => uuid;
-}
-
 const ACCT_A: AccountInfo = {
   url: "team-a.1password.com",
   email: "a@example.com",
@@ -298,25 +293,28 @@ describe("resolveDesktopAccount", () => {
       env: {},
       interactive: false,
       opAccountLister: lister([ACCT_A, ACCT_B]),
-      opDefaultAccountProbe: probe(null),
     });
     expect("error" in out).toBe(true);
     if ("error" in out) {
       expect(out.error).toMatch(/multiple 1password accounts/i);
+      expect(out.error).toContain("none is configured");
       expect(out.error).toContain(ACCT_A.url);
       expect(out.error).toContain(ACCT_B.url);
       expect(out.error).toContain("OP_ACCOUNT");
     }
   });
 
-  test("(d) multiple + non-interactive + matching op default → its url", () => {
+  test("(d) multiple + non-interactive never guesses from op authentication state", () => {
+    // `op account get` reports the most recently authenticated account, not a default;
+    // using it would silently move claudish's binding whenever that state drifts.
     const out = resolveDesktopAccount({
       env: {},
       interactive: false,
       opAccountLister: lister([ACCT_A, ACCT_B]),
-      opDefaultAccountProbe: probe(ACCT_B.account_uuid),
     });
-    expect(out).toEqual({ accountName: ACCT_B.url });
+    expect("error" in out).toBe(true);
+    expect("accountName" in out).toBe(false);
+    if ("error" in out) expect(out.error).toContain("none is configured");
   });
 
   test("(c) op absent (lister → null) → generic error", () => {
@@ -385,9 +383,8 @@ describe("resolveSdkAuth", () => {
         env: {},
         interactive: false,
         opAccountLister: lister([ACCT_A, ACCT_B]),
-        opDefaultAccountProbe: probe(null),
       })
-    ).rejects.toThrow(/OP_ACCOUNT|multiple/i);
+    ).rejects.toThrow(/none is configured/i);
   });
 
   test("op absent → throws", async () => {

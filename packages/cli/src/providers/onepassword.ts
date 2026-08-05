@@ -1616,19 +1616,17 @@ export interface AccountInfo {
 export type OpAccountLister = () => AccountInfo[] | null;
 
 /**
- * Ceiling on the optional read-only `op` probes.
+ * Ceiling on the optional read-only `op account list` probe.
  *
- * These spawns were previously unbounded, which made them a HANG, not a slow
- * path: `op` blocks while the desktop app is locked or its keychain is cold, and
- * `spawnSync` with no timeout waits forever. Every non-interactive caller
- * (MCP server, --stdin children, team spawns, channel sessions, serve) reaches
- * `defaultOpDefaultAccountProbe`, so a locked Mac could stall claudish before it
- * ever produced an error to act on.
+ * The spawn was previously unbounded, which made it a HANG, not a slow path:
+ * `op` blocks while the desktop app is locked or its keychain is cold, and
+ * `spawnSync` with no timeout waits forever. Measured on a healthy machine this
+ * call still takes 7-13s, so "it's fast" was never a safe assumption.
  *
- * Both probes are OPTIONAL and read-only: a null result falls through to the
- * existing actionable "set OP_ACCOUNT" message. So cutting a genuinely slow-but-
- * working `op` short costs a remediation hint the user can follow, while leaving
- * it unbounded costs an indefinite hang with no output at all. Bounded wins.
+ * The probe is OPTIONAL and read-only: a null result falls through to the
+ * actionable "set OP_ACCOUNT" message. So cutting a genuinely slow-but-working
+ * `op` short costs a remediation hint the user can follow, while leaving it
+ * unbounded costs an indefinite hang with no output at all. Bounded wins.
  *
  * `defaultScreenLockProbe` has carried `timeout: 2000` since it was written;
  * these two simply never got the same treatment. 5s rather than 2s because `op`
@@ -1666,31 +1664,6 @@ export const defaultOpAccountLister: OpAccountLister = () => {
 };
 
 /**
- * Reads `op`'s OWN notion of the current account — the one a bare `op read` or
- * `op run` would use. Returns its account uuid, or null when `op` is absent,
- * signed out, or answers with anything unexpected.
- *
- * Read-only and never throws, exactly like `defaultOpAccountLister`. Kept
- * separate from it because they answer different questions: `list` enumerates
- * what EXISTS, `get` names which one is CURRENT.
- */
-export type OpDefaultAccountProbe = () => string | null;
-
-export const defaultOpDefaultAccountProbe: OpDefaultAccountProbe = () => {
-  try {
-    const res = spawnSync("op", ["account", "get", "--format=json"], {
-      encoding: "utf-8",
-      timeout: OP_PROBE_TIMEOUT_MS,
-    });
-    if (res.error || res.status !== 0) return null;
-    const parsed = JSON.parse(res.stdout ?? "") as { id?: unknown };
-    return typeof parsed.id === "string" && parsed.id ? parsed.id : null;
-  } catch {
-    return null;
-  }
-};
-
-/**
  * The outcome of desktop-account resolution. Either a concrete account name to
  * use with DesktopAuth, an actionable error string, or a request for the caller
  * to run an interactive picker over the listed accounts (and save the choice).
@@ -1721,7 +1694,6 @@ export function resolveDesktopAccount(
     configAccount?: string;
     interactive?: boolean;
     opAccountLister?: OpAccountLister;
-    opDefaultAccountProbe?: OpDefaultAccountProbe;
   } = {}
 ): DesktopAccountResult {
   const env = opts.env ?? process.env;
@@ -1768,34 +1740,25 @@ export function resolveDesktopAccount(
     return { needsPicker: accounts };
   }
 
-  // (d) Non-interactive with several accounts. Ask `op` which one IT would use.
+  // (d) Several accounts, no TTY, nothing declared. This is genuinely ambiguous
+  // and claudish says so rather than choosing.
   //
-  // This is the case that made 1Password unusable from every non-TTY caller —
-  // the MCP server, --stdin children, team spawns, channel sessions, serve. The
-  // old code hard-failed here, which meant `createClient()` was never reached;
-  // since the desktop approval dialog is raised BY that call, no dialog could
-  // ever appear and the failure looked like silence rather than an error.
+  // A previous version asked `op account get` here and used whatever it named.
+  // That was wrong, and the reason is worth keeping: `op` has no concept of a
+  // "default account". `op account get` reports `system_auth_latest_signin` from
+  // ~/.config/op/config — the account you MOST RECENTLY AUTHENTICATED WITH. So
+  // the binding moved whenever the user signed into some other account for
+  // unrelated work, and claudish would silently start looking for its keys in a
+  // different account: a miss, or worse a hit on a same-named key holding a
+  // different value. A credential source must not drift as a side effect of
+  // something you did elsewhere.
   //
-  // `op account get` names the account a bare `op read` / `op run` resolves to,
-  // so deferring to it makes claudish agree with the tool the user already
-  // configured rather than inventing its own policy. It is a read-only probe and
-  // costs one fast spawn only on this branch — the single-account, OP_ACCOUNT,
-  // and saved-config paths never reach it.
-  //
-  // The probe returns an account UUID; DesktopAuth wants the account URL, so the
-  // uuid is matched back against the enumerated list. A probe that fails, or
-  // names an account not in the list, falls through to the original error — this
-  // can only turn a guaranteed failure into a success, never the reverse.
-  const probe = opts.opDefaultAccountProbe ?? defaultOpDefaultAccountProbe;
-  const defaultUuid = probe();
-  if (defaultUuid) {
-    const match = accounts.find((a) => a.account_uuid === defaultUuid);
-    if (match) return { accountName: match.url };
-  }
-
+  // The fix is to DECLARE the account (OP_ACCOUNT, or `onepasswordAccount` —
+  // which the interactive picker writes for you), all checked above. An
+  // undeclared multi-account machine is an error, not a coin flip.
   const listing = accounts.map((a) => `  - ${a.url}${a.email ? ` (${a.email})` : ""}`).join("\n");
   return {
-    error: `Multiple 1Password accounts are available, this is a non-interactive session, and \`op\` could not name a default account. ${remediation}\nAccounts:\n${listing}`,
+    error: `Multiple 1Password accounts are available and none is configured, so claudish cannot tell which one holds your keys. ${remediation}\nAccounts:\n${listing}`,
   };
 }
 
@@ -1820,7 +1783,6 @@ export async function resolveSdkAuth(
     configAccount?: string;
     interactive?: boolean;
     opAccountLister?: OpAccountLister;
-    opDefaultAccountProbe?: OpDefaultAccountProbe;
     /**
      * Invoked when multiple accounts exist in an interactive session. Returns
      * the chosen account URL (the caller is expected to persist it), or
@@ -1841,7 +1803,6 @@ export async function resolveSdkAuth(
     configAccount: opts.configAccount,
     interactive: opts.interactive,
     opAccountLister: opts.opAccountLister,
-    opDefaultAccountProbe: opts.opDefaultAccountProbe,
   });
 
   if ("accountName" in result) {

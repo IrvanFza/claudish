@@ -254,17 +254,30 @@ function announceAndCheck(authMode: AuthMode, armConfig: Record<string, unknown>
     log("");
   }
 
-  // `onepasswordAccount` is deliberately NOT required. It used to be — a
-  // multi-account machine could not pick an account without a TTY, so every model
-  // failed to get a key. `resolveDesktopAccount` now falls back to
-  // `op account get`, so an unset account is a supported state and madbench must
-  // run in it. Requiring it here would quietly force the very manual config edit
-  // the fix exists to remove.
-  if (authMode !== "desktop" || armConfig.onepasswordEnvironments) return;
-  log("❌ No `onepasswordEnvironments` in ~/.claudish/config.json and no service-account token.");
-  log("   There is no 1Password source to resolve provider keys from, so the models");
-  log("   would fail for a reason unrelated to what this benchmark measures.");
-  process.exit(2);
+  // Two separate preconditions, and it is worth keeping them separate: one is
+  // about having a SOURCE to read from, the other about knowing WHICH ACCOUNT
+  // holds it. Failing either produces model errors that look like routing bugs.
+  if (authMode !== "desktop") return;
+
+  if (!armConfig.onepasswordEnvironments) {
+    log("❌ No `onepasswordEnvironments` in ~/.claudish/config.json and no service-account token.");
+    log("   There is no 1Password source to resolve provider keys from, so the models");
+    log("   would fail for a reason unrelated to what this benchmark measures.");
+    process.exit(2);
+  }
+
+  // claudish no longer infers an account. It briefly did, via `op account get`,
+  // which reports the account most recently AUTHENTICATED with — so the binding
+  // drifted whenever the user signed into another account for unrelated work.
+  // Declaring it is now the only way, and a multi-account machine without one
+  // cannot resolve a single key.
+  if (!process.env.OP_ACCOUNT && !armConfig.onepasswordAccount) {
+    log("❌ No `onepasswordAccount` in ~/.claudish/config.json and no OP_ACCOUNT.");
+    log("   If this machine has several 1Password accounts, claudish cannot tell which");
+    log("   one holds your keys and will not guess. Run `claudish config` and pick one");
+    log("   (it saves), or set OP_ACCOUNT.");
+    process.exit(2);
+  }
 }
 
 async function main(): Promise<void> {

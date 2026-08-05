@@ -105,33 +105,39 @@ export const SCENARIOS: Scenario[] = [
       }),
   },
 
-  // `op:client-handshake` is createClient(), the call that raises the desktop
-  // dialog. Its absence was the entire original bug: without a handshake no
-  // dialog could ever appear, so the failure looked like silence, not an error.
+  // `op-cold`, with `onepasswordAccount: "inherit"`, now covers the success path
+  // and depends on the machine having `onepasswordAccount` set. checkPreconditions
+  // in env.ts enforces exactly that and refuses to run otherwise.
   {
     id: "op-no-account",
     group: "op",
-    description: "A missing account pin is resolved from op's own default account",
+    description: "A missing account pin is an error, not a guess",
     config: {
       onepasswordAccount: null,
       onepasswordEnvironments: "inherit",
     },
     calls: [createSessionCall()],
-    order: 15,
+    cooldownSeconds: 45,
+    order: 90,
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
-        assertSpanPresent(observation, failures, "op:client-handshake");
-        assertSpanPresent(observation, failures, "op:environments.getVariables");
-
-        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
-        if (authUnavailable.length > 0) {
+        if (observation.hasSpan("op:client-handshake")) {
           failures.push(
-            `expected no 1Password auth-unavailable marker, observed ${authUnavailable.length} matching stderr line(s)`
+            `expected no op:client-handshake span without an account pin, observed spans: ${observedSpanNames(observation)}`
           );
         }
-        if (observation.timedOut) {
+
+        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
+        if (authUnavailable.length === 0) {
           failures.push(
-            `expected default-account resolution to finish before its timeout, observed timedOut=${observation.timedOut}`
+            "expected the 1Password auth-unavailable stderr marker, observed 0 matching lines"
+          );
+        }
+
+        const resolveRequests = observation.resolveRequests();
+        if (resolveRequests.length > 0) {
+          failures.push(
+            `expected no resolved 1Password keys without an account pin, observed resolve requests: ${resolveRequests.join(", ")}`
           );
         }
       }),
