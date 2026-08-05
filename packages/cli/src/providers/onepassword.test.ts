@@ -20,6 +20,7 @@ import {
   type AccountInfo,
   OP_REF_RE,
   type OpAccountLister,
+  type OpDefaultAccountProbe,
   type SdkAuth,
   type SdkClientFactory,
   type SdkClientLike,
@@ -242,6 +243,10 @@ function lister(accounts: AccountInfo[] | null): OpAccountLister {
   return () => accounts;
 }
 
+function probe(uuid: string | null): OpDefaultAccountProbe {
+  return () => uuid;
+}
+
 const ACCT_A: AccountInfo = {
   url: "team-a.1password.com",
   email: "a@example.com",
@@ -293,6 +298,7 @@ describe("resolveDesktopAccount", () => {
       env: {},
       interactive: false,
       opAccountLister: lister([ACCT_A, ACCT_B]),
+      opDefaultAccountProbe: probe(null),
     });
     expect("error" in out).toBe(true);
     if ("error" in out) {
@@ -301,6 +307,16 @@ describe("resolveDesktopAccount", () => {
       expect(out.error).toContain(ACCT_B.url);
       expect(out.error).toContain("OP_ACCOUNT");
     }
+  });
+
+  test("(d) multiple + non-interactive + matching op default → its url", () => {
+    const out = resolveDesktopAccount({
+      env: {},
+      interactive: false,
+      opAccountLister: lister([ACCT_A, ACCT_B]),
+      opDefaultAccountProbe: probe(ACCT_B.account_uuid),
+    });
+    expect(out).toEqual({ accountName: ACCT_B.url });
   });
 
   test("(c) op absent (lister → null) → generic error", () => {
@@ -365,7 +381,12 @@ describe("resolveSdkAuth", () => {
 
   test("multiple + non-interactive → throws actionable error", async () => {
     expect(
-      resolveSdkAuth({ env: {}, interactive: false, opAccountLister: lister([ACCT_A, ACCT_B]) })
+      resolveSdkAuth({
+        env: {},
+        interactive: false,
+        opAccountLister: lister([ACCT_A, ACCT_B]),
+        opDefaultAccountProbe: probe(null),
+      })
     ).rejects.toThrow(/OP_ACCOUNT|multiple/i);
   });
 
@@ -1344,7 +1365,9 @@ describe("isTransientSdkError", () => {
     // The real 1Password SDK message when the user clicks Cancel/Deny. Retrying
     // it re-opens the dialog they just dismissed — must be terminal, not transient.
     expect(
-      isTransientSdkError(new Error("Error { msg: Denied authorization for SDK client, inner: None }"))
+      isTransientSdkError(
+        new Error("Error { msg: Denied authorization for SDK client, inner: None }")
+      )
     ).toBe(false);
     expect(isTransientSdkError(new Error("Denied authorization for SDK client"))).toBe(false);
   });
@@ -1576,8 +1599,7 @@ describe("withSdkRetry locked-screen denial recovery", () => {
 describe("appLockedFromSettings", () => {
   const ENABLED = "developers.sdkSharedLockState.enabled";
   const LAST_UNLOCK = "security.authenticatedUnlock.deviceBasedUnlock.lastUnlock";
-  const ASK_UNLOCK_AFTER =
-    "security.authenticatedUnlock.deviceBasedUnlock.askUnlockAfter";
+  const ASK_UNLOCK_AFTER = "security.authenticatedUnlock.deviceBasedUnlock.askUnlockAfter";
 
   function settings(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
@@ -1648,12 +1670,8 @@ describe("appLockedFromSettings", () => {
   test("returns false when lastUnlock or askUnlockAfter is not a number", () => {
     expect(appLockedFromSettings(settings({ [LAST_UNLOCK]: "500" }), 10_000)).toBe(false);
     expect(appLockedFromSettings(settings({ [LAST_UNLOCK]: null }), 10_000)).toBe(false);
-    expect(
-      appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: "480" }), 10_000)
-    ).toBe(false);
-    expect(appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: null }), 10_000)).toBe(
-      false
-    );
+    expect(appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: "480" }), 10_000)).toBe(false);
+    expect(appLockedFromSettings(settings({ [ASK_UNLOCK_AFTER]: null }), 10_000)).toBe(false);
   });
 
   test("returns false when settings is null", () => {
