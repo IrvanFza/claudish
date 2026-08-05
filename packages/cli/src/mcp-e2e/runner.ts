@@ -194,20 +194,12 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
   const t0 = Date.now();
 
   log(`\n▶ ${sc.id} — ${sc.description}`);
-  // Printed BEFORE the arm runs, so the expectation is on screen when a dialog
-  // appears rather than in a report read afterwards.
-  const d = sc.expectedDialogs;
-  if (d) {
-    const parts = [
-      `${d.onepassword} × 1Password approval`,
-      `${d.macos} × macOS permission${d.macos > 0 ? "  ⚠ should be 0" : ""}`,
-    ];
-    log(`  expect: ${parts.join("  ·  ")}${d.note ? `  — ${d.note}` : ""}`);
-    if (d.onepassword === 0 && d.macos === 0) {
-      log("  → any dialog during this arm is a BUG. Note which one you saw.");
-    }
-  }
-  if (gapBeforeSeconds > 0) log(`  (idled ${gapBeforeSeconds}s before this arm)`);
+  // The expected dialog counts live in the DESCRIPTION, printed on the line
+  // above. They used to also print here from `expectedDialogs`, which meant two
+  // sources rendering the same fact — and they promptly disagreed on screen when
+  // one was updated and the other was not. One source, on the line the operator
+  // already reads.
+  if (gapBeforeSeconds > 0) log(`  (idled ${gapBeforeSeconds}s before this scenario)`);
 
   const config = buildArmConfig(sc.config);
   const configPath = join(armDir, "config.json");
@@ -423,7 +415,7 @@ function assertPreconditions(): void {
   if (problems.length === 0) return;
   log("\n❌ preconditions not met:");
   for (const p of problems) log(`   - ${p}`);
-  log("\nRefusing to run — every arm would fail for the same reason.");
+  log("\nRefusing to run — every scenario would fail for the same reason.");
   process.exit(2);
 }
 
@@ -435,21 +427,36 @@ async function main(): Promise<void> {
   assertPreconditions();
 
   const selected = selectScenarios();
+  if (has("list")) {
+    log("\nAvailable scenarios (run one with:  bun run test:mcp -- --scenario <id>)\n");
+    for (const sc of selected) {
+      const d = sc.expectedDialogs;
+      const cost = d ? `${d.onepassword}×1Password ${d.macos}×macOS` : "unknown";
+      log(`  ${sc.id.padEnd(18)} ${cost.padEnd(24)} ${sc.description}`);
+    }
+    log("");
+    process.exit(0);
+  }
   if (selected.length === 0) {
     log(`No scenarios matched (scenario=${onlyScenario ?? "*"} group=${onlyGroup ?? "*"}).`);
     process.exit(2);
   }
-  log(`running ${selected.length} arm(s): ${selected.map((s) => s.id).join(", ")}`);
+  log(`running ${selected.length} scenario(s): ${selected.map((s) => s.id).join(", ")}`);
 
   const before = md5(REAL_CONFIG_PATH);
   log(`real config md5 before: ${before}`);
 
   const verdicts: Verdict[] = [];
   let lastCooldown = 0;
-  for (const sc of selected) {
+  for (const [i, sc] of selected.entries()) {
     verdicts.push(await runScenario(sc, lastCooldown));
     lastCooldown = sc.cooldownSeconds ?? 0;
-    if (lastCooldown > 0) {
+    // The cooldown protects the NEXT arm from 1Password's 15s denial-suppression
+    // window. After the last arm there is no next arm, so waiting is pure dead
+    // time — and it dominated single-arm runs: 22s of work followed by 45s of
+    // nothing, which is most of the reason verifying one fix felt slow.
+    const isLast = i === selected.length - 1;
+    if (lastCooldown > 0 && !isLast) {
       log(`  ⏳ cooling down ${lastCooldown}s (1Password denial suppression window)`);
       await sleep(lastCooldown * 1000);
     }

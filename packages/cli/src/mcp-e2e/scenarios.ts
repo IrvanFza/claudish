@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { ObservationView, Scenario } from "./types.js";
 
 const BUN_DIR = dirname(process.execPath);
-const AUTH_UNAVAILABLE = /\[claudish\] 1Password auth unavailable, skipping op:\/\/ keys:/;
+const ENVIRONMENT_SKIPPED = /1Password environment skipped/;
 const SDK_DENIED = /Denied authorization for SDK client/;
 
 function createSessionCall() {
@@ -62,27 +62,30 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-cold",
     group: "op",
-    description: "Cold MCP credential resolution succeeds through the configured 1Password account",
+    description:
+      "Cold MCP credential resolution succeeds through the configured 1Password account [expect 1×1Password]",
     config: {
       onepasswordAccount: "inherit",
       onepasswordEnvironments: "inherit",
     },
     calls: [createSessionCall()],
     order: 10,
+    // The zero macOS prompts are the payoff: a declared account skips `op`
+    // entirely, leaving only the 1Password approval the resolution actually needs.
     expectedDialogs: {
       onepassword: 1,
       macos: 0,
-      note: "parent handshakes once; the child inherits keys via prehydration",
+      note: "the declared account skips op account enumeration; the parent needs one 1Password approval and prehydrates the child",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         assertSpanPresent(observation, failures, "op:client-handshake");
         assertSpanPresent(observation, failures, "op:environments.getVariables");
 
-        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
-        if (authUnavailable.length > 0) {
+        const environmentSkipped = observation.grepStderr(ENVIRONMENT_SKIPPED);
+        if (environmentSkipped.length > 0) {
           failures.push(
-            `expected no 1Password auth-unavailable marker, observed ${authUnavailable.length} matching stderr line(s)`
+            `expected no 1Password environment-skipped marker, observed ${environmentSkipped.length} matching stderr line(s)`
           );
         }
 
@@ -116,7 +119,7 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-no-account",
     group: "op",
-    description: "A missing account pin is an error, not a guess",
+    description: "A missing account pin is an error, not a guess [expect 2×macOS]",
     config: {
       onepasswordAccount: null,
       onepasswordEnvironments: "inherit",
@@ -126,28 +129,33 @@ export const SCENARIOS: Scenario[] = [
     order: 90,
     expectedDialogs: {
       onepassword: 0,
-      macos: 0,
-      note: "auth fails at account selection — createClient is never reached",
+      macos: 2,
+      note: "two macOS prompts are the price of enumerating accounts in the parent and child when none is declared; declaring one removes them",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
+        // op:resolve records attempted names, not successful resolution; absence
+        // of later-stage spans proves that client and environment work never ran.
         if (observation.hasSpan("op:client-handshake")) {
           failures.push(
             `expected no op:client-handshake span without an account pin, observed spans: ${observedSpanNames(observation)}`
           );
         }
 
-        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
-        if (authUnavailable.length === 0) {
+        if (observation.hasSpan("op:environments.getVariables")) {
           failures.push(
-            "expected the 1Password auth-unavailable stderr marker, observed 0 matching lines"
+            `expected no op:environments.getVariables span without an account pin, observed spans: ${observedSpanNames(observation)}`
           );
         }
 
-        const resolveRequests = observation.resolveRequests();
-        if (resolveRequests.length > 0) {
+        const environmentSkipped = observation.grepStderr(ENVIRONMENT_SKIPPED);
+        if (environmentSkipped.length === 0) {
           failures.push(
-            `expected no resolved 1Password keys without an account pin, observed resolve requests: ${resolveRequests.join(", ")}`
+            "expected the 1Password environment-skipped stderr marker, observed 0 matching lines"
+          );
+        } else if (!environmentSkipped.some((line) => /none is configured/.test(line))) {
+          failures.push(
+            `expected the 1Password environment-skipped stderr line to say none is configured, observed: ${environmentSkipped.join(" | ")}`
           );
         }
       }),
@@ -163,7 +171,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-env-wins",
     group: "op",
-    description: "Explicit provider keys win without consulting 1Password",
+    description:
+      "Explicit provider keys win without consulting 1Password [expect NO dialogs — any popup here is a bug]",
     env: {
       ZAI_CODING_API_KEY: "fake-e2e-value-not-a-secret",
       GLM_API_KEY: "fake-e2e-value-not-a-secret",
@@ -178,7 +187,7 @@ export const SCENARIOS: Scenario[] = [
     expectedDialogs: {
       onepassword: 0,
       macos: 0,
-      note: "every chain key is already in env, so 1Password is never consulted",
+      note: "every chain key is already in env, so neither 1Password nor op account enumeration runs",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
@@ -200,7 +209,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-disabled",
     group: "op",
-    description: "CLAUDISH_DISABLE_OP prevents all 1Password work and SDK loading",
+    description:
+      "CLAUDISH_DISABLE_OP prevents all 1Password work and SDK loading [expect NO dialogs — any popup here is a bug]",
     env: { CLAUDISH_DISABLE_OP: "1" },
     config: {
       onepasswordAccount: "inherit",
@@ -214,7 +224,7 @@ export const SCENARIOS: Scenario[] = [
     expectedDialogs: {
       onepassword: 0,
       macos: 0,
-      note: "CLAUDISH_DISABLE_OP=1 in parent and child — any dialog here is a real bug",
+      note: "CLAUDISH_DISABLE_OP=1 prevents 1Password work and op account enumeration in both parent and child",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
@@ -238,7 +248,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-no-op-binary",
     group: "op",
-    description: "A missing op CLI reports that account selection is unavailable",
+    description:
+      "A missing op CLI reports that account selection is unavailable [expect NO dialogs — any popup here is a bug]",
     env: { PATH: BUN_DIR },
     config: {
       onepasswordAccount: null,
@@ -250,7 +261,7 @@ export const SCENARIOS: Scenario[] = [
     expectedDialogs: {
       onepassword: 0,
       macos: 0,
-      note: "no op on PATH, so there is nothing to spawn and no account to select",
+      note: "no op binary is available on PATH, so no account lister or 1Password client can be spawned",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
@@ -263,10 +274,18 @@ export const SCENARIOS: Scenario[] = [
           );
         }
 
-        const authUnavailable = observation.grepStderr(AUTH_UNAVAILABLE);
-        if (authUnavailable.length === 0) {
+        const environmentSkipped = observation.grepStderr(ENVIRONMENT_SKIPPED);
+        if (environmentSkipped.length === 0) {
           failures.push(
-            "expected the 1Password auth-unavailable stderr marker, observed 0 matching lines"
+            "expected the 1Password environment-skipped stderr marker, observed 0 matching lines"
+          );
+        } else if (
+          !environmentSkipped.some((line) =>
+            /could not determine which 1Password account/i.test(line)
+          )
+        ) {
+          failures.push(
+            `expected the 1Password environment-skipped stderr line to say could not determine which 1Password account, observed: ${environmentSkipped.join(" | ")}`
           );
         }
       }),
@@ -278,7 +297,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-placeholder",
     group: "op",
-    description: "A literal OP_ACCOUNT placeholder does not resolve the provider key",
+    description:
+      "A literal OP_ACCOUNT placeholder does not resolve the provider key [expect 2×macOS]",
     env: { OP_ACCOUNT: "${OP_ACCOUNT}" },
     config: {
       onepasswordAccount: null,
@@ -289,8 +309,8 @@ export const SCENARIOS: Scenario[] = [
     order: 95,
     expectedDialogs: {
       onepassword: 0,
-      macos: 0,
-      note: "the literal ${OP_ACCOUNT} placeholder is rejected, so auth fails first",
+      macos: 2,
+      note: "two macOS prompts are the price of enumerating accounts in the parent and child when the placeholder leaves none declared; declaring one removes them",
     },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
@@ -308,7 +328,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "op-concurrent",
     group: "op",
-    description: "Concurrent MCP servers serialize the 1Password SDK handshake across processes",
+    description:
+      "Concurrent MCP servers serialize the 1Password SDK handshake across processes [expect 6×1Password]",
     config: {
       onepasswordAccount: "inherit",
       onepasswordEnvironments: "inherit",
@@ -323,7 +344,7 @@ export const SCENARIOS: Scenario[] = [
     expectedDialogs: {
       onepassword: 6,
       macos: 0,
-      note: "six independent processes, one handshake each, serialized by the lock",
+      note: "six independent processes need exactly six 1Password approvals; the declared account avoids op account enumeration",
     },
     assert: (observations) => {
       const failures: string[] = [];
