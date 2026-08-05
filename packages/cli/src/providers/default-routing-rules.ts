@@ -33,8 +33,19 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   "o1-*": ["openai-codex", "openai", "openrouter"],
   "o3-*": ["openai-codex", "openai", "openrouter"],
 
-  // Google Gemini: Code Assist subscription, direct API, OpenRouter.
-  "gemini-*": ["gemini-codeassist", "google", "openrouter"],
+  // Google Gemini: Antigravity subscription, direct API, OpenRouter.
+  //
+  // `antigravity` holds the subscription slot that `gemini-codeassist` used to.
+  // Google retired Code Assist for individuals (UNSUPPORTED_CLIENT for
+  // gemini-cli's OAuth client), so leaving the retired provider at the head of
+  // this chain cost a guaranteed-failing round-trip and then silently billed the
+  // metered `google` API for a model the user's subscription already covers.
+  //
+  // Antigravity's served ids carry a reasoning-tier suffix
+  // (`gemini-3.6-flash-high`); the transport resolves a bare family name against
+  // the account's LIVE served set, so a bare `gemini-3.6-flash` routes correctly
+  // here. No token → route() filters the candidate out and `google` takes over.
+  "gemini-*": ["antigravity", "google", "openrouter"],
 
   // xAI Grok: direct API, then OpenRouter (no subscription tier).
   "grok-*": ["x-ai", "openrouter"],

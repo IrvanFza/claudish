@@ -100,9 +100,9 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["openai-codex", "openai", "openrouter"]);
   });
 
-  test("'gemini-2.0-flash' matches gemini-* → [gemini-codeassist, google, openrouter]", () => {
+  test("'gemini-2.0-flash' matches gemini-* → [antigravity, google, openrouter]", () => {
     const matched = matchRoutingRule("gemini-2.0-flash", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["gemini-codeassist", "google", "openrouter"]);
+    expect(matched).toEqual(["antigravity", "google", "openrouter"]);
   });
 
   test("'grok-4' matches grok-* → [x-ai, openrouter]", () => {
@@ -205,9 +205,9 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["openai-codex", "openai", "openrouter"]);
   });
 
-  test("'Gemini-2.5-Pro' matches gemini-* (case-insensitive) → [gemini-codeassist, google, openrouter]", () => {
+  test("'Gemini-2.5-Pro' matches gemini-* (case-insensitive) → [antigravity, google, openrouter]", () => {
     const matched = matchRoutingRule("Gemini-2.5-Pro", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["gemini-codeassist", "google", "openrouter"]);
+    expect(matched).toEqual(["antigravity", "google", "openrouter"]);
   });
 
   test("'glm-4.6' matches glm-* → [glm-coding, glm, openrouter]", () => {
