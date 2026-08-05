@@ -172,18 +172,33 @@ export function checkPreconditions(): string[] {
   // Only demand it when it would actually matter: a single-account machine
   // resolves unambiguously without it, and a service-account token needs no
   // desktop account at all.
-  if (
+  const needsDeclaredAccount =
     !process.env.OP_SERVICE_ACCOUNT_TOKEN &&
     !process.env.OP_ACCOUNT &&
-    typeof real.onepasswordAccount !== "string" &&
-    (defaultOpAccountLister()?.length ?? 0) > 1
-  ) {
-    problems.push(
-      "This machine has several 1Password accounts and `~/.claudish/config.json` " +
-        "has no `onepasswordAccount`. claudish no longer guesses which one holds " +
-        "your keys, so every op arm would fail at account selection. Run " +
-        "`claudish config`, pick an account (it saves), or set OP_ACCOUNT."
-    );
+    typeof real.onepasswordAccount !== "string";
+
+  if (needsDeclaredAccount) {
+    const accounts = defaultOpAccountLister();
+    // FAIL CLOSED on `null`. The lister is bounded at 5s, and `op` is slow
+    // enough under load to blow that — measured 1.5s idle but 7-13s when the
+    // machine is busy. An earlier version wrote `(lister()?.length ?? 0) > 1`,
+    // which read a timeout as "zero accounts, nothing to worry about". So the
+    // guard went quiet exactly when the machine was loaded, which is exactly
+    // when the suite is running. It let a 7-arm run proceed with no account and
+    // report 4 confusing failures instead of one clear refusal.
+    const problem =
+      accounts === null
+        ? "Could not determine how many 1Password accounts this machine has (`op` " +
+          "did not answer in time), and `~/.claudish/config.json` has no " +
+          "`onepasswordAccount`. Refusing to run rather than guess: if there is " +
+          "more than one account, every op arm would fail at account selection."
+        : accounts.length > 1
+          ? "This machine has several 1Password accounts and `~/.claudish/config.json` " +
+            "has no `onepasswordAccount`. claudish no longer guesses which one holds " +
+            "your keys, so every op arm would fail at account selection. Run " +
+            "`claudish config`, pick an account (it saves), or set OP_ACCOUNT."
+          : undefined;
+    if (problem) problems.push(problem);
   }
 
   const envs = real.onepasswordEnvironments;

@@ -18,6 +18,7 @@
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -94,6 +95,37 @@ function md5(path: string): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * A `claudish` shim on PATH that runs THIS repo's source.
+ *
+ * The MCP server spawns its children as `spawn("claudish", …)`
+ * (`channel/session-manager.ts`, `team-orchestrator.ts`) — by NAME, resolved
+ * through PATH, with no seam. So while the harness starts the SERVER from
+ * `packages/cli/src/index.ts`, every child it spawned was the globally INSTALLED
+ * claudish. Arms asserted on dev spans from the parent while the actual model
+ * run resolved credentials with whatever version happened to be installed.
+ *
+ * That is how a deleted code path came back to life: installed 7.34.0 still
+ * contained the `op account get` probe removed from this tree, and it fired on
+ * every child spawn.
+ *
+ * Prepending this shim makes parent AND child the same code. Mirrors the
+ * fake-claudish PATH shim `session-manager.test.ts` already uses, so it is the
+ * repo's existing idiom rather than a new mechanism.
+ */
+function writeClaudishShim(): string {
+  const binDir = join(RUN_DIR, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const shim = join(binDir, "claudish");
+  writeFileSync(
+    shim,
+    `#!/bin/sh\nexec "${process.execPath}" run "${SERVER_ENTRY}" "$@"\n`,
+    "utf-8"
+  );
+  chmodSync(shim, 0o755);
+  return binDir;
+}
+
 // ── session log collection ───────────────────────────────────────────────────
 
 /** Session dirs created after `sinceMs` — the children this arm spawned. */
@@ -168,6 +200,7 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
   const configPath = join(armDir, "config.json");
   writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 
+  const shimDir = writeClaudishShim();
   const replicas = sc.concurrency ?? 1;
   const observations: Observation[] = [];
 
@@ -179,6 +212,9 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
         ...sc.env,
         // Isolation: the child reads THIS file, never ~/.claudish/config.json.
         CLAUDISH_CONFIG: configPath,
+        // Applied AFTER sc.env so an arm that narrows PATH (op-no-op-binary
+        // hides the `op` binary) still resolves `claudish` to this tree.
+        PATH: `${shimDir}:${sc.env?.PATH ?? process.env.PATH ?? ""}`,
         // Observability: flips the trace into live-print so op spans stream out.
         CLAUDISH_STARTUP_TRACE: "1",
         CLAUDISH_OP_LOCK_TRACE: "1",
