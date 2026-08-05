@@ -2,6 +2,66 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.37.0] - 2026-08-05
+
+### Bug Fixes
+
+- **v7.37.0 — 1Password works without a TTY, and stops asking twice**
+
+  claudish decided WHICH of several 1Password accounts to use only through a
+  terminal picker. With no TTY — the MCP server, `--stdin` children, `team`
+  spawns, channel sessions, `serve` — it hard-failed at account selection,
+  BEFORE `createClient()`. Since the desktop approval dialog is raised by that
+  call, no dialog could ever appear and the failure read as silence.
+
+- **The account now travels with the source.** `onepassword[]` and
+  `onepasswordEnvironments[]` each accept a bare string (unchanged) or
+  `{ id | ref, account }`. A config can finally express "these keys are in
+  account A, those in B", and a run authorizes only the accounts it actually
+  needs: one account needed is one dialog, even with several configured. The
+  add-wizard records the account it already resolved to browse vaults, instead
+  of discarding it into a global setting.
+
+- **Never infer an account.** A previous build asked `op account get` and used
+  the answer. `op` has no default account — that reports
+  `system_auth_latest_signin`, the account most recently AUTHENTICATED with — so
+  the binding silently moved whenever the user signed into another account for
+  unrelated work. Undeclared plus multi-account is now an error naming what to
+  set, and the interactive picker saves the choice so it is asked at most once.
+
+- **`--cache=false` on `op`.** `op` spawns a background cache daemon that reads
+  1Password's group container; macOS Tahoe charges a system permission prompt
+  for that ("… would like to access data from other apps") and the daemons can
+  hang. Measured: 2.767s with the daemon, 0.786s without. This was the source of
+  a storm of system prompts that looked unrelated to 1Password's own approval.
+
+- **Cache 1Password auth FAILURES, not just successes.** A broken config
+  re-resolved auth on every provider lookup — roughly 4 per model, times every
+  concurrent process — spawning `op account list` each time. One wrong setting
+  became ~24 spawns and a wall of permission dialogs.
+
+- **Guard `OP_ACCOUNT` against an unexpanded `${VAR}`**, which Claude Code passes
+  through literally into an MCP `env` block when the variable is unset.
+
+- **Surface 1Password failures in MCP tool results.** They were reported only via
+  stderr, which an MCP host captures and never shows — the reason this whole
+  class of failure presented as silence rather than an error.
+
+- **Stop three e2e tests overwriting `~/.claudish/config.json`.** A killed run
+  left the fixture permanent, which destroyed a user's 1Password configuration.
+
+### New Features
+
+- `bun run test:mcp` — 7-scenario MCP × 1Password e2e harness driving a real
+  `claudish --mcp` over stdio JSON-RPC. Each scenario declares the dialogs it
+  should raise, `--list` prices a run before you pay it, and `--scenario <id>`
+  runs one in ~22s.
+- `bun run madbench` — full-stack benchmark: a real Claude Code session through
+  the claudish MCP server to three real models, with model ids resolved by the
+  agent from the live catalog rather than pinned.
+- `bun run test:safe` — runs any command and restores `~/.claudish/config.json`
+  if it was modified.
+
 ## [7.36.0] - 2026-08-05
 
 ### Bug Fixes
