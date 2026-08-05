@@ -2,6 +2,27 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.36.0] - 2026-08-05
+
+### Bug Fixes
+
+- drive the reasoning knob from the catalog, not a 4.5/4.6 name test *(glm)* ([`fd23ca4`](https://github.com/MadAppGang/claudish/commit/fd23ca427289af9b9de6d8859031ed68532d0964))
+- bound the `op` probes — an unbounded spawn is a hang, not a slow path *(1password)* ([`7cd83d0`](https://github.com/MadAppGang/claudish/commit/7cd83d0433aad917f0edda6d11ad0429849d7946))
+- onepassword tests shelled out to the real `op` binary *(test)* ([`4726d3d`](https://github.com/MadAppGang/claudish/commit/4726d3d9dcd8a63bb1af32a4d12c74bcd555c92d))
+
+### Documentation
+
+- update CHANGELOG.md for v7.35.0([`c678e51`](https://github.com/MadAppGang/claudish/commit/c678e51cb430c01e9fedd4c0a1295e37b3494647))
+
+### New Features
+
+- send context fill percent — absolute tokens were the wrong unit *(telemetry)* ([`8a0efba`](https://github.com/MadAppGang/claudish/commit/8a0efba457d82e89fbcef3bd395dc6c5c7b3748a))
+
+### Other Changes
+
+- v7.36.0([`5c9ec8a`](https://github.com/MadAppGang/claudish/commit/5c9ec8aa14b8ceeba9d129d61df651a72935da09))
+- make the lint gate pass, and stop one rule fighting another([`1495fb3`](https://github.com/MadAppGang/claudish/commit/1495fb3217f24f4d70b60ef1c8b067dabfd29f8c))
+
 ## [7.35.0] - 2026-08-04
 
 ### Documentation
