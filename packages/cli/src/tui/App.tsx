@@ -226,6 +226,10 @@ export function App({ requestLogin }: AppProps = {}) {
   const [opKindCursor, setOpKindCursor] = useState(0);
   const [opAccountCursor, setOpAccountCursor] = useState(0);
   const [opAccounts, setOpAccounts] = useState<AccountInfo[]>([]);
+  // The account the add-wizard is browsing. Set by acquireOpAuth, written onto
+  // the entry by runOpAdd. A ref (not state) on purpose: it must be readable
+  // synchronously inside runOpAdd without waiting for a re-render.
+  const opActiveAccount = useRef<string | undefined>(undefined);
   const [opTestResults, setOpTestResults] = useState<OpTestResultsMap>({});
   const [opPendingKind, setOpPendingKind] = useState<OpKind>("ref");
   const [opPendingValue, setOpPendingValue] = useState("");
@@ -554,7 +558,7 @@ export function App({ requestLogin }: AppProps = {}) {
    * the pick_op_account key handler resolves with the chosen url.
    */
   const acquireOpAuth = useCallback(async () => {
-    return resolveSdkAuth({
+    const auth = await resolveSdkAuth({
       interactive: true,
       configAccount: readOnepasswordAccount(),
       onNeedsPicker: (accounts) =>
@@ -571,6 +575,13 @@ export function App({ requestLogin }: AppProps = {}) {
           setMode("pick_op_account");
         }),
     });
+    // Remember which account this wizard is browsing, so the entry it creates
+    // can record it. The wizard ALREADY had to resolve an account to call
+    // listVaults — discarding it into a global was the whole reason a config
+    // could not express two accounts, and the reason a fresh machine got an
+    // account prompt for a question the wizard had just answered internally.
+    opActiveAccount.current = auth.kind === "desktop" ? auth.accountName : undefined;
+    return auth;
   }, []);
 
   /**
@@ -674,9 +685,9 @@ export function App({ requestLogin }: AppProps = {}) {
         if (kind === "account") {
           saveOnepasswordAccount(value, scope);
         } else if (kind === "environment") {
-          addOnepasswordEnvironment(value, scope);
+          addOnepasswordEnvironment(value, scope, undefined, opActiveAccount.current);
         } else {
-          addOnepasswordImport(value, scope);
+          addOnepasswordImport(value, scope, undefined, opActiveAccount.current);
         }
         refreshConfig();
 

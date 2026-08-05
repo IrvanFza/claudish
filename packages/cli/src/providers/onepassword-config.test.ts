@@ -18,9 +18,13 @@ import {
   addOnepasswordEnvironment,
   addOnepasswordImport,
   clearOnepasswordAccount,
+  listOnepasswordEnvironmentEntries,
   listOnepasswordEnvironments,
+  listOnepasswordImportEntries,
   listOnepasswordImports,
+  readAllOnepasswordEnvironmentEntries,
   readAllOnepasswordEnvironments,
+  readAllOnepasswordImportEntries,
   readOnepasswordAccount,
   readOnepasswordAccountForScope,
   removeOnepasswordEnvironment,
@@ -163,6 +167,134 @@ describe("environments: add / list / remove + dedup read", () => {
 
   test("readAllOnepasswordEnvironments is empty when nothing set", () => {
     expect(readAllOnepasswordEnvironments(paths)).toEqual([]);
+  });
+});
+
+describe("account-per-source entries", () => {
+  // Regression: declared accounts must use object form without churning undeclared legacy entries.
+  test("writes account-declared objects and undeclared bare strings", () => {
+    addOnepasswordEnvironment("environment-declared", "global", paths, "a.1password.com");
+    addOnepasswordEnvironment("environment-bare", "global", paths);
+    addOnepasswordImport("op://Vault/Declared/**", "global", paths, "b.1password.com");
+    addOnepasswordImport("op://Vault/Bare/**", "global", paths);
+
+    expect(read(globalPath).onepasswordEnvironments).toEqual([
+      { id: "environment-declared", account: "a.1password.com" },
+      "environment-bare",
+    ]);
+    expect(read(globalPath).onepassword).toEqual([
+      { ref: "op://Vault/Declared/**", account: "b.1password.com" },
+      "op://Vault/Bare/**",
+    ]);
+    expect(listOnepasswordEnvironmentEntries("global", paths)).toEqual([
+      { value: "environment-declared", account: "a.1password.com" },
+      { value: "environment-bare" },
+    ]);
+    expect(listOnepasswordImportEntries("global", paths)).toEqual([
+      { value: "op://Vault/Declared/**", account: "b.1password.com" },
+      { value: "op://Vault/Bare/**" },
+    ]);
+  });
+
+  // Regression: a legacy bare source must be upgradable without manual config editing.
+  test("upgrades an existing bare value with its newly declared account", () => {
+    addOnepasswordEnvironment("environment-id", "global", paths);
+    addOnepasswordEnvironment("environment-id", "global", paths, "a.1password.com");
+    addOnepasswordImport("op://Vault/Item/**", "global", paths);
+    addOnepasswordImport("op://Vault/Item/**", "global", paths, "b.1password.com");
+
+    expect(read(globalPath).onepasswordEnvironments).toEqual([
+      { id: "environment-id", account: "a.1password.com" },
+    ]);
+    expect(read(globalPath).onepassword).toEqual([
+      { ref: "op://Vault/Item/**", account: "b.1password.com" },
+    ]);
+  });
+
+  // Regression: a repeated add must not silently rebind a source to another account.
+  test("preserves the first declared account for an existing value", () => {
+    addOnepasswordEnvironment("environment-id", "global", paths, "first.1password.com");
+    addOnepasswordEnvironment("environment-id", "global", paths, "second.1password.com");
+    addOnepasswordImport("op://Vault/Item/**", "global", paths, "first.1password.com");
+    addOnepasswordImport("op://Vault/Item/**", "global", paths, "second.1password.com");
+
+    expect(read(globalPath).onepasswordEnvironments).toEqual([
+      { id: "environment-id", account: "first.1password.com" },
+    ]);
+    expect(read(globalPath).onepassword).toEqual([
+      { ref: "op://Vault/Item/**", account: "first.1password.com" },
+    ]);
+  });
+
+  // Regression: this guards against losing account declarations when removing one source.
+  test("keeps sibling account-declared objects when removing an unrelated entry", () => {
+    writeFileSync(
+      globalPath,
+      JSON.stringify({
+        onepasswordEnvironments: [
+          "environment-remove",
+          { id: "environment-a", account: "a.1password.com" },
+          { id: "environment-b", account: "b.1password.com" },
+        ],
+        onepassword: [
+          "op://Vault/Remove/**",
+          { ref: "op://Vault/A/**", account: "a.1password.com" },
+          { ref: "op://Vault/B/**", account: "b.1password.com" },
+        ],
+      }),
+      "utf-8"
+    );
+
+    removeOnepasswordEnvironment("environment-remove", "global", paths);
+    removeOnepasswordImport("op://Vault/Remove/**", "global", paths);
+
+    expect(read(globalPath).onepasswordEnvironments).toEqual([
+      { id: "environment-a", account: "a.1password.com" },
+      { id: "environment-b", account: "b.1password.com" },
+    ]);
+    expect(read(globalPath).onepassword).toEqual([
+      { ref: "op://Vault/A/**", account: "a.1password.com" },
+      { ref: "op://Vault/B/**", account: "b.1password.com" },
+    ]);
+  });
+
+  // Regression: adding an account declaration must not hide values from legacy string callers.
+  test("keeps object-entry values visible through legacy environment readers", () => {
+    addOnepasswordEnvironment("global-object", "global", paths, "g.1password.com");
+    addOnepasswordEnvironment("shared", "global", paths, "global.1password.com");
+    addOnepasswordEnvironment("shared", "project", paths, "project.1password.com");
+    addOnepasswordEnvironment("project-object", "project", paths, "p.1password.com");
+
+    expect(listOnepasswordEnvironments("global", paths)).toEqual(["global-object", "shared"]);
+    expect(readAllOnepasswordEnvironments(paths)).toEqual([
+      "shared",
+      "project-object",
+      "global-object",
+    ]);
+  });
+
+  // Regression: global duplicates must not override a project's account binding or read order.
+  test("gives project entries precedence and permits project account re-pointing", () => {
+    addOnepasswordEnvironment("shared-environment", "global", paths, "global.1password.com");
+    addOnepasswordEnvironment("global-environment", "global", paths, "global.1password.com");
+    addOnepasswordEnvironment("shared-environment", "project", paths, "project.1password.com");
+    addOnepasswordEnvironment("project-environment", "project", paths, "project.1password.com");
+
+    addOnepasswordImport("op://Vault/Shared/**", "global", paths, "global.1password.com");
+    addOnepasswordImport("op://Vault/Global/**", "global", paths, "global.1password.com");
+    addOnepasswordImport("op://Vault/Shared/**", "project", paths, "project.1password.com");
+    addOnepasswordImport("op://Vault/Project/**", "project", paths, "project.1password.com");
+
+    expect(readAllOnepasswordEnvironmentEntries(paths)).toEqual([
+      { value: "shared-environment", account: "project.1password.com" },
+      { value: "project-environment", account: "project.1password.com" },
+      { value: "global-environment", account: "global.1password.com" },
+    ]);
+    expect(readAllOnepasswordImportEntries(paths)).toEqual([
+      { value: "op://Vault/Shared/**", account: "project.1password.com" },
+      { value: "op://Vault/Project/**", account: "project.1password.com" },
+      { value: "op://Vault/Global/**", account: "global.1password.com" },
+    ]);
   });
 });
 

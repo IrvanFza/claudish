@@ -41,11 +41,12 @@ import { join } from "node:path";
 import { activeGlobalConfigFile } from "../../config-override.js";
 import {
   readAllOnepasswordEnvironmentEntries,
+  readAllOnepasswordImportEntries,
   readOnepasswordAccount,
   saveOnepasswordAccount as saveOpConfigAccount,
 } from "../../providers/onepassword-config.js";
 import type { AccountInfo, SdkAuth, SdkClientFactory } from "../../providers/onepassword.js";
-import type { OpSourceEntry } from "../../providers/op-source-entry.js";
+import { type OpSourceEntry, groupEntriesByAccount } from "../../providers/op-source-entry.js";
 import { type SpanMeta, addSpanMeta, beginQueuedSpan, traceSpan } from "../../startup-trace.js";
 
 /**
@@ -820,6 +821,21 @@ function hasNonEnvironmentOpSources(): boolean {
   return false;
 }
 
+/**
+ * Account declared for an `onepassword[]` entry, by its ref/glob value.
+ *
+ * `apiKeys` op:// refs are deliberately absent from this map: they are keyed by
+ * env-var name and have nowhere to put an account, so they resolve through the
+ * ambient rules. Looking up by the ref VALUE means a single ref and a glob are
+ * handled by the same lookup.
+ */
+function importAccountLookup(): Map<string, string | undefined> {
+  if (testSeams?.config) return new Map();
+  const out = new Map<string, string | undefined>();
+  for (const e of readAllOnepasswordImportEntries()) out.set(e.value, e.account);
+  return out;
+}
+
 /** The actual resolution body (runs inside runOpExclusive). */
 async function resolveOpKeyForEnvVarsInner(
   wanted: Set<string>,
@@ -904,6 +920,7 @@ async function resolveOpKeyForEnvVarsInner(
 
   try {
     // 1. config single op:// refs + globs (apiKeys + onepassword[]).
+    const importAccounts = importAccountLookup();
     const collected = collectConfigImports(
       { apiKeys: cfg.apiKeys, onepassword: cfg.onepassword },
       process.env
@@ -916,13 +933,34 @@ async function resolveOpKeyForEnvVarsInner(
       if (wanted.has(envVar)) wantedRefs[envVar] = ref;
     }
     if (Object.keys(wantedRefs).length > 0) {
-      // Wrapped for lock recovery — see the note at resolveEnvironmentShared for
-      // why the wrap lives at the call site rather than inside resolveSecrets.
-      const resolved = await withSdkRetry(
-        () => resolveSecrets(wantedRefs, { auth, sdkFactory: testSeams?.sdkFactory }),
-        "op:resolve-refs"
-      );
-      Object.assign(out, resolved);
+      // Group by declared account: `resolveSecrets` takes ONE auth for the whole
+      // batch, so refs spanning two accounts must be two batches. Undeclared
+      // refs fall into the ambient bucket and behave exactly as before.
+      const refEntries = Object.entries(wantedRefs).map(([envVar, ref]) => ({
+        value: envVar,
+        ...(importAccounts.get(ref) ? { account: importAccounts.get(ref) as string } : {}),
+      }));
+      const { byAccount, undeclared } = groupEntriesByAccount(refEntries, (e) => e.account);
+      const batches: { auth: SdkAuth | undefined; names: string[] }[] = [];
+      for (const [account, entries] of byAccount) {
+        batches.push({
+          auth: { kind: "desktop", accountName: account },
+          names: entries.map((e) => e.value),
+        });
+      }
+      if (undeclared.length > 0) batches.push({ auth, names: undeclared.map((e) => e.value) });
+
+      for (const batch of batches) {
+        const refs: Record<string, string> = {};
+        for (const n of batch.names) refs[n] = wantedRefs[n];
+        // Wrapped for lock recovery — see the note at resolveEnvironmentShared
+        // for why the wrap lives at the call site rather than inside resolveSecrets.
+        const resolved = await withSdkRetry(
+          () => resolveSecrets(refs, { auth: batch.auth, sdkFactory: testSeams?.sdkFactory }),
+          "op:resolve-refs"
+        );
+        Object.assign(out, resolved);
+      }
     }
 
     // Globs: each glob resolves ONCE per process (single-flight + memoized full
@@ -934,7 +972,17 @@ async function resolveOpKeyForEnvVarsInner(
     for (const globPath of collected.globImports) {
       if (stillWanted.size === 0) break;
       try {
-        const { resolved, cacheHit } = await resolveGlobShared(globPath, auth);
+        // A glob declared against account B is read with a client for B.
+        const globAuth = await authForEntry(
+          {
+            value: globPath,
+            ...(importAccounts.get(globPath)
+              ? { account: importAccounts.get(globPath) as string }
+              : {}),
+          },
+          allowPrompt
+        );
+        const { resolved, cacheHit } = await resolveGlobShared(globPath, globAuth);
         if (cacheHit) span?.addMeta({ globCacheHit: true });
         for (const w of [...stillWanted]) {
           const v = resolved[w];

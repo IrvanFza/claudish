@@ -49,6 +49,7 @@ import {
   type OpSourceEntry,
   dedupeOpSourceEntries,
   parseOpSourceEntries,
+  serializeOpSourceEntry,
 } from "./op-source-entry.js";
 
 /** The scope a 1Password config entry is written to / read from. */
@@ -210,16 +211,28 @@ function addToStringList(
   scope: OpConfigScope,
   key: string,
   entry: string,
-  paths: OpConfigPaths
+  paths: OpConfigPaths,
+  account?: string
 ): void {
   const value = entry.trim();
   if (!value) return;
+  const valueKey: OpEntryValueKey = key === "onepassword" ? "ref" : "id";
+  const declared = account?.trim();
   mutateConfig(scope, paths, (cfg) => {
-    const list = Array.isArray(cfg[key])
-      ? (cfg[key] as unknown[]).filter((v): v is string => typeof v === "string")
-      : [];
-    if (!list.includes(value)) list.push(value);
-    cfg[key] = list;
+    // Read through the entry parser so existing OBJECT entries survive an add.
+    // The old string-only filter silently dropped them, which would have deleted
+    // every account declaration the moment the user added one more source.
+    const existing = parseOpSourceEntries(cfg[key], valueKey);
+    const match = existing.find((e) => e.value === value);
+    if (match) {
+      // Idempotent, but a later add carrying an account UPGRADES an entry that
+      // had none — that is how a legacy bare entry acquires its account without
+      // the user hand-editing config.
+      if (declared && !match.account) match.account = declared;
+    } else {
+      existing.push(declared ? { value, account: declared } : { value });
+    }
+    cfg[key] = existing.map((e) => serializeOpSourceEntry(e, valueKey));
   });
 }
 
@@ -234,13 +247,18 @@ function removeFromStringList(
   paths: OpConfigPaths
 ): void {
   const value = entry.trim();
+  if (!value) return;
+  const valueKey: OpEntryValueKey = key === "onepassword" ? "ref" : "id";
   mutateConfig(scope, paths, (cfg) => {
-    const list = Array.isArray(cfg[key])
-      ? (cfg[key] as unknown[]).filter((v): v is string => typeof v === "string")
-      : [];
-    const next = list.filter((v) => v !== value);
-    if (next.length === 0) delete cfg[key];
-    else cfg[key] = next;
+    // Parser-based for the same reason as the add path: a string-only filter
+    // would delete every object entry as a side effect of removing one item.
+    const kept = parseOpSourceEntries(cfg[key], valueKey).filter((e) => e.value !== value);
+    // Emptying the list DELETES the key rather than leaving `[]` behind, so
+    // removing the last entry restores the config to the shape it had before
+    // the feature was ever used. Pinned by an existing test, which is what
+    // caught this when the entry-aware rewrite first dropped the behaviour.
+    if (kept.length === 0) delete cfg[key];
+    else cfg[key] = kept.map((e) => serializeOpSourceEntry(e, valueKey));
   });
 }
 
@@ -260,9 +278,10 @@ export function listOnepasswordImports(
 export function addOnepasswordImport(
   entry: string,
   scope: OpConfigScope,
-  paths: OpConfigPaths = defaultOpConfigPaths
+  paths: OpConfigPaths = defaultOpConfigPaths,
+  account?: string
 ): void {
-  addToStringList(scope, "onepassword", entry, paths);
+  addToStringList(scope, "onepassword", entry, paths, account);
 }
 
 /** Remove an op:// ref or glob from `onepassword[]` at a scope. */
@@ -369,9 +388,10 @@ export function readAllOnepasswordEnvironments(
 export function addOnepasswordEnvironment(
   id: string,
   scope: OpConfigScope,
-  paths: OpConfigPaths = defaultOpConfigPaths
+  paths: OpConfigPaths = defaultOpConfigPaths,
+  account?: string
 ): void {
-  addToStringList(scope, "onepasswordEnvironments", id, paths);
+  addToStringList(scope, "onepasswordEnvironments", id, paths, account);
 }
 
 /** Remove an Environment ID from `onepasswordEnvironments[]` at a scope. */
