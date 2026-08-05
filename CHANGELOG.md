@@ -2,55 +2,15 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
-## [7.38.0] - 2026-08-06
+## [7.38.0] - 2026-08-05
 
 ### Bug Fixes
 
-- **One 1Password dialog per multi-model run, not one per model.**
+- v7.38.0 — one 1Password dialog per multi-model run, not one per model([`7714a22`](https://github.com/MadAppGang/claudish/commit/7714a228a716368e14d6f4c4b8763c10a84b6a54))
 
-  A `team` or multi-model MCP run spawned N children and raised N approval
-  dialogs. Pre-hydration (v7.22.0) already handed each child its KEY, but still
-  passed a BARE model name — and a bare name is a routing CHAIN. The parent
-  short-circuits at the first credentialed candidate, so every candidate it
-  never queried was still a miss in the child, which then built its own SDK
-  client. That call is the dialog. The handshake lock working correctly is what
-  made it visible: N children became N SEQUENTIAL dialogs instead of one dialog
-  and N-1 denials.
+### Documentation
 
-  Measured from real session logs: 17 `create_session` children logged
-  `Denied authorization for SDK client`. Sixteen survived by finding a key later
-  in the chain — so the cost was mostly dialogs, not outages — and one,
-  `glm-5.2`, died in 0.6s chasing `ZHIPU_API_KEY` while the credential that
-  actually works is `GLM_CODING_API_KEY`. All 17 came from the spawn site that
-  DOES pre-hydrate, which is what proves pre-hydration alone was insufficient.
-
-- **The parent now resolves the ROUTE as well as the credential.**
-  `prehydrateCredentialsForSpawn` returns a `SpawnPlan` mapping each bare name to
-  an explicit `provider@model` spec, and children spawn with that. The child's
-  routing step is skipped, it has exactly one candidate, and that candidate's key
-  is already in the inherited env — so 1Password is never consulted. Verified
-  live with keys stripped: parent 1 handshake, all children and grandchildren 0
-  handshakes, 0 denials, 0 `op:*` spans.
-
-- **Natives are never pinned.** `route("opus")` answers `ok: openrouter` because
-  `defaultProvider` is appended to every bare chain, and `create_session` does not
-  screen native models the way `team` does — so an unguarded pin would have
-  spawned `--model or@opus`. Guarded and mutation-tested.
-
-- **OpenRouter specs are normalized before they reach argv.** `Route.modelSpec`
-  omits the provider prefix for OpenRouter because the proxy disambiguates it
-  with a sibling field; on argv `x-ai/grok-4.20` re-parses as a bare name and the
-  pin would silently no-op. Verified round-tripping across all 29 provider
-  prefixes.
-
-### Notes
-
-- MCP-spawned children no longer fall back to a second provider mid-run — the
-  parent already credential-filtered the chain, and a failure surfaces as one
-  model reported FAILED rather than a dead run. Interactive
-  `claudish --model X` is unchanged and keeps the full chain.
-- `CLAUDISH_SESSIONS_DIR` now overrides the channel session artifact root
-  (defaults to `~/.claudish/sessions`), so tests stop writing into real user state.
+- update CHANGELOG.md for v7.37.0([`fb7aa51`](https://github.com/MadAppGang/claudish/commit/fb7aa517aa4467662388b68974b60a7b6e217c0f))
 
 ## [7.37.0] - 2026-08-05
 
