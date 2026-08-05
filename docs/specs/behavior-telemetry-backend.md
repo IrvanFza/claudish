@@ -2,7 +2,8 @@
 
 **For:** backend developer
 **From:** claudish CLI
-**Status:** ✅ **implemented on both sides.** Endpoint deployed at `POST https://claudish.com/v1/behavior`; client shipped in claudish v7.35.0 and verified end-to-end against the live service.
+**Status:** ✅ implemented on both sides — endpoint deployed, client shipped and verified end-to-end against the live service.
+**⚠️ Action needed:** one additive field, see the change request below.
 **Related:** MTL-79 (this endpoint), MTL-77 (what it feeds)
 
 ## Settled answers (were §11 open questions)
@@ -15,7 +16,27 @@
 | Retention | session rows 12 months; non-identifying weekly per-model/per-rule aggregates indefinitely |
 | Schema versioning | client sends `schema_version`, server tolerates; no negotiation |
 
-**One field note back to the backend:** `context_bucket` tops out at `200k+`, which now covers everything from 200K to 1M-context models in one bucket. Splitting it is a spec change on both sides — flag it if the aggregate turns out too coarse to answer query 3.
+## ⚠️ One change request: add `context_fill_pct`
+
+**This is a correction to my spec, not a gap in your implementation** — you built the bucket list I gave you, and the bucket list was wrong.
+
+`context_bucket` was designed to answer query 3 ("does violation rate rise with context pressure?") and cannot. Two defects:
+
+1. **Absolute tokens aren't comparable across models.** 178K is 89% of a 200K window — near compaction — and 18% of a 1M one, barely started. Both land in `150-200k`. Query 2 and query 3 are inherently cross-model, so this makes them unanswerable.
+2. **`200k+` is unbounded**, so it has zero resolution from 200K to 1M — exactly where 1M-context models operate.
+
+**The ask — one additive field:**
+
+```jsonc
+"context_fill_pct": 48    // integer 0-100, peak fill of the ENFORCED window. May be absent.
+```
+
+- **Additive, not a redefinition.** `context_bucket` stays and keeps its current meaning ("how big was the session"), so no stored row is invalidated and there's no discontinuity. Re-cutting the bucket boundaries instead would split the data at the change, and it can't be backfilled — the token count is deliberately never sent.
+- **Absent when the window is unknown.** Treat missing as unknown; the client omits the key rather than send a percentage computed against a guessed denominator.
+- **Computed client-side, necessarily.** The enforced window is `min(spec, CLAUDE_CODE_MAX_CONTEXT_TOKENS, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, and it diverges from the catalog's spec window routinely — the Codex OAuth backend caps gpt-5.6-sol at ~372K against a 1.05M API spec. Dividing by the catalog value server-side would report 17% where the session actually ran at 48%.
+- **Leaks less than what's already sent**, not more: bounded 0–100, and carries no absolute scale, so nothing about project size is inferable.
+
+Client already emits it (v7.36.0+). Until you add the column your ingest will drop it as an unknown field, which is harmless — no coordination needed on timing.
 
 **Client-side deviation worth knowing:** a 429 is *not* honoured by waiting. The client drains its outbox in the background of a later session and must not sit on a `Retry-After` timer, so a rate-limited report is simply kept for the next run. Net effect on your side is identical, just later.
 
@@ -89,7 +110,8 @@ Field naming is `snake_case` and versioning is `schema_version`, matching `/v1/r
   "model_id":       "gpt-5.6-sol",
   "provider_name":  "openai-codex",
 
-  "context_bucket": "150-200k",     // coarse bucket, never an exact count
+  "context_bucket":   "150-200k",   // session size; coarse, never an exact count
+  "context_fill_pct": 48,           // peak % of the ENFORCED window; omitted if unknown
   "turns":          42,
 
   "decisions": [
@@ -122,17 +144,23 @@ Field naming is `snake_case` and versioning is `schema_version`, matching `/v1/r
 | `counts.*` keys | `ignored`, `matched`, `warned`, `repaired`, `novel` |
 | `path_relations.*` keys | `as_expected`, `same_dir_wrong_name`, `outside_expected_dir`, `no_expectation`, `not_applicable` |
 | `platform` | `darwin`, `linux`, `win32` |
-| `context_bucket` | `0-50k`, `50-100k`, `100-150k`, `150-200k`, `200k+` |
+| `context_bucket` | `0-50k`, `50-100k`, `100-150k`, `150-200k`, `200k+` — session SIZE only, see the change request above |
+| `context_fill_pct` | integer `0`-`100`, or **absent** when the window is unknown — this is the pressure signal |
 
 `rule_id`, `tool_name`, `model_id`, and `provider_name` are **open** strings — new rules, tools,
 and models appear constantly and must not require a schema change or a deploy on your side.
 
 ### Field notes
 
-- **`context_bucket` is coarse on purpose.** Exact token counts across many sessions are a
-  behavioural fingerprint. The analytical question — *do violations rise with context pressure?*
-  — only needs buckets. (In the motivating case, failures ran at ~178K median input tokens
-  against ~102K for successes, so the signal survives bucketing easily.)
+- **`context_bucket` is coarse because an exact token count is a fingerprint** — it leaks project
+  and working scale across sessions. That reason still holds, so the field stays coarse. What
+  does *not* hold is the claim this note originally made, that coarse buckets are sufficient for
+  the pressure question: they are not, for the two reasons in the change request above. Read this
+  field as **session size**.
+- **`context_fill_pct` is the pressure signal**, and needs no bucketing of its own. An integer
+  percent is already a 101-value quantisation, it is bounded 0–100, and it carries no absolute
+  scale — so it leaks strictly less than the token count it replaces, while being comparable
+  across models in a way absolute tokens never are.
 - **`path_relations` is both why this data is useful and why it is safe.**
   `same_dir_wrong_name` is the exact discriminator the plan-mode rule keys off — and it carries
   no path. This categorical-instead-of-literal pattern is how we intend to handle every future

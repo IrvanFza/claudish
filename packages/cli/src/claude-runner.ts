@@ -1244,6 +1244,15 @@ export async function runClaudeWithProxy(
       const realWindow = await computeMainThreadContextWindow(config);
       const contextEnv = resolveContextWindowEnv(realWindow, process.env);
       Object.assign(env, contextEnv.vars);
+      // Layer 4 telemetry needs this denominator and cannot derive it: the vars
+      // above go on the CHILD's env, while the proxy runs here in the parent and
+      // only knows the model's spec window. No-op unless telemetry is opted in.
+      try {
+        const { setSessionContextWindow } = await import("./behavior/telemetry/aggregate.js");
+        setSessionContextWindow(realWindow);
+      } catch {
+        // Telemetry must never affect launching Claude Code.
+      }
       if (contextEnv.notice && !config.quiet) {
         console.error(contextEnv.notice);
       }

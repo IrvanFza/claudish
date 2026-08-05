@@ -35,16 +35,21 @@ import type { Decision, PathRelation, Surface } from "../journal.js";
 export const TELEMETRY_SCHEMA_VERSION = 1;
 
 /**
- * Coarse context buckets — a CLOSED set fixed by the server contract.
+ * Coarse absolute-token buckets — a CLOSED set fixed by the server contract.
  *
- * Coarse on purpose: exact token counts across many sessions are a behavioural
- * fingerprint, and the question these exist to answer ("do violations rise with
- * context pressure?") is answered by buckets. The motivating case had failures
- * at ~178K median input tokens against ~102K for successes, which survives this
- * granularity comfortably.
+ * SCOPE, since this no longer means what it originally did: this answers "how
+ * big was the session", NOT "how much context pressure was there". Use
+ * `context_fill_pct` for pressure.
  *
- * Adding a value (e.g. splitting `200k+` for 1M-context models) is a SPEC
- * CHANGE — the backend validates against this list.
+ * It was designed for pressure and is wrong for it, in two ways. Absolute tokens
+ * are not comparable across models — 178K is 89% of a 200K window but 18% of a
+ * 1M one, and both land in `150-200k`. And `200k+` is unbounded, so it has zero
+ * resolution across 200K-1M, which is exactly where 1M-context models live.
+ *
+ * Kept anyway because session size is a real, separate question, and because
+ * removing or re-cutting the boundaries would split stored data at the change,
+ * while adding `context_fill_pct` alongside cannot. Any change to these values
+ * is a SPEC CHANGE — the backend validates against this list.
  */
 export type ContextBucket = "0-50k" | "50-100k" | "100-150k" | "150-200k" | "200k+";
 
@@ -54,6 +59,52 @@ export function contextBucket(inputTokens: number): ContextBucket {
   if (inputTokens < 150_000) return "100-150k";
   if (inputTokens < 200_000) return "150-200k";
   return "200k+";
+}
+
+/**
+ * The context window this session actually runs against.
+ *
+ * Recorded by claude-runner, which is the ONLY place that knows it. The handler
+ * knows the model's SPEC window; the enforced window is
+ * `min(spec, CLAUDE_CODE_MAX_CONTEXT_TOKENS, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`,
+ * and those vars are set on the CHILD's env, not the proxy's. They diverge
+ * routinely — the Codex OAuth backend caps gpt-5.6-sol at ~372K against a 1.05M
+ * API spec — which is why the status line renders both numbers when they
+ * disagree. Dividing by the spec window would understate pressure by ~3x on
+ * exactly the models where the question matters.
+ */
+let enforcedContextWindow = 0;
+
+/**
+ * Record the window the session runs against. Called once, at spawn.
+ * Zero or absent leaves `context_fill_pct` off the payload entirely — an absent
+ * field is honest, a percentage computed against a guessed denominator is not.
+ */
+export function setSessionContextWindow(tokens: number): void {
+  enforcedContextWindow = tokens > 0 ? tokens : 0;
+}
+
+/**
+ * Peak context fill, as an integer percent of the enforced window.
+ *
+ * This is the quantity the pressure hypothesis is actually about, and absolute
+ * tokens are not: 178K is 89% of a 200K window (near compaction) but 18% of a
+ * 1M one (barely started). The two are indistinguishable in `context_bucket`,
+ * which makes that field unusable for the cross-model comparison queries 2 and 3
+ * need.
+ *
+ * An integer percent is already a 101-value quantisation, so it needs no further
+ * bucketing: it is bounded 0-100, carries no absolute scale (nothing about
+ * project size leaks), and sessions are unlinkable by construction anyway — the
+ * salt below is per-process and never persisted, so the cross-session
+ * fingerprint that coarse bucketing defended against cannot be assembled.
+ */
+export function contextFillPct(
+  peakTokens: number,
+  window = enforcedContextWindow
+): number | undefined {
+  if (!(window > 0) || !(peakTokens > 0)) return undefined;
+  return Math.min(100, Math.max(0, Math.round((peakTokens / window) * 100)));
 }
 
 /**
@@ -100,6 +151,15 @@ export interface SessionReport {
   model_id: string;
   provider_name: string;
   context_bucket: ContextBucket;
+  /**
+   * Peak fill of the enforced window, 0-100. Omitted when the window is unknown.
+   *
+   * Additive alongside `context_bucket` rather than replacing it: the two answer
+   * different questions ("how much pressure" vs "how big was the session"), and
+   * adding a field cannot invalidate rows already stored, whereas redefining
+   * `context_bucket`'s boundaries would split the data at the change.
+   */
+  context_fill_pct?: number;
   turns: number;
   decisions: Array<{
     rule_id?: string;
@@ -252,6 +312,9 @@ function toReport(state: SessionState): SessionReport {
     model_id: state.model,
     provider_name: state.provider,
     context_bucket: contextBucket(state.maxInputTokens),
+    ...(contextFillPct(state.maxInputTokens) !== undefined && {
+      context_fill_pct: contextFillPct(state.maxInputTokens),
+    }),
     turns: state.turns,
     decisions: [...state.decisions.values()],
   };

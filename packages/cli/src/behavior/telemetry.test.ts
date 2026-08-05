@@ -5,10 +5,12 @@ import { join } from "node:path";
 import {
   type SessionReport,
   contextBucket,
+  contextFillPct,
   pendingReports,
   recordTelemetryDecision,
   recordTelemetryTurn,
   resetTelemetryState,
+  setSessionContextWindow,
   setTelemetryConsent,
   spoolPendingSync,
 } from "./telemetry/aggregate.js";
@@ -22,6 +24,7 @@ let fetchCalls: number;
 
 beforeEach(() => {
   resetTelemetryState();
+  setSessionContextWindow(0);
   resetDrainState();
   tempDir = mkdtempSync(join(tmpdir(), "claudish-behavior-telemetry-"));
   outbox = join(tempDir, "behavior-outbox.jsonl");
@@ -137,13 +140,62 @@ describe("behavior telemetry aggregation", () => {
     );
   });
 
-  it("emits the bucket for peak input tokens rather than the final turn", () => {
+  it("distinguishes context pressure when absolute-token buckets collide", () => {
+    expect(contextFillPct(178_000, 200_000)).toBe(89);
+    expect(contextFillPct(178_000, 1_000_000)).toBe(18);
+    expect([contextBucket(178_000), contextBucket(178_000)]).toEqual(["150-200k", "150-200k"]);
+  });
+
+  it("rounds context fill to the nearest integer percent", () => {
+    expect(contextFillPct(149, 200)).toBe(75);
+    expect(contextFillPct(151, 200)).toBe(76);
+  });
+
+  it("clamps context fill to 0 through 100", () => {
+    expect(contextFillPct(250_000, 200_000)).toBe(100);
+  });
+
+  it("does not calculate context fill without a window or peak tokens", () => {
+    setSessionContextWindow(0);
+    expect(contextFillPct(178_000)).toBeUndefined();
+
+    setSessionContextWindow(200_000);
+    expect(contextFillPct(0)).toBeUndefined();
+  });
+
+  it("emits context fill alongside the unchanged absolute-token bucket", () => {
+    setSessionContextWindow(372_000);
     setTelemetryConsent(true);
 
-    recordTurn("peak-session", "gpt-5.6-codex", 175_000);
+    recordTurn("fill-session", "gpt-5.6-codex", 178_000);
+
+    const pending = pendingReports()[0];
+    expect(pending.context_fill_pct).toBe(48);
+    expect(pending.context_bucket).toBe("150-200k");
+  });
+
+  it("omits context fill from the payload when the window is unknown", () => {
+    setSessionContextWindow(0);
+    setTelemetryConsent(true);
+
+    recordTurn("unknown-window-session", "gpt-5.6-codex", 178_000);
+
+    const pending = pendingReports()[0];
+    expect("context_fill_pct" in pending).toBe(false);
+    expect(pending.context_bucket).toBe("150-200k");
+  });
+
+  it("emits the bucket for peak input tokens rather than the final turn", () => {
+    setSessionContextWindow(200_000);
+    setTelemetryConsent(true);
+
+    recordTurn("peak-session", "gpt-5.6-codex", 40_000);
+    recordTurn("peak-session", "gpt-5.6-codex", 178_000);
     recordTurn("peak-session", "gpt-5.6-codex", 12_000);
 
-    expect(pendingReports()[0].context_bucket).toBe("150-200k");
+    const pending = pendingReports()[0];
+    expect(pending.context_bucket).toBe("150-200k");
+    expect(pending.context_fill_pct).toBe(89);
   });
 
   it("aggregates decision counts and path relations by rule, surface, and tool", () => {

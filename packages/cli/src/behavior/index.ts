@@ -22,12 +22,14 @@ export { buildCorpus, replayTranscript } from "./observer/corpus.js";
 export type { CorpusResult, Divergence } from "./observer/corpus.js";
 export {
   TELEMETRY_SCHEMA_VERSION,
+  contextFillPct,
   contextBucket,
   outboxPath,
   pendingReports,
   recordTelemetryDecision,
   recordTelemetryTurn,
   resetTelemetryState,
+  setSessionContextWindow,
   setTelemetryConsent,
   spoolPendingSync,
 } from "./telemetry/aggregate.js";
