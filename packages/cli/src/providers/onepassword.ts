@@ -1637,7 +1637,23 @@ const OP_PROBE_TIMEOUT_MS = 5000;
 /** Default account lister: read-only `op account list --format=json`. */
 export const defaultOpAccountLister: OpAccountLister = () => {
   try {
-    const res = spawnSync("op", ["account", "list", "--format=json"], {
+    // `--cache=false` FIRST, and it is load-bearing on macOS Tahoe.
+    //
+    // Without it `op` spawns `op daemon --background` for its caching layer.
+    // Those daemons reach into ~/Library/Group Containers/2BUA8C4S2C.com.1password,
+    // which Tahoe's TCC treats as "accessing data from another app" — so the user
+    // gets a system permission dialog that has nothing to do with 1Password's own
+    // approval prompt, attributed to their TERMINAL rather than to claudish. Worse,
+    // the daemons can hang indefinitely, which is what the 5s ceiling above was
+    // papering over.
+    //
+    // Measured here: 2.767s with the daemon, 0.786s without, and no daemon left
+    // behind. We never wanted the cache — this is a read-only account enumeration
+    // that runs at most once per process.
+    //
+    // Reported upstream as openclaw/openclaw#55459 (op 2.33.0, macOS Tahoe 26.3.1);
+    // reproduced here on op 2.38.2-beta.01, macOS 26.6.
+    const res = spawnSync("op", ["--cache=false", "account", "list", "--format=json"], {
       encoding: "utf-8",
       timeout: OP_PROBE_TIMEOUT_MS,
     });
