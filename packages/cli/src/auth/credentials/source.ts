@@ -74,7 +74,7 @@ export interface SourceConfig {
  *
  * Priority depends on whether the provider has OAuth login support:
  *
- *   For OAuth-capable providers (gemini-codeassist, openai-codex, kimi-coding):
+ *   For OAuth-capable providers (antigravity, openai-codex, kimi-coding):
  *   OAuth wins over env/cfg. These products are designed around the OAuth flow
  *   as the canonical auth path; an env key is usually a stale leftover or
  *   sideband override and shouldn't be the advertised method in the UI.

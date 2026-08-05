@@ -38,7 +38,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 ### Provider Shortcuts
 - `g@`, `google@` → Google Gemini (direct API, `GEMINI_API_KEY`)
 - `ag@`, `antigravity@` → Antigravity (Gemini via your Antigravity subscription — see "Antigravity Provider" below)
-- `go@` → **deprecated alias → `ag@`** (Gemini Code Assist for individuals was retired by Google; prints a one-line deprecation notice)
+- `go@` → **deprecated alias → `ag@`** (Gemini Code Assist for individuals was retired by Google; the provider has been REMOVED, `go@` prints a one-line deprecation notice and routes to Antigravity)
 - `oai@` → OpenAI Direct
 - `cx@`, `codex@` → OpenAI Codex (Responses API)
 - `or@`, `openrouter@` → OpenRouter
@@ -158,6 +158,10 @@ Two separate Gemini flows, deliberately split:
 | **Antigravity** | `ag@` / `antigravity@` | your Antigravity OAuth token (shared with the `agy` CLI) | `cloudcode-pa.googleapis.com/v1internal` | your Antigravity subscription (free / Pro / Ultra) |
 
 `go@` is a **deprecated alias → `ag@`**. Google retired the old "Gemini Code Assist for individuals" tier for gemini-cli's OAuth client (`UNSUPPORTED_CLIENT`); that product is dead, so `go@` now routes to Antigravity with a one-line deprecation notice.
+
+**The `gemini-codeassist` provider was fully REMOVED (v7.36.0)** — definition, transport, credential provider, OAuth registration, quota adapter, probe entry, and the `--gemini-login`/`--gemini-logout` flags. It could not authenticate for any consumer account, yet it sat FIRST in the `gemini-*` routing chain, so every bare `gemini-*` name paid a guaranteed-failing round-trip before falling through to the metered `google` API — silently billing per-token for a model the user's subscription already covered. The chain is now `["antigravity", "google", "openrouter"]`, matching the subscription-first convention every other family already follows. A leftover `~/.claudish/gemini-oauth.json` no longer reads as a live credential (its `oauth-registry.ts` entries are gone), which is what kept a dead provider in the config TUI's Test All list.
+
+The Antigravity half of the old `auth/gemini-oauth.ts` was extracted to **`auth/antigravity-user.ts`** (project/tier resolution, `retrieveUserQuota`, live served-set discovery) before that file was deleted — Antigravity depends on it, so deleting wholesale would have taken `ag@` down too. `retrieveUserQuota` deliberately keeps the gemini-cli User-Agent it was written with: that exact call is verified working on Ultra, and `loadCodeAssist` is known to gate on identity, so changing it is a live experiment, not a tidy-up.
 
 **Why not just spoof the identity:** the backend has two independent gates. `loadCodeAssist` gates the visible *tier* on request identity (`User-Agent` + `metadata.ideType: ANTIGRAVITY`), but `streamGenerateContent` gates *generation* on the OAuth **client that minted the token** — headers can't fake it (403 PERMISSION_DENIED). So claudish does not spoof; it **reuses the user's own Antigravity token**.
 
@@ -464,7 +468,7 @@ data: {"type":"response.in_progress", ...}
 data: {"type":"error","error":{"code":"server_is_overloaded", ...},"sequence_number":2}
 ```
 
-Every retry hook in claudish keys off the HTTP **status** (`anthropic-compat.ts`'s 429 loop, `gemini-codeassist.ts`'s 429 classifier), so this class of failure bypassed all of them. The parser turned it into an assistant **text block** with `stop_reason: "end_turn"` and `onApiError` only flagged stats — so a transient, textbook-retryable fault became a permanent, successful-looking answer reading `[API Error: server_is_overloaded]`.
+Every retry hook in claudish keys off the HTTP **status** (`anthropic-compat.ts`'s 429 loop, `antigravity.ts`'s 429 classifier), so this class of failure bypassed all of them. The parser turned it into an assistant **text block** with `stop_reason: "end_turn"` and `onApiError` only flagged stats — so a transient, textbook-retryable fault became a permanent, successful-looking answer reading `[API Error: server_is_overloaded]`.
 
 `sniffResponsesStreamHead()` peeks at the stream head in `composed-handler.ts` step **7b**, which is the only window where the status code is still ours to choose (once Hono flushes the 200, a 503 is no longer expressible):
 

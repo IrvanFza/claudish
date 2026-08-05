@@ -1387,7 +1387,7 @@ async function probeModelRouting(
     ) {
       formatAdapterName = "AnthropicAPIFormat";
       declaredStreamFormat = "anthropic-sse";
-    } else if (providerName === "gemini" || providerName === "gemini-codeassist") {
+    } else if (providerName === "gemini" || providerName === "antigravity") {
       formatAdapterName = "GeminiAPIFormat";
       declaredStreamFormat = "gemini-sse";
     } else if (providerName === "ollamacloud") {
@@ -1896,7 +1896,6 @@ ${h("MODEL ROUTING")}
     ${magenta("zen")}            ${dim("->")} OpenCode Zen        ${dim("zen@grok-code")}
     ${magenta("zengo, zgo")}     ${dim("->")} OpenCode Zen Go     ${dim("zengo@grok-code")}
     ${magenta("v, vertex")}      ${dim("->")} Vertex AI           ${dim("v@gemini-2.5-flash")}
-    ${magenta("go")}             ${dim("->")} Gemini Code Assist  ${dim("go@gemini-2.5-flash")}
     ${magenta("poe")}            ${dim("->")} Poe                 ${dim("poe@GPT-4o")}
     ${magenta("litellm, ll")}    ${dim("->")} LiteLLM             ${dim("ll@gpt-4o (needs LITELLM_BASE_URL)")}
     ${magenta("ds")}             ${dim("->")} DeepSeek            ${dim("ds@deepseek-chat")}

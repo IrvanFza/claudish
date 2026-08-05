@@ -303,8 +303,6 @@ claudish [OPTIONS] <claude-args...>
 | `--models-refresh` | | Force refresh model cache | |
 | `--init` | | Install Claudish skill in current project | |
 | `--mcp` | | Run as MCP server | |
-| `--gemini-login` | | Login to Gemini Code Assist via OAuth | |
-| `--gemini-logout` | | Clear Gemini OAuth credentials | |
 | `--kimi-login` | | Login to Kimi via OAuth | |
 | `--kimi-logout` | | Clear Kimi OAuth credentials | |
 | `--help-ai` | | Show AI agent usage guide | |
@@ -570,7 +568,8 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `zen@` | OpenCode Zen (free/paid) | `OPENCODE_API_KEY` _(optional)_ | `zen@gpt-5-nano` |
 | `zgo@`, `zengo@` | OpenCode Zen Go plan | `OPENCODE_API_KEY` | `zgo@glm-5` |
 | `v@`, `vertex@` | Vertex AI | `VERTEX_API_KEY` | `v@gemini-2.5-flash` |
-| `go@` | Gemini CodeAssist | _(OAuth)_ | `go@gemini-2.5-flash` |
+| `ag@`, `antigravity@` | Antigravity (Gemini subscription) | _(OAuth via `claudish login antigravity`)_ | `ag@gemini-3.6-flash` |
+| `go@` | _deprecated alias → `ag@`_ | _(OAuth)_ | `go@gemini-2.5-flash` |
 | `poe@` | Poe | `POE_API_KEY` | `poe@GPT-4o` |
 | `ollama@` | Ollama (local) | _(none)_ | `ollama@llama3.2` |
 | `lms@`, `lmstudio@` | LM Studio (local) | _(none)_ | `lms@qwen2.5-coder` |

@@ -41,7 +41,7 @@ import {
   locateAgyBinary,
   readSharedAntigravityToken,
 } from "./antigravity-token.js";
-import { getServedAntigravityModels, setupAntigravityUser } from "./gemini-oauth.js";
+import { getServedAntigravityModels, setupAntigravityUser } from "./antigravity-user.js";
 
 /**
  * Resolve a concrete CURRENT served model id for the success message, LIVE from

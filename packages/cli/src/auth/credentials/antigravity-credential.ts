@@ -29,7 +29,7 @@ import {
   buildAntigravityUserAgent,
   getServedAntigravityModels,
   setupAntigravityUser,
-} from "../gemini-oauth.js";
+} from "../antigravity-user.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
 
 /** Generate a short random request ID (matches the Antigravity CLI activity logger). */

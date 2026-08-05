@@ -78,7 +78,7 @@ export interface ModelInfo {
  * Firebase aggregator/owner slugs come from `VendorRecord.vendor` /
  * `aggregators[].provider` in the slim catalog (e.g. "opencode-zen", "openai").
  *
- * Subscription endpoints (codex, kimi-coding, glm-coding, gemini-codeassist) reuse
+ * Subscription endpoints (codex, kimi-coding, glm-coding, antigravity) reuse
  * the underlying owner's catalog because they serve the same models.
  *
  * Picker-local glue, intentionally not exported as a global concept.
@@ -87,7 +87,7 @@ export interface ModelInfo {
 export const pickerProviderToFirebaseSlug: Record<string, string> = {
   openrouter: "openrouter",
   google: "google",
-  "gemini-codeassist": "google",
+  antigravity: "google",
   openai: "openai",
   "openai-codex": "openai",
   "x-ai": "x-ai",
@@ -925,10 +925,10 @@ async function getProviderChoices() {
  */
 const PROVIDER_MODEL_PREFIX: Record<string, string> = {
   google: "google@",
-  // Gemini Code Assist (OAuth) maps to the google owner catalog, so the picker
-  // renders model rows for it — it needs its own prefix or rows would emit a
-  // bare id that doesn't route to the Code Assist gateway.
-  "gemini-codeassist": "go@",
+  // Antigravity maps to the google owner catalog, so the picker renders model
+  // rows for it — it needs its own prefix or rows would emit a bare id that
+  // doesn't route to the Antigravity backend.
+  antigravity: "ag@",
   openai: "oai@",
   "openai-codex": "cx@",
   "x-ai": "x-ai@",

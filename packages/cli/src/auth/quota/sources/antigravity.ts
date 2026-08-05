@@ -35,14 +35,12 @@ import {
   getValidAntigravityAccessToken,
   hasSharedAntigravityToken,
 } from "../../antigravity-token.js";
-// ↓↓↓ the only gemini-oauth.js dependency in the quota subsystem — see above ↓↓↓
 import {
   type QuotaBucket,
   getAntigravityTierDisplayName,
   retrieveUserQuota,
   setupAntigravityUser,
-} from "../../gemini-oauth.js";
-// ↑↑↑ on worktree-gemini-fix these move to ../../antigravity-user.js ↑↑↑
+} from "../../antigravity-user.js";
 import type { QuotaAdapter, QuotaPollContext } from "../adapter.js";
 import { type PlanUsage, type QuotaCapability, type QuotaWindow, toUsedPct } from "../types.js";
 

@@ -37,7 +37,6 @@ import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AntigravityProviderTransport } from "./transport/antigravity.js";
 import { DevinProviderTransport } from "./transport/devin.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
-import { GeminiCodeAssistProviderTransport } from "./transport/gemini-codeassist.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
@@ -96,20 +95,6 @@ const geminiProfile: ProviderProfile = {
       ...ctx.sharedOpts,
     });
     log(`[Proxy] Created Gemini handler (composed): ${ctx.modelName}`);
-    return handler;
-  },
-};
-
-const geminiCodeAssistProfile: ProviderProfile = {
-  createHandler(ctx) {
-    const transport = new GeminiCodeAssistProviderTransport(ctx.modelName);
-    const adapter = new GeminiAPIFormat(ctx.modelName);
-    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-      adapter,
-      unwrapGeminiResponse: true,
-      ...ctx.sharedOpts,
-    });
-    log(`[Proxy] Created Gemini Code Assist handler (composed): ${ctx.modelName}`);
     return handler;
   },
 };
@@ -424,7 +409,6 @@ const vertexProfile: ProviderProfile = {
  */
 export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   gemini: geminiProfile,
-  "gemini-codeassist": geminiCodeAssistProfile,
   antigravity: antigravityProfile,
   devin: devinProfile,
   openai: openaiProfile,

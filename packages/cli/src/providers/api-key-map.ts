@@ -41,7 +41,6 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   // every chain it appears in. Same shape as the sakana-subscription mismatch
   // above: two tiers, two keys, one table naming the wrong one.
   "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY", aliases: ["OPENCODE_API_KEY"] },
-  "gemini-codeassist": { envVar: "GEMINI_API_KEY" },
   vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
   poe: { envVar: "POE_API_KEY" },
 };

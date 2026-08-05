@@ -26,7 +26,6 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   "kimi-coding": { loginFlag: "login kimi", apiKeyEnvVar: "KIMI_CODING_API_KEY" },
   kimi: { loginFlag: "login kimi", apiKeyEnvVar: "MOONSHOT_API_KEY" },
   google: { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
-  "gemini-codeassist": { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
   // Antigravity auth is OAuth-only (shared keychain token) — no API key env var.
   antigravity: { loginFlag: "login antigravity" },
   // There is no `claudish login devin`: the token is minted by the Devin CLI's

@@ -2,7 +2,7 @@
  * AntigravityProviderTransport — Antigravity (cloudcode-pa backend) via the
  * SHARED Antigravity OAuth token.
  *
- * Adapted from providers/transport/gemini-codeassist.ts. It keeps ALL of that
+ * Adapted from the since-removed providers/transport/gemini-codeassist.ts. It keeps ALL of that
  * transport's hardening — the 429 classification (RATE_LIMIT_EXCEEDED retry /
  * MODEL_CAPACITY_EXHAUSTED fallback / QUOTA_EXHAUSTED terminal), the live
  * served-set discovery, the capacity fallback chain, and the served-set-aware
@@ -35,13 +35,16 @@ import {
   getServedAntigravityModels,
   retrieveUserQuota,
   setupAntigravityUser,
-} from "../../auth/gemini-oauth.js";
+} from "../../auth/antigravity-user.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 
-const CODE_ASSIST_BASE = "https://cloudcode-pa.googleapis.com";
-const CODE_ASSIST_ENDPOINT = `${CODE_ASSIST_BASE}/v1internal:streamGenerateContent?alt=sse`;
+// The backend host. Still the cloudcode-pa endpoint the retired Code Assist
+// path used — the split was never about the URL, it was about which OAuth
+// client minted the token.
+const ANTIGRAVITY_BASE = "https://cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_ENDPOINT = `${ANTIGRAVITY_BASE}/v1internal:streamGenerateContent?alt=sse`;
 
 /** Max retry attempts for retryable 429s (RATE_LIMIT_EXCEEDED) */
 const MAX_RETRY_ATTEMPTS = 3;
@@ -53,11 +56,10 @@ const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 /**
- * Reasoning-tier RANK — the ONLY literals allowed here (a rule, like
- * rankCodeAssistModel, not a roster). Lower number = stronger reasoning tier.
- * Anything unrecognized ranks last. Used ONLY to choose among a family's
- * live-served variants when the backend gives no default; never a list of
- * concrete model ids.
+ * Reasoning-tier RANK — the ONLY literals allowed here (a RULE, not a roster).
+ * Lower number = stronger reasoning tier. Anything unrecognized ranks last.
+ * Used ONLY to choose among a family's live-served variants when the backend
+ * gives no default; never a list of concrete model ids.
  */
 const REASONING_TIER_RANK: Record<string, number> = {
   high: 0,
@@ -71,6 +73,24 @@ const REASONING_TIER_RANK: Record<string, number> = {
 function rankReasoningSuffix(suffix: string): number {
   const rank = REASONING_TIER_RANK[suffix.toLowerCase()];
   return rank === undefined ? Number.MAX_SAFE_INTEGER : rank;
+}
+
+/**
+ * Rank a FULL served id by its reasoning-tier suffix, for display ordering
+ * (strongest tier first). A bare family id with no recognised suffix ranks
+ * last. Same rule as `rankReasoningSuffix`, applied to a whole id — the caller
+ * has served ids, not pre-split family/suffix pairs.
+ */
+export function rankAntigravityModel(modelId: string): number {
+  const dash = modelId.lastIndexOf("-");
+  if (dash === -1) return Number.MAX_SAFE_INTEGER;
+  // "extra-low" is the one two-word suffix, so try the last TWO segments first.
+  const parts = modelId.split("-");
+  if (parts.length >= 2) {
+    const twoWord = rankReasoningSuffix(`${parts[parts.length - 2]}-${parts[parts.length - 1]}`);
+    if (twoWord !== Number.MAX_SAFE_INTEGER) return twoWord;
+  }
+  return rankReasoningSuffix(modelId.slice(dash + 1));
 }
 
 /**
@@ -265,7 +285,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
 
   getEndpoint(): string {
-    return CODE_ASSIST_ENDPOINT;
+    return ANTIGRAVITY_ENDPOINT;
   }
 
   async getHeaders(): Promise<Record<string, string>> {

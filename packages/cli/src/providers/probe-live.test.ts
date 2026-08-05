@@ -170,16 +170,16 @@ describe("probeLink — OAuth login hints", () => {
     }
   }
 
-  test("gemini-codeassist suppresses the login hint on 403 without hiding the entitlement failure", async () => {
-    const result = await probeHttpError("gemini-codeassist", false, 403, permissionDeniedBody);
+  test("antigravity suppresses the login hint on 403 without hiding the entitlement failure", async () => {
+    const result = await probeHttpError("antigravity", false, 403, permissionDeniedBody);
     expect(result.actionHint).toBeUndefined();
     expect(result.state).toBe("auth-failed");
     expect(result.errorMessage).toContain("Permission 'aiplatform.endpoints.predict' denied");
   });
 
-  test("gemini-codeassist keeps the login hint on 401", async () => {
-    const result = await probeHttpError("gemini-codeassist", false, 401, unauthenticatedBody);
-    expect(result.actionHint).toBe("run: claudish login gemini");
+  test("antigravity keeps the login hint on 401", async () => {
+    const result = await probeHttpError("antigravity", false, 401, unauthenticatedBody);
+    expect(result.actionHint).toBe("run: claudish login antigravity");
     expect(result.state).toBe("auth-failed");
   });
 

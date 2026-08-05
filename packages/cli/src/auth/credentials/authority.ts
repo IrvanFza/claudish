@@ -17,7 +17,6 @@ import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { DevinCredentialProvider } from "./devin-credential.js";
-import { GeminiCodeAssistCredentialProvider } from "./gemini-credential.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
@@ -137,15 +136,14 @@ export class CredentialAuthority {
 
     // Explicitly-handled providers (OAuth / composite / ADC / local / native).
     authority.register(makeCodexCredential(), ["openai-codex"]);
-    // Code Assist OAuth is its OWN product. It must NOT own the "google" name:
-    // "google" is the DIRECT Gemini API (GEMINI_API_KEY), whose credential is
-    // registered by the generic loop below under both "google" and its runtime
-    // request-path name "gemini". Aliasing "google" here made a GEMINI_API_KEY-
-    // only user look uncredentialed and left "gemini" unregistered (probe 500).
-    authority.register(new GeminiCodeAssistCredentialProvider(), ["gemini-codeassist"]);
     // Antigravity is its OWN product: auth comes from the SHARED Antigravity
     // token (the agy keychain item), not a GEMINI_API_KEY. Registered under its
     // own name so `ag@`/`go@` requests resolve here (and never onto "google").
+    //
+    // "google" is the DIRECT Gemini API (GEMINI_API_KEY), registered by the
+    // generic loop below under both "google" and its runtime request-path name
+    // "gemini" — nothing here may alias it, or a GEMINI_API_KEY-only user looks
+    // uncredentialed and "gemini" goes unregistered (probe 500).
     authority.register(new AntigravityCredentialProvider(), ["antigravity"]);
     // Devin's artifact is `authorization: Basic <k>-<k>`, which the generic
     // ApiKeyCredentialProvider cannot express. Its definition carries
@@ -167,7 +165,6 @@ export class CredentialAuthority {
     // them with a generic API-key provider.
     const alreadyRegistered = new Set<string>([
       "openai-codex",
-      "gemini-codeassist",
       "antigravity",
       // Redundant with `apiKeyEnvVar: ""` (the loop skips it either way), and
       // kept because this set is the documented STATEMENT OF INTENT: if someone

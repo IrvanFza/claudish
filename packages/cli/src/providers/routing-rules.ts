@@ -218,7 +218,7 @@ export type RoutePlan =
  *     alias is excluded (the Codex composite's API-key half has no aliases).
  *   - Local transports (ollama, lmstudio, vllm, mlx) require explicit enablement
  *     (LocalCredentialProvider → isLocalProviderEnabled).
- *   - OAuth-backed providers (kimi, gemini-codeassist) accept an OAuth file or env
+ *   - OAuth-backed providers (kimi, antigravity) accept an OAuth file or env
  *     key; publicKeyFallback / oauthFallback affordances are honored by the
  *     ApiKeyCredentialProvider.
  *

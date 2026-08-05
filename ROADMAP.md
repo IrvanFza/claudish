@@ -147,9 +147,16 @@ Reference: research findings under `ai-docs/sessions/dev-research-channel-config
 
 ---
 
-## Gemini Code Assist: use `fetchAvailableModels` for the served set
+## ~~Gemini Code Assist: use `fetchAvailableModels` for the served set~~ (CLOSED — moot)
 
-**Status**: not started
+**Status**: CLOSED as moot (2026-08-05). The `gemini-codeassist` provider was
+removed entirely, so there is no longer a `getServedCodeAssistModels()` to
+migrate. The endpoint's request shape — the trigger condition below — WAS
+captured in the meantime (body `{ project }`, not `{ metadata }`) and is in
+production use on the Antigravity path (`getServedAntigravityModels` in
+`auth/antigravity-user.ts`). Retained for the record only.
+
+**Original status**: not started
 
 `getServedCodeAssistModels()` in `auth/gemini-oauth.ts` infers which models a
 tier serves by reading the bucket list from `retrieveUserQuota`. That is an
@@ -187,9 +194,17 @@ self-refreshes with client creds extracted at runtime from the user's local `agy
 binary — never shipped. Verified end-to-end on Google AI Ultra with
 `gemini-3.6-flash-high`.
 
-**Remaining follow-ups** (own items when triggered): Linux/Windows keyring
-backends (macOS `security` only today); a `claudish login antigravity` that does
-its own OAuth so Antigravity need not be installed.
+**Remaining follow-up**: Linux/Windows keyring backends (macOS `security` only
+today). Still genuinely open.
+
+**Closed follow-up — a `claudish login antigravity` that does its own OAuth.**
+Not deferred: *impossible*. Antigravity's client secret is baked per `agy`
+release and rotates on auto-update (proven — the extracted secret was revoked
+within a day, and there is no dynamic client registration), so claudish can
+never hold one. v7.33.0 ships the reachable version instead: `claudish login
+antigravity` installs and delegates to `agy`, which owns the whole credential
+lifecycle. Refresh delegates the same way (`agy models`). Do not re-open this
+expecting a claudish-native OAuth flow.
 
 ---
 

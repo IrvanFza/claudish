@@ -412,9 +412,9 @@ describe("CredentialAuthority", () => {
 
   test("aliases resolve to the same instance", async () => {
     const authority = new CredentialAuthority();
-    const instance = new FakeProvider("gemini-codeassist", { authed: true });
-    authority.register(instance, ["gemini-codeassist", "google"]);
-    expect(authority.get("gemini-codeassist")).toBe(instance);
+    const instance = new FakeProvider("antigravity", { authed: true });
+    authority.register(instance, ["antigravity", "google"]);
+    expect(authority.get("antigravity")).toBe(instance);
     expect(authority.get("google")).toBe(instance);
     expect(await authority.isAvailable("google")).toBe(true);
   });

@@ -10,7 +10,7 @@
  *   data: {"type":"error","error":{"code":"server_is_overloaded", ...}}
  *
  * Every retry hook in claudish keys off the HTTP status (see anthropic-compat's
- * 429 loop and gemini-codeassist's 429 classifier), so an overload arriving this
+ * 429 loop and antigravity's 429 classifier), so an overload arriving this
  * way bypassed all of them: the parser turned it into an assistant text block and
  * ended the turn `end_turn`. A transient, textbook-retryable failure became a
  * permanent, successful-looking answer reading "[API Error: server_is_overloaded]".
