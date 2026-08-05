@@ -78,7 +78,7 @@ export class FallbackHandler implements ModelHandler {
         const errorBody = await response.clone().text();
 
         // Non-retryable error (rate limit, server error, bad format) — stop trying
-        if (!isRetryableError(response.status, errorBody)) {
+        if (!isRetryableError(response.status, errorBody, name)) {
           if (errors.length > 0) {
             // We had previous fallback attempts; show combined error
             errors.push({ provider: name, status: response.status, message: errorBody });
@@ -168,7 +168,7 @@ export class FallbackHandler implements ModelHandler {
  * warrant trying a different provider. True server errors (500 without
  * billing context) do NOT — they'd likely fail on any provider.
  */
-function isRetryableError(status: number, errorBody: string): boolean {
+function isRetryableError(status: number, errorBody: string, provider?: string): boolean {
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
   //
@@ -247,6 +247,22 @@ function isRetryableError(status: number, errorBody: string): boolean {
       lower.includes("requires a google cloud project") ||
       lower.includes("unsupported_client")
     ) {
+      return true;
+    }
+
+    // Antigravity rejects some SERVED variants at generation time with a
+    // generic "Request contains an invalid argument" — `gemini-3.1-pro-high`
+    // is in both the account's served set and the catalog (marked the family
+    // default), yet 400s on every call. Without this, a bare `gemini-3.1-pro-*`
+    // aborts the whole chain instead of advancing to a provider that works,
+    // which is strictly worse than the 404 it used to produce.
+    //
+    // Deliberately scoped to this provider: "invalid argument" is generic
+    // enough that a blanket rule would mask real payload bugs elsewhere by
+    // silently advancing instead of surfacing them. Still bare-name only — an
+    // explicit `ag@` selection has no next candidate, so the caller returns
+    // this same 400 and the message reaches the user inline.
+    if (provider?.toLowerCase().includes("antigravity") && lower.includes("invalid argument")) {
       return true;
     }
   }

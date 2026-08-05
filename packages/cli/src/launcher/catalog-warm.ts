@@ -16,7 +16,7 @@
  */
 
 import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
-import { type RefreshOutcome, getResolver } from "../providers/model-catalog-resolver.js";
+import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
 
@@ -256,23 +256,10 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
-  const resolver = getResolver("openrouter");
-  if (!resolver) {
-    // Defensive: the OpenRouter resolver is registered at module import
-    // time, so this branch should be unreachable. If we somehow get here
-    // without it, classify the situation by prior cache state — same
-    // policy as a network failure.
-    if (state === "missing") {
-      process.stderr.write(HARD_FAIL_MESSAGE);
-      return "hard_fail";
-    }
-    return "warned";
-  }
-
   const spinner = startSpinner("Fetching model catalog from Firebase...", config.quiet);
   let outcome: RefreshOutcome;
   try {
-    outcome = await resolver.refreshCatalog(8000);
+    outcome = await refreshCatalog(8000);
   } finally {
     spinner.stop();
   }

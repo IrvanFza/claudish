@@ -14,9 +14,8 @@
  */
 
 import { confirm, input, search, select } from "@inquirer/prompts";
-import { lookupModel } from "./adapters/model-catalog.js";
+import { lookupModel, lookupModelCapabilities } from "./adapters/model-catalog.js";
 import { credentials } from "./auth/credentials/authority.js";
-import { resolveCatalogContextWindow } from "./handlers/shared/context-window-fallback.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type AggregatorEntry,
@@ -269,8 +268,9 @@ const SUBSCRIPTION_PRICING: ModelInfo["pricing"] = {
  * Plan does not). On a miss, fall back to the Firebase slim catalog, which
  * already knows most of these models — that is a read of the local
  * `~/.claudish/all-models.json`, never a network call, so the picker never
- * blocks on it. Still-unknown stays 0; `resolveMissingContextWindows` then gets
- * one bounded shot at the full cloud catalog before it renders as "N/A".
+ * blocks on it. Still-unknown stays 0 and renders as "N/A": there is no
+ * per-model cloud lookup, because a window the slim catalog lacks is a
+ * models-index gap, not something N extra round-trips can discover.
  */
 function resolveDiscoveredContextLength(m: DiscoveredModel): number {
   if (typeof m.contextWindow === "number" && m.contextWindow > 0) return m.contextWindow;
@@ -302,67 +302,7 @@ function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
   return m.releaseDate;
 }
 
-/**
- * How long the picker will wait on the cloud catalog for the windows it still
- * doesn't know. Short on purpose: a hung model list is worse than a missing
- * number, and every row is already renderable without it.
- */
-const DISCOVERY_CONTEXT_LOOKUP_TIMEOUT_MS = 1500;
 
-/**
- * Last-resort context windows, for the ids that BOTH the endpoint and the local
- * slim catalog missed.
- *
- * The slim catalog is capped and OpenRouter-derived (`?catalog=slim&limit=1000`),
- * so a plan-only or preview model can be absent from it while the FULL catalog
- * knows it — `qwen3.8-max-preview` is exactly that: 1M context upstream, no slim
- * entry, so the row read "N/A" for the one model the user was running.
- *
- * Properties this deliberately has:
- *   - **Only the misses.** Never a fan-out over the roster; for Qwen Plan it is
- *     a single id, and zero requests when the slim catalog already answered.
- *   - **Concurrent.** All misses go out at once, so N ids cost one round trip's
- *     latency, not N.
- *   - **Bounded.** Races a short budget; on expiry the rows render "N/A" exactly
- *     as they do today. The in-flight lookups are memoized per model id per
- *     process, so a late answer still lands for the next call.
- *   - **Silent.** Any failure → no entry. `resolveCatalogContextWindow` never
- *     throws and is disabled under `NODE_ENV=test` unless a fetcher is injected.
- */
-async function resolveMissingContextWindows(
-  ids: string[],
-  timeoutMs: number = DISCOVERY_CONTEXT_LOOKUP_TIMEOUT_MS
-): Promise<Map<string, number>> {
-  const resolved = new Map<string, number>();
-  if (ids.length === 0) return resolved;
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const budget = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs);
-    // Never hold the event loop open for a number the picker can live without.
-    timer.unref?.();
-  });
-
-  try {
-    const lookups = Promise.all(
-      ids.map(async (id) => [id, await resolveCatalogContextWindow(id)] as const)
-    );
-    const settled = await Promise.race([lookups, budget]);
-    if (settled) {
-      for (const [id, contextWindow] of settled) {
-        if (typeof contextWindow === "number" && contextWindow > 0) {
-          resolved.set(id, contextWindow);
-        }
-      }
-    }
-  } catch {
-    // Fail-soft: an unresolved window renders as "N/A", exactly as before.
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-
-  return resolved;
-}
 
 function modelDocToModelInfo(model: ModelDoc): ModelInfo {
   const providerLabel = formatFirebaseProviderLabel(model.provider || "unknown");
@@ -1159,15 +1099,16 @@ export async function buildDiscoveredModelRows(
         ])
       );
 
-  // Endpoint → local slim catalog (both offline), then one bounded, concurrent
-  // cloud lookup for whatever is still unknown.
-  const offlineContext = new Map(discovered.map((m) => [m.id, resolveDiscoveredContextLength(m)]));
-  const cloudContext = await resolveMissingContextWindows(
-    discovered.filter((m) => !offlineContext.get(m.id)).map((m) => m.id)
-  );
-
+  // The live endpoint decides WHICH models appear (entitlement) and overrides
+  // the context window for THIS tier. Everything else — capabilities, release
+  // date — comes from the catalog, which is the same for every user.
+  //
+  // There is deliberately no per-model cloud lookup for a missing window.
+  // Re-querying the same cloud one id at a time returns the same answer N
+  // round-trips later; a window the catalog lacks renders as unknown, which
+  // keeps the gap visible as a models-index issue rather than hiding it.
   const rows = discovered.map((m) => {
-    const contextLength = offlineContext.get(m.id) || cloudContext.get(m.id) || 0;
+    const contextLength = resolveDiscoveredContextLength(m);
     return {
       id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
       name: m.displayName || m.id,
@@ -1179,7 +1120,10 @@ export async function buildDiscoveredModelRows(
       pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(m.id.toLowerCase()),
       context: formatContextLength(contextLength),
       contextLength,
-      supportsTools: true,
+      // Catalog-first. `true` only as the fallback for a model the catalog does
+      // not carry — every provider here serves chat models, so assuming tool
+      // support is the safer miss than hiding a capable model.
+      supportsTools: lookupModelCapabilities(m.id)?.supportsTools ?? true,
       isFree: subscription, // covered by the subscription — no per-token charge
       source: displayName,
     };
