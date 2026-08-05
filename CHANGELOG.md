@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.39.0] - 2026-08-05
+
+### Documentation
+
+- update CHANGELOG.md for v7.38.0([`aad6060`](https://github.com/MadAppGang/claudish/commit/aad60604164a4741123d15517901fe807db8e27d))
+
+### New Features
+
+- v7.39.0 — real subscription usage in the status line, and gemini-* routes to Antigravity([`f7670f8`](https://github.com/MadAppGang/claudish/commit/f7670f85536e8600ebf27c4e32d4286fd42157f5))
+- publish real subscription usage, and stop the 2s probe that measured it *(quota)* ([`c700f68`](https://github.com/MadAppGang/claudish/commit/c700f680a14cb54021e7294b521307429597b506))
+
 ## [7.38.0] - 2026-08-05
 
 ### Bug Fixes
