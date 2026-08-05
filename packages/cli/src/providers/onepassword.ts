@@ -1615,10 +1615,34 @@ export interface AccountInfo {
  */
 export type OpAccountLister = () => AccountInfo[] | null;
 
+/**
+ * Ceiling on the optional read-only `op` probes.
+ *
+ * These spawns were previously unbounded, which made them a HANG, not a slow
+ * path: `op` blocks while the desktop app is locked or its keychain is cold, and
+ * `spawnSync` with no timeout waits forever. Every non-interactive caller
+ * (MCP server, --stdin children, team spawns, channel sessions, serve) reaches
+ * `defaultOpDefaultAccountProbe`, so a locked Mac could stall claudish before it
+ * ever produced an error to act on.
+ *
+ * Both probes are OPTIONAL and read-only: a null result falls through to the
+ * existing actionable "set OP_ACCOUNT" message. So cutting a genuinely slow-but-
+ * working `op` short costs a remediation hint the user can follow, while leaving
+ * it unbounded costs an indefinite hang with no output at all. Bounded wins.
+ *
+ * `defaultScreenLockProbe` has carried `timeout: 2000` since it was written;
+ * these two simply never got the same treatment. 5s rather than 2s because `op`
+ * talks to the desktop app, which is legitimately slower than `ioreg`.
+ */
+const OP_PROBE_TIMEOUT_MS = 5000;
+
 /** Default account lister: read-only `op account list --format=json`. */
 export const defaultOpAccountLister: OpAccountLister = () => {
   try {
-    const res = spawnSync("op", ["account", "list", "--format=json"], { encoding: "utf-8" });
+    const res = spawnSync("op", ["account", "list", "--format=json"], {
+      encoding: "utf-8",
+      timeout: OP_PROBE_TIMEOUT_MS,
+    });
     if (res.error || res.status !== 0) return null;
     const parsed = JSON.parse(res.stdout ?? "");
     if (!Array.isArray(parsed)) return null;
@@ -1654,7 +1678,10 @@ export type OpDefaultAccountProbe = () => string | null;
 
 export const defaultOpDefaultAccountProbe: OpDefaultAccountProbe = () => {
   try {
-    const res = spawnSync("op", ["account", "get", "--format=json"], { encoding: "utf-8" });
+    const res = spawnSync("op", ["account", "get", "--format=json"], {
+      encoding: "utf-8",
+      timeout: OP_PROBE_TIMEOUT_MS,
+    });
     if (res.error || res.status !== 0) return null;
     const parsed = JSON.parse(res.stdout ?? "") as { id?: unknown };
     return typeof parsed.id === "string" && parsed.id ? parsed.id : null;
