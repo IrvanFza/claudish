@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { resetBehaviorEngine } from "../behavior/index.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
@@ -14,9 +14,7 @@ class RecordingOpenAIAPIFormat extends OpenAIAPIFormat {
   captured?: CapturedBuildInput;
 
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
-    this.captured = JSON.parse(
-      JSON.stringify({ messages, tools, system: claudeRequest.system })
-    );
+    this.captured = JSON.parse(JSON.stringify({ messages, tools, system: claudeRequest.system }));
     return super.buildPayload(claudeRequest, messages, tools);
   }
 }

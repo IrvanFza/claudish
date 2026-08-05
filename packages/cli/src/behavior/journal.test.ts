@@ -1,21 +1,14 @@
-import { describe, it, expect } from "bun:test";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   JOURNAL_SCHEMA_VERSION,
+  type JournalEntry,
   MAX_JOURNAL_BYTES,
   classifyPath,
   recordDecision,
   toUploadable,
-  type JournalEntry,
 } from "./journal.js";
 
 async function inTempDir(run: (dir: string) => Promise<void>): Promise<void> {
@@ -151,7 +144,9 @@ describe("recordDecision", () => {
       const parentFile = join(dir, "not-a-directory");
       writeFileSync(parentFile, "block parent directory creation");
 
-      await expect(recordDecision(journalEntry(), join(parentFile, "journal.jsonl"))).resolves.toBeUndefined();
+      await expect(
+        recordDecision(journalEntry(), join(parentFile, "journal.jsonl"))
+      ).resolves.toBeUndefined();
     });
   });
 

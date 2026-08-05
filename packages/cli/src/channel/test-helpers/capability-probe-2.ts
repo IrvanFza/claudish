@@ -97,8 +97,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "probe_elicit") {
     try {
       const result = await server.elicitInput({
-        message:
-          "Model 'gemini-3.6-flash' has no credential. Route it via OpenRouter instead?",
+        message: "Model 'gemini-3.6-flash' has no credential. Route it via OpenRouter instead?",
         requestedSchema: {
           type: "object",
           properties: {
@@ -113,7 +112,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       log({ event: "ELICIT_RESULT", result });
       return {
         content: [
-          { type: "text", text: `ELICIT_OK action=${result.action} content=${JSON.stringify(result.content ?? null)}` },
+          {
+            type: "text",
+            text: `ELICIT_OK action=${result.action} content=${JSON.stringify(result.content ?? null)}`,
+          },
         ],
       };
     } catch (err) {
@@ -128,7 +130,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     log({ event: "returning.custom_scheme_resource_link", uri: RESOURCE_URI });
     return {
       content: [
-        { type: "text", text: "Summary: 2 of 6 models failed. Full status available as a resource." },
+        {
+          type: "text",
+          text: "Summary: 2 of 6 models failed. Full status available as a resource.",
+        },
         {
           type: "resource_link",
           uri: RESOURCE_URI,

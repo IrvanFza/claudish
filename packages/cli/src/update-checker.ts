@@ -143,7 +143,9 @@ export interface FetchVersionOptions {
  * spiky (sub-200ms when warm, multiple seconds on a cold DNS/TLS handshake), so an
  * aggressive timeout with no retry turns a slow network into a hard failure.
  */
-export async function fetchLatestVersionOrThrow(options: FetchVersionOptions = {}): Promise<string> {
+export async function fetchLatestVersionOrThrow(
+  options: FetchVersionOptions = {}
+): Promise<string> {
   const { timeoutMs = 5000, retries = 0 } = options;
   let lastError: Error = new Error("unknown error");
 
@@ -187,7 +189,9 @@ export async function fetchLatestVersionOrThrow(options: FetchVersionOptions = {
 /**
  * Fetch latest version from npm registry. Returns null on any failure.
  */
-export async function fetchLatestVersion(options: FetchVersionOptions = {}): Promise<string | null> {
+export async function fetchLatestVersion(
+  options: FetchVersionOptions = {}
+): Promise<string | null> {
   try {
     return await fetchLatestVersionOrThrow(options);
   } catch {

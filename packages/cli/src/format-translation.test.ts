@@ -1046,7 +1046,10 @@ describe("Regression: OpenAI/Codex images in tool_result", () => {
             tool_use_id: "toolu_read_1",
             content: [
               { type: "text", text: "[Image: original 4514x2432, displayed at 2000x1078]" },
-              { type: "image", source: { type: "base64", media_type: "image/png", data: TINY_PNG_B64 } },
+              {
+                type: "image",
+                source: { type: "base64", media_type: "image/png", data: TINY_PNG_B64 },
+              },
             ],
           },
         ],
@@ -1066,7 +1069,10 @@ describe("Regression: OpenAI/Codex images in tool_result", () => {
 
     // The image rides in its own user message as an image_url part.
     const imageMsg = messages.find(
-      (m: any) => m.role === "user" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "image_url")
+      (m: any) =>
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        m.content.some((p: any) => p.type === "image_url")
     );
     expect(imageMsg).toBeDefined();
     const imagePart = imageMsg.content.find((p: any) => p.type === "image_url");
@@ -1106,7 +1112,9 @@ describe("Regression: OpenAI/Codex images in tool_result", () => {
           },
           {
             role: "user",
-            content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file contents here" }],
+            content: [
+              { type: "tool_result", tool_use_id: "toolu_1", content: "file contents here" },
+            ],
           },
         ],
       },
@@ -1117,7 +1125,10 @@ describe("Regression: OpenAI/Codex images in tool_result", () => {
     // No stray image message.
     expect(
       messages.some(
-        (m: any) => m.role === "user" && Array.isArray(m.content) && m.content.some((p: any) => p.type === "image_url")
+        (m: any) =>
+          m.role === "user" &&
+          Array.isArray(m.content) &&
+          m.content.some((p: any) => p.type === "image_url")
       )
     ).toBe(false);
   });
@@ -1881,8 +1892,12 @@ describe("Regression: Responses turn truncated by max_output_tokens", () => {
     expect(() => JSON.parse(partialJson)).toThrow(); // unparseable — hence max_tokens
 
     // Blocks stay well-formed even though the turn was cut.
-    const starts = events.filter((e) => e.data?.type === "content_block_start").map((e) => e.data.index);
-    const stops = events.filter((e) => e.data?.type === "content_block_stop").map((e) => e.data.index);
+    const starts = events
+      .filter((e) => e.data?.type === "content_block_start")
+      .map((e) => e.data.index);
+    const stops = events
+      .filter((e) => e.data?.type === "content_block_stop")
+      .map((e) => e.data.index);
     expect(starts).toEqual(starts.map((_, i) => i));
     expect([...stops].sort((a, b) => a - b)).toEqual(starts);
   });

@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runModels, setupSession } from "./team-orchestrator.js";
@@ -55,24 +48,26 @@ afterEach(() => {
 });
 
 describe("runModels timeout diagnostics", () => {
-  it("persists stderr and reports the stdout bytes captured before timeout", async () => {
-    setupSession(sessionDir, ["hanging-model"], "Analyze this input");
+  it(
+    "persists stderr and reports the stdout bytes captured before timeout",
+    async () => {
+      setupSession(sessionDir, ["hanging-model"], "Analyze this input");
 
-    const status = await runModels(sessionDir, { timeout: 1 });
-    const model = Object.values(status.models)[0];
+      const status = await runModels(sessionDir, { timeout: 1 });
+      const model = Object.values(status.models)[0];
 
-    expect(model.state).toBe("TIMEOUT");
-    expect(model.error).toBeDefined();
-    expect(model.error?.reason).toBe("timeout");
-    expect(model.error?.command).toBe(
-      "claudish --model hanging-model -y --stdin --quiet"
-    );
-    expect(model.error?.stderrSnippet).toContain(STDERR_BEFORE_TIMEOUT);
-    expect(model.outputSize).toBe(Buffer.byteLength(STDOUT_BEFORE_TIMEOUT));
+      expect(model.state).toBe("TIMEOUT");
+      expect(model.error).toBeDefined();
+      expect(model.error?.reason).toBe("timeout");
+      expect(model.error?.command).toBe("claudish --model hanging-model -y --stdin --quiet");
+      expect(model.error?.stderrSnippet).toContain(STDERR_BEFORE_TIMEOUT);
+      expect(model.outputSize).toBe(Buffer.byteLength(STDOUT_BEFORE_TIMEOUT));
 
-    const errorLogPath = model.error?.errorLogPath;
-    expect(errorLogPath).toBeDefined();
-    expect(existsSync(errorLogPath!)).toBe(true);
-    expect(readFileSync(errorLogPath!, "utf-8")).toContain(STDERR_BEFORE_TIMEOUT);
-  }, { retry: 2 });
+      const errorLogPath = model.error?.errorLogPath;
+      expect(errorLogPath).toBeDefined();
+      expect(existsSync(errorLogPath!)).toBe(true);
+      expect(readFileSync(errorLogPath!, "utf-8")).toContain(STDERR_BEFORE_TIMEOUT);
+    },
+    { retry: 2 }
+  );
 });

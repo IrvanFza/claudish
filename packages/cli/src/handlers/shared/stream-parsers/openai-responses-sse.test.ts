@@ -128,13 +128,9 @@ test("stops keep-alive pings when the downstream reader is cancelled", async () 
         headers: { "content-type": "text/event-stream" },
       }
     );
-    const parsedResponse = createResponsesStreamHandler(
-      createMockContext(),
-      upstreamResponse,
-      {
-        modelName: "gpt-5.6-sol",
-      }
-    );
+    const parsedResponse = createResponsesStreamHandler(createMockContext(), upstreamResponse, {
+      modelName: "gpt-5.6-sol",
+    });
 
     if (!parsedResponse.body) {
       throw new Error("Expected the parsed response to have a body");

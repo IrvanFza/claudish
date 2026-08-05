@@ -118,7 +118,8 @@ const MAX_CREATED_SECONDS = 4_102_444_800;
  */
 function readCreatedDate(row: Record<string, unknown>): string | undefined {
   const raw = row.created;
-  const seconds = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  const seconds =
+    typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : Number.NaN;
   if (!Number.isFinite(seconds)) return undefined;
   if (seconds < MIN_CREATED_SECONDS || seconds > MAX_CREATED_SECONDS) return undefined;
   const iso = new Date(seconds * 1000).toISOString();

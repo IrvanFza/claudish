@@ -277,7 +277,9 @@ export function createGeminiSseStream(
                         }
                       } catch (err) {
                         // A failing rule must never corrupt the stream.
-                        log(`[GeminiSSE] repairToolArgs threw for ${part.functionCall.name}: ${err}`);
+                        log(
+                          `[GeminiSSE] repairToolArgs threw for ${part.functionCall.name}: ${err}`
+                        );
                       }
                     }
 

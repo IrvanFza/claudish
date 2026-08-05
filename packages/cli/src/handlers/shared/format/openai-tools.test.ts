@@ -33,14 +33,11 @@ describe("convertToolsToOpenAI", () => {
     { name: "missing", inputSchema: undefined },
     { name: "null", inputSchema: null },
     { name: "non-object", inputSchema: 42 },
-  ])(
-    "serializes object parameters for a $name input_schema when summarized",
-    ({ inputSchema }) => {
-      const parameters = serializedParameters(inputSchema, true);
+  ])("serializes object parameters for a $name input_schema when summarized", ({ inputSchema }) => {
+    const parameters = serializedParameters(inputSchema, true);
 
-      expect(parameters).toEqual({ type: "object", properties: {} });
-    }
-  );
+    expect(parameters).toEqual({ type: "object", properties: {} });
+  });
 
   it("round-trips a normal object schema unchanged", () => {
     const schema = {

@@ -425,7 +425,8 @@ try {
         r(1);
       });
     });
-    claudeUsable = probeCode === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
+    claudeUsable =
+      probeCode === 0 && !/not logged in|please run \/login|invalid api key/i.test(out);
   }
 } catch {}
 
@@ -526,7 +527,6 @@ describe("Group 2: Real Claude Code — MCP tool discovery", () => {
     },
     120_000
   );
-
 
   test.skipIf(!claudeUsable || !hasOpenRouterKey)(
     "claude creates a session via create_session tool",

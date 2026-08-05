@@ -15,8 +15,8 @@ import { randomUUID } from "node:crypto";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import {
-  buildCodeAssistUserAgent,
   CODE_ASSIST_FALLBACK_CHAIN,
+  buildCodeAssistUserAgent,
   getGeminiTierDisplayName,
   getServedCodeAssistModels,
   getValidAccessToken,
@@ -477,7 +477,7 @@ export class GeminiCodeAssistProviderTransport implements ProviderTransport {
     const message =
       reason +
       `To use ${this.modelName}, go through the direct Gemini API instead — ` +
-      `set GEMINI_API_KEY (get one at https://aistudio.google.com/app/apikey) and run ` +
+      "set GEMINI_API_KEY (get one at https://aistudio.google.com/app/apikey) and run " +
       `google@${this.modelName}.`;
     const body = JSON.stringify({
       error: { code: 404, status: "NOT_FOUND", message },

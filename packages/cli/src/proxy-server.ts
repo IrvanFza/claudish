@@ -3,6 +3,8 @@ import { cors } from "hono/cors";
 import { LocalModelAdapter } from "./adapters/local-adapter.js";
 import { OpenRouterAPIFormat } from "./adapters/openrouter-api-format.js";
 import { credentials } from "./auth/credentials/authority.js";
+import { loadHookRules } from "./behavior/hooks.js";
+import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
@@ -13,8 +15,6 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { parseBehaviorConfig, registerHookRules } from "./behavior/index.js";
-import { loadHookRules } from "./behavior/hooks.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import {
   ensureCatalogReady,

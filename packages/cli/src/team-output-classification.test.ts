@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
-  classifyRunOutput,
   DEFAULT_MIN_OUTPUT_BYTES,
   STDOUT_TAIL_LIMIT,
+  classifyRunOutput,
 } from "./team-orchestrator.js";
 
 const CLEAN_LARGE_OUTPUT = "A".repeat(STDOUT_TAIL_LIMIT);
@@ -69,16 +69,19 @@ describe("classifyRunOutput", () => {
       stdoutTail:
         "Observability matters because it turns opaque failures into diagnosable signals you can act on.",
     },
-  ])("accepts the measured $outputSize B regression answer at default", ({ outputSize, stdoutTail }) => {
-    expect(
-      classifyRunOutput({
-        outputSize,
-        stdoutTail,
-        stderr: "",
-        minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
-      })
-    ).toBeNull();
-  });
+  ])(
+    "accepts the measured $outputSize B regression answer at default",
+    ({ outputSize, stdoutTail }) => {
+      expect(
+        classifyRunOutput({
+          outputSize,
+          stdoutTail,
+          stderr: "",
+          minOutputBytes: DEFAULT_MIN_OUTPUT_BYTES,
+        })
+      ).toBeNull();
+    }
+  );
 
   it.each([
     { name: "a newline", outputSize: 1, stdoutTail: "\n" },

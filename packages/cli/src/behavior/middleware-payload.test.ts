@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 

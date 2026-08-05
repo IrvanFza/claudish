@@ -26,9 +26,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { getValidAntigravityAccessToken } from "../../auth/antigravity-token.js";
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
-import { getValidAntigravityAccessToken } from "../../auth/antigravity-token.js";
 import {
   buildAntigravityUserAgent,
   getAntigravityTierDisplayName,
@@ -450,7 +450,9 @@ export class AntigravityProviderTransport implements ProviderTransport {
     }
 
     log(`[Antigravity] Model ${this.servedModelName} capacity exhausted, starting fallback chain`);
-    logStderr(`[Antigravity] ${this.servedModelName} capacity exhausted, trying fallback models...`);
+    logStderr(
+      `[Antigravity] ${this.servedModelName} capacity exhausted, trying fallback models...`
+    );
 
     let lastResponse = originalResponse;
     const innerPayload = this.lastEnvelope.request;
@@ -531,16 +533,18 @@ export class AntigravityProviderTransport implements ProviderTransport {
     response.text().catch(() => {});
     // Only name the served set when we actually have one (the live fetch may
     // have failed); otherwise stay honest about not knowing.
-    const servesClause = served.length > 0 ? `That tier currently serves: ${served.join(", ")}. ` : "";
+    const servesClause =
+      served.length > 0 ? `That tier currently serves: ${served.join(", ")}. ` : "";
     const tier = this._displayName || "Antigravity";
     const reason = capacityFallbacksExhausted
       ? `${this.modelName} could not be served after every Antigravity capacity fallback failed (${tier}, via ag@). ` +
         servesClause
-      : `${this.modelName} is not served by your Antigravity tier (${tier}, via ag@). ` + servesClause;
+      : `${this.modelName} is not served by your Antigravity tier (${tier}, via ag@). ` +
+        servesClause;
     const message =
       reason +
       `To use ${this.modelName}, go through the direct Gemini API instead — ` +
-      `set GEMINI_API_KEY (get one at https://aistudio.google.com/app/apikey) and run ` +
+      "set GEMINI_API_KEY (get one at https://aistudio.google.com/app/apikey) and run " +
       `google@${this.modelName}.`;
     const list = served.join(", ");
     const body = JSON.stringify({

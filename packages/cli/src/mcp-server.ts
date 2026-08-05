@@ -381,7 +381,7 @@ export function formatTeamResult(
       }
     }
     lines.push("actions:");
-    lines.push(`  full stderr/stdout for one failure  → Read the evidence path above`);
+    lines.push("  full stderr/stdout for one failure  → Read the evidence path above");
     lines.push(
       `  machine-readable status             → team(mode="status", path="${sessionPath}")`
     );

@@ -10,9 +10,9 @@ describe("resolveAntigravityModelId", () => {
   test("returns an exactly-served id untouched", () => {
     const served = ["gemini-3.6-flash-high", "gemini-2.5-flash"];
     expect(resolveAntigravityModelId("gemini-2.5-flash", served, null)).toBe("gemini-2.5-flash");
-    expect(resolveAntigravityModelId("gemini-3.6-flash-high", served, "gemini-3.6-flash-high")).toBe(
-      "gemini-3.6-flash-high"
-    );
+    expect(
+      resolveAntigravityModelId("gemini-3.6-flash-high", served, "gemini-3.6-flash-high")
+    ).toBe("gemini-3.6-flash-high");
   });
 
   test("prefers the backend default when it is one of the family variants", () => {
@@ -46,21 +46,29 @@ describe("resolveAntigravityModelId", () => {
     expect(
       resolveAntigravityModelId(
         "gemini-x",
-        ["gemini-x-tiered", "gemini-x-extra-low", "gemini-x-low", "gemini-x-medium", "gemini-x-high"],
+        [
+          "gemini-x-tiered",
+          "gemini-x-extra-low",
+          "gemini-x-low",
+          "gemini-x-medium",
+          "gemini-x-high",
+        ],
         null
       )
     ).toBe("gemini-x-high");
     expect(
       resolveAntigravityModelId("gemini-x", ["gemini-x-tiered", "gemini-x-extra-low"], null)
     ).toBe("gemini-x-extra-low");
-    expect(resolveAntigravityModelId("gemini-x", ["gemini-x-low", "gemini-x-extra-low"], null)).toBe(
-      "gemini-x-low"
-    );
+    expect(
+      resolveAntigravityModelId("gemini-x", ["gemini-x-low", "gemini-x-extra-low"], null)
+    ).toBe("gemini-x-low");
   });
 
   test("prefers a ranked tier over an unrecognized suffix", () => {
     const served = ["gemini-3.6-flash-experimental", "gemini-3.6-flash-low"];
-    expect(resolveAntigravityModelId("gemini-3.6-flash", served, null)).toBe("gemini-3.6-flash-low");
+    expect(resolveAntigravityModelId("gemini-3.6-flash", served, null)).toBe(
+      "gemini-3.6-flash-low"
+    );
   });
 
   test("returns the sole served variant even if its suffix is unrecognized", () => {
@@ -79,6 +87,8 @@ describe("resolveAntigravityModelId", () => {
 
   test("trims surrounding whitespace before matching", () => {
     const served = ["gemini-2.5-flash"];
-    expect(resolveAntigravityModelId("  gemini-2.5-flash  ", served, null)).toBe("gemini-2.5-flash");
+    expect(resolveAntigravityModelId("  gemini-2.5-flash  ", served, null)).toBe(
+      "gemini-2.5-flash"
+    );
   });
 });

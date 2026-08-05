@@ -936,7 +936,7 @@ function buildProjectRequiredError(
     "",
     "No project / no Code Assist seat? Use the direct Gemini API instead:",
     "  export GEMINI_API_KEY='your-key'   # https://aistudio.google.com/app/apikey",
-    "  claudish --model google@gemini-2.5-pro \"...\""
+    '  claudish --model google@gemini-2.5-pro "..."'
   );
 
   return lines.join("\n");

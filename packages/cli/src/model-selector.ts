@@ -30,12 +30,12 @@ import {
   type CatalogModel,
   createCatalogClient,
 } from "./providers/model-catalog.js";
-import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import {
   type DiscoveredModel,
   discoverProviderModels,
   rankDiscoveredModels,
 } from "./providers/model-discovery.js";
+import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
 import { isChatCapable } from "./providers/transport/probe-discovery.js";

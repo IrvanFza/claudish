@@ -30,7 +30,8 @@
       },
       "style": {
         "noNonNullAssertion": "off",
-        "useNodejsImportProtocol": "error"
+        "useNodejsImportProtocol": "error",
+        "useTemplate": "off"
       },
       "suspicious": {
         "noExplicitAny": "warn"

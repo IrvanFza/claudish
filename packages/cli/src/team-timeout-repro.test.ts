@@ -21,12 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  type ModelState,
-  type ModelStatus,
-  runModels,
-  setupSession,
-} from "./team-orchestrator.js";
+import { type ModelState, type ModelStatus, runModels, setupSession } from "./team-orchestrator.js";
 
 // Retries are enabled here because these tests spawn short-lived real subprocesses
 // that can lose races under load. They are deliberately not used on expensive
@@ -90,75 +85,87 @@ afterEach(() => {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe("Bug #1: TIMEOUT despite successful completion", () => {
-  it("REPRO: process that completes before timeout should be COMPLETED, not TIMEOUT", async () => {
-    // Setup session with 2 "models"
-    setupSession(tempDir, ["fast-model-a", "fast-model-b"], "Say hello");
+  it(
+    "REPRO: process that completes before timeout should be COMPLETED, not TIMEOUT",
+    async () => {
+      // Setup session with 2 "models"
+      setupSession(tempDir, ["fast-model-a", "fast-model-b"], "Say hello");
 
-    // Run with a generous 5s timeout — processes complete in ~50ms
-    // Prepend fake claudish to PATH so it's found instead of real one
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
+      // Run with a generous 5s timeout — processes complete in ~50ms
+      // Prepend fake claudish to PATH so it's found instead of real one
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
-    try {
-      const status = await runModels(tempDir, { timeout: 5, minOutputBytes: 0 });
+      try {
+        const status = await runModels(tempDir, { timeout: 5, minOutputBytes: 0 });
 
-      // Both models should be COMPLETED since they finish well before the 5s timeout
-      for (const [modelId, model] of Object.entries(status.models)) {
-        expectModelState(modelId, model, "COMPLETED");
-        expect(model.exitCode).toBe(0);
-        expect(model.outputSize).toBeGreaterThan(0);
+        // Both models should be COMPLETED since they finish well before the 5s timeout
+        for (const [modelId, model] of Object.entries(status.models)) {
+          expectModelState(modelId, model, "COMPLETED");
+          expect(model.exitCode).toBe(0);
+          expect(model.outputSize).toBeGreaterThan(0);
+        }
+      } finally {
+        process.env.PATH = originalPath;
       }
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  }, { retry: 2 });
+    },
+    { retry: 2 }
+  );
 
-  it("REPRO: process that completes just before timeout fires should be COMPLETED", async () => {
-    // This is the tighter race: process completes in ~200ms, timeout at 1s
-    // On a fast machine this should never timeout, but the bug is in how
-    // the timeout handler checks proc.killed
-    if (fakeClaudishDir) {
-      rmSync(fakeClaudishDir, { recursive: true, force: true });
-    }
-    fakeClaudishDir = makeFakeClaudish(200); // 200ms delay
+  it(
+    "REPRO: process that completes just before timeout fires should be COMPLETED",
+    async () => {
+      // This is the tighter race: process completes in ~200ms, timeout at 1s
+      // On a fast machine this should never timeout, but the bug is in how
+      // the timeout handler checks proc.killed
+      if (fakeClaudishDir) {
+        rmSync(fakeClaudishDir, { recursive: true, force: true });
+      }
+      fakeClaudishDir = makeFakeClaudish(200); // 200ms delay
 
-    setupSession(tempDir, ["model-a"], "Say hello");
+      setupSession(tempDir, ["model-a"], "Say hello");
 
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
-    try {
-      const status = await runModels(tempDir, { timeout: 1, minOutputBytes: 0 });
+      try {
+        const status = await runModels(tempDir, { timeout: 1, minOutputBytes: 0 });
 
-      const model = Object.values(status.models)[0];
-      expectModelState("model-a", model, "COMPLETED");
-      expect(model.exitCode).toBe(0);
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  }, { retry: 2 });
+        const model = Object.values(status.models)[0];
+        expectModelState("model-a", model, "COMPLETED");
+        expect(model.exitCode).toBe(0);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    },
+    { retry: 2 }
+  );
 
-  it("REPRO: actual timeout should still produce TIMEOUT state", async () => {
-    // Create a slow fake claudish that takes 5 seconds
-    if (fakeClaudishDir) {
-      rmSync(fakeClaudishDir, { recursive: true, force: true });
-    }
-    fakeClaudishDir = makeFakeClaudish(5000); // 5 second delay
+  it(
+    "REPRO: actual timeout should still produce TIMEOUT state",
+    async () => {
+      // Create a slow fake claudish that takes 5 seconds
+      if (fakeClaudishDir) {
+        rmSync(fakeClaudishDir, { recursive: true, force: true });
+      }
+      fakeClaudishDir = makeFakeClaudish(5000); // 5 second delay
 
-    setupSession(tempDir, ["slow-model"], "Say hello");
+      setupSession(tempDir, ["slow-model"], "Say hello");
 
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
-    try {
-      const status = await runModels(tempDir, { timeout: 1 });
+      try {
+        const status = await runModels(tempDir, { timeout: 1 });
 
-      const model = Object.values(status.models)[0];
-      expectModelState("slow-model", model, "TIMEOUT");
-    } finally {
-      process.env.PATH = originalPath;
-    }
-  }, { retry: 2 });
+        const model = Object.values(status.models)[0];
+        expectModelState("slow-model", model, "TIMEOUT");
+      } finally {
+        process.env.PATH = originalPath;
+      }
+    },
+    { retry: 2 }
+  );
 
   it(
     "REPRO: mixed fast/slow models — fast ones COMPLETED, slow one TIMEOUT",
@@ -233,49 +240,53 @@ exit 0
     { timeout: 20_000, retry: 2 }
   );
 
-  it("REPRO: Bug #2 — byte counter tracks stdout accurately independent of filesystem", async () => {
-    // The original bug: statSync reads file size before stream flush completes,
-    // reporting fewer bytes than actually written. With small output (~80 bytes),
-    // flush completes before finish() runs, so statSync would also pass.
-    //
-    // Fix: use a LARGE output (64KB, well above Node's 16KB highWaterMark) so
-    // the pipe buffer can't flush instantly. The byte counter must track data
-    // events on stdout, not the filesystem state.
+  it(
+    "REPRO: Bug #2 — byte counter tracks stdout accurately independent of filesystem",
+    async () => {
+      // The original bug: statSync reads file size before stream flush completes,
+      // reporting fewer bytes than actually written. With small output (~80 bytes),
+      // flush completes before finish() runs, so statSync would also pass.
+      //
+      // Fix: use a LARGE output (64KB, well above Node's 16KB highWaterMark) so
+      // the pipe buffer can't flush instantly. The byte counter must track data
+      // events on stdout, not the filesystem state.
 
-    // Create a fake claudish that writes exactly 65536 bytes (64KB)
-    const largeFakeDir = mkdtempSync(join(tmpdir(), "fake-claudish-large-"));
-    const script = join(largeFakeDir, "claudish");
-    writeFileSync(
-      script,
-      `#!/bin/bash
+      // Create a fake claudish that writes exactly 65536 bytes (64KB)
+      const largeFakeDir = mkdtempSync(join(tmpdir(), "fake-claudish-large-"));
+      const script = join(largeFakeDir, "claudish");
+      writeFileSync(
+        script,
+        `#!/bin/bash
 cat > /dev/null
 # Generate exactly 65536 bytes (64KB) — exceeds default highWaterMark
 dd if=/dev/zero bs=1024 count=64 2>/dev/null | tr '\\0' 'A'
 exit 0
 `,
-      "utf-8"
-    );
-    chmodSync(script, 0o755);
+        "utf-8"
+      );
+      chmodSync(script, 0o755);
 
-    setupSession(tempDir, ["model-a"], "Say hello");
+      setupSession(tempDir, ["model-a"], "Say hello");
 
-    const originalPath = process.env.PATH;
-    process.env.PATH = `${largeFakeDir}:${originalPath}`;
+      const originalPath = process.env.PATH;
+      process.env.PATH = `${largeFakeDir}:${originalPath}`;
 
-    try {
-      const status = await runModels(tempDir, { timeout: 10 });
+      try {
+        const status = await runModels(tempDir, { timeout: 10 });
 
-      const model = Object.values(status.models)[0];
-      expectModelState("model-a", model, "COMPLETED");
-      // The byte counter must report exactly 65536 bytes — the known amount
-      // written to stdout. A statSync-based approach would under-report this
-      // when the write stream hasn't flushed yet.
-      expect(model.outputSize).toBe(65536);
-    } finally {
-      process.env.PATH = originalPath;
-      rmSync(largeFakeDir, { recursive: true, force: true });
-    }
-  }, { retry: 2 });
+        const model = Object.values(status.models)[0];
+        expectModelState("model-a", model, "COMPLETED");
+        // The byte counter must report exactly 65536 bytes — the known amount
+        // written to stdout. A statSync-based approach would under-report this
+        // when the write stream hasn't flushed yet.
+        expect(model.outputSize).toBe(65536);
+      } finally {
+        process.env.PATH = originalPath;
+        rmSync(largeFakeDir, { recursive: true, force: true });
+      }
+    },
+    { retry: 2 }
+  );
 });
 
 describe("Bug #3: Session directory overwrite protection", () => {

@@ -31,13 +31,13 @@ import {
   isLocalProviderName,
   parseModelSpec,
 } from "./model-parser.js";
+import { renderOpFailureNotice } from "./onepassword.js";
 import {
   getApiKeyInfo as getApiKeyInfoFromDefs,
   getDisplayName as getDisplayNameFromDefs,
 } from "./provider-definitions.js";
 import { parseUrlModel, resolveProvider } from "./provider-registry.js";
 import { resolveRemoteProvider } from "./remote-provider-registry.js";
-import { renderOpFailureNotice } from "./onepassword.js";
 import { buildCredentialHint } from "./routing-hints.js";
 // routing-rules does NOT import provider-resolver, so this stays acyclic.
 import { type RoutePlan, route } from "./routing-rules.js";

@@ -210,9 +210,7 @@ describe("Group 1: Model Catalog — lookupModel()", () => {
 
 describe("Group 1: Model Catalog — lookupModelForProvider()", () => {
   test("openai-codex provider → provider-specific contextWindow 372000", () => {
-    expect(lookupModelForProvider("gpt-5.6-sol", "openai-codex", mockCachePath)).toBe(
-      372_000
-    );
+    expect(lookupModelForProvider("gpt-5.6-sol", "openai-codex", mockCachePath)).toBe(372_000);
   });
 
   test("openai provider → provider-specific contextWindow 1050000", () => {
@@ -224,9 +222,9 @@ describe("Group 1: Model Catalog — lookupModelForProvider()", () => {
   });
 
   test("provider without matching aggregator → falls back to top-level contextWindow", () => {
-    expect(
-      lookupModelForProvider("gpt-5.6-sol", "some-other-provider", mockCachePath)
-    ).toBe(1_050_000);
+    expect(lookupModelForProvider("gpt-5.6-sol", "some-other-provider", mockCachePath)).toBe(
+      1_050_000
+    );
   });
 
   test("model without aggregators → returns top-level contextWindow", () => {
@@ -234,15 +232,13 @@ describe("Group 1: Model Catalog — lookupModelForProvider()", () => {
   });
 
   test("unknown model → undefined", () => {
-    expect(
-      lookupModelForProvider("unknown-model", "openai-codex", mockCachePath)
-    ).toBeUndefined();
+    expect(lookupModelForProvider("unknown-model", "openai-codex", mockCachePath)).toBeUndefined();
   });
 
   test("provider-routed ID throws (contract enforcement)", () => {
-    expect(() =>
-      lookupModelForProvider("cx@gpt-5.6-sol", "openai-codex", mockCachePath)
-    ).toThrow("@");
+    expect(() => lookupModelForProvider("cx@gpt-5.6-sol", "openai-codex", mockCachePath)).toThrow(
+      "@"
+    );
   });
 });
 

@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RoutingRules } from "../profile-config.js";
-import { writeAllModelsCache, type DiskCacheV2 } from "./all-models-cache.js";
+import { type DiskCacheV2, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { buildRoutingChain, matchRoutingRule, mergeRoutingRules, route } from "./routing-rules.js";

@@ -11,8 +11,6 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { DiskCacheV2 } from "../providers/all-models-cache.js";
-import type { RefreshOutcome } from "../providers/model-catalog-resolver.js";
-import type { ClaudishConfig } from "../types.js";
 // Value imports captured BEFORE the mock.module calls below so we can restore
 // the REAL modules in afterAll. Bun's mock.module is PROCESS-GLOBAL and
 // persists across files, so without this restore the stubs here bleed into
@@ -21,7 +19,9 @@ import type { ClaudishConfig } from "../types.js";
 // exports into a plain object immune to the namespace repointing mock.module
 // does. Verified hoist-safe.
 import * as __realAllModelsCache from "../providers/all-models-cache.js";
+import type { RefreshOutcome } from "../providers/model-catalog-resolver.js";
 import * as __realCatalogResolver from "../providers/model-catalog-resolver.js";
+import type { ClaudishConfig } from "../types.js";
 const __realAllModelsCacheExports = { ...__realAllModelsCache };
 const __realCatalogResolverExports = { ...__realCatalogResolver };
 

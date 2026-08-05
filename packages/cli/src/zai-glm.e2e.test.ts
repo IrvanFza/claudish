@@ -65,10 +65,7 @@ describe.skipIf(!HAVE_ZAI)("Real API — Z.AI GLM via claudish proxy (#102 regre
       // Before the fix, matchesModelFamily("zai@glm-4.6", "glm-") → true →
       // GLMModelDialect.getStreamFormat() → "openai-sse" → Anthropic-shape SSE
       // silently dropped → runPromptViaProxy throws "Model returned empty response".
-      const result = await runPromptUnlessAccountDrained(
-        `zai@${TEST_MODEL}`,
-        "Z.AI GLM (zai@)"
-      );
+      const result = await runPromptUnlessAccountDrained(`zai@${TEST_MODEL}`, "Z.AI GLM (zai@)");
       if (!result) return;
 
       expect(result.content).toBeDefined();
@@ -118,10 +115,7 @@ describe.skipIf(!HAVE_GLM)("Real API — standard GLM via claudish proxy (Zhipu 
     async () => {
       // Third sibling test: standard GLM provider at open.bigmodel.cn.
       // Different host, same OpenAI SSE parser, exercises yet another code path.
-      const result = await runPromptUnlessAccountDrained(
-        `glm@${TEST_MODEL}`,
-        "Zhipu GLM (glm@)"
-      );
+      const result = await runPromptUnlessAccountDrained(`glm@${TEST_MODEL}`, "Zhipu GLM (glm@)");
       if (!result) return;
 
       expect(result.content).toBeDefined();

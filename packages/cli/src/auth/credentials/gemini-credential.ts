@@ -12,8 +12,8 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  buildCodeAssistUserAgent,
   GeminiOAuth,
+  buildCodeAssistUserAgent,
   getValidAccessToken,
   setupGeminiUser,
 } from "../gemini-oauth.js";

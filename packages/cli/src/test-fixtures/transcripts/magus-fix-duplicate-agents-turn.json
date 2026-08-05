@@ -15,9 +15,25 @@
     "toolu_call_fAFvScJ6UrFqlCRjPfQqM8I6"
   ],
   "tools": [
-    { "name": "Agent", "id": "toolu_call_2drUc8W8AEhPFLH9LdD4WxfO", "desc": "Trace missing plugin versions" },
-    { "name": "Agent", "id": "toolu_call_A49y40FC77ZFJ6WlhXa8haH8", "desc": "Trace skills search 404" },
-    { "name": "Agent", "id": "toolu_call_QO992lmMUlz4OThT6FSOaltO", "desc": "Trace MCP registry filtering" },
-    { "name": "Agent", "id": "toolu_call_fAFvScJ6UrFqlCRjPfQqM8I6", "desc": "Trace tmux MCP startup" }
+    {
+      "name": "Agent",
+      "id": "toolu_call_2drUc8W8AEhPFLH9LdD4WxfO",
+      "desc": "Trace missing plugin versions"
+    },
+    {
+      "name": "Agent",
+      "id": "toolu_call_A49y40FC77ZFJ6WlhXa8haH8",
+      "desc": "Trace skills search 404"
+    },
+    {
+      "name": "Agent",
+      "id": "toolu_call_QO992lmMUlz4OThT6FSOaltO",
+      "desc": "Trace MCP registry filtering"
+    },
+    {
+      "name": "Agent",
+      "id": "toolu_call_fAFvScJ6UrFqlCRjPfQqM8I6",
+      "desc": "Trace tmux MCP startup"
+    }
   ]
 }

@@ -3,8 +3,8 @@
  * Derived from BUILTIN_PROVIDERS — single source of truth.
  */
 
-import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
 import { hasSharedAntigravityToken } from "../auth/antigravity-token.js";
+import { type CredentialSource, describeSourceSync } from "../auth/credentials/source.js";
 import { hasOAuthCredentials } from "../auth/oauth-registry.js";
 import type { LocalLiveness } from "../providers/local-liveness.js";
 import { type ProviderDefinition, getAllProviders } from "../providers/provider-definitions.js";

@@ -15,12 +15,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type DiskCacheV2, writeAllModelsCache } from "./all-models-cache.js";
 import {
   DEFAULT_ROUTING_RULES,
   validateDefaultRoutingRules,
   validateRoutingRulesAgainstProviders,
 } from "./default-routing-rules.js";
-import { writeAllModelsCache, type DiskCacheV2 } from "./all-models-cache.js";
 import { buildRoutingChain, matchRoutingRule } from "./routing-rules.js";
 
 function makeTempCatalog(

@@ -266,7 +266,9 @@ export function createStreamingResponseHandler(
                 if (validation.valid || (validation.repaired && validation.repairedArgs)) {
                   const argsJson = repairArgs(
                     t.name,
-                    JSON.stringify(validation.repaired ? validation.repairedArgs : validation.parsedArgs)
+                    JSON.stringify(
+                      validation.repaired ? validation.repairedArgs : validation.parsedArgs
+                    )
                   );
                   log(
                     `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
@@ -347,14 +349,12 @@ export function createStreamingResponseHandler(
               // believing every conversation was 100 tokens, which silently
               // disabled auto-compaction on every openai-sse provider.
               usage: {
-                ...(state.usage?.prompt_tokens
-                  ? { input_tokens: state.usage.prompt_tokens }
-                  : {}),
+                ...(state.usage?.prompt_tokens ? { input_tokens: state.usage.prompt_tokens } : {}),
                 output_tokens: state.usage?.completion_tokens || 0,
               },
             });
             behavior?.onTurnEnd?.();
-          send("message_stop", { type: "message_stop" });
+            send("message_stop", { type: "message_stop" });
           }
 
           // Update token counts - use actual usage if available, otherwise estimate

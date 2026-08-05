@@ -11,9 +11,9 @@
  */
 
 import {
-  readAllModelsCache,
   type ReasoningCapability,
   type SlimModelEntry,
+  readAllModelsCache,
 } from "../providers/all-models-cache.js";
 
 export type { ReasoningCapability, ReasoningControl } from "../providers/all-models-cache.js";

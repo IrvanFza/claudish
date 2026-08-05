@@ -10,12 +10,7 @@ import {
 import { join, resolve } from "node:path";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { redactSecrets } from "./redact.js";
-import {
-  renderTeamStatsCompact,
-  statsDir,
-  tokenFileFor,
-  writeStatusFile,
-} from "./team-stats.js";
+import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -209,8 +204,8 @@ export function classifyRunOutput(opts: {
       reason: "background_task_ceiling",
       detail:
         `Claude Code terminated the turn after ${bgCeiling[1]}s waiting on background tasks, ` +
-        `flushing only partial output. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 in the child ` +
-        `environment to wait indefinitely, or tell the model not to spawn background work.`,
+        "flushing only partial output. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 in the child " +
+        "environment to wait indefinitely, or tell the model not to spawn background work.",
     };
   }
 
@@ -550,9 +545,7 @@ export async function runModels(
 
         if (failed) {
           const reason: FailureReason = crashed ? "nonzero_exit" : degraded!.reason;
-          const detail = crashed
-            ? `Child exited with code ${exitCode}.`
-            : degraded!.detail;
+          const detail = crashed ? `Child exited with code ${exitCode}.` : degraded!.detail;
 
           persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
 
@@ -708,7 +701,7 @@ export async function runModels(
             const bytes = rt?.getByteCount() ?? 0;
             const detail =
               `Killed by the orchestrator after ${timeoutMs / 1000}s with ${bytes} B of stdout. ` +
-              `In --quiet print mode the child emits its answer only at the end, so 0 B means ` +
+              "In --quiet print mode the child emits its answer only at the end, so 0 B means " +
               `"did not finish", not "produced nothing".`;
 
             if (rt) persistErrorLog(rt.errorLogPath, `TIMEOUT: ${detail}`, stderr, stdoutTail);

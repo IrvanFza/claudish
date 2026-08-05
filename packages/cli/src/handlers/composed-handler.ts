@@ -27,9 +27,10 @@ import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
 import { DialectManager } from "../adapters/dialect-manager.js";
-import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
+import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
+import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import {
@@ -54,7 +55,6 @@ import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
-import { lookupModelForProvider } from "../adapters/model-catalog.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker } from "./shared/token-tracker.js";

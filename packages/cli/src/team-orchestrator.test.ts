@@ -15,12 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type {
-  ModelStatus,
-  TeamManifest,
-  TeamStatus,
-  VoteResult,
-} from "./team-orchestrator.js";
+import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
 //     until the tests actually run) ──────────────────────────────────────────

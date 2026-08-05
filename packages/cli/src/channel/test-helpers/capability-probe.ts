@@ -52,8 +52,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "probe_ping",
-        description:
-          "Returns 'pong'. Call AFTER probe_progress to detect stdio transport death.",
+        description: "Returns 'pong'. Call AFTER probe_progress to detect stdio transport death.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
       },
       {
@@ -92,7 +91,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       log({ event: "NO_PROGRESS_TOKEN", note: "client did not request progress" });
       return {
         content: [
-          { type: "text", text: "NO_PROGRESS_TOKEN — client sent no progressToken; emitted nothing" },
+          {
+            type: "text",
+            text: "NO_PROGRESS_TOKEN — client sent no progressToken; emitted nothing",
+          },
         ],
       };
     }
@@ -113,7 +115,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     return {
       content: [
-        { type: "text", text: "probe_progress done — 3 progress notifications emitted with messages" },
+        {
+          type: "text",
+          text: "probe_progress done — 3 progress notifications emitted with messages",
+        },
       ],
     };
   }

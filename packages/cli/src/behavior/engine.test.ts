@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { BehaviorEngine } from "./engine.js";
 import { planFilePathRule } from "./rules/plan-mode.js";
 import type { BehaviorRule } from "./types.js";
@@ -160,10 +160,7 @@ describe("BehaviorSession request actions", () => {
     );
 
     expect(claudeTools.map((tool) => tool.description)).toEqual(["claude appended", "other"]);
-    expect(tools.map((tool) => tool.function.description)).toEqual([
-      "converted appended",
-      "other",
-    ]);
+    expect(tools.map((tool) => tool.function.description)).toEqual(["converted appended", "other"]);
   });
 
   it("appends a system note to a string system prompt", () => {
@@ -279,6 +276,8 @@ describe("BehaviorSession tool interception", () => {
     session.applyRequest({ messages: [] }, [], [], []);
 
     expect(session.repairToolCall("Write", "{not valid json")).toBeNull();
-    expect(session.repairToolCall("Write", JSON.stringify({ file_path: "/tmp/file.md" }))).toBeNull();
+    expect(
+      session.repairToolCall("Write", JSON.stringify({ file_path: "/tmp/file.md" }))
+    ).toBeNull();
   });
 });

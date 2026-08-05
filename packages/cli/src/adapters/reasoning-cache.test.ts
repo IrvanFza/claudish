@@ -65,17 +65,32 @@ describe("CodexAPIFormat replays cached reasoning before its function_call", () 
       { role: "user", content: [{ type: "text", text: "read the file" }] },
       {
         role: "assistant",
-        content: [{ type: "tool_use", id: "toolu_call_abc", name: "read_file", input: { path: "/tmp/a.ts" } }],
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_call_abc",
+            name: "read_file",
+            input: { path: "/tmp/a.ts" },
+          },
+        ],
       },
       {
         role: "user",
-        content: [{ type: "tool_result", tool_use_id: "toolu_call_abc", content: "export const answer = 42;" }],
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_call_abc",
+            content: "export const answer = 42;",
+          },
+        ],
       },
     ],
   };
 
   async function buildInput() {
-    const { convertMessagesToOpenAI } = await import("../handlers/shared/format/openai-messages.js");
+    const { convertMessagesToOpenAI } = await import(
+      "../handlers/shared/format/openai-messages.js"
+    );
     const messages = convertMessagesToOpenAI(claudeRequest, "gpt-5.6-sol");
     const payload = new CodexAPIFormat("gpt-5.6-sol").buildPayload(claudeRequest, messages, []);
     return payload.input as any[];

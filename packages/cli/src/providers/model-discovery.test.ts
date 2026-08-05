@@ -12,11 +12,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { credentials } from "../auth/credentials/authority.js";
 import {
+  type DiscoveredModel,
   discoverContextWindow,
   discoverProviderModels,
   invalidateModelDiscovery,
   rankDiscoveredModels,
-  type DiscoveredModel,
 } from "./model-discovery.js";
 
 const realFetch = globalThis.fetch;
@@ -217,9 +217,7 @@ describe("model discovery cache and context lookup", () => {
     expect(await discoverContextWindow("kimi-coding", "k3")).toBe(1_048_576);
     expect(await discoverContextWindow("kimi-coding", "K3")).toBe(1_048_576);
     expect(await discoverContextWindow("kimi-coding", "not-listed")).toBeUndefined();
-    expect(
-      await discoverContextWindow("kimi-coding", "window-not-reported")
-    ).toBeUndefined();
+    expect(await discoverContextWindow("kimi-coding", "window-not-reported")).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -236,12 +234,7 @@ describe("rankDiscoveredModels", () => {
 
     const ranked = rankDiscoveredModels(models);
 
-    expect(ranked.map((model) => model.id)).toEqual([
-      "largest",
-      "alpha",
-      "zeta",
-      "no-window",
-    ]);
+    expect(ranked.map((model) => model.id)).toEqual(["largest", "alpha", "zeta", "no-window"]);
     expect(models).toEqual(original);
     expect(ranked).not.toBe(models);
   });
