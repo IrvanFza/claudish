@@ -110,17 +110,54 @@ const OWNER_PROVIDER_SLUGS = new Set<string>([
 ]);
 
 /**
- * Vendors that SERVE other owners' models — these appear as
- * `aggregators[].provider` values in the slim catalog. For these slugs
- * `modelsByVendor()` filters the slim cache.
+ * Cold-start seed for the aggregator set. NOT the roster — see
+ * {@link aggregatorProviderSlugs}, which derives the real one from the catalog.
+ *
+ * Used only when the slim cache is empty (first run, before the first fetch),
+ * where an empty set would make `modelsByVendor()` return nothing for everyone.
  */
-const AGGREGATOR_PROVIDER_SLUGS = new Set<string>([
+const AGGREGATOR_SLUG_SEED = new Set<string>([
   "openrouter",
   "opencode-zen",
   "opencode-zen-go",
   "fireworks",
   "together-ai",
 ]);
+
+/**
+ * Which providers SERVE other owners' models, derived from the catalog itself.
+ *
+ * `aggregators[].provider` IS this set — every provider that serves anything
+ * appears there by construction. Hardcoding it meant the list went stale the
+ * moment the backend added a provider, silently: `modelsByVendor()` fell
+ * through and returned nothing, and the picker papered over the empty list by
+ * aliasing to a DIFFERENT provider's catalog (`antigravity` → `google`), so
+ * users were shown the direct Gemini API's models under the Antigravity
+ * subscription. Measured against the live catalog, the hardcoded set of 5
+ * missed 4 real providers: antigravity (20 models), mistralai (19),
+ * kimi-coding (4), openai-codex (1).
+ *
+ * Recomputed per call from the passed-in cache reader — the cache is already
+ * memoized upstream, and the set must track a refresh without a restart.
+ */
+function aggregatorProviderSlugs(readSlimCache: () => { entries: SlimModelEntry[] } | null): Set<
+  string
+> {
+  const cache = readSlimCache();
+  if (!cache || cache.entries.length === 0) return AGGREGATOR_SLUG_SEED;
+
+  const slugs = new Set<string>();
+  for (const entry of cache.entries) {
+    for (const agg of entry.aggregators ?? []) {
+      if (agg.provider) slugs.add(agg.provider.toLowerCase());
+    }
+  }
+  // Union with the seed: a provider claudish knows how to reach should not
+  // vanish from the picker just because the current catalog snapshot happens
+  // to carry no models for it.
+  for (const seed of AGGREGATOR_SLUG_SEED) slugs.add(seed);
+  return slugs;
+}
 
 /**
  * Local-only / undocumented-catalog vendors. These have no Firebase catalog
@@ -273,9 +310,10 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
         return filterToServedByProvider(docs.map(modelDocToCatalogModel), slug, _readSlimCache);
       }
 
-      // Aggregators → filter slim cache by aggregators[].provider.
-      // Firebase-derived data — OK to cache locally per the catalog policy.
-      if (AGGREGATOR_PROVIDER_SLUGS.has(slug)) {
+      // Aggregators → filter slim cache by aggregators[].provider. The set of
+      // aggregator slugs is DERIVED from that same field, so a provider the
+      // backend starts serving shows up here without a code change.
+      if (aggregatorProviderSlugs(_readSlimCache).has(slug)) {
         const { entries } = readSlimCacheWithFreshness(_readSlimCache);
         const matches = entries.filter((entry) =>
           entry.aggregators?.some((agg) => agg.provider.toLowerCase() === slug)

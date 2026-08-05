@@ -86,15 +86,20 @@ export interface ModelInfo {
 export const pickerProviderToFirebaseSlug: Record<string, string> = {
   openrouter: "openrouter",
   google: "google",
-  antigravity: "google",
   openai: "openai",
+  // NOTE: kept deliberately, unlike antigravity/kimi-coding which now use
+  // their own slug. The catalog carries an `openai-codex` aggregator for just
+  // ONE of the six Responses-API models (gpt-5.6-sol), and /probeModels
+  // contradicts it by recommending gpt-5.6-luna. Using the real slug today
+  // would collapse the picker from OpenAI's full list to a single model on the
+  // strength of known-incomplete data. Remove this once coverage lands — see
+  // models-index TASK_model_behavior_metadata_gaps.md.
   "openai-codex": "openai",
   "x-ai": "x-ai",
   deepseek: "deepseek",
   minimax: "minimax",
   "minimax-coding": "minimax",
   kimi: "moonshotai",
-  "kimi-coding": "moonshotai",
   glm: "z-ai",
   "glm-coding": "z-ai",
   "z-ai": "z-ai",
@@ -572,8 +577,10 @@ async function fetchPickerModels(
   catalog: CatalogClient
 ): Promise<ModelInfo[]> {
   if (providerSlug) {
-    const firebaseSlug = pickerProviderToFirebaseSlug[providerSlug];
-    if (!firebaseSlug) return [];
+    // Fall back to the provider's OWN slug. `modelsByVendor` derives its
+    // aggregator set from the catalog, so any provider the backend serves
+    // resolves without needing an entry in the map below.
+    const firebaseSlug = pickerProviderToFirebaseSlug[providerSlug] ?? providerSlug;
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
     const infos = sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)));
     if (!searchTerm) return infos;
@@ -980,8 +987,7 @@ async function loadModelsForPickerProvider(
   providerValue: string,
   catalog: CatalogClient
 ): Promise<ModelInfo[]> {
-  const firebaseSlug = pickerProviderToFirebaseSlug[providerValue];
-  if (!firebaseSlug) return [];
+  const firebaseSlug = pickerProviderToFirebaseSlug[providerValue] ?? providerValue;
 
   try {
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
