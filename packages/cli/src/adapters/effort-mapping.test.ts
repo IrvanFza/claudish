@@ -362,6 +362,52 @@ function glmThinking(modelId: string, req: any): any {
   return (fmt as any).prepareRequest({}, req).thinking;
 }
 
+class StubbedGLM extends GLMModelDialect {
+  constructor(
+    modelId: string,
+    private readonly stub: any,
+    wireFormat?: "anthropic-sse"
+  ) {
+    super(modelId, wireFormat);
+  }
+
+  protected override lookupReasoningCapability(): any {
+    return this.stub;
+  }
+}
+
+const CATALOG = {
+  "glm-4.5-air": { supported: true, control: "toggle", mandatory: false },
+  "glm-4.6": { supported: true, control: "toggle", mandatory: false },
+  "glm-4.7": { supported: true, control: "toggle", mandatory: false },
+  "glm-5": { supported: true, control: "toggle", mandatory: false },
+  "glm-5.1": { supported: true, control: "toggle", mandatory: false },
+  "glm-5.2": {
+    supported: true,
+    control: "effort",
+    mandatory: false,
+    efforts: ["max", "high"],
+    defaultEffort: "max",
+  },
+  "glm-5.2-fast": {
+    supported: true,
+    control: "effort",
+    efforts: ["max", "high"],
+    defaultEffort: "max",
+  },
+  "glm-4-plus": undefined,
+};
+
+function stubbedGlmPrep(
+  modelId: keyof typeof CATALOG | string,
+  stub: any,
+  originalRequest: any,
+  request: any = {},
+  wireFormat?: "anthropic-sse"
+): any {
+  return new StubbedGLM(modelId, stub, wireFormat).prepareRequest(request, originalRequest);
+}
+
 describe("GLM thinking toggle (hybrid 4.5/4.6)", () => {
   test("glm-4.6: low → enabled, none → disabled", () => {
     expect(glmThinking("glm-4.6", { output_config: { effort: "low" } })).toEqual({
@@ -390,6 +436,165 @@ describe("GLM thinking toggle (hybrid 4.5/4.6)", () => {
       }
     );
     expect(out.thinking).toBeUndefined();
+  });
+});
+
+describe("GLM catalog-driven thinking toggles newer than 4.6", () => {
+  // These models previously produced a STRIPPED `thinking` at every effort level.
+  test.each(["glm-4.7", "glm-5", "glm-5.1"] as const)(
+    "%s enables thinking at high without inventing a depth knob",
+    (modelId) => {
+      const out = stubbedGlmPrep(modelId, CATALOG[modelId], {
+        output_config: { effort: "high" },
+      });
+      expect(out.thinking).toEqual({ type: "enabled" });
+      expect(out.reasoning_effort).toBeUndefined();
+    }
+  );
+
+  test.each(["glm-4.7", "glm-5", "glm-5.1"] as const)(
+    "%s disables thinking at none and minimal",
+    (modelId) => {
+      for (const effort of ["none", "minimal"] as const) {
+        const out = stubbedGlmPrep(modelId, CATALOG[modelId], {
+          output_config: { effort },
+        });
+        expect(out.thinking).toEqual({ type: "disabled" });
+      }
+    }
+  );
+});
+
+describe("GLM-5.2 catalog-driven reasoning_effort", () => {
+  test.each([
+    ["none", { type: "disabled" }, undefined],
+    ["minimal", { type: "disabled" }, undefined],
+    ["low", { type: "enabled" }, "high"],
+    ["medium", { type: "enabled" }, "high"],
+    ["high", { type: "enabled" }, "high"],
+    ["xhigh", { type: "enabled" }, "max"],
+    ["max", { type: "enabled" }, "max"],
+  ] as const)(
+    "effort %s maps to thinking %o and reasoning_effort %s",
+    (effort, thinking, level) => {
+      const out = stubbedGlmPrep("glm-5.2", CATALOG["glm-5.2"], {
+        output_config: { effort },
+      });
+      expect(out.thinking).toEqual(thinking);
+      expect(out.reasoning_effort).toBe(level);
+    }
+  );
+
+  test("xhigh clamps upward to max when equidistant from high and max", () => {
+    const out = stubbedGlmPrep("glm-5.2", CATALOG["glm-5.2"], {
+      output_config: { effort: "xhigh" },
+    });
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.reasoning_effort).toBe("max");
+  });
+
+  test("glm-5.2-fast has the same effort mapping as glm-5.2", () => {
+    for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+      const regular = stubbedGlmPrep("glm-5.2", CATALOG["glm-5.2"], {
+        output_config: { effort },
+      });
+      const fast = stubbedGlmPrep("glm-5.2-fast", CATALOG["glm-5.2-fast"], {
+        output_config: { effort },
+      });
+      expect({ thinking: fast.thinking, reasoning_effort: fast.reasoning_effort }).toEqual({
+        thinking: regular.thinking,
+        reasoning_effort: regular.reasoning_effort,
+      });
+    }
+  });
+
+  test("disabling thinking deletes an incoming contradictory reasoning_effort", () => {
+    const out = stubbedGlmPrep(
+      "glm-5.2",
+      CATALOG["glm-5.2"],
+      { output_config: { effort: "none" } },
+      { reasoning_effort: "xhigh" }
+    );
+    expect(out.thinking).toEqual({ type: "disabled" });
+    expect(out.reasoning_effort).toBeUndefined();
+  });
+});
+
+describe("GLM legacy stripping behavior", () => {
+  test("glm-4-plus strips incoming thinking even with a high effort signal", () => {
+    const out = stubbedGlmPrep(
+      "glm-4-plus",
+      CATALOG["glm-4-plus"],
+      { output_config: { effort: "high" } },
+      { thinking: { budget_tokens: 5 } }
+    );
+    expect(out.thinking).toBeUndefined();
+  });
+
+  test("glm-5.2 strips incoming thinking when there is no effort signal", () => {
+    const out = stubbedGlmPrep(
+      "glm-5.2",
+      CATALOG["glm-5.2"],
+      {},
+      { thinking: { budget_tokens: 5 } }
+    );
+    expect(out.thinking).toBeUndefined();
+  });
+});
+
+describe("GLM cold-cache version fallback", () => {
+  test.each(["glm-6", "glm-6.2", "glm-5.9-turbo"])(
+    "%s enables thinking for future GLM versions",
+    (modelId) => {
+      const out = stubbedGlmPrep(modelId, undefined, { output_config: { effort: "high" } });
+      expect(out.thinking).toEqual({ type: "enabled" });
+    }
+  );
+
+  test.each(["glm-4.4", "glm-4", "glm-4v-plus", "chatglm-3"])(
+    "%s strips thinking for a pre-4.5 or non-versioned model",
+    (modelId) => {
+      const out = stubbedGlmPrep(
+        modelId,
+        undefined,
+        { output_config: { effort: "high" } },
+        { thinking: { budget_tokens: 5 } }
+      );
+      expect(out.thinking).toBeUndefined();
+    }
+  );
+
+  test.each(["zhipu/glm-4.6", "z-ai/glm-4.7"])(
+    "%s strips the vendor prefix before accepting the version",
+    (modelId) => {
+      const out = stubbedGlmPrep(modelId, undefined, { output_config: { effort: "high" } });
+      expect(out.thinking).toEqual({ type: "enabled" });
+    }
+  );
+
+  test("vendor-prefixed glm-4-plus is still stripped", () => {
+    const out = stubbedGlmPrep(
+      "zhipu/glm-4-plus",
+      undefined,
+      { output_config: { effort: "high" } },
+      { thinking: { budget_tokens: 5 } }
+    );
+    expect(out.thinking).toBeUndefined();
+  });
+});
+
+describe("GLM Anthropic wire reasoning stays separate", () => {
+  test("glm-5.2 uses thinking plus output_config.effort, not reasoning_effort", () => {
+    const out = stubbedGlmPrep(
+      "glm-5.2",
+      CATALOG["glm-5.2"],
+      { output_config: { effort: "max" } },
+      {},
+      "anthropic-sse"
+    );
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.output_config).toEqual({ effort: "max" });
+    expect(out.reasoning_effort).toBeUndefined();
   });
 });
 

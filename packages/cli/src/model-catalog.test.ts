@@ -290,8 +290,20 @@ describe("Group 2: MiniMaxModelDialect — catalog integration", () => {
 });
 
 describe("Group 2: GLMModelDialect — prepareRequest", () => {
-  test("thinking param is stripped by GLM (not supported)", () => {
+  test("glm-5 converts Anthropic budget thinking to GLM's toggle", () => {
     const dialect = new GLMModelDialect("glm-5");
+    const originalRequest: any = {
+      thinking: { type: "enabled", budget_tokens: 5000 },
+      messages: [],
+    };
+    const request: any = { ...originalRequest };
+    dialect.prepareRequest(request, originalRequest);
+    expect(request.thinking).toEqual({ type: "enabled" });
+    expect(request.thinking.budget_tokens).toBeUndefined();
+  });
+
+  test("pre-4.5 GLM strips Anthropic budget thinking", () => {
+    const dialect = new GLMModelDialect("glm-4-plus");
     const originalRequest: any = {
       thinking: { type: "enabled", budget_tokens: 5000 },
       messages: [],

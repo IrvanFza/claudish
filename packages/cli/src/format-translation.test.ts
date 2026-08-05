@@ -565,11 +565,27 @@ describe("Model Adapter Quirks", () => {
     expect(request.thinking).toBeUndefined();
   });
 
-  test("GLMAdapter: strips thinking params", async () => {
+  test("GLMAdapter: glm-5 converts Anthropic budget thinking to GLM's toggle", async () => {
     const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
     const adapter = new GLMModelDialect("glm-5");
 
     const request: any = { model: "glm-5", messages: [], thinking: { budget_tokens: 10000 } };
+    const original = { thinking: { budget_tokens: 10000 } };
+
+    adapter.prepareRequest(request, original);
+    expect(request.thinking).toEqual({ type: "enabled" });
+    expect(request.thinking.budget_tokens).toBeUndefined();
+  });
+
+  test("GLMAdapter: pre-4.5 GLM strips Anthropic budget thinking", async () => {
+    const { GLMModelDialect } = await import("./adapters/glm-model-dialect.js");
+    const adapter = new GLMModelDialect("glm-4-plus");
+
+    const request: any = {
+      model: "glm-4-plus",
+      messages: [],
+      thinking: { budget_tokens: 10000 },
+    };
     const original = { thinking: { budget_tokens: 10000 } };
 
     adapter.prepareRequest(request, original);

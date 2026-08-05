@@ -9,15 +9,15 @@
     "playground@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true,
-    "designer@magus": true,
     "browser-use@magus": true,
     "kanban@magus": true,
     "claudish@magus": true,
-    "mnemex@magus": true
+    "mnemex@magus": true,
+    "designer@magus": true
   },
   "installedPluginVersions": {
     "skill-creator@claude-plugins-official": "0.0.0",
-    "designer@magus": "0.4.0",
+    "designer@magus": "0.4.2",
     "gtd@magus": "2.0.1",
     "browser-use@magus": "1.4.0",
     "kanban@magus": "1.6.0",
