@@ -67,6 +67,44 @@ export interface ReasoningCapability {
   supportsBudgetTokens?: boolean;
 }
 
+/**
+ * How a provider-preset variant relates to its base model.
+ *
+ * The catalog lists a preset variant (e.g. `gemini-3.6-flash-high`) as its own
+ * top-level model, and `routeVariant` is the back-pointer: which family it
+ * belongs to, which base model it presets, and whether it is that family's
+ * default. `isDefault` is the authoritative answer to "if the user names the
+ * family, which variant should we send?" — a fact the client cannot derive,
+ * because the variant suffix is provider vocabulary, not a version number.
+ */
+export interface RouteVariant {
+  /** Discriminator, e.g. `provider-preset`. Treat unknown kinds as no info. */
+  kind: string;
+  /** The catalog model this variant presets (e.g. `gemini-3.6-flash`). */
+  baseModelId?: string;
+  /** The family a user would name (e.g. `gemini-3.1-pro`). */
+  familyId?: string;
+  /** The serving provider this variant exists on (e.g. `antigravity`). */
+  provider?: string;
+  /** Provider vocabulary for the preset (e.g. `reasoning-tier=high`). */
+  preset?: string;
+  /** Whether this variant is the family's default on that provider. */
+  isDefault?: boolean;
+}
+
+/**
+ * Which wire API a model is reachable on, keyed by transport family.
+ *
+ * `api` names the concrete endpoint shape (`chat-completions` / `responses` /
+ * `anthropic-messages` / `gemini`), and `toolsWithReasoning` records whether
+ * tools and reasoning can be combined on it — `requires-responses` means the
+ * Chat Completions path cannot carry both.
+ */
+export interface ModelEndpoint {
+  api?: string;
+  toolsWithReasoning?: string;
+}
+
 export interface SlimModelEntry {
   modelId: string;
   aliases: string[];
@@ -97,6 +135,31 @@ export interface SlimModelEntry {
    * silently substituted. Optional — older cache files may not include it.
    */
   subscriptionPlans?: string[];
+  /**
+   * Whether the model accepts tool/function definitions. Shipped by the catalog
+   * for ~97% of models.
+   */
+  supportsTools?: boolean;
+  /**
+   * Whether the model can produce thinking/reasoning content at all. Coarser
+   * than {@link ReasoningCapability} (which describes the KNOB); this is the
+   * plain yes/no.
+   */
+  supportsThinking?: boolean;
+  /**
+   * The name of the output-token parameter this model's API expects —
+   * `max_tokens`, `max_completion_tokens`, or `max_output_tokens`.
+   *
+   * This exists because the correct parameter is NOT derivable from the model
+   * name. Guessing it from a version substring (`gpt-5` → max_completion_tokens)
+   * is wrong for the gpt-5.6-* family, which takes `max_output_tokens`, and
+   * breaks silently for every model released after the guess was written.
+   */
+  tokenParam?: string;
+  /** Preset-variant back-pointer — see {@link RouteVariant}. */
+  routeVariant?: RouteVariant;
+  /** Wire APIs this model is reachable on, keyed by transport family. */
+  endpoints?: Record<string, ModelEndpoint>;
 }
 
 /**

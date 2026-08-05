@@ -11,12 +11,19 @@
  */
 
 import {
+  type ModelEndpoint,
   type ReasoningCapability,
+  type RouteVariant,
   type SlimModelEntry,
   readAllModelsCache,
 } from "../providers/all-models-cache.js";
 
-export type { ReasoningCapability, ReasoningControl } from "../providers/all-models-cache.js";
+export type {
+  ModelEndpoint,
+  ReasoningCapability,
+  ReasoningControl,
+  RouteVariant,
+} from "../providers/all-models-cache.js";
 
 export interface ModelEntry {
   /** Model ID as stored in the slim catalog (not lowercased) */
@@ -78,6 +85,88 @@ export function lookupModelReasoning(
   cachePath?: string
 ): ReasoningCapability | undefined {
   return findCacheEntry(modelId, cachePath)?.reasoning;
+}
+
+/**
+ * The output-token parameter name this model's API expects.
+ *
+ * Returns `max_tokens` / `max_completion_tokens` / `max_output_tokens`, or
+ * undefined for a cold cache or a model the catalog has no opinion on — in
+ * which case the caller keeps whatever it did before.
+ *
+ * Callers must PREFER this over any name-based guess. Measured against the live
+ * catalog, guessing from the name sends the wrong parameter to the whole
+ * gpt-5.6-* family (they take `max_output_tokens`, the guess says
+ * `max_completion_tokens`).
+ */
+export function lookupModelTokenParam(modelId: string, cachePath?: string): string | undefined {
+  return findCacheEntry(modelId, cachePath)?.tokenParam;
+}
+
+/**
+ * Preset-variant metadata — which family this model belongs to, and whether it
+ * is that family's default on its provider.
+ *
+ * This is the sanctioned replacement for ranking variant suffixes client-side:
+ * the catalog names the default (`isDefault`), so there is nothing to rank.
+ */
+export function lookupModelRouteVariant(
+  modelId: string,
+  cachePath?: string
+): RouteVariant | undefined {
+  return findCacheEntry(modelId, cachePath)?.routeVariant;
+}
+
+/**
+ * The default preset variant for a family on a given provider, if the catalog
+ * knows one.
+ *
+ * Answers "the user typed `gemini-3.6-flash`, which id do we actually send to
+ * Antigravity?" by scanning for the family's `isDefault` variant. Returns
+ * undefined when the cache is cold or the family has no marked default, and the
+ * caller then falls back to its own resolution.
+ */
+export function lookupFamilyDefaultVariant(
+  familyId: string,
+  provider: string,
+  cachePath?: string
+): string | undefined {
+  const cache = readAllModelsCache(cachePath);
+  if (!cache) return undefined;
+  for (const entry of cache.entries) {
+    const rv = entry.routeVariant;
+    if (!rv?.isDefault) continue;
+    if (rv.provider !== provider) continue;
+    if (rv.familyId === familyId || rv.baseModelId === familyId) return entry.modelId;
+  }
+  return undefined;
+}
+
+/**
+ * Coarse capability flags straight from the catalog. Each is undefined when the
+ * catalog has no opinion — never defaulted to false, because "unknown" and "no"
+ * lead to different behaviour (dropping tools from a request that needs them is
+ * worse than sending them to a model that ignores them).
+ */
+export function lookupModelCapabilities(
+  modelId: string,
+  cachePath?: string
+): { supportsTools?: boolean; supportsThinking?: boolean } | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!entry) return undefined;
+  return { supportsTools: entry.supportsTools, supportsThinking: entry.supportsThinking };
+}
+
+/**
+ * The wire API this model is reachable on for a transport family
+ * (`openai` / `anthropic` / `gemini`).
+ */
+export function lookupModelEndpoint(
+  modelId: string,
+  transport: string,
+  cachePath?: string
+): ModelEndpoint | undefined {
+  return findCacheEntry(modelId, cachePath)?.endpoints?.[transport];
 }
 
 /**

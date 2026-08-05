@@ -36,6 +36,7 @@ import {
   retrieveUserQuota,
   setupAntigravityUser,
 } from "../../auth/antigravity-user.js";
+import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
@@ -56,10 +57,14 @@ const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 /**
- * Reasoning-tier RANK — the ONLY literals allowed here (a RULE, not a roster).
- * Lower number = stronger reasoning tier. Anything unrecognized ranks last.
- * Used ONLY to choose among a family's live-served variants when the backend
- * gives no default; never a list of concrete model ids.
+ * Reasoning-tier RANK — a LAST-RESORT rule, used only when neither the backend
+ * nor the catalog names a default.
+ *
+ * Two authorities come first: the Antigravity backend's own
+ * `defaultAgentModelId` (per-account, from fetchAvailableModels), and the slim
+ * catalog's `routeVariant.isDefault` (per-family, e.g. `gemini-3.6-flash-high`
+ * for family `gemini-3.6-flash`). This ordering only matters when both are
+ * silent — a genuinely cold path. Lower number = stronger tier.
  */
 const REASONING_TIER_RANK: Record<string, number> = {
   high: 0,
@@ -100,23 +105,33 @@ export function rankAntigravityModel(modelId: string): number {
  *
  * Rules (pure, exported for testing):
  *  1. Exact hit — `servedIds` contains `requested` → return it.
- *  2. Family variants — served ids that extend `requested-` (e.g.
+ *  2. CATALOG — the slim catalog's `routeVariant.isDefault` names this family's
+ *     default variant (e.g. `gemini-3.1-pro-high` for `gemini-3.1-pro-preview`).
+ *     Taken when that id is actually served. This is the ONLY rule that can
+ *     bridge a catalog id whose stem differs from the backend's — the served id
+ *     `gemini-3.1-pro-high` does not extend `gemini-3.1-pro-preview-`, so the
+ *     prefix rule below cannot see it, and the request 404s.
+ *  3. Family variants — served ids that extend `requested-` (e.g.
  *     `gemini-3.6-flash-high` for `gemini-3.6-flash`). If any exist:
  *       - if the backend `defaultId` is one of them → return `defaultId`;
- *       - else return the variant with the strongest reasoning tier
- *         (high > medium > low > extra-low > tiered > anything else) by suffix
- *         RANK — not by matching a hardcoded model list.
- *  3. Otherwise — return `requested` unchanged and let the backend 404, which
+ *       - else the strongest reasoning tier by suffix RANK.
+ *  4. Otherwise — return `requested` unchanged and let the backend 404, which
  *     the served-set-aware 404 rewrite (F1–F7) turns into an actionable error.
+ *
+ * `catalogDefault` is injected rather than looked up inside, so the function
+ * stays pure and testable.
  */
 export function resolveAntigravityModelId(
   requested: string,
   servedIds: string[],
-  defaultId: string | null
+  defaultId: string | null,
+  catalogDefault?: string | null
 ): string {
   const req = requested.trim();
 
   if (servedIds.includes(req)) return req;
+
+  if (catalogDefault && servedIds.includes(catalogDefault)) return catalogDefault;
 
   const familyPrefix = `${req}-`;
   const variants = servedIds.filter((id) => id.startsWith(familyPrefix));
@@ -338,7 +353,8 @@ export class AntigravityProviderTransport implements ProviderTransport {
     this.servedModelName = resolveAntigravityModelId(
       this.modelName,
       this.servedModels,
-      this.defaultServedModel
+      this.defaultServedModel,
+      lookupFamilyDefaultVariant(this.modelName, "antigravity")
     );
     log(
       `[Antigravity] Auth refreshed, project: ${this.projectId}, tier: ${this._displayName}, ` +

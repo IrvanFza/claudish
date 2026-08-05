@@ -14,6 +14,7 @@
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
+import { lookupModelReasoning, lookupModelTokenParam } from "./model-catalog.js";
 
 export class OpenAIAPIFormat extends BaseAPIFormat {
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
@@ -96,6 +97,17 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
    *  - `o1-mini`: the only o-series model with NO reasoning_effort param at all.
    */
   private supportsReasoningEffort(): boolean {
+    // CATALOG FIRST. The name rule below is a cold-cache fallback only.
+    //
+    // Measured against the live catalog, the name rule is wrong in both
+    // directions: 60 models take reasoning_effort but do not match it (every
+    // fugu-*, deepseek-v4-*, gemini-3-flash-agent, claude-*-fast), so effort was
+    // silently dropped; and 14 models match it but do NOT take the param
+    // (gpt-5-image, gpt-5.2-chat, gpt-5.3-chat, …), where sending it can 400.
+    // `isSakanaFugu()` below is the fossil of hand-patching one of those 60.
+    const reasoning = lookupModelReasoning(this.modelId);
+    if (reasoning) return reasoning.supported === true && reasoning.control === "effort";
+
     const model = this.modelId.toLowerCase();
     // o1-mini is the lone o-series model without the param → strip.
     if (model.includes("o1-mini")) return false;
@@ -176,7 +188,11 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     }
 
     // Sakana Fugu: ONLY high|xhigh valid; clamp everything below UP to high.
-    if (this.isSakanaFugu()) {
+    // Applied only on a cold cache — when the catalog is available it already
+    // says `efforts: ["xhigh","high"]`, and clampToVocabulary's upward walk
+    // produces the same answer generically (and gets fugu-ultra's `max` right,
+    // which this hardcoded pair does not).
+    if (this.isSakanaFugu() && !lookupModelReasoning(this.modelId)?.efforts?.length) {
       const value = level === "xhigh" || level === "max" ? "xhigh" : "high";
       log(`[OpenAIAPIFormat] Sakana Fugu clamp ${level} -> ${value} for ${this.modelId}`);
       return value;
@@ -185,8 +201,69 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     return this.clampOpenAIEffort(level);
   }
 
+  /**
+   * Canonical strength ordering, strongest first. Used to walk to the nearest
+   * level a model actually advertises. Ordering only — never a per-model list.
+   */
+  private static readonly EFFORT_LADDER = [
+    "max",
+    "xhigh",
+    "high",
+    "medium",
+    "low",
+    "minimal",
+    "none",
+  ] as const;
+
+  /**
+   * Clamp a requested level to a model's OWN advertised vocabulary.
+   *
+   * Walks DOWN the ladder from the requested level first (a weaker level is the
+   * safe substitution), and only walks UP if the model advertises nothing
+   * weaker. That upward walk is what makes Sakana Fugu work without a special
+   * case: its vocabulary is `["xhigh","high"]`, so a `low` request finds nothing
+   * below and clamps up to `high` — exactly what the hand-written rule did.
+   */
+  private clampToVocabulary(level: EffortLevel, efforts: string[]): string {
+    const allowed = new Set(efforts.map((e) => e.toLowerCase()));
+    if (allowed.has(level)) return level;
+
+    const ladder = OpenAIAPIFormat.EFFORT_LADDER;
+    const idx = ladder.indexOf(level as (typeof ladder)[number]);
+    if (idx === -1) return efforts[0];
+
+    // `none` is NOT merely the weakest level — it turns reasoning off. Falling
+    // into it as a substitution silently changes what the model does, so it is
+    // only ever returned on an exact match. A model that lacks the requested
+    // weak level (e.g. `minimal` on gpt-5.5) gets the next level UP instead.
+    for (let i = idx + 1; i < ladder.length; i++) {
+      if (ladder[i] !== "none" && allowed.has(ladder[i])) return ladder[i];
+    }
+    for (let i = idx - 1; i >= 0; i--) {
+      if (allowed.has(ladder[i])) return ladder[i];
+    }
+    return efforts[0];
+  }
+
   /** Clamp a canonical level to the value set the current OpenAI model accepts. */
   private clampOpenAIEffort(level: EffortLevel): string {
+    // CATALOG FIRST — the model's own advertised vocabulary. The name ladder
+    // below is a cold-cache fallback, and it is measurably wrong in places: it
+    // grants `xhigh` to every gpt-5.1+ id, but the catalog says gpt-5.1 accepts
+    // only ["high","medium","low","none"].
+    const efforts = lookupModelReasoning(this.modelId)?.efforts;
+    if (efforts?.length) {
+      const value = this.clampToVocabulary(level, efforts);
+      if (value !== level) {
+        log(`[OpenAIAPIFormat] effort ${level} -> ${value} (catalog) for ${this.modelId}`);
+      }
+      return value;
+    }
+    return this.clampOpenAIEffortByName(level);
+  }
+
+  /** Cold-cache fallback: the pre-catalog name ladder, unchanged. */
+  private clampOpenAIEffortByName(level: EffortLevel): string {
     // `max` never exists on OpenAI — xhigh is the ceiling.
     // `minimal` is rejected on gpt-5.1+ and on the o-series.
     // `none` is valid only on the gpt-5.1+ family.
@@ -216,14 +293,25 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     }
   }
 
-  private usesMaxCompletionTokens(): boolean {
+  /**
+   * Which output-token parameter this model expects.
+   *
+   * CATALOG FIRST (`tokenParam`), because the correct answer is not derivable
+   * from the name: the gpt-5.6-* family takes `max_output_tokens` while the
+   * name rule below says `max_completion_tokens`. The rule also has no way to
+   * be right about a model released after it was written.
+   */
+  private tokenParamName(): string {
+    const fromCatalog = lookupModelTokenParam(this.modelId);
+    if (fromCatalog) return fromCatalog;
+
     const model = this.modelId.toLowerCase();
-    return (
+    const usesMaxCompletion =
       model.includes("gpt-5") ||
       model.includes("o1") ||
       model.includes("o3") ||
-      model.includes("o4")
-    );
+      model.includes("o4");
+    return usesMaxCompletion ? "max_completion_tokens" : "max_tokens";
   }
 
   private buildChatCompletionsPayload(claudeRequest: any, messages: any[], tools: any[]): any {
@@ -235,11 +323,7 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       stream_options: { include_usage: true },
     };
 
-    if (this.usesMaxCompletionTokens()) {
-      payload.max_completion_tokens = claudeRequest.max_tokens;
-    } else {
-      payload.max_tokens = claudeRequest.max_tokens;
-    }
+    payload[this.tokenParamName()] = claudeRequest.max_tokens;
 
     if (tools.length > 0) {
       payload.tools = tools;
