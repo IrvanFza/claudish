@@ -46,7 +46,11 @@ import {
   saveOnepasswordAccount as saveOpConfigAccount,
 } from "../../providers/onepassword-config.js";
 import type { AccountInfo, SdkAuth, SdkClientFactory } from "../../providers/onepassword.js";
-import { type OpSourceEntry, groupEntriesByAccount } from "../../providers/op-source-entry.js";
+import {
+  type OpSourceEntry,
+  groupEntriesByAccount,
+  parseOpSourceEntries,
+} from "../../providers/op-source-entry.js";
 import { type SpanMeta, addSpanMeta, beginQueuedSpan, traceSpan } from "../../startup-trace.js";
 
 /**
@@ -295,14 +299,21 @@ async function authForEntry(
   entry: OpSourceEntry,
   allowPrompt: boolean
 ): Promise<SdkAuth | undefined> {
-  // The test seam wins over everything. Without this the hermetic suites reach
-  // the REAL `getSdkAuth` — running `op account list` against the developer's
-  // actual machine — and every op test becomes slow, environment-dependent, and
-  // wrong. That is exactly what happened when this function was first written.
-  if (testSeams?.auth) return testSeams.auth;
   const token = process.env.OP_SERVICE_ACCOUNT_TOKEN?.trim();
   if (token) return { kind: "token", token };
   if (entry.account) return { kind: "desktop", accountName: entry.account };
+  // The test seam stands in for the AMBIENT auth only — deliberately BELOW
+  // entry.account. Putting it above (the first version of this) made the seam
+  // swallow declared accounts, so per-account routing became untestable
+  // hermetically: every entry resolved to the one seeded auth no matter what it
+  // declared. Below entry.account, a seamed test can assert that two declared
+  // accounts really do produce two distinct client builds.
+  //
+  // It must still come BEFORE getSdkAuth: without it the hermetic suites reach
+  // the real resolver and run `op account list` against the developer's actual
+  // machine — 12 tests did exactly that, at ~2s each, silently depending on real
+  // 1Password state.
+  if (testSeams?.auth) return testSeams.auth;
   return getSdkAuth(allowPrompt);
 }
 
@@ -326,8 +337,12 @@ export function resolveExplicitFlagAuth(): Promise<SdkAuth | undefined> {
 
 interface SniffedConfig {
   apiKeys?: Record<string, string>;
-  onepassword?: string[];
-  onepasswordEnvironments?: string[];
+  // Same two shapes the real config accepts — bare string, or the object form
+  // carrying an account. The seam MUST be able to express an account or
+  // per-account routing cannot be tested hermetically at all, which is how the
+  // first version of this feature shipped unverified.
+  onepassword?: (string | { ref?: string; account?: string })[];
+  onepasswordEnvironments?: (string | { id?: string; account?: string })[];
   customEndpoints?: Record<string, unknown>;
 }
 
@@ -544,7 +559,7 @@ function configEnvironmentIds(): string[] {
  */
 function configEnvironmentEntries(): OpSourceEntry[] {
   if (testSeams?.config) {
-    return (testSeams.config.onepasswordEnvironments ?? []).map((value) => ({ value }));
+    return parseOpSourceEntries(testSeams.config.onepasswordEnvironments ?? [], "id");
   }
   return readAllOnepasswordEnvironmentEntries();
 }
@@ -835,9 +850,11 @@ function hasNonEnvironmentOpSources(): boolean {
  * handled by the same lookup.
  */
 function importAccountLookup(): Map<string, string | undefined> {
-  if (testSeams?.config) return new Map();
+  const entries = testSeams?.config
+    ? parseOpSourceEntries(testSeams.config.onepassword ?? [], "ref")
+    : readAllOnepasswordImportEntries();
   const out = new Map<string, string | undefined>();
-  for (const e of readAllOnepasswordImportEntries()) out.set(e.value, e.account);
+  for (const e of entries) out.set(e.value, e.account);
   return out;
 }
 
@@ -931,7 +948,12 @@ async function resolveOpKeyForEnvVarsInner(
     // 1. config single op:// refs + globs (apiKeys + onepassword[]).
     const importAccounts = importAccountLookup();
     const collected = collectConfigImports(
-      { apiKeys: cfg.apiKeys, onepassword: cfg.onepassword },
+      {
+        apiKeys: cfg.apiKeys,
+        // collectConfigImports parses op:// strings; the account lives beside it
+        // in importAccounts, so only the VALUES go in here.
+        onepassword: parseOpSourceEntries(cfg.onepassword ?? [], "ref").map((e) => e.value),
+      },
       process.env
     );
     for (const w of collected.warnings) console.error(w);
