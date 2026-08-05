@@ -295,6 +295,11 @@ async function authForEntry(
   entry: OpSourceEntry,
   allowPrompt: boolean
 ): Promise<SdkAuth | undefined> {
+  // The test seam wins over everything. Without this the hermetic suites reach
+  // the REAL `getSdkAuth` — running `op account list` against the developer's
+  // actual machine — and every op test becomes slow, environment-dependent, and
+  // wrong. That is exactly what happened when this function was first written.
+  if (testSeams?.auth) return testSeams.auth;
   const token = process.env.OP_SERVICE_ACCOUNT_TOKEN?.trim();
   if (token) return { kind: "token", token };
   if (entry.account) return { kind: "desktop", accountName: entry.account };
@@ -899,7 +904,11 @@ async function resolveOpKeyForEnvVarsInner(
   // source declared an account and resolved perfectly — a scary, wrong message
   // about work nothing had asked for.
   let auth: SdkAuth | undefined;
-  if (hasNonEnvironmentOpSources()) {
+  if (testSeams?.auth) {
+    // Seamed runs skip ambient resolution entirely — there is nothing ambient
+    // to resolve, and attempting it would reach the real `op`.
+    auth = testSeams.auth;
+  } else if (hasNonEnvironmentOpSources()) {
     try {
       auth = await ambientAuth();
     } catch (err) {
