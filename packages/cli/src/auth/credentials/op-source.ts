@@ -163,6 +163,8 @@ export type OnAuthFailure = "throw" | "skip";
 // ── Lazy SDK-auth resolution (memoized once per process) ────────────────────
 
 let cachedSdkAuth: SdkAuth | undefined;
+/** The failure from a settled auth resolution, replayed instead of retried. */
+let cachedAuthError: OpAuthError | undefined;
 let sdkAuthResolved = false;
 let authInFlight: Promise<SdkAuth | undefined> | undefined;
 
@@ -228,7 +230,10 @@ async function pickOnepasswordAccount(accounts: AccountInfo[]): Promise<string |
  * (explicit flag) or a soft "provider unavailable" (config-driven routing).
  */
 async function getSdkAuth(allowPrompt: boolean): Promise<SdkAuth | undefined> {
-  if (sdkAuthResolved) return cachedSdkAuth;
+  if (sdkAuthResolved) {
+    if (cachedAuthError) throw cachedAuthError;
+    return cachedSdkAuth;
+  }
   // In-flight dedup: concurrent callers (e.g. the model selector resolving 16
   // providers at once) share ONE auth resolution. Without this, a second caller
   // arriving while the first awaits would see a half-set latch and get undefined
@@ -265,7 +270,23 @@ async function getSdkAuth(allowPrompt: boolean): Promise<SdkAuth | undefined> {
       return auth;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new OpAuthError(message);
+      // Cache the FAILURE, not just the success.
+      //
+      // Only success was latched before, so a failing resolution re-ran on every
+      // subsequent lookup — and a bare model name asks the authority about 4-5
+      // candidate providers, each triggering a fresh `op account list` spawn.
+      // Measured in the e2e harness: FOUR `op:auth-resolve` spans per process,
+      // times six concurrent processes, each spawn taking 1.5s idle and 7-13s
+      // under load, several of them raising a macOS TCC prompt. A user with a
+      // misconfigured account got a storm of permission dialogs for one wrong
+      // setting.
+      //
+      // Re-resolving cannot succeed anyway: the accounts on the machine and the
+      // config file do not change mid-process. So the retry only ever bought a
+      // duplicate of the same error, at the cost of a spawn and a prompt.
+      cachedAuthError = new OpAuthError(message);
+      sdkAuthResolved = true;
+      throw cachedAuthError;
     } finally {
       authInFlight = undefined;
     }
@@ -320,6 +341,7 @@ async function authForEntry(
 /** Test-only: reset the memoized auth latch. */
 export function __resetSdkAuthForTests(): void {
   cachedSdkAuth = undefined;
+  cachedAuthError = undefined;
   sdkAuthResolved = false;
   authInFlight = undefined;
 }
