@@ -9,6 +9,8 @@
  *     (one vaults.list + items.list + items.get; values come from that
  *     discovery, so NO secrets.resolveAll) no matter how many providers ask,
  *     failures are never memoized, and two different globs never cross-contaminate.
+ *  3. DIALOG SCOPING: a run authorizes only the declared 1Password accounts
+ *     whose sources it must actually inspect to satisfy the wanted key set.
  *
  * The deep resolution primitives (collectConfigImports / resolveGlobImportAll /
  * resolveSecrets) are exhaustively tested in providers/onepassword.test.ts; the
@@ -54,6 +56,7 @@ import {
 let savedArgv: string[];
 let savedDisableOp: string | undefined;
 let savedOpUnavailable: string | undefined;
+let savedOpServiceAccountToken: string | undefined;
 
 beforeEach(() => {
   savedArgv = process.argv;
@@ -63,10 +66,13 @@ beforeEach(() => {
   delete process.env.CLAUDISH_DISABLE_OP;
   savedOpUnavailable = process.env[OP_UNAVAILABLE_ENV];
   delete process.env[OP_UNAVAILABLE_ENV];
-  __resetSniffForTests();
-  __resetResolveCacheForTests();
+  savedOpServiceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+  delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
   __resetSdkAuthForTests();
+  __resetSniffForTests();
   __resetWarnOnceForTests();
+  invalidateOpResolutionCache();
+  __resetResolveCacheForTests();
   __resetOpUnavailableForTests();
   resetOpFailures();
   __setOpSourceSeamsForTests(undefined);
@@ -81,10 +87,13 @@ afterEach(() => {
   else process.env.CLAUDISH_DISABLE_OP = savedDisableOp;
   if (savedOpUnavailable === undefined) delete process.env[OP_UNAVAILABLE_ENV];
   else process.env[OP_UNAVAILABLE_ENV] = savedOpUnavailable;
-  __resetSniffForTests();
-  __resetResolveCacheForTests();
+  if (savedOpServiceAccountToken === undefined) delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+  else process.env.OP_SERVICE_ACCOUNT_TOKEN = savedOpServiceAccountToken;
   __resetSdkAuthForTests();
+  __resetSniffForTests();
   __resetWarnOnceForTests();
+  invalidateOpResolutionCache();
+  __resetResolveCacheForTests();
   __resetOpUnavailableForTests();
   resetOpFailures();
   __setOpSourceSeamsForTests(undefined);
@@ -534,6 +543,242 @@ describe("environment point-of-need", () => {
 
     expect(out).toEqual({});
     expect(counts).toEqual({ getVariables: 1, environmentIds: [ENVIRONMENT_ID] });
+  });
+});
+
+// ===========================================================================
+// Desktop approval dialog scoping
+//
+// The fake factory records the DesktopAuth account used for every client build.
+// Distinct accounts are therefore the approval dialogs a real run would raise.
+// The elapsed-time guard makes these tests fail if the hermetic seam is bypassed
+// and a real `op`/SDK path turns a microtask-only case into a seconds-long probe.
+// ===========================================================================
+
+const DIALOG_ACCOUNT_A = "acctA.1password.com";
+const DIALOG_ACCOUNT_B = "acctB.1password.com";
+const DIALOG_ENV_A = "envA";
+const DIALOG_ENV_B = "envB";
+const DIALOG_REF_A = "op://V/I/KEY_A";
+const DIALOG_REF_B = "op://V/I/KEY_B";
+const DIALOG_BUDGET_MS = 100;
+
+interface DialogVariable {
+  name: string;
+  value: string;
+  masked: boolean;
+}
+
+function makeDialogScopedFactory(opts: {
+  environments?: Record<string, DialogVariable[]>;
+  refs?: Record<string, string>;
+}): {
+  factory: SdkClientFactory;
+  authorizedAccounts: string[];
+} {
+  const authorizedAccounts: string[] = [];
+  const factory: SdkClientFactory = async (auth) => {
+    if (auth.kind !== "desktop") {
+      throw new Error("dialog-scoping tests require declared DesktopAuth accounts");
+    }
+    authorizedAccounts.push(auth.accountName);
+    return {
+      secrets: {
+        async resolve(ref: string): Promise<string> {
+          const value = opts.refs?.[ref];
+          if (value === undefined) throw new Error(`unexpected ref: ${ref}`);
+          return value;
+        },
+        async resolveAll(refs: string[]) {
+          const individualResponses: Record<string, { content?: { secret: string } }> = {};
+          for (const ref of refs) {
+            const value = opts.refs?.[ref];
+            if (value !== undefined) individualResponses[ref] = { content: { secret: value } };
+          }
+          return { individualResponses };
+        },
+      },
+      vaults: {
+        async list() {
+          return [];
+        },
+      },
+      items: {
+        async list() {
+          return [];
+        },
+        async get() {
+          throw new Error("dialog-scoping tests must not inspect items");
+        },
+      },
+      environments: {
+        async getVariables(id: string) {
+          return { variables: opts.environments?.[id] ?? [] };
+        },
+      },
+    };
+  };
+  return { factory, authorizedAccounts };
+}
+
+function seamWithDialogSources(
+  config: {
+    onepassword?: { ref: string; account: string }[];
+    onepasswordEnvironments?: { id: string; account: string }[];
+  },
+  factory: SdkClientFactory
+): void {
+  __setOpSourceSeamsForTests({ config, sdkFactory: factory, auth: stubAuth });
+  __resetSniffForTests();
+}
+
+async function resolveWithinDialogBudget(names: string[]): Promise<Record<string, string>> {
+  const startedAt = performance.now();
+  const out = await resolveOpKeyForEnvVars(new Set(names), { onAuthFailure: "skip" });
+  expect(performance.now() - startedAt).toBeLessThan(DIALOG_BUDGET_MS);
+  return out;
+}
+
+function distinctAccounts(accounts: string[]): string[] {
+  return [...new Set(accounts)];
+}
+
+describe("Desktop approval dialog scoping", () => {
+  // HEADLINE REGRESSION: configuring account B must not cost a second dialog
+  // when account A already satisfies the run. This holds because the environment
+  // loop breaks on SATISFACTION (`stillWantedEnv.size === 0`), not exhaustion.
+  it("a one-account run authorizes exactly that one configured account", async () => {
+    const { factory, authorizedAccounts } = makeDialogScopedFactory({
+      environments: {
+        [DIALOG_ENV_A]: [{ name: "KEY_A", value: "value-a", masked: true }],
+        [DIALOG_ENV_B]: [{ name: "KEY_B", value: "value-b", masked: true }],
+      },
+    });
+    seamWithDialogSources(
+      {
+        onepasswordEnvironments: [
+          { id: DIALOG_ENV_A, account: DIALOG_ACCOUNT_A },
+          { id: DIALOG_ENV_B, account: DIALOG_ACCOUNT_B },
+        ],
+      },
+      factory
+    );
+
+    expect(await resolveWithinDialogBudget(["KEY_A"])).toEqual({ KEY_A: "value-a" });
+    expect(distinctAccounts(authorizedAccounts)).toEqual([DIALOG_ACCOUNT_A]);
+  });
+
+  // REGRESSION: dialog minimization must not skip an account that genuinely owns
+  // another wanted key; two required accounts correctly cost two dialogs.
+  it("a two-account run authorizes both accounts and resolves both keys", async () => {
+    const { factory, authorizedAccounts } = makeDialogScopedFactory({
+      environments: {
+        [DIALOG_ENV_A]: [{ name: "KEY_A", value: "value-a", masked: true }],
+        [DIALOG_ENV_B]: [{ name: "KEY_B", value: "value-b", masked: true }],
+      },
+    });
+    seamWithDialogSources(
+      {
+        onepasswordEnvironments: [
+          { id: DIALOG_ENV_A, account: DIALOG_ACCOUNT_A },
+          { id: DIALOG_ENV_B, account: DIALOG_ACCOUNT_B },
+        ],
+      },
+      factory
+    );
+
+    expect(await resolveWithinDialogBudget(["KEY_A", "KEY_B"])).toEqual({
+      KEY_A: "value-a",
+      KEY_B: "value-b",
+    });
+    expect(distinctAccounts(authorizedAccounts)).toEqual([DIALOG_ACCOUNT_A, DIALOG_ACCOUNT_B]);
+  });
+
+  // REGRESSION: preserve the IRREDUCIBLE ordering cost for opaque environments.
+  // This is not a bug: fetching is the only way to learn their contents, and it
+  // authorizes the account, so user-controlled source ordering is the only lever.
+  it("authorizes an opaque earlier environment before the one holding the key", async () => {
+    const { factory, authorizedAccounts } = makeDialogScopedFactory({
+      environments: {
+        [DIALOG_ENV_A]: [{ name: "KEY_A", value: "value-a", masked: true }],
+        [DIALOG_ENV_B]: [{ name: "KEY_B", value: "value-b", masked: true }],
+      },
+    });
+    seamWithDialogSources(
+      {
+        onepasswordEnvironments: [
+          { id: DIALOG_ENV_B, account: DIALOG_ACCOUNT_B },
+          { id: DIALOG_ENV_A, account: DIALOG_ACCOUNT_A },
+        ],
+      },
+      factory
+    );
+
+    expect(await resolveWithinDialogBudget(["KEY_A"])).toEqual({ KEY_A: "value-a" });
+    expect(authorizedAccounts).toEqual([DIALOG_ACCOUNT_B, DIALOG_ACCOUNT_A]);
+    expect(distinctAccounts(authorizedAccounts)).toHaveLength(2);
+  });
+
+  // REGRESSION: a keyless or already-satisfied run (represented here by an empty
+  // wanted set) must keep non-1Password users free of desktop approval dialogs.
+  it("authorizes no account when the run needs no op key", async () => {
+    const { factory, authorizedAccounts } = makeDialogScopedFactory({
+      environments: {
+        [DIALOG_ENV_A]: [{ name: "KEY_A", value: "value-a", masked: true }],
+        [DIALOG_ENV_B]: [{ name: "KEY_B", value: "value-b", masked: true }],
+      },
+    });
+    seamWithDialogSources(
+      {
+        onepasswordEnvironments: [
+          { id: DIALOG_ENV_A, account: DIALOG_ACCOUNT_A },
+          { id: DIALOG_ENV_B, account: DIALOG_ACCOUNT_B },
+        ],
+      },
+      factory
+    );
+
+    expect(await resolveWithinDialogBudget([])).toEqual({});
+    expect(distinctAccounts(authorizedAccounts)).toEqual([]);
+  });
+
+  // REGRESSION: single refs must never inherit the opacity cost of environments.
+  // A ref names its key, so an account owning an unwanted ref is never touched,
+  // even when that unwanted ref appears first in configuration order.
+  it("authorizes only the account owning a wanted single ref", async () => {
+    for (const onepassword of [
+      [
+        { ref: DIALOG_REF_A, account: DIALOG_ACCOUNT_A },
+        { ref: DIALOG_REF_B, account: DIALOG_ACCOUNT_B },
+      ],
+      [
+        { ref: DIALOG_REF_B, account: DIALOG_ACCOUNT_B },
+        { ref: DIALOG_REF_A, account: DIALOG_ACCOUNT_A },
+      ],
+    ]) {
+      __resetSdkAuthForTests();
+      __resetSniffForTests();
+      __resetWarnOnceForTests();
+      invalidateOpResolutionCache();
+      __resetResolveCacheForTests();
+
+      const { factory, authorizedAccounts } = makeDialogScopedFactory({
+        environments: {
+          [DIALOG_ENV_B]: [{ name: "KEY_B", value: "environment-value-b", masked: true }],
+        },
+        refs: { [DIALOG_REF_A]: "value-a", [DIALOG_REF_B]: "value-b" },
+      });
+      seamWithDialogSources(
+        {
+          onepassword,
+          onepasswordEnvironments: [{ id: DIALOG_ENV_B, account: DIALOG_ACCOUNT_B }],
+        },
+        factory
+      );
+
+      expect(await resolveWithinDialogBudget(["KEY_A"])).toEqual({ KEY_A: "value-a" });
+      expect(distinctAccounts(authorizedAccounts)).toEqual([DIALOG_ACCOUNT_A]);
+    }
   });
 });
 
