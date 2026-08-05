@@ -44,6 +44,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { activeOpConfigPaths } from "../config-override.js";
+import {
+  type OpEntryValueKey,
+  type OpSourceEntry,
+  dedupeOpSourceEntries,
+  parseOpSourceEntries,
+} from "./op-source-entry.js";
 
 /** The scope a 1Password config entry is written to / read from. */
 export type OpConfigScope = "global" | "project";
@@ -189,9 +195,11 @@ export function clearOnepasswordAccount(
 /** Read a string[] config field at a scope, returning a clean (string) array. */
 function readStringList(scope: OpConfigScope, key: string, paths: OpConfigPaths): string[] {
   const cfg = readRawConfig(pathFor(scope, paths));
-  const raw = cfg[key];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is string => typeof v === "string");
+  // Entries may be bare strings or `{ id|ref, account }` objects. Both yield the
+  // same VALUE here, so declaring an account cannot make an entry disappear from
+  // callers that only care about the value — which is most of them.
+  const valueKey: OpEntryValueKey = key === "onepassword" ? "ref" : "id";
+  return parseOpSourceEntries(cfg[key], valueKey).map((e) => e.value);
 }
 
 /**
@@ -264,6 +272,64 @@ export function removeOnepasswordImport(
   paths: OpConfigPaths = defaultOpConfigPaths
 ): void {
   removeFromStringList(scope, "onepassword", entry, paths);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Entry-aware readers (account per source)
+//
+// The string readers above are kept verbatim: every existing caller that only
+// wants the value keeps working, and adding an account to one entry cannot
+// change what those callers see. The readers below expose the account too.
+// ───────────────────────────────────────────────────────────────────────────
+
+function readEntryList(
+  scope: OpConfigScope,
+  key: string,
+  valueKey: OpEntryValueKey,
+  paths: OpConfigPaths
+): OpSourceEntry[] {
+  const cfg = readRawConfig(pathFor(scope, paths));
+  return parseOpSourceEntries(cfg[key], valueKey);
+}
+
+/** `onepassword[]` at a scope, with any declared account. */
+export function listOnepasswordImportEntries(
+  scope: OpConfigScope,
+  paths: OpConfigPaths = defaultOpConfigPaths
+): OpSourceEntry[] {
+  return readEntryList(scope, "onepassword", "ref", paths);
+}
+
+/** `onepasswordEnvironments[]` at a scope, with any declared account. */
+export function listOnepasswordEnvironmentEntries(
+  scope: OpConfigScope,
+  paths: OpConfigPaths = defaultOpConfigPaths
+): OpSourceEntry[] {
+  return readEntryList(scope, "onepasswordEnvironments", "id", paths);
+}
+
+/**
+ * Both scopes, deduped by value, project first — the entry-aware counterpart of
+ * `readAllOnepasswordEnvironments`. Project precedence means a project entry can
+ * re-point an environment at a different account than the global config says.
+ */
+export function readAllOnepasswordEnvironmentEntries(
+  paths: OpConfigPaths = defaultOpConfigPaths
+): OpSourceEntry[] {
+  return dedupeOpSourceEntries([
+    ...listOnepasswordEnvironmentEntries("project", paths),
+    ...listOnepasswordEnvironmentEntries("global", paths),
+  ]);
+}
+
+/** Both scopes, deduped by value, project first. */
+export function readAllOnepasswordImportEntries(
+  paths: OpConfigPaths = defaultOpConfigPaths
+): OpSourceEntry[] {
+  return dedupeOpSourceEntries([
+    ...listOnepasswordImportEntries("project", paths),
+    ...listOnepasswordImportEntries("global", paths),
+  ]);
 }
 
 // ===========================================================================

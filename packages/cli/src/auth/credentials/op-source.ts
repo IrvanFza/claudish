@@ -40,11 +40,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { activeGlobalConfigFile } from "../../config-override.js";
 import {
-  readAllOnepasswordEnvironments,
+  readAllOnepasswordEnvironmentEntries,
   readOnepasswordAccount,
   saveOnepasswordAccount as saveOpConfigAccount,
 } from "../../providers/onepassword-config.js";
 import type { AccountInfo, SdkAuth, SdkClientFactory } from "../../providers/onepassword.js";
+import type { OpSourceEntry } from "../../providers/op-source-entry.js";
 import { type SpanMeta, addSpanMeta, beginQueuedSpan, traceSpan } from "../../startup-trace.js";
 
 /**
@@ -266,6 +267,37 @@ async function getSdkAuth(allowPrompt: boolean): Promise<SdkAuth | undefined> {
   })();
 
   return authInFlight;
+}
+
+/**
+ * The auth to use for ONE source, honouring an account declared on the entry.
+ *
+ * Precedence, and why:
+ *
+ *  1. `OP_SERVICE_ACCOUNT_TOKEN` — a service-account token is authorized by its
+ *     value and is already bound to one account, so a declared account has
+ *     nothing left to select. Token users get the token for every source.
+ *  2. `entry.account` — a declaration written next to the source. Beats the
+ *     ambient rules deliberately: it is a stronger statement of intent than an
+ *     env var that happens to be set, and it is the only thing that can express
+ *     "these keys are in account A, those in B".
+ *  3. the ambient auth (`OP_ACCOUNT` → `onepasswordAccount` → single account →
+ *     interactive picker), for entries that declare nothing.
+ *
+ * No extra caching is needed to make this one-dialog-per-account:
+ * `defaultSdkClientFactory` already keys its client cache on the auth, and
+ * `withHandshakeLock` already serializes handshakes machine-wide. Two accounts
+ * produce two cache entries and two authorizations; ten sources in one account
+ * produce one.
+ */
+async function authForEntry(
+  entry: OpSourceEntry,
+  allowPrompt: boolean
+): Promise<SdkAuth | undefined> {
+  const token = process.env.OP_SERVICE_ACCOUNT_TOKEN?.trim();
+  if (token) return { kind: "token", token };
+  if (entry.account) return { kind: "desktop", accountName: entry.account };
+  return getSdkAuth(allowPrompt);
 }
 
 /** Test-only: reset the memoized auth latch. */
@@ -496,13 +528,39 @@ function flagEnvironmentIds(): string[] {
  * injected SniffedConfig. Mirrors how readConfigRaw() gates the other sources.
  */
 function configEnvironmentIds(): string[] {
-  if (testSeams?.config) return testSeams.config.onepasswordEnvironments ?? [];
-  return readAllOnepasswordEnvironments();
+  return configEnvironmentEntries().map((e) => e.value);
 }
 
-/** All registered environment ids: config (`onepasswordEnvironments[]`) + `--op-env` flag. */
-function registeredEnvironmentIds(): string[] {
-  return [...new Set([...configEnvironmentIds(), ...flagEnvironmentIds()])];
+/**
+ * Config environments as ENTRIES, so each carries the account it was declared
+ * against. The test seam still injects plain ids; those parse as undeclared and
+ * fall back to the ambient auth, which is what every existing test expects.
+ */
+function configEnvironmentEntries(): OpSourceEntry[] {
+  if (testSeams?.config) {
+    return (testSeams.config.onepasswordEnvironments ?? []).map((value) => ({ value }));
+  }
+  return readAllOnepasswordEnvironmentEntries();
+}
+
+/**
+ * All registered environments as entries: config first, then `--op-env` flags.
+ * A flag carries no account by construction — it is an ad-hoc, one-off source
+ * with nowhere to put one — so it resolves through the ambient rules
+ * (`OP_ACCOUNT` being the intended override there).
+ */
+function registeredEnvironmentEntries(): OpSourceEntry[] {
+  const seen = new Set<string>();
+  const out: OpSourceEntry[] = [];
+  for (const entry of [
+    ...configEnvironmentEntries(),
+    ...flagEnvironmentIds().map((value) => ({ value })),
+  ]) {
+    if (seen.has(entry.value)) continue;
+    seen.add(entry.value);
+    out.push(entry);
+  }
+  return out;
 }
 
 /**
@@ -734,6 +792,34 @@ export async function resolveOpKeyForEnvVars(
   }, label);
 }
 
+/**
+ * Does this run have an op source that is NOT an environment — an `op://` ref in
+ * `apiKeys`, an `onepassword[]` entry, or a custom-endpoint key?
+ *
+ * These are the only sources that still need the AMBIENT account, so resolving
+ * ambient auth when none of them exist is pure cost: on a machine with several
+ * accounts and no global one it also emits a false "1Password auth unavailable"
+ * warning about work nothing requested.
+ */
+function hasNonEnvironmentOpSources(): boolean {
+  const cfg = testSeams?.config ?? readConfigRaw();
+  if (cfg.apiKeys) {
+    for (const v of Object.values(cfg.apiKeys)) {
+      if (typeof v === "string" && v.startsWith("op://")) return true;
+    }
+  }
+  if (Array.isArray(cfg.onepassword) && cfg.onepassword.length > 0) return true;
+  if (cfg.customEndpoints && typeof cfg.customEndpoints === "object") {
+    for (const raw of Object.values(cfg.customEndpoints)) {
+      if (raw && typeof raw === "object") {
+        const apiKey = (raw as { apiKey?: unknown }).apiKey;
+        if (typeof apiKey === "string" && apiKey.startsWith("op://")) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** The actual resolution body (runs inside runOpExclusive). */
 async function resolveOpKeyForEnvVarsInner(
   wanted: Set<string>,
@@ -746,28 +832,62 @@ async function resolveOpKeyForEnvVarsInner(
   const onAuthFailure = opts.onAuthFailure ?? "skip";
   const allowPrompt = opts.allowPrompt ?? false;
 
-  let auth: SdkAuth | undefined;
-  if (testSeams?.auth) {
-    auth = testSeams.auth;
-  } else {
+  // AMBIENT auth is resolved LAZILY, not as an upfront gate.
+  //
+  // It used to be resolved here and a failure returned immediately. That made
+  // ambient auth a precondition for EVERY source — including ones that declare
+  // their own account and need nothing ambient at all. On a multi-account
+  // machine with no global account, a perfectly well-declared
+  // `{ id, account }` environment still failed, because the gate tripped before
+  // its account was ever looked at.
+  //
+  // Now: sources that declare an account use it directly; only an UNDECLARED
+  // source pays for ambient resolution, and only at the moment it needs it. A
+  // run whose every source is declared never resolves ambient auth at all.
+  let ambientFailure: OpAuthError | undefined;
+  const ambientAuth = async (): Promise<SdkAuth | undefined> => {
+    if (testSeams?.auth) return testSeams.auth;
+    if (ambientFailure) throw ambientFailure;
     try {
-      auth = await getSdkAuth(allowPrompt);
+      return await getSdkAuth(allowPrompt);
     } catch (err) {
-      if (err instanceof OpAuthError && onAuthFailure === "skip") {
-        warnOnce(`[claudish] 1Password auth unavailable, skipping op:// keys: ${err.message}`);
-        // Record before returning: this run's keys may live in 1Password, and
-        // the missing-key error downstream must not tell the user to `export`
-        // a credential they already store there.
-        //
-        // warnOnce de-duplicates the USER-FACING line (a bare model name asks the
-        // authority about several candidate providers, so one failure used to
-        // print several identical lines). The RECORD is not de-duplicated —
-        // provenance must see every failure.
-        const { recordOpFailure } = await import("../../providers/onepassword.js");
-        recordOpFailure({ kind: "auth", message: err.message });
-        return {};
-      }
+      if (err instanceof OpAuthError) ambientFailure = err;
       throw err;
+    }
+  };
+
+  /** Report an auth failure the way the old upfront gate did, or rethrow. */
+  const reportAuthFailure = async (err: unknown): Promise<void> => {
+    if (!(err instanceof OpAuthError) || onAuthFailure !== "skip") throw err;
+    warnOnce(`[claudish] 1Password auth unavailable, skipping op:// keys: ${err.message}`);
+    // Record before returning: this run's keys may live in 1Password, and the
+    // missing-key error downstream must not tell the user to `export` a
+    // credential they already store there.
+    //
+    // warnOnce de-duplicates the USER-FACING line (a bare model name asks the
+    // authority about several candidate providers, so one failure used to print
+    // several identical lines). The RECORD is not de-duplicated — provenance
+    // must see every failure.
+    const { recordOpFailure } = await import("../../providers/onepassword.js");
+    recordOpFailure({ kind: "auth", message: err.message });
+  };
+
+  // The non-environment sources below still share one ambient auth. They are
+  // keyed by env-var name (`apiKeys`) or by a bare `onepassword[]` entry, and
+  // gain per-entry accounts in the same way once those readers are threaded
+  // through; until then an ambient failure simply skips them, exactly as before,
+  // instead of aborting the environments that CAN resolve.
+  //
+  // Resolved ONLY IF such a source actually exists. Attempting it
+  // unconditionally warned "1Password auth unavailable" on a run whose every
+  // source declared an account and resolved perfectly — a scary, wrong message
+  // about work nothing had asked for.
+  let auth: SdkAuth | undefined;
+  if (hasNonEnvironmentOpSources()) {
+    try {
+      auth = await ambientAuth();
+    } catch (err) {
+      await reportAuthFailure(err);
     }
   }
 
@@ -861,10 +981,17 @@ async function resolveOpKeyForEnvVarsInner(
     //    Environments are the broadest/lowest-priority op source → resolved LAST.
     const stillWantedEnv = new Set([...wanted].filter((w) => !(w in out)));
     if (stillWantedEnv.size > 0) {
-      for (const envId of registeredEnvironmentIds()) {
+      for (const envEntry of registeredEnvironmentEntries()) {
         if (stillWantedEnv.size === 0) break;
+        const envId = envEntry.value;
         try {
-          const { resolved, cacheHit } = await resolveEnvironmentShared(envId, auth);
+          // Per-entry auth: an environment declared against account B is read
+          // with a client for B, even when another source in this same run used
+          // account A. The loop exits as soon as every wanted key is satisfied,
+          // so an account whose sources this run does not need is never
+          // authorized at all.
+          const envAuth = await authForEntry(envEntry, allowPrompt);
+          const { resolved, cacheHit } = await resolveEnvironmentShared(envId, envAuth);
           if (cacheHit) span?.addMeta({ globCacheHit: true });
           for (const w of [...stillWantedEnv]) {
             const v = resolved[w];

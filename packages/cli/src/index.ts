@@ -70,7 +70,7 @@ process.on("exit", () => {
  * authority, exactly when a routed provider's key misses env/config:
  *   1. `onepasswordEnvironments[]` config — read directly by the resolver.
  *   2. `--op-env <id>` flag — parsed from argv by the resolver.
- * (see auth/credentials/op-source.ts `registeredEnvironmentIds` /
+ * (see auth/credentials/op-source.ts `registeredEnvironmentEntries` /
  * `resolveEnvironmentShared`).
  *
  * Why: the old eager hydration ran the SDK (DesktopAuth prompt) at the top of
