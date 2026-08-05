@@ -949,8 +949,13 @@ function resolveProviderAggregatorEntry(
   provider: string,
   model: ModelInfo
 ): AggregatorEntry | undefined {
-  const firebaseSlug = pickerProviderToFirebaseSlug[provider];
-  if (!firebaseSlug || !model.aggregators) return undefined;
+  // Same fallback as the two modelsByVendor call sites: a provider absent from
+  // the alias map uses its OWN slug, which is what `aggregators[].provider`
+  // actually holds. Without this, removing an alias silently degrades the row
+  // to the catalog id — `kc@kimi-k2.7-code` instead of the wire id
+  // `kc@kimi-for-coding` — and drops the per-aggregator price with it.
+  const firebaseSlug = pickerProviderToFirebaseSlug[provider] ?? provider;
+  if (!model.aggregators) return undefined;
   return model.aggregators.find((a) => a.provider.toLowerCase() === firebaseSlug.toLowerCase());
 }
 
