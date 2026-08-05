@@ -125,8 +125,49 @@ export interface Scenario {
   order: number;
   /** Per-arm hard timeout. Default 90s. */
   timeoutMs?: number;
+  /**
+   * Dialogs a human should expect to see while this arm runs.
+   *
+   * Printed next to the arm as it starts, because a dialog is the one thing this
+   * harness CANNOT observe — it is a GUI event with no span, no stderr line, and
+   * no exit code. The only detector is the person at the keyboard, and they can
+   * only judge "was that expected?" if the expectation is on screen at the
+   * moment it appears.
+   *
+   * That gap is not theoretical: `op-disabled` claims to prevent ALL 1Password
+   * work, raised a 1Password window during a real run, and still reported PASS —
+   * because every assertion reads the PARENT's spans and nothing watches the
+   * child. An unexpected dialog is currently the only signal that would have
+   * caught it.
+   */
+  expectedDialogs?: ExpectedDialogs;
   /** Return [] to pass, or one string per failed expectation. */
   assert(obs: ObservationView[]): string[];
+}
+
+/**
+ * What a human should see on screen during one arm.
+ *
+ * Two DIFFERENT dialogs, from two different systems, and conflating them is what
+ * made this hard to reason about:
+ *
+ *  - `onepassword` — 1Password's own approval window, raised by `createClient()`
+ *    (DesktopAuth). Legitimate and unavoidable when reading a credential through
+ *    the desktop app: one per distinct account, per process.
+ *
+ *  - `macos` — the system TCC prompt ("<terminal> would like to access data from
+ *    other apps"), raised when a process opens something inside 1Password's group
+ *    container. This one is a BUG when it appears: it came from `op` spawning a
+ *    background cache daemon, and `--cache=false` removes it. The expectation is
+ *    therefore 0 everywhere — a non-zero observation is a regression, not a cost.
+ */
+export interface ExpectedDialogs {
+  /** 1Password approval windows. */
+  onepassword: number;
+  /** macOS "access data from other apps" prompts. Should always be 0. */
+  macos: number;
+  /** Optional one-line reason, shown after the counts. */
+  note?: string;
 }
 
 /** A single `tools/call` the runner issues. */

@@ -69,6 +69,11 @@ export const SCENARIOS: Scenario[] = [
     },
     calls: [createSessionCall()],
     order: 10,
+    expectedDialogs: {
+      onepassword: 1,
+      macos: 0,
+      note: "parent handshakes once; the child inherits keys via prehydration",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         assertSpanPresent(observation, failures, "op:client-handshake");
@@ -119,6 +124,11 @@ export const SCENARIOS: Scenario[] = [
     calls: [createSessionCall()],
     cooldownSeconds: 45,
     order: 90,
+    expectedDialogs: {
+      onepassword: 0,
+      macos: 0,
+      note: "auth fails at account selection — createClient is never reached",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         if (observation.hasSpan("op:client-handshake")) {
@@ -165,6 +175,11 @@ export const SCENARIOS: Scenario[] = [
     },
     calls: [createSessionCall()],
     order: 20,
+    expectedDialogs: {
+      onepassword: 0,
+      macos: 0,
+      note: "every chain key is already in env, so 1Password is never consulted",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         if (observation.hasSpan("op:")) {
@@ -193,6 +208,14 @@ export const SCENARIOS: Scenario[] = [
     },
     calls: [createSessionCall()],
     order: 30,
+    // This arm claims to prevent all 1Password work, yet raised a 1Password window
+    // and still passed in a real run: assertions read parent spans, not the child.
+    // Until the child is asserted, an unexpected dialog is the only signal.
+    expectedDialogs: {
+      onepassword: 0,
+      macos: 0,
+      note: "CLAUDISH_DISABLE_OP=1 in parent and child — any dialog here is a real bug",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         if (observation.hasSpan("op:")) {
@@ -224,6 +247,11 @@ export const SCENARIOS: Scenario[] = [
     calls: [createSessionCall()],
     cooldownSeconds: 45,
     order: 92,
+    expectedDialogs: {
+      onepassword: 0,
+      macos: 0,
+      note: "no op on PATH, so there is nothing to spawn and no account to select",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         // This is the honest remaining failure mode: with no account pin and no
@@ -259,6 +287,11 @@ export const SCENARIOS: Scenario[] = [
     calls: [createSessionCall()],
     cooldownSeconds: 45,
     order: 95,
+    expectedDialogs: {
+      onepassword: 0,
+      macos: 0,
+      note: "the literal ${OP_ACCOUNT} placeholder is rejected, so auth fails first",
+    },
     assert: (observations) =>
       assertSingle(observations, (observation, failures) => {
         if (observation.hasSpan("op:environments.getVariables")) {
@@ -284,6 +317,14 @@ export const SCENARIOS: Scenario[] = [
     concurrency: 6,
     cooldownSeconds: 45,
     order: 99,
+    // Six is BY DESIGN: this arm proves the cross-process handshake lock, so six
+    // clients require six authorizations. OP_SERVICE_ACCOUNT_TOKEN skips both the
+    // desktop handshake and the lock, which is what silences those dialogs.
+    expectedDialogs: {
+      onepassword: 6,
+      macos: 0,
+      note: "six independent processes, one handshake each, serialized by the lock",
+    },
     assert: (observations) => {
       const failures: string[] = [];
       if (observations.length !== 6) {

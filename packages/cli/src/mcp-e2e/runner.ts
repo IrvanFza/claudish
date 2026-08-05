@@ -194,6 +194,19 @@ async function runScenario(sc: Scenario, gapBeforeSeconds: number): Promise<Verd
   const t0 = Date.now();
 
   log(`\n▶ ${sc.id} — ${sc.description}`);
+  // Printed BEFORE the arm runs, so the expectation is on screen when a dialog
+  // appears rather than in a report read afterwards.
+  const d = sc.expectedDialogs;
+  if (d) {
+    const parts = [
+      `${d.onepassword} × 1Password approval`,
+      `${d.macos} × macOS permission${d.macos > 0 ? "  ⚠ should be 0" : ""}`,
+    ];
+    log(`  expect: ${parts.join("  ·  ")}${d.note ? `  — ${d.note}` : ""}`);
+    if (d.onepassword === 0 && d.macos === 0) {
+      log("  → any dialog during this arm is a BUG. Note which one you saw.");
+    }
+  }
   if (gapBeforeSeconds > 0) log(`  (idled ${gapBeforeSeconds}s before this arm)`);
 
   const config = buildArmConfig(sc.config);
