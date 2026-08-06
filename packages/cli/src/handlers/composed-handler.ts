@@ -1260,6 +1260,14 @@ function getRecoveryHint(status: number, errorText: string, providerName: string
   if (status === 429 && isTerminal429(errorText)) {
     return "Out of quota — check your plan & billing details. This won't recover on retry.";
   }
+  // A spent SUBSCRIPTION allowance also arrives as 429, and the generic
+  // rate-limit advice below is actively wrong for it: "reduce concurrency" does
+  // nothing about an allowance that refills on a clock. Zen Go's real body is
+  // `429 "5-hour usage limit reached. Resets in 3hr 17min"` — the useful reply
+  // names the plan and the wait, not the request rate.
+  if (isQuotaExhaustionError(status, errorText)) {
+    return "Subscription allowance spent — this refills on the provider's own schedule (see the message below). Reducing concurrency won't help; switch model/provider or wait.";
+  }
   if (status === 429 || lower.includes("rate limit")) {
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
