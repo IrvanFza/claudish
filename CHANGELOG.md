@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.40.0] - 2026-08-06
+
+### Documentation
+
+- update CHANGELOG.md for v7.39.0([`7aff9f9`](https://github.com/MadAppGang/claudish/commit/7aff9f9a6476872624cac10ac740e13e71e4d538))
+
+### New Features
+
+- v7.40.0 — subscriptions before metered APIs, and stop mistaking a spent plan for a broken key([`cd952c2`](https://github.com/MadAppGang/claudish/commit/cd952c2948d79601deb24335a04e7a6fd1628113))
+
 ## [7.39.0] - 2026-08-05
 
 ### Documentation
