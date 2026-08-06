@@ -2,6 +2,31 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.43.0] - 2026-08-06
+
+### Bug Fixes
+
+- keep the provider's own wire id when an alias is removed *(picker)* ([`af71a40`](https://github.com/MadAppGang/claudish/commit/af71a4009987724b7e86a38cc61e06a25ffc2435))
+- derive the aggregator roster from the catalog, not a hardcoded set *(picker)* ([`3a293b9`](https://github.com/MadAppGang/claudish/commit/3a293b92e55803fe9455d0add0e0aabde4d4a7eb))
+- read the model facts the catalog already ships, instead of guessing from names([`b8f5f08`](https://github.com/MadAppGang/claudish/commit/b8f5f08cb1ba1cfb3dd152063b17b9245d10649d))
+
+### Documentation
+
+- update CHANGELOG.md for v7.42.0([`f3a7bd3`](https://github.com/MadAppGang/claudish/commit/f3a7bd38357f2fad1dbcc6d5ab1c46c1e91cc967))
+
+### New Features
+
+- add a Mistral transport, and stop an alias collision serving the wrong model([`6f58eea`](https://github.com/MadAppGang/claudish/commit/6f58eea97a1a194040df0a8d5ee705d4f5615a0a))
+- v7.36.0 — remove the Gemini Code Assist provider, repoint gemini-* at Antigravity([`8258e1f`](https://github.com/MadAppGang/claudish/commit/8258e1fbd46a8067984c5228cfcda04ae6645431))
+
+### Other Changes
+
+- v7.43.0([`58a2dd8`](https://github.com/MadAppGang/claudish/commit/58a2dd816492ae7be506be636dea46c3abd79e4d))
+
+### Refactoring
+
+- one catalog client for every provider, and no per-model cloud lookup([`3daa6cd`](https://github.com/MadAppGang/claudish/commit/3daa6cd83d28714be7b825362b9a30e8b9080acf))
+
 ## [7.42.0] - 2026-08-06
 
 ### Bug Fixes
