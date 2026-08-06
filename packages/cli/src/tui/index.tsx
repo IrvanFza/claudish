@@ -4,7 +4,6 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
-import { reloadGeminiCredentials } from "../auth/gemini-oauth.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
 import { App } from "./App.js";
@@ -90,10 +89,6 @@ export async function startConfigTui(): Promise<void> {
         // the probe handler with the fresh credential.
         _resetAntigravityTokenState();
         invalidateProbeProxyHandlers("antigravity");
-      } else if (slug === "gemini") {
-        reloadGeminiCredentials();
-        invalidateProbeProxyHandlers("google");
-        invalidateProbeProxyHandlers("gemini-codeassist");
       } else if (slug === "codex") {
         getCodexOAuth().reloadCredentials();
         invalidateProbeProxyHandlers("openai-codex");

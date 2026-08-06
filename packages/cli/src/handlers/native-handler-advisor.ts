@@ -25,7 +25,7 @@
 import { appendFileSync } from "node:fs";
 import { log } from "../logger.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
-import { resolveModelNameSync } from "../providers/model-catalog-resolver.js";
+import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 
 const ADVISOR_SERVER_TOOL_TYPE = "advisor_20260301";

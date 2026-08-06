@@ -2,7 +2,7 @@
  * Gemini Schema Utilities
  *
  * Shared utilities for converting JSON Schema to Gemini's API format.
- * Used by both GeminiHandler (API key) and GeminiCodeAssistHandler (OAuth).
+ * Used by both the Gemini direct-API handler and the Antigravity handler (OAuth).
  */
 
 import { log } from "../../logger.js";

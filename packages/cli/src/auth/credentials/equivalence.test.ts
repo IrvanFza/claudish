@@ -314,19 +314,11 @@ describe("credential equivalence: openai-codex (OAuth-OR-CODEX-key, OPENAI_API_K
   });
 });
 
-describe("credential equivalence: gemini-codeassist (oauth-only)", async () => {
-  test("no creds → false", async () => assertEquivalent("gemini-codeassist", false));
-  test("oauth credentials present → true", async () => {
-    state.oauthAuthed.add("gemini-codeassist");
-    await assertEquivalent("gemini-codeassist", true);
-  });
-});
-
 describe("credential equivalence: google / gemini (direct API key)", async () => {
   // "google" is the DIRECT Gemini API credential (GEMINI_API_KEY) — its own
-  // ApiKeyCredentialProvider, no longer an alias of Code Assist OAuth. It is
-  // additionally registered under "gemini", the RemoteProvider runtime rename
-  // (toRemoteProvider) the request path signs with.
+  // ApiKeyCredentialProvider. It is additionally registered under "gemini", the
+  // RemoteProvider runtime rename (toRemoteProvider) the request path signs
+  // with.
   test("no creds → false", async () => assertEquivalent("google", false));
   test("GEMINI_API_KEY env → true (catalog name)", async () => {
     process.env.GEMINI_API_KEY = "sk-gem-123";
@@ -336,10 +328,10 @@ describe("credential equivalence: google / gemini (direct API key)", async () =>
     process.env.GEMINI_API_KEY = "sk-gem-123";
     await assertEquivalent("gemini", true);
   });
-  // Code Assist OAuth must NOT make the direct API routable: the direct
-  // transport authenticates with GEMINI_API_KEY, not a Code Assist token.
-  test("Code Assist oauth alone → false for the direct API", async () => {
-    state.oauthAuthed.add("gemini-codeassist");
+  // A subscription token must NOT make the direct API routable: the direct
+  // transport authenticates with GEMINI_API_KEY, not an Antigravity token.
+  test("antigravity oauth alone → false for the direct API", async () => {
+    state.oauthAuthed.add("antigravity");
     await assertEquivalent("google", false);
   });
 });

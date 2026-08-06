@@ -11,19 +11,19 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { DiskCacheV2 } from "../providers/all-models-cache.js";
+import type { RefreshOutcome } from "../providers/catalog-client.js";
+import type { ClaudishConfig } from "../types.js";
 // Value imports captured BEFORE the mock.module calls below so we can restore
 // the REAL modules in afterAll. Bun's mock.module is PROCESS-GLOBAL and
 // persists across files, so without this restore the stubs here bleed into
-// sibling suites that test the real all-models-cache / model-catalog-resolver
+// sibling suites that test the real all-models-cache / catalog-client
 // (they run in the same process). The `{...}` spread snapshots the real
 // exports into a plain object immune to the namespace repointing mock.module
 // does. Verified hoist-safe.
 import * as __realAllModelsCache from "../providers/all-models-cache.js";
-import type { RefreshOutcome } from "../providers/model-catalog-resolver.js";
-import * as __realCatalogResolver from "../providers/model-catalog-resolver.js";
-import type { ClaudishConfig } from "../types.js";
+import * as __realCatalogClient from "../providers/catalog-client.js";
 const __realAllModelsCacheExports = { ...__realAllModelsCache };
-const __realCatalogResolverExports = { ...__realCatalogResolver };
+const __realCatalogClientExports = { ...__realCatalogClient };
 
 // ---------------------------------------------------------------------------
 // Module mocks for dispatcher tests
@@ -35,7 +35,6 @@ const __realCatalogResolverExports = { ...__realCatalogResolver };
 
 let mockReadResult: DiskCacheV2 | null = null;
 let mockRefreshOutcome: RefreshOutcome = { kind: "refreshed", modelCount: 0 };
-let mockResolverNull = false;
 const refreshSpy = mock(async (_timeoutMs: number): Promise<RefreshOutcome> => {
   return mockRefreshOutcome;
 });
@@ -50,29 +49,17 @@ mock.module("../providers/all-models-cache.js", () => ({
   ALL_MODELS_CACHE_PATH: "/tmp/test-all-models.json",
 }));
 
-mock.module("../providers/model-catalog-resolver.js", () => ({
-  getResolver: (provider: string) => {
-    // `mockResolverNull` lets the L1 test exercise the otherwise-unreachable
-    // defensive branch in catalog-warm.ts where the OpenRouter resolver is
-    // somehow not registered. Reset to false in beforeEach.
-    if (mockResolverNull) return null;
-    if (provider !== "openrouter") return null;
-    return {
-      provider: "openrouter",
-      resolveSync: () => null,
-      warmCache: async () => {},
-      isCacheWarm: () => false,
-      ensureReady: async () => {},
-      refreshCatalog: refreshSpy,
-    };
-  },
+// catalog-warm.ts now calls the module-level refreshCatalog directly — there
+// is no resolver registry to stub, so the mock is one function.
+mock.module("../providers/catalog-client.js", () => ({
+  refreshCatalog: refreshSpy,
 }));
 
 // Restore the real modules after this file's tests so the process-global
 // mock.module stubs above don't bleed into sibling suites.
 afterAll(() => {
   mock.module("../providers/all-models-cache.js", () => __realAllModelsCacheExports);
-  mock.module("../providers/model-catalog-resolver.js", () => __realCatalogResolverExports);
+  mock.module("../providers/catalog-client.js", () => __realCatalogClientExports);
 });
 
 // Now import the module under test. The two mocks above are wired in.
@@ -239,7 +226,6 @@ describe("warmCatalogIfNeeded", () => {
     refreshSpy.mockClear();
     mockReadResult = null;
     mockRefreshOutcome = { kind: "refreshed", modelCount: 0 };
-    mockResolverNull = false;
   });
 
   afterEach(() => {
@@ -323,21 +309,6 @@ describe("warmCatalogIfNeeded", () => {
     expect(stderrText).toContain(
       "Claudish will not launch without catalog data when using cloud models."
     );
-  });
-
-  test("missing cache + null resolver → 'hard_fail' (defensive branch)", async () => {
-    // Simulate the otherwise-unreachable case where getResolver returns null
-    // (the OpenRouter resolver is normally auto-registered at module import).
-    // Combined with a missing cache, the dispatcher should still hard-fail
-    // with the verbatim FR-4 message rather than crash.
-    mockReadResult = null;
-    mockResolverNull = true;
-    const config = makeConfig({ model: "gpt-4o" });
-    const result = await warmCatalogIfNeeded(config, { now: NOW });
-    expect(result).toBe("hard_fail");
-    expect(refreshSpy).not.toHaveBeenCalled();
-    const stderrText = stderrChunks.join("");
-    expect(stderrText).toContain("Error: cannot reach model catalog and no cached copy found.");
   });
 
   test("stale cache aged exactly 24h + fetch_failed → WARNING uses singular '1 day'", async () => {

@@ -302,8 +302,9 @@ const isLogoutCommand = firstPositional === "logout";
 // Quota subcommand: claudish quota [provider]
 const isQuotaCommand = firstPositional === "quota" || firstPositional === "usage";
 // Legacy auth flags (deprecated, redirect to new subcommands)
-const isLegacyGeminiLogin = args.includes("--gemini-login");
-const isLegacyGeminiLogout = args.includes("--gemini-logout");
+// NOTE: --gemini-login/--gemini-logout were removed with the Gemini Code Assist
+// provider (Google retired it for individuals). The Gemini subscription flow is
+// `claudish login antigravity`.
 const isLegacyKimiLogin = args.includes("--kimi-login");
 const isLegacyKimiLogout = args.includes("--kimi-logout");
 
@@ -373,16 +374,14 @@ if (isMcpMode) {
   import("./auth/auth-commands.js").then((m) =>
     m.logoutCommand(logoutProviderArg).catch(handlePromptExit)
   );
-} else if (isLegacyGeminiLogin || isLegacyKimiLogin) {
-  // Deprecated --*-login flags — redirect to new subcommands
-  const provider = isLegacyGeminiLogin ? "gemini" : "kimi";
-  console.log(`Note: --${provider}-login is deprecated. Use: claudish login ${provider}`);
-  import("./auth/auth-commands.js").then((m) => m.loginCommand(provider).catch(handlePromptExit));
-} else if (isLegacyGeminiLogout || isLegacyKimiLogout) {
-  // Deprecated --*-logout flags — redirect to new subcommands
-  const provider = isLegacyGeminiLogout ? "gemini" : "kimi";
-  console.log(`Note: --${provider}-logout is deprecated. Use: claudish logout ${provider}`);
-  import("./auth/auth-commands.js").then((m) => m.logoutCommand(provider).catch(handlePromptExit));
+} else if (isLegacyKimiLogin) {
+  // Deprecated --kimi-login flag — redirect to the new subcommand
+  console.log("Note: --kimi-login is deprecated. Use: claudish login kimi");
+  import("./auth/auth-commands.js").then((m) => m.loginCommand("kimi").catch(handlePromptExit));
+} else if (isLegacyKimiLogout) {
+  // Deprecated --kimi-logout flag — redirect to the new subcommand
+  console.log("Note: --kimi-logout is deprecated. Use: claudish logout kimi");
+  import("./auth/auth-commands.js").then((m) => m.logoutCommand("kimi").catch(handlePromptExit));
 } else if (isQuotaCommand) {
   // Quota/usage subcommand: claudish quota [provider]
   const quotaProviderArg = args.find(

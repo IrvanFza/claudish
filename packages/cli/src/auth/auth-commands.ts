@@ -12,7 +12,6 @@ import { select } from "@inquirer/prompts";
 import { AntigravityOAuth } from "./antigravity-oauth.js";
 import { hasSharedAntigravityToken } from "./antigravity-token.js";
 import { CodexOAuth } from "./codex-oauth.js";
-import { GeminiOAuth } from "./gemini-oauth.js";
 import { KimiOAuth } from "./kimi-oauth.js";
 import { hasOAuthCredentials } from "./oauth-registry.js";
 
@@ -36,13 +35,6 @@ const AUTH_PROVIDERS: OAuthProvider[] = [
     prefix: "ag@, antigravity@",
     getInstance: () => AntigravityOAuth.getInstance(),
     registryKeys: ["antigravity"],
-  },
-  {
-    name: "gemini",
-    displayName: "Gemini Code Assist",
-    prefix: "go@",
-    getInstance: () => GeminiOAuth.getInstance(),
-    registryKeys: ["google", "gemini-codeassist"],
   },
   {
     name: "kimi",

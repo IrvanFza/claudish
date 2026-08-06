@@ -50,20 +50,16 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
     expiresAtField: "expires_at",
     expiryBufferMs: 5 * 60 * 1000,
   },
-  // Google Gemini Code Assist - OAuth2 PKCE flow (browser-based)
-  // Login via: claudish login gemini
-  google: {
-    credentialFile: "gemini-oauth.json",
-    validationMode: "check-expiry",
-    expiresAtField: "expires_at",
-    expiryBufferMs: 5 * 60 * 1000,
-  },
-  "gemini-codeassist": {
-    credentialFile: "gemini-oauth.json",
-    validationMode: "check-expiry",
-    expiresAtField: "expires_at",
-    expiryBufferMs: 5 * 60 * 1000,
-  },
+  // NOTE: there is deliberately no `google` / `gemini-codeassist` entry here.
+  // Both used to point at ~/.claudish/gemini-oauth.json, the Gemini Code Assist
+  // token. That product was retired by Google for individuals and the provider
+  // has been removed; `google` is now purely the direct Gemini API, keyed by
+  // GEMINI_API_KEY, and the Gemini subscription flow is `antigravity` (whose
+  // token lives in the shared agy keychain, not in a file here).
+  //
+  // Leaving them registered meant a leftover gemini-oauth.json still read as a
+  // live credential — which is how a dead provider kept its place in the config
+  // TUI's provider list and failed every Test All run.
 };
 
 function hasValidOAuthCredentials(descriptor: OAuthProviderDescriptor): boolean {

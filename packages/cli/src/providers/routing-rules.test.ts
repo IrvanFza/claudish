@@ -236,8 +236,13 @@ describe("buildRoutingChain", () => {
     expect(routes).toHaveLength(1);
     const route = routes[0];
     expect(route.provider).toBe("minimax");
-    // PROVIDER_TO_PREFIX["minimax"] = "mm"
-    expect(route.modelSpec).toBe("mm@minimax-m2.5");
+    // PROVIDER_TO_PREFIX["minimax"] = "mm". The MODEL id comes from the
+    // catalog's minimax aggregator (externalId "MiniMax-M2.5",
+    // confidence api_official — MiniMax's own spelling), not from whatever
+    // casing the user typed. That is the point of catalog-driven resolution:
+    // the provider's API is case-sensitive, so echoing user input was a coin
+    // flip. Falls back to the input unchanged on a cold cache.
+    expect(route.modelSpec).toBe("mm@MiniMax-M2.5");
     expect(route.displayName).toBe(DISPLAY_NAMES.minimax ?? "minimax");
   });
 
@@ -245,7 +250,7 @@ describe("buildRoutingChain", () => {
     const routes = buildRoutingChain(["mm"], "minimax-m2.5");
     expect(routes).toHaveLength(1);
     expect(routes[0].provider).toBe("minimax");
-    expect(routes[0].modelSpec).toBe("mm@minimax-m2.5");
+    expect(routes[0].modelSpec).toBe("mm@MiniMax-M2.5");
   });
 
   test("explicit 'mm@minimax-m2.5' parses provider and model, ignores originalModelName", () => {
@@ -253,7 +258,8 @@ describe("buildRoutingChain", () => {
     expect(routes).toHaveLength(1);
     const route = routes[0];
     expect(route.provider).toBe("minimax");
-    expect(route.modelSpec).toBe("mm@minimax-m2.5");
+    // An explicitly pinned model is still normalised to the provider's own id.
+    expect(route.modelSpec).toBe("mm@MiniMax-M2.5");
   });
 
   test("explicit 'kimi@kimi-k2.5' parses correctly", () => {

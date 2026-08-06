@@ -143,7 +143,7 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
       // This preserves the baseline behavior — DO NOT add an AbortController.
       //
       // Each probe runs through the same lazy proxy the Providers tab uses, so
-      // OAuth providers (e.g. gemini-codeassist after `claudish login gemini`)
+      // OAuth providers (e.g. antigravity after `claudish login antigravity`)
       // are tested for real instead of being misreported as missing.
       (async () => {
         // Best-effort proxy startup. If it fails we mark everything as failed

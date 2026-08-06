@@ -20,8 +20,8 @@ import {
   ensureCatalogReady,
   logResolution,
   resolveModelNameSync,
-  warmAllCatalogs,
-} from "./providers/model-catalog-resolver.js";
+  warmCatalog,
+} from "./providers/catalog-client.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
@@ -462,23 +462,26 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
-    // 2b. Catalog resolution — resolve vendor prefix for OpenRouter.
-    // This must happen after target is determined but before handler construction.
-    // ensureCatalogReady awaits the catalog if not yet warm (with 5s timeout).
-    // resolveModelNameSync then reads from the in-memory cache synchronously.
-    // (LiteLLM catalog resolution was removed in commit 5 — users type the
-    // exact LiteLLM model_group name now; see plan §D.)
+    // 2b. Catalog resolution — map the typed name to the provider's own wire id.
+    //
+    // Runs for EVERY provider, not just OpenRouter. It is one `aggregators[]`
+    // lookup, so it answers `mm@minimax-m2.5` → `MiniMax-M2.5` (MiniMax's own
+    // api_official spelling, and their API is case-sensitive) and
+    // `ag@gemini-3.6-flash` → `gemini-3.6-flash-high` with the same code path
+    // that already handled `or@qwen3-coder-next`. Gating it to one provider was
+    // why every other provider grew its own bespoke translation.
+    //
+    // Safe to run unconditionally: a model the catalog doesn't know — a local
+    // GGUF, a custom endpoint's private id — resolves to null and passes
+    // through unchanged. Providers that ALSO resolve live (Antigravity's served
+    // set) are unaffected: they re-resolve an exact id to itself.
     {
       const parsedTarget = parseModelSpec(target);
-      if (parsedTarget.provider === "openrouter") {
-        await ensureCatalogReady(parsedTarget.provider, 5000);
-        const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
-        logResolution(parsedTarget.model, resolution, options.quiet);
-        if (resolution.wasResolved) {
-          // Reconstruct target with resolved model name so handler construction
-          // uses the correct fully-qualified API ID (e.g., "qwen/qwen3-coder-next").
-          target = `${parsedTarget.provider}@${resolution.resolvedId}`;
-        }
+      await ensureCatalogReady(5000);
+      const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
+      logResolution(parsedTarget.model, resolution, options.quiet);
+      if (resolution.wasResolved) {
+        target = `${parsedTarget.provider}@${resolution.resolvedId}`;
       }
     }
 
@@ -499,7 +502,7 @@ export async function createProxyServer(
         }
 
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
-        await ensureCatalogReady("openrouter", 5000);
+        await ensureCatalogReady(5000);
 
         const plan = await route(parsedForFallback.model, effectiveRoutingRules);
         if (plan.kind === "ok") {
@@ -806,7 +809,7 @@ export async function createProxyServer(
   // Warm model catalog resolvers in background (non-blocking).
   // OpenRouter is the only registered resolver post-commit-5 — the LiteLLM
   // resolver was removed (claudish doesn't fetch LiteLLM's catalog anymore).
-  warmAllCatalogs(["openrouter"]).catch(() => {
+  warmCatalog().catch(() => {
     // Warming failures are non-fatal — resolver falls back to passthrough
   });
 

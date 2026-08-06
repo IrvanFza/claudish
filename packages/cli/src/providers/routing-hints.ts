@@ -26,7 +26,6 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   "kimi-coding": { loginFlag: "login kimi", apiKeyEnvVar: "KIMI_CODING_API_KEY" },
   kimi: { loginFlag: "login kimi", apiKeyEnvVar: "MOONSHOT_API_KEY" },
   google: { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
-  "gemini-codeassist": { loginFlag: "login gemini", apiKeyEnvVar: "GEMINI_API_KEY" },
   // Antigravity auth is OAuth-only (shared keychain token) — no API key env var.
   antigravity: { loginFlag: "login antigravity" },
   // There is no `claudish login devin`: the token is minted by the Devin CLI's
@@ -42,6 +41,7 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   glm: { apiKeyEnvVar: "ZHIPU_API_KEY" },
   "glm-coding": { apiKeyEnvVar: "GLM_CODING_API_KEY" },
   deepseek: { apiKeyEnvVar: "DEEPSEEK_API_KEY" },
+  mistralai: { apiKeyEnvVar: "MISTRAL_API_KEY" },
   sakana: { apiKeyEnvVar: "SAKANA_API_KEY" },
   "sakana-subscription": { apiKeyEnvVar: "SAKANA_SUBSCRIPTION_API_KEY" },
   "qwen-cloud": { apiKeyEnvVar: "QWEN_CLOUD_PLAN_API_KEY" },

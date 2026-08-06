@@ -24,7 +24,6 @@ export type TransportType =
   | "openai"
   | "anthropic"
   | "gemini"
-  | "gemini-oauth"
   | "antigravity"
   | "devin"
   | "openrouter"
@@ -95,13 +94,10 @@ export interface ProviderDefinition {
   oauthFallback?: string;
   /**
    * Slug for `claudish login {slug}` if this provider supports OAuth.
-   * Multiple catalog entries can share a slug — e.g. `google` and
-   * `gemini-codeassist` both map to `"gemini"` because one OAuth flow
-   * covers the whole family.
    * Single source of truth: keep this in sync with AUTH_PROVIDERS in
    * src/auth/auth-commands.ts.
    */
-  oauthLoginSlug?: "gemini" | "codex" | "kimi" | "antigravity";
+  oauthLoginSlug?: "codex" | "kimi" | "antigravity";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -137,9 +133,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^google\//i }, { pattern: /^gemini-/i }],
     isDirectApi: true,
     description: "Direct Gemini API (g@, google@)",
-    // No oauthLoginSlug: the bare Gemini direct API takes GEMINI_API_KEY.
-    // OAuth login (`claudish login gemini`) targets the gemini-codeassist
-    // subscription endpoint below, not this one.
+    // No oauthLoginSlug: the Gemini direct API takes GEMINI_API_KEY. The
+    // Gemini SUBSCRIPTION flow is `antigravity` below, which authenticates with
+    // the shared agy token — a different product, not an OAuth mode of this one.
   },
 
   // ── Antigravity (shared OAuth token — subscription) ────────────────
@@ -215,26 +211,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Devin subscription (dv@, devin@)",
   },
 
-  // ── Gemini Code Assist (OAuth) ─────────────────────────────────────
-  // The legacy gemini-cli OAuth subscription target. Still reachable via the
-  // `gemini-*` default routing chain; no longer owns a user-facing `@` prefix
-  // (the `go@` alias now routes to the Antigravity provider above).
-  {
-    name: "gemini-codeassist",
-    displayName: "Gemini Code Assist",
-    transport: "gemini-oauth",
-    baseUrl: "https://cloudcode-pa.googleapis.com",
-    apiPath: "/v1internal:streamGenerateContent?alt=sse",
-    apiKeyEnvVar: "",
-    apiKeyDescription: "Gemini Code Assist (OAuth)",
-    apiKeyUrl: "https://cloud.google.com/code-assist",
-    oauthLoginSlug: "gemini",
-    shortcuts: [],
-    shortestPrefix: "gemini-codeassist",
-    legacyPrefixes: [],
-    isDirectApi: true,
-    description: "Gemini Code Assist OAuth (routing fallback for gemini-*)",
-  },
+  // NOTE: the `gemini-codeassist` provider was REMOVED here. Google retired
+  // "Code Assist for individuals" for gemini-cli's OAuth client
+  // (UNSUPPORTED_CLIENT), so it could not authenticate for any consumer account.
+  // The Gemini subscription flow is `antigravity` above; `g@`/`google@` remains
+  // the direct pay-per-use API. `go@` is a deprecated alias → antigravity.
 
   // ── OpenAI (direct API) ────────────────────────────────────────────
   {
@@ -741,6 +722,45 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     nativeModelPatterns: [{ pattern: /^deepseek\//i }, { pattern: /^deepseek-/i }],
     isDirectApi: true,
     description: "DeepSeek API (ds@)",
+  },
+
+  // ── Mistral (OpenAI-compatible direct API) ─────────────────────────
+  // The catalog carries 13 mistralai-served models; 5 of them
+  // (labs-leanstral-1-5, ministral-3-3b/3-8b-instruct, mistral-medium-3.5,
+  // mistral-small-4.0-2603) are served by NO other provider claudish can
+  // reach, so without this they are simply unroutable.
+  //
+  // NOTE on ids: Mistral's own wire ids are floating aliases
+  // (`mistral-large-latest`, `ministral-8b-latest`) that silently move to a new
+  // model on each release. The catalog carries them as `aggregators[].externalId`
+  // against pinned catalog ids (`mistral-large-2512`), and the generic
+  // externalId resolution translates one to the other — so a user typing the
+  // pinned id still reaches the alias, and no per-provider code is needed here.
+  {
+    name: "mistralai",
+    displayName: "Mistral",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.mistral.ai",
+    baseUrlEnvVars: ["MISTRAL_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "MISTRAL_API_KEY",
+    apiKeyDescription: "Mistral API Key",
+    apiKeyUrl: "https://console.mistral.ai/api-keys",
+    shortcuts: ["mistral"],
+    shortestPrefix: "mistral",
+    legacyPrefixes: [{ prefix: "mistral/", stripPrefix: true }],
+    // `ministral-` and `codestral-` are distinct product lines, not prefixes of
+    // `mistral-`, so each needs its own pattern. Anchored to avoid catching
+    // unrelated ids that merely contain the substring.
+    nativeModelPatterns: [
+      { pattern: /^mistralai\//i },
+      { pattern: /^mistral-/i },
+      { pattern: /^ministral-/i },
+      { pattern: /^codestral-/i },
+    ],
+    isDirectApi: true,
+    description: "Direct Mistral API (mistral@)",
   },
 
   // ── Sakana Fugu (OpenAI-compatible direct API / token plan) ────────

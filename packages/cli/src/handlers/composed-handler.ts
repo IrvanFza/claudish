@@ -52,7 +52,6 @@ import {
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
-import { requestCatalogContextWindow } from "./shared/context-window-fallback.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
@@ -494,14 +493,6 @@ export class ComposedHandler implements ModelHandler {
       if (providerWindow > 0) {
         this.tokenTracker.setContextWindow(providerWindow);
       }
-    }
-
-    // Still nothing? Ask the cloud catalog for this one model id, off the hot
-    // path. Memoized per model id; a miss leaves today's behaviour untouched.
-    if (this.tokenTracker.getContextWindow() <= 0) {
-      requestCatalogContextWindow(this.bareModelName, (cw) =>
-        this.tokenTracker.setContextWindow(cw)
-      );
     }
 
     // 5c. Provider payload transformation (e.g., CodeAssist envelope wrapping)

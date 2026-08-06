@@ -83,7 +83,7 @@
 import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
-import { ensureCatalogReady } from "../../providers/model-catalog-resolver.js";
+import { ensureCatalogReady } from "../../providers/catalog-client.js";
 import { parseModelSpec } from "../../providers/model-parser.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
@@ -265,7 +265,7 @@ async function prepareParentRoutingContext(): Promise<void> {
     }
   }
   try {
-    await ensureCatalogReady("openrouter", CATALOG_WARM_TIMEOUT_MS);
+    await ensureCatalogReady(CATALOG_WARM_TIMEOUT_MS);
   } catch {
     // ensureCatalogReady is documented not to throw; belt-and-braces.
   }

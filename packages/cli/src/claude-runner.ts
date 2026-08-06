@@ -16,7 +16,6 @@ import { dirname, join } from "node:path";
 import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { ENV } from "./config.js";
-import { resolveCatalogContextWindow } from "./handlers/shared/context-window-fallback.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
@@ -889,27 +888,7 @@ export const MIN_AUTO_COMPACT_WINDOW = 200_000;
  * existed. 1.5s is comfortably above a warm `queryModels` round-trip and well
  * under the point where a launch feels stalled.
  */
-export const CATALOG_WINDOW_TIMEOUT_MS = 1_500;
-
-/**
- * Race `promise` against `ms`, resolving to `null` on expiry. Never rejects.
- * The timer is unref'd + cleared so a pending lookup can't hold the process open.
- */
-function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise<T | null>((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
-    (timer as unknown as { unref?: () => void }).unref?.();
-    promise
-      .then((value) => {
-        clearTimeout(timer);
-        resolve(value);
-      })
-      .catch(() => {
-        clearTimeout(timer);
-        resolve(null);
-      });
-  });
-}
+export 
 
 /**
  * Resolve ONE model spec's window from the local sources only (live provider
@@ -943,33 +922,6 @@ async function resolveLocalContextWindow(
   };
 }
 
-/**
- * Last resort for the slim-cache misses only: ask the FULL cloud catalog, which
- * knows models the slim cache never carried. Queried concurrently (a two-slot
- * profile must not pay two serial round-trips) under ONE shared deadline, since
- * this sits between the user pressing Enter and Claude Code appearing.
- *
- * Returns +Infinity — the identity for `Math.min` — when there is nothing to ask,
- * the deadline expires, or the catalog knows none of them. That is exactly
- * today's behaviour: the caller keeps whatever the local path resolved, which for
- * a single unknown model is nothing, so the env stays unset.
- */
-async function catalogWindowMin(modelIds: string[]): Promise<number> {
-  const misses = [...new Set(modelIds)];
-  if (misses.length === 0) return Number.POSITIVE_INFINITY;
-
-  const windows = await withDeadline(
-    Promise.all(misses.map((id) => resolveCatalogContextWindow(id).catch(() => null))),
-    CATALOG_WINDOW_TIMEOUT_MS
-  );
-
-  let min = Number.POSITIVE_INFINITY;
-  for (const win of windows ?? []) {
-    if (typeof win === "number" && win > 0) min = Math.min(min, win);
-  }
-  return min;
-}
-
 export async function computeMainThreadContextWindow(
   config: ClaudishConfig,
   cachePath?: string
@@ -996,7 +948,13 @@ export async function computeMainThreadContextWindow(
     }
   }
 
-  min = Math.min(min, await catalogWindowMin(unresolved));
+  // No per-model cloud lookup for `unresolved`. Asking the same cloud one id
+  // at a time returns the same answer N round-trips more slowly: the models the
+  // slim catalog has no window for are overwhelmingly not chat models at all
+  // (embeddings, ASR, TTS, video). A genuine chat model missing its window is a
+  // models-index gap to fix there — see TASK_model_behavior_metadata_gaps.md —
+  // and surfacing it as "unknown" keeps that gap visible instead of papering
+  // over it on every launch.
   return Number.isFinite(min) ? min : 0;
 }
 

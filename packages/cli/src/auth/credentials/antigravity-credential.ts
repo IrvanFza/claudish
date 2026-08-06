@@ -20,6 +20,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
 import { resolveAntigravityModelId } from "../../providers/transport/antigravity.js";
 import {
   getValidAntigravityAccessToken,
@@ -29,7 +30,7 @@ import {
   buildAntigravityUserAgent,
   getServedAntigravityModels,
   setupAntigravityUser,
-} from "../gemini-oauth.js";
+} from "../antigravity-user.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
 
 /** Generate a short random request ID (matches the Antigravity CLI activity logger). */
@@ -58,7 +59,12 @@ export class AntigravityCredentialProvider implements CredentialProvider {
     const { projectId, tierId } = await setupAntigravityUser(token);
     // Resolve the requested id against the LIVE served set (fetchAvailableModels).
     const { servedIds, defaultId } = await getServedAntigravityModels(token, projectId);
-    const servedModel = resolveAntigravityModelId(ctx.model, servedIds, defaultId);
+    const servedModel = resolveAntigravityModelId(
+      ctx.model,
+      servedIds,
+      defaultId,
+      lookupFamilyDefaultVariant(ctx.model, "antigravity")
+    );
     return {
       headers: {
         Authorization: `Bearer ${token}`,

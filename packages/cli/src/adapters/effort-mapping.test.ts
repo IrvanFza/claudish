@@ -137,7 +137,11 @@ describe("Sakana Fugu (OpenAI-compatible path) clamps UP to high", () => {
     ["fugu", "xhigh", "xhigh"],
     ["fugu", "max", "xhigh"],
     ["fugu-ultra", "low", "high"],
-    ["fugu-ultra", "max", "xhigh"],
+    // fugu-ultra advertises `max` in the catalog (efforts: max|xhigh|high), so
+    // the catalog-driven clamp passes it through instead of normalising it down.
+    // Not a behaviour regression: Sakana documents `xhigh == max`, so both send
+    // the same thing. `fugu` (non-ultra) has no `max` and still clamps to xhigh.
+    ["fugu-ultra", "max", "max"],
     ["sakana/fugu-ultra-20260615", "medium", "high"],
   ])("%s effort '%s' → reasoning_effort '%s'", (model, input, expected) => {
     expect(openaiEffort(model, input)).toBe(expected);

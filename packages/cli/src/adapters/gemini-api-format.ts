@@ -10,7 +10,7 @@
  * Visible text is NOT filtered — see processTextContent for why the old
  * regex-based reasoning stripper was removed.
  *
- * Used with GeminiProviderTransport (direct API) and GeminiCodeAssistProviderTransport (OAuth).
+ * Used with GeminiProviderTransport (direct API) and AntigravityProviderTransport (OAuth).
  */
 
 import { convertToolsToGemini } from "../handlers/shared/gemini-schema.js";

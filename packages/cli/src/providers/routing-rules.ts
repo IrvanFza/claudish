@@ -4,7 +4,7 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
-import { resolveModelNameSync } from "./model-catalog-resolver.js";
+import { resolveExternalId } from "./catalog-client.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { buildCredentialHint } from "./routing-hints.js";
@@ -140,17 +140,32 @@ export function buildRoutingChain(
     // when the plan doesn't include this model, so the chain falls through to a
     // provider that can actually serve it instead of erroring or silently
     // handing back a different model.
+    let wireIdResolved = false;
     if (atIdx === -1) {
       const routing = resolveSubscriptionRouting(modelName, provider, cachePath);
       if (routing.kind === "not-served") continue;
-      if (routing.kind === "serves") modelName = routing.externalId;
+      if (routing.kind === "serves") {
+        modelName = routing.externalId;
+        // Already the plan's wire id — do NOT resolve again below, or the
+        // generic lookup would translate an external id a second time.
+        wireIdResolved = true;
+      }
     }
 
-    // Build modelSpec
+    // Every provider's wire id comes from the SAME catalog lookup
+    // (`aggregators[]`), not a per-provider resolver. This is what makes
+    // `ag@gemini-3.6-flash` reach `gemini-3.6-flash-high` and
+    // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
+    // needing bespoke code. No match → the name passes through unchanged.
+    if (!wireIdResolved) {
+      modelName = resolveExternalId(modelName, provider) ?? modelName;
+    }
+
+    // Build modelSpec. OpenRouter's ids are already vendor-qualified, so they
+    // are their own spec; everyone else takes a provider prefix.
     let modelSpec: string;
     if (provider === "openrouter") {
-      const resolution = resolveModelNameSync(modelName, "openrouter");
-      modelSpec = resolution.resolvedId;
+      modelSpec = modelName;
     } else {
       const prefix = PROVIDER_TO_PREFIX[provider] ?? provider;
       modelSpec = `${prefix}@${modelName}`;
@@ -218,7 +233,7 @@ export type RoutePlan =
  *     alias is excluded (the Codex composite's API-key half has no aliases).
  *   - Local transports (ollama, lmstudio, vllm, mlx) require explicit enablement
  *     (LocalCredentialProvider → isLocalProviderEnabled).
- *   - OAuth-backed providers (kimi, gemini-codeassist) accept an OAuth file or env
+ *   - OAuth-backed providers (kimi, antigravity) accept an OAuth file or env
  *     key; publicKeyFallback / oauthFallback affordances are honored by the
  *     ApiKeyCredentialProvider.
  *

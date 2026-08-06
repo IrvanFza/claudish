@@ -52,7 +52,6 @@ All flags recognized by `parseArgs()` in `packages/cli/src/cli.ts`.
 | `--help-ai` | | action | | Show AI agent usage guide (from `AI_AGENT_GUIDE.md`) and exit |
 | `--init` | | action | | Install Claudish skill in `.claude/skills/claudish-usage/SKILL.md` |
 | `--mcp` | | action | | Run as MCP server |
-| `--gemini-login` | | action | | Login to Gemini Code Assist via OAuth |
 | `--gemini-logout` | | action | | Clear Gemini OAuth credentials |
 | `--kimi-login` | | action | | Login to Kimi/Moonshot AI via OAuth |
 | `--kimi-logout` | | action | | Clear Kimi OAuth credentials |
@@ -166,7 +165,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `VERTEX_PROJECT` | Vertex AI OAuth mode — GCP project ID | `GOOGLE_CLOUD_PROJECT` | GCP Console |
 | `VERTEX_LOCATION` | Vertex AI region | `us-central1` | |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON file (Vertex OAuth) | | GCP Console |
-| `GOOGLE_CLOUD_PROJECT` | GCP project ID (also used by Gemini Code Assist OAuth) | `GOOGLE_CLOUD_PROJECT_ID` | |
+| `GOOGLE_CLOUD_PROJECT` | GCP project ID (Vertex AI) | `GOOGLE_CLOUD_PROJECT_ID` | |
 
 **Note on Vertex AI**: Vertex supports two authentication modes:
 - Express mode (`VERTEX_API_KEY`): Uses the Gemini API endpoint; supports Gemini models only.
@@ -207,8 +206,6 @@ Claudish automatically loads `.env` from the current working directory at startu
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GEMINI_CLIENT_ID` | Custom OAuth client ID for Gemini Code Assist | built-in (from Claudish installation) |
-| `GEMINI_CLIENT_SECRET` | Custom OAuth client secret for Gemini Code Assist | built-in (from Claudish installation) |
 
 These are only needed if you want to use your own Google Cloud OAuth application instead of Claudish's built-in credentials.
 
@@ -295,7 +292,6 @@ Same schema as `~/.claudish/config.json`. Placed in the project root directory (
 | `all-models.json` | Cached full model catalog from OpenRouter | Every 2 days, or on `--models-refresh` |
 | `litellm-models-{hash}.json` | Cached LiteLLM model list per server (hash = SHA-256 of `LITELLM_BASE_URL`) | On each LiteLLM model fetch |
 | `kimi-oauth.json` | Kimi OAuth credentials (access + refresh tokens) | On `claudish --kimi-login` |
-| `gemini-oauth.json` | Gemini Code Assist OAuth credentials | On `claudish --gemini-login` |
 | `logs/` | Debug log files (created when `--debug-claudish` is used) | Per session |
 
 ### 4.4 Config File Override (`--config`)
@@ -365,7 +361,9 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY`; optional for free models) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan |
 | `v`, `vertex` | `vertex` | Vertex AI (`VERTEX_API_KEY` or `VERTEX_PROJECT`) |
-| `go` | `gemini-codeassist` | Gemini Code Assist via OAuth (`claudish --gemini-login`) |
+| `mistral` | `mistralai` | Direct Mistral API (`MISTRAL_API_KEY`) |
+| `ag`, `antigravity` | `antigravity` | Gemini via your Antigravity subscription (`claudish login antigravity`) |
+| `go` | `antigravity` | _deprecated alias_ — Gemini Code Assist was retired by Google |
 | `litellm`, `ll` | `litellm` | LiteLLM proxy (`LITELLM_BASE_URL` + `LITELLM_API_KEY`) |
 | `poe` | `poe` | Poe API (`POE_API_KEY`) |
 
@@ -407,7 +405,8 @@ The old `prefix/model` format works but emits a deprecation warning suggesting t
 |---------------|----------|----------------|
 | `g/` | Google Gemini | `g@` |
 | `gemini/` | Google Gemini | `gemini@` |
-| `go/` | Gemini Code Assist | `go@` |
+| `ag/`, `antigravity/` | Antigravity (Gemini subscription) | `ag@` |
+| `go/` | _deprecated alias → Antigravity_ | `go@` |
 | `oai/` | OpenAI | `oai@` |
 | `or/` | OpenRouter | `or@` |
 | `mmax/`, `mm/` | MiniMax | `mm@` |
@@ -474,7 +473,7 @@ When `defaultProvider` is absent and only `OPENROUTER_API_KEY` is present:
    - `kimi` → Kimi Coding Plan (`kc@kimi-for-coding`) if `KIMI_CODING_API_KEY` or OAuth present.
    - `minimax` → MiniMax Coding Plan (`mmc@`) if `MINIMAX_CODING_API_KEY` present.
    - `glm` → GLM Coding Plan at Z.AI (`gc@`) if `GLM_CODING_API_KEY` or `ZAI_CODING_API_KEY` present.
-   - `google` → Gemini Code Assist (`go@`) if OAuth credentials present.
+   - `gemini-*` → `antigravity` (subscription) → `google` (direct API) → `openrouter`.
 3. **Native provider API** — if the detected native provider has an API key or OAuth credentials.
 4. **OpenRouter** — if `OPENROUTER_API_KEY` is set (universal fallback).
 
@@ -696,7 +695,6 @@ For local Qwen models, setting `CLAUDISH_QWEN_NO_THINK=1` prepends `/no_think` t
 | `~/.claudish/all-models.json` | Full OpenRouter model catalog | Every 2 days; or `--models-refresh` |
 | `~/.claudish/litellm-models-{hash}.json` | LiteLLM model list (one file per unique `LITELLM_BASE_URL`) | On each LiteLLM model list fetch |
 | `~/.claudish/kimi-oauth.json` | Kimi OAuth access + refresh tokens | `claudish --kimi-login` |
-| `~/.claudish/gemini-oauth.json` | Gemini Code Assist OAuth tokens | `claudish --gemini-login` |
 | `.claudish.json` | Local/project config | Profile commands with `--local` |
 | `.env` | Environment variables (auto-loaded at startup) | Manual |
 

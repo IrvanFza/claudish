@@ -39,9 +39,9 @@ describe("buildExplicitModelSpec", () => {
     ["minimax-coding", "MiniMax-M2", "mmc@MiniMax-M2"],
     ["kimi", "kimi-k2", "kimi@kimi-k2"],
     ["kimi-coding", "kimi-for-coding", "kc@kimi-for-coding"],
-    // gemini-codeassist renders google-catalog rows in the picker; without a
-    // prefix entry, rows would emit a bare id that won't route to Code Assist.
-    ["gemini-codeassist", "gemini-3-pro", "go@gemini-3-pro"],
+    // antigravity renders google-catalog rows in the picker; without a prefix
+    // entry, rows would emit a bare id that won't route to Antigravity.
+    ["antigravity", "gemini-3-pro", "ag@gemini-3-pro"],
     ["glm", "glm-4-plus", "glm@glm-4-plus"],
     ["glm-coding", "glm-4-plus", "gc@glm-4-plus"],
     ["z-ai", "z-ai-plus", "z-ai@z-ai-plus"],
