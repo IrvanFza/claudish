@@ -1,0 +1,26 @@
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1786019228-deYyCMSICXzLSBz3AdvZ","object":"chat.completion.chunk","created":1786019228,"model":"google/gemini-3.1-pro-preview","provider":"Google","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"**Confirming Input Interpretation**\n\nI'm currently processing the instruction to acknowledge the \"hi marker xhmmf9d\" input. My focus is on ensuring accurate repetition of the provided string as the core of my response, confirming I understood the specific command.\n\n","reasoning_details":[{"type":"reasoning.text","text":"**Confirming Input Interpretation**\n\nI'm currently processing the instruction to acknowledge the \"hi marker xhmmf9d\" input. My focus is on ensuring accurate repetition of the provided string as the core of my response, confirming I understood the specific command.\n\n","format":"google-gemini-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1786019228-deYyCMSICXzLSBz3AdvZ","object":"chat.completion.chunk","created":1786019228,"model":"google/gemini-3.1-pro-preview","provider":"Google","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning_details":[{"type":"reasoning.text","signature":"AY89a19iFGipHrMbSrzYOCzN1MVKrBCHbuz6jEAAP5cUyr8xi1+5aLsYYhM/lBnyxSVZLom0psnWkD/DhIA3M4sdxoxYMPpH3cAoUtKgyRcT947RuUMLm2W0ISesrzVyu6SEMEOUzlgw1ILJheAZrgp2IV+047oshhYdn1ca35FbcZh0kfjYwGCoEHLcBe29zDs3BeTu0aB7pg5fRxNkkQVmrCT7ayf5GqntyzezOdG858Vh+v63Qnrit+3uTBHPBH3W2E3a8f2IVNRmb9Peiv26Y/qolNTob+/kzwQNXRiQjNYknSl9y8QZLwpee26gEn7GcZWXcmFhwWhoyhfUuq9cRfp/zZYpVN09x20FizwFAkRvD9CS6Gi4svwl4pQoH9lJci5FzJLQWVWq","format":"google-gemini-v1","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1786019228-deYyCMSICXzLSBz3AdvZ","object":"chat.completion.chunk","created":1786019228,"model":"google/gemini-3.1-pro-preview","provider":"Google","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"length","native_finish_reason":"MAX_TOKENS"}]}
+
+data: {"id":"gen-1786019228-deYyCMSICXzLSBz3AdvZ","object":"chat.completion.chunk","created":1786019228,"model":"google/gemini-3.1-pro-preview","provider":"Google","service_tier":"default","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"length","native_finish_reason":"MAX_TOKENS"}],"usage":{"prompt_tokens":8,"completion_tokens":61,"total_tokens":69,"cost":0.000748,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.000748,"upstream_inference_prompt_cost":0.000016,"upstream_inference_completions_cost":0.000732},"completion_tokens_details":{"reasoning_tokens":61,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

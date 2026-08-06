@@ -1991,3 +1991,323 @@ describe("Responses SSE captures reasoning items for passback", () => {
     cacheMod.clearReasoningCache();
   });
 });
+
+describe("Regression: Gemini visible text is never silently dropped", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/gemini-sse.js");
+    return mod.createGeminiSseStream;
+  }
+
+  async function getAdapter() {
+    const mod = await import("./adapters/gemini-api-format.js");
+    return new mod.GeminiAPIFormat("gemini-3.6-flash");
+  }
+
+  test("real OK capture emits its text and starts a text block", async () => {
+    const createGeminiSseStream = await getParser();
+    const adapter = await getAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.6-flash-antigravity-ok-answer.sse")
+    );
+
+    const response = createGeminiSseStream(createMockContext(), fixture, {
+      modelName: "gemini-3.6-flash",
+      adapter,
+      unwrapResponse: true,
+    });
+    const events = await parseClaudeSseStream(response);
+
+    expect(extractText(events)).toBe("OK");
+    const textBlockStart = events.find(
+      (event) =>
+        event.data?.type === "content_block_start" && event.data?.content_block?.type === "text"
+    );
+    expect(textBlockStart).toBeDefined();
+  });
+
+  test("real BANANA control capture still emits its text verbatim", async () => {
+    const createGeminiSseStream = await getParser();
+    const adapter = await getAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.6-flash-antigravity-banana-answer.sse")
+    );
+
+    const response = createGeminiSseStream(createMockContext(), fixture, {
+      modelName: "gemini-3.6-flash",
+      adapter,
+      unwrapResponse: true,
+    });
+    const events = await parseClaudeSseStream(response);
+
+    expect(extractText(events)).toBe("BANANA");
+  });
+
+  test.each([
+    "OK",
+    "Ok",
+    "okay",
+    "Okay",
+    "OK.",
+    "OKAY",
+    "Hmmm, interesting — the answer is 42",
+    "First, I recommend X",
+    "Let me know if you need anything else",
+    "I need to know your API key before continuing",
+    "Wait",
+  ])("processTextContent preserves %j verbatim", async (input) => {
+    const adapter = await getAdapter();
+
+    const result = adapter.processTextContent(input, "");
+
+    expect(result.cleanedText).toBe(input);
+    expect(result.wasTransformed).toBe(false);
+  });
+
+  test("processTextContent never returns empty cleaned text for a non-empty input", async () => {
+    const adapter = await getAdapter();
+    const nonEmptyInputs = [
+      "A",
+      "0",
+      "No",
+      "Done.",
+      "Wait, I should verify that",
+      "Let me think about the answer",
+      "First, we should choose the safer option",
+      "`result` is ready",
+      "\nVisible after a leading newline",
+      " ",
+    ];
+
+    for (const input of nonEmptyInputs) {
+      expect(input.length).toBeGreaterThan(0);
+      expect(adapter.processTextContent(input, "").cleanedText).not.toBe("");
+    }
+  });
+
+  test("a boolean thought flag routes part.text only to the thinking block", async () => {
+    const createGeminiSseStream = await getParser();
+    const adapter = await getAdapter();
+
+    // Synthetic protocol-shape case: no real includeThoughts capture is available.
+    const chunk = {
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              { text: "reasoning here", thought: true },
+              { text: "the answer" },
+            ],
+          },
+          finishReason: "STOP",
+        },
+      ],
+    };
+    const fixture = new Response(`data: ${JSON.stringify(chunk)}\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const response = createGeminiSseStream(createMockContext(), fixture, {
+      modelName: "gemini-3.6-flash",
+      adapter,
+      unwrapResponse: true,
+    });
+    const events = await parseClaudeSseStream(response);
+
+    const blockTypes = events
+      .filter((event) => event.data?.type === "content_block_start")
+      .map((event) => event.data.content_block.type);
+    expect(blockTypes).toEqual(["thinking", "text"]);
+
+    const thinking = events
+      .filter((event) => event.data?.delta?.type === "thinking_delta")
+      .map((event) => event.data.delta.thinking)
+      .join("");
+    expect(thinking).toBe("reasoning here");
+    expect(extractText(events)).toBe("the answer");
+  });
+});
+
+describe("Regression: truncated turns are reported as max_tokens", () => {
+  async function getOpenAiParser() {
+    const mod = await import("./handlers/shared/stream-parsers/openai-sse.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getOpenRouterAdapter() {
+    const mod = await import("./adapters/openrouter-api-format.js");
+    return new mod.OpenRouterAPIFormat("google/gemini-3.1-pro-preview");
+  }
+
+  async function getGeminiParser() {
+    const mod = await import("./handlers/shared/stream-parsers/gemini-sse.js");
+    return mod.createGeminiSseStream;
+  }
+
+  async function getGeminiAdapter() {
+    const mod = await import("./adapters/gemini-api-format.js");
+    return new mod.GeminiAPIFormat("gemini-3.6-flash");
+  }
+
+  test("OpenRouter length finish with no visible text emits max_tokens", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("max_tokens");
+  });
+
+  test("OpenRouter length finish preserves partial text and emits max_tokens", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-truncated.sse")
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("max_tokens");
+    expect(extractText(events)).toBe("Hi marker x");
+  });
+
+  test("OpenRouter delta.reasoning reaches a thinking content block", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const thinkingStart = events.find(
+      (event) =>
+        event.data?.type === "content_block_start" &&
+        event.data?.content_block?.type === "thinking"
+    );
+    const thinking = events
+      .filter((event) => event.data?.delta?.type === "thinking_delta")
+      .map((event) => event.data.delta.thinking)
+      .join("");
+
+    expect(thinkingStart?.data.content_block.type).toBe("thinking");
+    expect(thinking.length).toBeGreaterThan(200);
+  });
+
+  test("Gemini MAX_TOKENS preserves text and emits max_tokens", async () => {
+    const createGeminiSseStream = await getGeminiParser();
+    const adapter = await getGeminiAdapter();
+
+    // Synthetic protocol-shape case: a standard Gemini chunk with a truncated text part.
+    const chunk = {
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "partial Gemini answer" }] },
+          finishReason: "MAX_TOKENS",
+        },
+      ],
+    };
+    const fixture = new Response(`data: ${JSON.stringify(chunk)}\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const response = createGeminiSseStream(createMockContext(), fixture, {
+      modelName: "gemini-3.6-flash",
+      adapter,
+      unwrapResponse: false,
+    });
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("max_tokens");
+    expect(extractText(events)).toBe("partial Gemini answer");
+  });
+
+  test("Gemini STOP control remains end_turn", async () => {
+    const createGeminiSseStream = await getGeminiParser();
+    const adapter = await getGeminiAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "gemini-3.6-flash-antigravity-ok-answer.sse")
+    );
+
+    const response = createGeminiSseStream(createMockContext(), fixture, {
+      modelName: "gemini-3.6-flash",
+      adapter,
+      unwrapResponse: true,
+    });
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("end_turn");
+    expect(extractText(events)).toBe("OK");
+  });
+
+  test("OpenAI tool_calls finish remains tool_use", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+
+    // Synthetic protocol-shape case: the smallest structured tool-call turn.
+    const chunk = {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_regression_tool",
+                type: "function",
+                function: { name: "Read", arguments: "{}" },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    };
+    const fixture = new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(extractToolNames(events)).toEqual(["Read"]);
+    expect(messageDelta?.data.delta.stop_reason).toBe("tool_use");
+  });
+});

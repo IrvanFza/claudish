@@ -6,7 +6,9 @@
  * - Tool conversion: Claude tools → Gemini function declarations
  * - Payload building: generationConfig, systemInstruction, thinkingConfig
  * - thoughtSignature tracking across requests (required for Gemini 3/2.5 thinking)
- * - Reasoning text filtering (removes leaked internal monologue)
+ *
+ * Visible text is NOT filtered — see processTextContent for why the old
+ * regex-based reasoning stripper was removed.
  *
  * Used with GeminiProviderTransport (direct API) and GeminiCodeAssistProviderTransport (OAuth).
  */
@@ -22,50 +24,6 @@ import {
   matchesModelFamily,
 } from "./base-api-format.js";
 
-/**
- * Patterns that indicate internal reasoning/monologue that should be filtered.
- * Gemini sometimes leaks reasoning as regular text instead of keeping it in thinking blocks.
- */
-const REASONING_PATTERNS = [
-  /^Wait,?\s+I(?:'m|\s+am)\s+\w+ing\b/i,
-  /^Wait,?\s+(?:if|that|the|this|I\s+(?:need|should|will|have|already))/i,
-  /^Wait[.!]?\s*$/i,
-  /^Let\s+me\s+(think|check|verify|see|look|analyze|consider|first|start)/i,
-  /^Let's\s+(check|see|look|start|first|try|think|verify|examine|analyze)/i,
-  /^I\s+need\s+to\s+/i,
-  /^O[kK](?:ay)?[.,!]?\s*(?:so|let|I|now|first)?/i,
-  /^[Hh]mm+/,
-  /^So[,.]?\s+(?:I|let|first|now|the)/i,
-  /^(?:First|Next|Then|Now)[,.]?\s+(?:I|let|we)/i,
-  /^(?:Thinking\s+about|Considering)/i,
-  /^I(?:'ll|\s+will)\s+(?:first|now|start|begin|try|check|fix|look|examine|modify|create|update|read|investigate|adjust|improve|integrate|mark|also|verify|need|rethink|add|help|use|run|search|find|explore|analyze|review|test|implement|write|make|set|get|see|open|close|save|load|fetch|call|send|build|compile|execute|process|handle|parse|format|validate|clean|clear|remove|delete|move|copy|rename|install|configure|setup|initialize|prepare|work|continue|proceed|ensure|confirm)/i,
-  /^I\s+should\s+/i,
-  /^I\s+will\s+(?:first|now|start|verify|check|create|modify|look|need|also|add|help|use|run|search|find|explore|analyze|review|test|implement|write)/i,
-  /^(?:Debug|Checking|Verifying|Looking\s+at):/i,
-  /^I\s+also\s+(?:notice|need|see|want)/i,
-  /^The\s+(?:goal|issue|problem|idea|plan)\s+is/i,
-  /^In\s+the\s+(?:old|current|previous|new|existing)\s+/i,
-  /^`[^`]+`\s+(?:is|has|does|needs|should|will|doesn't|hasn't)/i,
-];
-
-const REASONING_CONTINUATION_PATTERNS = [
-  /^And\s+(?:then|I|now|so)/i,
-  /^And\s+I(?:'ll|\s+will)/i,
-  /^But\s+(?:I|first|wait|actually|the|if)/i,
-  /^Actually[,.]?\s+/i,
-  /^Also[,.]?\s+(?:I|the|check|note)/i,
-  /^\d+\.\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix|Look)/i,
-  /^-\s+(?:I|First|Check|Run|Create|Update|Read|Modify|Add|Fix)/i,
-  /^Or\s+(?:I|just|we|maybe|perhaps)/i,
-  /^Since\s+(?:I|the|this|we|it)/i,
-  /^Because\s+(?:I|the|this|we|it)/i,
-  /^If\s+(?:I|the|this|we|it)\s+/i,
-  /^This\s+(?:is|means|requires|should|will|confirms|suggests)/i,
-  /^That\s+(?:means|is|should|will|explains|confirms)/i,
-  /^Lines?\s+\d+/i,
-  /^The\s+`[^`]+`\s+(?:is|has|contains|needs|should)/i,
-];
-
 export class GeminiAPIFormat extends BaseAPIFormat {
   /**
    * Map of tool_use_id → { name, thoughtSignature }.
@@ -73,10 +31,6 @@ export class GeminiAPIFormat extends BaseAPIFormat {
    * thoughtSignatures from previous responses to be echoed back in subsequent requests.
    */
   private toolCallMap = new Map<string, { name: string; thoughtSignature?: string }>();
-
-  /** Reasoning filter state */
-  private inReasoningBlock = false;
-  private reasoningBlockDepth = 0;
 
   // ─── Message Conversion (Claude → Gemini parts) ─────────────────
 
@@ -367,60 +321,39 @@ export class GeminiAPIFormat extends BaseAPIFormat {
 
   // ─── Text Processing (reasoning filter) ───────────────────────────
 
+  /**
+   * Visible text passes through UNCHANGED.
+   *
+   * This used to run 35 regexes over the model's prose to strip "leaked"
+   * reasoning ("Wait, I'm...", "Let me think...", "Okay, so..."). That was a
+   * real fix in Dec 2025 (commit 523c0e4, the "Wait, I'm scaling tools" loop):
+   * Gemini 2.x had no reasoning channel and no thinking budget, so it reasoned
+   * in the only channel it had — the answer.
+   *
+   * Both conditions are gone:
+   *  1. `thinkingConfig` (buildPayload below, added 9 days later in 2b0064d)
+   *     gives the model a real place to think, which is what actually stops
+   *     the leak. Prevention, not post-hoc deletion. NOTE this applies to the
+   *     direct `g@`/`ag@` paths only — `or@gemini-*` builds its payload in
+   *     OpenRouterAPIFormat and never reaches this buildPayload, so there the
+   *     protection is OpenRouter's own reasoning handling, not this.
+   *  2. Reasoning no longer arrives as visible text. Gemini 3.x returns it as
+   *     an opaque `thoughtSignature` on a part whose `text` is "" — measured
+   *     on a real capture: `thoughtsTokenCount: 57` with zero reasoning text
+   *     on the wire. gemini-sse.ts consumes that signature only to echo it
+   *     back on tool calls; there is no reasoning text to strip. (A
+   *     `thought: true` flag would carry text, but only if `includeThoughts`
+   *     were requested, and claudish never sets it.)
+   *
+   * And the filter could not be made correct: it asked "is this string
+   * reasoning or an answer?", but for a reply like "OK" that bit does not
+   * exist in the string. It deleted `"OK"`, `"Okay"`, `"Hmmm, ...anything"`
+   * and any line opening `"First, I..."` — returning an EMPTY text block,
+   * which the stream parser could not distinguish from "no output", so the
+   * turn completed successfully with a blank answer and exit code 0.
+   */
   processTextContent(textContent: string, _accumulatedText: string): AdapterResult {
-    if (!textContent || textContent.trim() === "") {
-      return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };
-    }
-
-    const lines = textContent.split("\n");
-    const cleanedLines: string[] = [];
-    let wasFiltered = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      if (!trimmed) {
-        cleanedLines.push(line);
-        continue;
-      }
-
-      if (this.isReasoningLine(trimmed)) {
-        log(`[GeminiAPIFormat] Filtered reasoning: "${trimmed.substring(0, 50)}..."`);
-        wasFiltered = true;
-        this.inReasoningBlock = true;
-        this.reasoningBlockDepth++;
-        continue;
-      }
-
-      if (this.inReasoningBlock && this.isReasoningContinuation(trimmed)) {
-        log(`[GeminiAPIFormat] Filtered reasoning continuation: "${trimmed.substring(0, 50)}..."`);
-        wasFiltered = true;
-        continue;
-      }
-
-      if (this.inReasoningBlock && trimmed.length > 20 && !this.isReasoningContinuation(trimmed)) {
-        this.inReasoningBlock = false;
-        this.reasoningBlockDepth = 0;
-      }
-
-      cleanedLines.push(line);
-    }
-
-    const cleanedText = cleanedLines.join("\n");
-
-    return {
-      cleanedText: wasFiltered ? cleanedText : textContent,
-      extractedToolCalls: [],
-      wasTransformed: wasFiltered,
-    };
-  }
-
-  private isReasoningLine(line: string): boolean {
-    return REASONING_PATTERNS.some((pattern) => pattern.test(line));
-  }
-
-  private isReasoningContinuation(line: string): boolean {
-    return REASONING_CONTINUATION_PATTERNS.some((pattern) => pattern.test(line));
+    return { cleanedText: textContent, extractedToolCalls: [], wasTransformed: false };
   }
 
   // ─── Format metadata ─────────────────────────────────────────────
@@ -430,13 +363,11 @@ export class GeminiAPIFormat extends BaseAPIFormat {
   }
 
   /**
-   * Reset reasoning filter state between requests.
+   * No per-request state to reset since the reasoning filter was removed.
    * NOTE: toolCallMap is intentionally NOT cleared — it persists across requests
    * because Gemini requires thoughtSignatures from previous responses.
    */
   override reset(): void {
-    this.inReasoningBlock = false;
-    this.reasoningBlockDepth = 0;
     // Do NOT clear toolCallMap or toolNameMap
   }
 

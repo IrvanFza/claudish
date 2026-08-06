@@ -347,10 +347,16 @@ describe("Group B — real API routing", () => {
       const t0 = Date.now();
       const port = await spinProxy({ quiet: false });
       const marker = MARKER();
+      // 256, not the 64 default: gemini-3.1-pro-preview is a THINKING model and
+      // its reasoning is billed against max_tokens. Measured against OpenRouter
+      // on 2026-08-06 with this exact prompt — at 64 the reasoning consumed the
+      // whole budget (1/3 runs returned empty content with finish_reason=length,
+      // 2/3 truncated mid-sentence); at 256, 3/3 complete with finish_reason=stop.
       const { ok, status, text, raw } = await askProxy(
         port,
         "gemini-3.1-pro-preview",
-        `say hi marker ${marker}`
+        `say hi marker ${marker}`,
+        256
       );
       const stderr = releaseStderr();
       const elapsed = Date.now() - t0;
@@ -361,10 +367,13 @@ describe("Group B — real API routing", () => {
       console.log(
         `[B1b] model=gemini-3.1-pro-preview provider=openrouter elapsed=${elapsed}ms text="${text.slice(0, 60)}"`
       );
-      // Real APIs occasionally rate-limit or return zero tokens. The load-bearing
-      // assertion is that the request succeeded end-to-end — empty response text
-      // can happen on flagship models for trivial "say hi" prompts.
+      // The load-bearing assertion is that the request succeeded end-to-end.
+      // Empty text is NOT treated as acceptable here: with an adequate budget
+      // this prompt returned content 5/5 upstream, so a blank answer means
+      // something in the pipeline lost it (that is exactly how the Gemini
+      // reasoning-filter bug hid for seven months).
       expect(ok).toBe(true);
+      expect(text.trim()).not.toBe("");
       // Best-effort stderr provenance check — Bun async logging is flaky
       const lower = stderr.toLowerCase();
       if (!lower.includes("openrouter")) {
