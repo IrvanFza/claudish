@@ -15,6 +15,7 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   "glm-coding": { envVar: "GLM_CODING_API_KEY", aliases: ["ZAI_CODING_API_KEY"] },
   "z-ai": { envVar: "ZAI_API_KEY" },
   deepseek: { envVar: "DEEPSEEK_API_KEY" },
+  mistralai: { envVar: "MISTRAL_API_KEY" },
   sakana: { envVar: "SAKANA_API_KEY" },
   // Subscription plan (sc@) — general-purpose, not coding-specific. Its own key,
   // named after Sakana's "subscription" term; SAKANA_CODING_API_KEY kept as a

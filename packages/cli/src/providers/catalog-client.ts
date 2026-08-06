@@ -187,12 +187,19 @@ export function resolveExternalId(userInput: string, provider: string): string |
 
   if (!entries) return null;
 
-  // Step 2: exact modelId.
+  // Step 2: exact modelId. AUTHORITATIVE — if the user named a canonical
+  // catalog id, that row's answer is final, including "this provider does not
+  // serve it" (null). Falling through to the alias/suffix steps below would
+  // resolve to a DIFFERENT model that merely shares the name.
+  //
+  // Not hypothetical: the catalog currently lists `mistral-medium-3.5` as a
+  // canonical id AND as an alias of `mistral-medium-2604`. Without this early
+  // return, asking OpenRouter for 3.5 silently answered with
+  // `mistralai/mistral-medium-3` — a real model, so no error, just the wrong
+  // one. Serving a different model than the user asked for is worse than
+  // failing to route.
   const byModelId = entries.find((e) => e.modelId === userInput);
-  if (byModelId) {
-    const id = externalIdFor(byModelId, provider);
-    if (id) return id;
-  }
+  if (byModelId) return externalIdFor(byModelId, provider);
 
   // Step 3: aliases.
   const byAlias = entries.find((e) => e.aliases.includes(userInput));

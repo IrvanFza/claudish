@@ -560,6 +560,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `kimi@`, `moon@` | Kimi Direct | `MOONSHOT_API_KEY` | `kimi@kimi-k2` |
 | `glm@`, `zhipu@` | GLM Direct | `ZHIPU_API_KEY` | `glm@glm-4` |
 | `zai@` | Z.AI Direct | `ZAI_API_KEY` | `zai@glm-4` |
+| `mistral@` | Mistral | `MISTRAL_API_KEY` | `mistral@mistral-large-2512` |
 | `sakana@`, `fugu@` | Sakana Fugu | `SAKANA_API_KEY` | `fugu@fugu-ultra` |
 | `sc@` | Sakana Fugu Subscription | `SAKANA_CODING_API_KEY` | `sc@fugu-ultra` |
 | `qc@` | Qwen Plan | `QWEN_CLOUD_PLAN_API_KEY` | `qc@qwen3.7-plus` |

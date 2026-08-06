@@ -724,6 +724,45 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "DeepSeek API (ds@)",
   },
 
+  // ── Mistral (OpenAI-compatible direct API) ─────────────────────────
+  // The catalog carries 13 mistralai-served models; 5 of them
+  // (labs-leanstral-1-5, ministral-3-3b/3-8b-instruct, mistral-medium-3.5,
+  // mistral-small-4.0-2603) are served by NO other provider claudish can
+  // reach, so without this they are simply unroutable.
+  //
+  // NOTE on ids: Mistral's own wire ids are floating aliases
+  // (`mistral-large-latest`, `ministral-8b-latest`) that silently move to a new
+  // model on each release. The catalog carries them as `aggregators[].externalId`
+  // against pinned catalog ids (`mistral-large-2512`), and the generic
+  // externalId resolution translates one to the other — so a user typing the
+  // pinned id still reaches the alias, and no per-provider code is needed here.
+  {
+    name: "mistralai",
+    displayName: "Mistral",
+    transport: "openai",
+    tokenStrategy: "delta-aware",
+    baseUrl: "https://api.mistral.ai",
+    baseUrlEnvVars: ["MISTRAL_BASE_URL"],
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: "MISTRAL_API_KEY",
+    apiKeyDescription: "Mistral API Key",
+    apiKeyUrl: "https://console.mistral.ai/api-keys",
+    shortcuts: ["mistral"],
+    shortestPrefix: "mistral",
+    legacyPrefixes: [{ prefix: "mistral/", stripPrefix: true }],
+    // `ministral-` and `codestral-` are distinct product lines, not prefixes of
+    // `mistral-`, so each needs its own pattern. Anchored to avoid catching
+    // unrelated ids that merely contain the substring.
+    nativeModelPatterns: [
+      { pattern: /^mistralai\//i },
+      { pattern: /^mistral-/i },
+      { pattern: /^ministral-/i },
+      { pattern: /^codestral-/i },
+    ],
+    isDirectApi: true,
+    description: "Direct Mistral API (mistral@)",
+  },
+
   // ── Sakana Fugu (OpenAI-compatible direct API / token plan) ────────
   {
     name: "sakana",

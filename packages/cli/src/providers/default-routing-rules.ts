@@ -97,6 +97,19 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   "mimo-*": ["opencode-zen-go", "openrouter"],
   "hy3*": ["opencode-zen-go", "openrouter"],
 
+  // Mistral: direct API, then OpenRouter. Three separate product lines —
+  // `ministral-` and `codestral-` are not prefixes of `mistral-`, so a single
+  // glob cannot cover them. `magistral-*` is deliberately NOT claimed: it is not
+  // in the catalog's mistralai set, so routing it here would send it to a
+  // provider that does not serve it.
+  "mistral-*": ["mistralai", "openrouter"],
+  "ministral-*": ["mistralai", "openrouter"],
+  "codestral-*": ["mistralai", "openrouter"],
+  // Mistral Labs ships under its own prefix. NO openrouter fallback: this is
+  // the one mistralai model no other provider in the catalog serves, so naming
+  // a fallback would claim a reachability that does not exist.
+  "labs-*": ["mistralai"],
+
   // Sakana Fugu: subscription first, then token API. NO hardcoded openrouter —
   // we don't claim OpenRouter carries the model; it's reachable explicitly via
   // or@sakana/fugu (catalog-resolved). The bare "fugu" id needs its own exact

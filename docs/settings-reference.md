@@ -361,6 +361,7 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY`; optional for free models) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan |
 | `v`, `vertex` | `vertex` | Vertex AI (`VERTEX_API_KEY` or `VERTEX_PROJECT`) |
+| `mistral` | `mistralai` | Direct Mistral API (`MISTRAL_API_KEY`) |
 | `ag`, `antigravity` | `antigravity` | Gemini via your Antigravity subscription (`claudish login antigravity`) |
 | `go` | `antigravity` | _deprecated alias_ — Gemini Code Assist was retired by Google |
 | `litellm`, `ll` | `litellm` | LiteLLM proxy (`LITELLM_BASE_URL` + `LITELLM_API_KEY`) |
