@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.42.0] - 2026-08-06
+
+### Bug Fixes
+
+- stop deleting answers that open like reasoning, and report truncation honestly *(gemini)* ([`92b72cb`](https://github.com/MadAppGang/claudish/commit/92b72cb89e2d06ad813931fc42fc2064b54238f0))
+
+### Documentation
+
+- update CHANGELOG.md for v7.41.0([`78ae3b5`](https://github.com/MadAppGang/claudish/commit/78ae3b54a82b5eb8f074f72ec208d724955471c0))
+
+### Other Changes
+
+- v7.42.0([`6dd2ab8`](https://github.com/MadAppGang/claudish/commit/6dd2ab86237b40b00cafb6327f0fa7675dda0794))
+
 ## [7.41.0] - 2026-08-06
 
 ### Documentation
