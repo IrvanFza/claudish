@@ -277,17 +277,17 @@ describe("probe budget", () => {
     );
   });
 
-  // Contentless-truncation E2E: a reasoning model that burns the ENTIRE probe
-  // budget on hidden reasoning yields HTTP 200 + finish_reason "length" + zero
-  // visible text (verified live against OpenAI gpt-5-nano). The probe must
-  // report a self-explaining budget message, not "stream ended without content".
+  // Explicit contentless-truncation E2E: a reasoning model that burns the ENTIRE
+  // probe budget on hidden reasoning yields HTTP 200 + finish_reason "length" +
+  // zero visible text (verified live against OpenAI gpt-5-nano). The probe must
+  // report the mapped explicit max_tokens signal, not "stream ended without content".
   //
   // Fixture policy: the Claude-side stream the probe consumes is produced by
   // the REAL openai-sse parser (createStreamingResponseHandler) — the actual
   // production producer. Only the upstream OpenAI chunks are synthesized,
   // mirroring the verified reproduction shape (empty content deltas,
   // finish_reason "length", usage with completion_tokens == the full cap).
-  test("contentless budget-truncated 200 reports 'no visible output within probe budget'", async () => {
+  test("contentless 200 with explicit length finish reports max_tokens truncation", async () => {
     const { createStreamingResponseHandler } = await import("../handlers/shared/openai-compat.js");
     const { DefaultAPIFormat } = await import("../adapters/base-api-format.js");
 
@@ -296,6 +296,66 @@ describe("probe budget", () => {
     const upstreamChunks = [
       `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
       `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+      `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":${PROBE_MAX_TOKENS},"total_tokens":${25 + PROBE_MAX_TOKENS},"completion_tokens_details":{"reasoning_tokens":${PROBE_MAX_TOKENS}}}}`,
+      "data: [DONE]",
+    ].join("\n\n");
+
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        const upstream = new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`${upstreamChunks}\n\n`));
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } }
+        );
+        // Minimal Hono-context shim (same shape format-translation.test.ts uses).
+        const ctx: any = {
+          body: (stream: ReadableStream, init?: any) => new Response(stream, init),
+        };
+        return createStreamingResponseHandler(
+          ctx,
+          upstream,
+          new DefaultAPIFormat("gpt-5-nano"),
+          "gpt-5-nano",
+          null,
+          undefined,
+          undefined
+        );
+      },
+    });
+
+    try {
+      const result = await probeLink(
+        `http://127.0.0.1:${server.port}`,
+        { provider: "openai", modelSpec: "oai@gpt-5-nano", hasCredentials: true },
+        10000
+      );
+      expect(result.state).toBe("error");
+      expect(result.errorMessage).toContain("no visible output within probe budget");
+      expect(result.errorMessage).toContain("finish: max_tokens");
+    } finally {
+      server.stop(true);
+    }
+    // Explicit timeout > the probeLink budget (10_000ms) below. Without it the
+    // test inherits Bun's 5_000ms default, which is SHORTER than the probe's own
+    // budget — so under full-suite load (this passes in isolation) the probe
+    // legitimately needs >5s to reach its terminal state and the test times out
+    // before the operation it asserts on can finish.
+  }, 20_000);
+
+  test("contentless 200 with usage-only budget exhaustion reports tokens consumed", async () => {
+    const { createStreamingResponseHandler } = await import("../handlers/shared/openai-compat.js");
+    const { DefaultAPIFormat } = await import("../adapters/base-api-format.js");
+
+    // Pins the fallback for providers that report usage but no truncation
+    // finish_reason: the whole probe budget was consumed by hidden reasoning.
+    const upstreamChunks = [
+      `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+      `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
       `data: {"id":"chatcmpl-probe","object":"chat.completion.chunk","created":1,"model":"gpt-5-nano","choices":[],"usage":{"prompt_tokens":25,"completion_tokens":${PROBE_MAX_TOKENS},"total_tokens":${25 + PROBE_MAX_TOKENS},"completion_tokens_details":{"reasoning_tokens":${PROBE_MAX_TOKENS}}}}`,
       "data: [DONE]",
     ].join("\n\n");

@@ -29,6 +29,12 @@ export interface StreamingState {
   toolIds: Set<string>;
   lastActivity: number;
   accumulatedText: string; // Accumulated text for potential tool call extraction
+  /**
+   * Upstream `finish_reason` from the last chunk that carried one. Needed at
+   * finalize() so a turn the provider CUT OFF is not reported as a turn the
+   * model chose to end — see the stop_reason mapping in finalize().
+   */
+  finishReason: string | null;
 }
 
 export interface ToolState {
@@ -93,6 +99,7 @@ export function createStreamingState(): StreamingState {
     toolIds: new Set(),
     lastActivity: Date.now(),
     accumulatedText: "",
+    finishReason: null,
   };
 }
 
@@ -338,8 +345,28 @@ export function createStreamingResponseHandler(
           } else {
             // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
             const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);
-            const stopReason =
-              textToolCalls.length > 0 || hasStructuredTools ? "tool_use" : "end_turn";
+            // A turn the PROVIDER cut off must not be reported as a turn the model
+            // chose to end. Anthropic's contract for a cut-off turn is "max_tokens";
+            // reporting "end_turn" presents a truncated (or, when reasoning consumed
+            // the whole budget, an EMPTY) answer as the model's complete final word.
+            // Mirrors openai-responses-sse.ts, which already does this.
+            // `content_filter` is the same class: the provider refused, which is
+            // Anthropic's "refusal", not a turn the model chose to end.
+            // openai-responses-sse.ts already maps both this way.
+            const truncated = state.finishReason === "length";
+            const refused = state.finishReason === "content_filter";
+            const stopReason = refused
+              ? "refusal"
+              : truncated
+                ? "max_tokens"
+                : textToolCalls.length > 0 || hasStructuredTools
+                  ? "tool_use"
+                  : "end_turn";
+            if (truncated || refused) {
+              log(
+                `[Streaming] Upstream finish_reason=${state.finishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
+              );
+            }
             send("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
@@ -419,6 +446,7 @@ export function createStreamingResponseHandler(
 
                 const delta = chunk.choices?.[0]?.delta;
                 const finishReason = chunk.choices?.[0]?.finish_reason;
+                if (finishReason) state.finishReason = finishReason;
 
                 // Debug: Log chunk details for troubleshooting early termination
                 if (delta?.content || finishReason) {
@@ -437,9 +465,13 @@ export function createStreamingResponseHandler(
                     });
                   }
 
-                  // Handle reasoning_content (Kimi, DeepSeek thinking models via LiteLLM)
-                  if (delta.reasoning_content) {
-                    behavior?.onAssistantText?.(delta.reasoning_content, "reasoning");
+                  // Reasoning arrives under two different field names on this one
+                  // wire format: `reasoning_content` (Kimi, DeepSeek via LiteLLM)
+                  // and `reasoning` (OpenRouter). Reading only the former silently
+                  // dropped every OpenRouter thinking model's reasoning.
+                  const reasoningText = delta.reasoning_content || delta.reasoning;
+                  if (reasoningText) {
+                    behavior?.onAssistantText?.(reasoningText, "reasoning");
                     state.lastActivity = Date.now();
                     if (!state.reasoningStarted) {
                       state.reasoningIdx = state.curIdx++;
@@ -453,7 +485,7 @@ export function createStreamingResponseHandler(
                     send("content_block_delta", {
                       type: "content_block_delta",
                       index: state.reasoningIdx,
-                      delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+                      delta: { type: "thinking_delta", thinking: reasoningText },
                     });
                   }
 
@@ -478,7 +510,19 @@ export function createStreamingResponseHandler(
                       `[Streaming] After adapter: "${res.cleanedText.substring(0, 30).replace(/\n/g, "\\n")}" (${res.cleanedText.length} chars, transformed=${res.wasTransformed})`
                     );
 
-                    // Debug: Log text processing
+                    // An adapter emptying a chunk is LEGITIMATE on this path, so
+                    // there is deliberately no "non-empty in, non-empty out" guard
+                    // here — unlike gemini-sse.ts, which has one. Two adapters
+                    // return "" by design:
+                    //   • QwenModelDialect — the chunk was entirely chat-template
+                    //     special tokens (`<|im_start|>` &c.); passing the original
+                    //     through would leak them to the user.
+                    //   • GrokModelDialect — it is buffering a `<xai:function_call>`
+                    //     XML block split across chunks; passing the original
+                    //     through would emit half a tool call as visible text.
+                    // Per-chunk emptiness is therefore not evidence of loss here.
+                    // What WOULD be a bug is a whole turn arriving empty; that is
+                    // caught at the turn level by the probe and by stop_reason.
                     if (txt.length > 0 && res.cleanedText.length === 0) {
                       log(`[Streaming] Text filtered out by adapter: "${txt.substring(0, 50)}"`);
                     }

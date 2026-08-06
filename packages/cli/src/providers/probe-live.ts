@@ -498,9 +498,13 @@ async function consumeProbeStream(
   // Contentless 200: distinguish token-budget exhaustion from a genuinely dead
   // stream. Reasoning models can burn the whole probe budget on hidden
   // reasoning — the stream signals it either with an explicit truncation stop
-  // reason ("max_tokens"/"length", anthropic passthrough) or with usage that
-  // consumed the full cap (openai-sse always reports end_turn but forwards
-  // real usage). A self-explaining message beats a bare "stream ended without
+  // reason ("max_tokens"/"length") or with usage that consumed the full cap.
+  //
+  // The explicit reason is now the normal path: openai-sse and gemini-sse both
+  // map upstream truncation to "max_tokens" (they previously hardcoded
+  // "end_turn", which is why the usage-based fallback below was written). Keep
+  // the fallback — it still covers providers that report usage but no
+  // finish_reason. A self-explaining message beats a bare "stream ended without
   // content" for what is really a budget artifact, not a dead link.
   const truncationReason =
     stopReason === "max_tokens" || stopReason === "length" ? stopReason : undefined;

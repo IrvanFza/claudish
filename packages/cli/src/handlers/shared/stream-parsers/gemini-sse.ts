@@ -2,7 +2,7 @@
  * Gemini SSE → Claude SSE stream parser.
  *
  * Gemini streams SSE with `data: {"candidates": [{"content": {"parts": [...]}}]}`.
- * Handles: text, thinking (thought/thoughtText), functionCall with thoughtSignature,
+ * Handles: text, thinking (the `thought: true` flag / thoughtText), functionCall with thoughtSignature,
  * usageMetadata, and finishReason. CodeAssist variant wraps response in {response: {...}}.
  */
 
@@ -72,6 +72,8 @@ export function createGeminiSseStream(
       const toolCalls = new Map<number, any>();
       let accumulatedText = "";
       let lastActivity = Date.now();
+      /** Upstream finishReason was MAX_TOKENS — the turn was cut off, not completed. */
+      let truncated = false;
 
       send("message_start", {
         type: "message_start",
@@ -131,9 +133,17 @@ export function createGeminiSseStream(
           send("error", { type: "error", error: { type: "api_error", message: err } });
         } else {
           const hasToolCalls = toolCalls.size > 0;
+          // Anthropic's contract for a cut-off turn is "max_tokens". Reporting
+          // "end_turn" presents a truncated answer — or an empty one, when a
+          // thinking model spent the whole budget reasoning — as the model's
+          // complete final word.
+          const stopReason = truncated ? "max_tokens" : hasToolCalls ? "tool_use" : "end_turn";
+          if (truncated) {
+            log("[GeminiSSE] finishReason=MAX_TOKENS → stop_reason=max_tokens");
+          }
           send("message_delta", {
             type: "message_delta",
-            delta: { stop_reason: hasToolCalls ? "tool_use" : "end_turn", stop_sequence: null },
+            delta: { stop_reason: stopReason, stop_sequence: null },
             // input_tokens rides the delta so the client learns the real context
             // size — without it Claude Code keeps message_start's estimate and
             // auto-compaction never arms. See message-start-usage.ts.
@@ -192,9 +202,18 @@ export function createGeminiSseStream(
                 for (const part of candidate.content.parts) {
                   lastActivity = Date.now();
 
-                  // Handle thinking/reasoning text
-                  if (part.thought || part.thoughtText) {
-                    const thinkingContent = part.thought || part.thoughtText;
+                  // Handle thinking/reasoning text.
+                  //
+                  // `thought` is a BOOLEAN FLAG on the part — the reasoning text
+                  // itself rides in `part.text`. Treating the flag as content
+                  // emitted the literal `true` into a thinking_delta AND let the
+                  // reasoning fall through to the visible-text branch below.
+                  // (`thoughtText` is a non-standard variant kept for backends
+                  // that send one.)
+                  const isThoughtPart = part.thought === true;
+                  const thinkingContent = isThoughtPart ? (part.text ?? "") : part.thoughtText;
+
+                  if (thinkingContent) {
                     if (!thinkingStarted) {
                       thinkingIdx = curIdx++;
                       send("content_block_start", {
@@ -211,8 +230,8 @@ export function createGeminiSseStream(
                     });
                   }
 
-                  // Handle regular text
-                  if (part.text) {
+                  // Handle regular text (a thought part's text was emitted above)
+                  if (part.text && !isThoughtPart) {
                     // Close thinking block before text
                     if (thinkingStarted) {
                       send("content_block_stop", {
@@ -226,6 +245,16 @@ export function createGeminiSseStream(
                     if (opts.adapter) {
                       const res = opts.adapter.processTextContent(part.text, accumulatedText);
                       cleanedText = res.cleanedText || "";
+                      // An adapter that consumes ALL the visible text yields a
+                      // turn with no content block, which is indistinguishable
+                      // downstream from "the model said nothing" — a blank answer
+                      // that still reports success. Non-empty in, non-empty out.
+                      if (!cleanedText) {
+                        log(
+                          `[gemini-sse] adapter emptied ${part.text.length} chars of visible text — passing the original through`
+                        );
+                        cleanedText = part.text;
+                      }
                       accumulatedText += cleanedText;
                     } else {
                       accumulatedText += cleanedText;
@@ -313,9 +342,12 @@ export function createGeminiSseStream(
                 }
               }
 
-              // Check for finish reason
+              // Check for finish reason. MAX_TOKENS must stay distinguishable from
+              // STOP all the way into finalize() — collapsing both into "done"
+              // reported a cut-off turn as a completed one.
               if (candidate?.finishReason) {
                 if (candidate.finishReason === "STOP" || candidate.finishReason === "MAX_TOKENS") {
+                  truncated = candidate.finishReason === "MAX_TOKENS";
                   await finalize("done");
                   return;
                 }
