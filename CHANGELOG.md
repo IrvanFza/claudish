@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.41.0] - 2026-08-06
+
+### Documentation
+
+- update CHANGELOG.md for v7.40.0([`df3b279`](https://github.com/MadAppGang/claudish/commit/df3b27957ca5cad275f133bc7eeee5659d9796db))
+
+### New Features
+
+- v7.38.0 — dv@ Devin provider, route Claude Code through a Devin subscription (#154)([`176761a`](https://github.com/MadAppGang/claudish/commit/176761a4842c5d319953902425343318ce4d265f))
+
 ## [7.40.0] - 2026-08-06
 
 ### Documentation
