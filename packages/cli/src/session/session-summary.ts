@@ -25,6 +25,7 @@ import {
   type BarSegment,
   RESET,
   badge,
+  clipStyled,
   compact,
   duration,
   meter,
@@ -126,8 +127,11 @@ export function renderSessionSummary(input: SummaryInput): string[] {
   else if (stats.isEstimated) chips.push(badge("EST", "#8a7d1e"));
   if (exitCode !== 0) chips.push(badge(`EXIT ${exitCode}`, "#9e2b2b"));
 
-  const left = chips.join(" ");
+  // Clip the chip run rather than letting it push the duration past the edge: `gap`
+  // flooring at 1 kept the row growing instead of bounding it, so a long model name plus
+  // FREE/EST plus EXIT n overflowed a narrow card.
   const right = body(duration(stats.durationMs));
+  const left = clipStyled(chips.join(" "), Math.max(0, inner - visibleWidth(right) - 1));
   const gap = Math.max(1, inner - visibleWidth(left) - visibleWidth(right));
   row(left + " ".repeat(gap) + right);
   if (stats.providerName) row(dim(truncate(stats.providerName, inner)));

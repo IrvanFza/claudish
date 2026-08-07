@@ -829,20 +829,49 @@ async function runCli() {
     // here — after config resolution but BEFORE the proxy — means a cancelled pick costs
     // nothing: no port bound, no child spawned. The picker returns a concrete id, which
     // is appended as the explicit `--resume <id>` form the child understands.
+    // The session id claudish KNOWS it launched, when it knows one — from the picker, or
+    // from an explicit `--resume <id>`. Preferred over guessing by mtime, which cannot
+    // tell this session's transcript from a concurrent one in the same directory.
+    let resumedSessionId: string | null = (() => {
+      const i = cliConfig.claudeArgs.indexOf("--resume");
+      const v = i !== -1 ? cliConfig.claudeArgs[i + 1] : undefined;
+      return v && !v.startsWith("-") ? v : null;
+    })();
+
     if (cliConfig._resumePicker) {
-      const { runResumePicker } = await import("./session/resume-picker-run.js");
-      const outcome = await runResumePicker();
-      if (!outcome.hadSessions) {
-        console.error(
-          "[claudish] No recorded Claude Code sessions found for this repository."
-        );
-        process.exit(0);
+      // THE PICKER IS AN UPGRADE OF `--resume`, NEVER A REPLACEMENT FOR IT.
+      //
+      // Every path that cannot show a full-screen TUI must forward the bare flag and let
+      // Claude Code handle it, because that is what `claudish --resume` did before this
+      // feature existed. Two ways to get here without a usable screen:
+      //
+      //   - NOT A TTY. `claudish -p --resume --output-format stream-json | jq` would
+      //     otherwise write alternate-screen escapes into the stdout that print mode
+      //     reserves for machine-readable output, and then block forever waiting for a
+      //     keypress that cannot arrive. Same for any CI shell or a piped run.
+      //   - NOT A GIT REPOSITORY. `getRepoContext` returns null, which made the picker
+      //     report "no sessions" and `exit(0)` — turning a previously working flag into
+      //     a silent no-op in every non-git directory. Sessions may well exist there;
+      //     claudish just has no worktree structure to group them by.
+      const canDrawTui = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+      if (!canDrawTui || cliConfig._hasPrintFlag || !cliConfig.interactive) {
+        cliConfig.claudeArgs.push("--resume");
+      } else {
+        const { runResumePicker } = await import("./session/resume-picker-run.js");
+        const outcome = await runResumePicker();
+        if (!outcome.hadSessions) {
+          // Nothing to group, or not a repository — hand the flag over rather than
+          // deciding on Claude Code's behalf that there is nothing to resume.
+          cliConfig.claudeArgs.push("--resume");
+        } else if (!outcome.sessionId) {
+          // Cancelled. Exit 0 — declining to pick is not an error, and forwarding the
+          // flag here would reopen a picker the user just dismissed.
+          process.exit(0);
+        } else {
+          cliConfig.claudeArgs.push("--resume", outcome.sessionId);
+          resumedSessionId = outcome.sessionId;
+        }
       }
-      if (!outcome.sessionId) {
-        // Cancelled. Exit 0 — declining to pick is not an error.
-        process.exit(0);
-      }
-      cliConfig.claudeArgs.push("--resume", outcome.sessionId);
     }
 
     const proxy = await traceSpan("startup:proxy-start", () =>
@@ -928,7 +957,9 @@ async function runCli() {
               // name that re-routes from scratch — and a profile-role session
               // (modelOpus/modelSonnet/…) has no single spec to print at all.
               resumeModelSpec: explicitModel ?? null,
-              resumeId: findLatestSessionId(),
+              resumeId:
+                resumedSessionId ??
+                findLatestSessionId(process.cwd(), Date.now() - stats.durationMs),
               exitCode,
             },
             write

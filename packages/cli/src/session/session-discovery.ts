@@ -238,6 +238,12 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
     .sort((a, b) => b.slug.length - a.slug.length);
 
   const groups = new Map<string, WorktreeGroup>();
+  /**
+   * Group name → the absolute `cwd` its sessions recorded, for the dead-worktree fold
+   * below. Populated lazily and only for groups with no live path, since that is the
+   * only case the fold has to adjudicate.
+   */
+  const groupCwd = new Map<string, string>();
   const upsert = (name: string, path: string | null, live: boolean): WorktreeGroup => {
     let g = groups.get(name);
     if (!g) {
@@ -307,6 +313,11 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
     }
 
     const g = upsert(name, path, live);
+    if (path) groupCwd.set(name, path);
+    else if (!groupCwd.has(name)) {
+      const cwd = readProjectCwd(dir);
+      if (cwd) groupCwd.set(name, cwd);
+    }
     for (const s of sessionsIn(dir)) {
       g.sessions.push(s);
       if (s.mtimeMs > g.lastActiveMs) g.lastActiveMs = s.mtimeMs;
@@ -330,6 +341,20 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
     const parent = names.find((n) => n !== name && name.startsWith(`${n}-`) && groups.has(n));
     if (!parent) continue;
     const into = groups.get(parent)!;
+
+    // NAME SHAPE IS NOT ENOUGH — confirm the descent against the recorded `cwd`.
+    //
+    // The name test cannot tell "a subdirectory of worktree X" from "a sibling worktree
+    // called X-something". For LIVE worktrees git settles it, but two DEAD siblings both
+    // reach here: worktrees `resume` and `resume-message` under one root would see
+    // `resume-message` folded into `resume`, losing its heading and filing its sessions
+    // under an unrelated worktree — the "silently drop history" outcome this pass exists
+    // to avoid. So the transcripts decide: fold only when the child really did run
+    // beneath the parent.
+    const childCwd = groupCwd.get(name);
+    const parentCwd = groupCwd.get(parent);
+    if (!childCwd || !parentCwd || !isUnder(childCwd, parentCwd)) continue;
+
     into.sessions.push(...g.sessions);
     into.lastActiveMs = Math.max(into.lastActiveMs, g.lastActiveMs);
     groups.delete(name);
@@ -429,6 +454,20 @@ export function hydrateSession(row: SessionRow): SessionRow {
   if (row.hydrated) return row;
   row.hydrated = true;
 
+  // Re-stat a LIVE session before reading its tail. `sizeBytes` was captured during the
+  // list pass, and a session that is still appending — exactly the ones the picker marks
+  // with a green dot, and the most likely thing a user picks — will have grown since.
+  // Using the stale size aims the tail window at the middle of the file, so the "current"
+  // title and last message come from an older part of it, or from nothing at all if it
+  // grew by more than TAIL_BYTES.
+  if (isActive(row)) {
+    try {
+      row.sizeBytes = statSync(row.file).size;
+    } catch {
+      // Deleted mid-scan; the bounded reads below cope with a stale size.
+    }
+  }
+
   const head = parseRecords(readChunk(row.file, 0, Math.min(HEAD_BYTES, row.sizeBytes)), false);
   for (const r of head) {
     if (!row.gitBranch && typeof r.gitBranch === "string") row.gitBranch = r.gitBranch;
@@ -470,8 +509,21 @@ export function sessionLabel(row: SessionRow): string {
  * because the summary runs moments after the child exited, so the session it just ran
  * is necessarily the most recently written transcript for that directory.
  */
-export function findLatestSessionId(cwd: string = process.cwd()): string | null {
-  const rows = sessionsIn(slugForPath(cwd));
+export function findLatestSessionId(
+  cwd: string = process.cwd(),
+  sinceMs = 0
+): string | null {
+  // `sinceMs` bounds the guess to transcripts touched during THIS session.
+  //
+  // Newest-by-mtime is only "necessarily" the session that just ran when one session
+  // owns the directory. A second terminal in the same cwd, a `team` run or an MCP
+  // channel child all write here too and any of them can be the most recently touched
+  // at the moment claudish exits — which would print a resume command naming someone
+  // else's conversation, as a line the user is invited to paste. Filtering by the
+  // proxy's start time cannot make the guess right, but it does make it fail closed:
+  // when nothing in this directory was written during the session, the answer is null
+  // and the card prints no resume line at all.
+  const rows = sessionsIn(slugForPath(cwd)).filter((r) => r.mtimeMs >= sinceMs);
   if (rows.length === 0) return null;
   return rows.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a)).id;
 }

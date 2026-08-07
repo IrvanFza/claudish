@@ -136,10 +136,54 @@ export function visibleWidth(s: string): number {
   return displayWidth(stripAnsi(s));
 }
 
-/** Pad a styled string to `width` columns. Content that is already wider is untouched. */
+/**
+ * Clip a STYLED string to `width` visible columns, keeping its escapes intact.
+ *
+ * `truncate` in `tui/viz/text.ts` cannot do this — it sanitises ESC to a space, which is
+ * correct for its contract (plain text in, one clean line out) and destructive here.
+ * This walks the string instead, copying SGR sequences through at zero width and
+ * counting only what the terminal paints, so a clipped row keeps its colours and always
+ * ends with a reset rather than leaking style into the border that follows it.
+ *
+ * Wide glyphs are never split: a CJK character that would straddle the edge is dropped
+ * whole, so the result may be one column short of `width` but is never over.
+ */
+export function clipStyled(s: string, width: number): string {
+  if (width <= 0) return "";
+  if (visibleWidth(s) <= width) return s;
+  let out = "";
+  let w = 0;
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\x1b") {
+      const end = s.indexOf("m", i);
+      if (end === -1) break;
+      out += s.slice(i, end + 1); // an SGR run costs no columns
+      i = end + 1;
+      continue;
+    }
+    const ch = [...s.slice(i)][0] ?? "";
+    const cw = displayWidth(ch);
+    if (w + cw > width) break;
+    out += ch;
+    w += cw;
+    i += ch.length;
+  }
+  return out + RESET;
+}
+
+/**
+ * Pad a styled string to exactly `width` columns, clipping when it is already wider.
+ *
+ * CLIPPING IS THE POINT, and it was missing. This only ever padded, so every caller was
+ * silently trusted to have produced something short enough — and one that did not (a
+ * long `mcp__server__tool_name` in the summary's tool legend) pushed a row past the card
+ * edge, wrapped it, and destroyed the right border for every row below it.
+ */
 export function padVisible(s: string, width: number, align: "left" | "right" = "left"): string {
-  const pad = Math.max(0, width - visibleWidth(s));
-  return align === "left" ? s + " ".repeat(pad) : " ".repeat(pad) + s;
+  const clipped = clipStyled(s, width);
+  const pad = Math.max(0, width - visibleWidth(clipped));
+  return align === "left" ? clipped + " ".repeat(pad) : " ".repeat(pad) + clipped;
 }
 
 /** Compact byte/'000s formatting: 1_234_567 → "1.2M". */
