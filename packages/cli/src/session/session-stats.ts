@@ -62,6 +62,16 @@ export interface SessionStats {
    */
   inputCostUsd: number;
   outputCostUsd: number;
+  /**
+   * Cumulative input tokens the session was BILLED for, across every turn.
+   *
+   * `inputTokens` above is the CURRENT context size — most TokenTracker strategies
+   * assign rather than accumulate it, because that is what the status line's occupancy
+   * bar needs. Cost, by contrast, accumulates. Anything that compares tokens against
+   * cost must therefore use this field, or it holds one turn's input against N turns of
+   * spending — which understates the saving and can flip its sign.
+   */
+  billedInputTokens: number;
 }
 
 /** The path `TokenTracker.writeFile` wrote to, resolved the same way it resolves it. */
@@ -115,7 +125,12 @@ export function readSessionStats(port: number): SessionStats | null {
   const updatedAt = num(d.updated_at);
   const durationMs = startedAt > 0 && updatedAt > startedAt ? updatedAt - startedAt : 0;
 
-  const rawIn = (inputTokens / 1_000_000) * num(d.input_per_m);
+  // Fall back to `input_tokens` only for a token file written before this field
+  // existed. It is the wrong basis (see the field's doc comment) but it is what those
+  // files have, and it is closer than zero.
+  const billedInputTokens = num(d.billed_input_tokens) || inputTokens;
+
+  const rawIn = (billedInputTokens / 1_000_000) * num(d.input_per_m);
   const rawOut = (outputTokens / 1_000_000) * num(d.output_per_m);
   const rawTotal = rawIn + rawOut;
   // Rescale onto the authoritative total so the two parts always sum to what the user
@@ -137,9 +152,12 @@ export function readSessionStats(port: number): SessionStats | null {
     toolCalls,
     toolCallTotal: toolCalls.reduce((a, t) => a + t.count, 0),
     durationMs,
-    savings: computeSavings(inputTokens, outputTokens, costUsd),
+    // Billed volume, NOT the current context — the two differ by a factor of the turn
+    // count and only one of them is comparable with a cumulative `total_cost`.
+    savings: computeSavings(billedInputTokens, outputTokens, costUsd),
     inputCostUsd: rawIn * scale,
     outputCostUsd: rawOut * scale,
+    billedInputTokens,
   };
 }
 

@@ -923,6 +923,11 @@ async function runCli() {
             {
               stats,
               modelSpec: explicitModel || stats.modelName || "",
+              // Only an EXPLICIT `--model` is safe to reprint. `stats.modelName` is
+              // prefix-stripped by TokenTracker, so reusing it here would emit a bare
+              // name that re-routes from scratch — and a profile-role session
+              // (modelOpus/modelSonnet/…) has no single spec to print at all.
+              resumeModelSpec: explicitModel ?? null,
               resumeId: findLatestSessionId(),
               exitCode,
             },

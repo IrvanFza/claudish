@@ -70,8 +70,22 @@ const LABEL_W = 10;
 
 export interface SummaryInput {
   stats: SessionStats;
-  /** Full routed spec as the user typed it, e.g. `google@gemini-3.1-pro`. */
+  /** What to LABEL the session with. May be a bare model name; display only. */
   modelSpec: string;
+  /**
+   * The exact spec to put after `--model` in the resume command, or null to omit the
+   * flag entirely.
+   *
+   * Deliberately separate from `modelSpec`. The label can be the bare name the token
+   * file records, but the resume command cannot: a bare name is re-ROUTED from scratch,
+   * and for providers reachable only by prefix it can silently land somewhere else —
+   * `dv@claude-opus-5` stripped to `claude-opus-5` matches native Anthropic's
+   * `/^claude-/i` rule and resumes against a different provider and a different bill.
+   * When the session was driven by profile role mappings there is no single spec to
+   * print at all, so the honest output is `claudish --resume <id>`, which re-reads the
+   * same profile rather than guessing one flag for it.
+   */
+  resumeModelSpec: string | null;
   /** Session UUID to resume, when one could be found. */
   resumeId: string | null;
   /** Non-zero when the child exited badly — the card says so instead of implying success. */
@@ -84,7 +98,7 @@ export interface SummaryInput {
  * mode, where stdout belongs to the machine-readable output).
  */
 export function renderSessionSummary(input: SummaryInput): string[] {
-  const { stats, modelSpec, resumeId, exitCode } = input;
+  const { stats, modelSpec, resumeModelSpec, resumeId, exitCode } = input;
   const W = cardWidth();
   const inner = W - CHROME;
   const out: string[] = [];
@@ -240,7 +254,12 @@ export function renderSessionSummary(input: SummaryInput): string[] {
     out.push(dim("Resume this session with:"));
     // Unstyled ON PURPOSE. Colour codes survive a copy in some terminals and paste as
     // literal escapes; a bare line always pastes as a runnable command.
-    out.push(`claudish --model ${modelSpec} --resume ${resumeId}`);
+    //
+    // `--model` is omitted rather than guessed when the routed spec is unknown — see
+    // `resumeModelSpec`. A resume that re-reads the user's profile is correct; one that
+    // pins a bare name can route to a different provider than the session used.
+    const modelFlag = resumeModelSpec ? `--model ${resumeModelSpec} ` : "";
+    out.push(`claudish ${modelFlag}--resume ${resumeId}`);
   }
 
   return out;

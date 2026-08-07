@@ -1374,7 +1374,7 @@ export class ComposedHandler implements ModelHandler {
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 

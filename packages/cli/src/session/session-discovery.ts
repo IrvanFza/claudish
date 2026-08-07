@@ -154,6 +154,41 @@ function sessionsIn(dirName: string): SessionRow[] {
   return rows;
 }
 
+/** True when `p` is `root` itself or lives beneath it. Path-segment aware, so
+ * `/repo-old` is NOT under `/repo` — the exact confusion the slug cannot avoid. */
+function isUnder(p: string, root: string): boolean {
+  return p === root || p.startsWith(`${root}/`);
+}
+
+/**
+ * The absolute `cwd` a project directory's sessions ran in, read from a transcript.
+ *
+ * Claude Code records `cwd` on most records, so the head of any one transcript settles
+ * what the lossy slug cannot: whether `-Users-j-mag-claudish-old` is this repo's
+ * `old/` subdirectory or a different checkout called `claudish-old`.
+ *
+ * Deliberately called ONLY for the ambiguous case — a directory whose slug extends the
+ * root's with no worktree marker. Doing it for all 219 project directories on this
+ * machine would put ~200 file opens on the picker's startup path to answer a question
+ * git has already answered for every case that matters.
+ *
+ * The known gap, stated rather than hidden: a DELETED worktree that lived outside the
+ * root is invisible — git no longer lists it and its slug does not extend the root's, so
+ * nothing points at it. Finding those would cost the full scan this avoids.
+ */
+function readProjectCwd(dirName: string): string | null {
+  const rows = sessionsIn(dirName);
+  if (rows.length === 0) return null;
+  // Newest first: an old transcript may predate a directory move.
+  rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const row of rows.slice(0, 2)) {
+    for (const r of parseRecords(readChunk(row.file, 0, Math.min(HEAD_BYTES, row.sizeBytes)), false)) {
+      if (typeof r.cwd === "string" && r.cwd) return r.cwd;
+    }
+  }
+  return null;
+}
+
 /**
  * A session is treated as LIVE when its transcript was touched within this window.
  *
@@ -185,7 +220,17 @@ export function isActive(row: SessionRow, now = Date.now()): boolean {
  */
 export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
   const rootSlug = slugForPath(repo.root);
-  const mine = projectDirs().filter((d) => d === rootSlug || d.startsWith(`${rootSlug}-`));
+  // EVERY project directory is considered, not just those whose slug starts with the
+  // root's. A slug-prefix filter is wrong in both directions, because the slug is lossy:
+  //   - it ADMITS a foreign sibling — `/Users/j/mag/claudish-old` slugs to
+  //     `-Users-j-mag-claudish-old`, which prefix-matches the root just as a real
+  //     subdirectory would, so another project's sessions get listed as resumable here;
+  //   - it DROPS a legitimate worktree created outside the root, which
+  //     `git worktree add ../repo-feature` does by default — git knows about it, the
+  //     prefix test does not, and it never reaches the picker at all.
+  // Ownership is decided below against git's own worktree list and, where that cannot
+  // settle it, against the transcript's recorded `cwd`.
+  const mine = projectDirs();
 
   // Longest first so the most specific worktree claims a directory before the root does.
   const known = [...repo.liveWorktrees]
@@ -225,26 +270,40 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
     let path: string | null;
     let live: boolean;
 
-    if (at === -1) {
-      // No marker: the main checkout, or a subdirectory of it.
+    // 1. A worktree git currently lists, matched on its REAL path's slug. This is the
+    //    only branch that can see a worktree living outside the root.
+    const hit = worktreeMatches.find((k) => dir === k.slug || dir.startsWith(`${k.slug}-`));
+    if (hit) {
+      path = hit.path;
+      live = true;
+      name = hit.path === repo.root ? "(root)" : basename(hit.path);
+    } else if (at !== -1 && dir.startsWith(rootSlug)) {
+      // 2. A worktree git no longer lists, nested under this root. Its transcripts
+      //    survive and stay resumable, so it keeps a group. Un-slugging is lossy, so a
+      //    deleted worktree's subdirectory sessions may carry a suffix in the heading
+      //    rather than being silently merged or dropped.
+      path = null;
+      live = false;
+      name = dir.slice(at + WORKTREE_MARK.length);
+    } else if (dir === rootSlug) {
+      // 3. The main checkout itself.
+      name = "(root)";
+      path = repo.root;
+      live = true;
+    } else if (dir.startsWith(`${rootSlug}-`) && at === -1) {
+      // 4. AMBIGUOUS: the slug extends the root's, with no worktree marker. That is
+      //    either a subdirectory of this repo (`<root>/packages/cli`) or a different
+      //    project whose name merely starts the same way (`<root>-old`, `<root>.bak` —
+      //    `.` slugs to `-` too). The slug cannot tell them apart, so ask the
+      //    transcript, which records the absolute `cwd` it ran in.
+      const cwd = readProjectCwd(dir);
+      if (!cwd || !isUnder(cwd, repo.root)) continue; // a foreign sibling — not ours
       name = "(root)";
       path = repo.root;
       live = true;
     } else {
-      const hit = worktreeMatches.find((k) => dir === k.slug || dir.startsWith(`${k.slug}-`));
-      if (hit) {
-        path = hit.path;
-        live = true;
-        name = basename(hit.path);
-      } else {
-        // A worktree git no longer lists. Its transcripts survive and stay resumable,
-        // so it keeps a group. The name is the slug remainder: un-slugging is lossy, so
-        // a deleted worktree's subdirectory sessions may carry a suffix in the heading
-        // rather than being silently merged or dropped.
-        path = null;
-        live = false;
-        name = dir.slice(at + WORKTREE_MARK.length);
-      }
+      // Belongs to some other repository entirely.
+      continue;
     }
 
     const g = upsert(name, path, live);

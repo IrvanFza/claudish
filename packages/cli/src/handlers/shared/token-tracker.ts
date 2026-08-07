@@ -80,6 +80,22 @@ export class TokenTracker {
    * span the user experiences as "the session".
    */
   private readonly startedAt = Date.now();
+  /**
+   * Every input token this session was BILLED for, summed across turns.
+   *
+   * Distinct from `sessionInputTokens`, which most strategies ASSIGN rather than
+   * accumulate because it answers "how full is the context right now" for the status
+   * line. `sessionTotalCost` meanwhile accumulates, so the two are on different bases —
+   * a ten-turn session holds one turn's input against ten turns of cost.
+   *
+   * That mismatch is invisible for the status line and fatal for a savings comparison:
+   * pricing one turn of input at Sonnet's rate and subtracting ten turns of real cost
+   * understates the saving and can invert its sign, reporting "over by $X" for a session
+   * that in fact saved money. This counter is the honest denominator, and it mirrors
+   * whatever each strategy actually charged for — the delta on the delta-aware path, the
+   * full context on the assignment paths, the running total on accumulate-both.
+   */
+  private sessionBilledInputTokens = 0;
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
@@ -160,6 +176,7 @@ export class TokenTracker {
     this.sessionInputTokens = inputTokens;
     this.lastInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
+    this.sessionBilledInputTokens += inputTokens;
 
     const pricing = this.getPricing();
     const cost =
@@ -185,6 +202,9 @@ export class TokenTracker {
       (this.sessionOutputTokens / 1_000_000) * pricing.outputCostPer1M;
     // OllamaCloud recalculates total cost each time (not incremental)
     this.sessionTotalCost = cost;
+    // Assigned, not accumulated, for the same reason the cost above is: this strategy
+    // already sums input itself, so `+=` here would count every earlier turn again.
+    this.sessionBilledInputTokens = this.sessionInputTokens;
 
     this.writeFile(this.sessionInputTokens, this.sessionOutputTokens, pricing.isEstimate);
   }
@@ -231,6 +251,7 @@ export class TokenTracker {
     this.sessionOutputTokens += outputTokens;
 
     const pricing = this.getPricing();
+    this.sessionBilledInputTokens += incrementalInputTokens;
     const cost =
       (incrementalInputTokens / 1_000_000) * pricing.inputCostPer1M +
       (outputTokens / 1_000_000) * pricing.outputCostPer1M;
@@ -251,6 +272,7 @@ export class TokenTracker {
     this.sessionInputTokens = inputTokens;
     this.lastInputTokens = inputTokens;
     this.sessionOutputTokens += outputTokens;
+    this.sessionBilledInputTokens += inputTokens;
 
     if (typeof actualCost === "number" && actualCost > 0) {
       this.sessionTotalCost += actualCost;
@@ -275,6 +297,7 @@ export class TokenTracker {
       this.lastInputTokens = inputTokens;
     }
     this.sessionOutputTokens += outputTokens;
+    this.sessionBilledInputTokens += inputTokens;
     // Local models are free
     this.writeFile(this.sessionInputTokens, this.sessionOutputTokens);
   }
@@ -366,6 +389,11 @@ export class TokenTracker {
         // give a duration; `tool_calls` is the distribution, not just a total.
         started_at: this.startedAt,
         tool_calls: this.getToolCalls(),
+        // The savings baseline's denominator. `input_tokens` above is the CURRENT
+        // context (assigned, for the status line's occupancy bar); this is the
+        // cumulative billed volume. Pricing the former against a cumulative
+        // `total_cost` compares one turn to N and can invert the sign of the result.
+        billed_input_tokens: this.sessionBilledInputTokens,
         // The per-million RATES, not a split of the total. Cost accumulates through four
         // different strategies above (standard, accumulate-both, delta-aware,
         // actual-cost), so maintaining a parallel input/output split in each would be
