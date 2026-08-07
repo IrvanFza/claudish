@@ -1,0 +1,173 @@
+/**
+ * ansi-viz — the viz widgets, rendered as raw ANSI instead of OpenTUI renderables.
+ *
+ * The session summary prints AFTER the proxy and any renderer are gone, straight into
+ * the user's scrollback, so it cannot use `tui/viz/widgets.tsx` — those are React
+ * components and there is no renderer left to mount them in. claudish already has this
+ * exact split for the probe (`probe-results-printer.ts` prints static ANSI once the
+ * OpenTUI phase ends), and it already has the rule that keeps the two honest:
+ *
+ *   SHARE THE CELL MATHS, NEVER THE DRAWING.
+ *
+ * So every function here imports the SAME `rampFor` / `fillCells` / `splitCells` /
+ * `pickInk` / `displayWidth` the React widgets use, and differs only in emitting
+ * `\x1b[38;2;…m` where the widget emits `<span fg=…>`. Two renderers that round
+ * independently drift by a cell; two that share the maths cannot.
+ */
+
+import { pickInk } from "../tui/viz/color.js";
+import { displayWidth, splitCells } from "../tui/viz/text.js";
+import { type Ramp, ramps, tokens } from "../tui/viz/tokens.js";
+import { fillCells, rampFor } from "../tui/viz/widgets.js";
+
+export const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+
+const FILL = "█";
+const TRACK = "░";
+const NODATA = "╌";
+
+function rgb(hex: string): [number, number, number] {
+  return [
+    Number.parseInt(hex.slice(1, 3), 16),
+    Number.parseInt(hex.slice(3, 5), 16),
+    Number.parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+/** Truecolor foreground SGR for a `#rrggbb`. */
+export function fg(hex: string): string {
+  const [r, g, b] = rgb(hex);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+/** Truecolor background SGR for a `#rrggbb`. */
+export function bg(hex: string): string {
+  const [r, g, b] = rgb(hex);
+  return `\x1b[48;2;${r};${g};${b}m`;
+}
+
+/** Colourise a plain string. */
+export function paint(text: string, hex: string, bold = false): string {
+  return `${bold ? BOLD : ""}${fg(hex)}${text}${RESET}`;
+}
+
+/**
+ * Gradient meter — one colour per cell, exactly like `<Meter>`.
+ *
+ * `pct` is 0..100. `NaN` is ABSENT data and draws a dim `╌` row rather than a track,
+ * keeping the widget's distinction between "nothing to report" and "genuinely zero".
+ */
+export function meter(pct: number, width: number, ramp: Ramp = ramps.load): string {
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0) return "";
+  if (Number.isNaN(pct)) return paint(NODATA.repeat(cells), tokens.dead);
+
+  const cols = rampFor(cells, ramp);
+  const filled = fillCells(pct, cells);
+  let out = "";
+  let last = "";
+  for (let i = 0; i < cells; i++) {
+    const hex = i < filled ? cols[i]! : tokens.border;
+    // Emit an SGR only when the colour actually changes. A 40-cell meter is 40 escapes
+    // otherwise, and the unfilled track is one flat colour that never needs repeating.
+    if (hex !== last) {
+      out += fg(hex);
+      last = hex;
+    }
+    out += i < filled ? FILL : TRACK;
+  }
+  return out + RESET;
+}
+
+/** One category of a `stackedBar`. */
+export interface BarSegment {
+  value: number;
+  color: string;
+}
+
+/**
+ * Stacked bar — consecutive coloured-space runs, exactly like `<StackedBar>`.
+ * Always EXACTLY `width` columns, so nothing to its right can drift.
+ */
+export function stackedBar(segments: readonly BarSegment[], width: number): string {
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0 || segments.length === 0) return "";
+  const split = splitCells(
+    segments.map((s) => s.value),
+    cells
+  );
+  if (split.reduce((a, b) => a + b, 0) === 0) return paint(TRACK.repeat(cells), tokens.border);
+  let out = "";
+  for (let i = 0; i < split.length; i++) {
+    const n = split[i]!;
+    if (n > 0) out += `${bg(segments[i]!.color)}${" ".repeat(n)}`;
+  }
+  return out + RESET;
+}
+
+/**
+ * Status chip — dark-or-light ink chosen by measured contrast, one space of padding
+ * each side, same as `<Badge>`. The ink comes from `pickInk`, so a chip can never end
+ * up illegible on a saturated fill the way a fixed threshold allowed.
+ */
+export function badge(label: string, hex: string): string {
+  return `${BOLD}${fg(pickInk(hex))}${bg(hex)} ${label} ${RESET}`;
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI requires them
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+/** Drop SGR sequences so a styled string can be measured. */
+export function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
+/**
+ * Display columns of a styled string.
+ *
+ * Uses `displayWidth` (i.e. `Bun.stringWidth`) rather than `.length`, which is the
+ * difference between a box that closes and one that does not: a session title can carry
+ * CJK or emoji, where a code-unit count is half or double the real column count.
+ * claudish's older `probe-results-printer.ts` helper counts code units and would
+ * mis-measure exactly those titles.
+ */
+export function visibleWidth(s: string): number {
+  return displayWidth(stripAnsi(s));
+}
+
+/** Pad a styled string to `width` columns. Content that is already wider is untouched. */
+export function padVisible(s: string, width: number, align: "left" | "right" = "left"): string {
+  const pad = Math.max(0, width - visibleWidth(s));
+  return align === "left" ? s + " ".repeat(pad) : " ".repeat(pad) + s;
+}
+
+/** Compact byte/'000s formatting: 1_234_567 → "1.2M". */
+export function compact(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}G`;
+  if (a >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (a >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
+/** `12m 34s`, `1h 02m`, `8s`. Zero renders as `—` (not measured), never `0s`. */
+export function duration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** USD with a precision that suits the magnitude — sub-cent runs are common. */
+export function usd(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const a = Math.abs(n);
+  if (a === 0) return "$0";
+  if (a < 0.01) return `$${n.toFixed(4)}`;
+  if (a < 1) return `$${n.toFixed(3)}`;
+  return `$${n.toFixed(2)}`;
+}

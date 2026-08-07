@@ -825,6 +825,26 @@ async function runCli() {
       subagent: cliConfig.modelSubagent,
     };
 
+    // A bare `--resume` opens the session picker before anything else starts. Doing it
+    // here — after config resolution but BEFORE the proxy — means a cancelled pick costs
+    // nothing: no port bound, no child spawned. The picker returns a concrete id, which
+    // is appended as the explicit `--resume <id>` form the child understands.
+    if (cliConfig._resumePicker) {
+      const { runResumePicker } = await import("./session/resume-picker-run.js");
+      const outcome = await runResumePicker();
+      if (!outcome.hadSessions) {
+        console.error(
+          "[claudish] No recorded Claude Code sessions found for this repository."
+        );
+        process.exit(0);
+      }
+      if (!outcome.sessionId) {
+        // Cancelled. Exit 0 — declining to pick is not an error.
+        process.exit(0);
+      }
+      cliConfig.claudeArgs.push("--resume", outcome.sessionId);
+    }
+
     const proxy = await traceSpan("startup:proxy-start", () =>
       createProxyServer(
         port,
@@ -877,6 +897,41 @@ async function runCli() {
     if (!cliConfig.quiet) {
       const write = cliConfig.interactive ? console.log : console.error;
       write("[claudish] Done\n");
+      // The end-of-session card. Printed here, after `proxy.shutdown()`, for the same
+      // reason the probe prints its results after tearing its renderer down: nothing is
+      // drawing to the terminal any more, so this lands in the scrollback intact.
+      //
+      // It reads `~/.claudish/tokens-<port>.json`, which TokenTracker leaves behind, and
+      // returns null when that file records nothing — a session that never got a
+      // response prints no card rather than a card full of zeroes. Never fatal: a
+      // summary that throws must not change the exit code of the user's actual work.
+      //
+      // Imported dynamically, like everything else heavy in this file: the summary
+      // reaches the viz layer, which imports `@opentui/core` for its colour maths.
+      // A static import here would pull OpenTUI into `--version`, `--update` and every
+      // other run that never draws anything.
+      try {
+        const [{ readSessionStats }, { printSessionSummary }, { findLatestSessionId }] =
+          await Promise.all([
+            import("./session/session-stats.js"),
+            import("./session/session-summary.js"),
+            import("./session/session-discovery.js"),
+          ]);
+        const stats = readSessionStats(port);
+        if (stats) {
+          printSessionSummary(
+            {
+              stats,
+              modelSpec: explicitModel || stats.modelName || "",
+              resumeId: findLatestSessionId(),
+              exitCode,
+            },
+            write
+          );
+        }
+      } catch (e) {
+        console.error(`[claudish] session summary unavailable: ${e}`);
+      }
     }
 
     // Suggest sending logs if session had errors

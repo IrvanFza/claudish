@@ -573,6 +573,22 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.claudeArgs.push(...rest);
       if (rest.length > 0) config._hasPositionalPrompt = true;
       break;
+    } else if (
+      arg === "--resume" &&
+      (i + 1 >= args.length || args[i + 1]!.startsWith("-"))
+    ) {
+      // A BARE `--resume` (no session id) opens claudish's own picker.
+      //
+      // `--resume <id>` is untouched and still passes straight through, because that
+      // form is unambiguous and Claude Code handles it. Only the id-less form is
+      // intercepted, and intercepting it is a strict improvement: forwarded bare, it
+      // makes Claude Code list the sessions of the CURRENT DIRECTORY only, which in a
+      // worktree is the one place the session you want almost certainly is not.
+      //
+      // The flag is deliberately NOT pushed to `claudeArgs` here. The picker resolves a
+      // concrete id and `index.ts` appends `--resume <id>` itself, so the child always
+      // receives the explicit form.
+      config._resumePicker = true;
     } else if (arg.startsWith("-")) {
       // Unknown flag: pass through to Claude Code with value consumed if present.
       // Value consumption rule: if the next token exists and does NOT start with '-',

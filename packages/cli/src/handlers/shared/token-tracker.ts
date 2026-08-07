@@ -62,10 +62,53 @@ export class TokenTracker {
   private planUsage: PlanUsage | undefined;
   /** Last plan written, so setPlanUsage can write on change only. */
   private lastPlanSerialized = "";
+  /**
+   * Tool calls the model emitted this session, by tool name.
+   *
+   * Counted at the point a tool call is COMPLETE (name known, arguments closed),
+   * never per streamed fragment — an `input_json_delta` path would count one
+   * `Edit` twenty times. The session summary renders this as a distribution, which
+   * is why the per-name breakdown is kept rather than a bare total: "47 calls" is a
+   * number, "Read 18 · Edit 12 · Bash 9" is a shape.
+   */
+  private toolCallsByName = new Map<string, number>();
+  /**
+   * Wall-clock start of this tracker, i.e. of the proxied session.
+   *
+   * The token file already carries `updated_at`; a duration needs both ends. Taken
+   * at construction because that is when the proxy begins serving, which is the
+   * span the user experiences as "the session".
+   */
+  private readonly startedAt = Date.now();
 
   constructor(port: number, config: TokenTrackerConfig) {
     this.port = port;
     this.config = config;
+  }
+
+  /**
+   * Record one COMPLETED tool call. Unnamed calls are counted under `unknown`
+   * rather than dropped: a tool call whose name never arrived is still a tool call,
+   * and silently discarding it would make the summary's total disagree with the
+   * transcript.
+   */
+  recordToolUse(name: string): void {
+    const key = name.trim() || "unknown";
+    this.toolCallsByName.set(key, (this.toolCallsByName.get(key) ?? 0) + 1);
+  }
+
+  /** Total completed tool calls this session. */
+  getToolCallCount(): number {
+    let n = 0;
+    for (const v of this.toolCallsByName.values()) n += v;
+    return n;
+  }
+
+  /** Per-tool counts, descending by count. */
+  getToolCalls(): Array<{ name: string; count: number }> {
+    return [...this.toolCallsByName]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
   /** Set an override model name (shown in status line instead of original) */
@@ -316,6 +359,22 @@ export class TokenTracker {
         updated_at: Date.now(),
         is_free: isFreeModel,
         is_estimated: isEstimate || false,
+        // Session-summary fields. The status line ignores both; they exist because
+        // the token file is the only durable record of a session that survives the
+        // proxy exiting, and the summary is printed AFTER shutdown (see
+        // `session/session-summary.ts`). `started_at` pairs with `updated_at` to
+        // give a duration; `tool_calls` is the distribution, not just a total.
+        started_at: this.startedAt,
+        tool_calls: this.getToolCalls(),
+        // The per-million RATES, not a split of the total. Cost accumulates through four
+        // different strategies above (standard, accumulate-both, delta-aware,
+        // actual-cost), so maintaining a parallel input/output split in each would be
+        // four chances to drift from `total_cost`. Publishing the rates lets the summary
+        // derive the split and rescale it to whatever `total_cost` actually says, which
+        // stays correct even on the actual-cost path where the provider's billed figure
+        // overrides our arithmetic entirely.
+        input_per_m: pricing.inputCostPer1M,
+        output_per_m: pricing.outputCostPer1M,
       };
       // model_name is ALWAYS written, not just when a fallback override is active.
       // The status line's fallback for a missing key is $CLAUDISH_ACTIVE_MODEL_NAME,
