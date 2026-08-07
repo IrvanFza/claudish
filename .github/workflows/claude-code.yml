@@ -30,6 +30,19 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # For an `issue_comment` event GitHub's context points at the DEFAULT BRANCH,
+          # not the PR — `actions/checkout` then checks out `main` and the action reviews
+          # the wrong tree. It is invisible on a PR that only edits existing files, and
+          # fatal on one that ADDS them: the action's data fetcher tries to read each
+          # changed file, every new path is absent, and the run dies with
+          # `fatal: could not open '<new file>' for reading` before Claude sees anything.
+          # Observed on #158 (16 new files): two runs, ~3m each, is_error with no review.
+          # `pull_request` events already resolve to refs/pull/N/merge, so this only
+          # needs to fill in the comment-triggered case.
+          ref: >-
+            ${{ github.event_name == 'issue_comment'
+                && format('refs/pull/{0}/head', github.event.issue.number)
+                || '' }}
 
       - name: Claude Code Action
         uses: anthropics/claude-code-action@v1
