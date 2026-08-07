@@ -15,13 +15,13 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import {
   ensureCatalogReady,
   logResolution,
   resolveModelNameSync,
   warmCatalog,
 } from "./providers/catalog-client.js";
+import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {

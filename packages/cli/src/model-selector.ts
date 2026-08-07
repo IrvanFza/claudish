@@ -307,8 +307,6 @@ function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
   return m.releaseDate;
 }
 
-
-
 function modelDocToModelInfo(model: ModelDoc): ModelInfo {
   const providerLabel = formatFirebaseProviderLabel(model.provider || "unknown");
   const contextLength = model.contextWindow || 0;

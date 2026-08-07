@@ -2094,10 +2094,7 @@ describe("Regression: Gemini visible text is never silently dropped", () => {
         {
           content: {
             role: "model",
-            parts: [
-              { text: "reasoning here", thought: true },
-              { text: "the answer" },
-            ],
+            parts: [{ text: "reasoning here", thought: true }, { text: "the answer" }],
           },
           finishReason: "STOP",
         },
@@ -2153,9 +2150,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
   test("OpenRouter length finish with no visible text emits max_tokens", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();
-    const fixture = fixtureToResponse(
-      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
-    );
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse"));
 
     const response = createStreamingResponseHandler(
       createMockContext(),
@@ -2194,9 +2189,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
   test("OpenRouter delta.reasoning reaches a thinking content block", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();
-    const fixture = fixtureToResponse(
-      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
-    );
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse"));
 
     const response = createStreamingResponseHandler(
       createMockContext(),
@@ -2208,8 +2201,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
     const events = await parseClaudeSseStream(response);
     const thinkingStart = events.find(
       (event) =>
-        event.data?.type === "content_block_start" &&
-        event.data?.content_block?.type === "thinking"
+        event.data?.type === "content_block_start" && event.data?.content_block?.type === "thinking"
     );
     const thinking = events
       .filter((event) => event.data?.delta?.type === "thinking_delta")

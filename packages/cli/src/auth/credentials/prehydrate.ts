@@ -82,8 +82,8 @@
 
 import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
-import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
+import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
 import { parseModelSpec } from "../../providers/model-parser.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";

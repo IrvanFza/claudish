@@ -888,9 +888,7 @@ export const MIN_AUTO_COMPACT_WINDOW = 200_000;
  * existed. 1.5s is comfortably above a warm `queryModels` round-trip and well
  * under the point where a launch feels stalled.
  */
-export 
-
-/**
+export /**
  * Resolve ONE model spec's window from the local sources only (live provider
  * discovery, then the slim catalog cache), plus the bare model id so a miss can
  * be retried against the cloud catalog. Returns null when the spec is unroutable.
