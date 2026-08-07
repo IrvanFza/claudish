@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.44.0] - 2026-08-07
+
+### Documentation
+
+- update CHANGELOG.md for v7.43.0([`5ec2cc2`](https://github.com/MadAppGang/claudish/commit/5ec2cc2d8f774903a46f112fa8661007a2a705a1))
+
+### New Features
+
+- per-provider roster collapse, and fix two order-dependent resolutions (#160) *(model-resolvers)* ([`c33ce8d`](https://github.com/MadAppGang/claudish/commit/c33ce8d012649e8625d701ffb347210a8406d426))
+
+### Other Changes
+
+- biome clean — organize imports and format([`438a0bc`](https://github.com/MadAppGang/claudish/commit/438a0bc5961a55e94ebcd474f0d47e1f844fedc9))
+
 ## [7.43.0] - 2026-08-06
 
 ### Bug Fixes
