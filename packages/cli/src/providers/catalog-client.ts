@@ -257,6 +257,40 @@ export function resolveModelNameSync(
   return { resolvedId: resolved, wasResolved: true, sourceLabel: `${targetProvider} catalog` };
 }
 
+/**
+ * Decide what a request's target string becomes after catalog resolution.
+ *
+ * The rule this encodes: catalog resolution rewrites a target into an
+ * `provider@model` string, and that shape MEANS "the user named this provider".
+ * So it may only be applied to a spec that was already explicit. For a BARE name
+ * the `provider` field is merely auto-DETECTED from the model id, and emitting
+ * `detected@canonicalId` manufactures a user intent that was never expressed —
+ * downstream, `parseModelSpec().isExplicitProvider` then reads true and the whole
+ * routing chain (subscription tiers first) is skipped.
+ *
+ * Pulled out of proxy-server's request path as a pure function precisely because
+ * the failure it prevents is invisible in situ: the bug only fires when the
+ * canonical id DIFFERS from the typed name, which across the whole catalog was
+ * true for exactly one family (MiniMax, which differs only in case). A live test
+ * of any other model passes whether or not the guard exists.
+ *
+ * `resolve` is injected so callers can test without a warm catalog.
+ */
+export function resolveTargetForCatalog(
+  target: string,
+  isExplicitProvider: boolean,
+  model: string,
+  provider: string,
+  resolve: (m: string, p: string) => ModelResolutionResult = resolveModelNameSync
+): { target: string; resolution: ModelResolutionResult | null } {
+  if (!isExplicitProvider) return { target, resolution: null };
+  const resolution = resolve(model, provider);
+  return {
+    target: resolution.wasResolved ? `${provider}@${resolution.resolvedId}` : target,
+    resolution,
+  };
+}
+
 /** Emit a resolution notice to stderr (after `wasResolved=true`). */
 export function logResolution(
   userInput: string,

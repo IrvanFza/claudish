@@ -44,6 +44,31 @@ describe("Group 1: Backward compatibility", () => {
   });
 });
 
+describe("--model route chains", () => {
+  test("--model keeps the first candidate ordinary and exposes the full chain separately", async () => {
+    const config = await parseArgs(["--model", "zgo@a+mm@b"]);
+
+    // All existing downstream consumers read config.model, so they must keep
+    // receiving one ordinary spec rather than the raw cross-process chain.
+    expect(config.model).toBe("zgo@a");
+    expect(config.modelChain).toEqual(["zgo@a", "mm@b"]);
+  });
+
+  test("a plain --model leaves the opt-in chain field absent", async () => {
+    const config = await parseArgs(["--model", "gc@glm-5.2"]);
+
+    expect(config.model).toBe("gc@glm-5.2");
+    expect(config.modelChain).toBeUndefined();
+  });
+
+  test("-m parses a route chain identically to --model", async () => {
+    const config = await parseArgs(["-m", "zgo@a+mm@b"]);
+
+    expect(config.model).toBe("zgo@a");
+    expect(config.modelChain).toEqual(["zgo@a", "mm@b"]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Group 2: Two-Pass Parsing (new behavior)
 // ---------------------------------------------------------------------------

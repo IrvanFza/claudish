@@ -119,11 +119,55 @@ export const NATIVE_MODEL_PATTERNS = _getNativeModelPatterns();
 export const LEGACY_PREFIX_PATTERNS = _getLegacyPrefixPatterns();
 
 /**
+ * Separator for a ROUTE CHAIN — an ordered list of explicit specs to try in turn:
+ *
+ *   zgo@minimax-m2.5+mm@MiniMax-M2.5+or@minimax/minimax-m2.5
+ *
+ * Why a chain form exists at all: `team` and channel `create_session` spawn child
+ * claudish processes with an EXPLICIT spec rather than the bare name, because a
+ * bare name makes the child re-resolve credentials and open its own 1Password SDK
+ * client — and that handshake is arbitrated machine-wide, so N children racing it
+ * means N-1 denials or N sequential dialogs (see `auth/credentials/prehydrate.ts`).
+ * Explicitness is what buys one dialog per run. But an explicit spec is also a
+ * chain of ONE, so those children had no fallback: `isRetryableError` is reachable
+ * only from `FallbackHandler`, which is only built for a name the child routes
+ * itself. A spent subscription, a rotated key, or a capability rejection killed the
+ * model outright, where the same request served interactively would have fallen
+ * through. This form carries the parent's whole chain across the process boundary
+ * with every element still explicit, so both properties hold at once.
+ *
+ * `+` rather than `,` (already the advisor/team list separator) or `|` (needs shell
+ * quoting when a user copies a spawn line out of a log). Verified against the live
+ * catalog: 0 of 764 model ids contain a `+`.
+ */
+export const MODEL_CHAIN_SEPARATOR = "+";
+
+/**
+ * Split a `--model` value into its ordered candidates.
+ *
+ * A string with no separator yields a one-element array, so callers can treat
+ * every model value as a chain without branching. Empty segments are dropped —
+ * a trailing separator is a formatting artifact, not a request for a null
+ * candidate.
+ */
+export function parseModelChain(modelSpec: string): string[] {
+  const parts = modelSpec
+    .split(MODEL_CHAIN_SEPARATOR)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : [modelSpec];
+}
+
+/**
  * Parse a model specification string
  *
  * Supports both new and legacy syntax:
  * - New: provider@model[:concurrency]
  * - Legacy: prefix/model or prefix:model
+ *
+ * NOTE: this parses ONE spec. A chain value (`a+b+c`) must be split with
+ * {@link parseModelChain} first — the CLI does that at the argument boundary, so
+ * everything downstream of arg parsing still sees a single spec.
  *
  * @param modelSpec - The model specification string
  * @returns Parsed model information

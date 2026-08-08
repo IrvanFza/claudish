@@ -1192,6 +1192,24 @@ export class ComposedHandler implements ModelHandler {
    * Resolved in one place because handle() needs it BEFORE handleStream() runs, to
    * decide whether the response head is worth sniffing for retryable errors.
    */
+  /**
+   * Introspection seam — the three facts that define this handler's composition,
+   * without going through a live request.
+   *
+   * Exists because a mis-composed handler is invisible until it hits the wire: the
+   * Zen Go MiniMax bug shipped an Anthropic format+transport pointed at an
+   * `/v1/chat/completions` endpoint, and that pairing was only observable as a 400
+   * from the upstream vendor. `endpoint` is included precisely because the failure
+   * was a format/endpoint MISMATCH — neither field alone would have caught it.
+   */
+  describeComposition(): { transport: string; streamFormat: string; endpoint: string } {
+    return {
+      transport: this.provider.name,
+      streamFormat: this.resolveStreamFormat(),
+      endpoint: this.provider.getEndpoint(this.bareModelName),
+    };
+  }
+
   private resolveStreamFormat(): string {
     return (
       this.provider.overrideStreamFormat?.() ??

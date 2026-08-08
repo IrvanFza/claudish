@@ -54,6 +54,8 @@ describe("Group 1: MCP Protocol — channel capability", () => {
         ...process.env,
         CLAUDISH_MCP_TOOLS: "all",
         CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
+        // create_session children would otherwise resolve the installed binary through PATH.
+        CLAUDISH_BIN: SERVER_ENTRY,
       },
       stderr: "pipe",
     });
@@ -335,6 +337,8 @@ async function runClaudeWithMcp(
           CLAUDISH_MCP_TOOLS: "all",
           CLAUDISH_SESSIONS_DIR: SESSIONS_DIR,
           OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? "",
+          // create_session children would otherwise resolve the installed binary through PATH.
+          CLAUDISH_BIN: SERVER_ENTRY,
         },
       },
     },

@@ -355,6 +355,7 @@ describe("team-orchestrator", () => {
     it("keeps manifest.models[].model unchanged after a pinned run", async () => {
       const { runModels, setupSession } = await getOrchestrator();
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
       const shimDir = mkdtempSync(join(tmpdir(), "team-pinned-shim-"));
       const fakeClaudish = join(
         dirname(fileURLToPath(import.meta.url)),
@@ -370,6 +371,8 @@ describe("team-orchestrator", () => {
       });
 
       try {
+        // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+        delete process.env.CLAUDISH_BIN;
         process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
 
         setupSession(tempDir, ["vendor/model"], "Analyze this input");
@@ -397,6 +400,11 @@ describe("team-orchestrator", () => {
         expect(reread.models[anonId].model).toBe("vendor/model");
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
         rmSync(shimDir, { recursive: true, force: true });
       }
     });

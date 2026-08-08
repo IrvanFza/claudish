@@ -14,6 +14,7 @@ const STDOUT_BEFORE_TIMEOUT = "partial stdout written before hanging";
 let sessionDir: string;
 let fakeClaudishDir: string;
 let originalPath: string | undefined;
+let originalClaudishBin: string | undefined;
 
 function makeHangingFakeClaudish(): string {
   const dir = mkdtempSync(join(tmpdir(), "fake-claudish-timeout-"));
@@ -35,11 +36,19 @@ beforeEach(() => {
   sessionDir = mkdtempSync(join(tmpdir(), "team-timeout-diagnostics-"));
   fakeClaudishDir = makeHangingFakeClaudish();
   originalPath = process.env.PATH;
+  originalClaudishBin = process.env.CLAUDISH_BIN;
+  // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+  delete process.env.CLAUDISH_BIN;
   process.env.PATH = `${fakeClaudishDir}:${originalPath ?? ""}`;
 });
 
 afterEach(() => {
   process.env.PATH = originalPath;
+  if (originalClaudishBin === undefined) {
+    delete process.env.CLAUDISH_BIN;
+  } else {
+    process.env.CLAUDISH_BIN = originalClaudishBin;
+  }
   for (const dir of [sessionDir, fakeClaudishDir]) {
     if (dir && existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });

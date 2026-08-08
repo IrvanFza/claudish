@@ -6,6 +6,20 @@ export type OpenRouterModel = string;
 // CLI Configuration
 export interface ClaudishConfig {
   model?: OpenRouterModel | string; // Optional - will prompt if not provided
+  /**
+   * The full ordered candidate list when `--model` was given a CHAIN
+   * (`zgo@m+mm@M+or@v/m`), which is how `team` / `create_session` hand a spawned
+   * child the routing decision their parent already made and credential-filtered.
+   *
+   * `model` always holds the chain's FIRST element, never the raw chain string —
+   * the split happens at the argument boundary precisely so that every existing
+   * consumer (key validation, session naming, status line, the Claude Code env)
+   * keeps seeing one ordinary spec and needs no chain awareness. Only the proxy
+   * reads this, to build a FallbackHandler.
+   *
+   * Absent for a single-spec `--model`, which is the overwhelming majority.
+   */
+  modelChain?: string[];
   port?: number;
   autoApprove: boolean;
   dangerous: boolean;

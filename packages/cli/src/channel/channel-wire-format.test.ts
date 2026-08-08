@@ -43,17 +43,25 @@ const FAKE_CLAUDISH_TS = join(__dirname, "test-helpers", "fake-claudish.ts");
 let shimDir: string;
 let sessionsDir: string;
 const ORIGINAL_PATH = process.env.PATH ?? "";
+const ORIGINAL_CLAUDISH_BIN = process.env.CLAUDISH_BIN;
 
 beforeAll(() => {
   shimDir = mkdtempSync(join(tmpdir(), "claudish-shim-wireformat-"));
   sessionsDir = mkdtempSync(join(tmpdir(), "claudish-sessions-wireformat-"));
   const shimPath = join(shimDir, "claudish");
   writeFileSync(shimPath, `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`, { mode: 0o755 });
+  // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+  delete process.env.CLAUDISH_BIN;
   process.env.PATH = `${shimDir}:${ORIGINAL_PATH}`;
 });
 
 afterAll(() => {
   process.env.PATH = ORIGINAL_PATH;
+  if (ORIGINAL_CLAUDISH_BIN === undefined) {
+    delete process.env.CLAUDISH_BIN;
+  } else {
+    process.env.CLAUDISH_BIN = ORIGINAL_CLAUDISH_BIN;
+  }
   if (shimDir) {
     try {
       rmSync(shimDir, { recursive: true, force: true });

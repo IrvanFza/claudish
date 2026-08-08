@@ -59,6 +59,8 @@ const mcpConfig = {
         CLAUDISH_CHANNEL_TRACE: "1",
         CLAUDISH_CHANNEL_TRACE_FILE: SERVER_TRACE_FILE,
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? "",
+        // create_session children must exercise this tree, not an installed claudish.
+        CLAUDISH_BIN: SERVER_ENTRY,
       },
     },
   },

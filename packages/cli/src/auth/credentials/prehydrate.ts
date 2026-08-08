@@ -62,10 +62,26 @@
  * succeeded (see baseline-evidence.md in this feature's session dir).
  *
  * So the parent now also RESOLVES THE ROUTE and returns a {@link SpawnPlan}
- * mapping each bare name to an explicit `prefix@model` spec. A child launched
- * with an explicit spec skips routing entirely, has exactly one provider, and
- * finds that provider's key in the inherited env at step 1 of the resolution
- * chain — `hasOpSources()` is never reached, so no SDK client is ever built.
+ * mapping each bare name to explicit `prefix@model` specs. A child launched with
+ * explicit specs skips routing entirely and finds each provider's key in the
+ * inherited env at step 1 of the resolution chain — `hasOpSources()` is never
+ * reached, so no SDK client is ever built.
+ *
+ * The pin carries the WHOLE credential-filtered chain, joined by
+ * `MODEL_CHAIN_SEPARATOR` (`zgo@m+mm@M+or@v/m`), not just the primary. Pinning
+ * only the primary bought the one-dialog property at the cost of retryability:
+ * `FallbackHandler` is built only for a name the child routes ITSELF, and
+ * `isRetryableError` has no other caller, so a spawned child could not fall
+ * through on a spent subscription, a rotated key, or a provider that rejects the
+ * request shape — recoveries an interactive run makes for free. Every element of
+ * the chain is still explicit, so nothing re-routes and the dialog property is
+ * unchanged; the child just has somewhere to go when the first candidate fails.
+ *
+ * Handing over the chain is safe rather than merely hopeful because the keys for
+ * ALL of it are already in `process.env` when the pin is made: `route()`'s bare
+ * path calls `credentials.isAvailable()` on every candidate, and that resolution
+ * write-throughs each op:// value into the env children inherit. Candidates that
+ * failed the filter are absent from the chain, so the child never looks them up.
  *
  * ORDERING IS LOAD-BEARING: phase A (hydrate) MUST complete before phase B
  * (route). `route()`'s credential filter reads the same env phase A writes;
@@ -84,7 +100,7 @@ import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
 import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
-import { parseModelSpec } from "../../providers/model-parser.js";
+import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../../providers/model-parser.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
 import type { Route, RoutePlan } from "../../providers/routing-rules.js";
@@ -105,8 +121,8 @@ const CATALOG_WARM_TIMEOUT_MS = 5000;
  */
 export interface SpawnPlan {
   /**
-   * The original `--model` value → the explicit `prefix@model` spec to spawn
-   * with.
+   * The original `--model` value → the explicit spec (or `+`-joined chain of
+   * specs) to spawn with.
    *
    * ABSENT means "spawn with the original string" — it is NEVER an error
    * signal. Call sites degrade with `plan.pinned.get(m) ?? m`, which is exactly
@@ -291,10 +307,39 @@ export async function pinSpecFor(
   try {
     const plan = await router(model);
     if (plan.kind !== "ok") return null;
-    return normalizePinnedSpec(plan.primary);
+    return joinPinnedChain([plan.primary, ...plan.fallbacks]);
   } catch {
     return null;
   }
+}
+
+/**
+ * Render a credential-filtered chain as ONE argv-safe value.
+ *
+ * Pinning only the primary was the original design, and it left every spawned
+ * child with a chain of one — no `FallbackHandler`, so no retry on a spent
+ * subscription, a rotated key, or a provider that cannot serve the request shape.
+ * The parent had already computed the fallbacks and dropped them on the floor.
+ *
+ * THE KEYS FOR THE WHOLE CHAIN ARE ALREADY IN `process.env` BY THE TIME THIS RUNS,
+ * which is what makes handing over the chain safe rather than merely optimistic.
+ * `route()`'s bare path calls `credentials.isAvailable()` on EVERY candidate, and
+ * `ApiKeyCredentialProvider.resolveKey` write-throughs each resolved op:// value
+ * into `process.env` (api-key-credential.ts). Children inherit that env, so every
+ * candidate here resolves at step 1 of the child's chain — `hasOpSources()` is
+ * never reached and no child ever builds an SDK client, exactly as with a
+ * single-candidate pin. Candidates that FAILED the filter are absent from the
+ * chain, so the child never even looks their key up.
+ *
+ * A candidate that cannot be made self-describing is DROPPED rather than
+ * failing the pin: the surviving prefix of the chain is strictly better than
+ * spawning bare, and `normalizePinnedSpec` only returns null for a malformed
+ * route. Returns null only when nothing survives, which the caller reads as
+ * "spawn with the original name".
+ */
+export function joinPinnedChain(routes: Route[]): string | null {
+  const specs = routes.map(normalizePinnedSpec).filter((s): s is string => !!s);
+  return specs.length > 0 ? specs.join(MODEL_CHAIN_SEPARATOR) : null;
 }
 
 /**

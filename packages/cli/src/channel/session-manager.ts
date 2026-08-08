@@ -12,6 +12,7 @@ import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import { SignalWatcher } from "./signal-watcher.js";
 import type {
@@ -89,7 +90,11 @@ export class SessionManager {
       ...(opts.claudishFlags ?? []),
     ];
 
-    const proc = spawn("claudish", args, {
+    // Resolved rather than hardcoded so a test harness can point child spawns at
+    // the tree under test — without it the suite exercises whatever claudish is
+    // INSTALLED. Unset in production, where the result is exactly "claudish".
+    const spawnTarget = resolveClaudishSpawn();
+    const proc = spawn(spawnTarget.command, [...spawnTarget.prefixArgs, ...args], {
       cwd: opts.cwd ?? process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,

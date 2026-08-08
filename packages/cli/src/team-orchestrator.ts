@@ -10,6 +10,7 @@ import {
 import { join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { redactSecrets } from "./redact.js";
+import { resolveClaudishSpawn } from "./spawn-claudish.js";
 import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -483,7 +484,10 @@ export async function runModels(
       startedAt: new Date().toISOString(),
     });
 
-    const proc = spawn("claudish", args, {
+    // See session-manager: resolved so a harness can spawn the tree under test
+    // instead of the installed binary. Unset in production → plain "claudish".
+    const teamSpawnTarget = resolveClaudishSpawn();
+    const proc = spawn(teamSpawnTarget.command, [...teamSpawnTarget.prefixArgs, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
       env: {
