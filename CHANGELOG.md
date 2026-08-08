@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.46.0] - 2026-08-08
+
+### Documentation
+
+- update CHANGELOG.md for v7.45.0([`361f214`](https://github.com/MadAppGang/claudish/commit/361f214ded266168e9b67d21533ccf0903757e16))
+
+### New Features
+
+- v7.45.0 — derive the picker's provider roster, and give 1Password denials a fourth cause([`1ab9697`](https://github.com/MadAppGang/claudish/commit/1ab9697af280cecc2646d25d06c9c635c6bfd932))
+
+### Other Changes
+
+- v7.46.0([`4879110`](https://github.com/MadAppGang/claudish/commit/487911067186f551d3f7743a2451b643486ef79e))
+
 ## [7.45.0] - 2026-08-08
 
 ### Documentation
