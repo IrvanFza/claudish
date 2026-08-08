@@ -14,6 +14,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  __resetHandshakeContextForTests,
+  peerHoldsHandshakeLock,
   resetHandshakeLockTestSeams,
   setHandshakeLockTestSeams,
   withHandshakeLock,
@@ -25,7 +27,14 @@ let dir: string;
 let lockPath: string;
 let savedBypass: string | undefined;
 
+function writeLiveForeignLock(at: number): void {
+  expect(process.ppid).not.toBe(process.pid);
+  expect(() => process.kill(process.ppid, 0)).not.toThrow();
+  writeFileSync(lockPath, `${process.ppid} ${at}`);
+}
+
 beforeEach(() => {
+  __resetHandshakeContextForTests();
   dir = mkdtempSync(join(tmpdir(), "claudish-op-handshake-lock-"));
   lockPath = join(dir, "op-handshake.lock");
   savedBypass = process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK;
@@ -37,10 +46,117 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetHandshakeContextForTests();
   resetHandshakeLockTestSeams();
   if (savedBypass === undefined) delete process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK;
   else process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK = savedBypass;
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe("peerHoldsHandshakeLock", () => {
+  test("returns false when no lock file exists", () => {
+    expect(existsSync(lockPath)).toBe(false);
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("returns false when this process owns the lock", () => {
+    writeFileSync(lockPath, `${process.pid} ${Date.now()}`);
+
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("returns false when the lock owner has exited", () => {
+    const deadProcess = spawnSync(process.execPath, ["-e", ""]);
+    expect(deadProcess.status).toBe(0);
+    expect(deadProcess.pid).toBeGreaterThan(0);
+    expect(() => process.kill(deadProcess.pid!, 0)).toThrow();
+    writeFileSync(lockPath, `${deadProcess.pid} ${Date.now()}`);
+
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("returns true for a recent lock held by a live foreign process", () => {
+    writeLiveForeignLock(Date.now());
+
+    expect(peerHoldsHandshakeLock()).toBe(true);
+  });
+
+  test("returns false for a stale lock held by a live foreign process", () => {
+    writeLiveForeignLock(Date.now() - 501);
+
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test.each(["", "not-a-pid not-a-timestamp"])(
+    "returns false without throwing for an unreadable lock fixture %p",
+    (contents) => {
+      writeFileSync(lockPath, contents);
+
+      expect(() => peerHoldsHandshakeLock()).not.toThrow();
+      expect(peerHoldsHandshakeLock()).toBe(false);
+    }
+  );
+
+  test("does not blame a later holder after our own locked handshake is denied", async () => {
+    await expect(
+      withHandshakeLock(async () => {
+        expect(readFileSync(lockPath, "utf-8").startsWith(`${process.pid} `)).toBe(true);
+        throw new Error("authorization denied");
+      })
+    ).rejects.toThrow("authorization denied");
+
+    writeLiveForeignLock(Date.now());
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("never blames a peer when we held the lock, even if the holder predates our handshake (fact 1, otherwise unreachable)", async () => {
+    setHandshakeLockTestSeams({ timing: { staleMs: 10_000 } });
+    const beforeHandshake = Date.now();
+
+    await expect(
+      withHandshakeLock(async () => {
+        expect(readFileSync(lockPath, "utf-8").startsWith(`${process.pid} `)).toBe(true);
+        throw new Error("authorization denied");
+      })
+    ).rejects.toThrow("authorization denied");
+
+    // Synthetic state: O_EXCL makes an older foreign holder unreachable after we held the lock.
+    // This pins Fact 1 so its direct ownership guarantee is not deleted as dead code.
+    const foreignHolderAt = beforeHandshake - 5;
+    writeLiveForeignLock(foreignHolderAt);
+    expect(Date.now() - foreignHolderAt).toBeLessThan(10_000);
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("does not blame a foreign holder that arrived after an unlocked handshake began", async () => {
+    process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK = "1";
+
+    await expect(
+      withHandshakeLock(async () => {
+        const callbackStartedAt = Date.now();
+        while (Date.now() <= callbackStartedAt) await sleep(1);
+        writeLiveForeignLock(Date.now());
+        throw new Error("authorization denied");
+      })
+    ).rejects.toThrow("authorization denied");
+
+    expect(peerHoldsHandshakeLock()).toBe(false);
+  });
+
+  test("recognizes a foreign holder that predates an unlocked handshake", async () => {
+    process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK = "1";
+    const holderStartedAt = Date.now();
+    writeLiveForeignLock(holderStartedAt);
+    while (Date.now() <= holderStartedAt) await sleep(1);
+
+    await expect(
+      withHandshakeLock(async () => {
+        throw new Error("authorization denied");
+      })
+    ).rejects.toThrow("authorization denied");
+
+    expect(peerHoldsHandshakeLock()).toBe(true);
+  });
 });
 
 describe("withHandshakeLock", () => {
