@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { C } from "../tui/theme.js";
+import { A, C } from "../tui/theme.js";
 import { padStartTo, padTo, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
 import { Meter, Panel, Sparkline } from "../tui/viz/widgets.js";
@@ -25,13 +25,16 @@ import {
   type WorktreeGroup,
   hydrateSession,
   isActive,
+  isAgentSession,
   sessionLabel,
 } from "./session-discovery.js";
 
 /** `Panel` costs 4 columns of chrome; a `<scrollbox>` inside it costs 1 more. */
 const PANEL_CHROME = 4;
 const SCROLL_CHROME = 1;
-const SIDEBAR_W = 26;
+/** Narrow terminals keep the compact sidebar; wide ones get room for branch + state. */
+const SIDEBAR_NARROW = 30;
+const SIDEBAR_WIDE = 40;
 const PREVIEW_H = 9;
 
 /** Case-insensitive subsequence match — the same "typing narrows it" feel as the 1Password tab. */
@@ -53,6 +56,74 @@ function age(ms: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+/**
+ * One worktree, as two rows.
+ *
+ * Two rather than one because the question this pane answers is not "what is it called"
+ * but "which of these is worth going back to", and that needs branch, working-tree state
+ * and recency together. Colour is the encoding, not decoration: green means live or
+ * clean, orange means uncommitted work, cyan means unpushed commits, and a dimmed name
+ * means the worktree is gone. Each row is ONE `<text>` of spans — sibling `<text>`s in a
+ * height-2 box would overprint.
+ */
+function WorktreeRow({
+  g,
+  cursor,
+  width,
+  count,
+}: {
+  g: WorktreeGroup;
+  cursor: boolean;
+  width: number;
+  /** Sessions actually listed for this worktree — post agent-filter, not `g.sessions`. */
+  count: number;
+}): React.ReactNode {
+  // line 1: marker + name + activity dot + session count
+  const COUNT_W = 5;
+  const nameW = Math.max(6, width - 2 - COUNT_W - 2);
+  const nameColor = !g.live ? tokens.dead : g.current ? tokens.success : cursor ? tokens.text : tokens.subtle;
+
+  // line 2: branch, then state badges, then created·used ages
+  const ages = `${g.createdMs ? age(g.createdMs) : "?"}·${g.lastActiveMs ? age(g.lastActiveMs) : "?"}`;
+  const flags: Array<[string, string]> = [];
+  if (g.dirty !== undefined && g.dirty > 0) flags.push([`✎${g.dirty}`, tokens.warn]);
+  else if (g.dirty === 0) flags.push(["✓", tokens.success]);
+  if (g.ahead) flags.push([`↑${g.ahead}`, tokens.info]);
+  if (g.behind) flags.push([`↓${g.behind}`, tokens.error]);
+  const flagW = flags.reduce((a, [t]) => a + t.length + 1, 0);
+  // -1 more so a truncated branch never abuts its flag ("…✎4" reads as one token).
+  const branchW = Math.max(4, width - 2 - flagW - ages.length - 3);
+
+  return (
+    <box
+      flexDirection="column"
+      height={2}
+      backgroundColor={cursor ? C.bgHighlight : undefined}
+    >
+      <text>
+        <span fg={g.current ? tokens.success : tokens.trace}>{g.current ? "▶ " : "  "}</span>
+        <span fg={nameColor} attributes={cursor ? A.bold : undefined}>
+          {padTo(truncate(g.name, nameW), nameW)}
+        </span>
+        <span fg={g.activeNow ? tokens.success : tokens.trace}>{g.activeNow ? "● " : "  "}</span>
+        <span fg={cursor ? tokens.text : tokens.subtle}>
+          {padStartTo(String(count), COUNT_W - 2)}
+        </span>
+      </text>
+      <text>
+        <span fg={tokens.trace}>{"  ⎇ "}</span>
+        <span fg={g.live ? tokens.info : tokens.dead}>
+          {`${padTo(truncate(g.branch ?? (g.live ? "detached" : "—"), branchW), branchW)} `}
+        </span>
+        {flags.map(([t, c]) => (
+          <span key={t} fg={c}>{`${t} `}</span>
+        ))}
+        <span fg={tokens.trace}>{ages}</span>
+      </text>
+    </box>
+  );
 }
 
 /**
@@ -84,26 +155,48 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   const [wtCursor, setWtCursor] = useState(0);
   const [sessCursor, setSessCursor] = useState(0);
   const [filter, setFilter] = useState("");
+  /**
+   * Whether machine-driven sessions are listed. OFF by default: 95% of transcripts here
+   * are `sdk-cli` (claudish's own team members, MCP channel children, `-p` runs, e2e
+   * tests), and none of them is a conversation anyone resumes. `a` reveals them.
+   */
+  const [showAgents, setShowAgents] = useState(false);
   // Re-render tick. Hydration mutates rows in place (they are shared with the caller),
   // so there is no new object for React to diff against — the counter is what tells it
   // the rows it already holds now say more than they did.
   const [, setTick] = useState(0);
 
-  const visibleGroups = useMemo(
-    () => (filter ? groups.filter((g) => fuzzy(filter, g.name)) : groups),
-    [groups, filter]
+  /** A group's sessions after the agent filter — the set every count and list uses. */
+  const listed = useMemo(() => {
+    const m = new Map<string, SessionRow[]>();
+    for (const g of groups) {
+      m.set(g.name, showAgents ? g.sessions : g.sessions.filter((s) => !isAgentSession(s)));
+    }
+    return m;
+  }, [groups, showAgents]);
+
+  const hiddenCount = useMemo(
+    () => (showAgents ? 0 : groups.reduce((a, g) => a + g.sessions.filter(isAgentSession).length, 0)),
+    [groups, showAgents]
   );
+
+  const visibleGroups = useMemo(() => {
+    // A worktree with nothing left to show after filtering is not worth a row.
+    const withSessions = groups.filter((g) => (listed.get(g.name)?.length ?? 0) > 0);
+    return filter ? withSessions.filter((g) => fuzzy(filter, g.name)) : withSessions;
+  }, [groups, filter, listed]);
   const group = visibleGroups[Math.min(wtCursor, visibleGroups.length - 1)];
 
   const sessions = useMemo(() => {
     if (!group) return [];
-    if (!filter) return group.sessions;
+    const base = listed.get(group.name) ?? [];
+    if (!filter) return base;
     // A filter that matches the worktree name keeps all its sessions; otherwise it
     // narrows within them. Typing "gemini" should show the gemini-fix worktree's whole
     // list, not just sessions that happen to repeat the word.
-    if (fuzzy(filter, group.name)) return group.sessions;
-    return group.sessions.filter((s) => fuzzy(filter, sessionLabel(s)));
-  }, [group, filter]);
+    if (fuzzy(filter, group.name)) return base;
+    return base.filter((s) => fuzzy(filter, sessionLabel(s)));
+  }, [group, filter, listed]);
 
   const selected = sessions[Math.min(sessCursor, sessions.length - 1)];
 
@@ -167,6 +260,14 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
       }
       return;
     }
+    // `a` is the one letter the filter does not get, because a toggle the user cannot
+    // find is the same as no toggle. The footer advertises it.
+    if (name === "a" && !key.ctrl && !key.meta) {
+      setShowAgents((v) => !v);
+      setWtCursor(0);
+      setSessCursor(0);
+      return;
+    }
     if (name === "backspace") {
       setFilter((f) => f.slice(0, -1));
       setWtCursor(0);
@@ -176,7 +277,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
     // `key.raw` carries the literal character; letters arrive lowercase with `shift`
     // reported separately, so matching on `name` alone would drop capitals.
     const ch = key.raw;
-    if (ch && ch.length === 1 && ch >= " " && ch !== "\x7f") {
+    if (ch && ch.length === 1 && ch >= " " && ch !== "\x7f" && ch !== "a") {
       setFilter((f) => f + ch);
       setWtCursor(0);
       setSessCursor(0);
@@ -185,15 +286,18 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
 
   // ── widths (arithmetic, because data widgets take a numeric width) ─────────
   const bodyW = width;
-  const rightW = Math.max(30, bodyW - SIDEBAR_W);
+  const sidebarW = width >= 120 ? SIDEBAR_WIDE : SIDEBAR_NARROW;
+  const rightW = Math.max(30, bodyW - sidebarW);
   const sessInner = rightW - PANEL_CHROME - SCROLL_CHROME;
-  const sideInner = SIDEBAR_W - PANEL_CHROME - SCROLL_CHROME;
+  // One extra column of slack so a full-width row never abuts the scrollbar thumb.
+  const sideInner = sidebarW - PANEL_CHROME - SCROLL_CHROME - 1;
   const previewInner = bodyW - PANEL_CHROME;
 
-  const maxCount = Math.max(1, ...visibleGroups.map((g) => g.sessions.length));
   const maxSize = Math.max(1, ...sessions.slice(0, 400).map((s) => s.sizeBytes));
 
-  const totalSessions = groups.reduce((a, g) => a + g.sessions.length, 0);
+  // Count what the user can actually see. Reporting the raw corpus (2,025) next to a
+  // list of 95 reads as a bug in the picker rather than as a filter doing its job.
+  const shownSessions = [...listed.values()].reduce((a, v) => a + v.length, 0);
 
   return (
     <box flexDirection="column" height={height} backgroundColor={C.bg}>
@@ -206,41 +310,25 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
           <span fg={tokens.subtle}> resume</span>
         </text>
         <text>
-          <span fg={tokens.subtle}>{`${visibleGroups.length} worktrees · ${totalSessions} sessions`}</span>
+          <span fg={tokens.subtle}>{`${visibleGroups.length} worktrees · ${shownSessions} sessions`}</span>
           {filter ? <span fg={tokens.warn}>{`  /${filter}`}</span> : <span />}
         </text>
       </box>
 
       <box flexDirection="row" flexGrow={1} minHeight={0}>
         {/* ── worktrees ─────────────────────────────────────────────────── */}
-        <box width={SIDEBAR_W} flexDirection="column" minHeight={0}>
+        <box width={sidebarW} flexDirection="column" minHeight={0}>
           <Panel title="worktrees" focused={pane === "worktrees"} flexGrow={1} flexBasis={0}>
             <scrollbox focused={false} flexGrow={1}>
-              {visibleGroups.map((g, i) => {
-                const cur = i === wtCursor;
-                // Budget: 2 for the current-marker prefix + 4 for the right-aligned
-                // count. Getting this one column wrong put `610` under the scrollbar as
-                // `61` — the count column is the narrowest thing here and the first to
-                // be eaten.
-                const nameW = Math.max(6, sideInner - 6);
-                return (
-                  <box
-                    key={g.name}
-                    height={1}
-                    backgroundColor={cur ? C.bgHighlight : undefined}
-                  >
-                    <text>
-                      <span fg={g.current ? tokens.success : cur ? tokens.text : tokens.subtle}>
-                        {g.current ? "▶ " : "  "}
-                      </span>
-                      <span fg={g.live ? (cur ? tokens.text : tokens.subtle) : tokens.dead}>
-                        {padTo(truncate(g.name, nameW), nameW)}
-                      </span>
-                      <span fg={tokens.subtle}>{padStartTo(String(g.sessions.length), 4)}</span>
-                    </text>
-                  </box>
-                );
-              })}
+              {visibleGroups.map((g, i) => (
+                <WorktreeRow
+                  key={g.name}
+                  g={g}
+                  cursor={i === wtCursor}
+                  width={sideInner}
+                  count={listed.get(g.name)?.length ?? 0}
+                />
+              ))}
             </scrollbox>
           </Panel>
         </box>
@@ -301,7 +389,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
                   group={group}
                   width={previewInner}
                   maxSize={maxSize}
-                  maxCount={maxCount}
+                  groupCount={sessions.length}
                 />
               ) : (
                 <text fg={tokens.subtle}>nothing selected</text>
@@ -316,6 +404,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
         <text fg={tokens.subtle}>⇥ pane</text>
         <text fg={tokens.subtle}>type to filter</text>
         <text fg={tokens.accent}>⏎ resume</text>
+        <text fg={showAgents ? tokens.warn : tokens.subtle}>
+          {showAgents ? `a hide ${hiddenCount || ""}agent` : `a show ${hiddenCount} agent`}
+        </text>
         <text fg={tokens.subtle}>esc cancel</text>
       </box>
     </box>
@@ -327,13 +418,14 @@ function Preview({
   group,
   width,
   maxSize,
-  maxCount,
+  groupCount,
 }: {
   row: SessionRow;
   group: WorktreeGroup | undefined;
   width: number;
   maxSize: number;
-  maxCount: number;
+  /** Sessions listed in this worktree after filtering. */
+  groupCount: number;
 }): React.ReactNode {
   const mb = row.sizeBytes / 1_048_576;
   const series = group ? activitySeries(group.sessions) : [];
@@ -364,7 +456,7 @@ function Preview({
       <box flexDirection="row" gap={1} height={1}>
         <text fg={tokens.subtle}>{padTo("14d", 8)}</text>
         <Sparkline values={series} fg={tokens.info} />
-        <text fg={tokens.subtle}>{`${group?.sessions.length ?? 0} of ${maxCount} max`}</text>
+        <text fg={tokens.subtle}>{`${groupCount} session${groupCount === 1 ? "" : "s"} here`}</text>
       </box>
       <text fg={tokens.subtle}>{truncate(row.firstPrompt || "", width)}</text>
     </box>

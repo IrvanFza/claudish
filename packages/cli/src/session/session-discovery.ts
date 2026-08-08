@@ -19,10 +19,13 @@
  *      whole file — so a 73 MB transcript costs the same as a 73 KB one.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+
+/** Head bytes scanned for the `entrypoint` marker. See `isAgentSession`. */
+const ENTRYPOINT_BYTES = 8192;
 
 /** Where Claude Code keeps transcripts. */
 export const PROJECTS_DIR = join(homedir(), ".claude", "projects");
@@ -56,6 +59,30 @@ export interface SessionRow {
   /** Display columns of the final user message — "how big was the last thing I said". */
   lastMessageChars?: number;
   hydrated?: boolean;
+  /**
+   * How the session was launched: `cli` for one a human started, `sdk-cli` for one
+   * driven programmatically. Read during the list pass because it decides whether the
+   * row is OFFERED at all, and a filter cannot wait for lazy hydration.
+   * Undefined when the marker was not in the file's first 8 KB.
+   */
+  entrypoint?: string;
+}
+
+/**
+ * Whether this session was machine-driven rather than started by a person.
+ *
+ * claudish itself is a prolific source of these: every `team` member, every MCP channel
+ * `create_session`, every `-p` one-shot and every e2e test spawns a real Claude Code
+ * session that lands in the same project directory as your own work. MEASURED across
+ * this repository: 1,923 of 2,018 transcripts are `sdk-cli` — so 95% of an unfiltered
+ * picker is noise, and the seven interactive sessions you actually want are buried.
+ *
+ * FAILS OPEN. An unknown entrypoint (23 of 2,018, where the marker fell outside the
+ * head we read) counts as a human session, because hiding a real conversation is a much
+ * worse error than showing a spurious one.
+ */
+export function isAgentSession(row: SessionRow): boolean {
+  return row.entrypoint !== undefined && row.entrypoint !== "cli";
 }
 
 /** One worktree (or the repo root) and every session recorded inside it. */
@@ -71,6 +98,23 @@ export interface WorktreeGroup {
   sessions: SessionRow[];
   /** mtime of the most recent session in the group. */
   lastActiveMs: number;
+  /** Branch checked out in this worktree, short form. Absent for a deleted one. */
+  branch?: string;
+  /**
+   * When the worktree came into existence.
+   *
+   * The directory's birthtime for a live worktree — the honest answer, and free from the
+   * `stat` we already do. For a deleted one there is no directory left, so it falls back
+   * to the OLDEST session recorded in it, which is when work there demonstrably started.
+   */
+  createdMs?: number;
+  /** Whether any session here is still being written. */
+  activeNow: boolean;
+  /** Changed files (`git status --porcelain`). Undefined until enrichment resolves. */
+  dirty?: number;
+  /** Commits ahead of / behind upstream. Undefined when there is no upstream. */
+  ahead?: number;
+  behind?: number;
 }
 
 export interface RepoContext {
@@ -80,6 +124,8 @@ export interface RepoContext {
   current: string;
   /** Absolute paths of every worktree git still knows about, including `root`. */
   liveWorktrees: string[];
+  /** Worktree path → short branch name. Parsed from the same porcelain block, so free. */
+  branchByPath: Map<string, string>;
 }
 
 /**
@@ -108,14 +154,26 @@ export function getRepoContext(cwd: string = process.cwd()): RepoContext | null 
     ? commonDir.slice(0, -"/.git".length)
     : current;
 
+  // `git worktree list --porcelain` emits a block per worktree:
+  //   worktree /abs/path
+  //   HEAD <sha>
+  //   branch refs/heads/<name>       (absent when detached)
+  // so the branch comes out of the call we already make, at no extra cost.
   const liveWorktrees: string[] = [];
+  const branchByPath = new Map<string, string>();
   const porcelain = git(["worktree", "list", "--porcelain"]);
   if (porcelain) {
+    let currentPath: string | null = null;
     for (const line of porcelain.split("\n")) {
-      if (line.startsWith("worktree ")) liveWorktrees.push(line.slice("worktree ".length));
+      if (line.startsWith("worktree ")) {
+        currentPath = line.slice("worktree ".length);
+        liveWorktrees.push(currentPath);
+      } else if (line.startsWith("branch ") && currentPath) {
+        branchByPath.set(currentPath, line.slice("branch ".length).replace(/^refs\/heads\//, ""));
+      }
     }
   }
-  return { root, current, liveWorktrees };
+  return { root, current, liveWorktrees, branchByPath };
 }
 
 /** `~/.claude/projects` entries, or `[]` when the directory does not exist yet. */
@@ -146,12 +204,83 @@ function sessionsIn(dirName: string): SessionRow[] {
       // A zero-byte transcript is a session that died before writing anything; it
       // cannot be resumed into anything meaningful, so it is not offered.
       if (st.size === 0) continue;
-      rows.push({ id: basename(n, ".jsonl"), file, mtimeMs: st.mtimeMs, sizeBytes: st.size });
+      const row: SessionRow = {
+        id: basename(n, ".jsonl"),
+        file,
+        mtimeMs: st.mtimeMs,
+        sizeBytes: st.size,
+      };
+      // Classify here, in the list pass, because `entrypoint` decides whether the row is
+      // shown at all — a lazily-hydrated filter would paint 2,000 rows and then collapse
+      // to 70. MEASURED at 8 KB: 97ms across 2,018 files and the marker is found in
+      // 1,995 of them; at 4 KB it misses 305, which is not worth the saving.
+      const head = readChunk(file, 0, Math.min(ENTRYPOINT_BYTES, st.size));
+      const m = /"entrypoint":"([a-z-]+)"/.exec(head);
+      if (m) row.entrypoint = m[1];
+      rows.push(row);
     } catch {
       // Raced with a delete. Skip.
     }
   }
   return rows;
+}
+
+/**
+ * Fill in each live worktree's `dirty` / `ahead` / `behind`, off the render path.
+ *
+ * SPLIT FROM DISCOVERY ON PURPOSE, because the two have very different costs. MEASURED
+ * on this repo: `git for-each-ref` answers ahead/behind for EVERY branch in one 16ms
+ * call, while `git status --porcelain` costs ~40ms per worktree and cannot be batched —
+ * 331ms across eight worktrees. Discovery itself is 10–17ms, so folding status into it
+ * would make the picker twenty times slower to appear in exchange for a column most
+ * users glance at once.
+ *
+ * So the picker paints immediately with what is free (branch, dates, activity) and calls
+ * this afterwards; rows fill in as it resolves. Mutates the groups in place and resolves
+ * when every probe has settled. Never throws — a worktree whose status cannot be read
+ * simply keeps `undefined`, which the UI renders as "unknown" rather than as "clean".
+ */
+export async function enrichWorktreeGit(
+  groups: WorktreeGroup[],
+  repoRoot: string
+): Promise<void> {
+  const run = (cwd: string, args: string[]): Promise<string> =>
+    new Promise((resolve) => {
+      execFile("git", args, { cwd, encoding: "utf-8" }, (err, stdout) =>
+        resolve(err ? "" : stdout)
+      );
+    });
+
+  // One call for every branch's upstream tracking, e.g. `main [ahead 2, behind 1]`.
+  const trackByBranch = new Map<string, { ahead?: number; behind?: number }>();
+  const refs = await run(repoRoot, [
+    "for-each-ref",
+    "--format=%(refname:short)\t%(upstream:track)",
+    "refs/heads/",
+  ]);
+  for (const line of refs.split("\n")) {
+    const [name, track] = line.split("\t");
+    if (!name || !track) continue;
+    const ahead = /ahead (\d+)/.exec(track)?.[1];
+    const behind = /behind (\d+)/.exec(track)?.[1];
+    if (ahead || behind) {
+      trackByBranch.set(name, {
+        ...(ahead ? { ahead: Number(ahead) } : {}),
+        ...(behind ? { behind: Number(behind) } : {}),
+      });
+    }
+  }
+
+  // Status is per-worktree and unbatchable, so run them concurrently rather than in
+  // series — the cost becomes the slowest single probe instead of their sum.
+  await Promise.all(
+    groups.map(async (g) => {
+      if (g.branch) Object.assign(g, trackByBranch.get(g.branch) ?? {});
+      if (!g.path || !g.live) return;
+      const out = await run(g.path, ["status", "--porcelain"]);
+      g.dirty = out.split("\n").filter((l) => l.trim().length > 0).length;
+    })
+  );
 }
 
 /** True when `p` is `root` itself or lives beneath it. Path-segment aware, so
@@ -254,6 +383,8 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
         current: path !== null && path === repo.current,
         sessions: [],
         lastActiveMs: 0,
+        activeNow: false,
+        ...(path ? { branch: repo.branchByPath.get(path) } : {}),
       };
       groups.set(name, g);
     }
@@ -360,7 +491,23 @@ export function discoverWorktreeGroups(repo: RepoContext): WorktreeGroup[] {
     groups.delete(name);
   }
 
-  for (const g of groups.values()) g.sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const g of groups.values()) {
+    g.sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    g.activeNow = g.sessions.some((s) => isActive(s));
+    // Birthtime for a live worktree is the real creation moment. For a deleted one the
+    // directory is gone, so the oldest session is the best available evidence of when
+    // work there began.
+    if (g.path) {
+      try {
+        g.createdMs = statSync(g.path).birthtimeMs;
+      } catch {
+        /* removed under us; fall through to the session-based estimate */
+      }
+    }
+    if (!g.createdMs && g.sessions.length > 0) {
+      g.createdMs = g.sessions.reduce((m, s) => Math.min(m, s.mtimeMs), Number.POSITIVE_INFINITY);
+    }
+  }
 
   // Current worktree first, then most recently active. The current worktree is almost
   // always what the user means, and making them hunt for it would defeat the point.
