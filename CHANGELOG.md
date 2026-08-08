@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.45.0] - 2026-08-08
+
+### Documentation
+
+- update CHANGELOG.md for v7.44.0([`ded4c9e`](https://github.com/MadAppGang/claudish/commit/ded4c9e69ea1921e9c76b8a03807f622efff1853))
+
+### New Features
+
+- restore the provider chain for MiniMax and for spawned children *(routing)* ([`a9112dc`](https://github.com/MadAppGang/claudish/commit/a9112dceb4e66ca6fbe876bab8ce43c05aa705d6))
+
 ## [7.44.0] - 2026-08-07
 
 ### Documentation
