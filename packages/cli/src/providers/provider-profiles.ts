@@ -234,36 +234,42 @@ const glmProfile: ProviderProfile = {
  * rate-limit bucketing consistent without a second inline fallback.
  *
  * Model routing inside the profile:
- *   - MiniMax models  → AnthropicProviderTransport + AnthropicAPIFormat
  *   - GPT-* models    → OpenAIProviderTransport (/v1/responses) + CodexAPIFormat (Responses API)
  *   - All other models → OpenAIProviderTransport (/v1/chat/completions) + OpenAIAPIFormat (delta-aware)
+ *
+ * MiniMax models take the SAME OpenAI path as everything else. They briefly had
+ * their own Anthropic branch (AnthropicProviderTransport + AnthropicAPIFormat),
+ * added to cure a `401 {"type":"AuthError","message":"Missing API key."}` — but
+ * that 401 was purely an auth-HEADER problem: the Anthropic transport defaults to
+ * `x-api-key` and only sends Bearer when the provider declares
+ * `authScheme: "bearer"`, which neither Zen definition does (their own OpenAI
+ * transport is Bearer-only, so they never needed to). Swapping in an entire
+ * transport+format pair to fix a header carried an endpoint assumption that does
+ * not hold here: AnthropicProviderTransport builds its URL as
+ * `baseUrl + provider.apiPath`, and BOTH Zen tiers declare
+ * `apiPath: "/v1/chat/completions"`. So an Anthropic-shaped body was being posted
+ * to an OpenAI endpoint.
+ *
+ * That survived verification because a tool-free Anthropic body is close enough to
+ * an OpenAI one to be accepted. Tools are where the shapes diverge: Anthropic tools
+ * carry `input_schema` and NO `type` field, and MiniMax validates them OpenAI-style,
+ * reporting the missing type as empty. Measured live 2026-08-08 against
+ * `opencode.ai/zen/go/v1/chat/completions`:
+ *
+ *   anthropic body + tools  → 400 "invalid params, invalid tool type:  (2013)"
+ *   anthropic body, NO tools → 200        ← why the original fix looked correct
+ *   openai body + tools      → 200
+ *   openai body + tools + stream → 200, real tool_calls frames (m2.5 and m3)
+ *   anthropic body → /v1/messages → 401 AuthError (no usable Anthropic route)
+ *
+ * Every Claude Code request carries tools, so this failed 100% of real turns. The
+ * non-Go tier is structurally identical (same apiPath, same transport) and shares
+ * the fix; it could not be re-measured without an OPENCODE_API_KEY.
  */
 const openCodeZenProfile: ProviderProfile = {
   createHandler(ctx) {
     const zenApiKey = ctx.apiKey;
     const isGoProvider = ctx.provider.name === "opencode-zen-go";
-
-    if (ctx.modelName.toLowerCase().includes("minimax")) {
-      // Both Zen tiers authenticate with `Authorization: Bearer`, but this branch
-      // swaps in the ANTHROPIC transport, which defaults to `x-api-key` and only
-      // sends Bearer when the provider declares `authScheme: "bearer"`. Neither
-      // Zen definition declares it — they don't need to for their own OpenAI
-      // transport, which is Bearer-only — so every MiniMax model on Zen and Zen
-      // Go was sending the key in a header the endpoint ignores and getting back
-      // `401 {"type":"AuthError","message":"Missing API key."}`. Verified live
-      // 2026-08-06: x-api-key alone → 401 AuthError; Bearer → served.
-      const bearerProvider = { ...ctx.provider, authScheme: "bearer" as const };
-      const transport = new AnthropicProviderTransport(bearerProvider, zenApiKey);
-      const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created OpenCode Zen${isGoProvider ? " Go" : ""} (Anthropic composed): ${ctx.modelName}`
-      );
-      return handler;
-    }
 
     // GPT models are served via the OpenAI Responses API (/v1/responses), not /v1/chat/completions.
     if (ctx.modelName.toLowerCase().startsWith("gpt-")) {

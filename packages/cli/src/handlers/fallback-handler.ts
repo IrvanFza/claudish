@@ -149,7 +149,7 @@ export class FallbackHandler implements ModelHandler {
           })),
         },
       },
-      502 as any
+      exhaustedChainStatus(errors) as any
     );
   }
 
@@ -168,7 +168,7 @@ export class FallbackHandler implements ModelHandler {
  * warrant trying a different provider. True server errors (500 without
  * billing context) do NOT — they'd likely fail on any provider.
  */
-function isRetryableError(status: number, errorBody: string, provider?: string): boolean {
+export function isRetryableError(status: number, errorBody: string, provider?: string): boolean {
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.
   //
@@ -265,6 +265,42 @@ function isRetryableError(status: number, errorBody: string, provider?: string):
     if (provider?.toLowerCase().includes("antigravity") && lower.includes("invalid argument")) {
       return true;
     }
+
+    // An AGGREGATOR reporting that its UPSTREAM rejected the request is terminal
+    // for this candidate and says nothing about the next one — the two claims are
+    // different, and conflating them costs the chain a provider that works.
+    //
+    // Zen Go fronts other vendors' models, so a rejection here is the upstream's
+    // verdict on the request SHAPE, not on the model's availability anywhere:
+    //
+    //   {"error":{"type":"server_error","message":"Error from provider (Console
+    //    Go): Upstream request failed: [bad_request_error] invalid params,
+    //    invalid tool type:  (2013)"}}
+    //
+    // That wording matches none of the model-not-found tests above, so a bare
+    // `minimax-m2.5` died at the first candidate while the metered MiniMax API and
+    // OpenRouter sat behind it, credentialed and ready. Same defect class as the
+    // spent-subscription case at the top of this function, one axis over: that one
+    // separated "exhausted for this provider" from "exhausted for the chain", this
+    // one separates "can't serve this request" from "nobody can serve it".
+    //
+    // Keyed on the aggregator's own framing (`Upstream request failed` / `Error
+    // from provider (`) rather than on the upstream's message, which is
+    // vendor-specific and unbounded. Provider-scoped for the same reason the
+    // Antigravity rule above is: a blanket "advance on any 400" would silently
+    // paper over real payload bugs in providers that speak for themselves.
+    // NOTE ON THE PROVIDER STRING: what arrives here is the candidate's DISPLAY
+    // name ("OpenCode Zen Go"), not the canonical id ("opencode-zen-go") —
+    // proxy-server builds candidates as `{ name: candidate.displayName }`. So the
+    // match is made on a punctuation-stripped form, which accepts both. The
+    // Antigravity rule above only works because its display name happens to be a
+    // single word; do not copy its literal shape for a hyphenated provider.
+    if (
+      isProvider(provider, "opencodezen") &&
+      (lower.includes("upstream request failed") || lower.includes("error from provider ("))
+    ) {
+      return true;
+    }
   }
 
   // Server errors (500) — only retryable if it's a billing/credit issue
@@ -281,6 +317,58 @@ function isRetryableError(status: number, errorBody: string, provider?: string):
   }
 
   return false;
+}
+
+/**
+ * The status an EXHAUSTED chain reports — terminal 400, or transient 503.
+ *
+ * This used to be a flat 502, which reads to Claude Code as a retryable transport
+ * fault: it shows "API error · Retrying · attempt N/10" and the turn ends with NO
+ * visible text. A chain of ONE never took this path at all — the single candidate's
+ * response is returned as-is, so a 400 reached the client and Claude Code rendered
+ * the reason inline (`API Error: 400 Error from provider (Console Go): …`, captured
+ * verbatim in a real session's output.log). Measured side by side against a stub
+ * replaying that 400: single candidate → HTTP 400 with the message; two candidates
+ * → HTTP 502 with no usable text.
+ *
+ * That gap did not matter much while chains were built only for interactive
+ * bare-name routing. Pinned chains hand it to every spawned child, so the WORST
+ * case of a `team` run would have become "the model reported nothing" instead of
+ * "the model reported why". Reporting a reason is the whole value of the failure.
+ *
+ * The split follows the same doctrine as the stream-head sniffer: terminal faults
+ * are 400 so the reason surfaces inline, and only genuinely transient ones get a
+ * retryable status, because retrying is the actual remedy there. Every candidate
+ * being rate-limited or overloaded IS transient — Claude Code's retry loop is
+ * correct for it — while an exhausted chain of capability/auth/model errors is not
+ * going to fix itself, and burying it behind ten silent retries is what the
+ * 400-not-5xx rule exists to prevent.
+ */
+export function exhaustedChainStatus(
+  errors: Array<{ provider: string; status: number; message: string }>
+): number {
+  if (errors.length === 0) return 400;
+  const allTransient = errors.every(
+    (e) => e.status === 429 || e.status === 503 || hasQuotaExhaustionWording(e.message)
+  );
+  return allTransient ? 503 : 400;
+}
+
+/**
+ * Match a candidate against a provider family, tolerating the two spellings the
+ * same provider reaches this file under: the canonical id (`opencode-zen-go`) and
+ * the display name (`OpenCode Zen Go`). Both normalize to `opencodezengo`, so a
+ * `needle` of `opencodezen` matches either, and both Zen tiers.
+ *
+ * Exported for tests — the display-name-vs-id distinction is exactly the kind of
+ * thing that silently disables a rule.
+ */
+export function isProvider(provider: string | undefined, needle: string): boolean {
+  if (!provider) return false;
+  return provider
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .includes(needle);
 }
 
 /** Extract a human-readable message from a JSON error body */
