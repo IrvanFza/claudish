@@ -28,11 +28,13 @@
  * OUTPUT (all local, no network):
  *  - Always: one JSONL line per launch → ~/.claudish/startup-metrics.jsonl
  *    (capped at STARTUP_METRICS_MAX_LINES lines; oldest dropped on overflow).
- *  - total > SLOW_START_THRESHOLD_MS: one concise stderr line (top 3 spans by
- *    duration, with wait/exec split when present) BEFORE any fullscreen UI
- *    mounts — the callers finalize pre-mount.
  *  - CLAUDISH_STARTUP_TRACE=1: the full aligned phase table on stderr at
  *    finalize, plus live per-span lines after finalize.
+ *  - NOTHING on stderr otherwise. There used to be an unsolicited "slow start"
+ *    line above SLOW_START_THRESHOLD_MS; it was removed because `totalMs` is
+ *    wall-clock and on an interactive run it includes `startup:model-select`,
+ *    i.e. how long the human spent reading the model picker. See the note above
+ *    `printTable`.
  *
  * SEAMS: clock, output path, env, stderr sink, cap, and threshold are all
  * injectable via __configureStartupTraceForTests so tests are hermetic.
@@ -74,7 +76,13 @@ export interface StartupTracePayload {
 export const STARTUP_METRICS_FILE = join(homedir(), ".claudish", "startup-metrics.jsonl");
 /** Cap on JSONL lines; oldest are dropped when a write would exceed this. */
 export const STARTUP_METRICS_MAX_LINES = 500;
-/** Total startup time above which the one-line slow-start warning prints. */
+/**
+ * Total startup time once considered "slow".
+ *
+ * Nothing prints at this threshold any more (see the note above `printTable`) —
+ * it survives only as the `slowThresholdMs` seam's default, so the existing
+ * test configuration keeps compiling. A future quiet-gated line could reuse it.
+ */
 export const SLOW_START_THRESHOLD_MS = 8000;
 /** In-memory span buffer cap (protects long-lived never-finalized processes). */
 const MAX_BUFFERED_SPANS = 500;
@@ -408,18 +416,22 @@ function writeJsonlCapped(payload: StartupTracePayload): void {
   }
 }
 
-/** The one-line slow-start warning: total + top 3 spans by duration. */
-function printSlowLine(payload: StartupTracePayload): void {
-  const top = [...payload.spans]
-    .sort((a, b) => b.durMs - a.durMs)
-    .slice(0, 3)
-    .map((s) => `${s.name} ${fmtDur(s.durMs)}${fmtWaitExec(s.meta)}`);
-  const detail = top.length > 0 ? ` — ${top.join(", ")}` : "";
-  seams.stderr(
-    `[claudish] slow start ${fmtDur(payload.totalMs)}${detail} … full data: ` +
-      `${displayPath(seams.outPath)} (CLAUDISH_STARTUP_TRACE=1 for live detail)`
-  );
-}
+/**
+ * The slow-start warning is NOT printed.
+ *
+ * `totalMs` is wall-clock from launch to finalize, and on an interactive run
+ * that includes `startup:model-select` — the time a human spends reading the
+ * picker. A 133s "slow start" whose top span is 133.2s of model-select is
+ * reporting how long the user took to choose, which is not a startup problem
+ * and not something they can act on. Rather than special-case the interactive
+ * spans (the same argument applies to any prompt claudish adds later), the
+ * unsolicited line is gone.
+ *
+ * The measurement itself is untouched: every launch still appends its full
+ * span list to `~/.claudish/startup-metrics.jsonl`, and
+ * `CLAUDISH_STARTUP_TRACE=1` still prints the aligned table live. Diagnosing a
+ * genuinely slow start is one env var away; the default run stays quiet.
+ */
 
 /** The full aligned phase table (CLAUDISH_STARTUP_TRACE=1). */
 function printTable(payload: StartupTracePayload): void {
@@ -442,10 +454,23 @@ function printTable(payload: StartupTracePayload): void {
  * fallback, are no-ops). Never throws.
  *
  * `context` is the coarse argvKind ("config" | "run" | "other").
- * `opts.quiet` suppresses the slow-start warning line (honors --quiet); the
- * full table still prints when CLAUDISH_STARTUP_TRACE=1 (explicit opt-in).
+ *
+ * `opts.quiet` is RESERVED and currently inert — deliberately kept, not
+ * overlooked. It only ever gated the slow-start line, which no longer prints
+ * (see the note above `printTable`), so today finalize is silent for every
+ * caller and the flag changes nothing.
+ *
+ * Kept rather than removed because the three call sites (index.ts) are the only
+ * places that know the user's `--quiet` intent, and threading it back in later
+ * would mean re-plumbing all three. What it costs is one ignored argument; what
+ * it buys is that the moment ANY quiet-suppressible output returns here, the
+ * signal is already at the call site and the pinned "quiet:true remains silent"
+ * test is already watching it. The `_` prefix is the honest marker that nothing
+ * reads it yet — if a future reader finds this comment still true and the
+ * suppressible surface still empty, deleting the parameter (and its three
+ * callers' argument) is the correct cleanup.
  */
-export function finalizeStartupTrace(context: string, opts: { quiet?: boolean } = {}): void {
+export function finalizeStartupTrace(context: string, _opts: { quiet?: boolean } = {}): void {
   try {
     if (finalized) return;
     const totalMs = safeNow();
@@ -470,9 +495,8 @@ export function finalizeStartupTrace(context: string, opts: { quiet?: boolean } 
         // hook): JSONL only — printing now would corrupt the render buffer.
       } else if (traceModeOn()) {
         printTable(payload);
-      } else if (totalMs > seams.slowThresholdMs && !opts.quiet) {
-        printSlowLine(payload);
       }
+      // No slow-start line — see the note above printTable's neighbour.
     } catch {
       // A broken stderr sink must never break startup.
     }

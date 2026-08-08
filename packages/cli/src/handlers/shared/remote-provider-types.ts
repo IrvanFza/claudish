@@ -80,7 +80,14 @@ export const PROVIDER_DEFAULTS: Record<string, ModelPricing> = {
 // Free providers — always return free pricing regardless of model
 const FREE_PROVIDERS = new Set(["opencode-zen", "zen"]);
 
-// Subscription providers — display "SUB" instead of cost
+// Subscription providers — display "SUB" instead of cost.
+//
+// Membership is decided by BILLING, not by whether the provider happens to
+// declare `modelDiscovery`. That distinction is what let three flat-rate plans
+// sit outside this set for so long: a provider WITH discovery renders through
+// `buildDiscoveredModelRows`, which asks this question, while a provider
+// WITHOUT it renders through the catalog path, which (until now) did not — so a
+// missing entry was invisible on one path and merely wrong on the other.
 const SUBSCRIPTION_PROVIDERS = new Set([
   "minimax-coding",
   "kimi-coding",
@@ -90,7 +97,35 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   // Without this the picker prints an invented per-token price and TokenTracker
   // accrues fictional cost.
   "devin",
+  // Antigravity is billed by the user's Antigravity plan (free / Pro / Ultra) —
+  // the whole reason `ag@` exists as a separate provider from the metered `g@`.
+  // It has no `modelDiscovery`, so it rendered the catalog's N/A instead.
+  "antigravity",
+  // The `-subscription` in the name is the whole point: `sc@` is the flat-rate
+  // Sakana plan, distinct from the metered `sakana@`. Left out, the picker
+  // showed Sakana's per-token rate against a plan that does not charge one —
+  // the same confusion that made sc@ bill PAYG once before.
+  "sakana-subscription",
 ]);
+
+// DELIBERATELY NOT LISTED: `openai-codex`.
+//
+// It looks like the obvious fourth entry — its own picker row reads "ChatGPT
+// Plus/Pro subscription" — and it was briefly added here. But the provider is
+// DUAL-MODE: `oauthFallback: "codex-oauth.json"` is the subscription, while
+// `apiKeyAliases: ["OPENAI_API_KEY"]` means a plain metered OpenAI key
+// authenticates `cx@` just as well. Marking it flat-rate reports SUB and accrues
+// ZERO cost for a user OpenAI is billing per token — a silent under-report of
+// real money.
+//
+// The two errors are not symmetric. Quoting a dollar rate to someone on a
+// subscription is a cosmetic over-estimate they can ignore; reporting $0 to
+// someone being metered is the one that costs them. Until membership can be
+// decided from the CREDENTIAL actually in play rather than the provider name,
+// the safe answer is to leave it out. `antigravity` (no `apiKeyEnvVar` at all,
+// OAuth only) and `sakana-subscription` (whose comment records that it
+// deliberately does NOT alias the PAYG `SAKANA_API_KEY`) have no such ambiguity,
+// which is why they ARE listed.
 
 /**
  * Whether a provider bills a flat subscription rather than per token.

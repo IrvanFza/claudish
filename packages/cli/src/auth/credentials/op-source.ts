@@ -412,6 +412,13 @@ function readConfigRaw(): SniffedConfig {
  */
 let sniffed: boolean | undefined;
 export function hasOpSources(): boolean {
+  // The kill switch is read BEFORE the memo, on every call, because it can now
+  // be flipped MID-RUN: "s skip 1Password" during a denial countdown sets it so
+  // the remaining providers in a routing chain stop asking. Behind the memo it
+  // would be honoured only if nothing had consulted op sources yet — which is
+  // never true by the time a denial has happened, so the skip would silently do
+  // nothing.
+  if (process.env.CLAUDISH_DISABLE_OP === "1") return false;
   if (sniffed !== undefined) return sniffed;
   sniffed = computeHasOpSources();
   return sniffed;
@@ -961,6 +968,7 @@ async function resolveOpKeyForEnvVarsInner(
     recordOpHydratedVars,
     recordOpFailure,
     withSdkRetry,
+    humanizeOpError,
   } = await import("../../providers/onepassword.js");
 
   const cfg = readConfigRaw();
@@ -1048,8 +1056,10 @@ async function resolveOpKeyForEnvVarsInner(
         // NON-FATAL (startup contract): warn + skip — a bad glob must never lock
         // the user out. The failed resolution was evicted from the memo map, so
         // the NEXT resolve retries it.
+        // RECORD the raw message (wasOpAuthorizationDenied matches on it),
+        // DISPLAY the humanized one — the SDK's Rust struct dump names no cause.
         const m = globErr instanceof Error ? globErr.message : String(globErr);
-        warnOnce(`[claudish] 1Password import skipped: ${m}`);
+        warnOnce(`[claudish] 1Password import skipped: ${humanizeOpError(globErr)}`);
         recordOpFailure({ kind: "import", source: globPath, message: m });
       }
     }
@@ -1106,7 +1116,7 @@ async function resolveOpKeyForEnvVarsInner(
           // never lock the user out. The failed resolution was evicted, so the
           // next resolve retries it.
           const m = envErr instanceof Error ? envErr.message : String(envErr);
-          warnOnce(`[claudish] 1Password environment skipped: ${m}`);
+          warnOnce(`[claudish] 1Password environment skipped: ${humanizeOpError(envErr)}`);
           recordOpFailure({ kind: "environment", source: envId, message: m });
         }
       }
@@ -1118,7 +1128,7 @@ async function resolveOpKeyForEnvVarsInner(
       return out;
     }
     const message = err instanceof Error ? err.message : String(err);
-    warnOnce(`[claudish] 1Password secret resolution failed: ${message}`);
+    warnOnce(`[claudish] 1Password secret resolution failed: ${humanizeOpError(err)}`);
     recordOpFailure({ kind: "reference", message });
     if (onAuthFailure === "throw") throw err;
   }

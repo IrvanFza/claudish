@@ -31,6 +31,7 @@ import {
   resetOpFailures,
   setAppLockProbe,
   setLockRetryTiming,
+  setPeerLockProbe,
   setScreenLockProbe,
 } from "../../providers/onepassword.js";
 import {
@@ -79,6 +80,7 @@ beforeEach(() => {
   setLockRetryTiming({ seconds: 0.01, tickMs: 1 });
   setScreenLockProbe(() => false);
   setAppLockProbe(() => false);
+  setPeerLockProbe(() => false);
 });
 
 afterEach(() => {
@@ -100,6 +102,7 @@ afterEach(() => {
   setLockRetryTiming();
   setScreenLockProbe(undefined);
   setAppLockProbe(undefined);
+  setPeerLockProbe(undefined);
 });
 
 describe("hasOpSources() — the sync laziness gate", () => {
@@ -129,6 +132,17 @@ describe("hasOpSources() — the sync laziness gate", () => {
     process.argv = ["bun", "index.ts", "--op-env=env-1"];
     __resetSniffForTests();
     expect(hasOpSources()).toBe(true);
+  });
+
+  it("honors CLAUDISH_DISABLE_OP after the source sniff is memoized", () => {
+    process.argv = ["bun", "index.ts", "--op", "op://V/Item/**"];
+    __resetSniffForTests();
+    expect(hasOpSources()).toBe(true);
+
+    // A test that only sets the env var up-front does not cover this — it would
+    // pass against the old buggy code too.
+    process.env.CLAUDISH_DISABLE_OP = "1";
+    expect(hasOpSources()).toBe(false);
   });
 });
 
@@ -200,8 +214,10 @@ describe("CLAUDISH_OP_UNAVAILABLE skip-list", () => {
     });
 
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    let messages: string[] = [];
     try {
       expect(await resolveOne("AUTH_FAILURE_KEY")).toEqual({});
+      messages = errorSpy.mock.calls.map(([message]) => String(message));
     } finally {
       errorSpy.mockRestore();
     }
@@ -209,7 +225,11 @@ describe("CLAUDISH_OP_UNAVAILABLE skip-list", () => {
     expect(getOpUnavailableVars()).toEqual(["AUTH_FAILURE_KEY"]);
     expect(sdkFactoryCalls).toBe(1);
     expect(getOpFailures()).toHaveLength(1);
-    expect(getOpFailures()[0]?.message).toContain(denial);
+    expect(getOpFailures()[0]?.message).toBe(denial);
+    expect(messages).toContain(
+      "[claudish] 1Password environment skipped: " +
+        "the 1Password approval prompt was dismissed (or never answered)"
+    );
     expect(process.env[OP_UNAVAILABLE_ENV]).toBeUndefined();
   });
 });
@@ -839,7 +859,9 @@ describe("1Password failure warnings", () => {
       }
 
       const messages = errorSpy.mock.calls.map(([message]) => String(message));
-      const repeatedWarning = `[claudish] 1Password environment skipped: ${repeatedFailure}`;
+      const repeatedWarning =
+        "[claudish] 1Password environment skipped: " +
+        "the 1Password approval prompt was dismissed (or never answered)";
       const distinctWarning = `[claudish] 1Password environment skipped: ${distinctFailure}`;
       expect(messages.filter((message) => message === repeatedWarning)).toHaveLength(1);
       expect(messages.filter((message) => message === distinctWarning)).toHaveLength(1);

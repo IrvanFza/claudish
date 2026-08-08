@@ -172,6 +172,91 @@ function isAbandoned(path: string): boolean {
 }
 
 /**
+ * What the most recent handshake knew about the lock.
+ *
+ * `peerHoldsHandshakeLock` runs AFTER `withHandshakeLock`'s `finally` has
+ * already released, so by then the lock file no longer says anything about the
+ * process asking. This is the fact that survives that release.
+ */
+type HandshakeContext = { heldByUs: boolean; startedAt: number };
+let lastHandshake: HandshakeContext | undefined;
+
+/** Test seam: forget the last handshake (call between cases). */
+export function __resetHandshakeContextForTests(): void {
+  lastHandshake = undefined;
+}
+
+/**
+ * True when a DIFFERENT, LIVE process is currently mid-handshake.
+ *
+ * This is the missing fourth answer to "why was I denied". The other three
+ * causes are states of the machine that a probe can see (screen locked, app
+ * locked, user clicked Cancel); this one is a peer, and until now it was
+ * indistinguishable from the Cancel — so it inherited Cancel's terminal
+ * treatment and the user got a raw SDK error for a situation that clears
+ * itself in about a second.
+ *
+ * Evidence-based, not a guess: the lock file is written O_EXCL by exactly one
+ * process, carries that process's pid, and is removed the instant its handshake
+ * returns. A live foreign holder therefore means "a sibling claudish is at the
+ * 1Password prompt right now", which is precisely the condition where waiting
+ * is the correct behaviour.
+ *
+ * TELLING IT APART FROM A REAL CANCEL takes more than reading the lock file,
+ * and an earlier version of this function got it wrong. The reasoning was "a
+ * Cancel happens INSIDE the holder's own handshake, so the denied peer holds
+ * nothing" — true of the PEER, but it ignores the canceller ITSELF, which also
+ * gets a denial. `withHandshakeLock` releases in a `finally` BEFORE that error
+ * reaches the classifier, so by the time we look, the canceller is no longer
+ * holding anything either. If a sibling grabbed the freed lock in that window —
+ * likely, since a burst is exactly when the lock matters — the user's own
+ * Cancel read as `peer` and got retried: the pinned `aa71ce3` second dialog,
+ * arriving in ~1s because `stillLocked()` breaks the countdown as soon as the
+ * peer releases.
+ *
+ * Two facts close it, both surviving the release:
+ *
+ *   1. **Did WE hold the lock during the failing handshake?** The holder is the
+ *      process 1Password actually prompted, so its denial is a decision, never a
+ *      collision. Whoever holds the lock can never claim `peer`.
+ *   2. **Was the current holder already there when we started?** A holder that
+ *      appeared AFTER our handshake began cannot have caused our denial. This
+ *      covers the degraded regimes where fact 1 is unavailable — the 45s
+ *      `acquire` timeout, `CLAUDISH_NO_OP_HANDSHAKE_LOCK=1`, an unwritable HOME
+ *      — in which nobody holds the lock on our behalf and a Cancel would
+ *      otherwise be indistinguishable.
+ *
+ * Both are conservative in the same direction: unsure → not a peer → terminal,
+ * which is the pre-existing behaviour and keeps `aa71ce3` fixed.
+ *
+ * Mutation testing showed fact 2 is the one that actually fires: because the
+ * lock is taken `O_EXCL`, any foreign holder observed after WE held it must
+ * have written a NEWER timestamp, so fact 2 already rejects it. Fact 1 is
+ * therefore redundant in every reachable state — kept deliberately, because it
+ * states the guarantee ("the process that was prompted owns its own denial")
+ * directly instead of deriving it from clock arithmetic, and it still holds if
+ * the locking discipline is ever relaxed. It is pinned by a test that
+ * constructs the otherwise-unreachable state on purpose.
+ *
+ * Stale holders are excluded for the same reason `isAbandoned` exists — a wedged
+ * process is not something to wait behind.
+ */
+export function peerHoldsHandshakeLock(): boolean {
+  // Fact 1: we were the one being asked, so this denial is ours to own.
+  if (lastHandshake?.heldByUs) return false;
+
+  const holder = readHolder(currentLockPath());
+  if (!holder || holder.pid === process.pid) return false;
+  if (!holderAlive(holder.pid)) return false;
+  if (Date.now() - holder.at > timing.staleMs) return false;
+
+  // Fact 2: a holder that arrived after we started did not cause our denial.
+  if (lastHandshake && holder.at > lastHandshake.startedAt) return false;
+
+  return true;
+}
+
+/**
  * Take the lock, or return false if `timeoutMs` elapses first.
  *
  * NEVER THROWS. A filesystem this cannot write to (read-only HOME, exotic
@@ -230,6 +315,10 @@ function release(path: string): void {
 export async function withHandshakeLock<T>(handshake: () => Promise<T>): Promise<T> {
   if (process.env.CLAUDISH_NO_OP_HANDSHAKE_LOCK === "1") {
     trace("bypassed (CLAUDISH_NO_OP_HANDSHAKE_LOCK=1)");
+    // Still recorded: bypassed means we hold nothing, so a denial here must not
+    // be blamed on whichever peer happens to hold the lock. `startedAt` keeps
+    // the "was the holder already there?" test available.
+    lastHandshake = { heldByUs: false, startedAt: Date.now() };
     return handshake();
   }
 
@@ -242,6 +331,12 @@ export async function withHandshakeLock<T>(handshake: () => Promise<T>): Promise
     held = false;
   }
   trace(`${held ? "acquired" : "NOT held (timeout or unwritable)"} after ${Date.now() - t0}ms`);
+  // Recorded BEFORE the handshake and deliberately NOT cleared in the `finally`:
+  // `peerHoldsHandshakeLock` reads it after the error has propagated, which is
+  // strictly later than the release. SDK ops are serialized per process
+  // (`runSdkExclusive`), so at most one handshake is ever in flight and a single
+  // module-level slot cannot be raced.
+  lastHandshake = { heldByUs: held, startedAt: t0 };
   try {
     return await handshake();
   } finally {

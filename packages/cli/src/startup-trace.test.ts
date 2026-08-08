@@ -237,6 +237,8 @@ describe("finalize → JSONL", () => {
 });
 
 describe("slow-start threshold gating", () => {
+  // There is no automatic slow line: interactive startup:model-select can dominate
+  // totalMs with the time the user spends reading and choosing from the model picker.
   test("below threshold → silent (JSONL still written)", () => {
     t = 2000;
     finalizeStartupTrace("run");
@@ -244,7 +246,7 @@ describe("slow-start threshold gating", () => {
     expect(readPayloads()).toHaveLength(1);
   });
 
-  test("above threshold → exactly ONE line with the top 3 spans by duration", () => {
+  test("far above the old threshold → silent (JSONL still preserves timing data)", () => {
     t = 0;
     traceSpan("op:vaults.list", () => {
       t = 900;
@@ -262,35 +264,40 @@ describe("slow-start threshold gating", () => {
     }); // 3.1s
     t = 31200;
     finalizeStartupTrace("config");
-    expect(stderrLines).toHaveLength(1);
-    const line = stderrLines[0];
-    expect(line).toContain("slow start 31.2s");
-    // Top 3 by duration: items.list (9.2s wait+exec), handshake (8.2s), wasm (3.1s).
-    expect(line).toContain("op:items.list 9.2s (wait 4.1s + exec 5.1s)");
-    expect(line).toContain("op:client-handshake 8.2s");
-    expect(line).toContain("op:sdk-wasm-import 3.1s");
-    expect(line).not.toContain("op:vaults.list"); // 4th place — excluded
-    expect(line).toContain("startup-metrics.jsonl");
-    expect(line).toContain("CLAUDISH_STARTUP_TRACE=1");
+    expect(stderrLines).toHaveLength(0);
+    const [payload] = readPayloads();
+    expect(payload.totalMs).toBe(31200);
+    expect(payload.spans).toEqual([
+      { name: "op:vaults.list", startMs: 0, durMs: 900 },
+      {
+        name: "op:items.list",
+        startMs: 900,
+        durMs: 9200,
+        meta: { waitMs: 4100, execMs: 5100 },
+      },
+      { name: "op:client-handshake", startMs: 10100, durMs: 8200 },
+      { name: "op:sdk-wasm-import", startMs: 18300, durMs: 3100 },
+    ]);
   });
 
-  test("quiet:true suppresses the slow line", () => {
+  test("quiet:true remains silent (JSONL still written)", () => {
     t = 20000;
     finalizeStartupTrace("run", { quiet: true });
     expect(stderrLines).toHaveLength(0);
     expect(readPayloads()).toHaveLength(1); // data still captured
   });
 
-  test("injected threshold is honored", () => {
+  test("crossing an injected threshold remains silent", () => {
     configure({ slowThresholdMs: 100 });
     t = 150;
     finalizeStartupTrace("run");
-    expect(stderrLines.some((l) => l.includes("slow start"))).toBe(true);
+    expect(stderrLines).toHaveLength(0);
+    expect(readPayloads()[0].totalMs).toBe(150);
   });
 });
 
 describe("CLAUDISH_STARTUP_TRACE=1 full table + live detail", () => {
-  test("finalize prints the aligned phase table instead of the slow line", () => {
+  test("finalize prints the aligned phase table", () => {
     configure({ env: { CLAUDISH_STARTUP_TRACE: "1" } });
     traceSpan("startup:parse-args", () => {
       t = 42;
@@ -300,7 +307,7 @@ describe("CLAUDISH_STARTUP_TRACE=1 full table + live detail", () => {
     q.start();
     t = 9000;
     q.end();
-    t = 30000; // way past threshold — but table mode replaces the slow line
+    t = 30000; // way past the old threshold — trace mode still prints the table
     finalizeStartupTrace("config");
     const all = stderrLines.join("\n");
     expect(all).toContain("startup trace (config)");
@@ -367,7 +374,7 @@ describe("suppressStartupTraceTerminalOutput — the TUI owns the terminal", () 
 
   test("a late finalize after suppression prints nothing (JSONL still written)", () => {
     // Defensive path: suppression arrives BEFORE finalize (e.g. the exit hook
-    // finalizes after a TUI mounted). The table/slow-line must not print.
+    // finalizes after a TUI mounted). The table must not print.
     configure({ env: { CLAUDISH_STARTUP_TRACE: "1" } });
     suppressStartupTraceTerminalOutput();
     t = 30000; // way past the slow threshold, and trace mode is on
@@ -412,8 +419,7 @@ describe("never throws (tracing failures can't break startup)", () => {
     });
     t = 20000;
     expect(() => finalizeStartupTrace("run")).not.toThrow();
-    // The slow line still prints — only the file write failed.
-    expect(stderrLines.some((l) => l.includes("slow start"))).toBe(true);
+    expect(stderrLines).toHaveLength(0);
     expect(existsSync(join(blocker, "nested"))).toBe(false);
   });
 

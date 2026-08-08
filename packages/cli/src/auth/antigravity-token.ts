@@ -98,6 +98,30 @@ export interface AntigravityTokenDeps {
 // Default (real) deps
 // ---------------------------------------------------------------------------
 
+/**
+ * Burst memo for the raw keychain READ.
+ *
+ * `defaultReadStore` spawns `security`, and since `antigravity` became visible in
+ * the model picker that spawn sits on the picker-open path: the picker resolves
+ * `credentials.isAvailable()` for every offered provider, which lands here. One
+ * open can therefore fork `security` several times for an answer that cannot have
+ * changed in between.
+ *
+ * A process-lifetime cache would be WRONG — `agy` signs in and out underneath us,
+ * writing the same keychain item from another process — so the TTL is deliberately
+ * short. The goal is collapsing a burst inside ONE operation, not caching across a
+ * session. Every write path claudish owns invalidates it explicitly (see
+ * `invalidateReadStoreMemo` callers), because a stale read after a refresh would
+ * hand back the token that was just replaced.
+ */
+const READ_STORE_TTL_MS = 3000;
+let cachedRawStore: { at: number; value: string | null } | null = null;
+
+/** Drop the read memo — call after ANY mutation of the shared keychain item. */
+function invalidateReadStoreMemo(): void {
+  cachedRawStore = null;
+}
+
 /** Read the shared token via macOS `security`. Non-darwin → null (with a warning). */
 function defaultReadStore(): string | null {
   if (process.platform !== "darwin") {
@@ -106,6 +130,9 @@ function defaultReadStore(): string | null {
     );
     return null;
   }
+  const now = Date.now();
+  if (cachedRawStore && now - cachedRawStore.at < READ_STORE_TTL_MS) return cachedRawStore.value;
+  let value: string | null = null;
   try {
     const out = execFileSync(
       "security",
@@ -113,11 +140,15 @@ function defaultReadStore(): string | null {
       { encoding: "utf8" }
     );
     const trimmed = out.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    value = trimmed.length > 0 ? trimmed : null;
   } catch {
     // Item not found (agy not signed in) or `security` unavailable.
-    return null;
+    value = null;
   }
+  // Memoize the MISS too: "not signed in" is the case that repeats hardest on the
+  // picker path, and it costs a failed spawn each time.
+  cachedRawStore = { at: now, value };
+  return value;
 }
 
 /** Write the shared token via macOS `security` (upsert with -U). */
@@ -125,6 +156,9 @@ function defaultWriteStore(rawValue: string): void {
   if (process.platform !== "darwin") {
     throw new Error("[Antigravity] Cannot write the shared token store on a non-macOS platform.");
   }
+  // Invalidate BEFORE the write, so a throwing `security` still leaves the memo
+  // dropped rather than serving a value the store may or may not still hold.
+  invalidateReadStoreMemo();
   execFileSync(
     "security",
     ["add-generic-password", "-U", "-s", KC_SERVICE, "-a", KC_ACCOUNT, "-w", rawValue],
@@ -151,6 +185,7 @@ export function locateAgyBinary(): string | null {
 /** Delete the shared token via macOS `security` (idempotent — missing item is fine). */
 function defaultDeleteStore(): void {
   if (process.platform !== "darwin") return;
+  invalidateReadStoreMemo();
   try {
     execFileSync("security", ["delete-generic-password", "-s", KC_SERVICE, "-a", KC_ACCOUNT], {
       stdio: ["ignore", "ignore", "ignore"],
@@ -180,6 +215,14 @@ function defaultRunAgyRefresh(): void {
     });
   } catch {
     // Non-zero exit / timeout — the caller re-reads the store and decides.
+  } finally {
+    // agy writes the refreshed token into the SAME keychain item from ANOTHER
+    // process, and `resolveValidToken` re-reads immediately after this returns.
+    // Without this drop, that re-read would replay the expired token from the
+    // memo and the successful refresh would be reported as "couldn't be
+    // refreshed". In the `finally` because a timed-out agy may still have
+    // written before we gave up on it.
+    invalidateReadStoreMemo();
   }
 }
 
@@ -364,8 +407,16 @@ export function getValidAntigravityAccessToken(
 // Test seam
 // ---------------------------------------------------------------------------
 
-/** Clear the in-flight promise and the memoized presence flag (between tests). */
+/**
+ * Clear the in-flight promise, the memoized presence flag, and the raw read memo
+ * (between tests, and after any out-of-band change to the shared store).
+ *
+ * The read memo is included so callers that already documented themselves as
+ * "reset, then read FRESH" — antigravity-oauth's `readToken` — keep that
+ * guarantee now that the default read is memoized at all.
+ */
 export function _resetAntigravityTokenState(): void {
   inFlight = null;
   cachedHasToken = null;
+  invalidateReadStoreMemo();
 }
