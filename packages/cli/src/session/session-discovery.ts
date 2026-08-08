@@ -66,6 +66,8 @@ export interface SessionRow {
    * is the thing you actually need to decide whether it is the one to resume.
    */
   recentTurns?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** Whether the deep search for a human turn has already run — see `hydrateConversation`. */
+  conversationDeepened?: boolean;
   /**
    * How the session was launched: `cli` for one a human started, `sdk-cli` for one
    * driven programmatically. Read during the list pass because it decides whether the
@@ -650,17 +652,47 @@ export function hydrateSession(row: SessionRow): SessionRow {
   return row;
 }
 
-/** How many trailing turns the details panel shows. */
-const RECENT_TURNS = 6;
+/**
+ * How far back the deep pass will look for a human turn, and why it exists at all.
+ *
+ * MEASURED on a 7.8 MB transcript in this repository: the last 128 KB (`TAIL_BYTES`, what
+ * `hydrateSession` reads) holds 25 assistant turns and ZERO human ones — the most recent
+ * thing the person said is roughly half a megabyte back, behind a wall of tool traffic.
+ * So the per-role quota below is necessary but not sufficient: it reserves the slot, and
+ * the slot stays empty because the record is outside the window.
+ *
+ * Widening `TAIL_BYTES` is the wrong fix. It is paid by EVERY row on EVERY keystroke —
+ * the list hydrates about twenty rows at a time — to serve a panel that shows one. This
+ * budget is paid once, for the selected row only, and only when the cheap window came up
+ * empty.
+ */
+const DEEP_TAIL_BYTES = 4 * 1024 * 1024;
 
 /**
- * The last few real turns of a conversation, oldest → newest.
+ * A PER-ROLE quota, not a flat count, and the difference is the whole feature.
  *
- * Walks the tail BACKWARDS and stops early, so a 73 MB transcript costs the same as a
- * small one — the records are already parsed by the caller either way.
+ * "Last 6 turns" sounds like a conversation and is not one in an agentic transcript: the
+ * assistant narrates several prose turns per human prompt, so the trailing six are very
+ * often six assistant turns and the panel showed a monologue. The human's last message is
+ * usually present and merely further back — it is what says what the session was ASKED
+ * to do, which is most of what decides whether it is the one to resume. Reserving it a
+ * slot guarantees it appears however deep it sits.
+ */
+const RECENT_AI_TURNS = 5;
+const RECENT_USER_TURNS = 1;
+
+/**
+ * The last few real turns of a conversation, oldest → newest: the most recent human
+ * message plus the last handful from the model.
  *
- * What counts as a turn is the whole difficulty. A Claude Code transcript is mostly NOT
- * conversation: tool results are posted as `user` records, tool calls and thinking are
+ * Walks the tail BACKWARDS and stops as soon as both quotas are filled, so a 73 MB
+ * transcript costs the same as a small one — the records are already parsed by the caller
+ * either way. Reversing at the end restores chronological order, and because the walk is
+ * strictly backwards that is a true ordering, not a re-sort: the user turn lands wherever
+ * it actually occurred relative to the model's, above them when it came first.
+ *
+ * What counts as a turn is the rest of the difficulty. A Claude Code transcript is mostly
+ * NOT conversation: tool results are posted as `user` records, tool calls and thinking are
  * blocks inside `assistant` records, and slash commands arrive wrapped in
  * `<command-name>` envelopes. Rendering those verbatim would fill the panel with
  * `[{"type":"tool_result"…}]` and teach the reader nothing. So a turn must carry actual
@@ -671,19 +703,81 @@ function extractRecentTurns(
   records: Record<string, unknown>[]
 ): Array<{ role: "user" | "assistant"; text: string }> {
   const out: Array<{ role: "user" | "assistant"; text: string }> = [];
-  for (let i = records.length - 1; i >= 0 && out.length < RECENT_TURNS; i--) {
+  let ai = 0;
+  let user = 0;
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (ai >= RECENT_AI_TURNS && user >= RECENT_USER_TURNS) break;
     const r = records[i]!;
     if (r.isMeta || r.isSidechain) continue;
     if (r.type !== "user" && r.type !== "assistant") continue;
+    const role = r.type === "user" ? "user" : "assistant";
+    // Quota check BEFORE the content work: once a role is satisfied the remaining
+    // records of that role cost nothing but the type test.
+    if (role === "assistant" ? ai >= RECENT_AI_TURNS : user >= RECENT_USER_TURNS) continue;
     const content = (r.message as { content?: unknown } | undefined)?.content;
     // A `user` record whose content is a tool_result is the harness replying to the
     // model, not the human speaking.
     if (Array.isArray(content) && content.some((b) => (b as any)?.type === "tool_result")) continue;
     const text = cleanPrompt(contentText(content));
     if (!text) continue;
-    out.push({ role: r.type === "user" ? "user" : "assistant", text });
+    out.push({ role, text });
+    if (role === "assistant") ai++;
+    else user++;
   }
   return out.reverse();
+}
+
+/**
+ * Second pass for the DETAILS panel: go and find the human turn the cheap window missed.
+ *
+ * Runs at most once per row (`conversationDeepened`) and returns immediately when the
+ * turns already include a `user` — so on a short session, or any session where the person
+ * spoke recently, it costs one array scan and no I/O at all.
+ *
+ * IT DOES NOT RE-PARSE THE WINDOW. Handing 4 MB of JSONL to `parseRecords` would mean
+ * `JSON.parse` on every assistant record and every tool result in it, to keep one line.
+ * Instead the lines are filtered by SUBSTRING first — a `user` record always carries
+ * `"type":"user"` — and only the survivors are parsed, walking backwards so the first hit
+ * is the newest and the loop stops there.
+ *
+ * The turn is PREPENDED. It is necessarily older than everything `hydrateSession` found,
+ * because that pass looked at the newest bytes and found no human turn in them, so
+ * chronological order puts it first. What separates it from the model turns below it is
+ * tool traffic, not silence — the panel shows the last thing asked and the last things
+ * said, which is what it is for, not a contiguous slice of the transcript.
+ */
+export function hydrateConversation(row: SessionRow): SessionRow {
+  if (row.conversationDeepened) return row;
+  row.conversationDeepened = true;
+  const turns = row.recentTurns;
+  if (!turns || turns.some((t) => t.role === "user")) return row;
+
+  const start = Math.max(0, row.sizeBytes - DEEP_TAIL_BYTES);
+  const chunk = readChunk(row.file, start, row.sizeBytes - start);
+  if (!chunk) return row;
+  const lines = chunk.split("\n");
+  // A window that starts mid-file starts mid-line; that fragment is not a record.
+  if (start > 0) lines.shift();
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.includes('"type":"user"')) continue;
+    let r: Record<string, unknown>;
+    try {
+      r = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (r.type !== "user" || r.isMeta || r.isSidechain) continue;
+    const content = (r.message as { content?: unknown } | undefined)?.content;
+    if (Array.isArray(content) && content.some((b) => (b as any)?.type === "tool_result")) continue;
+    const text = cleanPrompt(contentText(content));
+    if (!text) continue;
+    turns.unshift({ role: "user", text });
+    if (row.lastMessageChars === undefined) row.lastMessageChars = text.length;
+    return row;
+  }
+  return row;
 }
 
 /** The best label available for a row: its title, else its opening prompt, else its id. */

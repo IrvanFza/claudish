@@ -4,8 +4,10 @@
  * Vendored from the `bunjs:opentui-tui` skill's `assets/theme/tokens.ts`, with TWO
  * deliberate deviations from the shipped file. Everything else — the token NAMES, the
  * `Ramp` type and its non-empty bound, the ramp STRUCTURE (an explicit midtone stop so
- * `blendStops` never desaturates through the middle) — is unchanged, and `color.ts`,
- * `text.ts` and `widgets.tsx` beside it are byte-identical copies. Never scatter hex
+ * `blendStops` never desaturates through the middle) — is unchanged. `color.ts` and
+ * `text.ts` beside it are byte-identical copies; `widgets.tsx` differs by exactly one
+ * ADDITIVE prop, `Panel`'s `flush` (documented at the component), which defaults to the
+ * shipped behaviour — so a diff against the skill is one hunk, not a fork. Never scatter hex
  * literals in components: import a token. If a value you need is missing, add a token
  * HERE first — a one-off literal in a component is how a palette stops being a palette.
  *

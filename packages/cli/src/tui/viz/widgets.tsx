@@ -363,10 +363,20 @@ export type PanelLayout = Pick<BoxProps, LayoutKeys | "width" | "height">
  * to fill the screen. Pass it, and the panel fills what it is given. The spread sits
  * AFTER the chrome props so sizing always wins, and the layout type cannot reach the
  * chrome to contradict it.
+ *
+ * `flush` DROPS THE HORIZONTAL PADDING, for the one case the default gets wrong: a
+ * SELECTION LIST. The 1-column gutter is right for a form or a paragraph, and wrong for
+ * rows that carry their own full-width cursor highlight — the highlight stops a column
+ * short of the border on both sides, so the selected row reads as a floating chip rather
+ * than as a bar, and every row loses two columns of the text it is scanned by. It is on
+ * the component's own API (like `title` and `focused`) rather than in `PanelLayout`,
+ * because padding is appearance and appearance is not the parent's to set arbitrarily;
+ * this is one named, documented choice, not an open door to per-call-site chrome. A
+ * flush panel's children own the edge, so they must size themselves to `width - 2`.
  */
 export function Panel(
-  { title, focused = false, children, style, ...layout }:
-    PanelLayout & { title: string; focused?: boolean; children?: ReactNode; style?: PanelLayout },
+  { title, focused = false, flush = false, children, style, ...layout }:
+    PanelLayout & { title: string; focused?: boolean; flush?: boolean; children?: ReactNode; style?: PanelLayout },
 ): ReactNode {
   return (
     <box
@@ -378,8 +388,8 @@ export function Panel(
       titleAlignment="left"
       flexDirection="column"
       overflow="hidden"
-      paddingLeft={1}
-      paddingRight={1}
+      paddingLeft={flush ? 0 : 1}
+      paddingRight={flush ? 0 : 1}
       {...layout}
       style={style}
     >
