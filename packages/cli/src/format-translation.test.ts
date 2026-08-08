@@ -2261,6 +2261,39 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
     expect(extractText(events)).toBe("OK");
   });
 
+  test("OpenAI content_filter preserves text and emits refusal", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+
+    // Synthetic protocol-shape case: a provider refusal is not a turn the model chose to end.
+    const contentChunk = {
+      choices: [{ index: 0, delta: { content: "visible before refusal" }, finish_reason: null }],
+    };
+    const refusalChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }],
+    };
+    const fixture = new Response(
+      `data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(refusalChunk)}\n\ndata: [DONE]\n\n`,
+      {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("refusal");
+    expect(extractText(events)).toBe("visible before refusal");
+  });
+
   test("OpenAI tool_calls finish remains tool_use", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();

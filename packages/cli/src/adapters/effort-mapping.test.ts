@@ -11,7 +11,14 @@
  * ai-docs/sessions/dev-research-reasoning-effort-20260629-010035-c1b698d0/report.md §3.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import {
+  ALL_MODELS_CACHE_PATH,
+  type DiskCacheV2,
+  writeAllModelsCache,
+} from "../providers/all-models-cache.js";
 import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
 import { CodexAPIFormat } from "./codex-api-format.js";
 import { DeepSeekModelDialect } from "./deepseek-model-dialect.js";
@@ -21,6 +28,41 @@ import { GrokModelDialect } from "./grok-model-dialect.js";
 import { MiniMaxModelDialect } from "./minimax-model-dialect.js";
 import { OpenAIAPIFormat } from "./openai-api-format.js";
 import { QwenModelDialect } from "./qwen-model-dialect.js";
+
+const SYNTHETIC_FUGU_MODEL_ID = "fugu-acme-ultra";
+
+function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
+  const cacheDir = dirname(ALL_MODELS_CACHE_PATH);
+  const cacheDirExisted = existsSync(cacheDir);
+  const previousContents = existsSync(ALL_MODELS_CACHE_PATH)
+    ? readFileSync(ALL_MODELS_CACHE_PATH, "utf-8")
+    : null;
+
+  writeAllModelsCache(
+    {
+      version: 2,
+      lastUpdated: new Date().toISOString(),
+      entries,
+      models: [],
+    },
+    ALL_MODELS_CACHE_PATH
+  );
+
+  return () => {
+    if (previousContents === null) {
+      rmSync(ALL_MODELS_CACHE_PATH, { force: true });
+      if (!cacheDirExisted) {
+        try {
+          rmdirSync(cacheDir);
+        } catch {
+          // Another test may have created something in the shared cache dir.
+        }
+      }
+      return;
+    }
+    writeFileSync(ALL_MODELS_CACHE_PATH, previousContents, "utf-8");
+  };
+}
 
 // ─── Part 1: shared resolveEffortLevel ────────────────────────────────────
 
@@ -128,6 +170,29 @@ describe("OpenAI gates", () => {
 // ─── Part 2A (Sakana/Fugu): clamp-up via the OpenAI path ──────────────────
 
 describe("Sakana Fugu (OpenAI-compatible path) clamps UP to high", () => {
+  let cleanupCatalog: (() => void) | undefined;
+
+  beforeEach(() => {
+    cleanupCatalog = seedDefaultCatalog([
+      {
+        modelId: SYNTHETIC_FUGU_MODEL_ID,
+        aliases: [],
+        sources: {},
+        reasoning: {
+          supported: true,
+          control: "effort",
+          efforts: ["max", "xhigh", "high"],
+          defaultEffort: "high",
+        },
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    cleanupCatalog?.();
+    cleanupCatalog = undefined;
+  });
+
   test.each([
     ["fugu", "none", "high"],
     ["fugu", "minimal", "high"],
@@ -137,11 +202,10 @@ describe("Sakana Fugu (OpenAI-compatible path) clamps UP to high", () => {
     ["fugu", "xhigh", "xhigh"],
     ["fugu", "max", "xhigh"],
     ["fugu-ultra", "low", "high"],
-    // fugu-ultra advertises `max` in the catalog (efforts: max|xhigh|high), so
-    // the catalog-driven clamp passes it through instead of normalising it down.
-    // Not a behaviour regression: Sakana documents `xhigh == max`, so both send
-    // the same thing. `fugu` (non-ultra) has no `max` and still clamps to xhigh.
-    ["fugu-ultra", "max", "max"],
+    // The synthetic catalog entry advertises `max`, so the catalog-driven clamp
+    // passes it through. Without the fixture (or without catalog lookup), the
+    // Fugu name fallback would normalise `max` down to `xhigh` and this fails.
+    [SYNTHETIC_FUGU_MODEL_ID, "max", "max"],
     ["sakana/fugu-ultra-20260615", "medium", "high"],
   ])("%s effort '%s' → reasoning_effort '%s'", (model, input, expected) => {
     expect(openaiEffort(model, input)).toBe(expected);
