@@ -60,6 +60,13 @@ export interface SessionRow {
   lastMessageChars?: number;
   hydrated?: boolean;
   /**
+   * The tail of the conversation, oldest → newest, user and assistant interleaved.
+   *
+   * A title says what a session was ABOUT; the last exchange says where it got to, which
+   * is the thing you actually need to decide whether it is the one to resume.
+   */
+  recentTurns?: Array<{ role: "user" | "assistant"; text: string }>;
+  /**
    * How the session was launched: `cli` for one a human started, `sdk-cli` for one
    * driven programmatically. Read during the list pass because it decides whether the
    * row is OFFERED at all, and a filter cannot wait for lazy hydration.
@@ -638,9 +645,45 @@ export function hydrateSession(row: SessionRow): SessionRow {
       const t = cleanPrompt(contentText((r.message as any)?.content));
       if (t) row.lastMessageChars = t.length;
     }
-    if (row.title && row.lastMessageChars !== undefined) break;
   }
+  row.recentTurns = extractRecentTurns(tail);
   return row;
+}
+
+/** How many trailing turns the details panel shows. */
+const RECENT_TURNS = 6;
+
+/**
+ * The last few real turns of a conversation, oldest → newest.
+ *
+ * Walks the tail BACKWARDS and stops early, so a 73 MB transcript costs the same as a
+ * small one — the records are already parsed by the caller either way.
+ *
+ * What counts as a turn is the whole difficulty. A Claude Code transcript is mostly NOT
+ * conversation: tool results are posted as `user` records, tool calls and thinking are
+ * blocks inside `assistant` records, and slash commands arrive wrapped in
+ * `<command-name>` envelopes. Rendering those verbatim would fill the panel with
+ * `[{"type":"tool_result"…}]` and teach the reader nothing. So a turn must carry actual
+ * prose: tool-result records are skipped outright, non-text blocks are dropped, and what
+ * survives is collapsed to one line.
+ */
+function extractRecentTurns(
+  records: Record<string, unknown>[]
+): Array<{ role: "user" | "assistant"; text: string }> {
+  const out: Array<{ role: "user" | "assistant"; text: string }> = [];
+  for (let i = records.length - 1; i >= 0 && out.length < RECENT_TURNS; i--) {
+    const r = records[i]!;
+    if (r.isMeta || r.isSidechain) continue;
+    if (r.type !== "user" && r.type !== "assistant") continue;
+    const content = (r.message as { content?: unknown } | undefined)?.content;
+    // A `user` record whose content is a tool_result is the harness replying to the
+    // model, not the human speaking.
+    if (Array.isArray(content) && content.some((b) => (b as any)?.type === "tool_result")) continue;
+    const text = cleanPrompt(contentText(content));
+    if (!text) continue;
+    out.push({ role: r.type === "user" ? "user" : "assistant", text });
+  }
+  return out.reverse();
 }
 
 /** The best label available for a row: its title, else its opening prompt, else its id. */

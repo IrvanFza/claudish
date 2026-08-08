@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { A, C } from "../tui/theme.js";
-import { padTo, truncate } from "../tui/viz/text.js";
+import { padStartTo, padTo, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
 import { BadgeSpan, Meter, Panel, Sparkline } from "../tui/viz/widgets.js";
 import {
@@ -35,7 +35,7 @@ const SCROLL_CHROME = 1;
 /** Narrow terminals keep the compact sidebar; wide ones get room for branch + state. */
 const SIDEBAR_NARROW = 30;
 const SIDEBAR_WIDE = 40;
-const PREVIEW_H = 11;
+const PREVIEW_H = 13;
 
 /** Case-insensitive subsequence match — the same "typing narrows it" feel as the 1Password tab. */
 function fuzzy(needle: string, hay: string): boolean {
@@ -69,6 +69,20 @@ export const STALE_MS = 3 * 86_400_000;
  * buckets exist in `tui/theme.ts`). These are the mid-lightness versions, so a row of
  * chips reads as data rather than as a warning light.
  */
+/**
+ * Chip COLUMN widths, in cells. Constant on purpose.
+ *
+ * The alignment bug this fixes: the name width was derived from each row's own chip
+ * text, so a worktree with `1`/`7s` reserved less than one with `611`/`144d` and every
+ * column in the pane wandered by a few cells per row. Fixed columns mean the name is
+ * padded to the same width everywhere and the chips stack in a true column. `BadgeSpan`
+ * takes `width` and pads OUTSIDE the fill, so the chips stay chip-sized — padding inside
+ * the label is what fuses a stack of them into one solid rectangle.
+ */
+const COUNT_COL = 6;
+const AGE_COL = 7;
+const STATE_COL = 14;
+
 const CHIP = {
   count: "#2c4a6e", //   sessions — neutral blue, the most common chip
   fresh: "#2d6e3e", //   recently used
@@ -112,11 +126,10 @@ function WorktreeRow({
         ? tokens.text
         : tokens.subtle;
 
-  // line 1 — name, then "how much" and "how recently" as chips on the right
+  // line 1 — name, then "how much" and "how recently" as chips in fixed columns
   const used = g.lastActiveMs ? age(g.lastActiveMs) : "?";
   const usedBg = g.lastActiveMs && Date.now() - g.lastActiveMs < STALE_MS ? CHIP.fresh : CHIP.old;
-  const line1Chips = ` ${count} ` + ` ${used} `;
-  const nameW = Math.max(6, width - 2 - 2 - line1Chips.length);
+  const nameW = Math.max(6, width - 2 - 2 - COUNT_COL - AGE_COL);
 
   // line 2 — branch, then working-tree state. `↑`/`↓` are the conventional pair for
   // unpushed / unpulled commits, so they are chipped separately rather than merged.
@@ -125,8 +138,7 @@ function WorktreeRow({
   else if (g.dirty === 0) chips.push(["✓", CHIP.clean]);
   if (g.ahead) chips.push([`↑${g.ahead}`, CHIP.ahead]);
   if (g.behind) chips.push([`↓${g.behind}`, CHIP.behind]);
-  const chipW = chips.reduce((a, [t]) => a + t.length + 2, 0);
-  const branchW = Math.max(4, width - 4 - chipW - 1);
+  const branchW = Math.max(4, width - 4 - STATE_COL);
 
   return (
     <box flexDirection="column" height={2} backgroundColor={cursor ? C.bgHighlight : undefined}>
@@ -136,8 +148,8 @@ function WorktreeRow({
           {padTo(truncate(g.name, nameW), nameW)}
         </span>
         <span fg={g.activeNow ? tokens.success : tokens.trace}>{g.activeNow ? "● " : "  "}</span>
-        <BadgeSpan label={String(count)} bg={CHIP.count} />
-        <BadgeSpan label={used} bg={usedBg} />
+        <BadgeSpan label={String(count)} bg={CHIP.count} width={COUNT_COL} />
+        <BadgeSpan label={used} bg={usedBg} width={AGE_COL} />
       </text>
       <text>
         <span fg={tokens.trace}>{"  ⎇ "}</span>
@@ -232,11 +244,13 @@ function SessionRowView({
       <box flexDirection="row" height={1}>
         <text>
           <span fg={cursor ? tokens.accent : tokens.trace}>{`${pad}${cursor ? "▍" : " "}   `}</span>
-          <BadgeSpan label={age(row.mtimeMs)} bg={live ? CHIP.fresh : CHIP.old} />
+          <BadgeSpan label={age(row.mtimeMs)} bg={live ? CHIP.fresh : CHIP.old} width={AGE_COL} />
         </text>
         <Meter pct={(row.sizeBytes / maxSize) * 100} width={10} ramp={ramps.temperature} />
         <text>
-          <span fg={tokens.subtle}>{` ${size}`}</span>
+          {/* Right-aligned: a size column that jitters at the decimal is exactly the
+              drift `padStartTo` exists to stop. */}
+          <span fg={tokens.subtle}>{` ${padStartTo(size, 7)}`}</span>
           {row.gitBranch ? (
             <span fg={tokens.trace}>{`  ⎇ ${truncate(row.gitBranch, 18)}`}</span>
           ) : (
@@ -473,7 +487,10 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   const sessInner = rightW - PANEL_CHROME - SCROLL_CHROME;
   // One extra column of slack so a full-width row never abuts the scrollbar thumb.
   const sideInner = sidebarW - PANEL_CHROME - SCROLL_CHROME - 1;
-  const previewInner = bodyW - PANEL_CHROME;
+  // The details panel sits in the RIGHT COLUMN, not across the whole terminal, so its
+  // inner width comes off `rightW`. Deriving it from the full width made it 40 cells too
+  // wide at 145 columns and the conversation ran straight off the panel's right edge.
+  const previewInner = rightW - PANEL_CHROME;
 
   const maxSize = Math.max(1, ...sessions.slice(0, 400).map((s) => s.sizeBytes));
 
@@ -596,6 +613,36 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   );
 }
 
+/** One field row in the details panel: dim fixed-width label, value, done. */
+function Field({
+  label,
+  width,
+  children,
+}: {
+  label: string;
+  width: number;
+  children: React.ReactNode;
+}): React.ReactNode {
+  return (
+    <box flexDirection="row" height={1}>
+      <text fg={tokens.subtle}>{padTo(label, width)}</text>
+      {children}
+    </box>
+  );
+}
+
+/**
+ * The details panel: what this worktree is, on the left; how the conversation ended, on
+ * the right.
+ *
+ * TWO COLUMNS because they answer different questions and the panel is wide enough for
+ * both — metadata identifies the session, the transcript tail tells you whether it is
+ * the one you meant. Stacking them would push the conversation off the bottom, which is
+ * where it was before and why it may as well not have existed.
+ *
+ * Every label is one fixed-width dim column and every value starts at the same x, so the
+ * panel reads as a form rather than as a paragraph. Chrome dim, values bright: rule 6.
+ */
 function Preview({
   row,
   group,
@@ -611,84 +658,134 @@ function Preview({
   groupCount: number;
 }): React.ReactNode {
   const mb = row.sizeBytes / 1_048_576;
-  const series = group ? activitySeries(group.sessions) : [];
   const L = 9;
-  /**
-   * THE DETAILS PANEL IS WHERE THE FULL STRINGS LIVE.
-   *
-   * The sidebar truncates aggressively — `worktree-resume-messa…`, `ci-green-tes…` — and
-   * that is the right trade there, because the list is for scanning. It only works if
-   * the untruncated name, branch and path are one keystroke away, which is here. Nothing
-   * in this panel is abbreviated except to the panel's own width.
-   */
+  // The conversation gets the right half on a wide terminal and is dropped entirely on a
+  // narrow one, where truncating it to a few cells would be worse than omitting it.
+  // Two FIXED columns that sum to the available width, neither allowed to shrink.
+  // Mixing `width` with `flexGrow` here was contradictory and let Yoga squeeze whichever
+  // side lost: first the transcript to 17 cells, then the metadata labels to `acti…`.
+  const GAP = 2;
+  const wide = width >= 96;
+  const convW = wide ? Math.min(64, Math.floor(width * 0.45)) : 0;
+  const metaW = width - convW - (wide ? GAP : 0);
+
   return (
-    <box flexDirection="column">
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("worktree", L)}</text>
-        <text>
-          <span fg={tokens.text} attributes={A.bold}>
-            {truncate(group?.name ?? "—", Math.max(8, width - L - 26))}
-          </span>
-          {group?.current ? <span fg={tokens.success}>{"  ▶ you are here"}</span> : <span />}
-          {group && !group.live ? <span fg={tokens.dead}>{"  (worktree deleted)"}</span> : <span />}
-        </text>
-      </box>
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("branch", L)}</text>
-        <text fg={group?.live ? tokens.info : tokens.dead}>
-          {truncate(group?.branch ?? "—", Math.max(8, width - L - 22))}
-        </text>
-        {group?.dirty !== undefined ? (
+    <box flexDirection="row" gap={wide ? GAP : 0}>
+      {/* The metadata column GROWS and may shrink; the conversation column is fixed and
+          may not. Without `flexShrink={0}` the transcript was squeezed to ~17 cells of a
+          64-cell column whenever a long path or title overflowed the metadata side —
+          Yoga's default `flexShrink: 1` spreads the shortfall across every sibling. */}
+      <box flexDirection="column" width={metaW} flexShrink={0}>
+        <Field label="worktree" width={L}>
           <text>
-            <BadgeSpan
-              label={group.dirty > 0 ? `✎${group.dirty}` : "clean"}
-              bg={group.dirty > 0 ? CHIP.dirty : CHIP.clean}
-            />
-            {group.ahead ? <BadgeSpan label={`↑${group.ahead}`} bg={CHIP.ahead} /> : <span />}
-            {group.behind ? <BadgeSpan label={`↓${group.behind}`} bg={CHIP.behind} /> : <span />}
+            <span fg={tokens.text} attributes={A.bold}>
+              {truncate(group?.name ?? "—", Math.max(8, metaW - L - 16))}
+            </span>
+            {group?.current ? <span fg={tokens.success}>{"  ▶ here"}</span> : <span />}
+            {group && !group.live ? <span fg={tokens.dead}>{"  deleted"}</span> : <span />}
           </text>
-        ) : (
-          <text fg={tokens.trace}>—</text>
-        )}
+        </Field>
+        <Field label="branch" width={L}>
+          <text>
+            <span fg={group?.live ? tokens.info : tokens.dead}>
+              {`${truncate(group?.branch ?? "—", Math.max(8, metaW - L - STATE_COL))} `}
+            </span>
+          </text>
+          {group?.dirty !== undefined ? (
+            <text>
+              <BadgeSpan
+                label={group.dirty > 0 ? `✎${group.dirty}` : "clean"}
+                bg={group.dirty > 0 ? CHIP.dirty : CHIP.clean}
+              />
+              {group.ahead ? <BadgeSpan label={`↑${group.ahead}`} bg={CHIP.ahead} /> : <span />}
+              {group.behind ? <BadgeSpan label={`↓${group.behind}`} bg={CHIP.behind} /> : <span />}
+            </text>
+          ) : null}
+        </Field>
+        <Field label="path" width={L}>
+          <text fg={tokens.trace}>{truncate(group?.path ?? "—", metaW - L)}</text>
+        </Field>
+        <Field label="activity" width={L}>
+          <Sparkline values={group ? activitySeries(group.sessions) : []} fg={tokens.info} />
+          <text fg={tokens.trace}>
+            {truncate(
+              ` ${groupCount} session${groupCount === 1 ? "" : "s"} · ${
+                group?.createdMs ? age(group.createdMs) : "?"
+              } old · used ${group?.lastActiveMs ? age(group.lastActiveMs) : "?"} ago`,
+              Math.max(0, metaW - L - 15)
+            )}
+          </text>
+        </Field>
+
+        <box height={1} />
+
+        <Field label="session" width={L}>
+          <text fg={tokens.text} attributes={A.bold}>
+            {truncate(sessionLabel(row), metaW - L)}
+          </text>
+        </Field>
+        <Field label="id" width={L}>
+          <text fg={tokens.info}>{truncate(row.id, metaW - L)}</text>
+        </Field>
+        <Field label="size" width={L}>
+          <Meter pct={(row.sizeBytes / maxSize) * 100} width={14} ramp={ramps.temperature} />
+          <text fg={tokens.text}>{` ${mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.round(row.sizeBytes / 1024)} KB`}`}</text>
+        </Field>
       </box>
-      {group?.path ? (
-        <box flexDirection="row" gap={1} height={1}>
-          <text fg={tokens.subtle}>{padTo("path", L)}</text>
-          <text fg={tokens.trace}>{truncate(group.path, width - L - 2)}</text>
+
+      {wide ? (
+        <box width={convW} flexShrink={0} overflow="hidden">
+          <Conversation turns={row.recentTurns ?? []} width={convW} />
         </box>
       ) : null}
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("history", L)}</text>
-        <Sparkline values={series} fg={tokens.info} />
-        <text fg={tokens.trace}>
-          {`${groupCount} session${groupCount === 1 ? "" : "s"} · created ${
-            group?.createdMs ? `${age(group.createdMs)} ago` : "?"
-          } · used ${group?.lastActiveMs ? `${age(group.lastActiveMs)} ago` : "?"}`}
-        </text>
-      </box>
+    </box>
+  );
+}
 
-      <box height={1} />
-
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("session", L)}</text>
-        <text fg={tokens.text} attributes={A.bold}>
-          {truncate(sessionLabel(row), width - L - 2)}
+/**
+ * The tail of the conversation, oldest at the top.
+ *
+ * Roles are BADGES rather than coloured prose, and the two are deliberately different
+ * colours that mean the same thing everywhere else in claudish — cyan for the machine,
+ * green for the person. Each turn is clipped to two lines: enough to recognise where the
+ * session got to, not so much that the panel becomes a transcript viewer.
+ */
+function Conversation({
+  turns,
+  width,
+}: {
+  turns: Array<{ role: "user" | "assistant"; text: string }>;
+  width: number;
+}): React.ReactNode {
+  if (turns.length === 0) {
+    return (
+      <box flexDirection="column" width={width}>
+        <text fg={tokens.trace}>no conversation recorded</text>
+      </box>
+    );
+  }
+  const ROLE_W = 8;
+  const textW = Math.max(10, width - ROLE_W - 2);
+  // Newest last, and only as many as fit — the panel is 9 rows and each turn takes one.
+  const shown = turns.slice(-8);
+  return (
+    <box flexDirection="column" width={width} flexShrink={0}>
+      {shown.map((t, i) => (
+        // ONE <text> per turn. As two sibling <text>s in a row, Yoga shrank the
+        // content one to its minimum and the transcript rendered ~17 cells wide
+        // regardless of the column it had been given.
+        <text key={`${i}-${t.text.slice(0, 12)}`}>
+          <span fg={tokens.trace}>{"▍"}</span>
+          <BadgeSpan
+            label={t.role === "user" ? "you" : "model"}
+            bg={t.role === "user" ? CHIP.fresh : CHIP.ahead}
+            width={ROLE_W}
+          />
+          <span fg={t.role === "user" ? tokens.text : tokens.subtle}>
+            {truncate(t.text, textW)}
+          </span>
         </text>
-      </box>
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("id", L)}</text>
-        <text fg={tokens.info}>{row.id}</text>
-        <text fg={tokens.subtle}>last msg</text>
-        <text fg={tokens.text}>
-          {row.lastMessageChars === undefined ? "—" : `${row.lastMessageChars} ch`}
-        </text>
-      </box>
-      <box flexDirection="row" gap={1} height={1}>
-        <text fg={tokens.subtle}>{padTo("size", L)}</text>
-        <Meter pct={(row.sizeBytes / maxSize) * 100} width={18} ramp={ramps.temperature} />
-        <text fg={tokens.text}>{`${mb.toFixed(mb >= 10 ? 0 : 1)} MB`}</text>
-        <text fg={tokens.trace}>{truncate(row.firstPrompt || "", Math.max(0, width - L - 32))}</text>
-      </box>
+      ))}
     </box>
   );
 }
