@@ -33,9 +33,19 @@ import {
 const PANEL_CHROME = 4;
 const SCROLL_CHROME = 1;
 /** Narrow terminals keep the compact sidebar; wide ones get room for branch + state. */
-const SIDEBAR_NARROW = 30;
-const SIDEBAR_WIDE = 40;
-const PREVIEW_H = 13;
+/**
+ * The sidebar takes a THIRD of the screen, not a fixed 30 cells.
+ *
+ * Choosing the worktree is the first decision and the one this picker exists for, so its
+ * pane is sized as a share of whatever the terminal gives rather than as a constant that
+ * happened to fit one window. The clamps keep it usable at both extremes.
+ */
+const SIDEBAR_MIN = 28;
+const SIDEBAR_MAX = 50;
+/** Session details, under the RIGHT column only. */
+const SESSION_DETAIL_H = 11;
+/** Worktree details, spanning BOTH columns along the bottom. */
+const WORKTREE_DETAIL_H = 4;
 
 /** Case-insensitive subsequence match — the same "typing narrows it" feel as the 1Password tab. */
 function fuzzy(needle: string, hay: string): boolean {
@@ -70,18 +80,13 @@ export const STALE_MS = 3 * 86_400_000;
  * chips reads as data rather than as a warning light.
  */
 /**
- * Chip COLUMN widths, in cells. Constant on purpose.
+ * Session cards keep a fixed age column so every meter starts at the same x.
  *
- * The alignment bug this fixes: the name width was derived from each row's own chip
- * text, so a worktree with `1`/`7s` reserved less than one with `611`/`144d` and every
- * column in the pane wandered by a few cells per row. Fixed columns mean the name is
- * padded to the same width everywhere and the chips stack in a true column. `BadgeSpan`
- * takes `width` and pads OUTSIDE the fill, so the chips stay chip-sized — padding inside
- * the label is what fuses a stack of them into one solid rectangle.
+ * It is the only fixed chip column left. The SIDEBAR has none: it packs chips from the
+ * left and omits absent ones, because reserving a column for a chip that is not there is
+ * exactly what produced the voids it used to render beside truncated names.
  */
-const COUNT_COL = 6;
 const AGE_COL = 7;
-const STATE_COL = 14;
 
 const CHIP = {
   count: "#2c4a6e", //   sessions — neutral blue, the most common chip
@@ -94,17 +99,18 @@ const CHIP = {
 } as const;
 
 /**
- * One worktree, as two rows of chips.
+ * One worktree: the NAME on its own line, the STATUS on the next.
  *
- * Two rows because the question this pane answers is not "what is it called" but "which
- * of these is worth going back to", and that needs branch, working-tree state and
- * recency together. Discrete facts are BADGES rather than coloured text — a count, an
- * age and an ahead/behind pair are exactly the "discrete status" the visual contract
- * says to chip, and chips survive being scanned at speed in a way `✎3` in orange does
- * not. Names and branches TRUNCATE here on purpose; the details panel carries them in
- * full, which is why they do not need to fit.
+ * The split is by kind, not by convenience, and that is what fixes the layout. Earlier
+ * versions put chips beside the name and padded whatever was absent, so every row was a
+ * truncated name (`minimax-suppo…`) next to a void — squeezing the one field you
+ * navigate by in order to reserve space for one that was not there. Now line one is the
+ * full name with nothing competing for it, and line two is chips packed from the left
+ * with no right-alignment padding, so there is no gap to leave behind.
  *
- * Each row is ONE `<text>` of spans — sibling `<text>`s in a height-2 box overprint.
+ * Chip order is fixed — threads, uncommitted, unpushed, unpulled, age — so the eye can
+ * learn one position per fact even though absent chips are omitted rather than padded.
+ * Branch, path and created-date live in the details panel, which shows them in full.
  */
 function WorktreeRow({
   g,
@@ -125,51 +131,52 @@ function WorktreeRow({
       : cursor
         ? tokens.text
         : tokens.subtle;
-
-  // line 1 — name, then "how much" and "how recently" as chips in fixed columns
   const used = g.lastActiveMs ? age(g.lastActiveMs) : "?";
   const usedBg = g.lastActiveMs && Date.now() - g.lastActiveMs < STALE_MS ? CHIP.fresh : CHIP.old;
-  const nameW = Math.max(6, width - 2 - 2 - COUNT_COL - AGE_COL);
-
-  // line 2 — branch, then working-tree state. `↑`/`↓` are the conventional pair for
-  // unpushed / unpulled commits, so they are chipped separately rather than merged.
-  const chips: Array<[string, string]> = [];
-  if (g.dirty !== undefined && g.dirty > 0) chips.push([`✎${g.dirty}`, CHIP.dirty]);
-  else if (g.dirty === 0) chips.push(["✓", CHIP.clean]);
-  if (g.ahead) chips.push([`↑${g.ahead}`, CHIP.ahead]);
-  if (g.behind) chips.push([`↓${g.behind}`, CHIP.behind]);
-  const branchW = Math.max(4, width - 4 - STATE_COL);
 
   return (
     <box flexDirection="column" height={2} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text>
         <span fg={g.current ? tokens.success : tokens.trace}>{g.current ? "▶ " : "  "}</span>
         <span fg={nameColor} attributes={cursor ? A.bold : undefined}>
-          {padTo(truncate(g.name, nameW), nameW)}
+          {truncate(g.name, Math.max(6, width - 2))}
         </span>
-        <span fg={g.activeNow ? tokens.success : tokens.trace}>{g.activeNow ? "● " : "  "}</span>
-        <BadgeSpan label={String(count)} bg={CHIP.count} width={COUNT_COL} />
-        <BadgeSpan label={used} bg={usedBg} width={AGE_COL} />
       </text>
       <text>
-        <span fg={tokens.trace}>{"  ⎇ "}</span>
-        <span fg={g.live ? tokens.info : tokens.dead}>
-          {padTo(truncate(g.branch ?? (g.live ? "detached" : "—"), branchW), branchW)}
-        </span>
-        {chips.map(([t, bg]) => (
-          <BadgeSpan key={t} label={t} bg={bg} />
-        ))}
+        <span fg={g.activeNow ? tokens.success : tokens.trace}>{g.activeNow ? "  ● " : "    "}</span>
+        <BadgeSpan label={String(count)} bg={CHIP.count} />
+        <span> </span>
+        {g.dirty ? <BadgeSpan label={`✎${g.dirty}`} bg={CHIP.dirty} /> : <span />}
+        {g.dirty ? <span> </span> : <span />}
+        {g.ahead ? <BadgeSpan label={`↑${g.ahead}`} bg={CHIP.ahead} /> : <span />}
+        {g.ahead ? <span> </span> : <span />}
+        {g.behind ? <BadgeSpan label={`↓${g.behind}`} bg={CHIP.behind} /> : <span />}
+        {g.behind ? <span> </span> : <span />}
+        <BadgeSpan label={used} bg={usedBg} />
       </text>
     </box>
   );
 }
 
 /** A non-selectable divider between the recent worktrees and the stale ones. */
-function SectionHeader({ label, width }: { label: string; width: number }): React.ReactNode {
+function SectionHeader({
+  label,
+  count,
+  width,
+}: {
+  label: string;
+  count: number;
+  width: number;
+}): React.ReactNode {
+  const text = `${label} ${count} `;
   return (
-    <box height={1}>
+    // A blank row above it. One dim rule inside a wall of two-line rows reads as another
+    // row, not as a boundary — the gap is what makes it a section break.
+    <box flexDirection="column" height={2}>
+      <text> </text>
       <text>
-        <span fg={tokens.trace}>{`${label} ${"─".repeat(Math.max(0, width - label.length - 1))}`}</span>
+        <span fg={tokens.subtle} attributes={A.bold}>{text}</span>
+        <span fg={tokens.border}>{"─".repeat(Math.max(0, width - text.length))}</span>
       </text>
     </box>
   );
@@ -393,7 +400,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
 
   // Hydrate what is on screen, never the whole corpus. Each call is two bounded reads
   // and returns immediately once a row is done, so this stays cheap on every keystroke.
-  const listRows = Math.max(3, height - PREVIEW_H - 4);
+  const listRows = Math.max(3, height - SESSION_DETAIL_H - WORKTREE_DETAIL_H - 4);
   useEffect(() => {
     const start = Math.max(0, Math.min(sessCursor - 2, items.length - listRows));
     for (const it of items.slice(start, start + listRows + 2)) {
@@ -482,7 +489,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
 
   // ── widths (arithmetic, because data widgets take a numeric width) ─────────
   const bodyW = width;
-  const sidebarW = width >= 120 ? SIDEBAR_WIDE : SIDEBAR_NARROW;
+  const sidebarW = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(width * 0.34)));
   const rightW = Math.max(30, bodyW - sidebarW);
   const sessInner = rightW - PANEL_CHROME - SCROLL_CHROME;
   // One extra column of slack so a full-width row never abuts the scrollbar thumb.
@@ -490,7 +497,8 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   // The details panel sits in the RIGHT COLUMN, not across the whole terminal, so its
   // inner width comes off `rightW`. Deriving it from the full width made it 40 cells too
   // wide at 145 columns and the conversation ran straight off the panel's right edge.
-  const previewInner = rightW - PANEL_CHROME;
+  const sessionDetailInner = rightW - PANEL_CHROME;
+  const worktreeDetailInner = width - PANEL_CHROME;
 
   const maxSize = Math.max(1, ...sessions.slice(0, 400).map((s) => s.sizeBytes));
 
@@ -528,7 +536,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
                   count={listed.get(g.name)?.length ?? 0}
                 />
               ))}
-              {stale.length > 0 ? <SectionHeader label="stale" width={sideInner} /> : null}
+              {stale.length > 0 ? (
+                <SectionHeader label="stale · 3d+" count={stale.length} width={sideInner} />
+              ) : null}
               {stale.map((g, i) => (
                 <WorktreeRow
                   key={g.name}
@@ -581,22 +591,26 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
 
           {/* Content-sized, so flexShrink={0}: without it the scrollbox above (whose
               intrinsic height is its whole content) starves this panel to one row. */}
-          <box height={PREVIEW_H} flexShrink={0}>
-            <Panel title="preview" flexGrow={1}>
+          <box height={SESSION_DETAIL_H} flexShrink={0}>
+            <Panel title="session" flexGrow={1}>
               {selected ? (
-                <Preview
-                  row={selected}
-                  group={group}
-                  width={previewInner}
-                  maxSize={maxSize}
-                  groupCount={sessions.length}
-                />
+                <SessionDetail row={selected} width={sessionDetailInner} />
               ) : (
-                <text fg={tokens.subtle}>nothing selected</text>
+                <text fg={tokens.subtle}>
+                  {cursorItem?.kind === "agents" ? "agent sessions — enter to expand" : "nothing selected"}
+                </text>
               )}
             </Panel>
           </box>
         </box>
+      </box>
+
+      {/* Spans BOTH columns: the worktree is the context for everything above it, so it
+          gets the full width rather than being squeezed into the right-hand column. */}
+      <box height={WORKTREE_DETAIL_H} flexShrink={0}>
+        <Panel title="worktree" flexGrow={1}>
+          <WorktreeDetail group={group} width={worktreeDetailInner} count={sessions.length} />
+        </Panel>
       </box>
 
       <box flexDirection="row" height={1} paddingX={1} gap={2}>
@@ -613,7 +627,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   );
 }
 
-/** One field row in the details panel: dim fixed-width label, value, done. */
+/** One field row: dim fixed-width label, value, done. */
 function Field({
   label,
   width,
@@ -623,8 +637,11 @@ function Field({
   width: number;
   children: React.ReactNode;
 }): React.ReactNode {
+  // `gap={1}` rather than trailing spaces inside a `<text>`: a flex row does not render
+  // a sibling's trailing whitespace as separation, so `${id}   ` left the meter flush
+  // against the id (`…1c67d87ed1de███████`). The gap is a layout fact, so Yoga owns it.
   return (
-    <box flexDirection="row" height={1}>
+    <box flexDirection="row" height={1} gap={1}>
       <text fg={tokens.subtle}>{padTo(label, width)}</text>
       {children}
     </box>
@@ -632,112 +649,99 @@ function Field({
 }
 
 /**
- * The details panel: what this worktree is, on the left; how the conversation ended, on
- * the right.
+ * The worktree strip along the bottom, spanning BOTH columns.
  *
- * TWO COLUMNS because they answer different questions and the panel is wide enough for
- * both — metadata identifies the session, the transcript tail tells you whether it is
- * the one you meant. Stacking them would push the conversation off the bottom, which is
- * where it was before and why it may as well not have existed.
- *
- * Every label is one fixed-width dim column and every value starts at the same x, so the
- * panel reads as a form rather than as a paragraph. Chrome dim, values bright: rule 6.
+ * It gets the full width because it is the context for everything above it, and because
+ * the sidebar deliberately does NOT carry branch, path or created-date — they were
+ * squeezing the name there, so they live here where there is room for them in full.
+ * Two rows: identity, then location and history.
  */
-function Preview({
-  row,
+function WorktreeDetail({
   group,
   width,
-  maxSize,
-  groupCount,
+  count,
 }: {
-  row: SessionRow;
   group: WorktreeGroup | undefined;
   width: number;
-  maxSize: number;
-  /** Sessions listed in this worktree after filtering. */
-  groupCount: number;
+  count: number;
 }): React.ReactNode {
+  if (!group) return <text fg={tokens.subtle}>no worktree selected</text>;
+  const L = 9;
+  return (
+    <box flexDirection="column">
+      <box flexDirection="row" height={1}>
+        <text fg={tokens.subtle}>{padTo("worktree", L)}</text>
+        <text>
+          <span fg={tokens.text} attributes={A.bold}>
+            {truncate(group.name, Math.max(10, Math.floor(width * 0.3)))}
+          </span>
+          {group.current ? <span fg={tokens.success}>{"  ▶ you are here"}</span> : <span />}
+          {!group.live ? <span fg={tokens.dead}>{"  worktree deleted"}</span> : <span />}
+        </text>
+        <text fg={tokens.subtle}>{"   ⎇ "}</text>
+        <text fg={group.live ? tokens.info : tokens.dead}>
+          {`${truncate(group.branch ?? (group.live ? "detached" : "—"), Math.max(10, Math.floor(width * 0.28)))} `}
+        </text>
+        <text>
+          {group.dirty !== undefined ? (
+            <BadgeSpan
+              label={group.dirty > 0 ? `✎${group.dirty} uncommitted` : "clean"}
+              bg={group.dirty > 0 ? CHIP.dirty : CHIP.clean}
+            />
+          ) : (
+            <span />
+          )}
+          {group.ahead ? <BadgeSpan label={`↑${group.ahead}`} bg={CHIP.ahead} /> : <span />}
+          {group.behind ? <BadgeSpan label={`↓${group.behind}`} bg={CHIP.behind} /> : <span />}
+        </text>
+      </box>
+      <box flexDirection="row" height={1}>
+        <text fg={tokens.subtle}>{padTo("path", L)}</text>
+        <text fg={tokens.trace}>
+          {`${truncate(group.path ?? "—", Math.max(20, Math.floor(width * 0.5)))}  `}
+        </text>
+        <Sparkline values={activitySeries(group.sessions)} fg={tokens.info} />
+        <text fg={tokens.trace}>
+          {` ${count} session${count === 1 ? "" : "s"} · created ${
+            group.createdMs ? age(group.createdMs) : "?"
+          } ago · used ${group.lastActiveMs ? age(group.lastActiveMs) : "?"} ago`}
+        </text>
+      </box>
+    </box>
+  );
+}
+
+/**
+ * The session panel, under the RIGHT column: what this conversation is, and how it ended.
+ *
+ * The transcript tail is the point of it — a title says what a session was ABOUT, the
+ * last exchange says where it got to, which is what decides whether it is the one to
+ * resume. Metadata is three compact rows above it so the conversation gets the rest.
+ */
+function SessionDetail({ row, width }: { row: SessionRow; width: number }): React.ReactNode {
   const mb = row.sizeBytes / 1_048_576;
   const L = 9;
-  // The conversation gets the right half on a wide terminal and is dropped entirely on a
-  // narrow one, where truncating it to a few cells would be worse than omitting it.
-  // Two FIXED columns that sum to the available width, neither allowed to shrink.
-  // Mixing `width` with `flexGrow` here was contradictory and let Yoga squeeze whichever
-  // side lost: first the transcript to 17 cells, then the metadata labels to `acti…`.
-  const GAP = 2;
-  const wide = width >= 96;
-  const convW = wide ? Math.min(64, Math.floor(width * 0.45)) : 0;
-  const metaW = width - convW - (wide ? GAP : 0);
-
   return (
-    <box flexDirection="row" gap={wide ? GAP : 0}>
-      {/* The metadata column GROWS and may shrink; the conversation column is fixed and
-          may not. Without `flexShrink={0}` the transcript was squeezed to ~17 cells of a
-          64-cell column whenever a long path or title overflowed the metadata side —
-          Yoga's default `flexShrink: 1` spreads the shortfall across every sibling. */}
-      <box flexDirection="column" width={metaW} flexShrink={0}>
-        <Field label="worktree" width={L}>
-          <text>
-            <span fg={tokens.text} attributes={A.bold}>
-              {truncate(group?.name ?? "—", Math.max(8, metaW - L - 16))}
-            </span>
-            {group?.current ? <span fg={tokens.success}>{"  ▶ here"}</span> : <span />}
-            {group && !group.live ? <span fg={tokens.dead}>{"  deleted"}</span> : <span />}
-          </text>
-        </Field>
-        <Field label="branch" width={L}>
-          <text>
-            <span fg={group?.live ? tokens.info : tokens.dead}>
-              {`${truncate(group?.branch ?? "—", Math.max(8, metaW - L - STATE_COL))} `}
-            </span>
-          </text>
-          {group?.dirty !== undefined ? (
-            <text>
-              <BadgeSpan
-                label={group.dirty > 0 ? `✎${group.dirty}` : "clean"}
-                bg={group.dirty > 0 ? CHIP.dirty : CHIP.clean}
-              />
-              {group.ahead ? <BadgeSpan label={`↑${group.ahead}`} bg={CHIP.ahead} /> : <span />}
-              {group.behind ? <BadgeSpan label={`↓${group.behind}`} bg={CHIP.behind} /> : <span />}
-            </text>
-          ) : null}
-        </Field>
-        <Field label="path" width={L}>
-          <text fg={tokens.trace}>{truncate(group?.path ?? "—", metaW - L)}</text>
-        </Field>
-        <Field label="activity" width={L}>
-          <Sparkline values={group ? activitySeries(group.sessions) : []} fg={tokens.info} />
-          <text fg={tokens.trace}>
-            {truncate(
-              ` ${groupCount} session${groupCount === 1 ? "" : "s"} · ${
-                group?.createdMs ? age(group.createdMs) : "?"
-              } old · used ${group?.lastActiveMs ? age(group.lastActiveMs) : "?"} ago`,
-              Math.max(0, metaW - L - 15)
-            )}
-          </text>
-        </Field>
-
-        <box height={1} />
-
-        <Field label="session" width={L}>
-          <text fg={tokens.text} attributes={A.bold}>
-            {truncate(sessionLabel(row), metaW - L)}
-          </text>
-        </Field>
-        <Field label="id" width={L}>
-          <text fg={tokens.info}>{truncate(row.id, metaW - L)}</text>
-        </Field>
-        <Field label="size" width={L}>
-          <Meter pct={(row.sizeBytes / maxSize) * 100} width={14} ramp={ramps.temperature} />
-          <text fg={tokens.text}>{` ${mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.round(row.sizeBytes / 1024)} KB`}`}</text>
-        </Field>
-      </box>
-
-      {wide ? (
-        <box width={convW} flexShrink={0} overflow="hidden">
-          <Conversation turns={row.recentTurns ?? []} width={convW} />
-        </box>
-      ) : null}
+    <box flexDirection="column">
+      <Field label="title" width={L}>
+        <text fg={tokens.text} attributes={A.bold}>
+          {truncate(sessionLabel(row), width - L)}
+        </text>
+      </Field>
+      {/* Neither the branch nor the size meter is repeated here. The worktree strip
+          below owns the branch, the session card in the list above already carries the
+          size, and squeezing them in truncated the one field this row exists for — the
+          full session id, which is what a `--resume` needs. */}
+      <Field label="id" width={L}>
+        <text fg={tokens.info}>{row.id}</text>
+        <text fg={tokens.trace}>
+          {`${mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.round(row.sizeBytes / 1024)} KB`}${
+            row.lastMessageChars !== undefined ? ` · last msg ${row.lastMessageChars} ch` : ""
+          }`}
+        </text>
+      </Field>
+      <box height={1} />
+      <Conversation turns={row.recentTurns ?? []} width={width} max={6} />
     </box>
   );
 }
@@ -753,9 +757,12 @@ function Preview({
 function Conversation({
   turns,
   width,
+  max,
 }: {
   turns: Array<{ role: "user" | "assistant"; text: string }>;
   width: number;
+  /** How many trailing turns fit in the space this instance was given. */
+  max: number;
 }): React.ReactNode {
   if (turns.length === 0) {
     return (
@@ -767,7 +774,7 @@ function Conversation({
   const ROLE_W = 8;
   const textW = Math.max(10, width - ROLE_W - 2);
   // Newest last, and only as many as fit — the panel is 9 rows and each turn takes one.
-  const shown = turns.slice(-8);
+  const shown = turns.slice(-max);
   return (
     <box flexDirection="column" width={width} flexShrink={0}>
       {shown.map((t, i) => (
