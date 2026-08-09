@@ -200,85 +200,142 @@ export function createStreamingResponseHandler(
           }
         }, 1000);
 
+        // Teardown is separated from finalize() on purpose. finalize() guards
+        // re-entry on state.finalized, so once it has started, a throw part-way
+        // through used to mean the stream was never closed and the ping interval
+        // was never cleared: the outer catch re-called finalize(), which returned
+        // immediately at the guard. The client then sat on an open HTTP 200
+        // forever. Teardown therefore runs from a `finally`, and stays safe to
+        // call twice.
+        const teardown = () => {
+          if (!isClosed) {
+            try {
+              controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
+            } catch {}
+            try {
+              controller.close();
+            } catch {}
+            isClosed = true;
+          }
+          if (ping) {
+            clearInterval(ping);
+            ping = null;
+          }
+        };
+
         const finalize = async (reason: string, err?: string) => {
-          if (state.finalized) return;
+          // A second call still has to tear down: the first may have thrown
+          // before reaching its own `finally`.
+          if (state.finalized) {
+            teardown();
+            return;
+          }
           state.finalized = true;
 
-          // Debug: Log accumulated text for analysis
-          if (state.accumulatedText.length > 0) {
-            const preview = state.accumulatedText.slice(0, 500).replace(/\n/g, "\\n");
-            log(
-              `[Streaming] Accumulated text (${state.accumulatedText.length} chars): ${preview}...`
-            );
-          }
+          try {
+            // Debug: Log accumulated text for analysis
+            if (state.accumulatedText.length > 0) {
+              const preview = state.accumulatedText.slice(0, 500).replace(/\n/g, "\\n");
+              log(
+                `[Streaming] Accumulated text (${state.accumulatedText.length} chars): ${preview}...`
+              );
+            }
 
-          // Check for text-based tool calls before finalizing
-          // Some models (like Qwen) output tool calls as text instead of structured tool_calls
-          const textToolCalls = extractToolCallsFromText(state.accumulatedText);
-          log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
-          if (textToolCalls.length > 0) {
-            log(
-              `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
-            );
+            // Check for text-based tool calls before finalizing
+            // Some models (like Qwen) output tool calls as text instead of structured tool_calls
+            const textToolCalls = extractToolCallsFromText(state.accumulatedText);
+            log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
+            if (textToolCalls.length > 0) {
+              log(
+                `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
+              );
 
-            // Close any open text block first
+              // Close any open text block first
+              if (state.textStarted) {
+                send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
+                state.textStarted = false;
+              }
+
+              // Send each extracted tool call as a proper tool_use block
+              for (const tc of textToolCalls) {
+                const toolIdx = state.curIdx++;
+                const toolId = `tool_${Date.now()}_${toolIdx}`;
+
+                send("content_block_start", {
+                  type: "content_block_start",
+                  index: toolIdx,
+                  content_block: { type: "tool_use", id: toolId, name: tc.name },
+                });
+                send("content_block_delta", {
+                  type: "content_block_delta",
+                  index: toolIdx,
+                  delta: {
+                    type: "input_json_delta",
+                    partial_json: repairArgs(tc.name, JSON.stringify(tc.arguments)),
+                  },
+                });
+                send("content_block_stop", { type: "content_block_stop", index: toolIdx });
+              }
+            }
+
+            if (state.reasoningStarted) {
+              send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
+            }
             if (state.textStarted) {
               send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-              state.textStarted = false;
             }
 
-            // Send each extracted tool call as a proper tool_use block
-            for (const tc of textToolCalls) {
-              const toolIdx = state.curIdx++;
-              const toolId = `tool_${Date.now()}_${toolIdx}`;
-
-              send("content_block_start", {
-                type: "content_block_start",
-                index: toolIdx,
-                content_block: { type: "tool_use", id: toolId, name: tc.name },
-              });
-              send("content_block_delta", {
-                type: "content_block_delta",
-                index: toolIdx,
-                delta: {
-                  type: "input_json_delta",
-                  partial_json: repairArgs(tc.name, JSON.stringify(tc.arguments)),
-                },
-              });
-              send("content_block_stop", { type: "content_block_stop", index: toolIdx });
-            }
-          }
-
-          if (state.reasoningStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.reasoningIdx });
-          }
-          if (state.textStarted) {
-            send("content_block_stop", { type: "content_block_stop", index: state.textIdx });
-          }
-
-          // Handle buffered-but-unsent structured tool calls.
-          // Some models (e.g., Gemini via LiteLLM) send tool calls with finish_reason="stop"
-          // instead of "tool_calls", so the normal validation path (line ~695) is never reached.
-          // We must send these buffered tools here so Claude Code can execute them.
-          for (const t of Array.from(state.tools.values())) {
-            if (!t.closed && t.buffered && !t.started) {
-              if (toolSchemas && toolSchemas.length > 0) {
-                const validation = validateToolArguments(
-                  t.name,
-                  t.arguments,
-                  toolSchemas,
-                  state.accumulatedText
-                );
-
-                if (validation.valid || (validation.repaired && validation.repairedArgs)) {
-                  const argsJson = repairArgs(
+            // Handle buffered-but-unsent structured tool calls.
+            // Some models (e.g., Gemini via LiteLLM) send tool calls with finish_reason="stop"
+            // instead of "tool_calls", so the normal validation path (line ~695) is never reached.
+            // We must send these buffered tools here so Claude Code can execute them.
+            for (const t of Array.from(state.tools.values())) {
+              if (!t.closed && t.buffered && !t.started) {
+                if (toolSchemas && toolSchemas.length > 0) {
+                  const validation = validateToolArguments(
                     t.name,
-                    JSON.stringify(
-                      validation.repaired ? validation.repairedArgs : validation.parsedArgs
-                    )
+                    t.arguments,
+                    toolSchemas,
+                    state.accumulatedText
                   );
+
+                  if (validation.valid || (validation.repaired && validation.repairedArgs)) {
+                    const argsJson = repairArgs(
+                      t.name,
+                      JSON.stringify(
+                        validation.repaired ? validation.repairedArgs : validation.parsedArgs
+                      )
+                    );
+                    log(
+                      `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
+                    );
+                    send("content_block_start", {
+                      type: "content_block_start",
+                      index: t.blockIndex,
+                      content_block: { type: "tool_use", id: t.id, name: t.name },
+                    });
+                    send("content_block_delta", {
+                      type: "content_block_delta",
+                      index: t.blockIndex,
+                      delta: { type: "input_json_delta", partial_json: argsJson },
+                    });
+                    send("content_block_stop", {
+                      type: "content_block_stop",
+                      index: t.blockIndex,
+                    });
+                    t.started = true;
+                    t.closed = true;
+                  } else {
+                    log(
+                      `[Streaming] Buffered tool call ${t.name} failed validation, skipping: ${validation.missingParams.join(", ")}`
+                    );
+                    t.closed = true;
+                  }
+                } else {
+                  // No schemas to validate against — send as-is
+                  const argsJson = repairArgs(t.name, t.arguments || "{}");
                   log(
-                    `[Streaming] Sending buffered tool call (finish_reason!=tool_calls): ${t.name} with args: ${argsJson}`
+                    `[Streaming] Sending buffered tool call (no validation): ${t.name} with args: ${argsJson}`
                   );
                   send("content_block_start", {
                     type: "content_block_start",
@@ -296,122 +353,90 @@ export function createStreamingResponseHandler(
                   });
                   t.started = true;
                   t.closed = true;
-                } else {
-                  log(
-                    `[Streaming] Buffered tool call ${t.name} failed validation, skipping: ${validation.missingParams.join(", ")}`
-                  );
-                  t.closed = true;
                 }
-              } else {
-                // No schemas to validate against — send as-is
-                const argsJson = repairArgs(t.name, t.arguments || "{}");
-                log(
-                  `[Streaming] Sending buffered tool call (no validation): ${t.name} with args: ${argsJson}`
-                );
-                send("content_block_start", {
-                  type: "content_block_start",
-                  index: t.blockIndex,
-                  content_block: { type: "tool_use", id: t.id, name: t.name },
-                });
-                send("content_block_delta", {
-                  type: "content_block_delta",
-                  index: t.blockIndex,
-                  delta: { type: "input_json_delta", partial_json: argsJson },
-                });
-                send("content_block_stop", {
-                  type: "content_block_stop",
-                  index: t.blockIndex,
-                });
-                t.started = true;
+              }
+            }
+
+            // Close any remaining started-but-unclosed tool calls
+            for (const t of Array.from(state.tools.values())) {
+              if (t.started && !t.closed) {
+                send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
                 t.closed = true;
               }
             }
-          }
 
-          // Close any remaining started-but-unclosed tool calls
-          for (const t of Array.from(state.tools.values())) {
-            if (t.started && !t.closed) {
-              send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
-              t.closed = true;
+            if (middlewareManager) {
+              await middlewareManager.afterStreamComplete(target, streamMetadata);
             }
-          }
 
-          if (middlewareManager) {
-            await middlewareManager.afterStreamComplete(target, streamMetadata);
-          }
-
-          if (reason === "error") {
-            send("error", { type: "error", error: { type: "api_error", message: err } });
-          } else {
-            // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
-            const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);
-            // A turn the PROVIDER cut off must not be reported as a turn the model
-            // chose to end. Anthropic's contract for a cut-off turn is "max_tokens";
-            // reporting "end_turn" presents a truncated (or, when reasoning consumed
-            // the whole budget, an EMPTY) answer as the model's complete final word.
-            // Mirrors openai-responses-sse.ts, which already does this.
-            // `content_filter` is the same class: the provider refused, which is
-            // Anthropic's "refusal", not a turn the model chose to end.
-            // openai-responses-sse.ts already maps both this way.
-            const truncated = state.finishReason === "length";
-            const refused = state.finishReason === "content_filter";
-            const stopReason = refused
-              ? "refusal"
-              : truncated
-                ? "max_tokens"
-                : textToolCalls.length > 0 || hasStructuredTools
-                  ? "tool_use"
-                  : "end_turn";
-            if (truncated || refused) {
-              log(
-                `[Streaming] Upstream finish_reason=${state.finishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
-              );
-            }
-            send("message_delta", {
-              type: "message_delta",
-              delta: { stop_reason: stopReason, stop_sequence: null },
-              // input_tokens must ride the delta too: Claude Code takes the
-              // context size from the last assistant message, and message_start
-              // could only carry an estimate. Omitting it left the client
-              // believing every conversation was 100 tokens, which silently
-              // disabled auto-compaction on every openai-sse provider.
-              usage: {
-                ...(state.usage?.prompt_tokens ? { input_tokens: state.usage.prompt_tokens } : {}),
-                output_tokens: state.usage?.completion_tokens || 0,
-              },
-            });
-            behavior?.onTurnEnd?.();
-            send("message_stop", { type: "message_stop" });
-          }
-
-          // Update token counts - use actual usage if available, otherwise estimate
-          if (onTokenUpdate) {
-            if (state.usage) {
-              log(
-                `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
-              );
-              onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0);
+            if (reason === "error") {
+              send("error", { type: "error", error: { type: "api_error", message: err } });
             } else {
-              // Estimate tokens for local models that don't return usage data
-              // Rough estimate: ~4 characters per token
-              const estimatedOutputTokens = Math.ceil(state.accumulatedText.length / 4);
-              log(
-                `[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`
-              );
-              // Carry the previous context size forward rather than a literal
-              // 100 — the status line reads this value, and 100 would make the
-              // bar collapse to "empty" on any turn the provider skips usage.
-              onTokenUpdate(priorInputTokens || 100, estimatedOutputTokens);
+              // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
+              const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);
+              // A turn the PROVIDER cut off must not be reported as a turn the model
+              // chose to end. Anthropic's contract for a cut-off turn is "max_tokens";
+              // reporting "end_turn" presents a truncated (or, when reasoning consumed
+              // the whole budget, an EMPTY) answer as the model's complete final word.
+              // Mirrors openai-responses-sse.ts, which already does this.
+              // `content_filter` is the same class: the provider refused, which is
+              // Anthropic's "refusal", not a turn the model chose to end.
+              // openai-responses-sse.ts already maps both this way.
+              const truncated = state.finishReason === "length";
+              const refused = state.finishReason === "content_filter";
+              const stopReason = refused
+                ? "refusal"
+                : truncated
+                  ? "max_tokens"
+                  : textToolCalls.length > 0 || hasStructuredTools
+                    ? "tool_use"
+                    : "end_turn";
+              if (truncated || refused) {
+                log(
+                  `[Streaming] Upstream finish_reason=${state.finishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
+                );
+              }
+              send("message_delta", {
+                type: "message_delta",
+                delta: { stop_reason: stopReason, stop_sequence: null },
+                // input_tokens must ride the delta too: Claude Code takes the
+                // context size from the last assistant message, and message_start
+                // could only carry an estimate. Omitting it left the client
+                // believing every conversation was 100 tokens, which silently
+                // disabled auto-compaction on every openai-sse provider.
+                usage: {
+                  ...(state.usage?.prompt_tokens
+                    ? { input_tokens: state.usage.prompt_tokens }
+                    : {}),
+                  output_tokens: state.usage?.completion_tokens || 0,
+                },
+              });
+              behavior?.onTurnEnd?.();
+              send("message_stop", { type: "message_stop" });
             }
-          }
 
-          if (!isClosed) {
-            try {
-              controller.enqueue(encoder.encode("data: [DONE]\n\n\n"));
-            } catch (e) {}
-            controller.close();
-            isClosed = true;
-            if (ping) clearInterval(ping);
+            // Update token counts - use actual usage if available, otherwise estimate
+            if (onTokenUpdate) {
+              if (state.usage) {
+                log(
+                  `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
+                );
+                onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0);
+              } else {
+                // Estimate tokens for local models that don't return usage data
+                // Rough estimate: ~4 characters per token
+                const estimatedOutputTokens = Math.ceil(state.accumulatedText.length / 4);
+                log(
+                  `[Streaming] No usage data from provider, estimating: ~${estimatedOutputTokens} output tokens`
+                );
+                // Carry the previous context size forward rather than a literal
+                // 100 — the status line reads this value, and 100 would make the
+                // bar collapse to "empty" on any turn the provider skips usage.
+                onTokenUpdate(priorInputTokens || 100, estimatedOutputTokens);
+              }
+            }
+          } finally {
+            teardown();
           }
         };
 
