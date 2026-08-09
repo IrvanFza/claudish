@@ -577,13 +577,20 @@ function parseRecords(chunk: string, dropFirstPartial: boolean): Record<string, 
   return out;
 }
 
-/** Flatten Claude Code's string-or-blocks message content to plain text. */
+/**
+ * Flatten Claude Code's string-or-blocks message content to plain text.
+ *
+ * Blocks join with a NEWLINE, not a space. They are separate paragraphs of one message,
+ * and the reader renders them as such; every other consumer runs the result through
+ * `cleanPrompt`, which collapses all whitespace, so the separator is invisible to them
+ * and the length `lastMessageChars` reports is unchanged either way.
+ */
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
     .map((b) => (b && typeof b === "object" && typeof (b as any).text === "string" ? (b as any).text : ""))
-    .join(" ");
+    .join("\n");
 }
 
 /**
@@ -591,6 +598,79 @@ function contentText(content: unknown): string {
  * session invoked as `/investigate` previews as its actual prompt rather than as
  * `<command-message>investigate</command-message><command-name>…`.
  */
+/**
+ * Envelopes the HARNESS posts as `user` records, which no human typed.
+ *
+ * A Claude Code transcript records more than a conversation on the `user` side. Tool
+ * results are the obvious case and are already filtered by shape, but background-task
+ * events arrive as ordinary `user` records carrying a `<task-notification>` payload — and
+ * `cleanPrompt` strips the tags and keeps the body, so one surfaced in the transcript tail
+ * as `you  b8kmietd6 Monitor event: "v7.45.0 release run and npm publish"`. Attributing a
+ * callback to the person is worse than dropping a turn: the panel exists to show what was
+ * last ASKED, and the reader has no way to tell the misattribution from the real thing.
+ *
+ * Matched on the RAW text before `cleanPrompt`, because cleaning is what destroys the
+ * evidence. `[Request interrupted by user]` is a harness marker too — a real action, but
+ * not prose, and it says nothing about where the session got to.
+ */
+const HARNESS_ENVELOPES = [
+  "<task-notification>",
+  "<system-reminder>",
+  "<local-command-stdout>",
+  "<user-prompt-submit-hook>",
+] as const;
+
+export function isHarnessNoise(raw: string): boolean {
+  const t = raw.trimStart();
+  if (t.startsWith("[Request interrupted by user")) return true;
+  return HARNESS_ENVELOPES.some((e) => t.startsWith(e));
+}
+
+/**
+ * One turn of the MAIN conversation, before any presentation-level cleaning.
+ *
+ * `raw` is exactly what the record carried, joined across its text blocks — no envelope
+ * stripping, no whitespace collapsing. The two consumers want different cleanings (the
+ * picker's preview collapses a turn to one line; the reader keeps its paragraphs), and a
+ * shared helper that had already collapsed the text could not serve the second.
+ */
+export interface RawTurn {
+  role: "user" | "assistant";
+  raw: string;
+}
+
+/**
+ * THE definition of "a turn of the main conversation", in one place.
+ *
+ * Every surface that reads a transcript needs the same five exclusions, and they are not
+ * guessable from the record shape alone — which is why they live here rather than being
+ * re-derived at each call site:
+ *
+ *   1. only `user` and `assistant` records are conversation at all (a transcript also
+ *      carries `ai-title`, `mode`, `attachment`, `file-history-snapshot`, …);
+ *   2. `isMeta` marks a record the harness posted, not prose;
+ *   3. `isSidechain` marks SUBAGENT traffic — a different conversation that happens to
+ *      share the file;
+ *   4. a `user` record whose content is a `tool_result` is the harness replying to the
+ *      model, not the person speaking;
+ *   5. `isHarnessNoise` catches the envelopes (`<task-notification>`, `<system-reminder>`,
+ *      hook output, interrupt markers) that arrive as ordinary `user` records.
+ *
+ * Returns `null` for anything that fails one of them, or that carries no text at all —
+ * an assistant record holding only `tool_use` or `thinking` blocks has no prose in it.
+ */
+export function mainConversationTurn(r: Record<string, unknown>): RawTurn | null {
+  if (r.type !== "user" && r.type !== "assistant") return null;
+  if (r.isMeta || r.isSidechain) return null;
+  const content = (r.message as { content?: unknown } | undefined)?.content;
+  if (Array.isArray(content) && content.some((b) => (b as { type?: unknown })?.type === "tool_result")) {
+    return null;
+  }
+  const raw = contentText(content);
+  if (!raw.trim() || isHarnessNoise(raw)) return null;
+  return { role: r.type === "user" ? "user" : "assistant", raw };
+}
+
 function cleanPrompt(text: string): string {
   return text
     .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, " ")
@@ -628,7 +708,8 @@ export function hydrateSession(row: SessionRow): SessionRow {
   for (const r of head) {
     if (!row.gitBranch && typeof r.gitBranch === "string") row.gitBranch = r.gitBranch;
     if (!row.firstPrompt && r.type === "user" && !r.isMeta) {
-      const t = cleanPrompt(contentText((r.message as any)?.content));
+      const raw = contentText((r.message as any)?.content);
+      const t = isHarnessNoise(raw) ? "" : cleanPrompt(raw);
       if (t) row.firstPrompt = t;
     }
     if (row.gitBranch && row.firstPrompt) break;
@@ -644,7 +725,8 @@ export function hydrateSession(row: SessionRow): SessionRow {
       row.title = r.aiTitle.trim();
     }
     if (row.lastMessageChars === undefined && r.type === "user" && !r.isMeta) {
-      const t = cleanPrompt(contentText((r.message as any)?.content));
+      const raw = contentText((r.message as any)?.content);
+      const t = isHarnessNoise(raw) ? "" : cleanPrompt(raw);
       if (t) row.lastMessageChars = t.length;
     }
   }
@@ -708,17 +790,14 @@ function extractRecentTurns(
   for (let i = records.length - 1; i >= 0; i--) {
     if (ai >= RECENT_AI_TURNS && user >= RECENT_USER_TURNS) break;
     const r = records[i]!;
-    if (r.isMeta || r.isSidechain) continue;
     if (r.type !== "user" && r.type !== "assistant") continue;
     const role = r.type === "user" ? "user" : "assistant";
     // Quota check BEFORE the content work: once a role is satisfied the remaining
     // records of that role cost nothing but the type test.
     if (role === "assistant" ? ai >= RECENT_AI_TURNS : user >= RECENT_USER_TURNS) continue;
-    const content = (r.message as { content?: unknown } | undefined)?.content;
-    // A `user` record whose content is a tool_result is the harness replying to the
-    // model, not the human speaking.
-    if (Array.isArray(content) && content.some((b) => (b as any)?.type === "tool_result")) continue;
-    const text = cleanPrompt(contentText(content));
+    const turn = mainConversationTurn(r);
+    if (!turn) continue;
+    const text = cleanPrompt(turn.raw);
     if (!text) continue;
     out.push({ role, text });
     if (role === "assistant") ai++;
@@ -768,10 +847,9 @@ export function hydrateConversation(row: SessionRow): SessionRow {
     } catch {
       continue;
     }
-    if (r.type !== "user" || r.isMeta || r.isSidechain) continue;
-    const content = (r.message as { content?: unknown } | undefined)?.content;
-    if (Array.isArray(content) && content.some((b) => (b as any)?.type === "tool_result")) continue;
-    const text = cleanPrompt(contentText(content));
+    const turn = mainConversationTurn(r);
+    if (!turn || turn.role !== "user") continue;
+    const text = cleanPrompt(turn.raw);
     if (!text) continue;
     turns.unshift({ role: "user", text });
     if (row.lastMessageChars === undefined) row.lastMessageChars = text.length;

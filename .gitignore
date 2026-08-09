@@ -60,6 +60,8 @@ ai-sessions/
 # Temp dev files
 claude
 claude_desktop.flow
+# Scratch driver for the resume picker — hardcodes a local absolute path.
+packages/cli/demo-picker.tsx
 
 # Debug/analysis artifacts
 *.pid

@@ -5,9 +5,13 @@
  * deliberate deviations from the shipped file. Everything else — the token NAMES, the
  * `Ramp` type and its non-empty bound, the ramp STRUCTURE (an explicit midtone stop so
  * `blendStops` never desaturates through the middle) — is unchanged. `color.ts` and
- * `text.ts` beside it are byte-identical copies; `widgets.tsx` differs by exactly one
- * ADDITIVE prop, `Panel`'s `flush` (documented at the component), which defaults to the
- * shipped behaviour — so a diff against the skill is one hunk, not a fork. Never scatter hex
+ * `text.ts` beside it are byte-identical copies; `widgets.tsx` carries three ADDITIVE
+ * changes, each documented at its own definition and none altering shipped behaviour:
+ * `Panel`'s `flush` prop, and the `<span>` twins `MeterSpan` / `SparklineSpan` (with
+ * `sparkGlyphs` extracted so the twin cannot drift from `Sparkline`). The twins exist for
+ * the reason the file already gives for `BadgeSpan` — a `<text>` cannot nest in a `<text>`,
+ * so every ONE-`<text>` widget is un-composable in a mixed row, and the alternative, flex
+ * `<text>` siblings, is the arrangement Yoga silently shrinks. Never scatter hex
  * literals in components: import a token. If a value you need is missing, add a token
  * HERE first — a one-off literal in a component is how a palette stops being a palette.
  *
@@ -98,7 +102,13 @@ export type Ramp = readonly [string, ...string[]]
  * it should pass through. `C`'s neon stops are far more saturated than the skill's
  * defaults, so the measured midpoint floor goes UP, not down.
  */
-export const ramps: { load: Ramp; temperature: Ramp; network: Ramp; savings: Ramp } = {
+export const ramps: {
+  load: Ramp
+  temperature: Ramp
+  network: Ramp
+  savings: Ramp
+  volume: Ramp
+} = {
   load: [tokens.success, C.yellow, tokens.error],
   temperature: [tokens.running, tokens.success, C.orange, tokens.error],
   network: [tokens.success, C.yellow, tokens.error],
@@ -112,6 +122,17 @@ export const ramps: { load: Ramp; temperature: Ramp; network: Ramp; savings: Ram
    * red mean "bad" on one row and "excellent" on the next.
    */
   savings: [tokens.error, C.yellow, tokens.success],
+  /**
+   * ONE HUE, dark to bright — for a magnitude that is neither good nor bad.
+   *
+   * The other four ramps all end in red or green because they encode HEALTH, and rule 1
+   * says a colour means one thing app-wide. A quantity with no valence — a file's size, a
+   * message count — painted with `load` or `temperature` therefore lies twice over: the
+   * biggest one glows alarm-red, and red stops meaning "error" everywhere else. Staying
+   * inside the blue family keeps the length carrying the comparison and the brightness
+   * carrying the magnitude, with no health claim attached to either.
+   */
+  volume: [C.border, C.blue, C.cyan],
 }
 
 /** HTTP method colours (the `posting` look). Use as badge backgrounds. */

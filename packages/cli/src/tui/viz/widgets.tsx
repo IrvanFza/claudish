@@ -159,6 +159,38 @@ export function Meter(
 }
 
 /**
+ * The same meter as `<span>`s, for a MIXED-CONTENT row — the exact counterpart of
+ * `BadgeSpan`, and it exists for the identical reason: `Meter` is a `<text>`, a `<text>`
+ * cannot nest in a `<text>`, so the ONE-`<text>` form is un-composable and a meter sharing
+ * a row with a chip and a label has nowhere to go.
+ *
+ *   <text><BadgeSpan label="17h" bg={…} /><MeterSpan pct={72} width={12} /><span> 1.5 MB</span></text>
+ *
+ * The alternative — a flex ROW of `<text>` siblings — is measurably worse than untidy:
+ * Yoga's default `flexShrink: 1` shaves columns off a sibling the moment the row is one
+ * column over, and it takes them off the LAST one, which is how a branch name rendered as
+ * `mai` with thirty free columns beside it.
+ *
+ * Same `rampFor` and `fillCells` as `Meter`, so the two cannot drift by a cell — share the
+ * cell maths, never the drawing. No layout props: a `<span>` is not a flex item, so its
+ * row's `<text>` owns the layout for both. `NaN` paints the same dim `╌` run.
+ */
+export function MeterSpan({ pct, width, ramp = ramps.load }: { pct: number; width: number; ramp?: Ramp }): ReactNode {
+  const cells = Math.floor(width)
+  if (!Number.isFinite(cells) || cells <= 0) return null
+  if (Number.isNaN(pct)) return <span fg={tokens.dead}>{NODATA.repeat(cells)}</span>
+  const cols = rampFor(cells, ramp)
+  const filled = fillCells(pct, cells)
+  return (
+    <>
+      {Array.from({ length: cells }, (_, i) => (
+        <span key={i} fg={i < filled ? cols[i]! : tokens.border}>{i < filled ? FILL : TRACK}</span>
+      ))}
+    </>
+  )
+}
+
+/**
  * Inline trend, one row of block glyphs — deliberately ONE colour, because the
  * glyph height already encodes magnitude and a second encoding would only add
  * noise. Empty input renders nothing. Constant data has no range to normalise
@@ -184,20 +216,39 @@ export function Sparkline(
   { values, fg = tokens.info, style, ...layout }:
     WidgetLayout & { values: readonly number[]; fg?: ColorInput; style?: WidgetLayout },
 ): ReactNode {
+  const row = sparkGlyphs(values)
+  if (row === null) return null
+  return <text fg={fg} flexShrink={0} {...layout} style={style}>{row}</text>
+}
+
+/**
+ * The glyph row a sparkline paints — extracted so the `<text>` and `<span>` forms cannot
+ * drift, exactly as `fillCells`/`rampFor` keep `Meter` and `MeterSpan` in step. `null` for
+ * an empty series (the caller renders nothing at all; an empty `<text>` still eats a row).
+ */
+export function sparkGlyphs(values: readonly number[]): string | null {
   if (values.length === 0) return null
   let max = Number.NEGATIVE_INFINITY
   let min = Number.POSITIVE_INFINITY
   for (const v of values) if (Number.isFinite(v)) { max = Math.max(max, v); min = Math.min(min, v) }
-  if (max === Number.NEGATIVE_INFINITY) return <text fg={fg} flexShrink={0} {...layout} style={style}>{GAP.repeat(values.length)}</text>
+  if (max === Number.NEGATIVE_INFINITY) return GAP.repeat(values.length)
   const half = max / 2 - min / 2
   const mid = SPARK[Math.floor((SPARK.length - 1) / 2)]!
   const top = SPARK.length - 1
   const glyph = (v: number) => SPARK[Math.min(top, Math.max(0, Math.round(((v / 2 - min / 2) / half) * top)))]!
-  return (
-    <text fg={fg} flexShrink={0} {...layout} style={style}>
-      {values.map((v) => (!Number.isFinite(v) ? GAP : half > 0 ? glyph(v) : mid)).join("")}
-    </text>
-  )
+  return values.map((v) => (!Number.isFinite(v) ? GAP : half > 0 ? glyph(v) : mid)).join("")
+}
+
+/**
+ * The same sparkline as a `<span>`, for a MIXED-CONTENT row. Same argument as `BadgeSpan`
+ * and `MeterSpan`: a `<text>` cannot nest in a `<text>`, so a trend sharing a row with a
+ * label or a chip needs the span form or it forces the row into flex siblings — the
+ * arrangement Yoga silently shrinks. Shares `sparkGlyphs`, so the two forms are identical
+ * glyph for glyph.
+ */
+export function SparklineSpan({ values, fg = tokens.info }: { values: readonly number[]; fg?: ColorInput }): ReactNode {
+  const row = sparkGlyphs(values)
+  return row === null ? null : <span fg={fg}>{row}</span>
 }
 
 /**
@@ -231,6 +282,42 @@ export function HeatRow(
         return <span key={i} bg={ramp[Math.round(t * top)]}> </span>
       })}
     </text>
+  )
+}
+
+/**
+ * A row of DISCRETE LEVELS — the bucket counterpart to `HeatRow`, and a separate widget
+ * rather than an option on it because the distinction is not taste (`aesthetics-and-color.md`,
+ * "Smooth ramp or discrete buckets?"). A heat row's brightness encodes POSITION along a
+ * continuous magnitude, so it must be smooth. A level row's colour encodes a VALUE that has
+ * already been placed in a band, so it must NOT be: the whole point of a band is that two
+ * cells one band apart are visibly different, which a 24-step ramp deliberately prevents —
+ * the same reason a continuous scale made 976 ms, 2519 ms and 4713 ms read as one colour.
+ *
+ * THE CALLER OWNS THE BUCKETING and passes level INDICES, not values. Where a band's edges
+ * fall — absolute thresholds, or quantiles of the visible window — is a claim about the
+ * data that only the caller can make, and a widget that guessed would bury it. So this
+ * paints and nothing else; `palette[0]` is the empty level and the index is clamped, so a
+ * caller cannot address a colour that is not there.
+ *
+ *   <text><span fg={tokens.trace}>{"-3w "}</span><LevelRowSpan levels={week} palette={GH} /></text>
+ *
+ * A `<span>` form because a `<text>` cannot nest in a `<text>` — same argument as
+ * `BadgeSpan`, `MeterSpan` and `SparklineSpan`, and it bites hardest here: a level row is
+ * coloured SPACES, so a column Yoga shaved off a flex sibling would leave a stub of
+ * background that `captureCharFrame()` cannot see at all.
+ */
+export function LevelRowSpan(
+  { levels, palette }: { levels: readonly number[]; palette: readonly string[] },
+): ReactNode {
+  if (levels.length === 0 || palette.length === 0) return null
+  const top = palette.length - 1
+  return (
+    <>
+      {levels.map((n, i) => (
+        <span key={i} bg={palette[Math.min(top, Math.max(0, Math.round(n)))]!}> </span>
+      ))}
+    </>
   )
 }
 
