@@ -345,6 +345,35 @@ export function removeUriFormat(schema: any): any {
 }
 
 /**
+ * Claude Code prepends a billing header to the system prompt as its own text
+ * block:
+ *
+ *   x-anthropic-billing-header: cc_version=2.1.107.3d9; cc_entrypoint=cli; cch=74943;
+ *
+ * `cch=` is a PER-TURN hash, so the first bytes of a ~31k-token system prompt
+ * differ on every single request. Any backend doing prefix caching therefore
+ * re-reads the entire prefix each turn. @mtparet measured it against vLLM in
+ * #101: 48 tokens cached before, 31,728 after.
+ *
+ * Stripped HERE rather than in filterIdentity() because filterIdentity is only
+ * honoured by the OpenAI-shaped adapters and Gemini. AnthropicApiFormat ignores
+ * its filter argument entirely, and CodexAPIFormat assigns `system` straight to
+ * `payload.instructions` — so MiniMax, Kimi, GLM, Z.AI, vertex-anthropic, Codex
+ * and OllamaCloud would all keep leaking the hash.
+ *
+ * transformOpenAIToClaude runs once per ComposedHandler request and NEVER for
+ * NativeHandler, which is what makes this safe without an `instanceof` guard:
+ * native Anthropic traffic keeps the header, and Anthropic is the party the
+ * header is actually for.
+ */
+const BILLING_HEADER_RE = /x-anthropic-billing-header:[^\n]*\n?/gi;
+
+export function stripBillingHeader(text: string): string {
+  if (!text || !text.includes("x-anthropic-billing-header")) return text;
+  return text.replace(BILLING_HEADER_RE, "");
+}
+
+/**
  * Main transformation function from OpenAI to Claude format
  */
 export function transformOpenAIToClaude(claudeRequestInput: any): {
@@ -381,8 +410,14 @@ export function transformOpenAIToClaude(claudeRequestInput: any): {
         // Fallback
         return JSON.stringify(item);
       })
+      // Strip before the empty-filter below, so a block that held ONLY the
+      // billing header is dropped rather than left as an empty string. An
+      // empty text block is a 400 on Anthropic-compat endpoints.
+      .map((text: string) => stripBillingHeader(text))
       .filter((text: string) => text && text.trim() !== "")
       .join("\n\n");
+  } else if (typeof req.system === "string") {
+    req.system = stripBillingHeader(req.system);
   }
 
   if (!Array.isArray(req.messages)) {
