@@ -65,43 +65,61 @@ export function createOllamaJsonlStream(
         }
       }, 1000);
 
-      const finalize = (reason: string, err?: string) => {
-        if (isClosed) return;
+      // `isClosed` used to double as the re-entry guard, which made a throw
+      // part-way through finalize() worse than a leak: isClosed was still false,
+      // so the catch at the bottom re-ran the WHOLE body and emitted a second
+      // message_delta / message_stop. A dedicated `finalized` flag separates
+      // "already emitted the terminal events" from "controller is shut", and
+      // teardown runs from a `finally` so the ping interval always clears.
+      let finalized = false;
 
-        if (textStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: 0 });
-        }
-
-        if (reason === "error") {
-          send("error", { type: "error", error: { type: "api_error", message: err } });
-        } else {
-          send("message_delta", {
-            type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null },
-            // Ollama reports the FULL context each turn in prompt_eval_count;
-            // forwarding it lets Claude Code arm auto-compaction instead of
-            // holding message_start's estimate. See message-start-usage.ts.
-            usage: {
-              ...(promptTokens > 0 ? { input_tokens: promptTokens } : {}),
-              output_tokens: completionTokens,
-            },
-          });
-          send("message_stop", { type: "message_stop" });
-        }
-
-        if (opts.onTokenUpdate) {
-          opts.onTokenUpdate(promptTokens, completionTokens);
-        }
-
+      const teardown = () => {
         if (!isClosed) {
           isClosed = true;
-          if (pingInterval) {
-            clearInterval(pingInterval);
-            pingInterval = null;
-          }
           try {
             controller.close();
           } catch {}
+        }
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+      };
+
+      const finalize = (reason: string, err?: string) => {
+        if (finalized) {
+          teardown();
+          return;
+        }
+        finalized = true;
+
+        try {
+          if (textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: 0 });
+          }
+
+          if (reason === "error") {
+            send("error", { type: "error", error: { type: "api_error", message: err } });
+          } else {
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: "end_turn", stop_sequence: null },
+              // Ollama reports the FULL context each turn in prompt_eval_count;
+              // forwarding it lets Claude Code arm auto-compaction instead of
+              // holding message_start's estimate. See message-start-usage.ts.
+              usage: {
+                ...(promptTokens > 0 ? { input_tokens: promptTokens } : {}),
+                output_tokens: completionTokens,
+              },
+            });
+            send("message_stop", { type: "message_stop" });
+          }
+
+          if (opts.onTokenUpdate) {
+            opts.onTokenUpdate(promptTokens, completionTokens);
+          }
+        } finally {
+          teardown();
         }
       };
 
