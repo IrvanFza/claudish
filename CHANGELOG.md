@@ -2,6 +2,44 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.46.0] - 2026-08-08
+
+### Documentation
+
+- update CHANGELOG.md for v7.45.0([`361f214`](https://github.com/MadAppGang/claudish/commit/361f214ded266168e9b67d21533ccf0903757e16))
+
+### New Features
+
+- v7.45.0 — derive the picker's provider roster, and give 1Password denials a fourth cause([`1ab9697`](https://github.com/MadAppGang/claudish/commit/1ab9697af280cecc2646d25d06c9c635c6bfd932))
+
+### Other Changes
+
+- v7.46.0([`4879110`](https://github.com/MadAppGang/claudish/commit/487911067186f551d3f7743a2451b643486ef79e))
+
+## [7.45.0] - 2026-08-08
+
+### Documentation
+
+- update CHANGELOG.md for v7.44.0([`ded4c9e`](https://github.com/MadAppGang/claudish/commit/ded4c9e69ea1921e9c76b8a03807f622efff1853))
+
+### New Features
+
+- restore the provider chain for MiniMax and for spawned children *(routing)* ([`a9112dc`](https://github.com/MadAppGang/claudish/commit/a9112dceb4e66ca6fbe876bab8ce43c05aa705d6))
+
+## [7.44.0] - 2026-08-07
+
+### Documentation
+
+- update CHANGELOG.md for v7.43.0([`5ec2cc2`](https://github.com/MadAppGang/claudish/commit/5ec2cc2d8f774903a46f112fa8661007a2a705a1))
+
+### New Features
+
+- per-provider roster collapse, and fix two order-dependent resolutions (#160) *(model-resolvers)* ([`c33ce8d`](https://github.com/MadAppGang/claudish/commit/c33ce8d012649e8625d701ffb347210a8406d426))
+
+### Other Changes
+
+- biome clean — organize imports and format([`438a0bc`](https://github.com/MadAppGang/claudish/commit/438a0bc5961a55e94ebcd474f0d47e1f844fedc9))
+
 ## [7.43.0] - 2026-08-06
 
 ### Bug Fixes

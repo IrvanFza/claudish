@@ -350,12 +350,19 @@ describe("Group 4: Real API — explicit provider skips fallback", () => {
 // ---------------------------------------------------------------------------
 
 describe("Group 5: isRetryableError — unit tests via FallbackHandler behavior", () => {
-  // We test isRetryableError indirectly through FallbackHandler since the function
-  // is not exported. We create mock handlers that return specific status codes and
-  // verify whether FallbackHandler tries the next candidate or stops.
+  // Keep the retryability assertions black-box: mock handlers make it observable
+  // whether FallbackHandler tries the next candidate or stops.
 
   const { Hono } = require("hono");
-  const { FallbackHandler } = require("./fallback-handler.js");
+  const { FallbackHandler, isProvider } = require("./fallback-handler.js");
+
+  // Captured verbatim from /Users/jack/.claudish/logs/claudish_2026-08-07_08-51-52.log:23
+  const ZEN_GO_INVALID_TOOL_BODY =
+    '{"error":{"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [bad_request_error] invalid params, invalid tool type:  (2013)"}}';
+
+  // Captured verbatim from /Users/jack/.claudish/logs/claudish_2026-08-07_12-34-35.log:11
+  const ZEN_GO_PROVIDER_ERROR_BODY =
+    '{"error":{"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [400] Provider returned error"}}';
 
   function mockHandler(status: number, body: string) {
     return {
@@ -379,6 +386,25 @@ describe("Group 5: isRetryableError — unit tests via FallbackHandler behavior"
       result = await handler.handle(c, { model: "test-model" });
       return result;
     });
+    const res = await app.request("/test", { method: "POST", body: "{}" });
+    const text = await res.text();
+    return { status: res.status, text, usedFallback: text.includes('"ok"') };
+  }
+
+  async function runFallbackForProvider(
+    candidateName: string,
+    firstStatus: number,
+    firstBody: string
+  ): Promise<any> {
+    const handler = new FallbackHandler([
+      { name: candidateName, handler: mockHandler(firstStatus, firstBody) },
+      {
+        name: "provider-b",
+        handler: mockHandler(200, '{"content":[{"type":"text","text":"ok"}]}'),
+      },
+    ]);
+    const app = new Hono();
+    app.post("/test", async (c: any) => handler.handle(c, { model: "test-model" }));
     const res = await app.request("/test", { method: "POST", body: "{}" });
     const text = await res.text();
     return { status: res.status, text, usedFallback: text.includes('"ok"') };
@@ -457,5 +483,48 @@ describe("Group 5: isRetryableError — unit tests via FallbackHandler behavior"
       '{"error":{"type":"authentication_error","message":"Gemini onboarding completed but no project ID returned."}}'
     );
     expect(result.usedFallback).toBe(true);
+  });
+
+  for (const body of [ZEN_GO_INVALID_TOOL_BODY, ZEN_GO_PROVIDER_ERROR_BODY]) {
+    test(`400 Zen Go upstream rejection advances: ${body}`, async () => {
+      const result = await runFallbackForProvider("OpenCode Zen Go", 400, body);
+      expect(result.usedFallback).toBe(true);
+    });
+  }
+
+  // Production passes the display name ("OpenCode Zen Go"), while direct unit
+  // calls may use the hyphenated canonical id. Pin both so punctuation-sensitive
+  // matching cannot make this rule look tested while silently disabling it live.
+  test("400 Zen Go upstream rejection advances for the canonical provider id", async () => {
+    const result = await runFallbackForProvider("opencode-zen-go", 400, ZEN_GO_INVALID_TOOL_BODY);
+    expect(result.usedFallback).toBe(true);
+  });
+
+  test("400 upstream rejection advances for the free Zen tier", async () => {
+    const result = await runFallbackForProvider("OpenCode Zen", 400, ZEN_GO_INVALID_TOOL_BODY);
+    expect(result.usedFallback).toBe(true);
+  });
+
+  for (const candidateName of ["MiniMax", "OpenRouter"] as const) {
+    test(`400 upstream-framed rejection does not advance for non-Zen ${candidateName}`, async () => {
+      const result = await runFallbackForProvider(candidateName, 400, ZEN_GO_INVALID_TOOL_BODY);
+      expect(result.usedFallback).toBe(false);
+    });
+  }
+
+  test("400 ordinary payload bug does not advance for Zen", async () => {
+    const result = await runFallbackForProvider(
+      "OpenCode Zen Go",
+      400,
+      '{"error":{"message":"messages.0: invalid role"}}'
+    );
+    expect(result.usedFallback).toBe(false);
+  });
+
+  test("isProvider is case- and punctuation-insensitive and rejects undefined", () => {
+    expect(isProvider("OpenCode Zen Go", "opencodezen")).toBe(true);
+    expect(isProvider("opencode-zen-go", "opencodezen")).toBe(true);
+    expect(isProvider("opencode_zen_go", "opencodezen")).toBe(true);
+    expect(isProvider(undefined, "opencodezen")).toBe(false);
   });
 });

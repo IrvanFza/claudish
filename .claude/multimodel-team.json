@@ -1,34 +1,31 @@
 {
   "schemaVersion": "2.1.0",
-  "lastUpdated": "2026-03-18T15:18:38Z",
+  "lastUpdated": "2026-08-08T14:11:27Z",
   "defaultModels": [
     "internal",
-    "minimax-m2.5",
-    "kimi-k2.5",
-    "glm-5",
-    "gemini-3.1-pro-preview",
-    "gpt-5.4",
-    "qwen3.5-plus-02-15"
+    "gpt-5.6-sol",
+    "gemini-3.6-flash",
+    "grok-4.5",
+    "kimi-k3",
+    "glm-5.2"
   ],
   "defaultThreshold": "majority",
   "contextPreferences": {
     "review": [
       "internal",
-      "minimax-m2.5",
-      "kimi-k2.5",
-      "glm-5",
-      "gemini-3.1-pro-preview",
-      "gpt-5.4",
-      "qwen3.5-plus-02-15"
+      "gpt-5.6-sol",
+      "gemini-3.6-flash",
+      "grok-4.5",
+      "kimi-k3",
+      "glm-5.2"
     ],
     "architecture": [
       "internal",
-      "minimax-m2.5",
-      "kimi-k2.5",
-      "glm-5",
-      "gemini-3.1-pro-preview",
-      "gpt-5.4",
-      "qwen3.5-plus-02-15"
+      "gpt-5.6-sol",
+      "gemini-3.6-flash",
+      "grok-4.5",
+      "kimi-k3",
+      "glm-5.2"
     ]
   },
   "history": []

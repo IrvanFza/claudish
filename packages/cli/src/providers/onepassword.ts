@@ -42,7 +42,7 @@ import { spawnSync } from "node:child_process";
 import { realValue } from "../env-placeholder.js";
 import { addSpanMeta, beginQueuedSpan, setStartupAuthKind, traceSpan } from "../startup-trace.js";
 import { VERSION } from "../version.js";
-import { withHandshakeLock } from "./onepassword-handshake-lock.js";
+import { peerHoldsHandshakeLock, withHandshakeLock } from "./onepassword-handshake-lock.js";
 
 /** Matches a full `op://...` secret reference (no embedded whitespace). */
 export const OP_REF_RE = /^op:\/\/[^\s]+$/;
@@ -136,6 +136,48 @@ export function wasOpAuthorizationDenied(): boolean {
 }
 
 /**
+ * Turn an SDK error into something worth showing a person.
+ *
+ * The SDK surfaces its Rust error with `Debug` formatting, so a routine denial
+ * reaches the user as:
+ *
+ *   An error occurred when processing SDK request: Error { msg: Denied
+ *   authorization for SDK client, inner: None }
+ *
+ * which names no cause, offers no fix, and reads like a crash. Worse, the four
+ * causes of a denial need four different answers, and the struct dump gives the
+ * same text for all of them. A probe can still tell them apart at the moment of
+ * failure, so ask.
+ *
+ * FOR DISPLAY ONLY — always record the RAW message. `wasOpAuthorizationDenied`
+ * matches on the original wording, and rewriting what gets stored would break
+ * the remediation block that depends on it.
+ */
+export function humanizeOpError(err: unknown): string {
+  const raw = (err instanceof Error ? err.message : String(err)).trim();
+
+  if (/denied authorization/i.test(raw)) {
+    const cause = currentLockCause();
+    if (cause === "screen") return "your Mac is locked, so the approval prompt couldn't be shown";
+    if (cause === "app") return "the 1Password app is locked, so it declined without prompting";
+    if (cause === "peer") return "another claudish process is holding the 1Password prompt";
+    return "the 1Password approval prompt was dismissed (or never answered)";
+  }
+
+  // Not a denial: keep the real text, minus the Rust struct wrapper.
+  //
+  // Anchored on the `, inner:` / `}` that actually terminate the field rather
+  // than on "the next comma" — a message like "vault not found, check the
+  // reference" is one value containing a comma, and a comma-stopped match would
+  // silently truncate it to "vault not found". Non-greedy so the FIRST
+  // terminator wins. Anything that doesn't match this exact shape falls through
+  // to the raw text, which is the safe direction: too much detail beats a
+  // sentence that quietly lost its second half.
+  const unwrapped = raw.match(/Error\s*\{\s*msg:\s*(.*?)(?:,\s*inner:|\s*\})/s);
+  return (unwrapped?.[1] ?? raw).trim();
+}
+
+/**
  * Render the "1Password was consulted and failed" block for a missing-key
  * error. Returns [] when 1Password played no part this run, so the caller can
  * splice unconditionally and non-op users see no change.
@@ -187,6 +229,12 @@ export function renderOpFailureBlock(subject: string): string[] {
       lines.push("");
       lines.push("  Fix: unlock 1Password (Touch ID is enough) and re-run.");
       lines.push("  To stop it re-locking mid-session, raise Settings → Security → auto-lock.");
+    } else if (cause === "peer") {
+      lines.push("  Another claudish process is at the 1Password prompt right now. 1Password");
+      lines.push("  authorizes ONE client at a time and denies every peer instantly, so this");
+      lines.push("  run lost a race rather than being refused.");
+      lines.push("");
+      lines.push("  Fix: approve the prompt in the other window, then re-run this one.");
     } else {
       lines.push("  The 1Password desktop app declined to release secrets. The approval prompt");
       lines.push("  was most likely dismissed.");
@@ -1378,8 +1426,39 @@ export function isAppLocked(): boolean {
   return appLockProbe();
 }
 
-/** Which recoverable lock caused a denial, or null when it is terminal. */
-export type LockCause = "screen" | "app";
+/** Probe returning true when a live peer holds the handshake. Injectable. */
+export type PeerLockProbe = () => boolean;
+
+let peerLockProbe: PeerLockProbe = peerHoldsHandshakeLock;
+
+/**
+ * Test seam: swap the peer probe. Pass undefined to restore the default.
+ *
+ * MANDATORY for any test that asserts a denial is terminal. The default probe
+ * reads a real file under `~/.claudish`, so without this seam the result
+ * depends on whether an unrelated claudish happens to be mid-handshake on the
+ * developer's machine — which is exactly how this seam got written: a sibling
+ * worktree's live run turned "unlocked denial is terminal" into a 30-second
+ * countdown.
+ */
+export function setPeerLockProbe(probe: PeerLockProbe | undefined): void {
+  peerLockProbe = probe ?? peerHoldsHandshakeLock;
+}
+
+/** True when another live claudish process currently holds the 1Password prompt. */
+export function isPeerHoldingPrompt(): boolean {
+  return peerLockProbe();
+}
+
+/**
+ * Which recoverable lock caused a denial, or null when it is terminal.
+ *
+ * `peer` is not a lock on the MACHINE but on the handshake: another live
+ * claudish process is at the 1Password prompt right now. It belongs here
+ * because it satisfies the same test the other two do — the user can still get
+ * a successful resolve out of this, by waiting.
+ */
+export type LockCause = "screen" | "app" | "peer";
 
 /**
  * Which lock is currently blocking, in the order the user must clear them.
@@ -1396,6 +1475,10 @@ export type LockCause = "screen" | "app";
 export function currentLockCause(): LockCause | null {
   if (isScreenLocked()) return "screen";
   if (isAppLocked()) return "app";
+  // Last: a peer only matters once the machine itself is not the blocker.
+  // Waiting behind a sibling is pointless while the Mac is locked, because the
+  // sibling cannot finish either.
+  if (isPeerHoldingPrompt()) return "peer";
   return null;
 }
 
@@ -1443,10 +1526,11 @@ async function countdownForUnlock(
   round: number,
   rounds: number,
   cause: LockCause
-): Promise<"retry" | "cancel"> {
+): Promise<"retry" | "cancel" | "skip"> {
   const ttyOut = process.stderr.isTTY === true;
   const ttyIn = process.stdin.isTTY === true;
   let cancelled = false;
+  let skipped = false;
 
   // The explanation prints ONCE, on the first round. Rounds 2 and 3 get only
   // the countdown line — re-explaining the same situation every 10 seconds
@@ -1459,13 +1543,20 @@ async function countdownForUnlock(
     const explain =
       cause === "screen"
         ? `${bold("🔐 1Password needs your OK — but your Mac is locked, so it can't ask.")}\n   Unlock your Mac and approve the popup. Claudish picks it up from there.`
-        : `${bold("🔐 1Password is locked, so it turned claudish away without asking you.")}\n   Unlock 1Password (Touch ID is enough). Claudish retries on its own —\n   no popup will appear until it's unlocked.`;
+        : cause === "app"
+          ? `${bold("🔐 1Password is locked, so it turned claudish away without asking you.")}\n   Unlock 1Password (Touch ID is enough). Claudish retries on its own —\n   no popup will appear until it's unlocked.`
+          : // "peer": nothing is wrong and there is nothing to fix — another
+            // claudish already has the prompt, and 1Password authorizes exactly
+            // one client at a time. Saying "approve the popup" here would send
+            // the user looking for a second popup that will never exist.
+            `${bold("🔐 Another claudish is already at the 1Password prompt.")}\n   1Password only lets one through at a time, so this run has to queue.\n   Approve it in the other window (or wait — it usually takes a second).`;
     process.stderr.write(`\n${explain}\n\n`);
   }
 
   // Wait on the lock that actually caused this denial. Polling the wrong one
   // would either never clear or clear while the real blocker remains.
-  const stillLocked = () => (cause === "screen" ? isScreenLocked() : isAppLocked());
+  const stillLocked = () =>
+    cause === "screen" ? isScreenLocked() : cause === "app" ? isAppLocked() : isPeerHoldingPrompt();
 
   let restoreInput = () => {};
   if (ttyIn) {
@@ -1473,6 +1564,11 @@ async function countdownForUnlock(
       const k = buf.toString();
       // Esc, q, or Ctrl-C — Ctrl-C is handled here too so raw mode can't eat it.
       if (k === "\x1b" || k === "q" || k === "\x03") cancelled = true;
+      // `s` is a DIFFERENT decision from cancelling, and the difference is
+      // scope: cancel abandons this one wait (a later provider may prompt
+      // again, which is the right call if the user is about to approve),
+      // whereas skip means "stop asking me about 1Password for this run".
+      if (k === "s" || k === "S") skipped = true;
     };
     const wasRaw = process.stdin.isRaw === true;
     try {
@@ -1489,14 +1585,26 @@ async function countdownForUnlock(
     }
   }
 
-  const stop = ttyIn ? "Esc to stop waiting" : "Ctrl-C to stop waiting";
-  const line = (secs: number) => dim(`   waiting ${secs}s · try ${round} of ${rounds} · ${stop}`);
+  // Both exits are always offered, because "wait" is not always the answer the
+  // user wants and a countdown with no way out is a hang with a progress bar.
+  const stop = ttyIn ? "Esc stop waiting" : "Ctrl-C stop waiting";
+  const skip = ttyIn ? " · s skip 1Password" : "";
+  // A filled/empty bar makes the remaining wait legible at a glance, which a
+  // bare number does not — the point of the countdown is to tell someone
+  // walking back to their Mac whether they have time.
+  const bar = (secs: number) => {
+    const total = Math.max(1, lockRetrySeconds);
+    const filled = Math.round(((total - secs) / total) * 10);
+    return `${"━".repeat(filled)}${"─".repeat(Math.max(0, 10 - filled))}`;
+  };
+  const line = (secs: number) =>
+    dim(`   ${bar(secs)} ${secs}s · try ${round}/${rounds} · ${stop}${skip}`);
   if (!ttyOut) process.stderr.write(`${line(lockRetrySeconds)}\n`);
 
   try {
     for (let remaining = lockRetrySeconds; remaining > 0; remaining--) {
-      if (cancelled) break;
-      // Unlocked early? Don't make the user wait out the clock — retry now, so
+      if (cancelled || skipped) break;
+      // Cleared early? Don't make the user wait out the clock — retry now, so
       // approving is immediately followed by the prompt they expect.
       if (!stillLocked()) break;
       if (ttyOut) process.stderr.write(`\r\x1b[2K${line(remaining)}`);
@@ -1507,11 +1615,54 @@ async function countdownForUnlock(
     if (ttyOut) process.stderr.write("\r\x1b[2K");
   }
 
+  if (skipped) {
+    process.stderr.write(
+      "   Skipping 1Password for this run. Keys already in your environment still work;\n" +
+        "   anything only 1Password has will report as missing.\n"
+    );
+    return "skip";
+  }
   if (cancelled) {
     process.stderr.write("   OK, not waiting. You can unlock and re-run any time.\n");
     return "cancel";
   }
   return "retry";
+}
+
+/**
+ * True only when the `s` skip in `countdownForUnlock` is what set
+ * `CLAUDISH_DISABLE_OP`. A user who exported the variable themselves has made a
+ * standing decision, and `clearOpSkip` must not overrule it — hence a latch
+ * rather than an unconditional `delete process.env.CLAUDISH_DISABLE_OP`.
+ */
+let opSkipLatchedByPrompt = false;
+
+/** Disable 1Password for the rest of this process, recording that WE did it. */
+function latchOpSkip(): void {
+  opSkipLatchedByPrompt = true;
+  process.env.CLAUDISH_DISABLE_OP = "1";
+}
+
+/**
+ * Re-arm 1Password after an interactive skip. Returns true when a skip was
+ * actually cleared.
+ *
+ * "Skip 1Password for this run" is the right scope for a one-shot CLI
+ * invocation, which ends minutes later. `claudish config` is the opposite: it is
+ * a long-lived process, so a skip taken during one "Test All" would otherwise
+ * silently disable every op://-backed credential for the remainder of the TUI
+ * session, with no indication and no way back. A long-lived host calls this when
+ * the user starts a NEW explicit 1Password action — that action is the retraction.
+ *
+ * Only the env flag is latched, so only the env flag is cleared: a denied
+ * `createClient` evicts itself from `sdkClientCache` (see
+ * `defaultSdkClientFactory`), so there is no poisoned client left to reset.
+ */
+export function clearOpSkip(): boolean {
+  if (!opSkipLatchedByPrompt) return false;
+  opSkipLatchedByPrompt = false;
+  delete process.env.CLAUDISH_DISABLE_OP;
+  return true;
 }
 
 /**
@@ -1542,7 +1693,18 @@ export async function withSdkRetry<T>(op: () => Promise<T>, label = "op:sdk-op")
       // cleared while the real blocker stayed put.
       const cause = classifyLockedDenial(err);
       if (round > LOCK_RETRY_ROUNDS || cause === null) throw err;
-      if ((await countdownForUnlock(round, LOCK_RETRY_ROUNDS, cause)) === "cancel") throw err;
+      const choice = await countdownForUnlock(round, LOCK_RETRY_ROUNDS, cause);
+      if (choice === "skip") {
+        // Honour "stop asking" for the WHOLE run, not just this op. A bare model
+        // name walks a routing chain, so one refusal otherwise buys the user
+        // three more countdowns for the same run. `CLAUDISH_DISABLE_OP` is the
+        // existing single-run kill switch (`hasOpSources` returns false), so the
+        // decision is expressed in the vocabulary the rest of the code already
+        // reads — no second flag to keep in sync.
+        latchOpSkip();
+        throw err;
+      }
+      if (choice === "cancel") throw err;
       // Fresh handshake for the retry — the denied client is spent.
       resetSdkClientCache();
     }

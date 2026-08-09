@@ -96,75 +96,91 @@ export function createGeminiSseStream(
         }
       }, 1000);
 
-      const finalize = async (reason: string, err?: string) => {
-        if (finalized) return;
-        finalized = true;
-
-        if (thinkingStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
-        }
-        if (textStarted) {
-          send("content_block_stop", { type: "content_block_stop", index: textIdx });
-        }
-        for (const t of toolCalls.values()) {
-          if (t.started && !t.closed) {
-            send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
-            t.closed = true;
-          }
-        }
-
-        if (opts.middlewareManager) {
-          await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
-        }
-
-        const inputTokens = usage?.promptTokenCount || 0;
-        const outputTokens = usage?.candidatesTokenCount || 0;
-
-        if (usage) {
-          log(`[GeminiSSE] Usage: prompt=${inputTokens}, completion=${outputTokens}`);
-        }
-
-        if (opts.onTokenUpdate) {
-          opts.onTokenUpdate(inputTokens, outputTokens);
-        }
-
-        if (reason === "error") {
-          log(`[GeminiSSE] Stream error: ${err}`);
-          send("error", { type: "error", error: { type: "api_error", message: err } });
-        } else {
-          const hasToolCalls = toolCalls.size > 0;
-          // Anthropic's contract for a cut-off turn is "max_tokens". Reporting
-          // "end_turn" presents a truncated answer — or an empty one, when a
-          // thinking model spent the whole budget reasoning — as the model's
-          // complete final word.
-          const stopReason = truncated ? "max_tokens" : hasToolCalls ? "tool_use" : "end_turn";
-          if (truncated) {
-            log("[GeminiSSE] finishReason=MAX_TOKENS → stop_reason=max_tokens");
-          }
-          send("message_delta", {
-            type: "message_delta",
-            delta: { stop_reason: stopReason, stop_sequence: null },
-            // input_tokens rides the delta so the client learns the real context
-            // size — without it Claude Code keeps message_start's estimate and
-            // auto-compaction never arms. See message-start-usage.ts.
-            usage: {
-              ...(inputTokens > 0 ? { input_tokens: inputTokens } : {}),
-              output_tokens: outputTokens,
-            },
-          });
-          opts.onTurnEnd?.();
-          send("message_stop", { type: "message_stop" });
-        }
-
+      // Kept out of finalize() so it can run from a `finally`. finalize() guards
+      // re-entry on `finalized`, so a throw part-way through (afterStreamComplete
+      // is an await on user middleware) used to leave the controller open and the
+      // ping interval running forever — the outer catch re-called finalize() and
+      // it returned at the guard. Safe to call more than once.
+      const teardown = () => {
         if (!isClosed) {
           isClosed = true;
-          if (pingInterval) {
-            clearInterval(pingInterval);
-            pingInterval = null;
-          }
           try {
             controller.close();
           } catch {}
+        }
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+      };
+
+      const finalize = async (reason: string, err?: string) => {
+        // A repeat call still tears down: the first may have thrown before
+        // reaching its own `finally`.
+        if (finalized) {
+          teardown();
+          return;
+        }
+        finalized = true;
+
+        try {
+          if (thinkingStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: thinkingIdx });
+          }
+          if (textStarted) {
+            send("content_block_stop", { type: "content_block_stop", index: textIdx });
+          }
+          for (const t of toolCalls.values()) {
+            if (t.started && !t.closed) {
+              send("content_block_stop", { type: "content_block_stop", index: t.blockIndex });
+              t.closed = true;
+            }
+          }
+
+          if (opts.middlewareManager) {
+            await opts.middlewareManager.afterStreamComplete(opts.modelName, new Map());
+          }
+
+          const inputTokens = usage?.promptTokenCount || 0;
+          const outputTokens = usage?.candidatesTokenCount || 0;
+
+          if (usage) {
+            log(`[GeminiSSE] Usage: prompt=${inputTokens}, completion=${outputTokens}`);
+          }
+
+          if (opts.onTokenUpdate) {
+            opts.onTokenUpdate(inputTokens, outputTokens);
+          }
+
+          if (reason === "error") {
+            log(`[GeminiSSE] Stream error: ${err}`);
+            send("error", { type: "error", error: { type: "api_error", message: err } });
+          } else {
+            const hasToolCalls = toolCalls.size > 0;
+            // Anthropic's contract for a cut-off turn is "max_tokens". Reporting
+            // "end_turn" presents a truncated answer — or an empty one, when a
+            // thinking model spent the whole budget reasoning — as the model's
+            // complete final word.
+            const stopReason = truncated ? "max_tokens" : hasToolCalls ? "tool_use" : "end_turn";
+            if (truncated) {
+              log("[GeminiSSE] finishReason=MAX_TOKENS → stop_reason=max_tokens");
+            }
+            send("message_delta", {
+              type: "message_delta",
+              delta: { stop_reason: stopReason, stop_sequence: null },
+              // input_tokens rides the delta so the client learns the real context
+              // size — without it Claude Code keeps message_start's estimate and
+              // auto-compaction never arms. See message-start-usage.ts.
+              usage: {
+                ...(inputTokens > 0 ? { input_tokens: inputTokens } : {}),
+                output_tokens: outputTokens,
+              },
+            });
+            opts.onTurnEnd?.();
+            send("message_stop", { type: "message_stop" });
+          }
+        } finally {
+          teardown();
         }
       };
 

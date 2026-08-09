@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
-import { parseModelSpec } from "../../providers/model-parser.js";
+import { parseModelChain, parseModelSpec } from "../../providers/model-parser.js";
 import type { Route } from "../../providers/routing-rules.js";
 import { __resetSniffForTests } from "./op-source.js";
-import { normalizePinnedSpec, pinSpecFor, prehydrateCredentialsForSpawn } from "./prehydrate.js";
+import {
+  joinPinnedChain,
+  normalizePinnedSpec,
+  pinSpecFor,
+  prehydrateCredentialsForSpawn,
+} from "./prehydrate.js";
 
 let savedDisableOp: string | undefined;
 
@@ -130,7 +135,74 @@ describe("normalizePinnedSpec", () => {
   });
 });
 
+describe("joinPinnedChain", () => {
+  it("joins several routes in order with plus", () => {
+    const joined = joinPinnedChain([
+      candidate("z-ai", "zgo@minimax-m2.5"),
+      candidate("minimax", "mm@MiniMax-M2.5"),
+      candidate("openrouter", "or@minimax/minimax-m2.5"),
+    ]);
+
+    expect(joined).toBe("zgo@minimax-m2.5+mm@MiniMax-M2.5+or@minimax/minimax-m2.5");
+  });
+
+  it("normalizes OpenRouter before joining so every candidate remains explicit", () => {
+    const joined = joinPinnedChain([
+      candidate("z-ai", "zgo@grok-4.20"),
+      candidate("openrouter", "x-ai/grok-4.20"),
+    ]);
+
+    expect(joined).toContain("or@x-ai/grok-4.20");
+    expect(joined).not.toBeNull();
+    expect(parseModelChain(joined!).every((spec) => parseModelSpec(spec).isExplicitProvider)).toBe(
+      true
+    );
+  });
+
+  it("drops an unnormalizable route while preserving the rest", () => {
+    expect(
+      joinPinnedChain([
+        candidate("z-ai", "zgo@minimax-m2.5"),
+        candidate("openrouter", "   "),
+        candidate("minimax", "mm@MiniMax-M2.5"),
+      ])
+    ).toBe("zgo@minimax-m2.5+mm@MiniMax-M2.5");
+  });
+
+  it("returns null when no route can be normalized", () => {
+    expect(joinPinnedChain([])).toBeNull();
+    expect(joinPinnedChain([candidate("openrouter", ""), candidate("minimax", "   ")])).toBeNull();
+  });
+});
+
 describe("pinSpecFor routing gate", () => {
+  it("returns the primary and fallbacks in credential-filtered preference order", async () => {
+    const router = mock(async () => ({
+      kind: "ok" as const,
+      primary: candidate("z-ai", "zgo@minimax-m2.5"),
+      fallbacks: [
+        candidate("minimax", "mm@MiniMax-M2.5"),
+        candidate("openrouter", "minimax/minimax-m2.5"),
+      ],
+    }));
+
+    expect(await pinSpecFor("minimax-m2.5", router)).toBe(
+      "zgo@minimax-m2.5+mm@MiniMax-M2.5+or@minimax/minimax-m2.5"
+    );
+  });
+
+  it("keeps a single-candidate pin byte-identical and separator-free", async () => {
+    const router = mock(async () => ({
+      kind: "ok" as const,
+      primary: candidate("openrouter", "x-ai/grok-4.20"),
+      fallbacks: [],
+    }));
+
+    const pinned = await pinSpecFor("x-ai/grok-4.20", router);
+    expect(pinned).toBe("or@x-ai/grok-4.20");
+    expect(pinned).not.toContain("+");
+  });
+
   it("does not route already-explicit specs", async () => {
     const router = mock(async () => ({
       kind: "ok" as const,

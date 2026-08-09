@@ -94,6 +94,64 @@ async function parseClaudeSseStream(response: Response): Promise<ClaudeEvent[]> 
   return events;
 }
 
+/**
+ * Consume a parser response with a wall-clock timeout while tracking the real
+ * intervals it creates. The wrappers delegate to the native timer functions;
+ * they only record whether parser teardown cleared its keepalive interval.
+ */
+async function parseWithTimeoutAndIntervalTracking(
+  createResponse: () => Response,
+  timeoutMs = 500
+): Promise<{
+  events: ClaudeEvent[] | null;
+  timedOut: boolean;
+  intervalsStarted: number;
+  intervalsStillActive: number;
+}> {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const activeIntervals = new Set<ReturnType<typeof globalThis.setInterval>>();
+  let intervalsStarted = 0;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutMarker = Symbol("stream parse timeout");
+
+  globalThis.setInterval = ((...args: Parameters<typeof globalThis.setInterval>) => {
+    const interval = originalSetInterval(...args);
+    intervalsStarted++;
+    activeIntervals.add(interval);
+    return interval;
+  }) as typeof globalThis.setInterval;
+  globalThis.clearInterval = ((...args: Parameters<typeof globalThis.clearInterval>) => {
+    const [interval] = args;
+    if (interval !== undefined) {
+      activeIntervals.delete(interval as ReturnType<typeof globalThis.setInterval>);
+    }
+    return originalClearInterval(...args);
+  }) as typeof globalThis.clearInterval;
+
+  try {
+    const response = createResponse();
+    const result = await Promise.race([
+      parseClaudeSseStream(response),
+      new Promise<typeof timeoutMarker>((resolve) => {
+        timeout = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+      }),
+    ]);
+
+    return {
+      events: result === timeoutMarker ? null : result,
+      timedOut: result === timeoutMarker,
+      intervalsStarted,
+      intervalsStillActive: activeIntervals.size,
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+    for (const interval of activeIntervals) originalClearInterval(interval);
+  }
+}
+
 /** Extract all text content from parsed Claude events */
 function extractText(events: ClaudeEvent[]): string {
   return events
@@ -2094,10 +2152,7 @@ describe("Regression: Gemini visible text is never silently dropped", () => {
         {
           content: {
             role: "model",
-            parts: [
-              { text: "reasoning here", thought: true },
-              { text: "the answer" },
-            ],
+            parts: [{ text: "reasoning here", thought: true }, { text: "the answer" }],
           },
           finishReason: "STOP",
         },
@@ -2153,9 +2208,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
   test("OpenRouter length finish with no visible text emits max_tokens", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();
-    const fixture = fixtureToResponse(
-      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
-    );
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse"));
 
     const response = createStreamingResponseHandler(
       createMockContext(),
@@ -2194,9 +2247,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
   test("OpenRouter delta.reasoning reaches a thinking content block", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();
-    const fixture = fixtureToResponse(
-      join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse")
-    );
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "gemini-3.1-pro-or-maxtokens-empty.sse"));
 
     const response = createStreamingResponseHandler(
       createMockContext(),
@@ -2208,8 +2259,7 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
     const events = await parseClaudeSseStream(response);
     const thinkingStart = events.find(
       (event) =>
-        event.data?.type === "content_block_start" &&
-        event.data?.content_block?.type === "thinking"
+        event.data?.type === "content_block_start" && event.data?.content_block?.type === "thinking"
     );
     const thinking = events
       .filter((event) => event.data?.delta?.type === "thinking_delta")
@@ -2269,6 +2319,39 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
     expect(extractText(events)).toBe("OK");
   });
 
+  test("OpenAI content_filter preserves text and emits refusal", async () => {
+    const createStreamingResponseHandler = await getOpenAiParser();
+    const adapter = await getOpenRouterAdapter();
+
+    // Synthetic protocol-shape case: a provider refusal is not a turn the model chose to end.
+    const contentChunk = {
+      choices: [{ index: 0, delta: { content: "visible before refusal" }, finish_reason: null }],
+    };
+    const refusalChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }],
+    };
+    const fixture = new Response(
+      `data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(refusalChunk)}\n\ndata: [DONE]\n\n`,
+      {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "google/gemini-3.1-pro-preview",
+      null
+    );
+    const events = await parseClaudeSseStream(response);
+    const messageDelta = events.find((event) => event.data?.type === "message_delta");
+
+    expect(messageDelta?.data.delta.stop_reason).toBe("refusal");
+    expect(extractText(events)).toBe("visible before refusal");
+  });
+
   test("OpenAI tool_calls finish remains tool_use", async () => {
     const createStreamingResponseHandler = await getOpenAiParser();
     const adapter = await getOpenRouterAdapter();
@@ -2309,5 +2392,89 @@ describe("Regression: truncated turns are reported as max_tokens", () => {
 
     expect(extractToolNames(events)).toEqual(["Read"]);
     expect(messageDelta?.data.delta.stop_reason).toBe("tool_use");
+  });
+});
+
+describe("Regression: finalize teardown survives callback failures", () => {
+  test("openai-sse closes the stream and clears its ping when onTokenUpdate throws", async () => {
+    const parserMod = await import("./handlers/shared/stream-parsers/openai-sse.js");
+    const adapterMod = await import("./adapters/base-api-format.js");
+    const adapter = new adapterMod.DefaultAPIFormat("test-model");
+    let callbackCalls = 0;
+
+    const result = await parseWithTimeoutAndIntervalTracking(() => {
+      const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-openai-text-only.sse"));
+      return parserMod.createStreamingResponseHandler(
+        createMockContext(),
+        fixture,
+        adapter,
+        "test-model",
+        null,
+        () => {
+          callbackCalls++;
+          throw new Error("token callback failed");
+        }
+      );
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.events).not.toBeNull();
+    expect(result.intervalsStarted).toBe(1);
+    expect(result.intervalsStillActive).toBe(0);
+    expect(callbackCalls).toBe(1);
+  });
+
+  test("gemini-sse closes the stream and clears its ping when onTokenUpdate throws", async () => {
+    const parserMod = await import("./handlers/shared/stream-parsers/gemini-sse.js");
+    const adapterMod = await import("./adapters/gemini-api-format.js");
+    const adapter = new adapterMod.GeminiAPIFormat("gemini-3.6-flash");
+    let callbackCalls = 0;
+
+    const result = await parseWithTimeoutAndIntervalTracking(() => {
+      const fixture = fixtureToResponse(
+        join(FIXTURES_DIR, "gemini-3.6-flash-antigravity-ok-answer.sse")
+      );
+      return parserMod.createGeminiSseStream(createMockContext(), fixture, {
+        modelName: "gemini-3.6-flash",
+        adapter,
+        unwrapResponse: true,
+        onTokenUpdate: () => {
+          callbackCalls++;
+          throw new Error("token callback failed");
+        },
+      });
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.events).not.toBeNull();
+    expect(result.intervalsStarted).toBe(1);
+    expect(result.intervalsStillActive).toBe(0);
+    expect(callbackCalls).toBe(1);
+  });
+
+  test("ollama-jsonl closes the stream, clears its ping, and emits one message_stop when onTokenUpdate throws", async () => {
+    const parserMod = await import("./handlers/shared/stream-parsers/ollama-jsonl.js");
+    let callbackCalls = 0;
+
+    const result = await parseWithTimeoutAndIntervalTracking(() => {
+      const fixture = new Response(
+        `${JSON.stringify({ message: { content: "Hello" }, done: false })}\n${JSON.stringify({ done: true, prompt_eval_count: 12, eval_count: 3 })}\n`,
+        { status: 200, headers: { "Content-Type": "application/x-ndjson" } }
+      );
+      return parserMod.createOllamaJsonlStream(createMockContext(), fixture, {
+        modelName: "test-model",
+        onTokenUpdate: () => {
+          callbackCalls++;
+          throw new Error("token callback failed");
+        },
+      });
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(result.events).not.toBeNull();
+    expect(result.intervalsStarted).toBe(1);
+    expect(result.intervalsStillActive).toBe(0);
+    expect(callbackCalls).toBe(1);
+    expect(result.events?.filter((event) => event.data?.type === "message_stop")).toHaveLength(1);
   });
 });

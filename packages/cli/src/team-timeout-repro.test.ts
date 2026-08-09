@@ -94,6 +94,9 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       // Run with a generous 5s timeout — processes complete in ~50ms
       // Prepend fake claudish to PATH so it's found instead of real one
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
+      // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+      delete process.env.CLAUDISH_BIN;
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
@@ -107,6 +110,11 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
         }
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
       }
     },
     { retry: 2 }
@@ -126,6 +134,9 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       setupSession(tempDir, ["model-a"], "Say hello");
 
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
+      // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+      delete process.env.CLAUDISH_BIN;
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
@@ -136,6 +147,11 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
         expect(model.exitCode).toBe(0);
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
       }
     },
     { retry: 2 }
@@ -153,6 +169,9 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       setupSession(tempDir, ["slow-model"], "Say hello");
 
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
+      // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+      delete process.env.CLAUDISH_BIN;
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
@@ -162,6 +181,11 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
         expectModelState("slow-model", model, "TIMEOUT");
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
       }
     },
     { retry: 2 }
@@ -209,6 +233,9 @@ exit 0
       setupSession(tempDir, ["fast-a", "fast-b", "slow-model"], "Analyze code");
 
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
+      // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+      delete process.env.CLAUDISH_BIN;
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
@@ -235,6 +262,11 @@ exit 0
         }
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
       }
     },
     { timeout: 20_000, retry: 2 }
@@ -269,6 +301,9 @@ exit 0
       setupSession(tempDir, ["model-a"], "Say hello");
 
       const originalPath = process.env.PATH;
+      const originalClaudishBin = process.env.CLAUDISH_BIN;
+      // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+      delete process.env.CLAUDISH_BIN;
       process.env.PATH = `${largeFakeDir}:${originalPath}`;
 
       try {
@@ -282,6 +317,11 @@ exit 0
         expect(model.outputSize).toBe(65536);
       } finally {
         process.env.PATH = originalPath;
+        if (originalClaudishBin === undefined) {
+          delete process.env.CLAUDISH_BIN;
+        } else {
+          process.env.CLAUDISH_BIN = originalClaudishBin;
+        }
         rmSync(largeFakeDir, { recursive: true, force: true });
       }
     },

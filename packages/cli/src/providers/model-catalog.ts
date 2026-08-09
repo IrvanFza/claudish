@@ -140,9 +140,9 @@ const AGGREGATOR_SLUG_SEED = new Set<string>([
  * Recomputed per call from the passed-in cache reader — the cache is already
  * memoized upstream, and the set must track a refresh without a restart.
  */
-function aggregatorProviderSlugs(readSlimCache: () => { entries: SlimModelEntry[] } | null): Set<
-  string
-> {
+function aggregatorProviderSlugs(
+  readSlimCache: () => { entries: SlimModelEntry[] } | null
+): Set<string> {
   const cache = readSlimCache();
   if (!cache || cache.entries.length === 0) return AGGREGATOR_SLUG_SEED;
 

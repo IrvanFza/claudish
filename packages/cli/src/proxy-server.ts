@@ -15,13 +15,14 @@ import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
+import { DISPLAY_NAMES } from "./providers/auto-route.js";
 import {
   ensureCatalogReady,
   logResolution,
-  resolveModelNameSync,
+  resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
+import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
@@ -87,6 +88,16 @@ export interface ProxyServerOptions {
    * Claude-recognized slot ids, not the real model ids. Defaults to [].
    */
   servedSlotIds?: string[];
+  /**
+   * An ordered, already-credential-filtered candidate list pinned by a PARENT
+   * claudish process (`team` / channel `create_session`), parsed from a `--model`
+   * chain value. Element 0 is also the `model` argument, so a chain is opt-in and
+   * additive: absent it, routing behaves exactly as before.
+   *
+   * See step 2a-chain in `getHandlerForRequest` for why this exists and why it is
+   * matched before catalog resolution.
+   */
+  modelChain?: string[];
 }
 
 export async function createProxyServer(
@@ -462,6 +473,76 @@ export async function createProxyServer(
 
     const invocationMode = detectInvocationMode(target, wasFromModelMap);
 
+    // 2a-chain. A PINNED CHAIN from a parent process.
+    //
+    // `team` / channel `create_session` resolve the route in the parent and spawn
+    // the child with explicit specs, because a bare name would make the child
+    // re-resolve credentials and open its own 1Password client — one dialog per
+    // child instead of one per run (auth/credentials/prehydrate.ts). The cost used
+    // to be that "explicit" also means "exactly one candidate": step 2c below is
+    // the only place a FallbackHandler is built, it runs only for names the child
+    // routes itself, and `isRetryableError` has no other caller. So a spawned child
+    // could not fall through on a spent subscription, a rotated key, or a provider
+    // that rejects the request shape — failures an interactive run recovers from.
+    //
+    // The parent now pins the WHOLE credential-filtered chain and this branch
+    // rebuilds the FallbackHandler from it. Every element is explicit, so no
+    // element re-routes and no SDK client is ever built; and the parent's
+    // `route()` already called `credentials.isAvailable()` on each candidate,
+    // which write-throughs each resolved op:// key into the env this process
+    // inherited — so every candidate here resolves from env at step 1.
+    //
+    // Matched BEFORE 2b, against the UNRESOLVED target: 2b rewrites the primary to
+    // its canonical wire id, so a post-2b comparison against `modelChain[0]` would
+    // stop matching for exactly the models whose id needs resolving. Each element
+    // gets the same catalog treatment individually, inside the loop.
+    //
+    // Only the default `--model` carries a chain; a role-mapped target (opus /
+    // sonnet / haiku) does not equal `modelChain[0]` and falls through untouched.
+    if (options.modelChain && options.modelChain.length > 1 && target === options.modelChain[0]) {
+      const cacheKey = `chain:${options.modelChain.join("+")}`;
+      const cached = fallbackHandlerCache.get(cacheKey);
+      if (cached) return cached;
+
+      await ensureCatalogReady(5000);
+      const candidates: FallbackCandidate[] = [];
+      for (const spec of options.modelChain) {
+        const parsed = parseModelSpec(spec);
+        const resolvedSpec = resolveTargetForCatalog(
+          spec,
+          parsed.isExplicitProvider,
+          parsed.model,
+          parsed.provider
+        ).target;
+        const handler =
+          parsed.provider === "openrouter"
+            ? getOpenRouterHandler(resolvedSpec, invocationMode)
+            : ((await getRemoteProviderHandler(resolvedSpec, invocationMode)) ??
+              getLocalProviderHandler(resolvedSpec, invocationMode));
+        // A candidate that cannot be built is DROPPED, never fatal: the parent
+        // credential-filtered this chain, so a miss here means the child's view
+        // differs (a provider it cannot construct), and the remaining candidates
+        // are still strictly better than failing the request.
+        if (handler) {
+          candidates.push({ name: DISPLAY_NAMES[parsed.provider] ?? parsed.provider, handler });
+        }
+      }
+
+      if (candidates.length > 0) {
+        const resultHandler =
+          candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler;
+        fallbackHandlerCache.set(cacheKey, resultHandler);
+        if (!options.quiet && candidates.length > 1) {
+          logStderr(
+            `[Route] ${candidates.length} pinned providers for ${target}: ${candidates.map((c) => c.name).join(" → ")}`
+          );
+        }
+        return resultHandler;
+      }
+      // Nothing built — fall through to the ordinary pipeline, which will report
+      // the real reason for the primary spec.
+    }
+
     // 2b. Catalog resolution — map the typed name to the provider's own wire id.
     //
     // Runs for EVERY provider, not just OpenRouter. It is one `aggregators[]`
@@ -475,13 +556,43 @@ export async function createProxyServer(
     // GGUF, a custom endpoint's private id — resolves to null and passes
     // through unchanged. Providers that ALSO resolve live (Antigravity's served
     // set) are unaffected: they re-resolve an exact id to itself.
+    //
+    // ONLY for an EXPLICIT `provider@model` spec. The rewrite emits a
+    // `provider@model` string, and for a BARE name `parsedTarget.provider` is the
+    // provider auto-DETECTED from the name — so rewriting a bare name manufactures
+    // an explicit spec out of a user request that had none. Step 2c then reads
+    // `isExplicitProvider === true`, skips routing entirely, and the model goes to
+    // the auto-detected provider with the whole subscription chain unconsulted.
+    //
+    // This bit exactly one family, which is why it survived: the rewrite only fires
+    // when `wasResolved` is true, i.e. when the canonical id DIFFERS from what the
+    // user typed — and MiniMax is the only family whose wire id differs by case
+    // (`minimax-m2.5` → `MiniMax-M2.5`). Measured across glm-5.2, kimi-k2.7, k3,
+    // deepseek-v3.2, grok-4.5, gpt-5.6-sol, gemini-3.6-flash and qwen3.7-plus: all
+    // pass through unchanged and keep their chains. Bare `minimax-m2.5` became
+    // `minimax@MiniMax-M2.5` and went straight to the METERED MiniMax API, past
+    // both `minimax-coding` and `opencode-zen-go`. The user-visible symptom was a
+    // subscription-covered model billing per token — or reporting no balance.
+    //
+    // Nothing is lost by skipping it here: the chain resolves each candidate's wire
+    // id itself. `buildRoutingChain` calls `resolveExternalId(modelName, provider)`
+    // per candidate, which is the same catalog lookup done PER PROVIDER instead of
+    // once against a guessed one — that is what yields `mm@MiniMax-M2.5` for the
+    // MiniMax candidate and `zengo@minimax-m2.5` for Zen Go in the same chain, two
+    // spellings this single rewrite could never produce.
     {
       const parsedTarget = parseModelSpec(target);
-      await ensureCatalogReady(5000);
-      const resolution = resolveModelNameSync(parsedTarget.model, parsedTarget.provider);
-      logResolution(parsedTarget.model, resolution, options.quiet);
-      if (resolution.wasResolved) {
-        target = `${parsedTarget.provider}@${resolution.resolvedId}`;
+      if (parsedTarget.isExplicitProvider) {
+        await ensureCatalogReady(5000);
+        const outcome = resolveTargetForCatalog(
+          target,
+          parsedTarget.isExplicitProvider,
+          parsedTarget.model,
+          parsedTarget.provider
+        );
+        if (outcome.resolution)
+          logResolution(parsedTarget.model, outcome.resolution, options.quiet);
+        target = outcome.target;
       }
     }
 

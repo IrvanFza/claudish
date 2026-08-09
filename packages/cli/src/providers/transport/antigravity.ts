@@ -26,9 +26,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
 import { getValidAntigravityAccessToken } from "../../auth/antigravity-token.js";
-import { credentials } from "../../auth/credentials/authority.js";
-import type { RequestAuth } from "../../auth/credentials/types.js";
 import {
   buildAntigravityUserAgent,
   getAntigravityTierDisplayName,
@@ -36,7 +35,8 @@ import {
   retrieveUserQuota,
   setupAntigravityUser,
 } from "../../auth/antigravity-user.js";
-import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
+import { credentials } from "../../auth/credentials/authority.js";
+import type { RequestAuth } from "../../auth/credentials/types.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";

@@ -33,10 +33,17 @@ import {
   type DiscoveredModel,
   discoverProviderModels,
   rankDiscoveredModels,
+  toRosterEntry,
 } from "./providers/model-discovery.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
-import { fetchOllamaModels } from "./providers/ollama-discovery.js";
-import { getDisplayName, getProviderByName } from "./providers/provider-definitions.js";
+import { collapseRoster } from "./providers/model-resolvers/registry.js";
+import { type ModelOffer, offerIsLive } from "./providers/model-resolvers/types.js";
+import {
+  type ProviderDefinition,
+  getAllProviders,
+  getDisplayName,
+  getProviderByName,
+} from "./providers/provider-definitions.js";
 import { isChatCapable } from "./providers/transport/probe-discovery.js";
 
 /**
@@ -73,7 +80,7 @@ export interface ModelInfo {
 /**
  * Picker provider value → Firebase aggregator/owner slug.
  *
- * Picker values come from `ALL_PROVIDER_CHOICES.value` (e.g. "zen", "openai-codex");
+ * Picker values are ProviderDefinition names (e.g. "opencode-zen", "openai-codex");
  * Firebase aggregator/owner slugs come from `VendorRecord.vendor` /
  * `aggregators[].provider` in the slim catalog (e.g. "opencode-zen", "openai").
  *
@@ -307,8 +314,6 @@ function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
   return m.releaseDate;
 }
 
-
-
 function modelDocToModelInfo(model: ModelDoc): ModelInfo {
   const providerLabel = formatFirebaseProviderLabel(model.provider || "unknown");
   const contextLength = model.contextWindow || 0;
@@ -362,6 +367,36 @@ function dedupeModels(models: ModelInfo[]): ModelInfo[] {
   for (const model of models) {
     if (seen.has(model.id)) continue;
     seen.add(model.id);
+    deduped.push(model);
+  }
+  return deduped;
+}
+
+/**
+ * Collapse rows that would render as the SAME `provider@model` spec.
+ *
+ * `dedupeModels` keys on the catalog's `modelId`, which cannot see this: two
+ * DIFFERENT catalog documents can carry the same `aggregators[].externalId` for
+ * one provider. Live example — Antigravity serves `gemini-3.6-flash-high` from
+ * both a variant-specific document and the canonical `gemini-3.6-flash` one, so
+ * the picker listed `ag@gemini-3.6-flash-high` twice (likewise 3.5-flash-low
+ * and 3.1-pro-high).
+ *
+ * Two rows that produce byte-identical argv are the same choice, so showing
+ * both is a rendering defect regardless of why the catalog has two documents.
+ * This is presentation only — it does not paper over the upstream data, which
+ * is written up for models-index separately.
+ *
+ * Runs AFTER the newest-first sort so the survivor is deterministic rather than
+ * whichever document the backend happened to return first.
+ */
+function dedupeByProviderSpec(provider: string, models: ModelInfo[]): ModelInfo[] {
+  const seen = new Set<string>();
+  const deduped: ModelInfo[] = [];
+  for (const model of models) {
+    const spec = buildExplicitModelSpec(provider, resolveProviderExternalId(provider, model));
+    if (seen.has(spec)) continue;
+    seen.add(spec);
     deduped.push(model);
   }
   return deduped;
@@ -456,51 +491,54 @@ function formatModelChoiceAsSpec(model: ModelInfo, spec: string, priceStr: strin
 }
 
 /**
- * Provider filter aliases for @prefix search syntax.
- * These map to actual configured runtime providers, not Firebase model vendors.
+ * Extra `@prefix` spellings that are NOT registered provider shortcuts.
+ *
+ * The alias table proper is DERIVED (see `getProviderFilterAliases`) from each
+ * definition's canonical name plus its `shortcuts` — the strings claudish
+ * already accepts on the command line, so `@dv` filters here exactly as
+ * `dv@model` routes there. These few are picker-only conveniences with no
+ * definition behind them.
  */
-const PROVIDER_FILTER_ALIASES: Record<string, string> = {
-  openrouter: "openrouter",
-  or: "openrouter",
-  google: "google",
-  gemini: "google",
+const PROVIDER_FILTER_ALIAS_EXTRA: Record<string, string> = {
   gem: "google",
-  openai: "openai",
-  oai: "openai",
-  codex: "openai-codex",
-  cx: "openai-codex",
-  "x-ai": "x-ai",
-  xai: "x-ai",
-  grok: "x-ai",
-  minimax: "minimax",
-  mm: "minimax",
-  "minimax-coding": "minimax-coding",
-  mmc: "minimax-coding",
-  kimi: "kimi",
-  moon: "kimi",
-  moonshot: "kimi",
-  "kimi-coding": "kimi-coding",
-  kc: "kimi-coding",
-  glm: "glm",
-  "glm-coding": "glm-coding",
-  gc: "glm-coding",
-  "z-ai": "z-ai",
-  zai: "z-ai",
-  zen: "zen",
-  ollamacloud: "ollamacloud",
-  oc: "ollamacloud",
-  litellm: "litellm",
-  ll: "litellm",
-  deepseek: "deepseek",
-  mistralai: "mistralai",
-  mistral: "mistralai",
-  sakana: "sakana",
-  fugu: "sakana",
-  "sakana-subscription": "sakana-subscription",
-  sc: "sakana-subscription",
-  "qwen-cloud": "qwen-cloud",
-  qc: "qwen-cloud",
+  // Legacy picker value for OpenCode Zen; the roster now uses the definition
+  // name, and both still resolve downstream.
+  zen: "opencode-zen",
 };
+
+// Deliberately NOT cached. An earlier version memoized this and justified it by
+// "runtime providers register at startup, before the picker opens" — true today,
+// but it is an assumption about call order that nothing enforces, and the payoff
+// is rebuilding ~30 map entries per keystroke. A stale alias table would drop a
+// custom endpoint out of `@filter` with no visible symptom, which is a poor
+// trade for microseconds.
+
+/**
+ * Provider filter aliases for `@prefix` search syntax.
+ * These map to picker provider values (ProviderDefinition names), not Firebase
+ * model vendors.
+ *
+ * Derived, because the hand-written version was the same opt-in table the
+ * provider roster used to be: `devin` and `antigravity` were both missing from
+ * it, so `@dv` silently matched nothing.
+ *
+ * Rebuilt per call — see the note above on why it is not memoized.
+ */
+export function getProviderFilterAliases(): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  // Insertion order is PICKER_ORDER, and that is load-bearing: an ambiguous
+  // partial like `@op` resolves by first match, so it should land on whatever
+  // the user sees FIRST in the provider list (OpenRouter) rather than on
+  // whichever definition happens to sit higher in the definitions file.
+  for (const def of pickableProvidersInPickerOrder()) {
+    aliases[def.name.toLowerCase()] = def.name;
+    for (const shortcut of def.shortcuts) {
+      aliases[shortcut.toLowerCase()] = def.name;
+    }
+  }
+  // Extras last so a picker convenience can override a derived spelling.
+  return { ...aliases, ...PROVIDER_FILTER_ALIAS_EXTRA };
+}
 
 /**
  * Parse search term for @provider filter prefix
@@ -527,7 +565,7 @@ function parseProviderFilter(
     rest = withoutAt.slice(spaceIdx + 1).trim();
   }
 
-  const source = PROVIDER_FILTER_ALIASES[prefix.toLowerCase()];
+  const source = getProviderFilterAliases()[prefix.toLowerCase()];
   if (source) {
     return { provider: source, searchTerm: rest };
   }
@@ -541,7 +579,7 @@ function parseProviderFilter(
     return { provider: exactMatch.slug, searchTerm: rest };
   }
 
-  const partialMatch = Object.entries(PROVIDER_FILTER_ALIASES).find(([alias]) =>
+  const partialMatch = Object.entries(getProviderFilterAliases()).find(([alias]) =>
     alias.startsWith(prefix.toLowerCase())
   );
   if (partialMatch) {
@@ -584,7 +622,10 @@ async function fetchPickerModels(
     // resolves without needing an entry in the map below.
     const firebaseSlug = pickerProviderToFirebaseSlug[providerSlug] ?? providerSlug;
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
-    const infos = sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)));
+    const infos = dedupeByProviderSpec(
+      providerSlug,
+      sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)))
+    );
     if (!searchTerm) return infos;
     const needle = searchTerm.toLowerCase();
     return infos.filter((m) => m.id.toLowerCase().includes(needle));
@@ -608,6 +649,13 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   let models: ModelInfo[];
   let recommendedModels: ModelInfo[] = [];
   let pickerProviders: PickerProvider[] = [];
+  // Resolved exactly ONCE per picker open, then shared by both consumers below
+  // (the picker's provider rail and the "Select provider:" prompt).
+  // getInteractiveProviderChoices awaits credentials.isAvailable for EVERY
+  // pickable provider, which can read OAuth files, the macOS keychain, and — for
+  // op:// backed keys — the 1Password SDK. Resolving it twice doubled
+  // picker-open latency for a byte-identical answer.
+  let interactiveProviderChoices: ProviderChoice[] = [];
   const remoteQueryCache = new Map<string, Promise<ModelInfo[]>>();
 
   if (freeOnly) {
@@ -629,7 +677,8 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
     models = topModels.length > 0 ? topModels : recommendedModels;
 
-    pickerProviders = toPickerProviders(await getInteractiveProviderChoices());
+    interactiveProviderChoices = await getInteractiveProviderChoices();
+    pickerProviders = toPickerProviders(interactiveProviderChoices);
   }
 
   const loadRemoteModels = async (
@@ -664,7 +713,6 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
 
   try {
     if (!freeOnly && !message && pickerProviders.length > 1) {
-      const interactiveProviderChoices = await getInteractiveProviderChoices();
       const providerChoices = [
         {
           name: "All providers",
@@ -717,13 +765,39 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
           const effectiveProvider = filterProvider;
           const remoteModels = await loadRemoteModels(effectiveProvider, searchTerm);
 
-          return remoteModels.slice(0, 100).map((model) => ({
-            name: formatModelChoice(model, true),
-            value: effectiveProvider
-              ? buildExplicitModelSpec(effectiveProvider, model.id)
-              : model.id,
-            description: model.description?.slice(0, 160),
-          }));
+          return remoteModels.slice(0, 100).map((model) => {
+            // Once the search is FILTERED to a provider (`@ag gemini`), the row
+            // IS that provider's offer, so it must be both priced and IDENTIFIED
+            // as that provider.
+            //
+            // The id matters as much as the price: `model.id` is the catalog's
+            // own key, while the callable string is `aggregators[].externalId`.
+            // They differ wherever a provider re-serves a model under its own
+            // name — `or@x-ai/grok-4.20` vs the bare id, `ag@gemini-3.6-flash`
+            // vs the `-high` variant Antigravity actually serves. Emitting
+            // `model.id` here handed the user a spec their provider does not
+            // recognise. The provider-scoped list (`pickModelFromList`) has
+            // always used `resolveProviderExternalId`; this path had not.
+            const spec = effectiveProvider
+              ? buildExplicitModelSpec(
+                  effectiveProvider,
+                  resolveProviderExternalId(effectiveProvider, model)
+                )
+              : model.id;
+            return {
+              // Unfiltered rows have no single provider to price or name
+              // against, so they keep the model-level figure and the bare id.
+              name: effectiveProvider
+                ? formatModelChoiceAsSpec(
+                    model,
+                    spec,
+                    resolveProviderDisplayPrice(effectiveProvider, model)
+                  )
+                : formatModelChoice(model, true),
+              value: spec,
+              description: model.description?.slice(0, 160),
+            };
+          });
         },
       },
       { signal: ac.signal }
@@ -744,106 +818,161 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   }
 }
 
-/**
- * Provider choices for profile model configuration.
- *
- * Each entry maps to a ProviderDefinition via `provider` field.
- * Availability is checked via isProviderAvailable() — no more ad-hoc envVar checks.
- */
-const ALL_PROVIDER_CHOICES: Array<{
+interface ProviderChoice {
   name: string;
   value: string;
   description: string;
   provider?: string; // ProviderDefinition.name — if set, availability is checked
-}> = [
-  {
-    name: "Skip (keep Claude default)",
-    value: "skip",
-    description: "Use native Claude model for this tier",
-  },
-  {
-    name: "OpenRouter",
-    value: "openrouter",
-    description: "580+ models via unified API",
-    provider: "openrouter",
-  },
-  {
-    name: "OpenCode Zen",
-    value: "zen",
-    description: "Free models, no API key needed",
-    provider: "opencode-zen",
-  },
-  { name: "Google Gemini", value: "google", description: "Direct API", provider: "google" },
-  { name: "OpenAI", value: "openai", description: "Direct API", provider: "openai" },
-  {
-    name: "OpenAI Codex",
-    value: "openai-codex",
-    description: "ChatGPT Plus/Pro subscription (Responses API)",
-    provider: "openai-codex",
-  },
-  { name: "xAI / Grok", value: "x-ai", description: "Direct API", provider: "x-ai" },
-  { name: "DeepSeek", value: "deepseek", description: "Direct API", provider: "deepseek" },
-  { name: "Mistral", value: "mistralai", description: "Direct API", provider: "mistralai" },
-  { name: "Sakana Fugu", value: "sakana", description: "Direct API", provider: "sakana" },
-  {
-    name: "Sakana Fugu Subscription",
-    value: "sakana-subscription",
-    description: "Subscription plan",
-    provider: "sakana-subscription",
-  },
-  { name: "MiniMax", value: "minimax", description: "Direct API", provider: "minimax" },
-  {
-    name: "MiniMax Coding",
-    value: "minimax-coding",
-    description: "Coding subscription",
-    provider: "minimax-coding",
-  },
-  { name: "Kimi / Moonshot", value: "kimi", description: "Direct API", provider: "kimi" },
-  {
-    name: "Kimi Coding",
-    value: "kimi-coding",
-    description: "Coding subscription",
-    provider: "kimi-coding",
-  },
-  {
-    name: "Qwen Plan",
-    value: "qwen-cloud",
-    description: "Alibaba Model Studio subscription",
-    provider: "qwen-cloud",
-  },
-  { name: "GLM / Zhipu", value: "glm", description: "Direct API", provider: "glm" },
-  {
-    name: "GLM Coding Plan",
-    value: "glm-coding",
-    description: "Coding subscription",
-    provider: "glm-coding",
-  },
-  { name: "Z.AI", value: "z-ai", description: "Direct API", provider: "z-ai" },
-  {
-    name: "OllamaCloud",
-    value: "ollamacloud",
-    description: "Cloud models",
-    provider: "ollamacloud",
-  },
-  { name: "LiteLLM", value: "litellm", description: "Configured proxy", provider: "litellm" },
-  {
-    name: "Ollama (local)",
-    value: "ollama",
-    description: "Local Ollama instance",
-    provider: "ollama",
-  },
-  {
-    name: "LM Studio (local)",
-    value: "lmstudio",
-    description: "Local LM Studio instance",
-    provider: "lmstudio",
-  },
-  {
-    name: "Enter custom model",
-    value: "custom",
-    description: "Type a provider@model specification",
-  },
+}
+
+/**
+ * Editorial overlay for the picker's provider rows — NOT a membership list.
+ *
+ * The roster itself is DERIVED from `getAllProviders()` (see
+ * `buildProviderChoices`). This map only overrides copy where the picker's
+ * wording beats the definition's `description`, which is written for the config
+ * TUI's denser layout. A provider absent from this map still appears; it just
+ * renders with `displayName` + `description` straight from its definition.
+ *
+ * Keyed by ProviderDefinition.name.
+ */
+const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
+  openrouter: { description: "580+ models via unified API" },
+  "opencode-zen": { name: "OpenCode Zen", description: "Free models, no API key needed" },
+  google: { name: "Google Gemini", description: "Direct API" },
+  openai: { description: "Direct API" },
+  "openai-codex": { description: "ChatGPT Plus/Pro subscription (Responses API)" },
+  "x-ai": { name: "xAI / Grok", description: "Direct API" },
+  deepseek: { description: "Direct API" },
+  mistralai: { name: "Mistral", description: "Direct API" },
+  sakana: { name: "Sakana Fugu", description: "Direct API" },
+  "sakana-subscription": { name: "Sakana Fugu Subscription", description: "Subscription plan" },
+  minimax: { description: "Direct API" },
+  "minimax-coding": { name: "MiniMax Coding", description: "Coding subscription" },
+  kimi: { name: "Kimi / Moonshot", description: "Direct API" },
+  "kimi-coding": { name: "Kimi Coding", description: "Coding subscription" },
+  "qwen-cloud": { name: "Qwen Plan", description: "Alibaba Model Studio subscription" },
+  glm: { name: "GLM / Zhipu", description: "Direct API" },
+  "glm-coding": { name: "GLM Coding Plan", description: "Coding subscription" },
+  "z-ai": { name: "Z.AI", description: "Direct API" },
+  ollamacloud: { name: "OllamaCloud", description: "Cloud models" },
+  litellm: { description: "Configured proxy" },
+  ollama: { name: "Ollama (local)", description: "Local Ollama instance" },
+  lmstudio: { name: "LM Studio (local)", description: "Local LM Studio instance" },
+  vllm: { name: "vLLM (local)", description: "Local vLLM server" },
+  mlx: { name: "MLX (local)", description: "Local MLX server" },
+};
+
+/**
+ * Leading display order. Anything not listed is appended alphabetically by
+ * displayName, so a NEW provider is visible by default — at the end of the
+ * list rather than nowhere. Ordering is the only thing this table controls.
+ */
+const PICKER_ORDER = [
+  "openrouter",
+  "opencode-zen",
+  "opencode-zen-go",
+  "google",
+  "antigravity",
+  "openai",
+  "openai-codex",
+  "devin",
+  "x-ai",
+  "deepseek",
+  "mistralai",
+  "sakana",
+  "sakana-subscription",
+  "minimax",
+  "minimax-coding",
+  "kimi",
+  "kimi-coding",
+  "qwen-cloud",
+  "glm",
+  "glm-coding",
+  "z-ai",
+  "ollamacloud",
+  "poe",
+  "vertex",
+  "litellm",
+  "ollama",
+  "lmstudio",
+  "vllm",
+  "mlx",
 ];
+
+/**
+ * Is this definition something a user can actually pick?
+ *
+ * The criterion is the ABSENCE OF SHORTCUTS, and nothing else. A definition with
+ * no `shortcuts` has no user-typeable `@` prefix, so the spec the picker emits
+ * could never be typed back or parsed to this provider — it exists only so
+ * `nativeModelPatterns` can steer a BARE model name to a real provider. `qwen`
+ * (→ OpenRouter) and `native-anthropic` (→ Claude Code's own auth) are the two.
+ * Both also happen to carry an empty `baseUrl`/`apiPath`, which corroborates the
+ * verdict for those specific definitions but is NOT the test: `vertex` and
+ * `litellm` have an empty `baseUrl` too (they resolve their endpoint from env at
+ * request time) and are both pickable. Everything else is offerable, and the
+ * credential authority decides whether THIS user sees it.
+ *
+ * A rule, not a roster — which is the point. The old hand-written
+ * ALL_PROVIDER_CHOICES array made membership opt-in, so `devin` and
+ * `antigravity` were both invisible here while working everywhere else
+ * (the config TUI derives its list from the same definitions).
+ *
+ * Exported for the drift test.
+ */
+export function isPickableProvider(def: ProviderDefinition): boolean {
+  return def.shortcuts.length > 0;
+}
+
+/** Pickable definitions in the order the picker renders them. */
+function pickableProvidersInPickerOrder(): ProviderDefinition[] {
+  const rank = new Map(PICKER_ORDER.map((name, i) => [name, i]));
+  return getAllProviders()
+    .filter(isPickableProvider)
+    .sort((a, b) => {
+      const ra = rank.get(a.name) ?? Number.MAX_SAFE_INTEGER;
+      const rb = rank.get(b.name) ?? Number.MAX_SAFE_INTEGER;
+      return ra !== rb ? ra - rb : a.displayName.localeCompare(b.displayName);
+    });
+}
+
+/**
+ * Provider choices for the picker, derived from the provider definitions — the
+ * single source of truth the config TUI already uses.
+ *
+ * `skip` and `custom` are NOT providers; they are picker affordances, so they
+ * stay explicit here.
+ *
+ * Exported for the drift test: this is the list the user actually sees, minus
+ * the credential filter, so a test can assert a provider is OFFERED rather than
+ * assert some proxy for it.
+ */
+export function buildProviderChoices(): ProviderChoice[] {
+  const derived: ProviderChoice[] = pickableProvidersInPickerOrder().map((def) => {
+    const copy = PICKER_COPY[def.name] ?? {};
+    return {
+      name: copy.name ?? def.displayName,
+      value: def.name,
+      description: copy.description ?? def.description ?? "",
+      provider: def.name,
+    };
+  });
+
+  return [
+    {
+      name: "Skip (keep Claude default)",
+      value: "skip",
+      description: "Use native Claude model for this tier",
+    },
+    ...derived,
+    {
+      name: "Enter custom model",
+      value: "custom",
+      description: "Type a provider@model specification",
+    },
+  ];
+}
 
 /**
  * Get provider choices filtered by provider availability.
@@ -856,50 +985,71 @@ const ALL_PROVIDER_CHOICES: Array<{
  * through the SDK serialization queue internally).
  */
 async function getProviderChoices() {
+  const all = buildProviderChoices();
   const checks = await Promise.all(
-    ALL_PROVIDER_CHOICES.map(async (choice) => {
+    all.map(async (choice) => {
       if (!choice.provider) return true; // skip, custom — always shown
       // The authority knows every catalog provider; isAvailable resolves the
       // full env/config/oauth/op:// readiness for that provider name.
       return credentials.isAvailable(choice.provider);
     })
   );
-  return ALL_PROVIDER_CHOICES.filter((_, i) => checks[i]);
+  return all.filter((_, i) => checks[i]);
 }
 
 /**
- * Model ID prefix for each provider. This is the prefix that gets prepended to
- * the user-selected model name to produce the final `provider@model` spec
- * handed back to claudish — a separate concern from the Firebase slug map
- * above.
+ * READABILITY overrides for the `provider@model` prefix the picker emits.
+ *
+ * The prefix is otherwise DERIVED from the definition's `shortestPrefix` (see
+ * `pickerModelPrefix`), which is the only string guaranteed to parse back to
+ * this provider. The four provider rows here are longer aliases that are
+ * equally valid and read better on a command line the user may copy —
+ * `google@gemini-3-pro` over
+ * `g@gemini-3-pro`. `zen` is a legacy picker VALUE (the roster now uses the
+ * definition name `opencode-zen`); kept so an old caller still resolves.
+ *
+ * Do NOT add a row here just because a provider is new — the derived path
+ * already covers it, and correctly.
  */
-const PROVIDER_MODEL_PREFIX: Record<string, string> = {
+const PROVIDER_MODEL_PREFIX_OVERRIDE: Record<string, string> = {
   google: "google@",
-  // Antigravity maps to the google owner catalog, so the picker renders model
-  // rows for it — it needs its own prefix or rows would emit a bare id that
-  // doesn't route to the Antigravity backend.
-  antigravity: "ag@",
-  openai: "oai@",
-  "openai-codex": "cx@",
-  "x-ai": "x-ai@",
-  deepseek: "ds@",
-  mistralai: "mistral@",
-  sakana: "sakana@",
-  "sakana-subscription": "sc@",
-  minimax: "mm@",
-  kimi: "kimi@",
-  "minimax-coding": "mmc@",
-  "kimi-coding": "kc@",
-  "qwen-cloud": "qc@",
-  glm: "glm@",
-  "glm-coding": "gc@",
-  "z-ai": "z-ai@",
-  ollamacloud: "oc@",
-  ollama: "ollama@",
-  lmstudio: "lmstudio@",
-  zen: "zen@",
   openrouter: "openrouter@",
+  lmstudio: "lmstudio@",
+  sakana: "sakana@",
+  zen: "zen@",
 };
+
+/**
+ * The `provider@` prefix for a picker value, or undefined when the provider is
+ * unknown (the caller then hands back the bare model id).
+ *
+ * What is load-bearing here is that a prefix is emitted AT ALL. The old
+ * `PROVIDER_MODEL_PREFIX[provider]` map returned undefined for any provider
+ * nobody had added a row for, and `buildExplicitModelSpec` then hands back the
+ * BARE id — for Devin that means `claude-opus-5-medium`, which matches
+ * native-anthropic's `/^claude-/i` and is silently answered by a different
+ * provider entirely. Deriving removes the opportunity to forget a row.
+ *
+ * `shortestPrefix` rather than `${provider}@` is a preference, not a
+ * correctness fix: `parseModelSpec` passes an unrecognized prefix through
+ * verbatim (model-parser.ts:160), so a canonical definition NAME also resolves.
+ * The shortest prefix is the provider's own declared spelling and is shorter to
+ * retype, which is what the user sees in the picker rows.
+ */
+function pickerModelPrefix(provider: string): string | undefined {
+  const override = PROVIDER_MODEL_PREFIX_OVERRIDE[provider];
+  if (override) return override;
+  const def = getProviderByName(provider);
+  if (!def || !isPickableProvider(def)) return undefined;
+  // `shortestPrefix` is OPTIONAL on ProviderDefinition. Returning undefined for
+  // a definition that omits it would reopen the exact hole described above — a
+  // pickable provider whose rows emit a bare id — so fall back to the first
+  // registered shortcut, which `isPickableProvider` guarantees exists and which
+  // `getShortcuts()` guarantees parses back to this provider. Only a genuinely
+  // unknown provider reaches undefined.
+  const prefix = def.shortestPrefix || def.shortcuts[0];
+  return prefix ? `${prefix}@` : undefined;
+}
 
 async function getInteractiveProviderChoices() {
   return (await getProviderChoices()).filter((choice) => choice.value !== "skip");
@@ -918,7 +1068,7 @@ function toPickerProviders(choices: Array<{ name: string; value: string }>): Pic
  * Pure function — exported for unit tests.
  */
 export function buildExplicitModelSpec(provider: string, modelId: string): string {
-  const prefix = PROVIDER_MODEL_PREFIX[provider];
+  const prefix = pickerModelPrefix(provider);
   if (!prefix) {
     return modelId;
   }
@@ -973,6 +1123,16 @@ function resolveProviderAggregatorEntry(
  * and finally "N/A". Exported for unit tests.
  */
 export function resolveProviderDisplayPrice(provider: string, model: ModelInfo): string {
+  // A flat-rate plan has no per-token rate to show, and this check has to come
+  // FIRST — ahead of both the aggregator rate and the model-level one.
+  //
+  // `buildDiscoveredModelRows` already asks this question, but only providers
+  // that declare `modelDiscovery` reach it. Everything else lands here, which is
+  // why Antigravity rendered "N/A" and why MiniMax Coding / GLM Coding rendered
+  // their metered siblings' dollar rates: the catalog knows the OWNER's price,
+  // and for a subscription that number is not what the user pays. Quoting it is
+  // worse than saying nothing.
+  if (isSubscriptionProvider(provider)) return "SUB";
   const entry = resolveProviderAggregatorEntry(provider, model);
   const entryPrice = formatAveragePricing(entry?.pricing);
   if (entryPrice?.average) return entryPrice.average;
@@ -983,7 +1143,7 @@ export function resolveProviderDisplayPrice(provider: string, model: ModelInfo):
  * Resolve the human-readable provider name used in picker prompt copy.
  */
 function getPickerDisplayName(providerValue: string): string {
-  const choice = ALL_PROVIDER_CHOICES.find((c) => c.value === providerValue);
+  const choice = buildProviderChoices().find((c) => c.value === providerValue);
   if (choice) return choice.name;
   // Fall back to provider-definitions for runtime providers / custom endpoints.
   return getDisplayName(providerValue);
@@ -1000,7 +1160,10 @@ async function loadModelsForPickerProvider(
 
   try {
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
-    return sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)));
+    return dedupeByProviderSpec(
+      providerValue,
+      sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)))
+    );
   } catch {
     return [];
   }
@@ -1089,6 +1252,23 @@ async function pickModelFromList(
  *
  * Exported for unit tests.
  */
+/**
+ * A live offer as a short badge, or undefined when there is nothing to say.
+ *
+ * Evaluated against the clock on every render, never cached: two of the four
+ * promos on the measured Devin roster expired within days of being observed,
+ * and a stale "FREE" badge is a wrong-price bug — strictly worse than no badge.
+ */
+function describeOffer(offer: ModelOffer | undefined): string | undefined {
+  if (!offerIsLive(offer) || offer?.kind !== "promo") return undefined;
+  if (offer.expiresAt === undefined) return "FREE";
+  const until = new Date(offer.expiresAt * 1000).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+  return `FREE until ${until}`;
+}
+
 export async function buildDiscoveredModelRows(
   provider: string,
   displayName: string,
@@ -1100,12 +1280,16 @@ export async function buildDiscoveredModelRows(
   if (discovered.length === 0) return [];
 
   const subscription = isSubscriptionProvider(provider);
-  // A non-subscription discovery provider bills per token, so show the real
-  // rate — the live endpoint doesn't report one and the slim catalog carries
-  // no prices, so ask the vendor catalog. Skipped entirely for subscription
-  // plans (they render SUB), which is every discovery provider today, so
-  // nothing pays for this lookup.
-  const pricingById = subscription
+  const local = getProviderByName(provider)?.isLocal === true;
+  // Neither a flat-rate plan nor a local daemon charges per token, and the
+  // vendor catalog has nothing to say about either — Firebase does not list a
+  // model someone pulled onto their own machine.
+  const flatRate = subscription || local;
+  // A per-token discovery provider should show the real rate; the live endpoint
+  // doesn't report one and the slim catalog carries no prices, so ask the
+  // vendor catalog. Skipped for flat-rate providers, which is every discovery
+  // provider today, so nothing pays for this lookup.
+  const pricingById = flatRate
     ? new Map<string, ModelInfo["pricing"]>()
     : new Map(
         (await loadModelsForPickerProvider(provider, catalog)).map((m) => [
@@ -1113,6 +1297,14 @@ export async function buildDiscoveredModelRows(
           m.pricing,
         ])
       );
+
+  // Fold variant explosions into the rows a human actually picks. Identity for
+  // every provider without a resolver, so this is a no-op except for Devin,
+  // where 167 served uids are ~39 real choices multiplied out by reasoning tier
+  // and speed premium. The chosen id is always a real wire id, so it still
+  // round-trips through buildExplicitModelSpec and argv unchanged.
+  const choices = collapseRoster(provider, discovered.map(toRosterEntry));
+  const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
   // The live endpoint decides WHICH models appear (entitlement) and overrides
   // the context window for THIS tier. Everything else — capabilities, release
@@ -1122,24 +1314,36 @@ export async function buildDiscoveredModelRows(
   // Re-querying the same cloud one id at a time returns the same answer N
   // round-trips later; a window the catalog lacks renders as unknown, which
   // keeps the gap visible as a models-index issue rather than hiding it.
-  const rows = discovered.map((m) => {
-    const contextLength = resolveDiscoveredContextLength(m);
+  const rows = choices.map((c) => {
+    const source = discoveredById.get(c.id);
+    const contextLength = source ? resolveDiscoveredContextLength(source) : (c.contextWindow ?? 0);
+
+    // Order: what it is · how big · what it costs · whether it is on offer.
+    const parts = [c.displayName];
+    if (contextLength) parts.push(`${Math.round(contextLength / 1024)}K context`);
+    // A relative multiplier is only meaningful on a plan that bills in credits;
+    // for a per-token provider the real rate is already in `pricing`.
+    if (subscription && c.costFactor !== undefined) parts.push(`×${c.costFactor}`);
+    const promo = describeOffer(c.offer);
+    if (promo) parts.push(promo);
+
     return {
-      id: m.id, // wire id — buildExplicitModelSpec adds the provider prefix
-      name: m.displayName || m.id,
-      description: contextLength
-        ? `${m.displayName ?? m.id} · ${Math.round(contextLength / 1024)}K context`
-        : (m.displayName ?? m.id),
+      id: c.id, // wire id — buildExplicitModelSpec adds the provider prefix
+      name: c.displayName,
+      description: parts.join(" · "),
       provider: displayName,
-      releaseDate: resolveDiscoveredReleaseDate(m),
-      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(m.id.toLowerCase()),
+      releaseDate: source ? resolveDiscoveredReleaseDate(source) : undefined,
+      pricing: subscription ? SUBSCRIPTION_PRICING : pricingById.get(c.id.toLowerCase()),
       context: formatContextLength(contextLength),
       contextLength,
-      // Catalog-first. `true` only as the fallback for a model the catalog does
-      // not carry — every provider here serves chat models, so assuming tool
-      // support is the safer miss than hiding a capable model.
-      supportsTools: lookupModelCapabilities(m.id)?.supportsTools ?? true,
-      isFree: subscription, // covered by the subscription — no per-token charge
+      // Catalog-first, then whatever the endpoint reported, then `true`. The
+      // endpoint step matters only for Ollama, whose locally-pulled models are
+      // absent from the catalog and where tool support genuinely varies — an
+      // embedding or vision-only pull cannot drive Claude Code. For everything
+      // else the catalog answers and `true` remains the safer miss than hiding
+      // a capable model.
+      supportsTools: lookupModelCapabilities(c.id)?.supportsTools ?? source?.supportsTools ?? true,
+      isFree: flatRate, // subscription or local — no per-token charge either way
       source: displayName,
     };
   });
@@ -1163,7 +1367,9 @@ async function selectModelFromProvider(
   _forceUpdate: boolean,
   catalog: CatalogClient
 ): Promise<string> {
-  const prefix = PROVIDER_MODEL_PREFIX[provider] || `${provider}@`;
+  // `${provider}@` is the last resort for a runtime custom endpoint, whose NAME
+  // is registered as its prefix; every builtin resolves through shortestPrefix.
+  const prefix = pickerModelPrefix(provider) ?? `${provider}@`;
   const displayName = getPickerDisplayName(provider);
 
   // Subscription providers (e.g. Kimi Coding) serve a roster that only their
@@ -1182,33 +1388,11 @@ async function selectModelFromProvider(
     // to the cloud catalog rather than showing an empty list.
   }
 
-  // Ollama (local): Firebase has no catalog, but the daemon lists installed
-  // models at /api/tags. Show that list (filterable, with a custom-entry escape
-  // hatch) instead of forcing the user to type a model name from memory. Falls
-  // through to free-text below when the daemon is unreachable or has no models.
-  if (provider === "ollama") {
-    const ollamaModels = await fetchOllamaModels({ enrichCapabilities: false });
-    // Daemon order (/api/tags) is not meaningful to the user. Apply the shared
-    // ordering rule so this picker matches every other one; with no release
-    // dates locally the comparator degrades to newest-version-first, then id.
-    const chatModels: ModelInfo[] = sortModelsNewestFirst(
-      ollamaModels.map((m) => ({
-        id: m.name, // bare name, e.g. "llama3.2:3b" — prefix added by buildExplicitModelSpec
-        name: m.name,
-        description: m.description,
-        provider: displayName,
-        supportsTools: m.supportsTools,
-        isFree: true,
-        source: displayName,
-      }))
-    );
-    if (chatModels.length > 0) {
-      const picked = await pickModelFromList(provider, displayName, tierName, chatModels);
-      if (picked) return picked;
-      // picked === null → user chose the custom-entry hatch; fall through.
-    }
-    // Unreachable daemon / no models / custom entry → free-text below.
-  }
+  // Ollama and LM Studio used to be handled here, each its own way — Ollama by
+  // an inline `/api/tags` branch, LM Studio not at all (free-text only). Both
+  // now declare `modelDiscovery`, so the block above lists them like every
+  // other provider that knows its own roster. A local daemon is not a different
+  // KIND of thing; it is a provider whose endpoint happens to be on localhost.
 
   // Local / user-deployed providers: Firebase has no catalog, free-text only.
   // No prefix advertising — buildExplicitModelSpec adds it silently.

@@ -49,7 +49,7 @@ import {
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
-import { parseModelSpec } from "./providers/model-parser.js";
+import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
 import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
@@ -263,7 +263,17 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
         printAvailableModels();
         process.exit(1);
       }
-      config.model = modelArg; // Accept any model ID
+      // A `--model` value may be a CHAIN (`zgo@m+mm@M`) — the ordered, already
+      // credential-filtered candidate list a parent process pins onto a spawned
+      // child (see MODEL_CHAIN_SEPARATOR). Split it HERE, at the boundary, and
+      // keep `config.model` a single spec: every downstream consumer — key
+      // validation, session naming, the status line, the env handed to Claude
+      // Code — then behaves exactly as it does for an ordinary `--model`, and
+      // only the proxy needs to know a chain exists. A plain value yields a
+      // one-element chain, so this costs nothing in the common case.
+      const chain = parseModelChain(modelArg);
+      config.model = chain[0]; // Accept any model ID
+      if (chain.length > 1) config.modelChain = chain;
     } else if (arg === "--model-opus") {
       // Model mapping flags
       const val = args[++i];

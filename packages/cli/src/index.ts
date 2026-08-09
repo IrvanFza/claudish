@@ -888,6 +888,9 @@ async function runCli() {
           isInteractive: cliConfig.interactive,
           advisorModels: cliConfig.advisorModels,
           advisorCollector: cliConfig.advisorCollector,
+          // Present only when `--model` was a pinned chain; `explicitModel` above
+          // is its first element, so the proxy can match the two.
+          modelChain: cliConfig.monitor ? undefined : cliConfig.modelChain,
         }
       )
     );

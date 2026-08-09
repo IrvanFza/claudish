@@ -888,9 +888,7 @@ export const MIN_AUTO_COMPACT_WINDOW = 200_000;
  * existed. 1.5s is comfortably above a warm `queryModels` round-trip and well
  * under the point where a launch feels stalled.
  */
-export 
-
-/**
+export /**
  * Resolve ONE model spec's window from the local sources only (live provider
  * discovery, then the slim catalog cache), plus the bare model id so a miss can
  * be retried against the cloud catalog. Returns null when the spec is unroutable.
@@ -1253,7 +1251,13 @@ export async function runClaudeWithProxy(
         // Telemetry must never affect launching Claude Code.
       }
       if (contextEnv.notice && !config.quiet) {
-        console.error(contextEnv.notice);
+        // Informational, NOT an error. It went to stderr, which hosts and shells
+        // colour red — so a routine "your window is 1M tokens" line read as a
+        // failure. Route it exactly like the `log` helper below: stdout when
+        // interactive, stderr only in print mode where stdout belongs to Claude
+        // Code's machine-readable output.
+        if (config.interactive) console.log(contextEnv.notice);
+        else console.error(contextEnv.notice);
       }
     }
   }

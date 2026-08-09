@@ -3,8 +3,8 @@ import { credentials } from "../auth/credentials/authority.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
-import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { resolveExternalId } from "./catalog-client.js";
+import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { buildCredentialHint } from "./routing-hints.js";
@@ -361,6 +361,41 @@ async function routeBare(
  * and `loadConfig()`) unless overrides are supplied. Tests should pass overrides
  * to avoid disk lookups.
  */
+/**
+ * Rewrite a dash-slugified GLM version to its canonical dotted form
+ * (`glm-5-2` → `glm-5.2`), so a client that slugifies dots still matches the
+ * routing rule instead of falling through to `defaultProvider`.
+ *
+ * Anchored and deliberately narrow. The second group must be ALL digits to the
+ * end (or to a `-suffix`), which is what keeps dash-native open-model ids
+ * intact: `glm-4-9b` and `glm-4-flash` are untouched because "9b" and "flash"
+ * are not pure digits.
+ *
+ * Applied ONLY on the bare-name path, to keep the rewrite's blast radius as
+ * small as the problem it solves.
+ *
+ * To be precise about why that is a choice and not a load-bearing guard:
+ * routeExplicit forwards the ORIGINAL `modelSpec` to buildRoutingChain, which
+ * re-parses it and takes the model from the entry itself, ignoring the `model`
+ * argument for any entry containing "@". So normalizing the explicit path would
+ * currently be a no-op rather than a bug. Restricting it here means that stays
+ * true even if buildRoutingChain's precedence ever changes.
+ *
+ * That matters because Devin re-serves other vendors' models under uids that
+ * legitimately contain dashes, `glm-5-2` and `glm-5-2-1m` among them (see
+ * providers/devin/model-id-resolver.ts). Those are matched against Devin's LIVE
+ * served set, so a `dv@glm-5-2` that ever became `dv@glm-5.2` would request a
+ * uid that does not exist. Bare names cannot reach Devin at all — it declares
+ * no nativeModelPatterns and has no DEFAULT_ROUTING_RULES entry — so the bare
+ * path is the only place this rewrite can apply and the only place it needs to.
+ */
+export function normalizeGlmSlug(model: string): string {
+  return model.replace(
+    /^glm-(\d+)-(\d+)(-.*)?$/i,
+    (_m, major, minor, suffix) => `glm-${major}.${minor}${suffix ?? ""}`
+  );
+}
+
 export async function route(
   modelSpec: string,
   rulesOverride?: RoutingRules,
@@ -370,6 +405,7 @@ export async function route(
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
+    // Not normalized here — see normalizeGlmSlug's note on explicit specs.
     return routeExplicit(modelSpec, parsed.model, parsed.provider, cachePath);
   }
 
@@ -384,7 +420,13 @@ export async function route(
       : rulesOverride !== undefined
         ? undefined
         : loadConfig().defaultProvider;
-  return routeBare(parsed.model, parsed.provider, rules, defaultProvider, cachePath);
+  return routeBare(
+    normalizeGlmSlug(parsed.model),
+    parsed.provider,
+    rules,
+    defaultProvider,
+    cachePath
+  );
 }
 
 // route() is now async; routeBare returns a Promise which is awaited by the caller.

@@ -53,6 +53,8 @@ const proc = spawn("bun", ["run", SERVER_ENTRY, "--mcp"], {
     CLAUDISH_CHANNEL_TRACE: "1",
     // Force channel tools enabled regardless of default
     CLAUDISH_MCP_TOOLS: "all",
+    // create_session children must exercise this tree, not an installed claudish.
+    CLAUDISH_BIN: SERVER_ENTRY,
   },
 });
 

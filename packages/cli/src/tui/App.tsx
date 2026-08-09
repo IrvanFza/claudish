@@ -44,6 +44,7 @@ import {
 import {
   type AccountInfo,
   type DiscoveredField,
+  clearOpSkip,
   detectSdkAuth,
   discoverItemFields,
   discoverItemFieldsById,
@@ -558,6 +559,14 @@ export function App({ requestLogin }: AppProps = {}) {
    * the pick_op_account key handler resolves with the chosen url.
    */
   const acquireOpAuth = useCallback(async () => {
+    // Every explicit 1Password action in this TUI funnels through here, so this
+    // is where an earlier "s — skip 1Password" retracts itself. The skip is
+    // scoped to "this run", which for a one-shot CLI ends in minutes but for the
+    // config TUI is the whole session — without this, one skip during "Test All"
+    // silently disabled op://-backed keys until the user quit and relaunched.
+    // No-op unless claudish itself latched the skip (a user-exported
+    // CLAUDISH_DISABLE_OP is left alone).
+    clearOpSkip();
     const auth = await resolveSdkAuth({
       interactive: true,
       configAccount: readOnepasswordAccount(),

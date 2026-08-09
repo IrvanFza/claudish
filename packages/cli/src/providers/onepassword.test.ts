@@ -27,12 +27,14 @@ import {
   buildAuthError,
   classifyLockedDenial,
   collectConfigImports,
+  currentLockCause,
   detectSdkAuth,
   discoverItemFields,
   envNameFromOpRef,
   filterGlobFields,
   getOpFailures,
   globToRegExp,
+  humanizeOpError,
   isGlobImport,
   isLockedDenial,
   isOpHydratedVar,
@@ -44,6 +46,7 @@ import {
   readEnvironment,
   recordOpFailure,
   recordOpHydratedVars,
+  renderOpFailureBlock,
   renderOpFailureNotice,
   resetOpFailures,
   resolveDesktopAccount,
@@ -54,6 +57,7 @@ import {
   resolveSecrets,
   setAppLockProbe,
   setLockRetryTiming,
+  setPeerLockProbe,
   setScreenLockProbe,
   wasOpAuthorizationDenied,
   withSdkRetry,
@@ -1456,7 +1460,11 @@ describe("withSdkRetry locked-screen denial recovery", () => {
   beforeEach(() => {
     originalServiceAccountToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
     delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    // All probes MUST be pinned: defaults read real machine state (ioreg for the screen and a
+    // file under ~/.claudish for the peer), so an unpinned probe makes the verdict machine-dependent.
+    setScreenLockProbe(() => false);
     setAppLockProbe(() => false);
+    setPeerLockProbe(() => false);
     resetOpFailures();
   });
 
@@ -1464,6 +1472,7 @@ describe("withSdkRetry locked-screen denial recovery", () => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
     setAppLockProbe(undefined);
+    setPeerLockProbe(undefined);
     resetOpFailures();
     if (originalServiceAccountToken === undefined) {
       delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
@@ -1474,6 +1483,7 @@ describe("withSdkRetry locked-screen denial recovery", () => {
 
   test("unlocked denial is terminal without countdown output", async () => {
     setScreenLockProbe(() => false);
+    setPeerLockProbe(() => false);
     const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
     let calls = 0;
 
@@ -1529,6 +1539,31 @@ describe("withSdkRetry locked-screen denial recovery", () => {
       expect(result).toBe("recovered");
       expect(calls).toBe(2);
       expect(probeCalls).toBe(2);
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  test("a peer denial counts down and retries once the peer releases the prompt", async () => {
+    setLockRetryTiming({ seconds: 2, tickMs: 1 });
+    let peerProbeCalls = 0;
+    setPeerLockProbe(() => ++peerProbeCalls === 1);
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let calls = 0;
+
+    try {
+      const result = await withSdkRetry(async () => {
+        calls++;
+        if (calls === 1) throw new Error(SDK_DENIAL_MESSAGE);
+        return "recovered";
+      });
+
+      expect(result).toBe("recovered");
+      expect(calls).toBe(2);
+      expect(peerProbeCalls).toBe(2);
+      const output = stderrWrite.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(output).toContain("Another claudish is already at the 1Password prompt");
+      expect(output).toContain("try 1/3");
     } finally {
       stderrWrite.mockRestore();
     }
@@ -1703,12 +1738,14 @@ describe("withSdkRetry app-locked denial recovery", () => {
     setLockRetryTiming({ seconds: 3, tickMs: 1 });
     setScreenLockProbe(() => false);
     setAppLockProbe(() => false);
+    setPeerLockProbe(() => false);
   });
 
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
     setAppLockProbe(undefined);
+    setPeerLockProbe(undefined);
     resetOpFailures();
     if (originalServiceAccountToken === undefined) {
       delete process.env.OP_SERVICE_ACCOUNT_TOKEN;
@@ -1845,25 +1882,32 @@ describe("withSdkRetry app-locked denial recovery", () => {
 });
 
 describe("classifyLockedDenial / isLockedDenial", () => {
+  beforeEach(() => {
+    setPeerLockProbe(() => false);
+  });
+
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
     setAppLockProbe(undefined);
+    setPeerLockProbe(undefined);
     resetOpFailures();
   });
 
   function expectClassification(
     error: unknown,
     env: NodeJS.ProcessEnv,
-    expected: "screen" | "app" | null
+    expected: "screen" | "app" | "peer" | null
   ): void {
     expect(classifyLockedDenial(error, env)).toBe(expected);
     expect(isLockedDenial(error, env)).toBe(expected !== null);
   }
 
-  test("screen lock takes precedence when both the screen and app are locked", () => {
+  test("screen lock takes precedence when screen, app, and peer are locked", () => {
     setScreenLockProbe(() => true);
     setAppLockProbe(() => true);
+    setPeerLockProbe(() => true);
+    expect(currentLockCause()).toBe("screen");
     expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, "screen");
   });
 
@@ -1876,7 +1920,16 @@ describe("classifyLockedDenial / isLockedDenial", () => {
   test("returns null when neither the screen nor app is locked", () => {
     setScreenLockProbe(() => false);
     setAppLockProbe(() => false);
+    setPeerLockProbe(() => false);
     expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, null);
+  });
+
+  test("currentLockCause returns peer when only a peer holds the prompt", () => {
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => false);
+    setPeerLockProbe(() => true);
+    expect(currentLockCause()).toBe("peer");
+    expectClassification(new Error(SDK_DENIAL_MESSAGE), {}, "peer");
   });
 
   test("service-account denial is terminal even when both locks are reported", () => {
@@ -1902,6 +1955,54 @@ describe("classifyLockedDenial / isLockedDenial", () => {
   });
 });
 
+describe("humanizeOpError", () => {
+  beforeEach(() => {
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => false);
+    setPeerLockProbe(() => false);
+  });
+
+  afterEach(() => {
+    setScreenLockProbe(undefined);
+    setAppLockProbe(undefined);
+    setPeerLockProbe(undefined);
+  });
+
+  test("maps every denial cause to its display sentence", () => {
+    const denial = new Error(SDK_DENIAL_MESSAGE);
+
+    setScreenLockProbe(() => true);
+    expect(humanizeOpError(denial)).toBe(
+      "your Mac is locked, so the approval prompt couldn't be shown"
+    );
+
+    setScreenLockProbe(() => false);
+    setAppLockProbe(() => true);
+    expect(humanizeOpError(denial)).toBe(
+      "the 1Password app is locked, so it declined without prompting"
+    );
+
+    setAppLockProbe(() => false);
+    setPeerLockProbe(() => true);
+    expect(humanizeOpError(denial)).toBe(
+      "another claudish process is holding the 1Password prompt"
+    );
+
+    setPeerLockProbe(() => false);
+    expect(humanizeOpError(denial)).toBe(
+      "the 1Password approval prompt was dismissed (or never answered)"
+    );
+  });
+
+  test("strips the Rust struct wrapper from a non-denial error", () => {
+    expect(
+      humanizeOpError(
+        new Error("An error occurred when processing SDK request: Error { msg: X, inner: None }")
+      )
+    ).toBe("X");
+  });
+});
+
 describe("1Password failure provenance and missing-key remediation", () => {
   const missingOpenAiKey: ProviderResolution = {
     category: "direct-api",
@@ -1919,12 +2020,14 @@ describe("1Password failure provenance and missing-key remediation", () => {
     resetOpFailures();
     setScreenLockProbe(() => false);
     setAppLockProbe(() => false);
+    setPeerLockProbe(() => false);
   });
 
   afterEach(() => {
     setLockRetryTiming();
     setScreenLockProbe(undefined);
     setAppLockProbe(undefined);
+    setPeerLockProbe(undefined);
     resetOpFailures();
   });
 
@@ -1981,6 +2084,22 @@ describe("1Password failure provenance and missing-key remediation", () => {
     expect(notice).toMatch(/approve/i);
     expect(notice).not.toContain("Fix: unlock 1Password");
     expect(notice).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  test("peer denial explains the single-client prompt race", () => {
+    const failure = {
+      kind: "environment" as const,
+      source: "production-env",
+      message: SDK_DENIAL_MESSAGE,
+    };
+    recordOpFailure(failure);
+    setPeerLockProbe(() => true);
+
+    expect(getOpFailures()).toEqual([failure]);
+    const notice = renderOpFailureBlock("for this test").join("\n");
+    expect(notice).toContain("Another claudish process is at the 1Password prompt right now.");
+    expect(notice).toContain("authorizes ONE client at a time and denies every peer instantly");
+    expect(notice).toContain("Fix: approve the prompt in the other window, then re-run this one.");
   });
 
   test("dismissed denial says the approval prompt was dismissed", () => {

@@ -228,6 +228,72 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`
 
+### The interactive picker roster is DERIVED — never add a membership table
+
+Bare `claudish` shows "Select provider:" from `model-selector.ts`. That list used to be a
+hand-written `ALL_PROVIDER_CHOICES` array, so **membership was opt-in and a new provider
+defaulted to invisible**. `devin` and `antigravity` were both fully working — routing,
+`--probe`, and the config TUI (which has always derived its list from `getAllProviders()`) —
+while absent from the picker. `3a293b9` even built Antigravity's correct 20-model roster for
+a provider the picker could not offer.
+
+The v7389502 credential refactor is the trap here: it unified availability **checking** (it
+deleted the three duplicate readiness oracles) and left the **roster** alone. Unifying how a
+list is filtered is not the same as unifying what is in it.
+
+- `isPickableProvider(def)` = `def.shortcuts.length > 0`. A definition with no shortcuts has
+  no user-typeable `@` prefix and exists only so `nativeModelPatterns` can steer a BARE name;
+  `qwen` and `native-anthropic` are the two, and both carry an empty `baseUrl`/`apiPath`.
+  A rule, not a roster — there is no exclusion list to keep current.
+- `PICKER_COPY` and `PICKER_ORDER` are **editorial only**: labels and ordering. Anything
+  unlisted still appears, at the end. Never use either as a membership gate.
+- The `@prefix` filter aliases (`getProviderFilterAliases`) are derived the same way, from
+  each definition's name + `shortcuts`, because that table had drifted identically — `@dv`
+  matched nothing. Alias insertion order follows `PICKER_ORDER` so an ambiguous partial like
+  `@op` resolves to the first row the user actually sees (OpenRouter).
+- The emitted prefix comes from `shortestPrefix`; `PROVIDER_MODEL_PREFIX_OVERRIDE` holds only
+  four readability aliases. The danger the old map created was returning **undefined**, which
+  makes `buildExplicitModelSpec` hand back a BARE id — for Devin that is
+  `claude-opus-5-medium`, which matches native-anthropic's `/^claude-/i` and is answered by a
+  different provider entirely. (`parseModelSpec` passes an unrecognized prefix through
+  verbatim — `model-parser.ts:160` — so a canonical NAME also resolves; assert the parser
+  round-trip, not membership in `shortcuts`.)
+
+The drift test is `buildProviderChoices()` ⊇ every pickable builtin. It asserts CONTAINMENT,
+not equality: runtime custom endpoints legitimately appear too (a real gain — the old array
+could never show one), so equality made the test order-dependent on whichever sibling test
+file had registered one.
+
+### Subscription pricing is decided by BILLING, not by `modelDiscovery`
+
+`SUBSCRIPTION_PROVIDERS` (`handlers/shared/remote-provider-types.ts`) drives both the picker's
+`SUB` label and `getModelPricing`'s zero-cost verdict, so a missing entry quotes a flat-rate
+user a per-token rate they do not pay — and TokenTracker then accrues fictional spend.
+
+Two paths render a price and only one used to ask the question: a provider WITH
+`modelDiscovery` goes through `buildDiscoveredModelRows` (which asks), everything else goes
+through `resolveProviderDisplayPrice` (which did not). That is why a missing entry was
+invisible on one path and merely wrong on the other. `resolveProviderDisplayPrice` now checks
+`isSubscriptionProvider` FIRST, ahead of both the aggregator and model-level rates.
+
+Found by that audit and added: `antigravity` (was N/A) and `sakana-subscription`, alongside
+the already-listed `minimax-coding` / `glm-coding`, which were quoting their metered
+siblings' dollar rates. When adding a provider, ask "does the user pay per token?", not
+"does it declare discovery?".
+
+**`openai-codex` is deliberately NOT in the set**, and the reasoning generalises. It was
+added in the same pass — its picker row literally says "ChatGPT Plus/Pro subscription" — and
+a multi-model review caught it. The provider is DUAL-MODE: `oauthFallback:
+"codex-oauth.json"` is the subscription, but `apiKeyAliases: ["OPENAI_API_KEY"]` means a
+plain metered key authenticates `cx@` just as well. So the flat-rate answer is right for one
+credential and wrong for the other. **The two errors are not symmetric**: quoting a dollar
+rate to a subscriber is a cosmetic over-estimate, while reporting `SUB` (and zero accrued
+cost) to someone OpenAI is metering silently under-reports real money. Membership is a
+property of the provider NAME today; until it can be decided from the credential actually in
+play, a dual-mode provider stays out. `antigravity` (no `apiKeyEnvVar` at all) and
+`sakana-subscription` (which deliberately does not alias the PAYG `SAKANA_API_KEY`) have no
+such ambiguity.
+
 ## Local Model Support
 
 Claudish supports local models via:
@@ -322,6 +388,14 @@ The ambiguity is resolved from OUTSIDE the error, by probing screen-lock state: 
 
 On a locked denial the user gets a friendly explanation (printed ONCE, on round 1 — re-explaining every 10s reads as nagging) plus a 10-second countdown, up to `LOCK_RETRY_ROUNDS` (3) → 3 retries ≈ 30s. The countdown **breaks early** the moment the probe reports unlocked, so approving is immediately followed by the prompt. Cancellation degrades by CAPABILITY, not by mode (interactive and non-interactive must behave identically — an explicit product decision): TTY stdin → Esc/q/Ctrl-C; otherwise Ctrl-C via SIGINT. The live `\r\x1b[2K` redraw and ANSI styling apply ONLY when `process.stderr.isTTY` (checked at call time, not module load) — under an MCP host or channel session stderr is a captured pipe, which gets one static line per round instead. Test seams: `setScreenLockProbe()` and `setLockRetryTiming({seconds, tickMs})` — the latter is MANDATORY in tests or the suite gains 30 real seconds.
 
+**A THIRD recoverable cause: `peer`.** `LockCause` is now `"screen" | "app" | "peer"`. A peer denial is another LIVE claudish holding `~/.claudish/op-handshake.lock` — a sibling standing at the 1Password prompt right now. It is EVIDENCE, not inference: the lock is written `O_EXCL` by exactly one process, carries its pid, and is removed the instant its handshake returns, so a live foreign holder means precisely "wait and you will get your turn". It cannot be confused with a real Cancel, because a Cancel happens INSIDE the holder's own handshake and the denied peer holds nothing — so the `aa71ce3` guard is untouched. Precedence is screen → app → peer: waiting behind a sibling is pointless while the Mac is locked, since the sibling cannot finish either.
+
+`setPeerLockProbe()` is **MANDATORY** in any test asserting a denial is terminal. The default probe reads a real file under `~/.claudish`, so without the seam the verdict depends on whether an unrelated claudish happens to be mid-handshake — which is how the seam came to exist: a sibling worktree's live run turned "unlocked denial is terminal" into a 30-second countdown, and the 1Password suite from 4.8s into 35.8s.
+
+**The countdown offers an exit as well as a wait.** `countdownForUnlock` returns `"retry" | "cancel" | "skip"`. `s` (TTY stdin) → skip, which sets `process.env.CLAUDISH_DISABLE_OP=1` so 1Password is skipped for the REST OF THE RUN — a bare model name walks a routing CHAIN, so one refusal otherwise buys three more countdowns for the same run. Reusing that existing kill switch means no second flag to keep in sync, but it required moving the `CLAUDISH_DISABLE_OP` test OUT of `computeHasOpSources` and to the top of `hasOpSources`, ahead of the `sniffed` memo: by the time a denial has happened the memo is certainly populated, so behind it the skip silently did nothing.
+
+**The raw SDK error is never shown.** `humanizeOpError` maps a denial to its cause (`your Mac is locked…` / `the 1Password app is locked…` / `another claudish process is holding the 1Password prompt` / `…was dismissed (or never answered)`) and strips the Rust `Error { msg: …, inner: None }` wrapper from everything else. DISPLAY ONLY — `recordOpFailure` still stores the RAW message, because `wasOpAuthorizationDenied` matches on that wording.
+
 ### Concurrent-spawn denial prevention (v7.22.0+)
 
 A THIRD situation produces the same `Denied authorization for SDK client`, and unlike the two above it is neither a decision nor a lock state: **several claudish processes racing the DesktopAuth handshake at once**. 1Password arbitrates that handshake across the whole MACHINE, not per process — it authorizes ONE client and instantly denies every concurrent peer. `runSdkExclusive` serializes SDK calls WITHIN a process (the `-4` IPC fix), but `team-orchestrator.ts` and channel `create_session` spawn N sibling PROCESSES, each building its own client, and no in-process queue can span those.
@@ -352,7 +426,7 @@ Two additions, both preventive:
 
 Concretely, on the developer's own config the Environment holds CODING-PLAN credentials — `GLM_CODING_API_KEY` (claudish's `gc@` GLM Coding Plan provider, alias `ZAI_CODING_API_KEY`) and `GOOGLE_GEMINI_API_KEY` — while the chain for a bare `glm-*` / `gemini-*` name also probes the PAYG names `ZHIPU_API_KEY` / `GLM_API_KEY` / `GEMINI_API_KEY`. Those are **different credentials on different billing plans, not misspellings of each other**: they are absent from the Environment because they genuinely do not belong there, and aliasing one onto the other would silently bill the wrong plan. So the PAYG lookups can never resolve, and before the skip-list every child opened an SDK client to chase them.
 
-**Not built:** retrying a denial once the 15s suppression expires. `isTransientSdkError` pins denials as TERMINAL to prevent the "second dialog" bug (`aa71ce3`), and relaxing that needs its own decision; the ~190ms latency signature is the evidence that would justify it.
+**Not built:** retrying a denial once the 15s suppression expires. `isTransientSdkError` pins denials as TERMINAL to prevent the "second dialog" bug (`aa71ce3`), and relaxing that needs its own decision; the ~190ms latency signature is the evidence that would justify it. (The `peer` cause above is NOT this: it waits on positive evidence of a live lock holder, not on a latency guess, and it never retries a denial that could have been a Cancel.)
 
 ### Parent-side route pinning — one dialog per multi-model run (v7.38.0+)
 

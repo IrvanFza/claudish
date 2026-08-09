@@ -9,16 +9,63 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RoutingRules } from "../profile-config.js";
-import { type DiskCacheV2, writeAllModelsCache } from "./all-models-cache.js";
+import {
+  ALL_MODELS_CACHE_PATH,
+  type DiskCacheV2,
+  writeAllModelsCache,
+} from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
+import { _resetCatalogClient } from "./catalog-client.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
-import { buildRoutingChain, matchRoutingRule, mergeRoutingRules, route } from "./routing-rules.js";
+import {
+  buildRoutingChain,
+  matchRoutingRule,
+  mergeRoutingRules,
+  normalizeGlmSlug,
+  route,
+} from "./routing-rules.js";
+
+const SYNTHETIC_MODEL_ID = "acme-x1.0";
+const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
+
+function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
+  const cacheDir = dirname(ALL_MODELS_CACHE_PATH);
+  const cacheDirExisted = existsSync(cacheDir);
+  const previousContents = existsSync(ALL_MODELS_CACHE_PATH)
+    ? readFileSync(ALL_MODELS_CACHE_PATH, "utf-8")
+    : null;
+
+  writeAllModelsCache(
+    {
+      version: 2,
+      lastUpdated: new Date().toISOString(),
+      entries,
+      models: [],
+    },
+    ALL_MODELS_CACHE_PATH
+  );
+
+  return () => {
+    if (previousContents === null) {
+      rmSync(ALL_MODELS_CACHE_PATH, { force: true });
+      if (!cacheDirExisted) {
+        try {
+          rmdirSync(cacheDir);
+        } catch {
+          // Another test may have created something in the shared cache dir.
+        }
+      }
+      return;
+    }
+    writeFileSync(ALL_MODELS_CACHE_PATH, previousContents, "utf-8");
+  };
+}
 
 function makeTempCatalog(
   model: {
@@ -231,35 +278,58 @@ describe("matchRoutingRule", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildRoutingChain", () => {
+  let cleanupCatalog: (() => void) | undefined;
+
+  beforeEach(() => {
+    cleanupCatalog = seedDefaultCatalog([
+      {
+        modelId: SYNTHETIC_MODEL_ID,
+        aliases: [],
+        sources: {},
+        aggregators: [
+          {
+            provider: "minimax",
+            externalId: SYNTHETIC_MINIMAX_EXTERNAL_ID,
+            confidence: "scrape_verified",
+          },
+        ],
+      },
+    ]);
+    _resetCatalogClient();
+  });
+
+  afterEach(() => {
+    _resetCatalogClient();
+    cleanupCatalog?.();
+    cleanupCatalog = undefined;
+  });
+
   test("plain provider name 'minimax' resolves via PROVIDER_SHORTCUTS and uses originalModelName", () => {
-    const routes = buildRoutingChain(["minimax"], "minimax-m2.5");
+    const routes = buildRoutingChain(["minimax"], SYNTHETIC_MODEL_ID);
     expect(routes).toHaveLength(1);
     const route = routes[0];
     expect(route.provider).toBe("minimax");
-    // PROVIDER_TO_PREFIX["minimax"] = "mm". The MODEL id comes from the
-    // catalog's minimax aggregator (externalId "MiniMax-M2.5",
-    // confidence api_official — MiniMax's own spelling), not from whatever
-    // casing the user typed. That is the point of catalog-driven resolution:
-    // the provider's API is case-sensitive, so echoing user input was a coin
-    // flip. Falls back to the input unchanged on a cold cache.
-    expect(route.modelSpec).toBe("mm@MiniMax-M2.5");
+    // PROVIDER_TO_PREFIX["minimax"] = "mm". The synthetic catalog deliberately
+    // gives the provider external id different casing from the user's input, so
+    // this exact check fails if catalog-driven normalization is removed.
+    expect(route.modelSpec).toBe(`mm@${SYNTHETIC_MINIMAX_EXTERNAL_ID}`);
     expect(route.displayName).toBe(DISPLAY_NAMES.minimax ?? "minimax");
   });
 
   test("plain provider shortcut 'mm' resolves to canonical 'minimax'", () => {
-    const routes = buildRoutingChain(["mm"], "minimax-m2.5");
+    const routes = buildRoutingChain(["mm"], SYNTHETIC_MODEL_ID);
     expect(routes).toHaveLength(1);
     expect(routes[0].provider).toBe("minimax");
-    expect(routes[0].modelSpec).toBe("mm@MiniMax-M2.5");
+    expect(routes[0].modelSpec).toBe(`mm@${SYNTHETIC_MINIMAX_EXTERNAL_ID}`);
   });
 
-  test("explicit 'mm@minimax-m2.5' parses provider and model, ignores originalModelName", () => {
-    const routes = buildRoutingChain(["mm@minimax-m2.5"], "some-other-model");
+  test("explicit 'mm@acme-x1.0' parses provider and model, ignores originalModelName", () => {
+    const routes = buildRoutingChain([`mm@${SYNTHETIC_MODEL_ID}`], "some-other-model");
     expect(routes).toHaveLength(1);
     const route = routes[0];
     expect(route.provider).toBe("minimax");
     // An explicitly pinned model is still normalised to the provider's own id.
-    expect(route.modelSpec).toBe("mm@MiniMax-M2.5");
+    expect(route.modelSpec).toBe(`mm@${SYNTHETIC_MINIMAX_EXTERNAL_ID}`);
   });
 
   test("explicit 'kimi@kimi-k2.5' parses correctly", () => {
@@ -394,6 +464,35 @@ describe("loadRoutingRules merges defaults", () => {
 });
 
 // ---------------------------------------------------------------------------
+// normalizeGlmSlug — bare-name GLM slug normalization
+// ---------------------------------------------------------------------------
+
+describe("normalizeGlmSlug", () => {
+  test("rewrites dash-slugified GLM versions to dotted canonical names", () => {
+    expect(normalizeGlmSlug("glm-5-2")).toBe("glm-5.2");
+    expect(normalizeGlmSlug("glm-4-6")).toBe("glm-4.6");
+    expect(normalizeGlmSlug("glm-4-5-air")).toBe("glm-4.5-air");
+    expect(normalizeGlmSlug("glm-4-5-airx")).toBe("glm-4.5-airx");
+  });
+
+  test("leaves already-dotted GLM names unchanged", () => {
+    expect(normalizeGlmSlug("glm-5.2")).toBe("glm-5.2");
+    expect(normalizeGlmSlug("glm-4.5-air")).toBe("glm-4.5-air");
+  });
+
+  test("leaves dash-native GLM ids unchanged", () => {
+    expect(normalizeGlmSlug("glm-4-9b")).toBe("glm-4-9b");
+    expect(normalizeGlmSlug("glm-4-flash")).toBe("glm-4-flash");
+  });
+
+  test("leaves unrelated model families unchanged", () => {
+    expect(normalizeGlmSlug("claude-opus-4-8")).toBe("claude-opus-4-8");
+    expect(normalizeGlmSlug("qwen3.6-35b-a3b")).toBe("qwen3.6-35b-a3b");
+    expect(normalizeGlmSlug("gpt-4o")).toBe("gpt-4o");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // route() — credential-aware single entry point
 // ---------------------------------------------------------------------------
 
@@ -418,6 +517,7 @@ const ENV_KEYS_TO_CLEAR = [
   "OLLAMA_API_KEY",
   "OPENCODE_API_KEY",
   "OPENCODE_GO_API_KEY",
+  "WINDSURF_API_KEY",
 ];
 
 const savedEnv: Record<string, string | undefined> = {};
@@ -455,6 +555,22 @@ describe("route()", () => {
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
+  });
+
+  test("bare glm-5-2 routes identically to canonical glm-5.2", async () => {
+    const rules: RoutingRules = { "glm-5.2": ["glm"] };
+    const dashPlan = await route("glm-5-2", rules);
+    const dottedPlan = await route("glm-5.2", rules);
+    expect(dashPlan).toEqual(dottedPlan);
+  });
+
+  test("explicit Devin dv@glm-5-2 preserves the dash-native uid without normalization", async () => {
+    process.env.WINDSURF_API_KEY = "devin-session-token$test";
+    const plan = await route("dv@glm-5-2", DEFAULT_ROUTING_RULES);
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.modelSpec).toBe("dv@glm-5-2");
+    expect(plan.primary.modelSpec).not.toBe("dv@glm-5.2");
   });
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {

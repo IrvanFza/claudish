@@ -149,12 +149,15 @@ function defaultRunAgyAuth(agyPath: string, interactive: boolean): void {
 
 const defaultLoginDeps: AntigravityLoginDeps = {
   locateAgy: locateAgyBinary,
-  // FRESH read (not the 5s-memoized hasSharedAntigravityToken): the "already
-  // authenticated?" short-circuit must see a just-logged-out store immediately,
-  // otherwise a login right after a logout falsely reports "already logged in".
+  // Reads the store rather than the 5s-memoized hasSharedAntigravityToken(): the
+  // "already authenticated?" short-circuit must see a just-logged-out store
+  // immediately, otherwise a login right after a logout falsely reports "already
+  // logged in". A logout drops the read memo as part of deleting the item, so
+  // this stays true even though the raw read is itself burst-memoized.
   hasToken: () => readSharedAntigravityToken() != null,
-  // readSharedAntigravityToken reads the store fresh (no memo); reset the memo too
-  // so a subsequent hasSharedAntigravityToken() reflects the new token at once.
+  // agy writes the store from ANOTHER process, so neither memo can observe the
+  // new token on its own: reset first, then read, and a subsequent
+  // hasSharedAntigravityToken() reflects it at once too.
   readToken: () => {
     _resetAntigravityTokenState();
     return readSharedAntigravityToken();

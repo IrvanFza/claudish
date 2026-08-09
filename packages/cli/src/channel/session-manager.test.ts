@@ -41,6 +41,8 @@ let shimDir: string;
 let sessionsDir: string;
 /** Original PATH value so we can restore it after tests. */
 const ORIGINAL_PATH = process.env.PATH ?? "";
+/** Original CLAUDISH_BIN value so we can restore it after tests. */
+const ORIGINAL_CLAUDISH_BIN = process.env.CLAUDISH_BIN;
 
 beforeAll(() => {
   // Create a temp directory for the shim
@@ -52,12 +54,19 @@ beforeAll(() => {
   writeFileSync(shimPath, `#!/bin/sh\nexec bun run "${FAKE_CLAUDISH_TS}" "$@"\n`, { mode: 0o755 });
 
   // Prepend shim directory to PATH so our fake is found first
+  // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
+  delete process.env.CLAUDISH_BIN;
   process.env.PATH = `${shimDir}:${ORIGINAL_PATH}`;
 });
 
 afterAll(() => {
   // Restore original PATH
   process.env.PATH = ORIGINAL_PATH;
+  if (ORIGINAL_CLAUDISH_BIN === undefined) {
+    delete process.env.CLAUDISH_BIN;
+  } else {
+    process.env.CLAUDISH_BIN = ORIGINAL_CLAUDISH_BIN;
+  }
 
   // Clean up shim directory
   try {
