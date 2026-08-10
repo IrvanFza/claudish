@@ -43,6 +43,13 @@ describe("parseModelSpec — shortcut resolution", () => {
     expect(parsed.model).toBe("qwen3.7-plus");
     expect(parsed.isExplicitProvider).toBe(true);
   });
+
+  test.each(["qp", "dashscope"])("%s@qwen3.7-plus resolves explicitly to qwen-payg", (shortcut) => {
+    const parsed = parseModelSpec(`${shortcut}@qwen3.7-plus`);
+    expect(parsed.provider).toBe("qwen-payg");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isExplicitProvider).toBe(true);
+  });
 });
 
 describe("parseModelSpec — legacy prefix patterns", () => {
@@ -81,6 +88,14 @@ describe("parseModelSpec — legacy prefix patterns", () => {
     const parsed = parseModelSpec("qc/qwen3.7-plus");
     expect(parsed.provider).toBe("qwen-cloud");
     expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isLegacySyntax).toBe(true);
+  });
+
+  test("qp/qwen3.7-plus resolves explicitly to qwen-payg", () => {
+    const parsed = parseModelSpec("qp/qwen3.7-plus");
+    expect(parsed.provider).toBe("qwen-payg");
+    expect(parsed.model).toBe("qwen3.7-plus");
+    expect(parsed.isExplicitProvider).toBe(true);
     expect(parsed.isLegacySyntax).toBe(true);
   });
 });
@@ -196,6 +211,26 @@ describe("Provider profiles", () => {
     expect(profile).toBe(PROVIDER_PROFILES["minimax-coding"]);
     expect(profile).toBe(PROVIDER_PROFILES["kimi-coding"]);
     expect(profile).toBe(PROVIDER_PROFILES["z-ai"]);
+  });
+
+  test("every profile omission is explicit and qwen-payg uses the Anthropic-compatible profile", () => {
+    const expectedProfilelessProviders = [
+      "google",
+      "openrouter",
+      "poe",
+      "ollama",
+      "lmstudio",
+      "vllm",
+      "mlx",
+      "native-anthropic",
+    ];
+    const profilelessProviders = BUILTIN_PROVIDERS.filter(
+      (provider) => !PROVIDER_PROFILES[provider.name]
+    ).map((provider) => provider.name);
+
+    expect(profilelessProviders).toEqual(expectedProfilelessProviders);
+    expect(PROVIDER_PROFILES["qwen-payg"]).toBeDefined();
+    expect(PROVIDER_PROFILES["qwen-payg"]).toBe(PROVIDER_PROFILES["qwen-cloud"]);
   });
 });
 

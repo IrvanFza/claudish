@@ -859,12 +859,39 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // carries (glm-5.2, deepseek-v4-*). Ask the endpoint; hardcode nothing.
   //
   // nativeModelPatterns is NAMESPACE ownership only, not a pinned roster.
-  // Alibaba Model Studio names releases with DOTTED versions (qwen3.7-plus,
-  // qwen3.8-max-preview) whereas OpenRouter/HuggingFace use hyphenated ones
-  // (qwen3-coder-next). `/^qwen3\.\d/i` is therefore a structural discriminator
-  // between the two naming worlds, and it keeps working as new dotted versions
-  // ship. This entry MUST stay above `qwen` below, whose `/^qwen/i` matches
-  // first-wins on array order and would otherwise claim these names.
+  // `/^qwen3\.\d/i` claims the DOTTED names, and it keeps working as new dotted
+  // versions ship. This entry MUST stay above `qwen` below, whose `/^qwen/i`
+  // matches first-wins on array order and would otherwise claim these names.
+  //
+  // CAUTION — the rule this pattern is right for is NOT the one it used to
+  // claim. The old note said dotted versions are "Model Studio" while
+  // hyphenated ones are "OpenRouter/HuggingFace", i.e. that the separator
+  // discriminates VENDOR. Measured 2026-08-10, that is false: Alibaba uses both
+  // conventions, and the split is PRODUCT LINE inside Alibaba.
+  //
+  //   Token Plan  (authenticated, this provider) → qwen3.8-max, qwen3.7-max,
+  //                 qwen3.7-plus, qwen3.6-flash          — all DOTTED
+  //   Coding Plan (public list, not built here)  → qwen3-coder-plus,
+  //                 qwen3-coder-next, qwen3-max-2026-01-23 (HYPHENATED)
+  //                 alongside qwen3.5-plus, qwen3.6-plus  — MIXED
+  //
+  // So the pattern is correct for THIS provider — Token Plan genuinely serves
+  // only dotted ids — but for a narrower reason than "hyphenated means an
+  // aggregator". The coder line and dated snapshots are hyphenated Alibaba
+  // names, not third-party ones.
+  //
+  // Consequence, deliberately left alone: a bare `qwen3-coder-plus` does not
+  // match `qwen3.*` (globMatch treats the "." literally), falls to `qwen`'s
+  // `/^qwen/i`, and is served by OpenRouter. That is CORRECT today, because no
+  // silo claudish implements serves it — Token Plan does not, and the Coding
+  // Plan has no provider. Do NOT "fix" this by pointing hyphenated names at
+  // qwen-payg on the strength of the name shape: routing filters by CREDENTIAL,
+  // not by model, so an id that host does not serve earns a `400 Model not
+  // exist` and STOPS (400 is non-retryable in fallback-handler.ts) — the exact
+  // dead-end documented for glm-* in default-routing-rules.ts. The PAYG roster
+  // is authenticated (401 without a key, unlike the Coding Plan's public list),
+  // so that change needs a DASHSCOPE_API_KEY to verify against, or routing that
+  // consults live `modelDiscovery` instead of guessing from the id.
   {
     name: "qwen-cloud",
     displayName: "Qwen Plan",
@@ -886,6 +913,65 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     modelDiscovery: { path: "/compatible-mode/v1/models", format: "openai-models-list" },
     isDirectApi: true,
     description: "Qwen Plan (qc@)",
+  },
+
+  // ── Alibaba Model Studio, PAY-AS-YOU-GO (the third silo) ───────────
+  // Same vendor as qwen-cloud above, DIFFERENT billing and a different host.
+  // Alibaba sells three products whose keys and base URLs are, in its own
+  // words, "completely isolated and must be used in matching pairs":
+  //
+  //   Token Plan   token-plan.ap-southeast-1.maas.aliyuncs.com  → qwen-cloud
+  //   Coding Plan  coding-intl.dashscope.aliyuncs.com           → (not built)
+  //   PAYG         dashscope-intl.aliyuncs.com                  → THIS entry
+  //
+  // Every silo rejects every other silo's key. That symmetry is the point, and
+  // it is why claudish needs one provider per silo rather than one "Qwen"
+  // provider with a swappable host: a user holding a PAYG key had NO way to
+  // reach Alibaba at all, because the only entry pointed at the plan host and
+  // answered 401 for them forever.
+  //
+  // Verified live 2026-08-10: this host's /compatible-mode/v1/models EXISTS and
+  // is AUTHENTICATED — a Token Plan key gets 401 "Incorrect API key provided",
+  // not a 404. (Contrast coding-intl's /v1/models, which serves the full roster
+  // to an unauthenticated caller — a 200 from THAT one proves nothing about a
+  // credential, and briefly convinced this investigation of the opposite.)
+  //
+  // apiKeyAliases onto QWEN_API_KEY is safe HERE where it would be wrong on
+  // qwen-cloud: both names hold a metered PAYG credential, so they are two
+  // spellings of one billing mode. Aliasing either onto the plan key would
+  // instead cross a subscription with a per-token bill.
+  //
+  // Deliberately NO nativeModelPatterns: qwen-cloud already owns the dotted
+  // `/^qwen3\.\d/i` namespace, and patterns are first-wins on array order, so a
+  // duplicate here would be dead weight that reads like a live rule. Bare-name
+  // reachability comes from the `qwen3.*` chain in default-routing-rules.ts,
+  // where this sits AFTER the subscription — the subscription-first ordering
+  // every other family already follows, so a user with both keys is never
+  // silently billed per token for a model their plan covers.
+  {
+    name: "qwen-payg",
+    displayName: "Qwen PAYG",
+    transport: "anthropic",
+    // International endpoint. A mainland-China (aliyun.com) account is a
+    // different account system on dashscope.aliyuncs.com; that user repoints
+    // via DASHSCOPE_BASE_URL rather than getting a fourth near-identical entry.
+    baseUrl: "https://dashscope-intl.aliyuncs.com",
+    baseUrlEnvVars: ["DASHSCOPE_BASE_URL"],
+    apiPath: "/apps/anthropic/v1/messages",
+    apiKeyEnvVar: "DASHSCOPE_API_KEY",
+    apiKeyAliases: ["QWEN_API_KEY"],
+    apiKeyDescription: "Alibaba Model Studio API Key (pay-as-you-go)",
+    apiKeyUrl: "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
+    authScheme: "bearer",
+    shortcuts: ["qp", "dashscope"],
+    shortestPrefix: "qp",
+    legacyPrefixes: [{ prefix: "qp/", stripPrefix: true }],
+    // Sibling of /apps/anthropic on the same origin, so one DASHSCOPE_BASE_URL
+    // override redirects messages AND discovery together — the same reason
+    // qwen-cloud folds its prefix into apiPath rather than into baseUrl.
+    modelDiscovery: { path: "/compatible-mode/v1/models", format: "openai-models-list" },
+    isDirectApi: true,
+    description: "Alibaba Model Studio pay-as-you-go (qp@)",
   },
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────

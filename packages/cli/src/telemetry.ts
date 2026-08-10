@@ -61,6 +61,7 @@ const PUBLIC_PROVIDERS = new Set([
   "kimi-coding",
   "glm-coding",
   "qwen-cloud",
+  "qwen-payg",
 ]);
 
 // ─── Module-Level State ───────────────────────────────────────────────────────

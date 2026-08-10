@@ -436,8 +436,11 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   kimi: anthropicCompatProfile,
   "kimi-coding": anthropicCompatProfile,
   // Alibaba Model Studio's plan endpoint is natively Anthropic-compatible
-  // (/apps/anthropic/v1/messages), so it needs no dialect translation.
+  // (/apps/anthropic/v1/messages), so it needs no dialect translation. The
+  // pay-as-you-go sibling serves the identical /apps/anthropic surface on a
+  // different host, so it reuses the same profile.
   "qwen-cloud": anthropicCompatProfile,
+  "qwen-payg": anthropicCompatProfile,
   "z-ai": anthropicCompatProfile,
   glm: glmProfile,
   "glm-coding": glmProfile,
