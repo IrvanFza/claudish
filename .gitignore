@@ -99,8 +99,6 @@ gtd/sessions/
 .claude/.statusline-worktree-*
 # Claude cache contents are local generated data and can grow quickly.
 .claude/cache/
-# Local claudemem indexes are generated from the repo and should not be committed.
-.claudemem/
 
 # Added by claudeup
 # Team MCP configuration should be committed so shared tools are discoverable.
