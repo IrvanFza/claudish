@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.47.0] - 2026-08-10
+
+### Bug Fixes
+
+- make the branch pass the hermetic gate main added *(session)* ([`8afaabb`](https://github.com/MadAppGang/claudish/commit/8afaabb9c1029fed5f5cdfb4d324b35ad14a24c8))
+- tolerate dash-slugified GLM version names on bare model specs *(routing)* ([`5a0d4ff`](https://github.com/MadAppGang/claudish/commit/5a0d4ff5f230dbeb31b106f429373646e8550a66))
+- strip Claude Code's billing header so prefix caching survives *(transform)* ([`228db3c`](https://github.com/MadAppGang/claudish/commit/228db3c6833e9202f331cd14ab2c27d2e06aaf2b))
+- tear down from a finally so a failed finalize cannot hang the turn *(stream-parsers)* ([`a40d2de`](https://github.com/MadAppGang/claudish/commit/a40d2de0f603a67e7ad507bb642d0e2740b42961))
+- cover review comments, gate on write access, skip fork pull_request *(ci)* ([`818ea72`](https://github.com/MadAppGang/claudish/commit/818ea7234dfade123df82b18f2fe1cb47c0a9dd1))
+- check out the PR head for @claude comment-triggered reviews *(ci)* ([`8cbc895`](https://github.com/MadAppGang/claudish/commit/8cbc89502e2bedf5a44ebed85cfde6449480f1f9))
+
+### Documentation
+
+- update CHANGELOG.md for v7.46.0([`04a466d`](https://github.com/MadAppGang/claudish/commit/04a466d937f6b6a1c762e1233c3e2337b902c3b5))
+
+### Other Changes
+
+- v7.47.0([`e796cad`](https://github.com/MadAppGang/claudish/commit/e796cad6cff47c229ede34dd086789245c0e4176))
+
 ## [7.46.0] - 2026-08-08
 
 ### Documentation
@@ -28,6 +47,11 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.44.0] - 2026-08-07
 
+### Bug Fixes
+
+- address independent review — TTY/non-git fallback, card clipping, resume id *(session)* ([`27b938f`](https://github.com/MadAppGang/claudish/commit/27b938f1a99d3af29bc26700b01f9f69f9faca72))
+- address Claude review — savings basis, worktree matching, Devin, resume spec *(session)* ([`d746cf2`](https://github.com/MadAppGang/claudish/commit/d746cf255db30bab8ff9a1462923b56dc51f2050))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.43.0([`5ec2cc2`](https://github.com/MadAppGang/claudish/commit/5ec2cc2d8f774903a46f112fa8661007a2a705a1))
@@ -35,6 +59,13 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - per-provider roster collapse, and fix two order-dependent resolutions (#160) *(model-resolvers)* ([`c33ce8d`](https://github.com/MadAppGang/claudish/commit/c33ce8d012649e8625d701ffb347210a8406d426))
+- a full-screen transcript reader, opened with `v` *(session)* ([`723091f`](https://github.com/MadAppGang/claudish/commit/723091f84ee1cb275dfc6eef73b0c82d1f6ec192))
+- text-first picker rows, and a transcript tail that includes the human *(session)* ([`78c7673`](https://github.com/MadAppGang/claudish/commit/78c7673d734542349f90e266e9400a3906bc739a))
+- name-then-status rows, a bigger sidebar, and two bottom panels *(session)* ([`1b02634`](https://github.com/MadAppGang/claudish/commit/1b02634efb983751a00ec9899b12902156b2cbaa))
+- show the conversation tail, and put every row on one grid *(session)* ([`c4b6027`](https://github.com/MadAppGang/claudish/commit/c4b60278fde20a9e41d56027cc80328da09e3e05))
+- chip the worktree state, split stale, and fold agents into a tree *(session)* ([`24d3677`](https://github.com/MadAppGang/claudish/commit/24d36771d2ed4ba5fff28aaf48bf0b0e825a9094))
+- worktree state in the picker, and hide agent-driven sessions *(session)* ([`2fad6ca`](https://github.com/MadAppGang/claudish/commit/2fad6cad9bb4d12f99d5ad7a4bdab487a55d04ce))
+- end-of-session summary card + worktree-aware resume picker *(session)* ([`c2ac8cf`](https://github.com/MadAppGang/claudish/commit/c2ac8cfe244ad907d8c737619431cb15fb559b94))
 
 ### Other Changes
 
