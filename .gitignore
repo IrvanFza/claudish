@@ -60,6 +60,9 @@ ai-sessions/
 # Temp dev files
 claude
 claude_desktop.flow
+# Scratch driver for the resume picker — hardcodes a local absolute path. Written
+# unanchored so biome's `vcs.useIgnoreFile` also honours it when run from packages/cli.
+demo-picker.tsx
 
 # Debug/analysis artifacts
 *.pid
@@ -124,4 +127,3 @@ gtd/sessions/
 
 # Added by claudeup
 # Local claudemem indexes are generated from the repo and should not be committed.
-.claudemem/

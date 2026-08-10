@@ -172,6 +172,24 @@ export function createStreamingResponseHandler(
       async start(controller) {
         const send = (e: string, d: any) => {
           if (!isClosed) {
+            // Observe every tool call HERE, at the single frame writer, rather than at
+            // each of the seven `content_block_start` sites below.
+            //
+            // This parser declared `onToolCallObserved` and never called it — so on the
+            // busiest wire in claudish (GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter,
+            // LiteLLM) the behaviour layer's tool-name list was always empty and the
+            // session summary would have reported zero tools. Hooking the writer instead
+            // of the emission sites makes that class of omission impossible: a new
+            // tool_use path cannot forget to opt in, and because exactly one
+            // `content_block_start` is emitted per tool call, it cannot double count
+            // either. The `input_json_delta` frames deliberately do not match.
+            if (e === "content_block_start" && d?.content_block?.type === "tool_use") {
+              try {
+                behavior?.onToolCallObserved?.(String(d.content_block.name ?? ""));
+              } catch (err) {
+                log(`[Streaming] onToolCallObserved threw: ${err}`);
+              }
+            }
             controller.enqueue(encoder.encode(`event: ${e}\ndata: ${JSON.stringify(d)}\n\n`));
           }
         };

@@ -1271,6 +1271,21 @@ export class ComposedHandler implements ModelHandler {
     // keeps whatever message_start carried whenever the closing delta omits it.
     const priorInputTokens = this.tokenTracker.getLastInputTokens();
 
+    /**
+     * The ONE place a completed tool call is observed, for both consumers.
+     *
+     * It deliberately does NOT depend on `behaviorSession`. Tool counting feeds the
+     * end-of-session summary, which must work for every model on every wire — including
+     * native Claude and any run with the behaviour layer switched off, where
+     * `behaviorSession` is undefined. Gating the count on it (as the four call sites
+     * below each used to) would have made the summary silently report zero tools for
+     * exactly those sessions.
+     */
+    const observeToolCall = (name: string): void => {
+      this.tokenTracker.recordToolUse(name);
+      behaviorSession?.observeToolCall(name);
+    };
+
     switch (streamFormat) {
       case "openai-sse":
         return createStreamingResponseHandler(
@@ -1283,12 +1298,17 @@ export class ComposedHandler implements ModelHandler {
           claudeRequest.tools,
           toolNameMap,
           priorInputTokens,
-          behaviorSession && {
-            shouldBufferTool: (name) => behaviorSession.interceptsTool(name),
-            onToolCall: (name, argsJson) => behaviorSession.repairToolCall(name, argsJson),
-            onAssistantText: (text, kind) => behaviorSession.observeText(text, kind),
-            onToolCallObserved: (name) => behaviorSession.observeToolCall(name),
-            onTurnEnd: () => behaviorSession.finishTurn(),
+          // Always pass the options object, never `behaviorSession && {…}`. The
+          // optional-chained hooks below already no-op without a session, and the
+          // conditional form meant `onToolCallObserved` was not even installed on the
+          // busiest wire in claudish (GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter,
+          // LiteLLM) whenever the behaviour layer was off.
+          {
+            shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
+            onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
+            onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
+            onToolCallObserved: observeToolCall,
+            onTurnEnd: () => behaviorSession?.finishTurn(),
           }
         );
 
@@ -1304,7 +1324,7 @@ export class ComposedHandler implements ModelHandler {
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           onToolCall: (name, argsJson) => behaviorSession?.repairToolCall(name, argsJson) ?? null,
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
@@ -1327,7 +1347,7 @@ export class ComposedHandler implements ModelHandler {
           repairToolArgs: (name, argsJson) =>
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 
@@ -1347,7 +1367,7 @@ export class ComposedHandler implements ModelHandler {
           repairToolArgs: (name, argsJson) =>
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
           unwrapResponse: this.options.unwrapGeminiResponse,
           priorInputTokens,
@@ -1372,7 +1392,7 @@ export class ComposedHandler implements ModelHandler {
             behaviorSession?.repairToolCall(name, argsJson) ?? null,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           onAssistantText: (text, kind) => behaviorSession?.observeText(text, kind),
-          onToolCallObserved: (name) => behaviorSession?.observeToolCall(name),
+          onToolCallObserved: observeToolCall,
           onTurnEnd: () => behaviorSession?.finishTurn(),
         });
 

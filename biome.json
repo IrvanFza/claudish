@@ -44,5 +44,17 @@
       "semicolons": "always",
       "trailingCommas": "es5"
     }
-  }
+  },
+  "overrides": [
+    {
+      "include": ["**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useJsxKeyInIterable": "off"
+          }
+        }
+      }
+    }
+  ]
 }
