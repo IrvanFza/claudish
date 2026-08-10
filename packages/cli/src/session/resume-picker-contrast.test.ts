@@ -1,14 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { CHIP, SELECTABLE_CHIPS, CHIP_MIN_CONTRAST, GH_LEVELS } from "./resume-picker.js";
 import { C } from "../tui/theme.js";
+import { CHIP, CHIP_MIN_CONTRAST, GH_LEVELS, SELECTABLE_CHIPS } from "./resume-picker.js";
 
 function channels(hex: string): [number, number, number] {
   const match = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!match) throw new Error(`Expected #rrggbb, received ${hex}`);
 
-  return [0, 2, 4].map((offset) =>
-    Number.parseInt(match[1]!.slice(offset, offset + 2), 16)
-  ) as [number, number, number];
+  return [0, 2, 4].map((offset) => Number.parseInt(match[1]!.slice(offset, offset + 2), 16)) as [
+    number,
+    number,
+    number,
+  ];
 }
 
 // This stays independent of viz/color.ts so a regression in production contrast math
@@ -16,27 +18,21 @@ function channels(hex: string): [number, number, number] {
 function relativeLuminance(hex: string): number {
   const [red, green, blue] = channels(hex).map((channel) => {
     const value = channel / 255;
-    return value <= 0.03928
-      ? value / 12.92
-      : ((value + 0.055) / 1.055) ** 2.4;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
   });
 
   return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!;
 }
 
 function contrastRatio(first: string, second: string): number {
-  const [high, low] = [relativeLuminance(first), relativeLuminance(second)].sort(
-    (a, b) => b - a
-  );
+  const [high, low] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
   return (high! + 0.05) / (low! + 0.05);
 }
 
 describe("resume picker chip contrast", () => {
   for (const name of SELECTABLE_CHIPS) {
     it(`${name} remains visible on the selected-row highlight`, () => {
-      expect(contrastRatio(CHIP[name], C.bgHighlight)).toBeGreaterThanOrEqual(
-        CHIP_MIN_CONTRAST
-      );
+      expect(contrastRatio(CHIP[name], C.bgHighlight)).toBeGreaterThanOrEqual(CHIP_MIN_CONTRAST);
     });
 
     it(`${name} keeps dark ink across fresh and stale rows`, () => {

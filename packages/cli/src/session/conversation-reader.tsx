@@ -23,8 +23,8 @@
  * the bar doubles as a map of the matches.
  */
 
-import { useEffect, useMemo, useState } from "react";
 import { useKeyboard } from "@opentui/react";
+import { useEffect, useMemo, useState } from "react";
 import { A, C } from "../tui/theme.js";
 import { displayWidth, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
@@ -263,10 +263,7 @@ export function ConversationReader({
   // Memoised so the loading render does not hand `layoutRows` a fresh `[]` on every frame
   // — a new array identity re-runs the wrap of the whole conversation for nothing.
   const turns = useMemo(() => conv?.turns ?? NO_TURNS, [conv]);
-  const { rows, turnStart, turnEnd } = useMemo(
-    () => layoutRows(turns, textW),
-    [turns, textW]
-  );
+  const { rows, turnStart, turnEnd } = useMemo(() => layoutRows(turns, textW), [turns, textW]);
   const search = useMemo(
     () => buildSearch(turns, rows, turnStart, turnEnd, query),
     [turns, rows, turnStart, turnEnd, query]
@@ -293,6 +290,7 @@ export function ConversationReader({
   // A new query re-aims the view at the first hit AT OR AFTER where the reader is
   // standing, falling back to the first hit anywhere — searching should not silently
   // teleport you backwards through a conversation you were already reading.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   useEffect(() => {
     if (search.hits.length === 0) return;
     let i = search.hits.findIndex((r) => r >= top);
@@ -371,7 +369,8 @@ export function ConversationReader({
   // ── header ───────────────────────────────────────────────────────────────
   const label = sessionLabel(row);
   const mb = row.sizeBytes / 1_048_576;
-  const size = mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(row.sizeBytes / 1024))} KB`;
+  const size =
+    mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(row.sizeBytes / 1024))} KB`;
   const stats = conv
     ? `${turns.length} turns · ${rows.length} lines · ${size} transcript`
     : `reading ${size}…`;
@@ -403,7 +402,9 @@ export function ConversationReader({
     <box flexDirection="column" height={height} backgroundColor={C.bg}>
       <box flexDirection="row" justifyContent="space-between" height={1} paddingX={1}>
         <text>
-          <span fg={tokens.accent} attributes={A.bold}>claudish</span>
+          <span fg={tokens.accent} attributes={A.bold}>
+            claudish
+          </span>
           <span fg={tokens.subtle}> reader</span>
           {conv && conv.dropped > 0 ? (
             <span fg={tokens.warn}>{`  ${conv.dropped} older turns dropped (cap)`}</span>
@@ -417,23 +418,38 @@ export function ConversationReader({
         </text>
       </box>
 
-      <Panel title={`conversation · ${truncate(label, Math.max(10, width - 20))}`} flush flexGrow={1} flexBasis={0}>
+      <Panel
+        title={`conversation · ${truncate(label, Math.max(10, width - 20))}`}
+        flush
+        flexGrow={1}
+        flexBasis={0}
+      >
         {!conv ? (
           <text fg={tokens.subtle}>{"  reading transcript…"}</text>
         ) : rows.length === 0 ? (
-          <text fg={tokens.trace}>{"  no conversation recorded — this transcript has no main-thread prose"}</text>
+          <text fg={tokens.trace}>
+            {"  no conversation recorded — this transcript has no main-thread prose"}
+          </text>
         ) : (
-          visible.map((r, i) => (
-            <ReaderRow
-              key={i}
-              row={r}
-              turn={r.turn >= 0 ? turns[r.turn]! : undefined}
-              hl={search.ranges.get(top + i)}
-              current={matchIdx}
-              width={contentW}
-              bar={barCells[i] ?? "track"}
-            />
-          ))
+          visible.map((r, i) => {
+            // Keyed by ABSOLUTE line, not by viewport slot. `i` alone is the slot, and every
+            // row reuses its slot on every scroll — so a one-line scroll would hand all N rows
+            // new content under the same N keys. The line number is the row's own identity, so
+            // scrolling by one moves N-1 rows and mounts exactly one. Named rather than inlined
+            // because it is the line, not an index, and the name is what says so.
+            const line = top + i;
+            return (
+              <ReaderRow
+                key={line}
+                row={r}
+                turn={r.turn >= 0 ? turns[r.turn]! : undefined}
+                hl={search.ranges.get(line)}
+                current={matchIdx}
+                width={contentW}
+                bar={barCells[i] ?? "track"}
+              />
+            );
+          })
         )}
       </Panel>
 
@@ -460,7 +476,9 @@ export function ConversationReader({
           )}
         </text>
         <text>
-          <span fg={tokens.subtle}>{`${Math.min(rows.length, top + viewport)}/${rows.length}  `}</span>
+          <span
+            fg={tokens.subtle}
+          >{`${Math.min(rows.length, top + viewport)}/${rows.length}  `}</span>
           <MeterSpan pct={pct} width={12} ramp={ramps.volume} />
         </text>
       </box>
@@ -599,7 +617,12 @@ function highlighted(text: string, hl: Hl[], current: number, fg: string): React
     const { s, e, hit } = hl[i]!;
     if (e <= from) continue;
     const start = Math.max(from, s);
-    if (start > from) out.push(<span key={`p${i}`} fg={fg}>{text.slice(from, start)}</span>);
+    if (start > from)
+      out.push(
+        <span key={`p${i}`} fg={fg}>
+          {text.slice(from, start)}
+        </span>
+      );
     const bg = hit === current ? tokens.accent : tokens.warn;
     out.push(
       <span key={`h${i}`} fg={tokens.ink} bg={bg} attributes={A.bold}>
@@ -608,6 +631,11 @@ function highlighted(text: string, hl: Hl[], current: number, fg: string): React
     );
     from = e;
   }
-  if (from < text.length) out.push(<span key="tail" fg={fg}>{text.slice(from)}</span>);
+  if (from < text.length)
+    out.push(
+      <span key="tail" fg={fg}>
+        {text.slice(from)}
+      </span>
+    );
   return <>{out}</>;
 }

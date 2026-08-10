@@ -1,3 +1,4 @@
+import { constants } from "node:os";
 /**
  * runtime/shutdown.ts — ONE owner and ONE idempotent path for every exit: the quit key,
  * SIGINT, SIGTERM, a fatal signal, normal completion, and a thrown error. Never call
@@ -27,9 +28,8 @@
  * Our SIGINT handler is still load-bearing — it catches `kill -INT` from outside the tty.
  *
  * Bridge site B1: imports from core and react, calls no construct. */
-import type { CliRenderer } from "@opentui/core"
-import type { Root } from "@opentui/react"
-import { constants } from "node:os"
+import type { CliRenderer } from "@opentui/core";
+import type { Root } from "@opentui/react";
 
 /**
  * Every signal `installShutdown` registers: OpenTUI's documented default set, complete,
@@ -43,11 +43,20 @@ import { constants } from "node:os"
  * SIGBREAK is Windows-only. `process.on` accepts it on darwin and it simply never fires,
  * so registration is attempted for every entry and only what actually registered is
  * tracked for removal. */
-export const OWNED_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGBREAK", "SIGPIPE", "SIGBUS"]
+export const OWNED_SIGNALS: NodeJS.Signals[] = [
+  "SIGINT",
+  "SIGTERM",
+  "SIGQUIT",
+  "SIGABRT",
+  "SIGHUP",
+  "SIGBREAK",
+  "SIGPIPE",
+  "SIGBUS",
+];
 
 /** Long enough for the restored terminal to flush its last frame, short enough that a
  * quit still feels immediate. */
-const FLUSH_MS = 50
+const FLUSH_MS = 50;
 
 /**
  * EXIT CODE POLICY — `128 + signum`, the shell's own convention. Deliberately NOT
@@ -69,11 +78,11 @@ const FLUSH_MS = 50
  * another and from the 0 of a clean quit — a signal-terminated TUI never reports success.
  * The trade-off accepted: a parent reading `WIFSIGNALED` sees an exit code instead. */
 const signalExitCode = (sig: NodeJS.Signals): number => {
-  const signum = (constants.signals as unknown as Record<string, number | undefined>)[sig]
-  return typeof signum === "number" ? 128 + signum : 128 // unknown here: still never 0
-}
+  const signum = (constants.signals as unknown as Record<string, number | undefined>)[sig];
+  return typeof signum === "number" ? 128 + signum : 128; // unknown here: still never 0
+};
 
-const UNPRINTABLE = "<unprintable throwable>"
+const UNPRINTABLE = "<unprintable throwable>";
 
 /**
  * Format a throwable, and NEVER throw doing it. Not defensive padding — the catch block
@@ -87,24 +96,24 @@ const UNPRINTABLE = "<unprintable throwable>"
 const describeError = (err: unknown): string => {
   try {
     if (err instanceof Error) {
-      const stack = err.stack
-      if (typeof stack === "string" && stack !== "") return stack
-      const message = err.message
-      if (typeof message === "string" && message !== "") return message
+      const stack = err.stack;
+      if (typeof stack === "string" && stack !== "") return stack;
+      const message = err.message;
+      if (typeof message === "string" && message !== "") return message;
     }
-    return String(err)
+    return String(err);
   } catch {
-    return `${UNPRINTABLE} (typeof ${typeof err})`
+    return `${UNPRINTABLE} (typeof ${typeof err})`;
   }
-}
+};
 
 /**
  * Structural minimums, not the full classes: `installShutdown` calls exactly two methods,
  * and saying so lets a test pass two stubs with no `as unknown as` cast — a teardown path
  * whose failure modes cannot be exercised is how this file grew them. A real
  * `CliRenderer` / `Root` satisfies these. */
-type Destroyable = Pick<CliRenderer, "destroy">
-type Unmountable = Pick<Root, "unmount">
+type Destroyable = Pick<CliRenderer, "destroy">;
+type Unmountable = Pick<Root, "unmount">;
 
 /**
  * Wire every exit path to one teardown and return it, so the app can also end normally by
@@ -133,23 +142,31 @@ type Unmountable = Pick<Root, "unmount">
 export function installShutdown(
   renderer: Destroyable,
   root: Unmountable,
-  disposers: ReadonlyArray<() => void> = [],
+  disposers: ReadonlyArray<() => void> = []
 ): () => Promise<void> {
-  const handlers = new Map<NodeJS.Signals, () => void>()
-  const failures: string[] = []
-  let torndown = false
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  const failures: string[] = [];
+  let torndown = false;
 
   /** stderr is safe only AFTER `destroy()`: behind a live renderer it leaves cells the
    * renderer cannot invalidate. It can also fail on its own (a closed pipe), and a failed
    * report must never be the thing that stops the process exiting. */
   const report = (line: string): void => {
-    try { console.error(line) } catch { /* stderr is gone; there is nowhere left to report */ }
-  }
+    try {
+      console.error(line);
+    } catch {
+      /* stderr is gone; there is nowhere left to report */
+    }
+  };
 
   /** Run one teardown step; never let it end the teardown. Reported after `destroy()`. */
   const attempt = (label: string, step: () => void): void => {
-    try { step() } catch (err) { failures.push(`${label}: ${describeError(err)}`) }
-  }
+    try {
+      step();
+    } catch (err) {
+      failures.push(`${label}: ${describeError(err)}`);
+    }
+  };
 
   /**
    * Every step, exactly once, in the documented order — and this function CANNOT throw.
@@ -158,28 +175,34 @@ export function installShutdown(
    * skip `renderer.destroy()`. Restoring the terminal is the step that must never be
    * skipped. */
   const teardownOnce = (): void => {
-    if (torndown) return
-    torndown = true
+    if (torndown) return;
+    torndown = true;
     try {
       // Listeners come off FIRST, so a second signal arriving mid-teardown hits the
       // default disposition and kills the process outright instead of re-entering here —
       // and so a later renderer in the same process starts from a clean slate.
       attempt("removeListeners", () => {
-        for (const [sig, handler] of handlers) process.removeListener(sig, handler)
-        handlers.clear()
-        process.removeListener("uncaughtException", onCrash)
-        process.removeListener("unhandledRejection", onCrash)
-      })
-      attempt("disposers", () => { disposers.forEach((d, i) => attempt(`disposers[${i}]`, d)) })
-      attempt("root.unmount", () => { root.unmount() })
-      attempt("renderer.destroy", () => { renderer.destroy() })
-      for (const f of failures) report(`shutdown: ${f}`)
+        for (const [sig, handler] of handlers) process.removeListener(sig, handler);
+        handlers.clear();
+        process.removeListener("uncaughtException", onCrash);
+        process.removeListener("unhandledRejection", onCrash);
+      });
+      attempt("disposers", () => {
+        disposers.forEach((d, i) => attempt(`disposers[${i}]`, d));
+      });
+      attempt("root.unmount", () => {
+        root.unmount();
+      });
+      attempt("renderer.destroy", () => {
+        renderer.destroy();
+      });
+      for (const f of failures) report(`shutdown: ${f}`);
     } catch (err) {
       // Unreachable by construction — which is exactly what was believed of the catch
       // block that threw. A file broken three times does not get to rely on that.
-      report(`shutdown: teardown: ${describeError(err)}`)
+      report(`shutdown: teardown: ${describeError(err)}`);
     }
-  }
+  };
 
   /**
    * `exitCode === undefined` means "tear down and hand control back": the normal-quit
@@ -193,30 +216,40 @@ export function installShutdown(
    * still end the process and latching can never strand it. */
   const shutdown = async (exitCode?: number, crash?: { readonly err: unknown }): Promise<void> => {
     try {
-      teardownOnce()
+      teardownOnce();
       // Deliberately NOT behind the latch: a crash can land after teardown has already
       // run, and it still has to be reported — after `destroy()`, never before.
-      if (crash) report(describeError(crash.err))
+      if (crash) report(describeError(crash.err));
     } finally {
       if (exitCode !== undefined) {
         // Let the restored terminal flush its last frame before the process goes.
-        try { await new Promise((r) => setTimeout(r, FLUSH_MS)) } catch { /* a broken timer must not block the exit */ }
-        process.exit(exitCode)
+        try {
+          await new Promise((r) => setTimeout(r, FLUSH_MS));
+        } catch {
+          /* a broken timer must not block the exit */
+        }
+        process.exit(exitCode);
       }
     }
-  }
+  };
 
-  const onCrash = (err: unknown): void => { void shutdown(1, { err }) }
+  const onCrash = (err: unknown): void => {
+    void shutdown(1, { err });
+  };
 
   for (const sig of OWNED_SIGNALS) {
-    const handler = (): void => { void shutdown(signalExitCode(sig)) }
+    const handler = (): void => {
+      void shutdown(signalExitCode(sig));
+    };
     try {
-      process.on(sig, handler)
-      handlers.set(sig, handler) // track only what registered, so removal stays symmetric
-    } catch { /* signal unknown to this platform: nothing registered, nothing to remove */ }
+      process.on(sig, handler);
+      handlers.set(sig, handler); // track only what registered, so removal stays symmetric
+    } catch {
+      /* signal unknown to this platform: nothing registered, nothing to remove */
+    }
   }
-  process.on("uncaughtException", onCrash)
-  process.on("unhandledRejection", onCrash)
+  process.on("uncaughtException", onCrash);
+  process.on("unhandledRejection", onCrash);
 
-  return () => shutdown(undefined)
+  return () => shutdown(undefined);
 }

@@ -36,7 +36,7 @@
  * skill's version matrix puts `--compile` on 0.1.x). Dropping it is the version
  * adaptation, not a downgrade — restore it if claudish ever moves to 0.4.x.
  */
-import { C } from "../theme.js"
+import { C } from "../theme.js";
 
 /**
  * Severity / status, then chrome. A token means ONE thing across the whole app:
@@ -59,9 +59,22 @@ import { C } from "../theme.js"
  * the btop lift the skill's rule 6 asks for: dim chrome, quiet frame, saturated signal.
  */
 export const tokens: Record<
-  | "fatal" | "error" | "warn" | "info" | "debug" | "trace"
-  | "success" | "running" | "idle" | "dead"
-  | "border" | "subtle" | "text" | "accent" | "bgPanel" | "ink",
+  | "fatal"
+  | "error"
+  | "warn"
+  | "info"
+  | "debug"
+  | "trace"
+  | "success"
+  | "running"
+  | "idle"
+  | "dead"
+  | "border"
+  | "subtle"
+  | "text"
+  | "accent"
+  | "bgPanel"
+  | "ink",
   string
 > = {
   fatal: C.red, //          catastrophic
@@ -80,7 +93,7 @@ export const tokens: Record<
   accent: C.focusBorder, // focus / titles
   bgPanel: C.bgAlt, //      panel background — see note below
   ink: C.black, //          text on bright badges
-}
+};
 
 /**
  * A gradient's STOPS — AT LEAST ONE, and that bound is load-bearing rather than
@@ -90,7 +103,7 @@ export const tokens: Record<
  * A non-empty tuple makes that call a COMPILE error. A computed `string[]` no longer
  * fits: annotate it `Ramp` or `as const` it, which is the right pressure — a ramp is a
  * designed object, not an array that happens to hold colours. */
-export type Ramp = readonly [string, ...string[]]
+export type Ramp = readonly [string, ...string[]];
 
 /**
  * Gradient STOPS, not ramps. Feed them to `blendStops(cells, ...stops)` so the
@@ -103,11 +116,11 @@ export type Ramp = readonly [string, ...string[]]
  * defaults, so the measured midpoint floor goes UP, not down.
  */
 export const ramps: {
-  load: Ramp
-  temperature: Ramp
-  network: Ramp
-  savings: Ramp
-  volume: Ramp
+  load: Ramp;
+  temperature: Ramp;
+  network: Ramp;
+  savings: Ramp;
+  volume: Ramp;
 } = {
   load: [tokens.success, C.yellow, tokens.error],
   temperature: [tokens.running, tokens.success, C.orange, tokens.error],
@@ -133,7 +146,7 @@ export const ramps: {
    * carrying the magnitude, with no health claim attached to either.
    */
   volume: [C.border, C.blue, C.cyan],
-}
+};
 
 /** HTTP method colours (the `posting` look). Use as badge backgrounds. */
 export const methods: Record<string, string> = {
@@ -143,4 +156,4 @@ export const methods: Record<string, string> = {
   PATCH: "#50E3C2",
   DELETE: "#F8615C",
   OPTIONS: "#9013FE",
-}
+};

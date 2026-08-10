@@ -148,7 +148,11 @@ export interface RepoContext {
 export function getRepoContext(cwd: string = process.cwd()): RepoContext | null {
   const git = (args: string[]): string | null => {
     try {
-      return execFileSync("git", args, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync("git", args, {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
     } catch {
       return null;
     }
@@ -159,9 +163,7 @@ export function getRepoContext(cwd: string = process.cwd()): RepoContext | null 
 
   // `--git-common-dir` answers an absolute `/repo/.git` from a worktree and a bare
   // `.git` from the main checkout, so only the absolute form identifies the root.
-  const root = commonDir.endsWith("/.git")
-    ? commonDir.slice(0, -"/.git".length)
-    : current;
+  const root = commonDir.endsWith("/.git") ? commonDir.slice(0, -"/.git".length) : current;
 
   // `git worktree list --porcelain` emits a block per worktree:
   //   worktree /abs/path
@@ -249,10 +251,7 @@ function sessionsIn(dirName: string): SessionRow[] {
  * when every probe has settled. Never throws — a worktree whose status cannot be read
  * simply keeps `undefined`, which the UI renders as "unknown" rather than as "clean".
  */
-export async function enrichWorktreeGit(
-  groups: WorktreeGroup[],
-  repoRoot: string
-): Promise<void> {
+export async function enrichWorktreeGit(groups: WorktreeGroup[], repoRoot: string): Promise<void> {
   const run = (cwd: string, args: string[]): Promise<string> =>
     new Promise((resolve) => {
       execFile("git", args, { cwd, encoding: "utf-8" }, (err, stdout) =>
@@ -320,7 +319,10 @@ function readProjectCwd(dirName: string): string | null {
   // Newest first: an old transcript may predate a directory move.
   rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const row of rows.slice(0, 2)) {
-    for (const r of parseRecords(readChunk(row.file, 0, Math.min(HEAD_BYTES, row.sizeBytes)), false)) {
+    for (const r of parseRecords(
+      readChunk(row.file, 0, Math.min(HEAD_BYTES, row.sizeBytes)),
+      false
+    )) {
       if (typeof r.cwd === "string" && r.cwd) return r.cwd;
     }
   }
@@ -589,7 +591,9 @@ function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((b) => (b && typeof b === "object" && typeof (b as any).text === "string" ? (b as any).text : ""))
+    .map((b) =>
+      b && typeof b === "object" && typeof (b as any).text === "string" ? (b as any).text : ""
+    )
     .join("\n");
 }
 
@@ -663,7 +667,10 @@ export function mainConversationTurn(r: Record<string, unknown>): RawTurn | null
   if (r.type !== "user" && r.type !== "assistant") return null;
   if (r.isMeta || r.isSidechain) return null;
   const content = (r.message as { content?: unknown } | undefined)?.content;
-  if (Array.isArray(content) && content.some((b) => (b as { type?: unknown })?.type === "tool_result")) {
+  if (
+    Array.isArray(content) &&
+    content.some((b) => (b as { type?: unknown })?.type === "tool_result")
+  ) {
     return null;
   }
   const raw = contentText(content);
@@ -718,7 +725,10 @@ export function hydrateSession(row: SessionRow): SessionRow {
   // The title is regenerated as a session evolves, so the LAST `ai-title` is the current
   // one — hence reading the tail rather than the head for it.
   const tailStart = Math.max(0, row.sizeBytes - TAIL_BYTES);
-  const tail = parseRecords(readChunk(row.file, tailStart, row.sizeBytes - tailStart), tailStart > 0);
+  const tail = parseRecords(
+    readChunk(row.file, tailStart, row.sizeBytes - tailStart),
+    tailStart > 0
+  );
   for (let i = tail.length - 1; i >= 0; i--) {
     const r = tail[i]!;
     if (!row.title && r.type === "ai-title" && typeof r.aiTitle === "string" && r.aiTitle.trim()) {
@@ -871,10 +881,7 @@ export function sessionLabel(row: SessionRow): string {
  * because the summary runs moments after the child exited, so the session it just ran
  * is necessarily the most recently written transcript for that directory.
  */
-export function findLatestSessionId(
-  cwd: string = process.cwd(),
-  sinceMs = 0
-): string | null {
+export function findLatestSessionId(cwd: string = process.cwd(), sinceMs = 0): string | null {
   // `sinceMs` bounds the guess to transcripts touched during THIS session.
   //
   // Newest-by-mtime is only "necessarily" the session that just ran when one session

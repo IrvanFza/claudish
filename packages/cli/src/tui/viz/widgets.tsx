@@ -25,24 +25,24 @@
  * series moved the layout depending on which widget was absent. And every widget
  * forwards the same layout props a parent may set on a `Panel` — see `WidgetLayout`.
  */
-import { createTextAttributes, type ColorInput } from "@opentui/core"
-import type { BoxProps, TextProps } from "@opentui/react"
-import type { ReactNode } from "react"
-import { blendStops, heatRamp, pickInk } from "./color"
-import { displayWidth, splitCells } from "./text"
-import { ramps, tokens, type Ramp } from "./tokens"
+import { type ColorInput, createTextAttributes } from "@opentui/core";
+import type { BoxProps, TextProps } from "@opentui/react";
+import type { ReactNode } from "react";
+import { blendStops, heatRamp, pickInk } from "./color";
+import { displayWidth, splitCells } from "./text";
+import { type Ramp, ramps, tokens } from "./tokens";
 
-const BOLD = createTextAttributes({ bold: true })
-const FILL = "█"
-const TRACK = "░"
-const SPARK = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const
+const BOLD = createTextAttributes({ bold: true });
+const FILL = "█";
+const TRACK = "░";
+const SPARK = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"] as const;
 /** A non-finite sample in a series. A SPACE, not `▁`: the floor glyph would read as
  * "nearly zero", which is a lie about data that is absent. */
-const GAP = " "
+const GAP = " ";
 /** A meter whose value is absent, one glyph per cell. NOT `TRACK`: a full `░` row is
  * exactly what a healthy 0% paints, so `NaN` painting one made a dead sensor and an
  * idle one pixel-identical. Same lie as `GAP`, a whole row at a time. */
-const NODATA = "╌"
+const NODATA = "╌";
 
 /**
  * The layout keys a parent may set on anything in this file — sizing, growth and
@@ -51,9 +51,21 @@ const NODATA = "╌"
  * the type rather than by a convention.
  */
 type LayoutKeys =
-  | "flexGrow" | "flexShrink" | "flexBasis" | "alignSelf"
-  | "minWidth" | "minHeight" | "maxWidth" | "maxHeight"
-  | "margin" | "marginX" | "marginY" | "marginTop" | "marginRight" | "marginBottom" | "marginLeft"
+  | "flexGrow"
+  | "flexShrink"
+  | "flexBasis"
+  | "alignSelf"
+  | "minWidth"
+  | "minHeight"
+  | "maxWidth"
+  | "maxHeight"
+  | "margin"
+  | "marginX"
+  | "marginY"
+  | "marginTop"
+  | "marginRight"
+  | "marginBottom"
+  | "marginLeft";
 
 /**
  * A DATA WIDGET IS A FLEX ITEM, AND UNTIL IT COULD SAY SO IT WAS AT YOGA'S MERCY.
@@ -75,10 +87,10 @@ type LayoutKeys =
  * as a CELL COUNT, and one name meaning two things is how a call site ends up meaning
  * neither. Constrain them with `minWidth`/`maxWidth` instead.
  */
-export type WidgetLayout = Pick<TextProps, LayoutKeys>
+export type WidgetLayout = Pick<TextProps, LayoutKeys>;
 
-const RAMP_CACHE = new Map<string, readonly string[]>()
-const RAMP_CACHE_MAX = 64
+const RAMP_CACHE = new Map<string, readonly string[]>();
+const RAMP_CACHE_MAX = 64;
 
 /**
  * Memoised `blendStops` — the ramp for `width` cells across `stops`.
@@ -101,14 +113,14 @@ const RAMP_CACHE_MAX = 64
  *
  * The returned array is SHARED. Treat it as read-only — the type says so. */
 export function rampFor(width: number, stops: readonly string[]): readonly string[] {
-  const use = stops.length > 0 ? stops : ramps.load
-  const key = `${width}|${use.join(":")}`
-  const hit = RAMP_CACHE.get(key)
-  if (hit) return hit
-  const built: readonly string[] = blendStops(width, ...use)
-  if (RAMP_CACHE.size >= RAMP_CACHE_MAX) RAMP_CACHE.delete(RAMP_CACHE.keys().next().value!)
-  RAMP_CACHE.set(key, built)
-  return built
+  const use = stops.length > 0 ? stops : ramps.load;
+  const key = `${width}|${use.join(":")}`;
+  const hit = RAMP_CACHE.get(key);
+  if (hit) return hit;
+  const built: readonly string[] = blendStops(width, ...use);
+  if (RAMP_CACHE.size >= RAMP_CACHE_MAX) RAMP_CACHE.delete(RAMP_CACHE.keys().next().value!);
+  RAMP_CACHE.set(key, built);
+  return built;
 }
 
 /**
@@ -125,9 +137,9 @@ export function rampFor(width: number, stops: readonly string[]): readonly strin
  * ±Infinity is NOT lumped in with it: the clamp maps it to 100 / 0, which is the
  * right answer, and `Number.isFinite` would have thrown away a usable value. */
 export function fillCells(pct: number, width: number): number {
-  const cells = Math.floor(width)
-  if (!Number.isFinite(cells) || cells <= 0 || Number.isNaN(pct)) return 0
-  return Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells)
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0 || Number.isNaN(pct)) return 0;
+  return Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells);
 }
 
 /**
@@ -140,22 +152,33 @@ export function fillCells(pct: number, width: number): number {
  * by the ramp's length, so no ramp can change the geometry. `width <= 0`, fractional or
  * non-finite renders nothing rather than throwing.
  */
-export function Meter(
-  { pct, width, ramp = ramps.load, style, ...layout }:
-    WidgetLayout & { pct: number; width: number; ramp?: Ramp; style?: WidgetLayout },
-): ReactNode {
-  const cells = Math.floor(width)
-  if (!Number.isFinite(cells) || cells <= 0) return null
-  if (Number.isNaN(pct)) return <text fg={tokens.dead} flexShrink={0} {...layout} style={style}>{NODATA.repeat(cells)}</text>
-  const cols = rampFor(cells, ramp)
-  const filled = fillCells(pct, cells)
+export function Meter({
+  pct,
+  width,
+  ramp = ramps.load,
+  style,
+  ...layout
+}: WidgetLayout & { pct: number; width: number; ramp?: Ramp; style?: WidgetLayout }): ReactNode {
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0) return null;
+  if (Number.isNaN(pct))
+    return (
+      <text fg={tokens.dead} flexShrink={0} {...layout} style={style}>
+        {NODATA.repeat(cells)}
+      </text>
+    );
+  const cols = rampFor(cells, ramp);
+  const filled = fillCells(pct, cells);
   return (
     <text flexShrink={0} {...layout} style={style}>
       {Array.from({ length: cells }, (_, i) => (
-        <span key={i} fg={i < filled ? cols[i]! : tokens.border}>{i < filled ? FILL : TRACK}</span>
+        // biome-ignore lint/suspicious/noArrayIndexKey: a meter cell is position-addressed — index IS identity
+        <span key={i} fg={i < filled ? cols[i]! : tokens.border}>
+          {i < filled ? FILL : TRACK}
+        </span>
       ))}
     </text>
-  )
+  );
 }
 
 /**
@@ -175,19 +198,26 @@ export function Meter(
  * cell maths, never the drawing. No layout props: a `<span>` is not a flex item, so its
  * row's `<text>` owns the layout for both. `NaN` paints the same dim `╌` run.
  */
-export function MeterSpan({ pct, width, ramp = ramps.load }: { pct: number; width: number; ramp?: Ramp }): ReactNode {
-  const cells = Math.floor(width)
-  if (!Number.isFinite(cells) || cells <= 0) return null
-  if (Number.isNaN(pct)) return <span fg={tokens.dead}>{NODATA.repeat(cells)}</span>
-  const cols = rampFor(cells, ramp)
-  const filled = fillCells(pct, cells)
+export function MeterSpan({
+  pct,
+  width,
+  ramp = ramps.load,
+}: { pct: number; width: number; ramp?: Ramp }): ReactNode {
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0) return null;
+  if (Number.isNaN(pct)) return <span fg={tokens.dead}>{NODATA.repeat(cells)}</span>;
+  const cols = rampFor(cells, ramp);
+  const filled = fillCells(pct, cells);
   return (
     <>
       {Array.from({ length: cells }, (_, i) => (
-        <span key={i} fg={i < filled ? cols[i]! : tokens.border}>{i < filled ? FILL : TRACK}</span>
+        // biome-ignore lint/suspicious/noArrayIndexKey: a meter cell is position-addressed — index IS identity
+        <span key={i} fg={i < filled ? cols[i]! : tokens.border}>
+          {i < filled ? FILL : TRACK}
+        </span>
       ))}
     </>
-  )
+  );
 }
 
 /**
@@ -212,13 +242,19 @@ export function MeterSpan({ pct, width, ramp = ramps.load }: { pct: number; widt
  * at most `MAX_VALUE / 2`, so the difference cannot overflow) and is exact in binary
  * floating point, so not one cell moves. The index is clamped for the same reason the
  * range is halved: `SPARK[i]!` must not be able to assert a lie. */
-export function Sparkline(
-  { values, fg = tokens.info, style, ...layout }:
-    WidgetLayout & { values: readonly number[]; fg?: ColorInput; style?: WidgetLayout },
-): ReactNode {
-  const row = sparkGlyphs(values)
-  if (row === null) return null
-  return <text fg={fg} flexShrink={0} {...layout} style={style}>{row}</text>
+export function Sparkline({
+  values,
+  fg = tokens.info,
+  style,
+  ...layout
+}: WidgetLayout & { values: readonly number[]; fg?: ColorInput; style?: WidgetLayout }): ReactNode {
+  const row = sparkGlyphs(values);
+  if (row === null) return null;
+  return (
+    <text fg={fg} flexShrink={0} {...layout} style={style}>
+      {row}
+    </text>
+  );
 }
 
 /**
@@ -227,16 +263,21 @@ export function Sparkline(
  * an empty series (the caller renders nothing at all; an empty `<text>` still eats a row).
  */
 export function sparkGlyphs(values: readonly number[]): string | null {
-  if (values.length === 0) return null
-  let max = Number.NEGATIVE_INFINITY
-  let min = Number.POSITIVE_INFINITY
-  for (const v of values) if (Number.isFinite(v)) { max = Math.max(max, v); min = Math.min(min, v) }
-  if (max === Number.NEGATIVE_INFINITY) return GAP.repeat(values.length)
-  const half = max / 2 - min / 2
-  const mid = SPARK[Math.floor((SPARK.length - 1) / 2)]!
-  const top = SPARK.length - 1
-  const glyph = (v: number) => SPARK[Math.min(top, Math.max(0, Math.round(((v / 2 - min / 2) / half) * top)))]!
-  return values.map((v) => (!Number.isFinite(v) ? GAP : half > 0 ? glyph(v) : mid)).join("")
+  if (values.length === 0) return null;
+  let max = Number.NEGATIVE_INFINITY;
+  let min = Number.POSITIVE_INFINITY;
+  for (const v of values)
+    if (Number.isFinite(v)) {
+      max = Math.max(max, v);
+      min = Math.min(min, v);
+    }
+  if (max === Number.NEGATIVE_INFINITY) return GAP.repeat(values.length);
+  const half = max / 2 - min / 2;
+  const mid = SPARK[Math.floor((SPARK.length - 1) / 2)]!;
+  const top = SPARK.length - 1;
+  const glyph = (v: number) =>
+    SPARK[Math.min(top, Math.max(0, Math.round(((v / 2 - min / 2) / half) * top)))]!;
+  return values.map((v) => (!Number.isFinite(v) ? GAP : half > 0 ? glyph(v) : mid)).join("");
 }
 
 /**
@@ -246,9 +287,12 @@ export function sparkGlyphs(values: readonly number[]): string | null {
  * arrangement Yoga silently shrinks. Shares `sparkGlyphs`, so the two forms are identical
  * glyph for glyph.
  */
-export function SparklineSpan({ values, fg = tokens.info }: { values: readonly number[]; fg?: ColorInput }): ReactNode {
-  const row = sparkGlyphs(values)
-  return row === null ? null : <span fg={fg}>{row}</span>
+export function SparklineSpan({
+  values,
+  fg = tokens.info,
+}: { values: readonly number[]; fg?: ColorInput }): ReactNode {
+  const row = sparkGlyphs(values);
+  return row === null ? null : <span fg={fg}>{row}</span>;
 }
 
 /**
@@ -267,22 +311,36 @@ export function SparklineSpan({ values, fg = tokens.info }: { values: readonly n
  * rows belong on one scale but the small one still disappears, split the panel instead.
  * `max <= 0` (or an all-zero row) draws the ramp floor — never a NaN index.
  */
-export function HeatRow(
-  { values, max, hue, style, ...layout }:
-    WidgetLayout & { values: readonly number[]; max: number | "row"; hue: ColorInput; style?: WidgetLayout },
-): ReactNode {
-  if (values.length === 0) return null
-  const ramp = heatRamp(hue)
-  const top = ramp.length - 1
-  const cap = max === "row" ? values.reduce((m, v) => (Number.isFinite(v) ? Math.max(m, v) : m), 0) : max
+export function HeatRow({
+  values,
+  max,
+  hue,
+  style,
+  ...layout
+}: WidgetLayout & {
+  values: readonly number[];
+  max: number | "row";
+  hue: ColorInput;
+  style?: WidgetLayout;
+}): ReactNode {
+  if (values.length === 0) return null;
+  const ramp = heatRamp(hue);
+  const top = ramp.length - 1;
+  const cap =
+    max === "row" ? values.reduce((m, v) => (Number.isFinite(v) ? Math.max(m, v) : m), 0) : max;
   return (
     <text flexShrink={0} {...layout} style={style}>
       {values.map((v, i) => {
-        const t = cap > 0 && Number.isFinite(v) ? Math.min(1, Math.max(0, v / cap)) : 0
-        return <span key={i} bg={ramp[Math.round(t * top)]}> </span>
+        const t = cap > 0 && Number.isFinite(v) ? Math.min(1, Math.max(0, v / cap)) : 0;
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a heat cell is position-addressed — index IS identity
+          <span key={i} bg={ramp[Math.round(t * top)]}>
+            {" "}
+          </span>
+        );
       })}
     </text>
-  )
+  );
 }
 
 /**
@@ -307,22 +365,26 @@ export function HeatRow(
  * coloured SPACES, so a column Yoga shaved off a flex sibling would leave a stub of
  * background that `captureCharFrame()` cannot see at all.
  */
-export function LevelRowSpan(
-  { levels, palette }: { levels: readonly number[]; palette: readonly string[] },
-): ReactNode {
-  if (levels.length === 0 || palette.length === 0) return null
-  const top = palette.length - 1
+export function LevelRowSpan({
+  levels,
+  palette,
+}: { levels: readonly number[]; palette: readonly string[] }): ReactNode {
+  if (levels.length === 0 || palette.length === 0) return null;
+  const top = palette.length - 1;
   return (
     <>
       {levels.map((n, i) => (
-        <span key={i} bg={palette[Math.min(top, Math.max(0, Math.round(n)))]!}> </span>
+        // biome-ignore lint/suspicious/noArrayIndexKey: a heat cell is position-addressed — index IS identity
+        <span key={i} bg={palette[Math.min(top, Math.max(0, Math.round(n)))]!}>
+          {" "}
+        </span>
       ))}
     </>
-  )
+  );
 }
 
 /** One category of a `StackedBar`: how much, and in what colour. */
-export type BarSegment = { value: number; color: ColorInput }
+export type BarSegment = { value: number; color: ColorInput };
 
 /**
  * Stacked bar — the default visual for a CATEGORY DISTRIBUTION (gonzo's severity
@@ -341,24 +403,45 @@ export type BarSegment = { value: number; color: ColorInput }
  * (down to `width < categories`, where the largest `width` of them get one each).
  * ALL-ZERO is the one case it cannot fill — no shares to apportion — so an empty
  * distribution draws a full-width TRACK row rather than collapsing to nothing. */
-export function StackedBar(
-  { segments, width, style, ...layout }:
-    WidgetLayout & { segments: readonly BarSegment[]; width: number; style?: WidgetLayout },
-): ReactNode {
-  const cells = Math.floor(width)
-  if (!Number.isFinite(cells) || cells <= 0 || segments.length === 0) return null
-  const split = splitCells(segments.map((s) => s.value), cells)
-  if (split.reduce((a, b) => a + b, 0) === 0) return <text fg={tokens.border} flexShrink={0} {...layout} style={style}>{TRACK.repeat(cells)}</text>
+export function StackedBar({
+  segments,
+  width,
+  style,
+  ...layout
+}: WidgetLayout & {
+  segments: readonly BarSegment[];
+  width: number;
+  style?: WidgetLayout;
+}): ReactNode {
+  const cells = Math.floor(width);
+  if (!Number.isFinite(cells) || cells <= 0 || segments.length === 0) return null;
+  const split = splitCells(
+    segments.map((s) => s.value),
+    cells
+  );
+  if (split.reduce((a, b) => a + b, 0) === 0)
+    return (
+      <text fg={tokens.border} flexShrink={0} {...layout} style={style}>
+        {TRACK.repeat(cells)}
+      </text>
+    );
   return (
     <text flexShrink={0} {...layout} style={style}>
-      {split.map((n, i) => (n > 0 ? <span key={i} bg={segments[i]!.color}>{" ".repeat(n)}</span> : null))}
+      {split.map((n, i) =>
+        n > 0 ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a bar segment is position-addressed — index IS identity
+          <span key={i} bg={segments[i]!.color}>
+            {" ".repeat(n)}
+          </span>
+        ) : null
+      )}
     </text>
-  )
+  );
 }
 
 /** A status chip: `label` and `bg` are the chip itself; `width` is the COLUMN it sits
  * in. See `badgePad` — the padding to `width` goes OUTSIDE the fill. */
-export type BadgeChip = { label: string; bg: ColorInput; width?: number }
+export type BadgeChip = { label: string; bg: ColorInput; width?: number };
 
 /**
  * Filler columns so a badge can hold a fixed-width COLUMN without growing its fill.
@@ -373,8 +456,8 @@ export type BadgeChip = { label: string; bg: ColorInput; width?: number }
  * `width` under the chip's own width pads nothing: a chip is never clipped, because half
  * a label (`WAR`) is a worse failure than a column one cell wide. */
 function badgePad(label: string, width?: number): ReactNode {
-  const pad = Math.max(0, (width ?? 0) - displayWidth(label) - 2)
-  return pad > 0 ? <span>{" ".repeat(pad)}</span> : null
+  const pad = Math.max(0, (width ?? 0) - displayWidth(label) - 2);
+  return pad > 0 ? <span>{" ".repeat(pad)}</span> : null;
 }
 
 /**
@@ -383,10 +466,19 @@ function badgePad(label: string, width?: number): ReactNode {
  * `width` is given. Keep the text LABEL — colour alone fails a red/green-blind reader
  * and fails in grayscale.
  */
-export function Badge(
-  { label, bg, width, style, ...layout }: WidgetLayout & BadgeChip & { style?: WidgetLayout },
-): ReactNode {
-  return <text flexShrink={0} {...layout} style={style}><span fg={pickInk(bg)} bg={bg} attributes={BOLD}>{` ${label} `}</span>{badgePad(label, width)}</text>
+export function Badge({
+  label,
+  bg,
+  width,
+  style,
+  ...layout
+}: WidgetLayout & BadgeChip & { style?: WidgetLayout }): ReactNode {
+  return (
+    <text flexShrink={0} {...layout} style={style}>
+      <span fg={pickInk(bg)} bg={bg} attributes={BOLD}>{` ${label} `}</span>
+      {badgePad(label, width)}
+    </text>
+  );
 }
 
 /**
@@ -405,7 +497,12 @@ export function Badge(
  * form reads as one line of JSX; change one, change the other. No layout props: a
  * `<span>` is not a flex item, so its row's `<text>` owns the layout for both. */
 export function BadgeSpan({ label, bg, width }: BadgeChip): ReactNode {
-  return <><span fg={pickInk(bg)} bg={bg} attributes={BOLD}>{` ${label} `}</span>{badgePad(label, width)}</>
+  return (
+    <>
+      <span fg={pickInk(bg)} bg={bg} attributes={BOLD}>{` ${label} `}</span>
+      {badgePad(label, width)}
+    </>
+  );
 }
 
 /**
@@ -419,7 +516,7 @@ export function BadgeSpan({ label, bg, width }: BadgeChip): ReactNode {
  * who reach for OpenTUI's style form while `style={{ borderStyle: "double" }}` does not
  * compile. `width`/`height` are here and absent from `WidgetLayout`, which is the one
  * real difference: a panel's width is a box, a widget's `width` is a cell count. */
-export type PanelLayout = Pick<BoxProps, LayoutKeys | "width" | "height">
+export type PanelLayout = Pick<BoxProps, LayoutKeys | "width" | "height">;
 
 /**
  * Panel chrome — the lazygit/btop focus model. Accent border when focused, dim
@@ -461,10 +558,20 @@ export type PanelLayout = Pick<BoxProps, LayoutKeys | "width" | "height">
  * this is one named, documented choice, not an open door to per-call-site chrome. A
  * flush panel's children own the edge, so they must size themselves to `width - 2`.
  */
-export function Panel(
-  { title, focused = false, flush = false, children, style, ...layout }:
-    PanelLayout & { title: string; focused?: boolean; flush?: boolean; children?: ReactNode; style?: PanelLayout },
-): ReactNode {
+export function Panel({
+  title,
+  focused = false,
+  flush = false,
+  children,
+  style,
+  ...layout
+}: PanelLayout & {
+  title: string;
+  focused?: boolean;
+  flush?: boolean;
+  children?: ReactNode;
+  style?: PanelLayout;
+}): ReactNode {
   return (
     <box
       border
@@ -482,5 +589,5 @@ export function Panel(
     >
       {children}
     </box>
-  )
+  );
 }

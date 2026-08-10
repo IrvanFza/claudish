@@ -16,13 +16,13 @@
  * Surface-neutral: pure functions, no renderables, no JSX. This is bridge site
  * B2 — it imports from core and calls no construct.
  */
-import { parseColor, rgbToHex, RGBA, type ColorInput } from "@opentui/core"
-import { tokens } from "./tokens"
+import { type ColorInput, RGBA, parseColor, rgbToHex } from "@opentui/core";
+import { tokens } from "./tokens";
 
 /** `.r/.g/.b/.a` on `RGBA` are normalised 0..1, NOT 0..255. `toInts()` is 0..255. */
-const rgba = (c: ColorInput): RGBA => parseColor(c)
-const hex = (c: RGBA): string => rgbToHex(c)
-const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0)
+const rgba = (c: ColorInput): RGBA => parseColor(c);
+const hex = (c: RGBA): string => rgbToHex(c);
+const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0);
 
 /**
  * Linear interpolation in RGB (gamma-space sRGB), `t` clamped to 0..1. The whole engine.
@@ -59,15 +59,15 @@ const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.min(1, Math.ma
  * it is not a colour space: use DISCRETE BUCKETS, not a continuous ramp.
  */
 function mix(a: RGBA, b: RGBA, t: number): string {
-  const k = clamp01(t)
+  const k = clamp01(t);
   return hex(
     RGBA.fromValues(
       a.r + (b.r - a.r) * k,
       a.g + (b.g - a.g) * k,
       a.b + (b.b - a.b) * k,
-      a.a + (b.a - a.a) * k,
-    ),
-  )
+      a.a + (b.a - a.a) * k
+    )
+  );
 }
 
 /**
@@ -84,11 +84,11 @@ function mix(a: RGBA, b: RGBA, t: number): string {
  * CELL is what reads as continuous. Call it with the meter's width, not with 4.
  */
 export function blend1D(steps: number, from: ColorInput, to: ColorInput): string[] {
-  if (!Number.isInteger(steps) || steps <= 0) return []
-  const a = rgba(from)
-  if (steps === 1) return [hex(a)]
-  const b = rgba(to)
-  return Array.from({ length: steps }, (_, i) => mix(a, b, i / (steps - 1)))
+  if (!Number.isInteger(steps) || steps <= 0) return [];
+  const a = rgba(from);
+  if (steps === 1) return [hex(a)];
+  const b = rgba(to);
+  return Array.from({ length: steps }, (_, i) => mix(a, b, i / (steps - 1)));
 }
 
 /**
@@ -99,15 +99,15 @@ export function blend1D(steps: number, from: ColorInput, to: ColorInput): string
  * first stop only, matching `blend1D`'s single-sample rule.
  */
 export function blendStops(steps: number, ...stops: ColorInput[]): string[] {
-  if (!Number.isInteger(steps) || steps <= 0 || stops.length === 0) return []
-  if (stops.length === 1 || steps === 1) return blend1D(steps, stops[0]!, stops.at(-1)!)
-  const pts = stops.map(rgba)
-  const segs = pts.length - 1
+  if (!Number.isInteger(steps) || steps <= 0 || stops.length === 0) return [];
+  if (stops.length === 1 || steps === 1) return blend1D(steps, stops[0]!, stops.at(-1)!);
+  const pts = stops.map(rgba);
+  const segs = pts.length - 1;
   return Array.from({ length: steps }, (_, i) => {
-    const p = (i / (steps - 1)) * segs
-    const s = Math.min(segs - 1, Math.floor(p))
-    return mix(pts[s]!, pts[s + 1]!, p - s)
-  })
+    const p = (i / (steps - 1)) * segs;
+    const s = Math.min(segs - 1, Math.floor(p));
+    return mix(pts[s]!, pts[s + 1]!, p - s);
+  });
 }
 
 /**
@@ -116,18 +116,16 @@ export function blendStops(steps: number, ...stops: ColorInput[]): string[] {
  * row's hue identity.
  */
 export function darken(c: ColorInput, amount: number): string {
-  const k = 1 - clamp01(amount)
-  const v = rgba(c)
-  return hex(RGBA.fromValues(v.r * k, v.g * k, v.b * k, v.a))
+  const k = 1 - clamp01(amount);
+  const v = rgba(c);
+  return hex(RGBA.fromValues(v.r * k, v.g * k, v.b * k, v.a));
 }
 
 /** Scale toward white by `amount`, clamped to 0..1. */
 export function lighten(c: ColorInput, amount: number): string {
-  const k = clamp01(amount)
-  const v = rgba(c)
-  return hex(
-    RGBA.fromValues(v.r + (1 - v.r) * k, v.g + (1 - v.g) * k, v.b + (1 - v.b) * k, v.a),
-  )
+  const k = clamp01(amount);
+  const v = rgba(c);
+  return hex(RGBA.fromValues(v.r + (1 - v.r) * k, v.g + (1 - v.g) * k, v.b + (1 - v.b) * k, v.a));
 }
 
 /**
@@ -144,7 +142,7 @@ export function lighten(c: ColorInput, amount: number): string {
  * for `hsvToRgb` only when GENERATING a palette from an HSV seed.
  */
 export function heatRamp(hue: ColorInput, steps = 24): string[] {
-  return blend1D(steps, darken(hue, 0.8), hue)
+  return blend1D(steps, darken(hue, 0.8), hue);
 }
 
 /**
@@ -157,28 +155,28 @@ export function heatRamp(hue: ColorInput, steps = 24): string[] {
  * `mix` is still sRGB channel interpolation and still says so.
  */
 function luminance(c: RGBA): number {
-  const f = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
-  return 0.2126 * f(clamp01(c.r)) + 0.7152 * f(clamp01(c.g)) + 0.0722 * f(clamp01(c.b))
+  const f = (v: number) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * f(clamp01(c.r)) + 0.7152 * f(clamp01(c.g)) + 0.0722 * f(clamp01(c.b));
 }
 
 /** WCAG contrast ratio, 1:1 (identical) to 21:1 (black on white). */
 function contrastRatio(a: RGBA, b: RGBA): number {
-  const [x, y] = [luminance(a), luminance(b)]
-  return x >= y ? (x + 0.05) / (y + 0.05) : (y + 0.05) / (x + 0.05)
+  const [x, y] = [luminance(a), luminance(b)];
+  return x >= y ? (x + 0.05) / (y + 0.05) : (y + 0.05) / (x + 0.05);
 }
 
 /** Source-over composite of `fg` onto an OPAQUE `bg` — what the terminal does when
  * it paints a translucent cell. Opaque `fg` short-circuits, so the common path
  * costs nothing and returns the caller's own colour object unchanged. */
 function over(fg: RGBA, bg: RGBA): RGBA {
-  const a = clamp01(fg.a)
-  if (a >= 1) return fg
+  const a = clamp01(fg.a);
+  if (a >= 1) return fg;
   return RGBA.fromValues(
     fg.r * a + bg.r * (1 - a),
     fg.g * a + bg.g * (1 - a),
     fg.b * a + bg.b * (1 - a),
-    1,
-  )
+    1
+  );
 }
 
 /**
@@ -208,10 +206,12 @@ function over(fg: RGBA, bg: RGBA): RGBA {
 export function pickInk(
   bg: ColorInput,
   dark: ColorInput = tokens.ink,
-  light: ColorInput = tokens.text,
+  light: ColorInput = tokens.text
 ): string {
-  const surface = over(rgba(bg), rgba(tokens.bgPanel))
-  const inkDark = over(rgba(dark), surface)
-  const inkLight = over(rgba(light), surface)
-  return hex(contrastRatio(inkDark, surface) >= contrastRatio(inkLight, surface) ? inkDark : inkLight)
+  const surface = over(rgba(bg), rgba(tokens.bgPanel));
+  const inkDark = over(rgba(dark), surface);
+  const inkLight = over(rgba(light), surface);
+  return hex(
+    contrastRatio(inkDark, surface) >= contrastRatio(inkLight, surface) ? inkDark : inkLight
+  );
 }

@@ -176,17 +176,20 @@ export function cleanTurnText(raw: string): string {
   // `<command-name>foo</command-name>` is the one envelope worth KEEPING the body of: it
   // is the slash command the user actually ran, which is the whole content of that turn.
   t = t.replace(/<command-name>([\s\S]*?)<\/command-name>/g, "/$1");
-  return t
-    .replace(/\t/g, "  ")
-    // Everything else in C0/C1: a raw ESC or \b in a terminal cell moves the cursor
-    // instead of painting, which corrupts the frame rather than the line.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((l) => l.replace(/\s+$/, ""))
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return (
+    t
+      .replace(/\t/g, "  ")
+      // Everything else in C0/C1: a raw ESC or \b in a terminal cell moves the cursor
+      // instead of painting, which corrupts the frame rather than the line.
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: deliberately stripping raw control chars
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((l) => l.replace(/\s+$/, ""))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 /** How the caps are configured. Tests set them low; the app uses the defaults. */

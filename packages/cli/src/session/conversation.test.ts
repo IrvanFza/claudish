@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readConversation, type ReaderTurn, wrapOffsets } from "./conversation.js";
 import { buildSearch, layoutRows } from "./conversation-reader.js";
+import { type ReaderTurn, readConversation, wrapOffsets } from "./conversation.js";
 
 const tempDir = mkdtempSync(join(tmpdir(), "claudish-conversation-test-"));
 
@@ -96,8 +96,7 @@ describe("conversation transcript reader", () => {
   });
 
   test("does not reject assistant prose that quotes structural marker strings", () => {
-    const prose =
-      'These are quoted JSON markers: "isSidechain":true and "type":"tool_result".';
+    const prose = 'These are quoted JSON markers: "isSidechain":true and "type":"tool_result".';
     const line = JSON.stringify(assistantRecord([{ type: "text", text: prose }]));
     const file = join(tempDir, "quoted-markers.jsonl");
     writeFileSync(file, `${line}\n`);
@@ -117,9 +116,7 @@ describe("conversation transcript reader", () => {
     ]);
     const totalCapped = readConversation(totalFile, { maxTotalChars: 12 });
 
-    expect(totalCapped.turns).toEqual([
-      { role: "user", text: "newest-3", elided: false },
-    ]);
+    expect(totalCapped.turns).toEqual([{ role: "user", text: "newest-3", elided: false }]);
     expect(totalCapped.dropped).toBe(2);
 
     const turnFile = transcriptFile("turn-cap.jsonl", [
@@ -167,7 +164,9 @@ describe("conversation layout and search", () => {
     const turns: ReaderTurn[] = [{ role: "assistant", text: "some prose", elided: false }];
     const layout = layoutRows(turns, 20);
     expect(buildSearch(turns, layout.rows, layout.turnStart, layout.turnEnd, "").hits).toEqual([]);
-    expect(buildSearch(turns, layout.rows, layout.turnStart, layout.turnEnd, "missing").hits).toEqual([]);
+    expect(
+      buildSearch(turns, layout.rows, layout.turnStart, layout.turnEnd, "missing").hits
+    ).toEqual([]);
   });
 
   test("wrapOffsets stays bounded, honors newlines, and hard-breaks long words", () => {
@@ -259,9 +258,7 @@ describe("large conversation streaming", () => {
     const heapDelta = Math.max(0, heapAfter - heapBefore);
 
     expect(conversation.turns).toEqual(expected);
-    expect(conversation.chars).toBe(
-      expected.reduce((sum, turn) => sum + turn.text.length, 0)
-    );
+    expect(conversation.chars).toBe(expected.reduce((sum, turn) => sum + turn.text.length, 0));
     expect(conversation.chars).toBeLessThan(fileSize * 0.01);
     expect(heapDelta).toBeLessThan(fileSize * 0.25);
   }, 30_000);

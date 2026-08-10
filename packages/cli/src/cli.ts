@@ -583,10 +583,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.claudeArgs.push(...rest);
       if (rest.length > 0) config._hasPositionalPrompt = true;
       break;
-    } else if (
-      arg === "--resume" &&
-      (i + 1 >= args.length || args[i + 1]!.startsWith("-"))
-    ) {
+    } else if (arg === "--resume" && (i + 1 >= args.length || args[i + 1]!.startsWith("-"))) {
       // A BARE `--resume` (no session id) opens claudish's own picker.
       //
       // `--resume <id>` is untouched and still passes straight through, because that

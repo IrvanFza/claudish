@@ -111,7 +111,9 @@ export function renderSessionSummary(input: SummaryInput): string[] {
   const titleText = exitCode === 0 ? " session " : " session · failed ";
   const titleHex = exitCode === 0 ? tokens.accent : tokens.error;
   const rule = "─".repeat(Math.max(0, W - 2 - visibleWidth(titleText) - 1));
-  out.push(paint("╭─", tokens.border) + paint(titleText, titleHex) + paint(rule + "╮", tokens.border));
+  out.push(
+    paint("╭─", tokens.border) + paint(titleText, titleHex) + paint(rule + "╮", tokens.border)
+  );
 
   const row = (s: string): void => {
     out.push(`${paint("│", tokens.border)} ${padVisible(s, inner)} ${paint("│", tokens.border)}`);
@@ -221,7 +223,11 @@ export function renderSessionSummary(input: SummaryInput): string[] {
   // ── cost and savings ──────────────────────────────────────────────────────
   row(
     dim(padTo("cost", LABEL_W)) +
-      paint(stats.isFree ? "free" : usd(stats.costUsd), stats.isFree ? tokens.success : tokens.text, true) +
+      paint(
+        stats.isFree ? "free" : usd(stats.costUsd),
+        stats.isFree ? tokens.success : tokens.text,
+        true
+      ) +
       (stats.isEstimated && !stats.isFree ? dim("  estimated") : "")
   );
 

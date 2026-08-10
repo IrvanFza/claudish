@@ -32,11 +32,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { setStderrQuiet } from "../logger.js";
 import { ResumePicker } from "./resume-picker.js";
-import {
-  discoverWorktreeGroups,
-  enrichWorktreeGit,
-  getRepoContext,
-} from "./session-discovery.js";
+import { discoverWorktreeGroups, enrichWorktreeGit, getRepoContext } from "./session-discovery.js";
 
 export interface PickerOutcome {
   /** Session id the user chose, or null when they cancelled. */

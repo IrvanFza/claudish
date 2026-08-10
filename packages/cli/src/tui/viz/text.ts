@@ -32,9 +32,9 @@
  * paints it) and ANSI excluded from the count.
  */
 const NATIVE_WIDTH: ((s: string) => number) | null = (() => {
-  const b = (globalThis as { Bun?: { stringWidth?: (s: string) => number } }).Bun
-  return typeof b?.stringWidth === "function" ? b.stringWidth.bind(b) : null
-})()
+  const b = (globalThis as { Bun?: { stringWidth?: (s: string) => number } }).Bun;
+  return typeof b?.stringWidth === "function" ? b.stringWidth.bind(b) : null;
+})();
 
 /**
  * FALLBACK ONLY — East_Asian_Width Wide/Fullwidth, MINUS the emoji, which
@@ -55,42 +55,69 @@ const NATIVE_WIDTH: ((s: string) => number) | null = (() => {
  * every one of those numbers, so widening a run without a sweep fails the suite.
  */
 const WIDE: ReadonlyArray<readonly [number, number]> = [
-  [0x1100, 0x115f], [0x2329, 0x232a],
-  [0x2e80, 0x303e], [0x3041, 0x31e3], [0x31e6, 0x3247], [0x3250, 0x33ff],
-  [0x3400, 0x4dbf], [0x4e00, 0x9fff],
-  [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3], [0xf900, 0xfaff],
-  [0xfe10, 0xfe19], [0xfe30, 0xfe6f], [0xff00, 0xff60], [0xffe0, 0xffe6],
-  [0x16fe0, 0x16fe4], [0x16ff0, 0x16ff1], [0x17000, 0x187f7], [0x18800, 0x18cd5],
-  [0x18d00, 0x18d08], [0x1aff0, 0x1aff3], [0x1aff5, 0x1affb], [0x1affd, 0x1affe],
-  [0x1b000, 0x1b122], [0x1b132, 0x1b132], [0x1b150, 0x1b152], [0x1b155, 0x1b155],
-  [0x1b164, 0x1b167], [0x1b170, 0x1b2fb],
-  [0x1f200, 0x1f202], [0x1f210, 0x1f23b], [0x1f240, 0x1f248], [0x1f250, 0x1f251],
-  [0x1f260, 0x1f265], [0x20000, 0x2fffd], [0x30000, 0x3fffd],
-]
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3041, 0x31e3],
+  [0x31e6, 0x3247],
+  [0x3250, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff],
+  [0xa000, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x16fe0, 0x16fe4],
+  [0x16ff0, 0x16ff1],
+  [0x17000, 0x187f7],
+  [0x18800, 0x18cd5],
+  [0x18d00, 0x18d08],
+  [0x1aff0, 0x1aff3],
+  [0x1aff5, 0x1affb],
+  [0x1affd, 0x1affe],
+  [0x1b000, 0x1b122],
+  [0x1b132, 0x1b132],
+  [0x1b150, 0x1b152],
+  [0x1b155, 0x1b155],
+  [0x1b164, 0x1b167],
+  [0x1b170, 0x1b2fb],
+  [0x1f200, 0x1f202],
+  [0x1f210, 0x1f23b],
+  [0x1f240, 0x1f248],
+  [0x1f250, 0x1f251],
+  [0x1f260, 0x1f265],
+  [0x20000, 0x2fffd],
+  [0x30000, 0x3fffd],
+];
 
-const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /** U+FE0F VARIATION SELECTOR-16, spelled by codepoint: as a bare literal it is an
  * invisible character in the source, which is how a `includes("…")` test for it
  * survives review while matching nothing. Its sibling U+FE0E (text presentation)
  * needs no branch — MEASURED against the oracle, it narrows nothing: `⚠︎` is 1
  * because `⚠` already is, and `⛔︎` stays 2 because U+26D4 is intrinsically Wide. */
-const VS16 = "\uFE0F"
+const VS16 = "\uFE0F";
 
 /** Zero-width in the fallback: format characters (`Cf`) — U+00AD SOFT HYPHEN,
  * U+200B ZERO WIDTH SPACE, U+200D ZWJ, U+FEFF. The previous table had no notion of
  * these at all and billed each one a column. Anchored, because it classifies a
  * grapheme cluster by the codepoint that STARTS it. */
-const LEADING_FORMAT = /^\p{Cf}/u
+const LEADING_FORMAT = /^\p{Cf}/u;
 
 /** Wide in the fallback, part two: emoji whose default presentation is Wide. This
  * is the engine's own table, so it tracks Unicode releases without an edit here. */
-const LEADING_EMOJI_PRESENTATION = /^\p{Emoji_Presentation}/u
+const LEADING_EMOJI_PRESENTATION = /^\p{Emoji_Presentation}/u;
 
 /** C0, DEL and C1. Every one is unprintable, and three of them actively wreck a
  * frame: `\n` breaks the row, `\t` advances to an unknowable tab stop, ESC can
  * reposition the cursor anywhere on screen. */
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: deliberately stripping raw control chars
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
 
 /**
  * THE CONTROL-CHARACTER CONTRACT for everything that returns a string: every C0
@@ -109,7 +136,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
  * `.replace` with a `/g` regex is used unconditionally — `CONTROL.test()` as a
  * fast-path guard would be a stateful-`lastIndex` bug that skips every other call.
  */
-const sanitize = (s: string): string => s.replace(CONTROL, " ")
+const sanitize = (s: string): string => s.replace(CONTROL, " ");
 
 /**
  * THE NUMERIC CONTRACT for every column count in this file: floored to whole
@@ -129,23 +156,23 @@ const sanitize = (s: string): string => s.replace(CONTROL, " ")
  * sensibly contributes nothing, whereas a missing dimension has no sensible value.
  */
 function columns(n: number, fn: string, arg = "width"): number {
-  if (!Number.isFinite(n)) throw new RangeError(`${fn}: ${arg} must be a finite number, got ${n}`)
-  return Math.max(0, Math.floor(n))
+  if (!Number.isFinite(n)) throw new RangeError(`${fn}: ${arg} must be a finite number, got ${n}`);
+  return Math.max(0, Math.floor(n));
 }
 
 /** Binary search over `WIDE`. Linear `.some()` was fine at 18 runs and is not at 37:
  * this runs once per grapheme on the fallback path. */
 function isWide(cp: number): boolean {
-  let lo = 0
-  let hi = WIDE.length - 1
+  let lo = 0;
+  let hi = WIDE.length - 1;
   while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    const [a, b] = WIDE[mid]!
-    if (cp < a) hi = mid - 1
-    else if (cp > b) lo = mid + 1
-    else return true
+    const mid = (lo + hi) >> 1;
+    const [a, b] = WIDE[mid]!;
+    if (cp < a) hi = mid - 1;
+    else if (cp > b) lo = mid + 1;
+    else return true;
   }
-  return false
+  return false;
 }
 
 /** Fallback width of ONE grapheme cluster, classified by the codepoint that starts
@@ -153,9 +180,9 @@ function isWide(cp: number): boolean {
  * the oracle — without a way to reach it, the fallback would ship unmeasured on
  * the one runtime that never runs the oracle. */
 export function fallbackClusterWidth(cluster: string): number {
-  const cp = cluster.codePointAt(0) ?? 0
-  if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || LEADING_FORMAT.test(cluster)) return 0
-  return isWide(cp) || LEADING_EMOJI_PRESENTATION.test(cluster) || cluster.includes(VS16) ? 2 : 1
+  const cp = cluster.codePointAt(0) ?? 0;
+  if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || LEADING_FORMAT.test(cluster)) return 0;
+  return isWide(cp) || LEADING_EMOJI_PRESENTATION.test(cluster) || cluster.includes(VS16) ? 2 : 1;
 }
 
 /**
@@ -170,10 +197,10 @@ export function fallbackClusterWidth(cluster: string): number {
  * clip cluster by cluster and still land on the width it promises.
  */
 export function displayWidth(s: string): number {
-  if (NATIVE_WIDTH) return NATIVE_WIDTH(s)
-  let w = 0
-  for (const { segment } of seg.segment(s)) w += fallbackClusterWidth(segment)
-  return w
+  if (NATIVE_WIDTH) return NATIVE_WIDTH(s);
+  let w = 0;
+  for (const { segment } of seg.segment(s)) w += fallbackClusterWidth(segment);
+  return w;
 }
 
 /**
@@ -187,19 +214,19 @@ export function displayWidth(s: string): number {
  * never more than one line.
  */
 export function truncate(s: string, width: number): string {
-  const n = columns(width, "truncate")
-  if (n === 0) return ""
-  const clean = sanitize(s)
-  if (displayWidth(clean) <= n) return clean
-  let out = ""
-  let w = 0
+  const n = columns(width, "truncate");
+  if (n === 0) return "";
+  const clean = sanitize(s);
+  if (displayWidth(clean) <= n) return clean;
+  let out = "";
+  let w = 0;
   for (const { segment } of seg.segment(clean)) {
-    const cw = displayWidth(segment)
-    if (w + cw > n - 1) break
-    out += segment
-    w += cw
+    const cw = displayWidth(segment);
+    if (w + cw > n - 1) break;
+    out += segment;
+    w += cw;
   }
-  return `${out}…`
+  return `${out}…`;
 }
 
 /**
@@ -212,11 +239,11 @@ export function truncate(s: string, width: number): string {
  * `displayWidth` exists to fix. Build on truncate + displayWidth.
  */
 export function padTo(s: string, width: number): string {
-  const n = columns(width, "padTo")
-  if (n === 0) return ""
-  const clean = sanitize(s)
-  const clipped = displayWidth(clean) > n ? truncate(clean, n) : clean
-  return clipped + " ".repeat(Math.max(0, n - displayWidth(clipped)))
+  const n = columns(width, "padTo");
+  if (n === 0) return "";
+  const clean = sanitize(s);
+  const clipped = displayWidth(clean) > n ? truncate(clean, n) : clean;
+  return clipped + " ".repeat(Math.max(0, n - displayWidth(clipped)));
 }
 
 /**
@@ -235,11 +262,11 @@ export function padTo(s: string, width: number): string {
  * number.
  */
 export function padStartTo(s: string, width: number): string {
-  const n = columns(width, "padStartTo")
-  if (n === 0) return ""
-  const clean = sanitize(s)
-  const clipped = displayWidth(clean) > n ? truncate(clean, n) : clean
-  return " ".repeat(Math.max(0, n - displayWidth(clipped))) + clipped
+  const n = columns(width, "padStartTo");
+  if (n === 0) return "";
+  const clean = sanitize(s);
+  const clipped = displayWidth(clean) > n ? truncate(clean, n) : clean;
+  return " ".repeat(Math.max(0, n - displayWidth(clipped))) + clipped;
 }
 
 /**
@@ -264,29 +291,36 @@ export function padStartTo(s: string, width: number): string {
  * latter overflows on a single part near MAX_VALUE even when `sum` is finite.
  */
 export function splitCells(parts: number[], cells: number): number[] {
-  const n = columns(cells, "splitCells", "cells")
-  const finite = parts.map((p) => (Number.isFinite(p) && p > 0 ? p : 0))
-  const out = finite.map(() => 0)
-  let safe = finite
-  let sum = finite.reduce((a, b) => a + b, 0)
+  const n = columns(cells, "splitCells", "cells");
+  const finite = parts.map((p) => (Number.isFinite(p) && p > 0 ? p : 0));
+  const out = finite.map(() => 0);
+  let safe = finite;
+  let sum = finite.reduce((a, b) => a + b, 0);
   if (!Number.isFinite(sum)) {
-    const max = finite.reduce((a, b) => (b > a ? b : a), 0)
-    safe = finite.map((p) => p / max)
-    sum = safe.reduce((a, b) => a + b, 0)
+    const max = finite.reduce((a, b) => (b > a ? b : a), 0);
+    safe = finite.map((p) => p / max);
+    sum = safe.reduce((a, b) => a + b, 0);
   }
-  if (n <= 0 || sum <= 0) return out
-  const byShare = safe.map((p, i) => ({ p, i })).sort((a, b) => b.p - a.p)
+  if (n <= 0 || sum <= 0) return out;
+  const byShare = safe.map((p, i) => ({ p, i })).sort((a, b) => b.p - a.p);
   if (n < byShare.filter(({ p }) => p > 0).length) {
-    for (const { i } of byShare.slice(0, n)) out[i] = 1
-    return out
+    for (const { i } of byShare.slice(0, n)) out[i] = 1;
+    return out;
   }
-  const exact = safe.map((p) => n * (p / sum))
-  exact.forEach((e, i) => { out[i] = Math.floor(e) })
-  const rank = exact.map((e, i) => ({ rem: e % 1, i })).sort((a, b) => b.rem - a.rem)
-  for (let k = 0, left = n - out.reduce((a, b) => a + b, 0); left > 0; k++, left--) out[rank[k % rank.length]!.i]! += 1
-  for (const { p, i } of byShare) if (p > 0 && out[i] === 0) {
-    const d = byShare.reduce((m, c) => (out[c.i]! > out[m]! ? c.i : m), 0)
-    if (out[d]! > 1) { out[d]! -= 1; out[i] = 1 }
-  }
-  return out
+  const exact = safe.map((p) => n * (p / sum));
+  exact.forEach((e, i) => {
+    out[i] = Math.floor(e);
+  });
+  const rank = exact.map((e, i) => ({ rem: e % 1, i })).sort((a, b) => b.rem - a.rem);
+  for (let k = 0, left = n - out.reduce((a, b) => a + b, 0); left > 0; k++, left--)
+    out[rank[k % rank.length]!.i]! += 1;
+  for (const { p, i } of byShare)
+    if (p > 0 && out[i] === 0) {
+      const d = byShare.reduce((m, c) => (out[c.i]! > out[m]! ? c.i : m), 0);
+      if (out[d]! > 1) {
+        out[d]! -= 1;
+        out[i] = 1;
+      }
+    }
+  return out;
 }

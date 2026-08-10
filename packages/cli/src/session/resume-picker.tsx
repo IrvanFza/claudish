@@ -14,14 +14,18 @@
  * `<span>`s inside one `<text>`) — sibling `<text>`s in a starved box overprint.
  */
 
-import { useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
+import { useEffect, useMemo, useState } from "react";
 import { A, C } from "../tui/theme.js";
 import { displayWidth, padStartTo, padTo, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
 import { BadgeSpan, MeterSpan, Panel, Sparkline, SparklineSpan } from "../tui/viz/widgets.js";
-import { type Conversation, readConversation } from "./conversation.js";
 import { ConversationReader, SPEAKER } from "./conversation-reader.js";
+// Aliased: this file already has a `Conversation` — the preview PANEL below. TypeScript
+// tolerates the collision because one is a type and one is a value, so `tsc` says nothing,
+// but a reader hitting `Conversation` in this file should not have to work out which of the
+// two senses is meant. The data keeps the qualified name; the component keeps the bare one.
+import { type Conversation as ConversationData, readConversation } from "./conversation.js";
 import {
   type SessionRow,
   type WorktreeGroup,
@@ -457,10 +461,18 @@ function WorktreeRow({
   // The chips a row ACTUALLY has, packed in fixed order, sparsest first.
   const chips: Array<{ label: string; bg: string; labelW: number }> = [];
   if (cols.sync > 0 && g.ahead) {
-    chips.push({ label: `↑${padStartTo(String(g.ahead), cols.sync)}`, bg: CHIP.ahead, labelW: cols.sync + 1 });
+    chips.push({
+      label: `↑${padStartTo(String(g.ahead), cols.sync)}`,
+      bg: CHIP.ahead,
+      labelW: cols.sync + 1,
+    });
   }
   if (cols.sync > 0 && g.behind) {
-    chips.push({ label: `↓${padStartTo(String(g.behind), cols.sync)}`, bg: CHIP.behind, labelW: cols.sync + 1 });
+    chips.push({
+      label: `↓${padStartTo(String(g.behind), cols.sync)}`,
+      bg: CHIP.behind,
+      labelW: cols.sync + 1,
+    });
   }
   if (cols.dirty > 0 && g.dirty) {
     chips.push({
@@ -667,7 +679,9 @@ function ActivityCalendar({
   return (
     <box flexDirection="column" flexShrink={0} paddingTop={1}>
       <text>
-        <span fg={tokens.subtle} attributes={A.bold}>{title}</span>
+        <span fg={tokens.subtle} attributes={A.bold}>
+          {title}
+        </span>
         <span fg={tokens.border}>{"─".repeat(Math.max(0, width - title.length))}</span>
       </text>
       {Array.from({ length: ACTIVITY_WEEKS }, (_, w) => {
@@ -676,9 +690,11 @@ function ActivityCalendar({
           // ONE <text> per row. The cells are coloured SPACES, so a column shaved off this
           // row by a flex sibling would leave a stub of background that only a colour
           // capture can see — hence label and grid share a single <text> of spans.
+          // biome-ignore lint/suspicious/noArrayIndexKey: a calendar week is position-addressed — index IS identity
           <text key={w}>
             <span fg={tokens.trace}>{padTo(ago === 0 ? "now" : `-${ago}w`, WEEK_LABEL_W)}</span>
             {Array.from({ length: WEEK_DAYS }, (_, d) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: a calendar day is position-addressed — index IS identity
               <span key={d} bg={GH_LEVELS[levels[w * WEEK_DAYS + d] ?? 0]}>
                 {" ".repeat(base + (d < extra ? 1 : 0))}
               </span>
@@ -705,7 +721,9 @@ function SectionHeader({ label, width }: { label: string; width: number }): Reac
     <box flexDirection="column" height={2}>
       <text> </text>
       <text>
-        <span fg={tokens.subtle} attributes={A.bold}>{text}</span>
+        <span fg={tokens.subtle} attributes={A.bold}>
+          {text}
+        </span>
         <span fg={tokens.border}>{"─".repeat(Math.max(0, width - text.length))}</span>
       </text>
     </box>
@@ -784,7 +802,8 @@ function SessionRowView({
   const live = isActive(row);
   const pad = " ".repeat(indent);
   const mb = row.sizeBytes / 1_048_576;
-  const size = mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(row.sizeBytes / 1024))} KB`;
+  const size =
+    mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(row.sizeBytes / 1024))} KB`;
   // A TWO-COLUMN marker, down from four. The cursor no longer needs a bar of its own —
   // the row's highlight background says which row it is — so the gutter is just the
   // live/idle dot and one space, and the title starts two columns further left.
@@ -832,7 +851,10 @@ function SessionRowView({
         {row.gitBranch ? (
           <span fg={tokens.trace}>{`  ${BRANCH_ICON} ${truncate(
             row.gitBranch,
-            Math.max(6, width - indent - 2 - SESSION_AGE_COL - meterW - SIZE_COL - BRANCH_LEAD_DENSE)
+            Math.max(
+              6,
+              width - indent - 2 - SESSION_AGE_COL - meterW - SIZE_COL - BRANCH_LEAD_DENSE
+            )
           )}`}</span>
         ) : (
           <span />
@@ -862,7 +884,9 @@ function AgentNode({
         <span fg={cursor ? tokens.accent : tokens.trace}>{`${cursor ? "▍" : " "} `}</span>
         <span fg={tokens.warn}>{open ? "▾ " : "▸ "}</span>
         <span fg={cursor ? tokens.text : tokens.subtle}>{label}</span>
-        <span fg={tokens.trace}>{truncate(`  ${hint}`, Math.max(0, width - label.length - 6))}</span>
+        <span fg={tokens.trace}>
+          {truncate(`  ${hint}`, Math.max(0, width - label.length - 6))}
+        </span>
       </text>
     </box>
   );
@@ -904,7 +928,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
    * freeze the picker with no explanation. The row is kept beside the conversation so the
    * async result can be discarded if the user has already opened a different session.
    */
-  const [reader, setReader] = useState<{ row: SessionRow; conv: Conversation | null } | null>(null);
+  const [reader, setReader] = useState<{ row: SessionRow; conv: ConversationData | null } | null>(
+    null
+  );
   // Re-render tick. Hydration mutates rows in place (they are shared with the caller),
   // so there is no new object for React to diff against — the counter is what tells it
   // the rows it already holds now say more than they did.
@@ -913,7 +939,11 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   /** Human sessions per worktree — what the sidebar counts and the list leads with. */
   const listed = useMemo(() => {
     const m = new Map<string, SessionRow[]>();
-    for (const g of groups) m.set(g.name, g.sessions.filter((s) => !isAgentSession(s)));
+    for (const g of groups)
+      m.set(
+        g.name,
+        g.sessions.filter((s) => !isAgentSession(s))
+      );
     return m;
   }, [groups]);
 
@@ -935,7 +965,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
     const f = matching
       .filter((g) => g.current || now - g.lastActiveMs < STALE_MS)
       .sort((a, b) => (a.current !== b.current ? (a.current ? -1 : 1) : byRecency(a, b)));
-    const st = matching.filter((g) => !g.current && now - g.lastActiveMs >= STALE_MS).sort(byRecency);
+    const st = matching
+      .filter((g) => !g.current && now - g.lastActiveMs >= STALE_MS)
+      .sort(byRecency);
     return { fresh: f, stale: st, visibleGroups: [...f, ...st] };
   }, [groups, filter, listed]);
   const group = visibleGroups[Math.min(wtCursor, visibleGroups.length - 1)];
@@ -952,10 +984,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
   }, [group, filter, listed]);
 
   /** Agent sessions for the selected worktree, newest first. */
-  const agentRows = useMemo(
-    () => (group ? group.sessions.filter(isAgentSession) : []),
-    [group]
-  );
+  const agentRows = useMemo(() => (group ? group.sessions.filter(isAgentSession) : []), [group]);
 
   /**
    * The right pane as a FLAT list of items the cursor walks.
@@ -1226,7 +1255,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
           <span fg={tokens.subtle}> resume</span>
         </text>
         <text>
-          <span fg={tokens.subtle}>{`${visibleGroups.length} worktrees · ${shownSessions} sessions`}</span>
+          <span
+            fg={tokens.subtle}
+          >{`${visibleGroups.length} worktrees · ${shownSessions} sessions`}</span>
           {filter ? <span fg={tokens.warn}>{`  /${filter}`}</span> : <span />}
         </text>
       </box>
@@ -1316,7 +1347,9 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
                 <SessionDetail row={selected} width={sessionDetailInner} turns={turns} />
               ) : (
                 <text fg={tokens.subtle}>
-                  {cursorItem?.kind === "agents" ? "agent sessions — enter to expand" : "nothing selected"}
+                  {cursorItem?.kind === "agents"
+                    ? "agent sessions — enter to expand"
+                    : "nothing selected"}
                 </text>
               )}
             </Panel>
@@ -1490,7 +1523,11 @@ function SessionDetail({
   // `L + 1` for the label and its gap, `+ 1` for the gap before the suffix.
   const suffixRoom = width - L - 1 - row.id.length - 1;
   const suffix =
-    displayWidth(full) <= suffixRoom ? full : displayWidth(`· ${size}`) <= suffixRoom ? `· ${size}` : "";
+    displayWidth(full) <= suffixRoom
+      ? full
+      : displayWidth(`· ${size}`) <= suffixRoom
+        ? `· ${size}`
+        : "";
   return (
     <box flexDirection="column">
       <Field label="title" width={L}>
@@ -1571,9 +1608,7 @@ function Conversation({
             bg={t.role === "user" ? SPEAKER.you : SPEAKER.ai}
             width={ROLE_W}
           />
-          <span fg={t.role === "user" ? tokens.text : MUTED}>
-            {truncate(t.text, textW)}
-          </span>
+          <span fg={t.role === "user" ? tokens.text : MUTED}>{truncate(t.text, textW)}</span>
         </text>
       ))}
     </box>
