@@ -138,6 +138,11 @@ async function sendMessage(
   } catch {
     body = { _raw_text: await res.text() };
   }
+  if (body?.type === "message" && Array.isArray(body.content) && body.content.length === 0) {
+    // Both response envelopes must classify an empty-but-successful turn the same way.
+    body.content = [{ type: "text", text: "" }];
+    return { ok: true, status: res.status, body };
+  }
   return { ok: res.ok, status: res.status, body };
 }
 
