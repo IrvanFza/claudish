@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.48.0] - 2026-08-10
+
+### Documentation
+
+- update CHANGELOG.md for v7.47.0([`f3d84f6`](https://github.com/MadAppGang/claudish/commit/f3d84f6de7703618e5fce6dfe2bac5ace1aa3b57))
+
+### New Features
+
+- add the pay-as-you-go silo, and stop discovery failing silently *(qwen)* ([`f66e7c9`](https://github.com/MadAppGang/claudish/commit/f66e7c9b9c40080a3c3c42ca6e759fa6d7e3ca51))
+
+### Other Changes
+
+- v7.48.0([`71dec74`](https://github.com/MadAppGang/claudish/commit/71dec74f4ef9c7d6971386be2d32659bdbb9e564))
+- restore the .claudemem/ ignore rule and collapse claudeup's duplicate headers([`7ef33dd`](https://github.com/MadAppGang/claudish/commit/7ef33dd38c67a068f55553619356c5110b5fc73b))
+
 ## [7.47.0] - 2026-08-10
 
 ### Bug Fixes
