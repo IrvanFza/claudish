@@ -90,21 +90,6 @@ gtd/sessions/
 .agents/
 
 # Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
 # A managed rule says this path should stay tracked in git.
 !/.claude/
 !/.claude/profiles.json
@@ -115,15 +100,10 @@ gtd/sessions/
 # Claude cache contents are local generated data and can grow quickly.
 .claude/cache/
 # Local claudemem indexes are generated from the repo and should not be committed.
+.claudemem/
 
 # Added by claudeup
 # Team MCP configuration should be committed so shared tools are discoverable.
 !/.mcp.json
 /.claude/.coaching
 /.claude/gtd
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
-
-# Added by claudeup
-# Local claudemem indexes are generated from the repo and should not be committed.
