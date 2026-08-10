@@ -506,6 +506,9 @@ const ENV_KEYS_TO_CLEAR = [
   "MOONSHOT_API_KEY",
   "KIMI_API_KEY",
   "KIMI_CODING_API_KEY",
+  "QWEN_CLOUD_PLAN_API_KEY",
+  "DASHSCOPE_API_KEY",
+  "QWEN_API_KEY",
   "MINIMAX_API_KEY",
   "MINIMAX_CODING_API_KEY",
   "ZHIPU_API_KEY",
@@ -639,6 +642,45 @@ describe("route()", () => {
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai-codex");
+  });
+
+  test("qwen3.7-plus prefers qwen-cloud over qwen-payg when both credentials are present", async () => {
+    process.env.QWEN_CLOUD_PLAN_API_KEY = "qwen-plan-test";
+    process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
+    const { path, cleanup } = makeTempCatalog({
+      modelId: "qwen3.7-plus",
+      externalId: "qwen3.7-plus",
+      subscriptionPlans: ["qwen-cloud"],
+    });
+    try {
+      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("qwen-cloud");
+      expect(plan.primary.modelSpec).toBe("qc@qwen3.7-plus");
+      expect(plan.fallbacks.map((fallback) => fallback.provider)).toEqual(["qwen-payg"]);
+      expect(plan.fallbacks[0]?.modelSpec).toBe("qp@qwen3.7-plus");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("qwen3.7-plus falls through to qwen-payg with only DASHSCOPE_API_KEY", async () => {
+    process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
+    const { path, cleanup } = makeTempCatalog({
+      modelId: "qwen3.7-plus",
+      externalId: "qwen3.7-plus",
+      subscriptionPlans: ["qwen-cloud"],
+    });
+    try {
+      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("qwen-payg");
+      expect(plan.primary.modelSpec).toBe("qp@qwen3.7-plus");
+    } finally {
+      cleanup();
+    }
   });
 
   test("kimi-k3 (bare) with KIMI_CODING_API_KEY uses subscription wire id k3", async () => {

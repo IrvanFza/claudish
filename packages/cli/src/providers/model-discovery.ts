@@ -109,10 +109,128 @@ const FETCH_TIMEOUT_MS = 5000;
 
 const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>();
 
+/**
+ * Why a discovery attempt produced nothing.
+ *
+ * `discoverProviderModels` is fail-soft by contract — it must never block a
+ * launch or a picker — but for a long time "fail-soft" also meant "fail
+ * SILENT": all five failure modes below collapsed into the same empty array
+ * behind a `--debug`-only log line. Callers could not tell "your API key was
+ * rejected" from "this provider genuinely publishes no roster", so the picker
+ * rendered a rejected credential as a free-text prompt, which reads as a
+ * feature rather than an error. (Measured on qwen-cloud: a 401 from Alibaba's
+ * plan host was indistinguishable in the UI from a provider with no list.)
+ *
+ * The kinds are ordered by what the user should do about them, not by HTTP
+ * status: `unauthorized` and `no-credentials` are setup problems the user can
+ * fix, `unreachable` and `http-error` are usually transient, and
+ * `empty-roster` means the endpoint answered correctly with nothing to offer —
+ * the only kind where falling through to a catalog or free-text entry is the
+ * genuinely right response.
+ */
+export type DiscoveryFailureKind =
+  | "no-credentials"
+  | "unauthorized"
+  | "http-error"
+  | "unreachable"
+  | "malformed"
+  | "empty-roster";
+
+export interface DiscoveryFailure {
+  kind: DiscoveryFailureKind;
+  provider: string;
+  /** Full URL that was attempted, when discovery got as far as building one. */
+  endpoint?: string;
+  /** HTTP status, for `unauthorized` / `http-error`. */
+  status?: number;
+  /** Upstream message or exception text, already truncated for display. */
+  detail?: string;
+}
+
+/**
+ * Last failure per provider.
+ *
+ * Deliberately NOT part of the `_cache` entry: successes are cached for a TTL
+ * while failures are re-attempted on every call, so the two have different
+ * lifetimes. Recorded on every failing path and CLEARED on success, so a stale
+ * reason can never outlive the condition that produced it — the same
+ * run-scoped, in-memory rationale as `recordOpFailure` in `onepassword.ts`.
+ */
+const _failures = new Map<string, DiscoveryFailure>();
+
+function recordFailure(failure: DiscoveryFailure): DiscoveredModel[] {
+  _failures.set(failure.provider, failure);
+  log(`[model-discovery:${failure.provider}] ${describeDiscoveryFailure(failure)}`);
+  return [];
+}
+
+/**
+ * Why the last `discoverProviderModels(provider)` call returned nothing, or
+ * undefined if it succeeded (or was never called).
+ */
+export function getDiscoveryFailure(provider: string): DiscoveryFailure | undefined {
+  return _failures.get(provider);
+}
+
+/**
+ * Whether a header set actually carries a credential.
+ *
+ * Case-insensitive because the header name is chosen by each transport —
+ * `authorization` lowercase on some, `Authorization` on others, `x-api-key` on
+ * the Anthropic-shaped ones. A non-empty VALUE is required: an empty string is
+ * what an unresolved credential looks like, and it authenticates nothing.
+ */
+function hasAuthHeader(headers: Record<string, string>): boolean {
+  return Object.entries(headers).some(
+    ([name, value]) =>
+      /^(authorization|x-api-key|api-key)$/i.test(name) && (value ?? "").trim().length > 0
+  );
+}
+
+/** Truncate upstream error text to one readable line. */
+function oneLine(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/**
+ * A discovery failure as a single human-readable sentence.
+ *
+ * Names the endpoint for anything network-shaped, because "check your API key"
+ * without saying WHICH host rejected it is exactly the advice that sent this
+ * bug's investigation to the wrong provider for hours — Alibaba serves several
+ * mutually-isolated plan hosts, and a key valid for one is rejected by all the
+ * others with an identical message.
+ */
+export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
+  const { kind, endpoint, status, detail } = failure;
+  const at = endpoint ? ` at ${endpoint}` : "";
+  const because = detail ? ` — ${detail}` : "";
+  switch (kind) {
+    case "no-credentials":
+      return `no usable credentials${because}`;
+    case "unauthorized":
+      return `the API key was rejected (HTTP ${status})${at}${because}`;
+    case "http-error":
+      return `the model list returned HTTP ${status}${at}${because}`;
+    case "unreachable":
+      return `the model list was unreachable${at}${because}`;
+    case "malformed":
+      return `the model list was not valid JSON${at}`;
+    case "empty-roster":
+      return `the endpoint answered${at} but listed no models`;
+  }
+}
+
 /** Drop cached discovery (after a credential change / TUI hydrate-on-add). */
 export function invalidateModelDiscovery(provider?: string): void {
-  if (provider) _cache.delete(provider);
-  else _cache.clear();
+  if (provider) {
+    _cache.delete(provider);
+    _failures.delete(provider);
+  } else {
+    _cache.clear();
+    _failures.clear();
+  }
 }
 
 /**
@@ -212,8 +330,7 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
     const { getServedDevinModels } = await import("./devin/devin-models.js");
     const served = await getServedDevinModels();
     if (served.length === 0) {
-      log(`[model-discovery:${providerName}] no models for this subscription`);
-      return [];
+      return recordFailure({ kind: "empty-roster", provider: providerName });
     }
     // Carry the full variant metadata, not just id/name/window: the picker
     // folds these 170 uids into ~42 rows and needs the group label, the cost
@@ -223,6 +340,7 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       const { wireId, ...rest } = devinRosterEntry(model);
       return { id: wireId, ...rest };
     });
+    _failures.delete(providerName);
     log(`[model-discovery:${providerName}] discovered ${models.length} models`);
     _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
     return models;
@@ -233,12 +351,15 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   if (descriptor.format === "ollama-tags") {
     const { fetchOllamaModels } = await import("./ollama-discovery.js");
     const installed = await fetchOllamaModels({ enrichCapabilities: false });
-    if (installed.length === 0) return [];
+    if (installed.length === 0) {
+      return recordFailure({ kind: "empty-roster", provider: providerName });
+    }
     const models: DiscoveredModel[] = installed.map((model) => ({
       id: model.name,
       displayName: model.name,
       supportsTools: model.supportsTools,
     }));
+    _failures.delete(providerName);
     log(`[model-discovery:${providerName}] discovered ${models.length} local models`);
     _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
     return models;
@@ -268,8 +389,22 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       const auth = await credentials.getRequestAuth(providerName, { model: "" });
       headers = { ...auth.headers };
     } catch (e: unknown) {
-      log(`[model-discovery:${providerName}] no credentials, skipping: ${(e as Error)?.message}`);
-      return [];
+      return recordFailure({
+        kind: "no-credentials",
+        provider: providerName,
+        endpoint,
+        detail: oneLine((e as Error)?.message ?? ""),
+      });
+    }
+    // The authority does not always THROW for a missing key — for several
+    // providers it returns headers with no auth on them, which upstream then
+    // answers with the same 401 a wrong key produces. Distinguishing the two
+    // matters: "you have not set a key" and "your key was rejected" have
+    // different fixes, and reporting the latter for the former sends the user
+    // hunting for a typo in a variable they never defined. Checking here also
+    // skips a round-trip that cannot succeed.
+    if (!hasAuthHeader(headers)) {
+      return recordFailure({ kind: "no-credentials", provider: providerName, endpoint });
     }
   }
 
@@ -281,29 +416,50 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (e: unknown) {
-    log(`[model-discovery:${providerName}] fetch failed: ${(e as Error)?.message}`);
-    return [];
+    return recordFailure({
+      kind: "unreachable",
+      provider: providerName,
+      endpoint,
+      detail: oneLine((e as Error)?.message ?? ""),
+    });
   }
 
   if (!response.ok) {
-    log(`[model-discovery:${providerName}] HTTP ${response.status} from ${endpoint}`);
-    return [];
+    // 401/403 is split out because it is the only status the USER can act on,
+    // and the action is specific: fix the credential. Everything else is
+    // infrastructure and usually transient.
+    const unauthorized = response.status === 401 || response.status === 403;
+    // Body is read best-effort — the upstream message is often the only thing
+    // that distinguishes "key rejected" from "key valid, plan expired", and
+    // Alibaba's plan hosts do exactly that.
+    let detail = "";
+    try {
+      detail = oneLine(await response.text());
+    } catch {
+      /* body unavailable — the status alone is still actionable */
+    }
+    return recordFailure({
+      kind: unauthorized ? "unauthorized" : "http-error",
+      provider: providerName,
+      endpoint,
+      status: response.status,
+      detail,
+    });
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    log(`[model-discovery:${providerName}] response was not JSON`);
-    return [];
+    return recordFailure({ kind: "malformed", provider: providerName, endpoint });
   }
 
   const models = parseOpenAIModelsList(body);
   if (models.length === 0) {
-    log(`[model-discovery:${providerName}] endpoint reachable but listed no models`);
-    return [];
+    return recordFailure({ kind: "empty-roster", provider: providerName, endpoint });
   }
 
+  _failures.delete(providerName);
   log(
     `[model-discovery:${providerName}] discovered ${models.length} models: ` +
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")

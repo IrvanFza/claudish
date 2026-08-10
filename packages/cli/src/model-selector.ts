@@ -31,7 +31,9 @@ import {
 } from "./providers/model-catalog.js";
 import {
   type DiscoveredModel,
+  describeDiscoveryFailure,
   discoverProviderModels,
+  getDiscoveryFailure,
   rankDiscoveredModels,
   toRosterEntry,
 } from "./providers/model-discovery.js";
@@ -852,6 +854,7 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   kimi: { name: "Kimi / Moonshot", description: "Direct API" },
   "kimi-coding": { name: "Kimi Coding", description: "Coding subscription" },
   "qwen-cloud": { name: "Qwen Plan", description: "Alibaba Model Studio subscription" },
+  "qwen-payg": { name: "Qwen PAYG", description: "Alibaba Model Studio pay-as-you-go" },
   glm: { name: "GLM / Zhipu", description: "Direct API" },
   "glm-coding": { name: "GLM Coding Plan", description: "Coding subscription" },
   "z-ai": { name: "Z.AI", description: "Direct API" },
@@ -887,6 +890,7 @@ const PICKER_ORDER = [
   "kimi",
   "kimi-coding",
   "qwen-cloud",
+  "qwen-payg",
   "glm",
   "glm-coding",
   "z-ai",
@@ -1269,6 +1273,47 @@ function describeOffer(offer: ModelOffer | undefined): string | undefined {
   return `FREE until ${until}`;
 }
 
+/**
+ * Tell the user why a discovery provider offered no list, on stderr, before the
+ * picker degrades to the catalog / free-text path.
+ *
+ * stderr rather than stdout because the picker's own chrome is drawn by
+ * inquirer on stdout, and a model spec is what this module ultimately RETURNS
+ * — a notice must not be capturable as part of a piped answer.
+ *
+ * `empty-roster` is deliberately silent: an endpoint that answers correctly
+ * with nothing chat-capable is not an error, and the free-text prompt that
+ * follows is the right affordance for it. Only actionable failures are named.
+ *
+ * Exported for unit tests.
+ */
+export function warnDiscoveryFailure(
+  provider: string,
+  displayName: string,
+  def: Pick<ProviderDefinition, "apiKeyEnvVar" | "apiKeyUrl">
+): void {
+  const failure = getDiscoveryFailure(provider);
+  if (!failure || failure.kind === "empty-roster") return;
+
+  process.stderr.write(
+    `\n⚠ ${displayName} could not list its models: ${describeDiscoveryFailure(failure)}\n`
+  );
+
+  // A credential problem is the one case with a concrete next step, so name the
+  // exact env var and where a key comes from. Naming the variable matters more
+  // than it looks: a provider's key is frequently shadowed by a stale value in
+  // the shell, and "check your API key" gives no clue which name to inspect.
+  if (failure.kind === "unauthorized" || failure.kind === "no-credentials") {
+    if (def.apiKeyEnvVar) {
+      process.stderr.write(
+        `  Check ${def.apiKeyEnvVar} (a value in your shell overrides stored credentials).\n`
+      );
+    }
+    if (def.apiKeyUrl) process.stderr.write(`  Get a key: ${def.apiKeyUrl}\n`);
+  }
+  process.stderr.write("  Falling back to manual model entry.\n\n");
+}
+
 export async function buildDiscoveredModelRows(
   provider: string,
   displayName: string,
@@ -1383,9 +1428,16 @@ async function selectModelFromProvider(
       const picked = await pickModelFromList(provider, displayName, tierName, discoveredModels);
       if (picked) return picked;
       // picked === null → user chose the custom-entry hatch; fall through.
+    } else {
+      // Discovery unavailable / nothing chat-capable → fall through to the
+      // cloud catalog rather than showing an empty list, but SAY WHY first.
+      //
+      // The fall-through itself is correct and deliberate; what was wrong was
+      // doing it silently. A rejected API key and a provider that publishes no
+      // roster both ended up as the same free-text prompt, so a credential
+      // error was indistinguishable from normal behaviour.
+      warnDiscoveryFailure(provider, displayName, def);
     }
-    // Discovery unavailable / nothing chat-capable in the roster → fall through
-    // to the cloud catalog rather than showing an empty list.
   }
 
   // Ollama and LM Studio used to be handled here, each its own way — Ollama by

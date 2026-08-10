@@ -9,7 +9,12 @@
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
-import { discoverProviderModels, rankDiscoveredModels } from "../model-discovery.js";
+import {
+  describeDiscoveryFailure,
+  discoverProviderModels,
+  getDiscoveryFailure,
+  rankDiscoveredModels,
+} from "../model-discovery.js";
 import { getProviderByName } from "../provider-definitions.js";
 import { isTerminal429 } from "./openai.js";
 import { type DiscoveryOutcome, isChatCapable } from "./probe-discovery.js";
@@ -115,9 +120,17 @@ export class AnthropicProviderTransport implements ProviderTransport {
 
     const discovered = await discoverProviderModels(this.provider.name);
     if (discovered.length === 0) {
+      // Prefer the REAL reason over the generic guess. This used to read
+      // "check the API key and that the subscription is active" for every
+      // failure mode — advice that is wrong for an unreachable endpoint and
+      // unhelpfully vague for a rejected key, since Alibaba serves several
+      // mutually-isolated plan hosts that reject each other's keys identically.
+      const failure = getDiscoveryFailure(this.provider.name);
       return {
         model: null,
-        reason: `${this.displayName} listed no models at ${def.modelDiscovery.path} — check the API key and that the subscription is active`,
+        reason: failure
+          ? `${this.displayName}: ${describeDiscoveryFailure(failure)}`
+          : `${this.displayName} listed no models at ${def.modelDiscovery.path} — check the API key and that the subscription is active`,
       };
     }
 
@@ -202,6 +215,7 @@ export class AnthropicProviderTransport implements ProviderTransport {
       kimi: "Kimi",
       "kimi-coding": "Kimi Coding",
       "qwen-cloud": "Qwen Plan",
+      "qwen-payg": "Qwen PAYG",
       moonshot: "Kimi",
       "z-ai": "Z.AI",
     };

@@ -1397,6 +1397,7 @@ async function probeModelRouting(
       "kimi",
       "kimi-coding",
       "qwen-cloud",
+      "qwen-payg",
       "z-ai",
     ];
     const isMinimaxModel = modelName.toLowerCase().includes("minimax");

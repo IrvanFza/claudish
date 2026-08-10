@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigFileOverride } from "../config-override.js";
 import { setConfigFileOverride } from "../profile-config.js";
+import { API_KEY_MAP } from "./api-key-map.js";
 import {
   BUILTIN_PROVIDERS,
   getApiKeyEnvVars,
@@ -22,6 +23,7 @@ import {
   getShortestPrefix,
   toRemoteProvider,
 } from "./provider-definitions.js";
+import { getProviderApiKeyEnv } from "./routing-hints.js";
 
 // ---------------------------------------------------------------------------
 // Structural validation
@@ -71,6 +73,37 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
       "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models"
     );
     expect(new URL(messagesUrl).origin).toBe(new URL(modelsUrl).origin);
+  });
+
+  test("qwen-payg keeps metered credentials isolated and uses Anthropic transport", () => {
+    const payg = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-payg");
+    expect(payg).toBeDefined();
+    expect(payg!.apiKeyEnvVar).toBe("DASHSCOPE_API_KEY");
+    expect(payg!.apiKeyAliases).toEqual(["QWEN_API_KEY"]);
+    expect(payg!.apiKeyAliases).not.toContain("QWEN_CLOUD_PLAN_API_KEY");
+    expect(payg!.transport).toBe("anthropic");
+    expect(payg!.authScheme).toBe("bearer");
+    expect(payg!.nativeModelPatterns).toBeUndefined();
+  });
+
+  test("qwen-payg composes message and discovery URLs on the PAYG origin", () => {
+    const payg = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-payg")!;
+    const messagesUrl = payg.baseUrl + payg.apiPath;
+    const modelsUrl = payg.baseUrl + payg.modelDiscovery!.path;
+
+    expect(messagesUrl).toBe("https://dashscope-intl.aliyuncs.com/apps/anthropic/v1/messages");
+    expect(modelsUrl).toBe("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models");
+    expect(new URL(messagesUrl).origin).toBe(new URL(modelsUrl).origin);
+  });
+
+  test("qwen-payg API key maps agree with its provider definition", () => {
+    const payg = BUILTIN_PROVIDERS.find((d) => d.name === "qwen-payg")!;
+
+    expect(API_KEY_MAP[payg.name]).toEqual({
+      envVar: payg.apiKeyEnvVar,
+      aliases: payg.apiKeyAliases,
+    });
+    expect(getProviderApiKeyEnv(payg.name)).toBe(payg.apiKeyEnvVar);
   });
 });
 

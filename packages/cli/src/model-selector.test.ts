@@ -10,7 +10,9 @@
  * Run: bun test packages/cli/src/model-selector.test.ts
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { credentials } from "./auth/credentials/authority.js";
+import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type ModelInfo,
   buildExplicitModelSpec,
@@ -20,8 +22,15 @@ import {
   pickerProviderToFirebaseSlug,
   resolveProviderDisplayPrice,
   resolveProviderExternalId,
+  warnDiscoveryFailure,
 } from "./model-selector.js";
 import { createCatalogClient } from "./providers/model-catalog.js";
+import {
+  type DiscoveryFailureKind,
+  discoverProviderModels,
+  getDiscoveryFailure,
+  invalidateModelDiscovery,
+} from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 
@@ -30,6 +39,131 @@ import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-defin
 // ─── isUserDeployedProvider ──────────────────────────────────────────────────
 
 // ─── buildExplicitModelSpec ──────────────────────────────────────────────────
+
+describe("warnDiscoveryFailure", () => {
+  const provider = "qwen-cloud";
+  const displayName = "Qwen Plan";
+  const def = getProviderByName(provider)!;
+  const realFetch = globalThis.fetch;
+  const realGetRequestAuth = credentials.getRequestAuth;
+
+  beforeEach(() => {
+    invalidateModelDiscovery();
+    credentials.getRequestAuth = mock(async () => ({
+      headers: { Authorization: "Bearer offline-test-token" },
+    }));
+    globalThis.fetch = mock(async () => {
+      throw new Error("Unexpected fetch call");
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    invalidateModelDiscovery();
+    globalThis.fetch = realFetch;
+    credentials.getRequestAuth = realGetRequestAuth;
+  });
+
+  async function recordFailure(kind: DiscoveryFailureKind): Promise<void> {
+    switch (kind) {
+      case "no-credentials":
+        credentials.getRequestAuth = mock(async () => ({ headers: { authorization: "   " } }));
+        break;
+      case "unauthorized":
+        globalThis.fetch = mock(
+          async () => new Response(JSON.stringify({ error: "rejected" }), { status: 401 })
+        ) as unknown as typeof fetch;
+        break;
+      case "http-error":
+        globalThis.fetch = mock(
+          async () => new Response(JSON.stringify({ error: "outage" }), { status: 500 })
+        ) as unknown as typeof fetch;
+        break;
+      case "unreachable":
+        globalThis.fetch = mock(async () => {
+          throw new Error("offline");
+        }) as unknown as typeof fetch;
+        break;
+      case "malformed":
+        globalThis.fetch = mock(
+          async () => new Response("not-json", { status: 200 })
+        ) as unknown as typeof fetch;
+        break;
+      case "empty-roster":
+        globalThis.fetch = mock(
+          async () => new Response(JSON.stringify({ data: [] }), { status: 200 })
+        ) as unknown as typeof fetch;
+        break;
+    }
+
+    expect(await discoverProviderModels(provider)).toEqual([]);
+    expect(getDiscoveryFailure(provider)?.kind).toBe(kind);
+  }
+
+  function captureWarning(): {
+    stderr: string;
+    stdout: string;
+    stderrCalls: number;
+    stdoutCalls: number;
+  } {
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdoutWrite = spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      warnDiscoveryFailure(provider, displayName, def);
+      return {
+        stderr: stderrWrite.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        stdout: stdoutWrite.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        stderrCalls: stderrWrite.mock.calls.length,
+        stdoutCalls: stdoutWrite.mock.calls.length,
+      };
+    } finally {
+      stderrWrite.mockRestore();
+      stdoutWrite.mockRestore();
+    }
+  }
+
+  test("writes nothing when no failure is recorded or the roster is empty", async () => {
+    expect(captureWarning()).toEqual({ stderr: "", stdout: "", stderrCalls: 0, stdoutCalls: 0 });
+
+    await recordFailure("empty-roster");
+    expect(captureWarning()).toEqual({ stderr: "", stdout: "", stderrCalls: 0, stdoutCalls: 0 });
+  });
+
+  test.each(["unauthorized", "no-credentials"] as const)(
+    "prints credential guidance for %s on stderr only",
+    async (kind) => {
+      await recordFailure(kind);
+
+      const output = captureWarning();
+      expect(output.stderr).toContain(displayName);
+      expect(output.stderr).toContain("QWEN_CLOUD_PLAN_API_KEY");
+      expect(output.stderr).toContain(
+        "https://www.alibabacloud.com/help/en/model-studio/claude-code"
+      );
+      expect(output.stderr).toContain("Falling back to manual model entry.");
+      expect(output.stderrCalls).toBeGreaterThan(0);
+      expect(output.stdout).toBe("");
+      expect(output.stdoutCalls).toBe(0);
+    }
+  );
+
+  test.each(["http-error", "unreachable", "malformed"] as const)(
+    "omits credential guidance for %s while warning on stderr",
+    async (kind) => {
+      await recordFailure(kind);
+
+      const output = captureWarning();
+      expect(output.stderr).toContain(displayName);
+      expect(output.stderr).toContain("Falling back to manual model entry.");
+      expect(output.stderr).not.toContain("QWEN_CLOUD_PLAN_API_KEY");
+      expect(output.stderr).not.toContain(
+        "https://www.alibabacloud.com/help/en/model-studio/claude-code"
+      );
+      expect(output.stderrCalls).toBeGreaterThan(0);
+      expect(output.stdout).toBe("");
+      expect(output.stdoutCalls).toBe(0);
+    }
+  );
+});
 
 describe("buildExplicitModelSpec", () => {
   test.each([
@@ -44,6 +178,7 @@ describe("buildExplicitModelSpec", () => {
     ["minimax-coding", "MiniMax-M2", "mmc@MiniMax-M2"],
     ["kimi", "kimi-k2", "kimi@kimi-k2"],
     ["kimi-coding", "kimi-for-coding", "kc@kimi-for-coding"],
+    ["qwen-payg", "qwen3.7-plus", "qp@qwen3.7-plus"],
     // antigravity renders google-catalog rows in the picker; without a prefix
     // entry, rows would emit a bare id that won't route to Antigravity.
     ["antigravity", "gemini-3-pro", "ag@gemini-3-pro"],
@@ -377,6 +512,13 @@ describe("resolveProviderDisplayPrice", () => {
 
   test("keeps a metered OpenAI provider on its real price", () => {
     expect(resolveProviderDisplayPrice("openai", pricedAcrossBillingModes)).toBe("$5.63/1M");
+  });
+
+  test("keeps qwen-payg metered while qwen-cloud remains subscription-priced", () => {
+    expect(isSubscriptionProvider("qwen-payg")).toBe(false);
+    expect(isSubscriptionProvider("qwen-cloud")).toBe(true);
+    expect(resolveProviderDisplayPrice("qwen-payg", pricedAcrossBillingModes)).toBe("$5.63/1M");
+    expect(resolveProviderDisplayPrice("qwen-payg", pricedAcrossBillingModes)).not.toBe("SUB");
   });
 
   test("does not treat dual-mode openai-codex as a subscription", () => {

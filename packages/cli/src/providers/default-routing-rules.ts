@@ -74,8 +74,15 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
 
   // Qwen Plan (Alibaba Model Studio subscription), then OpenRouter.
   // `globMatch` is a literal prefix/suffix split, so the "." is matched
-  // literally: this claims the DOTTED Model Studio names (qwen3.7-plus) and
-  // deliberately NOT the hyphenated aggregator names (qwen3-coder-next).
+  // literally: this claims the DOTTED names (qwen3.7-plus) and not the
+  // hyphenated ones (qwen3-coder-next).
+  //
+  // Hyphenated is NOT a synonym for "third-party name" — see the measured
+  // rosters in provider-definitions.ts's qwen-cloud note. Alibaba ships both
+  // conventions; the Token Plan this chain leads with just happens to serve
+  // only dotted ids, which is why the split lands correctly here. Extending
+  // this rule to `qwen3-*` is the same 400-dead-end hazard described for glm-*
+  // below, and needs a verified PAYG roster first.
   //
   // The plan ALSO serves glm-5.2 and deepseek-v4-*, but their chains are left
   // untouched on purpose. Routing filters by CREDENTIAL availability, not by
@@ -84,7 +91,16 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // `400 Model not exist`, and stop there, because 400 is deliberately
   // non-retryable in fallback-handler.ts. Cross-vendor access to the plan
   // stays explicit: `qc@glm-5.2`.
-  "qwen3.*": ["qwen-cloud", "opencode-zen-go", "openrouter"],
+  //
+  // `qwen-payg` (Alibaba's metered dashscope-intl host) sits after the plan and
+  // the Go plan, exactly where `kimi` / `glm` / `minimax` sit in their own
+  // chains: subscription → Go plan → metered vendor API → aggregator. Its key
+  // is a DIFFERENT credential from the plan's (each Alibaba silo rejects the
+  // others'), so a user holding both is answered by the plan they already pay
+  // for, while a user holding only a PAYG key now reaches Alibaba at all —
+  // before this entry existed, the sole Qwen chain pointed at a host their key
+  // could never authenticate against.
+  "qwen3.*": ["qwen-cloud", "opencode-zen-go", "qwen-payg", "openrouter"],
 
   // Z.AI native models.
   "z-ai-*": ["z-ai", "openrouter"],

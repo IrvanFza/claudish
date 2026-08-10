@@ -222,9 +222,9 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["glm-coding", "opencode-zen-go", "glm", "openrouter"]);
   });
 
-  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, opencode-zen-go, openrouter]", () => {
+  test("'qwen3.7-plus' matches qwen3.* → [qwen-cloud, opencode-zen-go, qwen-payg, openrouter]", () => {
     const matched = matchRoutingRule("qwen3.7-plus", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["qwen-cloud", "opencode-zen-go", "openrouter"]);
+    expect(matched).toEqual(["qwen-cloud", "opencode-zen-go", "qwen-payg", "openrouter"]);
   });
 
   test("'qwen3-coder-next' does not match the dotted Qwen Plan rule", () => {

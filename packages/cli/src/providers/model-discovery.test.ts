@@ -13,8 +13,11 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { credentials } from "../auth/credentials/authority.js";
 import {
   type DiscoveredModel,
+  type DiscoveryFailure,
+  describeDiscoveryFailure,
   discoverContextWindow,
   discoverProviderModels,
+  getDiscoveryFailure,
   invalidateModelDiscovery,
   rankDiscoveredModels,
 } from "./model-discovery.js";
@@ -113,34 +116,104 @@ describe("discoverProviderModels", () => {
     expect(await discoverProviderModels("not-a-real-provider")).toEqual([]);
   });
 
-  test("returns [] when credentials throw", async () => {
+  test("records no-credentials without fetching when credential resolution throws", async () => {
+    const fetchMock = mock(async () => new Response("should not be called"));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     credentials.getRequestAuth = mock(async () => {
       throw new Error("No offline credentials");
     });
 
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "no-credentials",
+      provider: "kimi-coding",
+      detail: "No offline credentials",
+    });
   });
 
-  test("returns [] when fetch rejects", async () => {
+  test.each([
+    ["missing", {}],
+    ["blank", { "X-API-Key": "   " }],
+  ])(
+    "records no-credentials without fetching when auth headers are %s",
+    async (_label, headers) => {
+      const fetchMock = mock(async () => new Response("should not be called"));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      credentials.getRequestAuth = mock(async () => ({
+        headers: headers as Record<string, string>,
+      }));
+
+      expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+        kind: "no-credentials",
+        provider: "kimi-coding",
+      });
+    }
+  );
+
+  test.each([
+    ["authorization", { aUtHoRiZaTiOn: "Bearer offline-test-token" }],
+    ["x-api-key", { "X-aPi-KeY": "offline-test-token" }],
+    ["api-key", { "aPi-KeY": "offline-test-token" }],
+  ])("accepts a case-insensitive %s credential header", async (_label, headers) => {
+    credentials.getRequestAuth = mock(async () => ({ headers }));
+    const fetchMock = stubJsonResponse({ data: [{ id: "authenticated-model" }] });
+
+    expect((await discoverProviderModels("kimi-coding")).map((model) => model.id)).toEqual([
+      "authenticated-model",
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getDiscoveryFailure("kimi-coding")).toBeUndefined();
+  });
+
+  test("classifies a fetch rejection as unreachable", async () => {
     globalThis.fetch = mock(async () => {
       throw new Error("Offline");
     }) as unknown as typeof fetch;
 
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "unreachable",
+      provider: "kimi-coding",
+      detail: "Offline",
+    });
   });
 
-  test("returns [] for a non-2xx response", async () => {
-    stubJsonResponse({ error: "unavailable" }, 503);
+  test.each([401, 403])("classifies HTTP %i as unauthorized", async (status) => {
+    stubJsonResponse({ error: "rejected test credential" }, status);
 
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "unauthorized",
+      provider: "kimi-coding",
+      status,
+      detail: '{"error":"rejected test credential"}',
+    });
   });
 
-  test("returns [] when the body is not JSON", async () => {
+  test("classifies HTTP 500 as http-error", async () => {
+    stubJsonResponse({ error: "unavailable" }, 500);
+
+    expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "http-error",
+      provider: "kimi-coding",
+      status: 500,
+    });
+  });
+
+  test("classifies a non-JSON 200 response as malformed", async () => {
     globalThis.fetch = mock(
       async () => new Response("{not-json", { status: 200 })
     ) as unknown as typeof fetch;
 
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "malformed",
+      provider: "kimi-coding",
+    });
   });
 
   test("returns [] when the body has no data array", async () => {
@@ -149,10 +222,14 @@ describe("discoverProviderModels", () => {
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
   });
 
-  test("returns [] when the data array is empty", async () => {
+  test("classifies a 200 response with an empty data array as empty-roster", async () => {
     stubJsonResponse({ data: [] });
 
     expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")).toMatchObject({
+      kind: "empty-roster",
+      provider: "kimi-coding",
+    });
   });
 
   test("skips rows with missing or blank ids", async () => {
@@ -165,6 +242,46 @@ describe("discoverProviderModels", () => {
 });
 
 describe("model discovery cache and context lookup", () => {
+  test("retries a failed discovery and clears its failure after success", async () => {
+    let fetchCount = 0;
+    globalThis.fetch = mock(async () => {
+      fetchCount++;
+      if (fetchCount === 1) {
+        return new Response(JSON.stringify({ error: "temporary outage" }), { status: 500 });
+      }
+      return new Response(JSON.stringify({ data: [{ id: "recovered-model" }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    expect(await discoverProviderModels("kimi-coding")).toEqual([]);
+    expect(getDiscoveryFailure("kimi-coding")?.kind).toBe("http-error");
+
+    expect(await discoverProviderModels("kimi-coding")).toEqual([
+      { id: "recovered-model", displayName: undefined, contextWindow: undefined },
+    ]);
+    expect(fetchCount).toBe(2);
+    expect(getDiscoveryFailure("kimi-coding")).toBeUndefined();
+  });
+
+  test("provider invalidation clears only that failure and global invalidation clears all", async () => {
+    globalThis.fetch = mock(
+      async () => new Response(JSON.stringify({ error: "outage" }), { status: 500 })
+    ) as unknown as typeof fetch;
+
+    await discoverProviderModels("kimi-coding");
+    await discoverProviderModels("qwen-cloud");
+    expect(getDiscoveryFailure("kimi-coding")?.kind).toBe("http-error");
+    expect(getDiscoveryFailure("qwen-cloud")?.kind).toBe("http-error");
+
+    invalidateModelDiscovery("kimi-coding");
+    expect(getDiscoveryFailure("kimi-coding")).toBeUndefined();
+    expect(getDiscoveryFailure("qwen-cloud")?.kind).toBe("http-error");
+
+    invalidateModelDiscovery();
+    expect(getDiscoveryFailure("qwen-cloud")).toBeUndefined();
+  });
+
   test("caches within the TTL and provider invalidation forces a refetch", async () => {
     let fetchCount = 0;
     globalThis.fetch = mock(async () => {
@@ -219,6 +336,64 @@ describe("model discovery cache and context lookup", () => {
     expect(await discoverContextWindow("kimi-coding", "not-listed")).toBeUndefined();
     expect(await discoverContextWindow("kimi-coding", "window-not-reported")).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("describeDiscoveryFailure", () => {
+  const cases: Array<{
+    kind: DiscoveryFailure["kind"];
+    failure: DiscoveryFailure;
+    substrings: string[];
+  }> = [
+    {
+      kind: "no-credentials",
+      failure: { kind: "no-credentials", provider: "test", detail: "missing key" },
+      substrings: ["no usable credentials", "missing key"],
+    },
+    {
+      kind: "unauthorized",
+      failure: {
+        kind: "unauthorized",
+        provider: "test",
+        endpoint: "https://example.test/models",
+        status: 401,
+      },
+      substrings: ["rejected", "HTTP 401", "https://example.test/models"],
+    },
+    {
+      kind: "http-error",
+      failure: {
+        kind: "http-error",
+        provider: "test",
+        endpoint: "https://example.test/models",
+        status: 500,
+      },
+      substrings: ["HTTP 500", "https://example.test/models"],
+    },
+    {
+      kind: "unreachable",
+      failure: { kind: "unreachable", provider: "test", endpoint: "https://example.test/models" },
+      substrings: ["unreachable", "https://example.test/models"],
+    },
+    {
+      kind: "malformed",
+      failure: { kind: "malformed", provider: "test", endpoint: "https://example.test/models" },
+      substrings: ["not valid JSON", "https://example.test/models"],
+    },
+    {
+      kind: "empty-roster",
+      failure: {
+        kind: "empty-roster",
+        provider: "test",
+        endpoint: "https://example.test/models",
+      },
+      substrings: ["answered", "listed no models", "https://example.test/models"],
+    },
+  ];
+
+  test.each(cases)("renders $kind with stable detail", ({ failure, substrings }) => {
+    const description = describeDiscoveryFailure(failure);
+    for (const substring of substrings) expect(description).toContain(substring);
   });
 });
 
