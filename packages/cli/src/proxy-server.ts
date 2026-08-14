@@ -14,7 +14,6 @@ import type { ModelHandler } from "./handlers/types.js";
 import { log, logStderr } from "./logger.js";
 import { warmRecommendedModels } from "./model-loader.js";
 import { loadConfig } from "./profile-config.js";
-import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { DISPLAY_NAMES } from "./providers/auto-route.js";
 import {
   ensureCatalogReady,
@@ -23,7 +22,10 @@ import {
   warmCatalog,
 } from "./providers/catalog-client.js";
 import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
+import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
+import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { describeMissingCredential } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
   createUrlProvider,
@@ -116,7 +118,15 @@ export async function createProxyServer(
   // register them in the runtime provider registry so they appear in lookups
   // and handler creation. Runs once per proxy lifetime; idempotent.
   try {
-    const customEpResult = loadCustomEndpoints(loadConfig());
+    // ONE config read for both halves. The bundled catalog's suppression set is
+    // `Object.keys(config.customEndpoints)`, so if the two halves ever read
+    // different config objects — or different SCOPES — a user entry could
+    // suppress a bundled row without its replacement registering, deleting the
+    // provider. Sharing the object here makes that impossible rather than
+    // merely unlikely.
+    const config = loadConfig();
+    ensureEndpointsRegistered({ config });
+    const customEpResult = loadCustomEndpoints(config);
     if (customEpResult.registered > 0) {
       log(`[Proxy] Registered ${customEpResult.registered} custom endpoint(s) from config`);
     }
@@ -701,13 +711,24 @@ export async function createProxyServer(
       const parsedExplicit = parseModelSpec(target);
       // openrouter@... legitimately uses the OpenRouter handler below.
       if (parsedExplicit.provider !== "openrouter") {
-        const keyInfo = API_KEY_MAP[parsedExplicit.provider];
-        const keyNames = keyInfo
-          ? [keyInfo.envVar, ...(keyInfo.aliases ?? [])].join(" or ")
-          : undefined;
-        const hint = keyNames
-          ? `No API key for provider "${parsedExplicit.provider}". Set ${keyNames} (env, config, or 1Password import).`
-          : `No API key for provider "${parsedExplicit.provider}".`;
+        // "No handler" has exactly one default explanation here, and for an
+        // endpoint provider it is sometimes the wrong one — a malformed
+        // base-URL override or a name collision produces no handler too, and
+        // reporting that as a missing key sends the user hunting for a
+        // credential they already have. Whoever KNEW the real reason recorded
+        // it; prefer it over the guess.
+        const recorded = getEndpointUnavailableReason(parsedExplicit.provider);
+        if (recorded) {
+          throw new RoutingError(`Explicit model "${target}" could not be routed — ${recorded}`);
+        }
+        // Sourced from the provider DEFINITION (runtime-aware) rather than the
+        // hand-maintained builtin-only API_KEY_MAP, which is the same
+        // second-table coupling that produces silent mis-routes elsewhere: it
+        // names no runtime endpoint at all, so every bundled or user-declared
+        // provider got the bare message with no variable to set. The three
+        // shapes it can produce — local-not-enabled, sign-in-or-key, plain key —
+        // are explained at the function.
+        const hint = describeMissingCredential(parsedExplicit.provider);
         throw new RoutingError(
           `Explicit model "${target}" could not be routed — its provider has no credential. ${hint}`
         );

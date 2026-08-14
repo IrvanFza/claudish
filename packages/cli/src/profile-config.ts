@@ -198,6 +198,20 @@ export interface ClaudishProfileConfig {
   customEndpoints?: Record<string, unknown>;
 
   /**
+   * Opt-out surface for the endpoint catalog that ships inside the package
+   * (`providers/predefined-catalog.ts`): `{ enabled?, disable?, enable? }`.
+   * Validated at the consumption site (`providers/predefined-endpoints.ts`) via
+   * Zod, not here — `loadConfig` stays Zod-free.
+   *
+   * SCOPE: global only, exactly like `customEndpoints`. That is not an
+   * oversight — the two are read as ONE object, because a suppression set built
+   * from a wider scope than the endpoints it suppresses would delete a provider
+   * outright (a project-level `customEndpoints.groq` would suppress the bundled
+   * row while the replacement, loaded from global config only, never registers).
+   */
+  predefinedEndpoints?: Record<string, unknown>;
+
+  /**
    * Layer 4 behavior-compatibility settings (rule severities, hooks, observer).
    * Validated at the consumption site via Zod in behavior/config.ts, not here —
    * `loadConfig` runs on lightweight startup paths and stays Zod-free.
@@ -301,6 +315,11 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.customEndpoints !== undefined) {
       merged.customEndpoints = config.customEndpoints;
+    }
+    // Without this line the block survives on disk until the first global save
+    // and is then silently dropped — the trap `onepasswordEnvironments` hit.
+    if (config.predefinedEndpoints !== undefined) {
+      merged.predefinedEndpoints = config.predefinedEndpoints;
     }
     if (config.behavior !== undefined) {
       merged.behavior = config.behavior;

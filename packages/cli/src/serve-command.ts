@@ -28,6 +28,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { type SlotRoute, createProxyServer } from "./proxy-server.js";
 
 interface ServeArgs {
@@ -134,6 +135,13 @@ export async function serveCommand(args: string[]): Promise<void> {
     console.error("[claudish serve] --models <path> is required");
     process.exit(1);
   }
+
+  // Before the slot map is read, so a slot naming a bundled endpoint resolves
+  // against a roster that already contains it. `createProxyServer` registers
+  // too and this is idempotent — the call is here so the guarantee belongs to
+  // `serve` rather than to an implementation detail of the proxy it happens to
+  // start.
+  ensureEndpointsRegistered();
 
   let slotMap: Map<string, SlotRoute>;
   let slotIds: string[];

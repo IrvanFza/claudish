@@ -1145,12 +1145,128 @@ export function getApiKeyInfo(providerName: string): {
 }
 
 /**
+ * The one-sentence remedy for "this provider produced no handler".
+ *
+ * Derived entirely from the provider DEFINITION — runtime-aware, so a bundled
+ * or user-declared endpoint gets the same treatment as a builtin — rather than
+ * from the hand-maintained builtin-only `API_KEY_MAP`, which is the second-table
+ * coupling that produces silent mis-routes elsewhere in this codebase.
+ *
+ * Three shapes, because "no credential" has three different causes and naming
+ * the wrong one sends the user somewhere expensive:
+ *
+ * 1. **A LOCAL provider** (`ollama`, `lmstudio`, `vllm`, `mlx`) is not gated on
+ *    a key at all. `LocalCredentialProvider.isAvailable()` is literally
+ *    `isLocalProviderEnabled(name)` — i.e. `config.localProviders` contains the
+ *    name — and its optional bearer token can never block a handler
+ *    (`getRequestAuth` returns empty headers when there is none). So the actual
+ *    cause is "not enabled in config", and leading with "Set OLLAMA_API_KEY"
+ *    names a variable the user almost certainly should not set. The key clause
+ *    survives, in parentheses, for the gateway case that really does want one.
+ *
+ * 2. **A provider with an `oauthFallback`** is DUAL-MODE: `openai-codex` is a
+ *    ChatGPT Plus/Pro subscription OR a metered `OPENAI_API_KEY`, `kimi-coding`
+ *    a Kimi membership OR a key. Telling a subscriber to go and buy metered API
+ *    access is the more expensive of the two asymmetric errors — the same
+ *    reasoning that keeps `openai-codex` out of `SUBSCRIPTION_PROVIDERS` — so
+ *    the sign-in path is named FIRST and the key path second. The provider NAME
+ *    is a valid `claudish login` argument (`auth-commands.ts` `findProvider`
+ *    matches on `registryKeys`, which carry the canonical names), so no second
+ *    name table is introduced here.
+ *
+ * 3. Everything else keeps today's text exactly.
+ */
+export function describeMissingCredential(providerName: string): string {
+  const info = getApiKeyInfo(providerName);
+  const keyNames = info?.envVar ? [info.envVar, ...(info.aliases ?? [])].join(" or ") : undefined;
+  const signup = info?.url ? ` Get one at ${info.url}.` : "";
+  const def = getProviderByName(providerName);
+
+  if (isLocalTransport(providerName)) {
+    const where = def ? ` Claudish will use ${getEffectiveBaseUrl(def)}.` : "";
+    const keyClause = keyNames
+      ? ` (Only set ${keyNames} if your local server requires a bearer token.)`
+      : "";
+    return (
+      `Provider "${providerName}" is a LOCAL server and is not enabled. ` +
+      "Enable it in `claudish config` (Providers tab), or add " +
+      `"localProviders": ["${providerName}"] to ~/.claudish/config.json.${where}${keyClause}`
+    );
+  }
+
+  if (def?.oauthFallback) {
+    const keyClause = keyNames
+      ? ` Or set ${keyNames} (env, config, or 1Password import) to use a metered API key instead.${signup}`
+      : "";
+    return (
+      `No credential for provider "${providerName}". Sign in with ` +
+      `\`claudish login ${providerName}\` to use your existing subscription.${keyClause}`
+    );
+  }
+
+  return keyNames
+    ? `No API key for provider "${providerName}". Set ${keyNames} (env, config, or 1Password import).${signup}`
+    : `No API key for provider "${providerName}".`;
+}
+
+/**
  * Get display name for a provider.
  * Replaces PROVIDER_DISPLAY_NAMES in provider-resolver.ts.
  */
 export function getDisplayName(providerName: string): string {
   const def = getProviderByName(providerName);
   return def?.displayName || providerName.charAt(0).toUpperCase() + providerName.slice(1);
+}
+
+/** Where a base-URL override came from, so a caller can phrase the remedy. */
+export interface BaseUrlOverrideCandidate {
+  /** The variable / `config.endpoints` key that supplied it. */
+  envVar: string;
+  /** The raw value, exactly as stored. Not validated and not trimmed. */
+  value: string;
+  source: "config" | "env";
+}
+
+/**
+ * Every base-URL override that is present, in precedence order.
+ *
+ * THE one oracle for "where does this provider actually point". It exists
+ * because there were briefly two: `getEffectiveBaseUrl` walked
+ * `config.endpoints` → env → default, while the custom-endpoint classifier
+ * walked env only. The config TUI's URL editor writes BOTH `setEndpoint()` and
+ * `process.env`, so the second oracle looked correct for the rest of the
+ * session and diverged only after a restart — at which point the TUI still
+ * DISPLAYED the saved private URL while requests went to the bundled public
+ * host. UI says private, wire says public, which is the data-egress failure the
+ * R12 skip-not-fallback rule exists to prevent, inverted.
+ *
+ * Returned as a LIST rather than a single winner because the two callers apply
+ * different policy to it: `getEffectiveBaseUrl` takes the first and is done,
+ * while `classifyEndpointBaseUrl` must skip an unexpanded `${VAR}` placeholder
+ * (which means "unset", not "wrong") and continue to the next candidate. A
+ * single-winner API would force the placeholder rule to live in one of them
+ * only — i.e. two oracles again.
+ *
+ * Precedence, unchanged: config.endpoints[VAR] for every var in order, then
+ * process.env[VAR] for every var in order. So `config.endpoints.OLLAMA_HOST`
+ * beats `process.env.LMSTUDIO_BASE_URL` — config wins as a TIER, matching the
+ * `apiKeys` rule, not per-variable.
+ */
+export function baseUrlOverrideCandidates(
+  baseUrlEnvVars?: readonly string[]
+): BaseUrlOverrideCandidate[] {
+  const found: BaseUrlOverrideCandidate[] = [];
+  if (!baseUrlEnvVars || baseUrlEnvVars.length === 0) return found;
+  // Config wins over env (matches the apiKeys precedence rule).
+  for (const envVar of baseUrlEnvVars) {
+    const fromConfig = getConfigEndpoint(envVar);
+    if (fromConfig) found.push({ envVar, value: fromConfig, source: "config" });
+  }
+  for (const envVar of baseUrlEnvVars) {
+    const value = process.env[envVar];
+    if (value) found.push({ envVar, value, source: "env" });
+  }
+  return found;
 }
 
 /**
@@ -1167,18 +1283,7 @@ export function getDisplayName(providerName: string): string {
  * wins over a generic `OLLAMA_HOST`.
  */
 export function getEffectiveBaseUrl(def: ProviderDefinition): string {
-  if (def.baseUrlEnvVars) {
-    // Config wins over env (matches the apiKeys precedence rule).
-    for (const envVar of def.baseUrlEnvVars) {
-      const fromConfig = getConfigEndpoint(envVar);
-      if (fromConfig) return fromConfig;
-    }
-    for (const envVar of def.baseUrlEnvVars) {
-      const value = process.env[envVar];
-      if (value) return value;
-    }
-  }
-  return def.baseUrl;
+  return baseUrlOverrideCandidates(def.baseUrlEnvVars)[0]?.value ?? def.baseUrl;
 }
 
 /**

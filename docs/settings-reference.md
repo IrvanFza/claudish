@@ -595,7 +595,7 @@ Full control over transport, auth, headers, and stream format:
       "baseUrl": "https://llm.corp.internal",
       "apiPath": "/api/v2/chat/completions",
       "apiKey": "${CORP_LLM_KEY}",
-      "authScheme": "X-Api-Key",
+      "authScheme": "x-api-key",
       "headers": { "X-Team": "platform" },
       "streamFormat": "openai-sse",
       "modelPrefix": "",
@@ -613,7 +613,7 @@ Full control over transport, auth, headers, and stream format:
 | `baseUrl` | string | yes | Server base URL |
 | `apiPath` | string | no | Custom API path (overrides default for transport) |
 | `apiKey` | string | no | API key; supports `${VAR}` env expansion |
-| `authScheme` | string | no | Auth header scheme (default: `Bearer`; use `X-Api-Key` for header-name auth) |
+| `authScheme` | `"bearer"` or `"x-api-key"` | no | Auth header scheme (default: `bearer`). **Lowercase enum** — a capitalized `"X-Api-Key"` fails validation and the entire entry is skipped |
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |
@@ -637,6 +637,41 @@ Claudish validates all `customEndpoints` entries with Zod at proxy startup. Inva
 ### Runtime registration
 
 Each valid custom endpoint calls `registerRuntimeProvider()` (injects into the provider resolver) and `registerRuntimeProfile()` (injects into the transport layer). The endpoint name becomes a valid provider shortcut immediately.
+
+### Predefined endpoints
+
+25 vendors ship inside the package as a bundled catalog (`providers/predefined-catalog.ts`). Each row compiles into exactly the complex `customEndpoints` entry documented above and travels the same registration path — there is no separate transport or provider table.
+
+**A bundled row activates only when its key is already present locally** — the vendor's own env var (e.g. `GROQ_API_KEY`), one of its aliases, `CUSTOM_<NAME>_KEY`, or `config.apiKeys`. The check is synchronous and cannot reach 1Password, so a key stored *only* behind an `op://` reference will not make its vendor appear; use `enable` below, or export the variable.
+
+```json
+{
+  "predefinedEndpoints": {
+    "enabled": true,
+    "enable": ["groq", "cerebras"],
+    "disable": ["perplexity"]
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `true` | `false` turns the whole catalog off |
+| `enable` | string[] | `[]` | Register these rows regardless of whether a key is present |
+| `disable` | string[] | `[]` | Never register these rows (beats `enable`) |
+
+Env kill switch: `CLAUDISH_NO_PREDEFINED_ENDPOINTS=1`.
+
+Other behaviours worth knowing:
+
+- **A `customEndpoints` entry of the same name REPLACES the bundled row entirely** — no merge. Your entry gets `CUSTOM_<NAME>_KEY`, so it does **not** inherit the vendor's conventional variable; add `"apiKey": "${GROQ_API_KEY}"` to keep using it. Claudish warns when that variable is set and would now be ignored.
+- **A row's base URL can be overridden**, when it declares one (e.g. `TUNING_ENGINES_BASE_URL` on `tuningengines`), from `config.endpoints["TUNING_ENGINES_BASE_URL"]` — what `claudish config` and the Providers tab's URL editor write — or from the environment variable of the same name. Config wins over environment, matching the `apiKeys` rule.
+- **A malformed base-URL override skips the row rather than falling back** to the bundled public URL, whichever source it came from. Silently redirecting a typo to a vendor's public host would leak the traffic a self-hosted gateway exists to contain. An unexpanded `${VAR}` placeholder is treated as *unset*, not as malformed.
+- **Turning a row off takes effect on the next start.** Runtime registration cannot be undone within a live process, so a row disabled mid-session keeps answering until claudish restarts. Claudish prints a warning naming the row and the reason rather than leaving that silent.
+- **No model roster ships with a row.** Catalog vendors get a free-text model prompt in the picker; model metadata comes from models-index or is absent.
+- **Nothing claudish ships puts a bundled row in a bare-name routing chain.** No row declares native model patterns or a legacy prefix, and none appears in the default routing rules, so a row is reachable only as `vendor@model` — an ambient key can add a picker row but cannot silently receive a request. (The one exception is your own doing: `defaultProvider` is appended to every bare chain, so setting `"defaultProvider": "groq"` does route bare names there.)
+- An invalid `predefinedEndpoints` block warns once and is treated as absent, never as "off".
+- **Evidence:** every shipped row is *probe*-verified — its configured path was confirmed to reach the vendor's own auth layer, and a deliberately bogus sibling path was confirmed to answer differently. **No row is live-verified**; that establishes the route, not the vendor's streaming dialect on a successful turn.
 
 ---
 

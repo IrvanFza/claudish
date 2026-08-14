@@ -73,7 +73,16 @@ async function selectProvider(action: string): Promise<OAuthProvider> {
   });
 }
 
-function findProvider(name: string): OAuthProvider | null {
+/**
+ * Resolve a `claudish login <arg>` argument to an OAuth provider.
+ *
+ * Exported so the missing-credential hint — which prints
+ * `claudish login <canonical provider name>` — can assert that the command it
+ * tells the user to run actually resolves. Deriving the argument from the
+ * provider name avoids a second name table; this pins that the derivation
+ * holds.
+ */
+export function findProvider(name: string): OAuthProvider | null {
   const lower = name.toLowerCase();
   return (
     AUTH_PROVIDERS.find(

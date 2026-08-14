@@ -2,6 +2,31 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [Unreleased]
+
+### Bug Fixes
+
+- honour `authScheme` and `headers` on custom endpoints *(transport)*
+
+  `OpenAIProviderTransport.getHeaders()` always signed with
+  `Authorization: Bearer …` and dropped `provider.headers`, even though
+  `custom-endpoints-loader` has always passed both fields in from your config.
+  They are now applied.
+
+  **This changes behaviour for existing user-authored custom endpoints.** An
+  entry with `"transport": "openai"` that declares `"authScheme": "x-api-key"`
+  previously sent `Authorization: Bearer <key>` — and worked if your gateway
+  accepted that. It now sends `x-api-key: <key>` and no `Authorization` header,
+  which is what the config asked for. Likewise a declared `headers` block is now
+  merged into the request instead of being ignored. If an endpoint stops
+  authenticating after upgrading, check those two fields against what your
+  gateway expects; setting `"authScheme": "bearer"` (or omitting it) restores
+  the previous signing.
+
+  No built-in provider is affected: all 12 that reach this transport were
+  enumerated and none declares either field, so every built-in's headers are
+  byte-identical to before.
+
 ## [7.48.0] - 2026-08-10
 
 ### Documentation
