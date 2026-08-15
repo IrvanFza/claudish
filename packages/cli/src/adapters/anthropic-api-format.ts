@@ -9,6 +9,61 @@
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 
+/** Text of one inline system message, whatever content shape it arrived in. */
+function systemText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block: any) => (typeof block?.text === "string" ? block.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
+ * Split `role: "system"` entries out of the messages array.
+ *
+ * Returns the ORIGINAL array reference when there is nothing to hoist, so the
+ * overwhelmingly common case allocates nothing and the payload is byte-identical
+ * to what it was before this existed.
+ */
+export function hoistInlineSystem(messages: any[]): { messages: any[]; hoisted: string[] } {
+  if (!Array.isArray(messages) || !messages.some((m) => m?.role === "system")) {
+    return { messages, hoisted: [] };
+  }
+  const kept: any[] = [];
+  const hoisted: string[] = [];
+  for (const msg of messages) {
+    if (msg?.role === "system") {
+      const text = systemText(msg.content);
+      // A system message with no extractable text is dropped rather than
+      // hoisted as "": it would add a blank paragraph to the system prompt and
+      // change the cached prefix for nothing.
+      if (text) hoisted.push(text);
+      continue;
+    }
+    kept.push(msg);
+  }
+  return { messages: kept, hoisted };
+}
+
+/**
+ * Append hoisted text to whatever `system` already was.
+ *
+ * The array form is PRESERVED as an array. Claude Code sends system as blocks
+ * carrying `cache_control`, and flattening them to one string would discard the
+ * cache breakpoints — turning a fix for a 400 into a silent cost regression.
+ */
+export function mergeSystem(existing: unknown, hoisted: string[]): unknown {
+  if (hoisted.length === 0) return existing;
+  const merged = hoisted.join("\n\n");
+  if (existing === undefined || existing === null || existing === "") return merged;
+  if (Array.isArray(existing)) return [...existing, { type: "text", text: merged }];
+  if (typeof existing === "string") return `${existing}\n\n${merged}`;
+  return existing;
+}
+
 export class AnthropicAPIFormat extends BaseAPIFormat {
   constructor(modelId: string, _providerName?: string) {
     super(modelId);
@@ -75,15 +130,36 @@ export class AnthropicAPIFormat extends BaseAPIFormat {
    * with the model name replaced to match the target provider's model.
    */
   override buildPayload(claudeRequest: any, messages: any[], tools: any[]): any {
+    // Claude Code injects `role: "system"` entries INLINE in messages[] (system
+    // reminders between turns). The Messages API takes `system` as a top-level
+    // field and accepts only user/assistant in messages, so every
+    // Anthropic-compatible provider — Z.AI, GLM, MiniMax, Kimi — answers 400.
+    //
+    // This belongs here rather than in ComposedHandler because it is a
+    // wire-format legality rule, and this class IS the Anthropic wire format.
+    // Put behind a provider check upstream and it would have to name every
+    // anthropic-transport provider and stay current with the list.
+    //
+    // The OpenAI path never needed it: convertMessagesToOpenAI already hoists
+    // system entries (openai-messages.ts:24), and Chat Completions accepts the
+    // role anyway. `transformMessages()` in transform.ts does the same hoisting
+    // and is EXPORTED BUT NEVER CALLED — dead since before this file existed.
+    const { messages: cleanMessages, hoisted } = hoistInlineSystem(messages);
+
     const payload: any = {
       model: this.modelId,
-      messages,
+      messages: cleanMessages,
       max_tokens: claudeRequest.max_tokens || 4096,
       stream: true,
     };
 
-    if (claudeRequest.system) {
-      payload.system = claudeRequest.system;
+    // APPEND, never replace. The reminders are additional context, and the real
+    // system prompt is the expensive cached prefix — overwriting it would both
+    // lose the user's instructions and blow the provider's prefix cache every
+    // turn a reminder appears.
+    const system = mergeSystem(claudeRequest.system, hoisted);
+    if (system !== undefined) {
+      payload.system = system;
     }
     if (tools.length > 0) {
       payload.tools = tools;
