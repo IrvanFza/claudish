@@ -21,6 +21,7 @@ import {
 import {
   acceptsReasoningEffort,
   acceptsReasoningEffortValue,
+  catalogReasoningFor,
   fallbackReasoningEffortValue,
   isReasoningEffortRejection,
   rejectedReasoningEffortValue,
@@ -129,50 +130,60 @@ export class GrokModelDialect extends BaseAPIFormat {
    * Map a canonical effort level to a Grok `reasoning_effort` value, or
    * undefined when this model does NOT accept the param (→ strip).
    *
-   * Two gates, both evidence-based rather than roster-based:
+   * Gates, most authoritative first:
    *   1. `acceptsReasoningEffort` — does this model take the parameter at all?
-   *      Optimistic; only a live 400 (remembered) or a seeded known-reject
-   *      answers "no".
-   *   2. `acceptsReasoningEffortValue` — does it take THIS value? `grok-4.5` and
-   *      `grok-4.6` accept the parameter but reject `none`, which is learned the
-   *      same way and stepped down to `low`.
+   *      Live evidence, then the hosted catalog, then optimistic name rules.
+   *   2. The catalog's advertised ladder — clamp into `efforts[]` rather than
+   *      guess. This is what makes a NEW model work without a claudish release:
+   *      grok-4.6 advertises `xhigh/high/medium/low` (no `none`) and grok-4.3
+   *      advertises `none`, and both come from the catalog, not from source.
+   *   3. `acceptsReasoningEffortValue` — a value the live API has rejected this
+   *      session, which covers a catalog that is cold, stale, or absent.
    */
   private effortToReasoningEffort(effort: EffortLevel): string | undefined {
     if (!acceptsReasoningEffort(this.modelId)) {
       return undefined; // positive evidence of rejection → strip
     }
 
-    const model = this.modelId.toLowerCase();
-
-    // grok-3-mini tier: low | high only. A documented, still-accurate ladder for
-    // a legacy family that is no longer in the live roster.
-    const isMini = model.includes("mini");
     let value: string;
-    if (isMini) {
-      switch (effort) {
-        case "high":
-        case "xhigh":
-        case "max":
-          value = "high";
-          break;
-        default:
-          // none/minimal/low/medium → low (mini has no none/medium).
-          value = "low";
-      }
+
+    // CATALOG FIRST — same rule OpenAIAPIFormat follows, and for the same
+    // measured reason: a name rule is wrong in both directions.
+    const reasoning = catalogReasoningFor(this.modelId);
+    const clamped = reasoning ? this.clampToAdvertisedEffort(effort, reasoning) : undefined;
+    if (clamped) {
+      value = clamped;
     } else {
-      switch (effort) {
-        case "none":
-          value = "none";
-          break;
-        case "minimal":
-        case "low":
-          value = "low";
-          break;
-        case "medium":
-          value = "medium";
-          break;
-        default:
-          value = "high";
+      const model = this.modelId.toLowerCase();
+      // grok-3-mini tier: low | high only. A documented, still-accurate ladder
+      // for a legacy family that the catalog has no entry for.
+      const isMini = model.includes("mini");
+      if (isMini) {
+        switch (effort) {
+          case "high":
+          case "xhigh":
+          case "max":
+            value = "high";
+            break;
+          default:
+            // none/minimal/low/medium → low (mini has no none/medium).
+            value = "low";
+        }
+      } else {
+        switch (effort) {
+          case "none":
+            value = "none";
+            break;
+          case "minimal":
+          case "low":
+            value = "low";
+            break;
+          case "medium":
+            value = "medium";
+            break;
+          default:
+            value = "high";
+        }
       }
     }
 
