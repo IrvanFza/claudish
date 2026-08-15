@@ -48,9 +48,13 @@ __tests__/
 *.jinja
 logs/
 
-# AI session files
-ai-docs/
-ai_docs/
+# AI session files — the per-session scratch only.
+#
+# `ai-docs/` itself IS tracked: CLAUDE.md cites durable artifacts that live under
+# it, so ignoring the whole tree made those references dangle. Only the
+# per-session working directories are ephemeral.
+ai-docs/sessions/
+ai_docs/sessions/
 ai-sessions/
 **/ai-sessions/
 

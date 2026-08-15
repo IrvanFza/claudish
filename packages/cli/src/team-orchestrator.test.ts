@@ -410,6 +410,18 @@ describe("team-orchestrator", () => {
     });
   });
 
+  describe("runModels — requirePattern validation", () => {
+    it("rejects an invalid pattern before reading manifest.json", async () => {
+      const { runModels } = await getOrchestrator();
+
+      // tempDir deliberately exists without a manifest. The pattern error must
+      // win before any filesystem read or child-process work can begin.
+      await expect(runModels(tempDir, { requirePattern: "(" })).rejects.toThrow(
+        /^Invalid requirePattern \/\(/
+      );
+    });
+  });
+
   // ── Directory names match manifest IDs ───────────────────────────────────
 
   describe("setupSession — work directory names", () => {

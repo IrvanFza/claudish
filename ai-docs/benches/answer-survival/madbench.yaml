@@ -1,0 +1,201 @@
+description: "Does a harness preserve the agent's ANSWER when a background task finishes after it?"
+harness: claude-code
+
+harness_config:
+  model: claude-haiku-4-5-20251001
+  # bypassPermissions, not acceptEdits: the treatment scenario needs the agent to
+  # actually SPAWN a subagent. In --print mode an un-approved tool call silently
+  # no-ops, which would make the treatment quietly degrade into the control and
+  # score a meaningless pass.
+  args: ["--permission-mode", "bypassPermissions"]
+
+defaults:
+  sandbox: process
+  timeout: 300s
+  capture: log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What this measures
+#
+# `claude -p` prints ONLY the final assistant message. So any turn the agent
+# takes AFTER writing its answer replaces that answer on the captured surface.
+# Measured 2026-08-11 on claudish's `team`: two models turned 7,743 and 4,737
+# output tokens into 250 B and 396 B of "the review above stands", and both were
+# reported `succeeded` because they exited 0 with real non-whitespace prose.
+#
+# Both scenarios ask for the SAME deliverable and assert PASS. This is a
+# capability benchmark, not a bug reproduction — a healthy harness/model passes
+# both. The only difference is that `post-answer-turn` guarantees a late
+# notification, so:
+#
+#   control passes + treatment passes  → answers survive a late notification
+#   control passes + treatment FAILS   → the dropout; the answer was generated
+#                                        and then overwritten by the epilogue
+#   control FAILS                      → the task itself is too hard / the model
+#                                        can't follow the format; treatment tells
+#                                        you nothing until this is fixed
+#
+# String checks grade ONLY the agent's final message, which is precisely the
+# surface that loses the answer — so `contains "```vote"` IS the detector.
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenarios:
+  - name: control-no-background-work
+    description: "Baseline: same deliverable, nothing runs after the answer"
+    testdata: ./testdata/repo
+    prompt: |
+      Read `classify.ts` in the current working directory and review its
+      `classifyRunOutput` function.
+
+      Write a short review (150+ words) covering:
+        - which signals it uses to decide a run succeeded
+        - one concrete failure mode it cannot detect
+
+      Do not modify any files.
+
+      Your response MUST end with a fenced block in exactly this form, and
+      nothing after it:
+
+      ```vote
+      VERDICT: APPROVE
+      CONFIDENCE: 8
+      SUMMARY: one sentence
+      ```
+
+      Use REJECT instead of APPROVE if you think the logic is unsound.
+    checks:
+      # THE detector: did the required block survive to the captured output?
+      - type: contains
+        value: "```vote"
+      - type: contains
+        value: "VERDICT:"
+
+      # Anti-cheat: a bare vote block with no review would pass the two checks
+      # above. Pin that the agent actually engaged with the file.
+      - type: contains-any
+        value:
+          - "classifyRunOutput"
+          - "empty_output"
+          - "api_error"
+
+      # The agent genuinely read the file rather than answering from the prompt.
+      - type: any-of
+        checks:
+          - type: trajectory:tool-used
+            value: "Read"
+          - type: trajectory:tool-used
+            value: "Grep"
+
+      # Read-only contract.
+      - type: not-any-of
+        checks:
+          - type: trajectory:tool-used
+            value: "Write"
+          - type: trajectory:tool-used
+            value: "Edit"
+
+      - type: latency
+        threshold: 180000
+      - type: cost
+        threshold: 0.10
+
+  - name: post-answer-turn
+    description: "A background subagent finishes AFTER the answer — does the answer survive?"
+    testdata: ./testdata/repo
+    prompt: |
+      Follow these steps in order.
+
+      **Step 1 — start background work FIRST.** Before anything else, launch a
+      background subagent using the Task tool with `run_in_background: true` and
+      `subagent_type: "general-purpose"`, giving it this task:
+
+          "Count how many lines in classify.ts mention the word 'output'.
+           Then write just that number into a file named subagent-done.txt
+           in the current directory. Take your time and be thorough."
+
+      Do NOT wait for that agent. Move straight on to step 2 while it runs.
+
+      **Step 2 — write your review.** Read `classify.ts` in the current working
+      directory and review its `classifyRunOutput` function. Write a short review
+      (150+ words) covering:
+        - which signals it uses to decide a run succeeded
+        - one concrete failure mode it cannot detect
+
+      Do not modify any files.
+
+      **Step 3 — end with your verdict.** Your response MUST end with a fenced
+      block in exactly this form, and nothing after it:
+
+      ```vote
+      VERDICT: APPROVE
+      CONFIDENCE: 8
+      SUMMARY: one sentence
+      ```
+
+      Use REJECT instead of APPROVE if you think the logic is unsound.
+    checks:
+      # Scenario validity guard: if the subagent never ran, no late notification
+      # arrived, this scenario degenerated into a duplicate of the control, and a
+      # PASS would be worthless.
+      #
+      # Deliberately a filesystem sentinel, NOT `trajectory:tool-used: Task`.
+      # Measured: madbench records subagents in a SEPARATE `subagents[]` array
+      # (`[{name: "general-purpose", tool_calls: 2}]`); the spawning call never
+      # appears in `trajectory.calls`, which held only ToolSearch and Read on a
+      # run where a subagent demonstrably ran and reported back. No builtin check
+      # reads `subagents[]`, so any trajectory-based guard here is a guaranteed
+      # false negative. The subagent's own tool calls are also absent from the
+      # main trajectory, which is why its write cannot trip the read-only checks.
+      - type: exec
+        args:
+          cmd: [sh, -c, "test -f subagent-done.txt"]
+          expected_exit: 0
+
+      # THE detector. Identical to the control, so any difference in outcome is
+      # attributable to the late notification and nothing else.
+      - type: contains
+        value: "```vote"
+      - type: contains
+        value: "VERDICT:"
+
+      - type: contains-any
+        value:
+          - "classifyRunOutput"
+          - "empty_output"
+          - "api_error"
+
+      # The dropout has a recognisable shape: the surviving text talks ABOUT the
+      # background work and refers back to a review that is no longer present.
+      # ADVISORY ONLY — never rely on it as the detector. The epilogue is free
+      # prose and its wording drifts every run; of five observed phrasings this
+      # pattern caught four, and "All steps complete. The background agent
+      # counted 12 lines…" slipped through while the run was a genuine dropout.
+      # A PASS here therefore means nothing; a FAIL usefully names the cause.
+      # The `contains` checks above are the detector.
+      #
+      # Regex, not a literal: an earlier `not-contains: "above stand"` passed on
+      # a real dropout whose text read "The review above captures…". Observed
+      # epilogues this does match:
+      #   "the review and vote above are complete"
+      #   "The review and vote above stand as delivered"
+      #   "My review is complete and stands"
+      #   "The review above captures…"
+      - type: not-regex
+        value: "(?i)(review|vote)[^.]{0,40}above|review is complete|background (task|agent) (completed|finished)"
+
+      # Read-only contract, asserted on the ARTEFACT rather than the trajectory:
+      # the file under review must still be intact. Stronger than
+      # `not-any-of trajectory:tool-used` here, because the subagent's calls do
+      # not surface in the main trajectory at all — so a trajectory check would
+      # not notice a subagent that rewrote the file.
+      - type: exec
+        args:
+          cmd: [sh, -c, "grep -q 'STDOUT_TAIL_LIMIT = 4000' classify.ts"]
+          expected_exit: 0
+
+      # Generous: this scenario does strictly more work than the control (a
+      # subagent plus the review). Tighten to ~1.5-2x observed max after 2-3 runs.
+      - type: latency
+        threshold: 300000
+      - type: cost
+        threshold: 0.20
