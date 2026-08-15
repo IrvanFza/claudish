@@ -95,3 +95,66 @@ describe("OpenCode Zen provider composition", () => {
     }
   }
 });
+
+describe("OpenAI Responses-API gate", () => {
+  const responsesComposition = {
+    transport: "openai",
+    streamFormat: "openai-responses-sse",
+    endpoint: "https://api.openai.com/v1/responses",
+  } as const;
+  const chatCompletionsComposition = {
+    transport: "openai",
+    streamFormat: "openai-sse",
+    endpoint: "https://api.openai.com/v1/chat/completions",
+  } as const;
+  const openAICompositionCases = [
+    { model: "gpt-5.3-codex", expected: responsesComposition },
+    { model: "gpt-5-codex", expected: responsesComposition },
+    { model: "gpt-5.1-codex-max", expected: responsesComposition },
+    { model: "gpt-5.1-codex-mini", expected: responsesComposition },
+    { model: "GPT-5.1-CODEX-MINI", expected: responsesComposition },
+    { model: "gpt-5.6-luna", expected: responsesComposition },
+    { model: "gpt-5.6-sol", expected: responsesComposition },
+    { model: "gpt-5.4", expected: chatCompletionsComposition },
+    { model: "gpt-5.5", expected: chatCompletionsComposition },
+    { model: "gpt-4o", expected: chatCompletionsComposition },
+    { model: "gpt-5", expected: chatCompletionsComposition },
+    { model: "gpt-5-mini", expected: chatCompletionsComposition },
+  ] as const;
+
+  for (const row of openAICompositionCases) {
+    test(`openai ${row.model} uses ${row.expected.streamFormat} at ${row.expected.endpoint}`, () => {
+      expect(describeHandler("openai", row.model)).toEqual(row.expected);
+    });
+  }
+
+  test("a codex id routes to Responses regardless of where 'codex' appears in the name", () => {
+    expect(describeHandler("openai", "codex-mini-latest")).toEqual(responsesComposition);
+  });
+
+  test("a codex id gets a Responses body AND a Responses endpoint (the two layers must agree)", () => {
+    for (const model of ["gpt-5.4-codex", "gpt-5.3-codex", "codex-mini-latest"]) {
+      const composition = describeHandler("openai", model);
+
+      // The endpoint already follows the codex rule in transport/openai.ts:31,37;
+      // streamFormat is what catches drift in the profile adapter choice.
+      expect(composition.streamFormat).toBe("openai-responses-sse");
+      expect(composition.endpoint.endsWith("/v1/responses")).toBe(true);
+    }
+  });
+
+  test("a non-codex model keeps both layers on Chat Completions", () => {
+    const composition = describeHandler("openai", "gpt-5.4");
+
+    expect(composition.streamFormat).toBe("openai-sse");
+    expect(composition.endpoint.endsWith("/v1/chat/completions")).toBe(true);
+  });
+
+  test("openai-codex remains Responses-only for codex and non-codex ids", () => {
+    const expected = { ...responsesComposition, transport: "openai-codex" };
+
+    // This provider composes to Responses by construction, so the `openai` gate is not what decides it.
+    expect(describeHandler("openai-codex", "gpt-5.3-codex")).toEqual(expected);
+    expect(describeHandler("openai-codex", "gpt-4o")).toEqual(expected);
+  });
+});
