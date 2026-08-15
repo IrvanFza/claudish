@@ -314,7 +314,15 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "minimax",
     displayName: "MiniMax",
     transport: "anthropic",
-    baseUrl: "https://api.minimax.io",
+    // NOT api.minimax.io — that host is the CODING PLAN's, and the two are
+    // separate credential silos rather than aliases of one service. Measured
+    // 2026-08-11 with a real coding key: api.minimax.io answers 200, while
+    // api.minimaxi.com answers 401 "invalid api key" for the same key. A PAYG
+    // key sent to minimax.io fails the same way in reverse, which is what
+    // `mm@`/`mmax@` did from here. `apiKeyUrl` below has always pointed at
+    // minimaxi.com, so this entry was telling users to fetch a key from one
+    // silo and then spending it against the other.
+    baseUrl: "https://api.minimaxi.com",
     baseUrlEnvVars: ["MINIMAX_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
     apiKeyEnvVar: "MINIMAX_API_KEY",
