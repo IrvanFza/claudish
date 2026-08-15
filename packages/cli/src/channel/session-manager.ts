@@ -12,6 +12,7 @@ import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { KILL_PROCESS_GROUP, signalProcessTree } from "../process-tree.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import { SignalWatcher } from "./signal-watcher.js";
@@ -98,6 +99,13 @@ export class SessionManager {
       cwd: opts.cwd ?? process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      // Own process group, so cancel/timeout can signal the whole subtree.
+      // `claudish` is a launcher → Bun CLI → `claude` → tools chain, and
+      // signalling the pid we hold reaches only the launcher; the rest is
+      // orphaned and keeps running (and billing). See process-tree.ts for the
+      // measurement. This is what made `cancel_session`'s documented
+      // "SIGTERM, then SIGKILL after 5 seconds" not actually stop the work.
+      detached: KILL_PROCESS_GROUP,
     });
 
     const scrollback = new ScrollbackBuffer(this.scrollbackCapacity);
@@ -205,10 +213,10 @@ export class SessionManager {
     // Set timeout
     entry.timeoutHandle = setTimeout(() => {
       if (!proc.killed) {
-        proc.kill("SIGTERM");
+        signalProcessTree(proc, "SIGTERM");
         entry.killHandle = setTimeout(() => {
           try {
-            proc.kill("SIGKILL");
+            signalProcessTree(proc, "SIGKILL");
           } catch {
             // Process may already be gone
           }
@@ -290,10 +298,10 @@ export class SessionManager {
     entry.watcher.forceState("cancelled", "Session cancelled");
 
     if (!entry.process.killed) {
-      entry.process.kill("SIGTERM");
+      signalProcessTree(entry.process, "SIGTERM");
       entry.killHandle = setTimeout(() => {
         try {
-          entry.process.kill("SIGKILL");
+          signalProcessTree(entry.process, "SIGKILL");
         } catch {
           // Process may already be gone
         }
@@ -335,12 +343,12 @@ export class SessionManager {
     const promises: Promise<void>[] = [];
     for (const [, entry] of this.sessions) {
       if (!entry.process.killed) {
-        entry.process.kill("SIGTERM");
+        signalProcessTree(entry.process, "SIGTERM");
         promises.push(
           new Promise((resolve) => {
             const timeout = setTimeout(() => {
               try {
-                entry.process.kill("SIGKILL");
+                signalProcessTree(entry.process, "SIGKILL");
               } catch {}
               resolve();
             }, KILL_GRACE_MS);
