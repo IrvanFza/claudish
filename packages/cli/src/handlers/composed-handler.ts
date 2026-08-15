@@ -51,6 +51,7 @@ import {
   isTerminalError,
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
+import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { filterIdentity } from "./shared/openai-compat.js";
@@ -990,7 +991,7 @@ export class ComposedHandler implements ModelHandler {
       }
     };
 
-    return this.handleStream(
+    const streamed = this.handleStream(
       c,
       response,
       adapter,
@@ -1002,6 +1003,17 @@ export class ComposedHandler implements ModelHandler {
       },
       behaviorSession
     );
+
+    // A client that did not ask for a stream gets the single JSON message the
+    // Messages API defines, not SSE. `=== true` rather than `!== false` because
+    // the API treats an absent `stream` as false, and NativeHandler already
+    // behaves that way — it forwards the payload verbatim and Anthropic decides
+    // — so anything looser would leave proxied models disagreeing with native
+    // ones, which is the bug being fixed. Claudish's own internal callers
+    // (mcp-server.ts:235, probe-live.ts:139) both send `stream: true`
+    // explicitly, so this changes nothing for them.
+    if (payload?.stream === true) return streamed;
+    return sseResponseToJson(streamed, this.bareModelName);
   }
 
   /**

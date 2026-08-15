@@ -319,6 +319,233 @@ describe("Anthropic SSE Passthrough (createAnthropicPassthroughStream)", () => {
   });
 });
 
+describe("Regression: Anthropic SSE abandoned streams emit a terminal tail", () => {
+  const encoder = new TextEncoder();
+
+  async function getParser() {
+    const mod = await import("./handlers/shared/stream-parsers/anthropic-sse.js");
+    return mod.createAnthropicPassthroughStream;
+  }
+
+  function frame(event: string, data: unknown): string {
+    return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  }
+
+  function messageStart(model = "test-model"): string {
+    return frame("message_start", {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 12, output_tokens: 0 },
+      },
+    });
+  }
+
+  function responseThatDrops(frames: string[]): Response {
+    let nextFrame = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const emitNext = () => {
+          if (nextFrame < frames.length) {
+            controller.enqueue(encoder.encode(frames[nextFrame++]));
+            timer = setTimeout(emitNext, 0);
+            return;
+          }
+          timer = setTimeout(() => controller.error(new Error("upstream socket closed")), 0);
+        };
+
+        emitNext();
+      },
+      cancel() {
+        if (timer) clearTimeout(timer);
+      },
+    });
+
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  test("mid-stream socket close preserves partial text, emits message_stop, and terminates", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = responseThatDrops([
+      messageStart(),
+      frame("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+      frame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "partial " },
+      }),
+      frame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "answer" },
+      }),
+    ]);
+    let turnEndCalls = 0;
+    let tokenUpdate: [number, number] | null = null as [number, number] | null;
+
+    const response = createAnthropicPassthroughStream(createMockContext(), fixture, {
+      modelName: "test-model",
+      onTurnEnd: () => {
+        turnEndCalls++;
+      },
+      onTokenUpdate: (input, output) => {
+        tokenUpdate = [input, output];
+      },
+    });
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const events = await Promise.race([
+        parseClaudeSseStream(response),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("abandoned stream did not terminate")), 500);
+        }),
+      ]);
+
+      expect(extractText(events)).toBe("partial answer");
+      expect(events.some((event) => event.data?.type === "message_stop")).toBe(true);
+      expect(turnEndCalls).toBe(1);
+      expect(tokenUpdate).toEqual([12, 0]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  });
+
+  test("healthy stream remains byte-identical with one message_delta and one message_stop", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const healthyStream = [
+      messageStart(),
+      frame("content_block_start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+      frame("content_block_delta", {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "complete" },
+      }),
+      frame("content_block_stop", { type: "content_block_stop", index: 0 }),
+      frame("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 1 },
+      }),
+      frame("message_stop", { type: "message_stop" }),
+    ].join("");
+
+    const response = createAnthropicPassthroughStream(
+      createMockContext(),
+      new Response(healthyStream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+      { modelName: "test-model" }
+    );
+    const output = await response.text();
+    const initialPing = 'event: ping\ndata: {"type":"ping"}\n\n';
+
+    expect(output).toBe(`${initialPing}${healthyStream}`);
+
+    const events = await parseClaudeSseStream(new Response(output));
+    expect(events.filter((event) => event.data?.type === "message_delta")).toHaveLength(1);
+    expect(events.filter((event) => event.data?.type === "message_stop")).toHaveLength(1);
+  });
+
+  test("synthetic tail honors an upstream tool_use stop reason", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = responseThatDrops([
+      messageStart(),
+      frame("message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "tool_use", stop_sequence: null },
+        usage: { output_tokens: 4 },
+      }),
+    ]);
+    const response = createAnthropicPassthroughStream(createMockContext(), fixture, {
+      modelName: "test-model",
+    });
+
+    const events = await parseClaudeSseStream(response);
+    const messageDeltas = events.filter((event) => event.data?.type === "message_delta");
+
+    expect(messageDeltas).toHaveLength(2);
+    expect(messageDeltas.at(-1)?.data?.delta?.stop_reason).toBe("tool_use");
+  });
+
+  test("synthetic tail closes an open content block before message_stop", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const fixture = responseThatDrops([
+      messageStart(),
+      frame("content_block_start", {
+        type: "content_block_start",
+        index: 3,
+        content_block: { type: "text", text: "" },
+      }),
+    ]);
+    const response = createAnthropicPassthroughStream(createMockContext(), fixture, {
+      modelName: "test-model",
+    });
+
+    const events = await parseClaudeSseStream(response);
+    const blockStopIndex = events.findIndex(
+      (event) => event.data?.type === "content_block_stop" && event.data?.index === 3
+    );
+    const messageStopIndex = events.findIndex((event) => event.data?.type === "message_stop");
+
+    expect(blockStopIndex).toBeGreaterThan(-1);
+    expect(messageStopIndex).toBeGreaterThan(blockStopIndex);
+  });
+
+  test("drop before message_start produces a complete parseable synthetic turn", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const response = createAnthropicPassthroughStream(createMockContext(), responseThatDrops([]), {
+      modelName: "test-model",
+    });
+
+    const events = await parseClaudeSseStream(response);
+
+    expect(events.find((event) => event.data?.type === "message_start")?.data?.message?.model).toBe(
+      "test-model"
+    );
+    expect(events.some((event) => event.data?.type === "message_delta")).toBe(true);
+    expect(events.some((event) => event.data?.type === "message_stop")).toBe(true);
+  });
+
+  test("synthetic frames remain valid JSON when modelName contains a quote and backslash", async () => {
+    const createAnthropicPassthroughStream = await getParser();
+    const modelName = 'provider/model"quoted\\path';
+    const response = createAnthropicPassthroughStream(createMockContext(), responseThatDrops([]), {
+      modelName,
+    });
+
+    const output = await response.text();
+    const dataLines = output
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6));
+    const parsed = dataLines.map((line) => JSON.parse(line));
+
+    expect(parsed.length).toBeGreaterThan(0);
+    expect(parsed.find((data) => data.type === "message_start")?.message?.model).toBe(modelName);
+  });
+});
+
 // ─── Adapter Message Conversion Tests ───────────────────────────────────────
 
 describe("Adapter: convertMessagesToOpenAI", () => {

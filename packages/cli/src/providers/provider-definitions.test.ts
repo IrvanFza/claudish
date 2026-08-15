@@ -383,3 +383,17 @@ describe("getApiKeyEnvVars", () => {
 // readiness cases formerly tested here (local always-available, publicKeyFallback,
 // primary key, alias key, no-key → unavailable) are covered by the authority's
 // equivalence matrix in auth/credentials/equivalence.test.ts.
+
+describe("MiniMax credential silo endpoints", () => {
+  test("keeps PAYG and coding providers on their matching hosts", () => {
+    const payg = getProviderByName("minimax")!;
+    const coding = getProviderByName("minimax-coding")!;
+
+    expect(payg.baseUrl).toBe("https://api.minimaxi.com");
+    expect(coding.baseUrl).toBe("https://api.minimax.io");
+    // This is the actual regression guard: identical URLs sent PAYG keys to the coding host.
+    expect(payg.baseUrl).not.toBe(coding.baseUrl);
+    expect(payg.apiKeyUrl).toContain("minimaxi.com");
+    expect(payg.baseUrl).toContain("minimaxi.com");
+  });
+});
