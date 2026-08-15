@@ -33,7 +33,8 @@ export type FailureReason =
   | "timeout"
   | "api_error"
   | "background_task_ceiling"
-  | "empty_output";
+  | "empty_output"
+  | "shape_mismatch";
 
 export interface ModelError {
   /** Model ID that failed (anonymized id used in the report). */
@@ -86,6 +87,27 @@ export interface TeamRunOptions {
    * Whitespace-only output is caught regardless of this setting.
    */
   minOutputBytes?: number;
+  /**
+   * Opt-in SHAPE contract: a JS regex source string the response must match, or
+   * the run is recorded EMPTY with reason `shape_mismatch`.
+   *
+   * This is the only signal that catches a child which answered correctly and
+   * then took one more turn. `claude -p` prints ONLY the final assistant
+   * message, so any post-answer turn (a background Task completing, a
+   * notification arriving) silently replaces the answer with an epilogue —
+   * exit 0, no API error, real non-whitespace prose. Measured: two models
+   * turned 7,743 and 4,737 output tokens into 250 B and 396 B of "the review
+   * above stands", and both were reported `succeeded`.
+   *
+   * Byte counts cannot separate that from a legitimately short answer (a
+   * measured 96 B reply is valid — see DEFAULT_MIN_OUTPUT_BYTES). A caller that
+   * mandated an output shape, however, KNOWS what a complete answer looks like:
+   * `team`'s prompts require a fenced ```vote block, so "```vote" is a precise
+   * oracle where length is a guess.
+   *
+   * Matched against the FULL response, not the bounded tail.
+   */
+  requirePattern?: string;
   /**
    * Called on a timer with a rendered, colourless progress block, and once more
    * when the run settles. Used to push live status somewhere a human can see it
@@ -190,8 +212,19 @@ export function classifyRunOutput(opts: {
   stdoutTail: string;
   stderr: string;
   minOutputBytes: number;
+  /** Caller's shape contract (regex source). See TeamRunOptions.requirePattern. */
+  requirePattern?: string;
+  /**
+   * The complete stdout, when the caller could read it back off disk.
+   *
+   * `stdoutTail` holds only the LAST STDOUT_TAIL_LIMIT bytes, so matching a
+   * pattern against it would silently fail for any contract whose marker sits
+   * near the START of a long answer. Falls back to the tail when absent, which
+   * is exact whenever the tail IS the whole output.
+   */
+  fullOutput?: string;
 }): { reason: FailureReason; detail: string } | null {
-  const { outputSize, stdoutTail, stderr, minOutputBytes } = opts;
+  const { outputSize, stdoutTail, stderr, minOutputBytes, requirePattern, fullOutput } = opts;
 
   const apiError = API_ERROR_RE.exec(stdoutTail);
   if (apiError) {
@@ -234,6 +267,35 @@ export function classifyRunOutput(opts: {
         `Child exited 0 but produced only ${outputSize} B of stdout ` +
         `(caller required at least ${minOutputBytes} B).`,
     };
+  }
+
+  // Shape contract, checked LAST: the structural failures above are cheaper and
+  // give better detail, and a run that hit one of them would fail this too —
+  // reporting "no ```vote block" for what is really an API error would send the
+  // caller after the wrong problem.
+  if (requirePattern) {
+    const haystack = fullOutput ?? stdoutTail;
+    let re: RegExp | null = null;
+    try {
+      re = new RegExp(requirePattern);
+    } catch {
+      // An unusable pattern must never fail a run that may be perfectly good.
+      // runModels validates up front so the caller hears about it before any
+      // model is spawned; this branch only guards a direct call.
+      re = null;
+    }
+    if (re && !re.test(haystack)) {
+      return {
+        reason: "shape_mismatch",
+        detail:
+          `Child exited 0 with ${outputSize} B, but the response does not match the ` +
+          `required pattern /${requirePattern}/. This is the signature of a child that ` +
+          "answered and then took one more turn: `claude -p` prints only the FINAL " +
+          "assistant message, so a background task completing (or any late notification) " +
+          "replaces the real answer with an epilogue about it. Check the child's " +
+          "transcript — the answer was generated, it just was not the last thing said.",
+      };
+    }
   }
 
   return null;
@@ -393,6 +455,49 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
 }
 
 /**
+ * Fail fast on an unusable shape contract. Deliberately called BEFORE the
+ * manifest read and the spawn loop: a bad regex discovered after N children
+ * have run would either waste the whole run or, worse, be swallowed and
+ * silently enforce nothing — which is the exact class of quiet failure this
+ * option exists to remove.
+ */
+function assertValidRequirePattern(pattern: string | undefined): void {
+  if (pattern === undefined) return;
+  try {
+    new RegExp(pattern);
+  } catch (err) {
+    throw new Error(
+      `Invalid requirePattern /${pattern}/: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
+ * Read the response back only when a shape contract needs the whole text —
+ * otherwise this is pure cost on the happy path. Callers invoke this from
+ * `finish`, which runs on the outputStream's "close", so the file is complete.
+ *
+ * Returns undefined when the read is unnecessary OR fails; the caller then
+ * falls back to the tail, and a contract checked against less text can only
+ * produce a false FAILURE, never a false success, with the detail string
+ * naming the pattern either way.
+ */
+function readFullOutputIfNeeded(opts: {
+  crashed: boolean;
+  requirePattern: string | undefined;
+  outputSize: number;
+  outputPath: string;
+}): string | undefined {
+  const { crashed, requirePattern, outputSize, outputPath } = opts;
+  if (crashed || !requirePattern || outputSize <= STDOUT_TAIL_LIMIT) return undefined;
+  try {
+    return readFileSync(outputPath, "utf-8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run all models in parallel.
  * Each model reads input.md and writes response-{ID}.md.
  * Returns when all models complete or timeout.
@@ -402,6 +507,9 @@ export async function runModels(
   opts: TeamRunOptions = {}
 ): Promise<TeamStatus> {
   const timeoutMs = (opts.timeout ?? 300) * 1000;
+
+  assertValidRequirePattern(opts.requirePattern);
+
   const manifest: TeamManifest = JSON.parse(
     readFileSync(join(sessionPath, "manifest.json"), "utf-8")
   );
@@ -433,6 +541,7 @@ export async function runModels(
   }
 
   const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
+  const requirePattern = opts.requirePattern;
 
   // Each child writes its token/cost stats here (one file per model).
   mkdirSync(statsDir(sessionPath), { recursive: true });
@@ -554,9 +663,22 @@ export async function runModels(
         // it: `claude -p` exits 0 on API errors and on background-task
         // termination, so exit code alone would file both as success.
         const crashed = exitCode !== 0;
+        const fullOutput = readFullOutputIfNeeded({
+          crashed,
+          requirePattern,
+          outputSize,
+          outputPath,
+        });
         const degraded = crashed
           ? null
-          : classifyRunOutput({ outputSize, stdoutTail, stderr, minOutputBytes });
+          : classifyRunOutput({
+              outputSize,
+              stdoutTail,
+              stderr,
+              minOutputBytes,
+              requirePattern,
+              fullOutput,
+            });
 
         const failed = crashed || degraded !== null;
         const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
