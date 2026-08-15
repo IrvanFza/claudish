@@ -23,7 +23,9 @@ describe("startHeartbeat", () => {
     });
 
     try {
-      await wait(110);
+      // CI contention delayed a 20 ms timer enough for the 50 ms case to fail on
+      // 2026-08-15; 200 ms keeps a 10:1 wait/interval margin.
+      await wait(200);
     } finally {
       heartbeat.stop();
     }
@@ -45,7 +47,9 @@ describe("startHeartbeat", () => {
     });
 
     try {
-      await wait(50);
+      // CI contention delayed a 20 ms timer enough for the 50 ms case to fail on
+      // 2026-08-15; 200 ms keeps a 10:1 wait/interval margin.
+      await wait(200);
     } finally {
       heartbeat.stop();
     }
@@ -63,7 +67,9 @@ describe("startHeartbeat", () => {
       intervalMs: 20,
     });
 
-    await wait(45);
+    // CI contention delayed a 20 ms timer enough for the 50 ms case to fail on
+    // 2026-08-15; 200 ms keeps a 10:1 wait/interval margin.
+    await wait(200);
     heartbeat.stop();
     heartbeat.stop();
     const countAtStop = frames.length;
@@ -139,7 +145,9 @@ describe("startHeartbeat", () => {
 
     try {
       expect(() => heartbeat.tick()).not.toThrow();
-      await wait(50);
+      // CI contention delayed a 20 ms timer enough for the 50 ms case to fail on
+      // 2026-08-15; 200 ms keeps a 10:1 wait/interval margin.
+      await wait(200);
       expect(heartbeat.emitted).toBeGreaterThanOrEqual(3);
     } finally {
       heartbeat.stop();
@@ -156,7 +164,9 @@ describe("startHeartbeat", () => {
 
     try {
       expect(() => heartbeat.tick()).not.toThrow();
-      await wait(50);
+      // CI contention delayed a 20 ms timer enough for the 50 ms case to fail on
+      // 2026-08-15; 200 ms keeps a 10:1 wait/interval margin.
+      await wait(200);
       expect(heartbeat.emitted).toBeGreaterThanOrEqual(3);
     } finally {
       heartbeat.stop();
