@@ -357,9 +357,10 @@ const NEXT_STEP: Record<string, string> = {
     "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 for children, or forbid background work in the prompt",
   empty_output: "retry once; if it repeats, drop the model",
   shape_mismatch:
-    "the answer was generated but not captured — print mode keeps only the FINAL " +
-    "assistant message, so a late background task or notification overwrote it. " +
-    "Retry, and forbid background work in the prompt; do NOT count this slot as a vote",
+    "the response does not carry the shape you required. Every assistant message the " +
+    "child emitted was captured, so nothing was lost in transit — the model did not " +
+    "produce it. Re-prompt with the required format restated; do NOT count this slot " +
+    "as a vote",
 };
 
 /** `18864` → `18.4KB`. */
@@ -863,11 +864,10 @@ function defineTools(
             "Regex the response MUST match, or the slot is reported FAILED (state EMPTY, " +
             "reason 'shape_mismatch') instead of succeeded. Strongly recommended whenever " +
             "your prompt mandates an output shape — e.g. '```vote' for a voting panel. " +
-            "Exit code 0 is not a success oracle: a child that answers and then takes one " +
-            "more turn (a background Task finishing, a late notification) has its real " +
-            "answer replaced by a short epilogue, because print mode emits only the FINAL " +
-            "assistant message. That lands as a few hundred bytes of plausible prose with " +
-            "exit 0 and no error, and is otherwise indistinguishable from success.",
+            "Exit code 0 is not a success oracle: it is 0 on API errors and on a child " +
+            "that simply never followed the format. Answers are no longer LOST to print " +
+            "mode (every assistant message is captured), so a mismatch now means the model " +
+            "did not produce the shape, not that the shape was discarded.",
         },
         min_output_bytes: {
           type: "number",
