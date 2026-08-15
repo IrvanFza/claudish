@@ -1,13 +1,13 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   DEFAULT_PROGRESS_INTERVAL_MS,
   MAX_PROGRESS_INTERVAL_MS,
   MIN_PROGRESS_INTERVAL_MS,
   NOOP_HEARTBEAT,
   PROGRESS_INTERVAL_ENV_VAR,
+  type ProgressFrame,
   resolveProgressIntervalMs,
   startHeartbeat,
-  type ProgressFrame,
 } from "./progress-heartbeat.js";
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
