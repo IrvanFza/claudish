@@ -296,6 +296,8 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
 const isBehaviorCommand = firstPositional === "behavior";
+// Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
+const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -350,6 +352,18 @@ if (isMcpMode) {
   import("./behavior-command.js").then((m) =>
     m.behaviorCommand(args.slice(behaviorArgIndex + 1)).catch((e) => {
       console.error(`[claudish behavior] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
+} else if (isTeamCommand) {
+  // Multi-model orchestration: claudish team run|run-and-judge. Routed here
+  // because an UNROUTED subcommand does not error — it falls through to the
+  // default path and `team run --models a,b` silently becomes a catalog search
+  // for the literal string "a,b", which reads like a working command.
+  const teamArgIndex = args.indexOf("team");
+  import("./team-cli.js").then((m) =>
+    m.teamCommand(args.slice(teamArgIndex + 1)).catch((e) => {
+      console.error(`[claudish team] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );

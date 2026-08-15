@@ -67,7 +67,7 @@ The only **binary** wire in the pipeline: Connect-protocol envelopes carrying pr
 Codec, request builder, credentials, live roster, and uid resolution live in `providers/devin/`;
 Layer 1 is `adapters/devin-api-format.ts`, Layer 3 `providers/transport/devin.ts`, the parser
 `handlers/shared/stream-parsers/devin-connect.ts`. Full reverse-engineering write-up:
-`ai-docs/sessions/dev-arch-devin-subscription-20260806-120000-a1b2c3d4/protocol-spec.md`.
+`ai-docs/sessions/dev-arch-devin-subscription-20260806-120000-a1b2c3d4/protocol-spec.md` (write-up lost — predates the ai-docs tracking fix).
 
 **Auth is the Devin CLI's own token, verbatim.** `~/.local/share/devin/credentials.toml`
 (`windsurf_api_key = "devin-session-token$<JWT>"`), overridable with `WINDSURF_API_KEY`;
@@ -174,7 +174,7 @@ The Antigravity half of the old `auth/gemini-oauth.ts` was extracted to **`auth/
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a roster. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
-**Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md`.
+**Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
 
 ### Qwen / Alibaba: ONE service, TWO consoles, THREE isolated silos
 
@@ -289,7 +289,7 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
-**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`
+**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
 
 ### The interactive picker roster is DERIVED — never add a membership table
 
@@ -868,6 +868,45 @@ bun run packages/cli/src/test-fixtures/extract-sse-from-log.ts logs/claudish_*.l
 bun test packages/cli/src/format-translation.test.ts
 ```
 
+## The `team` success oracle — why exit 0 proves nothing
+
+`claude -p` in text output mode emits **ONLY the final assistant message**. Any turn the child takes AFTER writing its answer replaces that answer on the captured surface. Isolated proof, no claudish anywhere in the path:
+
+```
+$ echo "Say exactly ALPHA_MARKER on its own line. Then run the bash command: echo hi. Then say exactly OMEGA_MARKER on its own line." | claude -p --model haiku
+OMEGA_MARKER          <- 13 bytes. ALPHA_MARKER is gone.
+```
+
+Under `--output-format stream-json --verbose` BOTH messages are present, and the `result` field equals the last message — i.e. exactly what text mode prints. **The data survives upstream; only the capture path discards it.** The trigger is any post-answer turn, most often a background `Task`/`Agent` completing, whose notification prompts an acknowledgement — and that acknowledgement becomes `response-NN.md`.
+
+Measured on claudish's `team`, deterministic 2/2 on the first attempt:
+
+| model | output tokens generated | bytes captured | exit | reported | `vote` blocks |
+|---|---|---|---|---|---|
+| `gc@glm-5.2` | 7,743 | 250 B | 0 | succeeded | 0 |
+| `kc@k3` | 4,737 | 396 B | 0 | succeeded | 0 |
+
+Both surviving texts referred to "the review and vote above" — a review that is not on disk. The originally reported incident (236 B from `glm-5.2`) is the same shape. **It is not model-specific and not a claudish bug**: a madbench eval reproduced it on `claude-haiku-4-5` through plain Claude Code, no claudish in the path, 3 consecutive runs. It is a property of the print-mode capture surface.
+
+The existing classifier could not see it because the epilogue passes every test it ran: exit code 0, no `[API Error: ...]` marker, non-whitespace output. `DEFAULT_MIN_OUTPUT_BYTES` is 0 (opt-in, off).
+
+**A byte threshold is the wrong instrument, and this is the design point.** An earlier default of 200 produced a 2/2 false-positive rate against real short answers (measured 141 B and 96 B replies, both valid). Length is a guess. A caller that MANDATED an output shape, by contrast, knows what a complete answer looks like — so `require_pattern` is a precise oracle where length is not.
+
+Detection, then:
+
+- `FailureReason` gains `shape_mismatch`; `classifyRunOutput` gains optional `requirePattern` and `fullOutput`.
+- `runModels` gains `requirePattern` and validates the regex **BEFORE reading the manifest and before spawning anything** — a bad regex discovered later would either waste the whole run or, worse, silently enforce nothing.
+- The MCP `team` tool exposes `require_pattern` and `min_output_bytes`. The reporter of the original bug had no way to opt in, which is why the option existing internally was not enough.
+
+Two ordering decisions worth keeping:
+
+1. **The shape check runs LAST**, after the api_error / background-ceiling / empty checks. A run that hit one of those would fail the shape check too, and reporting "no `vote` block" for what is really an API error sends the caller after the wrong problem.
+2. **The pattern is matched against the FULL response, not `stdoutTail`**, because that tail is capped at `STDOUT_TAIL_LIMIT` (4000 B) — a contract whose marker sits near the START of a long answer would otherwise silently never match. Mutation-tested: changing `fullOutput ?? stdoutTail` to `stdoutTail` fails the suite.
+
+**Deliberately NOT built: recovery.** Detection converts a silent wrong verdict into a loud failure, but the generated answer is still lost — the caller re-runs and pays again. Recovering it requires running children under `--output-format stream-json` and reassembling assistant text, which changes every team run's stdout contract and raises an unresolved question: concatenate all assistant text (including intermediate "let me read that file" chatter), or keep only the last substantial message? Open item, not a plan.
+
+Unrelated but adjacent: `teamCommand` is exported from `team-cli.ts` and imported nowhere, so `claudish team run` is dead code that silently falls through to catalog search. The `team` surface is **MCP-only**.
+
 ## Channel Mode (v6.4.0+)
 
 The MCP server supports a channel mode that enables async model sessions with push notifications.
@@ -932,7 +971,7 @@ When rendered by Claude Code, each notification arrives in the agent's context a
 
 `meta` keys must match `[a-zA-Z0-9_]+` — Claude Code silently drops keys with hyphens or other characters. Our schema uses underscore-only keys (`session_id`, `elapsed_seconds`, etc.); when adding new `extraMeta` keys via `SignalWatcher`, keep this constraint.
 
-The `task_id` / `status` / `created_at` / `last_updated_at` fields are SEP-1686 (MCP Tasks) forward-compatibility — additive only, no current consumer behavior change. The 7-value `event` collapses to the 5-value `status` per `EVENT_TO_TASK_STATUS` in `mcp-server.ts`. When Claude Code ships `notifications/tasks/status` receiver support, the migration is a method-name swap + payload restructure; see `ROADMAP.md` (Channel notifications → Phase 2) and `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` for the full plan.
+The `task_id` / `status` / `created_at` / `last_updated_at` fields are SEP-1686 (MCP Tasks) forward-compatibility — additive only, no current consumer behavior change. The 7-value `event` collapses to the 5-value `status` per `EVENT_TO_TASK_STATUS` in `mcp-server.ts`. When Claude Code ships `notifications/tasks/status` receiver support, the migration is a method-name swap + payload restructure; see `ROADMAP.md` (Channel notifications → Phase 2) and `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` (write-up lost — predates the ai-docs tracking fix) for the full plan.
 
 ### Enabling channel rendering in Claude Code
 
@@ -1004,6 +1043,30 @@ Under `--bare` the tools are not in the model's toolset when it decides what to 
 
 Assert on the protocol, never on prose: `--output-format stream-json --verbose` exposes the `init` server status, the `tools` array, and the `tool_use`/`tool_result` pair. An assertion like `stdout.includes("Recommended Models")` passes for the wrong reason — it matched output the model produced via `Bash` while MCP discovery was silently broken. Also `proc.stdin.end()` on the spawned `claude`, or every run stalls 3s on "no stdin data received".
 
+### The `notifications/progress` keepalive (`mcp/progress-heartbeat.ts`)
+
+Claude Code aborts a tool call that puts nothing on the transport for its idle window — `MCP server "plugin:claudish:claudish" tool "team" sent no response or progress for 1800s; aborting`. Measured 2026-08-14 on **2.1.231** with three tools of identical 90s duration against a 30s window (`ai-docs/reports/mcp-progress-keepalive/findings.md`):
+
+| Tool emits every 10s | Outcome |
+|---|---|
+| nothing | aborted at 30s |
+| `notifications/progress` | survived 90s |
+| `notifications/claude/channel` | aborted at 30s |
+
+Channel and progress are **complementary, not alternatives**: channel is the visible surface with no keepalive, progress is the invisible keepalive — it still renders nowhere. A tool that blocks for minutes needs both.
+
+**`heartbeat: true` is set on exactly three tools**: `team`, `run_prompt`, `compare_models`. `create_session` deliberately does NOT carry it — it returns in milliseconds with `{session_id, status:"starting"}` and cannot reach the idle timer; the session's own long life is reported over channel frames, which is a different question.
+
+**The emitter is TIME-driven, not event-driven**, and that is the load-bearing choice. `team` already emitted a channel frame on every state change and still died at exactly 1800s, because a model that thinks for 30 minutes produces no state changes — an event-driven emitter goes silent precisely while the idle timer is counting.
+
+Interval defaults to 10s (the measured-working value), overridable with `CLAUDISH_MCP_PROGRESS_INTERVAL_MS`, clamped to `[1000, 60000]`, garbage → default. Resolved once per server, not per call, so a long session cannot change cadence mid-flight. The first frame lands at t+interval, so a 200ms call stays completely silent.
+
+**An absent or invalid `progressToken` degrades to `NOOP_HEARTBEAT`** — a shared frozen handle: no timer, no frame, no warning, no throw. The token is optional in the spec, so a host that omits it has not misbehaved, and a tool call must never fail because its keepalive could not arm. (2.1.231 does send it — observed value `2` in every probe arm. `anthropics/claude-code#58687`, which reports the client sends no `_meta.progressToken`, is STALE.)
+
+**`stop()` latches; `clearInterval` alone would not be enough.** The dispatch owns start and stop in a `finally`, and `stopped` is re-checked at the top of `emit`, so a tick already queued on the macrotask queue when the response was computed is dropped instead of reaching the wire after its own response — the `GLips/Figma-Context-MCP#362` teardown pattern, where a frame arriving after the client cleaned up its token tears down stdio.
+
+**Idle-window defaults, for sizing any test or config**: 30 min on stdio, 5 min on HTTP/SSE/WS. A per-server `timeout` (ms, ≥1000) in `.mcp.json` floors it for that server only; `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` disables the check entirely. **Undocumented floor worth knowing**: values below ~30s are silently ignored by the client — `1000` and `5000` were (a silent 20s call survived a nominal 5s window), `30000` was honoured exactly. Any test using a shorter window is confounded, because its control cannot fail.
+
 ## Test Infrastructure
 
 ### Format Translation Test Harness
@@ -1026,7 +1089,13 @@ The fallback VERSION in version.ts ensures compiled binaries (Homebrew, standalo
 
 ## Session Artifacts
 
-Write research/planning artifacts to `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` — not `/tmp` (cleared on reboot). Referenced docs live there, e.g. `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`.
+`ai-docs/` is TRACKED, but `ai-docs/sessions/` is GITIGNORED. The split is load-bearing, not bookkeeping.
+
+**Ephemeral working artifacts** — scratch notes, raw run directories, intermediate logs, one-off probe scripts — go in `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/`, not `/tmp` (cleared on reboot). That directory does NOT survive a fresh clone or `git worktree remove`.
+
+**Anything referenced from CLAUDE.md, or otherwise meant to outlive the session, must be written somewhere TRACKED under `ai-docs/`** — `ai-docs/reports/` for findings and write-ups, `ai-docs/benches/` for reusable evals. Both exist and hold real content. A session dir is where you work; a tracked dir is where the conclusion goes.
+
+The cost is already paid: under the old "everything in `ai-docs/sessions/`" rule, of the four session write-ups CLAUDE.md cites, **three no longer exist anywhere** — never committed, so they died with the worktree that produced them. The prose citing them survives and now points at nothing, which is why those references carry an inline "write-up lost" marker. Only `dev-feature-parent-resolve-…/baseline-evidence.md` is still readable, and only by accident.
 
 ## Learned Preferences
 

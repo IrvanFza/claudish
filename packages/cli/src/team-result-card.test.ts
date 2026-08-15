@@ -165,13 +165,17 @@ describe("formatTeamResult", () => {
     "api_error",
     "background_task_ceiling",
     "empty_output",
+    "shape_mismatch",
   ] as const)("includes reason, next step, and evidence for %s", (reason) => {
     const output = formatTeamResult(
       status({
-        "01": modelStatus(reason === "timeout" ? "TIMEOUT" : "FAILED", {
-          id: "01",
-          reason,
-        }),
+        "01": modelStatus(
+          reason === "timeout" ? "TIMEOUT" : reason === "shape_mismatch" ? "EMPTY" : "FAILED",
+          {
+            id: "01",
+            reason,
+          }
+        ),
       }),
       SESSION_PATH
     );
@@ -186,6 +190,35 @@ describe("formatTeamResult", () => {
     if (reason === "api_error") {
       expect(output).toContain("or@");
     }
+  });
+
+  it("warns that a shape-mismatch answer was not captured and must not become a vote", () => {
+    const output = formatTeamResult(
+      status({
+        "01": modelStatus("EMPTY", { id: "01", reason: "shape_mismatch" }),
+      }),
+      SESSION_PATH
+    );
+
+    expect(output).toContain("not captured");
+    expect(output).toContain("do NOT count this slot as a vote");
+  });
+
+  it("reports a vote-less shape_mismatch slot as a failure, not a success", () => {
+    // Measured late turns reduced 7,743 and 4,737 output tokens to 250 B and 396 B epilogues.
+    const output = formatTeamResult(
+      status({
+        "01": modelStatus("COMPLETED", { id: "01" }),
+        "02": modelStatus("EMPTY", { id: "02", reason: "shape_mismatch" }),
+      }),
+      SESSION_PATH
+    );
+    const failures = output.split("failures:\n")[1]?.split("\nactions:")[0] ?? "";
+
+    expect(output).toContain("status: partial — 1/2 succeeded");
+    expect(output).not.toContain("2/2 succeeded");
+    expect(failures).toContain("02  EMPTY");
+    expect(failures).toContain("reason=shape_mismatch");
   });
 
   it("calls out missing diagnostics and tells the caller to report_error", () => {
