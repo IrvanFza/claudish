@@ -48,8 +48,9 @@ the kill I issued."*
 
 ## Measured
 
-`ai-docs/sessions/terminal-plugin-raw-tmux-drift-20260811-134200-c4f19b2e/repro4/`,
-claudish 7.48.0, Claude Code 2.1.227, macOS arm64.
+`ai-docs/reports/team-silent-dropout-run/` (the run directory itself, rescued out of the
+session tree so this table keeps its provenance), claudish 7.48.0, Claude Code 2.1.227,
+macOS arm64.
 
 | slot | model | reported state | bytes on disk | output tokens | ` ```vote ` blocks | tools called |
 |---|---|---|---|---|---|---|

@@ -128,11 +128,11 @@ that reaches a reader. It is not, however, a substitute on the *liveness* axis, 
 2026-08-14 measurement settled.
 
 **References**:
-- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
-- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/`
-- Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`
-- Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/sessions/mcp-progress-idle-timeout-20260814-000000-b7e21f4a/findings.md`
-- Keepalive implementation design: `ai-docs/sessions/dev-feature-mcp-progress-20260814-001500-c4d9/architecture.md`
+- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/` (lost — session dirs are gitignored and died with their worktree)
+- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/` (lost — same)
+- Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md` (lost — same)
+- Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/reports/mcp-progress-keepalive/findings.md`
+- Keepalive implementation design: `ai-docs/reports/mcp-progress-keepalive/architecture.md`
 - Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
 - Field evidence of the transport-kill bug the latch defends against: <https://github.com/GLips/Figma-Context-MCP/issues/362>
 - Stale `progressToken` claim: <https://github.com/anthropics/claude-code/issues/58687>
