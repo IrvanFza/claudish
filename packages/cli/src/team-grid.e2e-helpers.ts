@@ -71,6 +71,58 @@ export interface PtyHandle {
   kill(signal?: NodeJS.Signals): void;
 }
 
+export type HeadlessHandle = Omit<PtyHandle, "send">;
+
+/**
+ * Spawn a command directly with non-TTY stdio.
+ *
+ * magmux 0.8.0 auto-enables headless mode when stdin is not a terminal and no
+ * longer survives the expect(1) wrapper used by runInPty(). Socket-protocol
+ * tests therefore launch it directly and use the socket as the whole interface.
+ */
+export function runHeadless(opts: PtyRunOptions): HeadlessHandle {
+  const command = opts.command[0];
+  if (!command) throw new Error("runHeadless requires a command");
+
+  const proc = spawn(command, opts.command.slice(1), {
+    cwd: opts.cwd,
+    env: opts.env ?? process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let rawStdout = "";
+  proc.stdout?.on("data", (chunk: Buffer) => {
+    const s = chunk.toString("utf-8");
+    rawStdout += s;
+    opts.onData?.(s);
+  });
+  proc.stderr?.on("data", (chunk: Buffer) => {
+    const s = chunk.toString("utf-8");
+    rawStdout += s;
+    opts.onData?.(s);
+  });
+
+  const exit = new Promise<{ code: number; stdout: string }>((resolve) => {
+    proc.once("exit", (code) => {
+      resolve({ code: code ?? -1, stdout: stripAnsi(rawStdout) });
+    });
+  });
+
+  return {
+    proc,
+    waitForExit() {
+      return exit;
+    },
+    kill(signal: NodeJS.Signals = "SIGTERM") {
+      try {
+        proc.kill(signal);
+      } catch {
+        /* already dead */
+      }
+    },
+  };
+}
+
 /**
  * Spawn a command under a real PTY using expect(1). Cleaned stdout excludes
  * ANSI escape sequences.

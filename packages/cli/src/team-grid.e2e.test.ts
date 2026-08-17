@@ -21,10 +21,12 @@
 
 import { beforeAll, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
   type MagmuxSubscription,
   findMagmuxForTest,
+  runHeadless,
   runInPty,
   snapshotMagmuxSockets,
   stripAnsi,
@@ -122,16 +124,16 @@ describe("magmux socket protocol (shell commands)", () => {
     // before magmux starts emitting events. `-w` makes magmux auto-quit
     // as soon as the pane is "done".
     const grid = writeGridfile([`echo 'hello from test pane'; sleep 2`]);
-    const baseline = snapshotMagmuxSockets();
+    const id = `e2e-${randomUUID().slice(0, 8)}`;
 
-    const handle = runInPty({
-      command: [magmuxPath, "-g", grid.path, "-w"],
+    const handle = runHeadless({
+      command: [magmuxPath, "--id", id, "-g", grid.path, "-w"],
     });
 
     let sub: MagmuxSubscription | null = null;
     try {
       // Wait briefly for magmux to create its socket.
-      sub = await subscribeToMagmuxSocket({ baseline });
+      sub = await subscribeToMagmuxSocket(`/tmp/magmux-${id}.sock`);
 
       // The shutdown event is the canonical "we're about to close" signal.
       await sub.waitFor((events) => events.some((e) => e.type === "shutdown"), 15_000);
@@ -171,15 +173,15 @@ describe("magmux socket protocol (shell commands)", () => {
   it("marks a failed pane as failed in the results event", async () => {
     // Sleep first so the subscriber has time to attach, then fail.
     const grid = writeGridfile([`sleep 2; echo 'oops' >&2; exit 37`]);
-    const baseline = snapshotMagmuxSockets();
+    const id = `e2e-${randomUUID().slice(0, 8)}`;
 
-    const handle = runInPty({
-      command: [magmuxPath, "-g", grid.path, "-w"],
+    const handle = runHeadless({
+      command: [magmuxPath, "--id", id, "-g", grid.path, "-w"],
     });
 
     let sub: MagmuxSubscription | null = null;
     try {
-      sub = await subscribeToMagmuxSocket({ baseline });
+      sub = await subscribeToMagmuxSocket(`/tmp/magmux-${id}.sock`);
       await sub.waitFor((events) => events.some((e) => e.type === "results"), 15_000);
 
       const resultsEvent = sub.events.find((e) => e.type === "results")!;
@@ -196,15 +198,15 @@ describe("magmux socket protocol (shell commands)", () => {
 
   it("handles multiple panes and reports per-pane state", async () => {
     const grid = writeGridfile([`echo 'pane0 ok'; sleep 2`, `echo 'pane1 ok'; sleep 2`]);
-    const baseline = snapshotMagmuxSockets();
+    const id = `e2e-${randomUUID().slice(0, 8)}`;
 
-    const handle = runInPty({
-      command: [magmuxPath, "-g", grid.path, "-w"],
+    const handle = runHeadless({
+      command: [magmuxPath, "--id", id, "-g", grid.path, "-w"],
     });
 
     let sub: MagmuxSubscription | null = null;
     try {
-      sub = await subscribeToMagmuxSocket({ baseline });
+      sub = await subscribeToMagmuxSocket(`/tmp/magmux-${id}.sock`);
       await sub.waitFor((events) => events.some((e) => e.type === "results"), 15_000);
 
       const resultsEvent = sub.events.find((e) => e.type === "results")!;
@@ -227,15 +229,15 @@ describe("magmux socket protocol (shell commands)", () => {
     // pane1 is fast, pane0 is slow. Both sleep enough that subscribe
     // beats them to the punch.
     const grid = writeGridfile([`sleep 3; echo 'slow'`, `sleep 1; echo 'fast'`]);
-    const baseline = snapshotMagmuxSockets();
+    const id = `e2e-${randomUUID().slice(0, 8)}`;
 
-    const handle = runInPty({
-      command: [magmuxPath, "-g", grid.path, "-w"],
+    const handle = runHeadless({
+      command: [magmuxPath, "--id", id, "-g", grid.path, "-w"],
     });
 
     let sub: MagmuxSubscription | null = null;
     try {
-      sub = await subscribeToMagmuxSocket({ baseline });
+      sub = await subscribeToMagmuxSocket(`/tmp/magmux-${id}.sock`);
       await sub.waitFor((events) => events.filter((e) => e.type === "exit").length === 2, 15_000);
 
       const exits = sub.events.filter((e) => e.type === "exit");
@@ -256,15 +258,15 @@ describe("magmux crash fallback", () => {
   it("SIGKILL before results event → no results received", async () => {
     // A long-lived pane so we can kill before completion.
     const grid = writeGridfile(["sleep 30"]);
-    const baseline = snapshotMagmuxSockets();
+    const id = `e2e-${randomUUID().slice(0, 8)}`;
 
-    const handle = runInPty({
-      command: [magmuxPath, "-g", grid.path],
+    const handle = runHeadless({
+      command: [magmuxPath, "--id", id, "-g", grid.path],
     });
 
     let sub: MagmuxSubscription | null = null;
     try {
-      sub = await subscribeToMagmuxSocket({ baseline });
+      sub = await subscribeToMagmuxSocket(`/tmp/magmux-${id}.sock`);
 
       // Give magmux a moment to start rendering but not send results.
       await new Promise((r) => setTimeout(r, 500));
