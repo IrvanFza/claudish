@@ -90,6 +90,33 @@ export interface ProviderTransport {
   forceRefreshAuth?(): Promise<void>;
 
   /**
+   * Optional per-provider verdict on whether an error response is TERMINAL
+   * (won't recover on retry) — the transport's own reading of its provider's
+   * error dialect.
+   *
+   * `true` / `false` are authoritative and override the shared substring
+   * heuristics in `isTerminal429` / `getRecoveryHint`; `undefined` means "no
+   * opinion, use the generic rules", which is also what every transport that
+   * omits this hook gets.
+   *
+   * It exists because a substring heuristic cannot read a structured error.
+   * Google answers EVERY `RESOURCE_EXHAUSTED` — including a plain per-minute
+   * rate limit — with the boilerplate "Resource has been exhausted (e.g. check
+   * quota).", and the shared exhaustion-wording list matches on the bare word
+   * "quota". So a transient throttle was surfaced to the user as "Out of quota
+   * — check your plan & billing details. This won't recover on retry.", a
+   * confident false statement in two directions, while the SAME transport had
+   * already parsed `google.rpc.ErrorInfo.reason: RATE_LIMIT_EXCEEDED` and
+   * correctly called it retryable. The layer that understands the dialect gets
+   * the final say.
+   *
+   * MUST be a pure function of (status, bodyText) — the handler calls it on a
+   * body it already holds, and a handler instance can serve overlapping
+   * requests, so per-request state on the transport would race.
+   */
+  classifyTerminalError?(status: number, bodyText: string): boolean | undefined;
+
+  /**
    * Optional payload transformation before sending.
    * Used by providers that wrap the payload in an envelope (e.g., CodeAssist).
    * Called after adapter.buildPayload() + adapter.prepareRequest().

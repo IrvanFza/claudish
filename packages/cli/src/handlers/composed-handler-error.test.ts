@@ -231,3 +231,61 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
     expect(captured.status).toBeUndefined();
   });
 });
+
+type TerminalClassifier = NonNullable<ProviderTransport["classifyTerminalError"]>;
+
+function makeHandlerWithClassifier(classifyTerminalError: TerminalClassifier): ComposedHandler {
+  const transport: ProviderTransport = { ...makeTransport(), classifyTerminalError };
+  return new ComposedHandler(transport, "fugu-ultra", "fugu-ultra", 8080, {});
+}
+
+describe("ComposedHandler.handle — transport terminality override", () => {
+  test("transport-declared transient 429 overrides quota-wording heuristic", async () => {
+    const message = "Resource has been exhausted (e.g. check quota).";
+    stubUpstream(429, {
+      error: { code: 429, message, status: "RESOURCE_EXHAUSTED" },
+    });
+    let calls = 0;
+    const handler = makeHandlerWithClassifier((status, bodyText) => {
+      calls += 1;
+      expect(status).toBe(429);
+      expect(bodyText).toContain(message);
+      return false;
+    });
+    const { c, captured } = makeContext();
+
+    await handler.handle(c, PAYLOAD);
+
+    expect(calls).toBe(1);
+    expect(captured.status).toBe(429);
+    expect(captured.body?.error?.message).toContain(message);
+  });
+
+  test("transport-declared terminal 429 is surfaced as out of quota", async () => {
+    stubUpstream(429, { error: { message: "rate limit exceeded, slow down" } });
+    const { c, captured } = makeContext();
+
+    await makeHandlerWithClassifier(() => true).handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.type).toBe("invalid_request_error");
+    expect(captured.body?.error?.message).toContain("Out of quota");
+  });
+
+  test("an undefined transport verdict falls back to generic terminal-429 classification", async () => {
+    stubUpstream(429, {
+      error: {
+        message: "insufficient_quota",
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+      },
+    });
+    const { c, captured } = makeContext();
+
+    await makeHandlerWithClassifier(() => undefined).handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.message).toContain("Out of quota");
+    expect(captured.body?.error?.message).toContain("insufficient_quota");
+  });
+});

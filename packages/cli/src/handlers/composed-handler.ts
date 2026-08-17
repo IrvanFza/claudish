@@ -771,7 +771,18 @@ export class ComposedHandler implements ModelHandler {
       } else {
         const errorText = await response.text();
         log(`[${this.provider.displayName}] Error: ${errorText}`);
-        const hint = getRecoveryHint(response.status, errorText, this.provider.displayName);
+        // A transport that parses its provider's structured errors outranks the
+        // shared substring heuristics — computed ONCE here so the user-facing
+        // hint and the terminal/retryable remap below cannot disagree about what
+        // happened. `undefined` (the default for every transport without the
+        // hook) leaves the generic rules exactly as they were.
+        const transportTerminal = this.provider.classifyTerminalError?.(response.status, errorText);
+        const hint = getRecoveryHint(
+          response.status,
+          errorText,
+          this.provider.displayName,
+          transportTerminal
+        );
         let parsedErrorBody: any;
         try {
           parsedErrorBody = JSON.parse(errorText);
@@ -853,7 +864,9 @@ export class ComposedHandler implements ModelHandler {
         // (invalid_request_error) — a status Claude Code surfaces verbatim — and
         // attach a rich message (provider + status + hint + upstream message) so
         // the user sees WHY it failed, right in the chat.
-        if (isTerminalError(response.status, errorText, isTerminal429(errorText))) {
+        if (
+          isTerminalError(response.status, errorText, transportTerminal ?? isTerminal429(errorText))
+        ) {
           const surfaced = buildSurfacedErrorMessage({
             providerDisplayName: this.provider.displayName,
             status: response.status,
@@ -1548,15 +1561,36 @@ export class ComposedHandler implements ModelHandler {
 
 /**
  * Return a human-readable recovery hint based on HTTP status and error body.
+ *
+ * `transportTerminal429` is the transport's own verdict on a 429 when it can
+ * read its provider's structured errors (see
+ * `ProviderTransport.classifyTerminalError`). It OVERRIDES the wording
+ * heuristics below, which are pattern-matching prose and cannot tell a spent
+ * plan from a per-minute throttle when the provider phrases both identically.
+ * `undefined` — every transport without the hook — keeps the original behaviour.
  */
-function getRecoveryHint(status: number, errorText: string, providerName: string): string {
+function getRecoveryHint(
+  status: number,
+  errorText: string,
+  providerName: string,
+  transportTerminal429?: boolean
+): string {
   const lower = errorText.toLowerCase();
 
   if (status === 503 || lower.includes("overloaded")) {
     return "Provider overloaded. Retry or use a different model.";
   }
-  if (status === 429 && isTerminal429(errorText)) {
+  if (status === 429 && (transportTerminal429 ?? isTerminal429(errorText))) {
     return "Out of quota — check your plan & billing details. This won't recover on retry.";
+  }
+  // The transport has positively identified this 429 as transient. Return the
+  // throttling advice here rather than falling through, because the
+  // exhaustion-wording branch below would otherwise claim it: Google stamps
+  // "Resource has been exhausted (e.g. check quota)." on every RESOURCE_EXHAUSTED
+  // reply, so a per-minute rate limit matches "quota" and gets described as a
+  // spent subscription allowance that "refills on the provider's own schedule".
+  if (status === 429 && transportTerminal429 === false) {
+    return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
   // A spent SUBSCRIPTION allowance also arrives as 429, and the generic
   // rate-limit advice below is actively wrong for it: "reduce concurrency" does
