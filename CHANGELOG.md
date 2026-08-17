@@ -2,6 +2,25 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.52.0] - 2026-08-17
+
+### Bug Fixes
+
+- close the bug report's remaining findings, and a test-isolation defect([`e46898e`](https://github.com/MadAppGang/claudish/commit/e46898edd46deae43fe8b63893b33c62f56578ed))
+- ignore magmux's control panel when reading pane results *(team-grid)* ([`483cc83`](https://github.com/MadAppGang/claudish/commit/483cc832331a8903ed212e2bcc09d43d4645e1e9))
+- actually stop timed-out children, and stop discarding their answers *(team)* ([`26865dc`](https://github.com/MadAppGang/claudish/commit/26865dccfadcff8ce48de606fff2c535189db62e))
+- source reasoning capability from the catalog, not hardcoded gates *(adapters)* ([`80d5766`](https://github.com/MadAppGang/claudish/commit/80d5766c13b19ddf64d6376f19cdb664b07ed294))
+- stop silently discarding reasoning_effort on new xAI models *(grok)* ([`b7c61d3`](https://github.com/MadAppGang/claudish/commit/b7c61d3d6f72529699e7a02ef31c3c5d116a2a2c))
+- ignore magmux's control panel when reading pane results *(team-grid)* ([`b8c456a`](https://github.com/MadAppGang/claudish/commit/b8c456a94e9f2fecad31c937420a49159fb0eaa8))
+
+### Documentation
+
+- update CHANGELOG.md for v7.51.0([`1913b82`](https://github.com/MadAppGang/claudish/commit/1913b822152e20f3ecf86250b35d310fa4676728))
+
+### Other Changes
+
+- v7.52.0 - enforce team timeouts, and unbreak grok-4.6 reasoning effort([`59e717b`](https://github.com/MadAppGang/claudish/commit/59e717b110637f26597294a945c9b8cb957da8b6))
+
 ## [7.51.0] - 2026-08-17
 
 ### Documentation
