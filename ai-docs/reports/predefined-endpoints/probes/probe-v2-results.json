@@ -1,0 +1,177 @@
+[
+  {
+    "name": "fireworks",
+    "envVar": "FIREWORKS_API_KEY",
+    "verdict": "path-missing",
+    "baseUrl": "https://api.fireworks.ai/inference",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 404,
+      "contentType": "application/json",
+      "body": "{\"error\":{\"message\":\"Model not found, inaccessible, and/or not deployed\",\"param\":\"model\",\"code\":\"NOT_FOUND\",\"type\":\"error\"},\"request_id\":\"chatcmpl-fe75131835464923b7d535fe47137127\"}"
+    },
+    "bogusSibling": {
+      "status": 404,
+      "contentType": "application/json",
+      "body": "{\"error\":{\"message\":\"Path not found: /v1/chat/completions-claudish-probe-404\",\"param\":null,\"code\":\"NOT_FOUND\",\"type\":\"error\"},\"request_id\":\"chatcmpl-c436bb21f60140c498c4da560344bb23\"}"
+    },
+    "discriminated": true,
+    "note": "404 that does not name our model"
+  },
+  {
+    "name": "sambanova",
+    "envVar": "SAMBANOVA_API_KEY",
+    "verdict": "model-gate",
+    "baseUrl": "https://api.sambanova.ai",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 404,
+      "contentType": "application/json",
+      "body": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"The model `probe-nonexistent-model-zzz` does not exist or you do not have access to it.\",\"param\":\"model\",\"type\":\"invalid_request_error\"},\"request_id\":\"b5c0ac23\"}\n"
+    },
+    "bogusSibling": {
+      "status": 404,
+      "contentType": "application/json",
+      "body": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"The model `probe-nonexistent-model-zzz` does not exist or you do not have access to it.\",\"param\":\"model\",\"type\":\"invalid_request_error\"},\"request_id\":\"9ee5dfcc\"}\n"
+    },
+    "discriminated": true,
+    "note": "404 naming our fake model — route resolved, model rejected before auth"
+  },
+  {
+    "name": "parasail",
+    "envVar": "PARASAIL_API_KEY",
+    "verdict": "auth-realm",
+    "baseUrl": "https://api.parasail.io",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 401,
+      "contentType": "application/json;charset=ISO-8859-1",
+      "body": "Unauthorized. Invalid token.\n"
+    },
+    "bogusSibling": {
+      "status": 401,
+      "contentType": "application/json;charset=ISO-8859-1",
+      "body": "Unauthorized. Invalid token.\n"
+    },
+    "discriminated": false,
+    "note": "credentials checked at this path (401)"
+  },
+  {
+    "name": "writer",
+    "envVar": "WRITER_API_KEY",
+    "verdict": "auth-realm",
+    "baseUrl": "https://api.writer.com",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 401,
+      "contentType": "application/json",
+      "body": "{\"tpe\":\"fail.auth\",\"errors\":[{\"description\":\"Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =<redacted: sha256 of the invalid probe key>. Unable to find token in cache or `LiteLLM_VerificationTokenTable`\",\"key\":\"fail.auth.generic\",\"extras\":\"key\"}],\"extras\":null}"
+    },
+    "bogusSibling": {
+      "status": 401,
+      "contentType": "application/json",
+      "body": "{\"tpe\":\"fail.auth\",\"errors\":[{\"description\":\"Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =<redacted: sha256 of the invalid probe key>. Unable to find token in cache or `LiteLLM_VerificationTokenTable`\",\"key\":\"fail.auth.generic\",\"extras\":\"key\"}],\"extras\":null}"
+    },
+    "discriminated": false,
+    "note": "credentials checked at this path (401)"
+  },
+  {
+    "name": "gmi",
+    "envVar": "GMI_API_KEY",
+    "verdict": "path-missing",
+    "baseUrl": "https://api.gmi-serving.com",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 404,
+      "contentType": "text/plain;charset=UTF-8",
+      "body": "No matching target server found for model probe-nonexistent-model-zzz"
+    },
+    "bogusSibling": {
+      "status": 404,
+      "contentType": "text/plain;charset=UTF-8",
+      "body": "No matching target server found for model probe-nonexistent-model-zzz"
+    },
+    "discriminated": false,
+    "note": "identical response to a deliberately bogus sibling path — catch-all, route not real"
+  },
+  {
+    "name": "nvidia",
+    "envVar": "NVIDIA_API_KEY",
+    "verdict": "path-missing",
+    "baseUrl": "https://integrate.api.nvidia.com",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 404,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "404 page not found\n"
+    },
+    "bogusSibling": {
+      "status": 404,
+      "contentType": "text/plain; charset=utf-8",
+      "body": "404 page not found\n"
+    },
+    "discriminated": false,
+    "note": "identical response to a deliberately bogus sibling path — catch-all, route not real"
+  },
+  {
+    "name": "lambda",
+    "envVar": "LAMBDA_API_KEY",
+    "verdict": "unreachable",
+    "baseUrl": "https://api.lambda.ai",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": null,
+      "contentType": "",
+      "body": "",
+      "networkError": "Error: Unable to connect. Is the computer able to access the url?"
+    },
+    "bogusSibling": {
+      "status": null,
+      "contentType": "",
+      "body": "",
+      "networkError": "Error: Was there a typo in the url or port?"
+    },
+    "discriminated": false,
+    "note": "Error: Unable to connect. Is the computer able to access the url?"
+  },
+  {
+    "name": "kluster",
+    "envVar": "KLUSTER_API_KEY",
+    "verdict": "unreachable",
+    "baseUrl": "https://api.kluster.ai",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": null,
+      "contentType": "",
+      "body": "",
+      "networkError": "Error: Unable to connect. Is the computer able to access the url?"
+    },
+    "bogusSibling": {
+      "status": null,
+      "contentType": "",
+      "body": "",
+      "networkError": "Error: Was there a typo in the url or port?"
+    },
+    "discriminated": false,
+    "note": "Error: Unable to connect. Is the computer able to access the url?"
+  },
+  {
+    "name": "targon",
+    "envVar": "TARGON_API_KEY",
+    "verdict": "gone",
+    "baseUrl": "https://api.targon.com",
+    "apiPath": "/v1/chat/completions",
+    "real": {
+      "status": 410,
+      "contentType": "",
+      "body": ""
+    },
+    "bogusSibling": {
+      "status": 410,
+      "contentType": "",
+      "body": ""
+    },
+    "discriminated": false,
+    "note": "410 Gone — endpoint discontinued"
+  }
+]
