@@ -4,6 +4,40 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [Unreleased]
 
+## [7.51.0] - 2026-08-18
+
+### New Features
+
+- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled *(providers)*
+
+  Export `GROQ_API_KEY` and `groq@llama-3.3-70b` works. No `customEndpoints`
+  block, no base URL to look up, no API path to guess. 25 vendors ship: groq,
+  cerebras, together, fireworks, deepinfra, nebius, hyperbolic, sambanova,
+  novita, baseten, perplexity, venice, chutes, featherless, parasail,
+  inference-net, aimlapi, requesty, nanogpt, cohere, scaleway, upstage, writer,
+  moonshot-cn and tuningengines.
+
+  A vendor appears **only when its key is already in your environment**, and it
+  is reachable only by typing `vendor@model` — no bundled vendor can be reached
+  by a bare model name, so none can be billed without you naming it.
+
+  Membership was decided by measurement. Each candidate was probed at its
+  configured path alongside a deliberately bogus sibling path; a route counts as
+  real only when the two replies differ. 30 candidates were tested and 5 were
+  dropped — two answered a catch-all, one returned 410 Gone, two had no DNS
+  records. **All 25 ship probe-verified, none live-verified**: the probe is
+  strong evidence that a route authenticates and weak evidence about a vendor's
+  streaming dialect, so treat an unfamiliar vendor's first real turn as the test.
+
+  Configure with `predefinedEndpoints` (`enabled` / `disable` / `enable`) or
+  switch the whole catalog off with `CLAUDISH_NO_PREDEFINED_ENDPOINTS=1`. A
+  `customEndpoints` entry of the same name fully replaces the bundled row — note
+  that a replacement does **not** inherit the vendor's conventional env var, so
+  add `"apiKey": "${GROQ_API_KEY}"` if you still want it.
+
+  Adding vendor #26 is one row of data: no provider definition, no profile, no
+  transport, no code.
+
 ### Bug Fixes
 
 - honour `authScheme` and `headers` on custom endpoints *(transport)*
