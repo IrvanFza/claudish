@@ -34,6 +34,19 @@ function makeTransport(): ProviderTransport {
   } as unknown as ProviderTransport;
 }
 
+function makeTransportWithRefresh(
+  onRefresh: () => void | Promise<void>,
+  getHeaders: () => Promise<Record<string, string>> = async () => ({})
+): ProviderTransport {
+  return {
+    ...makeTransport(),
+    getHeaders,
+    forceRefreshAuth: async () => {
+      await onRefresh();
+    },
+  };
+}
+
 /** Stub global fetch to return one canned upstream error response. */
 function stubUpstream(status: number, body: unknown) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
@@ -42,6 +55,36 @@ function stubUpstream(status: number, body: unknown) {
       status,
       headers: { "Content-Type": "application/json" },
     })) as unknown as typeof fetch;
+}
+
+interface StubbedUpstreamResponse {
+  status: number;
+  body: unknown;
+  headers?: Record<string, string>;
+}
+
+interface SequencedFetchCall {
+  input: string | URL | Request;
+  init?: RequestInit;
+}
+
+/** Stub global fetch with one response per call and retain each request for assertions. */
+function stubUpstreamSequence(...responses: StubbedUpstreamResponse[]): SequencedFetchCall[] {
+  const calls: SequencedFetchCall[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const response = responses[calls.length];
+    calls.push({ input, init });
+    if (!response) {
+      throw new Error(`Unexpected fetch call ${calls.length}`);
+    }
+
+    const text = typeof response.body === "string" ? response.body : JSON.stringify(response.body);
+    return new Response(text, {
+      status: response.status,
+      headers: { "Content-Type": "application/json", ...response.headers },
+    });
+  }) as unknown as typeof fetch;
+  return calls;
 }
 
 /** Stub global fetch to throw before any upstream response is received. */
@@ -70,6 +113,7 @@ function makeContext(): { c: Context; captured: CapturedResponse } {
   const c = {
     req: { header: () => ({}) },
     header: () => {},
+    body: (body: BodyInit | null, init?: ResponseInit) => new Response(body, init),
     json: (body: unknown, status?: number) => {
       captured.body = body as CapturedErrorBody;
       captured.status = status;
@@ -229,5 +273,171 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
 
     expect(didReject).toBe(true);
     expect(captured.status).toBeUndefined();
+  });
+});
+
+type TerminalClassifier = NonNullable<ProviderTransport["classifyTerminalError"]>;
+
+function makeHandlerWithClassifier(classifyTerminalError: TerminalClassifier): ComposedHandler {
+  const transport: ProviderTransport = { ...makeTransport(), classifyTerminalError };
+  return new ComposedHandler(transport, "fugu-ultra", "fugu-ultra", 8080, {});
+}
+
+describe("ComposedHandler.handle — transport terminality override", () => {
+  test("transport-declared transient 429 overrides quota-wording heuristic", async () => {
+    const message = "Resource has been exhausted (e.g. check quota).";
+    stubUpstream(429, {
+      error: { code: 429, message, status: "RESOURCE_EXHAUSTED" },
+    });
+    let calls = 0;
+    const handler = makeHandlerWithClassifier((status, bodyText) => {
+      calls += 1;
+      expect(status).toBe(429);
+      expect(bodyText).toContain(message);
+      return false;
+    });
+    const { c, captured } = makeContext();
+
+    await handler.handle(c, PAYLOAD);
+
+    expect(calls).toBe(1);
+    expect(captured.status).toBe(429);
+    expect(captured.body?.error?.message).toContain(message);
+  });
+
+  test("transport-declared terminal 429 is surfaced as out of quota", async () => {
+    stubUpstream(429, { error: { message: "rate limit exceeded, slow down" } });
+    const { c, captured } = makeContext();
+
+    await makeHandlerWithClassifier(() => true).handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.type).toBe("invalid_request_error");
+    expect(captured.body?.error?.message).toContain("Out of quota");
+  });
+
+  test("an undefined transport verdict falls back to generic terminal-429 classification", async () => {
+    stubUpstream(429, {
+      error: {
+        message: "insufficient_quota",
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+      },
+    });
+    const { c, captured } = makeContext();
+
+    await makeHandlerWithClassifier(() => undefined).handle(c, PAYLOAD);
+
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.message).toContain("Out of quota");
+    expect(captured.body?.error?.message).toContain("insufficient_quota");
+  });
+});
+
+const RETRIED_SUCCESS_SSE = [
+  `data: ${JSON.stringify({
+    id: "chatcmpl-after-refresh",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "fugu-ultra",
+    choices: [
+      {
+        index: 0,
+        delta: { role: "assistant", content: "response from refreshed request" },
+        finish_reason: "stop",
+      },
+    ],
+  })}`,
+  "data: [DONE]",
+  "",
+].join("\n\n");
+
+describe("ComposedHandler.handle — 401 auth refresh retry", () => {
+  test("calls forceRefreshAuth exactly once, retries once, and returns the retried 200 response", async () => {
+    let refreshCalls = 0;
+    const calls = stubUpstreamSequence(
+      { status: 401, body: { error: { message: "stale token" } } },
+      {
+        status: 200,
+        body: RETRIED_SUCCESS_SSE,
+        headers: { "Content-Type": "text/event-stream" },
+      }
+    );
+    const transport = makeTransportWithRefresh(() => {
+      refreshCalls += 1;
+    });
+    const handler = new ComposedHandler(transport, "fugu-ultra", "fugu-ultra", 8080, {});
+    const { c } = makeContext();
+
+    const response = await handler.handle(c, PAYLOAD);
+    const body = (await response.json()) as { content?: Array<{ text?: string }> };
+
+    expect(refreshCalls).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(response.status).toBe(200);
+    expect(body.content?.[0]?.text).toBe("response from refreshed request");
+  });
+
+  test("retries with headers minted after forceRefreshAuth", async () => {
+    let refreshed = false;
+    const calls = stubUpstreamSequence(
+      { status: 401, body: { error: { message: "stale token" } } },
+      {
+        status: 200,
+        body: RETRIED_SUCCESS_SSE,
+        headers: { "Content-Type": "text/event-stream" },
+      }
+    );
+    const transport = makeTransportWithRefresh(
+      () => {
+        refreshed = true;
+      },
+      async () => ({ Authorization: refreshed ? "Bearer fresh" : "Bearer stale" })
+    );
+    const handler = new ComposedHandler(transport, "fugu-ultra", "fugu-ultra", 8080, {});
+    const { c } = makeContext();
+
+    const response = await handler.handle(c, PAYLOAD);
+    await response.arrayBuffer();
+
+    expect(calls).toHaveLength(2);
+    expect(new Headers(calls[0]?.init?.headers).get("Authorization")).toBe("Bearer stale");
+    expect(new Headers(calls[1]?.init?.headers).get("Authorization")).toBe("Bearer fresh");
+  });
+
+  test("refreshes only once when the retried request also returns 401", async () => {
+    let refreshCalls = 0;
+    const calls = stubUpstreamSequence(
+      { status: 401, body: { error: { message: "stale token" } } },
+      { status: 401, body: { error: { message: "fresh token rejected too" } } }
+    );
+    const transport = makeTransportWithRefresh(() => {
+      refreshCalls += 1;
+    });
+    const handler = new ComposedHandler(transport, "fugu-ultra", "fugu-ultra", 8080, {});
+    const { c, captured } = makeContext();
+
+    const response = await handler.handle(c, PAYLOAD);
+
+    expect(refreshCalls).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(response.ok).toBe(false);
+    expect(captured.status).toBe(401);
+  });
+
+  test("a transport without forceRefreshAuth surfaces a 401 through the generic error path", async () => {
+    const calls = stubUpstreamSequence({
+      status: 401,
+      body: { error: { message: "invalid api key" } },
+    });
+    const handler = new ComposedHandler(makeTransport(), "fugu-ultra", "fugu-ultra", 8080, {});
+    const { c, captured } = makeContext();
+
+    const response = await handler.handle(c, PAYLOAD);
+
+    expect(calls).toHaveLength(1);
+    expect(response.ok).toBe(false);
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.message).toContain("Sakana Fugu error (HTTP 401)");
   });
 });

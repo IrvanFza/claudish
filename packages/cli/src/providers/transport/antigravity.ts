@@ -27,11 +27,15 @@
 
 import { randomUUID } from "node:crypto";
 import { lookupFamilyDefaultVariant } from "../../adapters/model-catalog.js";
-import { getValidAntigravityAccessToken } from "../../auth/antigravity-token.js";
+import {
+  forceRefreshAntigravityToken,
+  getValidAntigravityAccessToken,
+} from "../../auth/antigravity-token.js";
 import {
   buildAntigravityUserAgent,
   getAntigravityTierDisplayName,
   getServedAntigravityModels,
+  resetAntigravityUserCache,
   retrieveUserQuota,
   setupAntigravityUser,
 } from "../../auth/antigravity-user.js";
@@ -51,6 +55,14 @@ const ANTIGRAVITY_ENDPOINT = `${ANTIGRAVITY_BASE}/v1internal:streamGenerateConte
 const MAX_RETRY_ATTEMPTS = 3;
 /** Default retry delay when server doesn't specify one */
 const DEFAULT_RATE_LIMIT_DELAY_MS = 10_000;
+/**
+ * Budget for the quota reading that fact-checks an "out of quota" verdict.
+ * `retrieveUserQuota` carries no timeout of its own, and this call sits on a
+ * path that is ALREADY failing — a hung connection must not hold the user's
+ * error response open. Timing out degrades to the honest "couldn't confirm"
+ * wording, never to a wrong claim.
+ */
+const QUOTA_CHECK_TIMEOUT_MS = 3000;
 
 // ---------------------------------------------------------------------------
 // Model-id resolution (live served set — NO hardcoded model ids)
@@ -363,6 +375,68 @@ export class AntigravityProviderTransport implements ProviderTransport {
   }
 
   /**
+   * Re-mint the shared token after the backend REJECTED the one we presented,
+   * then rebuild every piece of per-account state derived from it.
+   *
+   * ComposedHandler already owns the "401 → forceRefreshAuth() → retry once"
+   * loop for any transport that implements this hook (the same one Vertex uses).
+   * Antigravity simply never opted in, which is why a stale session had no
+   * recovery path at all: `getValidAntigravityAccessToken()` refreshes on the
+   * LOCAL clock only, so a server-invalidated token with a future `expiry` was
+   * re-presented on every attempt, forever.
+   *
+   * `resetAntigravityUserCache()` is not incidental. `setupAntigravityUser()`
+   * memoizes project + tier for the life of the PROCESS with no expiry, and
+   * `getServedAntigravityModels()` caches the served set for 10 minutes — both
+   * keyed to the identity that was just invalidated. A re-established session
+   * can land on a different project, so keeping them would pin the fresh token
+   * to the dead session's project. (Until now that reset function had no callers
+   * at all.)
+   */
+  async forceRefreshAuth(): Promise<void> {
+    await forceRefreshAntigravityToken();
+    resetAntigravityUserCache();
+    // Drop the delegated artifact too — its headers carry the rejected bearer
+    // token, and getHeaders() prefers it over the locally-built set.
+    this.cachedAuth = null;
+    await this.refreshAuth();
+  }
+
+  /**
+   * This transport's own verdict on 429 terminality, overriding the shared
+   * substring heuristics (see `ProviderTransport.classifyTerminalError`).
+   *
+   * `classify429` reads `google.rpc.ErrorInfo` / `QuotaFailure` and already
+   * distinguishes a spent daily allowance from a per-minute throttle. The
+   * generic classifier cannot: Google stamps "Resource has been exhausted (e.g.
+   * check quota)." on EVERY RESOURCE_EXHAUSTED reply, the shared exhaustion list
+   * matches the bare word "quota", and so a transient throttle reached the user
+   * as "Out of quota — ... This won't recover on retry." — sending them to a
+   * billing dashboard that shows nothing wrong, for a fault that clears on its
+   * own.
+   *
+   * MODEL_CAPACITY_EXHAUSTED is reported as NON-terminal here on purpose, and
+   * that is a deliberate behaviour change. It is terminal for ONE MODEL — which
+   * is why `enqueueRequest` answers it with the served-set fallback chain rather
+   * than a retry — but it says nothing about the account. Google has no capacity
+   * right now; capacity returns on the order of seconds, so retrying is the
+   * actual remedy rather than theatre, and a bare name whose chain continues
+   * (antigravity → google → openrouter) gets served instead of hard-failing.
+   * Reporting it terminal also handed it the quota message, which is how a
+   * capacity fault ended up telling users to check their billing.
+   *
+   * Pure: derived from `bodyText` alone, never from per-request instance state.
+   */
+  classifyTerminalError(status: number, bodyText: string): boolean | undefined {
+    if (status !== 429) return undefined;
+    const classification = classify429(bodyText);
+    // Unparseable body → no opinion; the generic rules are as good a guess.
+    if (!classification) return undefined;
+    if (classification.reason === "MODEL_CAPACITY_EXHAUSTED") return false;
+    return classification.terminal;
+  }
+
+  /**
    * Wrap the standard Gemini payload in the CodeAssist envelope.
    *
    * Stores the envelope for potential fallback retries in enqueueRequest.
@@ -438,10 +512,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       }
 
       if (classification.terminal) {
-        logStderr(
-          `[Antigravity] Quota exhausted (${classification.reason || "daily limit"}). Check plan limits.`
-        );
-        return response;
+        return await this.explainTerminalQuota(response, bodyText, classification.reason);
       }
 
       if (attempt < MAX_RETRY_ATTEMPTS) {
@@ -595,6 +666,97 @@ export class AntigravityProviderTransport implements ProviderTransport {
     }
     return new Response(body, {
       status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  /**
+   * Remaining allowance fraction for the model that just 429'd, or `undefined`
+   * when the reading could not be taken (no token/project, endpoint down, or —
+   * tellingly — the credential itself is no longer accepted).
+   */
+  private async quotaRemainingForServedModel(): Promise<number | undefined> {
+    if (!this.accessToken || !this.projectId) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const data = await Promise.race([
+      retrieveUserQuota(this.accessToken, this.projectId).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), QUOTA_CHECK_TIMEOUT_MS);
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    const buckets = data?.buckets;
+    if (!buckets?.length) return undefined;
+    const bucket =
+      buckets.find((b) => b.modelId === this.servedModelName) ??
+      buckets.find((b) => b.modelId === this.modelName);
+    return typeof bucket?.remainingFraction === "number" ? bucket.remainingFraction : undefined;
+  }
+
+  /**
+   * Answer a terminal-quota 429 with a claim claudish has actually CHECKED.
+   *
+   * "Out of quota — check your plan & billing details" is an assertion about the
+   * ACCOUNT, and it was being made purely from the shape of an error body. When
+   * it is wrong it is expensively wrong: it sends the user to a billing
+   * dashboard showing nothing amiss, while the bare-name chain
+   * (antigravity → google → openrouter) quietly moves them onto a METERED hop
+   * for a model their subscription already covers. The reported case was exactly
+   * this — a plan with allowance left, restored by re-running `agy`.
+   *
+   * `retrieveUserQuota` is the same per-model bucket endpoint the status line
+   * reads, so the claim can be tested against the account itself. Three
+   * outcomes, and the middle one is why this exists at all:
+   *   - allowance remains  → the 429 is not what it says; name the stale session.
+   *   - reading failed     → say we could not confirm, rather than asserting.
+   *   - allowance is zero  → the message was right; keep it, drop the hedging.
+   *
+   * The response is REBUILT rather than replaced: `details` (and therefore
+   * `ErrorInfo.reason`) are preserved verbatim, because `classifyTerminalError`
+   * re-parses this body upstream and must reach the same verdict. Only
+   * `error.message` gains text. An unparseable body is passed through untouched.
+   */
+  private async explainTerminalQuota(
+    response: Response,
+    bodyText: string,
+    reason: string | undefined
+  ): Promise<Response> {
+    const remaining = await this.quotaRemainingForServedModel();
+    const model = this.servedModelName;
+
+    let advice: string;
+    if (remaining !== undefined && remaining > 0) {
+      advice =
+        `your Antigravity plan still reports ${(remaining * 100).toFixed(1)}% of the ${model} ` +
+        "allowance available, so this is probably NOT an exhausted plan. The usual cause is an " +
+        "Antigravity session Google invalidated server-side; run `claudish login antigravity`.";
+    } else if (remaining === undefined) {
+      advice =
+        "claudish could not read your Antigravity quota to confirm this. If your plan is not " +
+        "actually spent, the session may be stale — run `claudish login antigravity`.";
+    } else {
+      advice = `your Antigravity plan reports no remaining ${model} allowance; it refills on Google's own schedule.`;
+    }
+
+    logStderr(`[Antigravity] Terminal 429 (${reason || "daily limit"}) — ${advice}`);
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch {
+      return response;
+    }
+    const target = Array.isArray(parsed) ? parsed[0]?.error : parsed?.error;
+    if (!target || typeof target !== "object") return response;
+    const upstream =
+      typeof target.message === "string" && target.message.length > 0
+        ? target.message
+        : "Resource has been exhausted";
+    target.message = `${upstream} — ${advice}`;
+
+    return new Response(JSON.stringify(parsed), {
+      status: 429,
       headers: { "Content-Type": "application/json" },
     });
   }

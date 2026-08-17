@@ -404,6 +404,85 @@ export function getValidAntigravityAccessToken(
 }
 
 // ---------------------------------------------------------------------------
+// Public: forced refresh (the backend rejected the token we presented)
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-mint the shared Antigravity token even though it is not locally expired.
+ *
+ * `needsRefresh()` only ever asks the CLOCK. A token Google invalidated
+ * server-side — session revoked, signed in elsewhere, OAuth client rotated —
+ * still carries a future `expiry`, so claudish considers itself healthy and
+ * keeps presenting a dead credential until the clock catches up. This is the
+ * escape hatch for the one moment when we hold better evidence than the clock:
+ * the backend has just REJECTED the token.
+ *
+ * Stamping the stored expiry into the past before calling agy is LOAD-BEARING.
+ * `agy models` re-mints only when AGY believes the token is expired, so against
+ * a locally-valid record it would authenticate with the same dead token, exit 0,
+ * and the "refresh" would be a silent no-op — the caller then retries with the
+ * credential that just failed. Marking the record expired is honest (the backend
+ * already told us it is dead), and a failed re-mint restores exactly what we
+ * found, so an absent or broken agy cannot leave the store worse than it was.
+ *
+ * Throws rather than returning null: the caller is mid-retry, and a null would
+ * send it back upstream with the same rejected credential instead of surfacing
+ * an actionable message.
+ */
+export async function forceRefreshAntigravityToken(
+  deps: AntigravityTokenDeps = defaultDeps
+): Promise<string> {
+  if (process.platform !== "darwin") {
+    throw new Error(
+      "[Antigravity] The shared Antigravity token store is macOS-only for now. " +
+        "Use g@<model> with GEMINI_API_KEY on this platform."
+    );
+  }
+
+  // Drop the single-flight promise AND the read memo first, so nothing below can
+  // be handed back the very token the backend just rejected.
+  _resetAntigravityTokenState();
+
+  const rec = parseRecord(deps.readStore());
+  if (!rec) {
+    throw new Error(
+      "[Antigravity] No Antigravity session found. Sign in with `claudish login antigravity`, " +
+        "or use g@<model> with GEMINI_API_KEY " +
+        "(get one at https://aistudio.google.com/app/apikey)."
+    );
+  }
+
+  const original = rec.token;
+  log("[Antigravity] Upstream rejected the current token — asking the Antigravity CLI to re-mint.");
+  writeSharedAntigravityToken(
+    { ...original, expiry: new Date(deps.now() - 1000).toISOString() },
+    deps
+  );
+  deps.runAgyRefresh();
+
+  const refreshed = parseRecord(deps.readStore());
+  const token = refreshed?.token;
+  if (token && token.access_token !== original.access_token && !needsRefresh(token, deps.now())) {
+    log("[Antigravity] Shared token re-minted by the Antigravity CLI.");
+    return token.access_token;
+  }
+
+  // Restore ONLY when agy never wrote (the store still holds our own expiry
+  // stamp). If agy did write something — even something we can't use — that
+  // record is more current than ours, and clobbering it would undo a real
+  // sign-in. Our stamp was a means to provoke the re-mint, never a verdict to
+  // persist.
+  if (!refreshed || refreshed.token.access_token === original.access_token) {
+    writeSharedAntigravityToken(original, deps);
+  }
+  _resetAntigravityTokenState();
+  throw new Error(
+    "[Antigravity] The Antigravity session was rejected upstream and could not be re-minted. " +
+      "Run `claudish login antigravity` to sign in again."
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Test seam
 // ---------------------------------------------------------------------------
 
