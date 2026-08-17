@@ -305,6 +305,41 @@ export function classifyRunOutput(opts: {
 }
 
 /**
+ * stderr lines that every healthy child emits, and which say nothing about the
+ * run's outcome.
+ *
+ * `unrecognized_model` is Claude Code telling itself it does not know the model
+ * name claudish routed — which is the NORMAL case for a proxied model and is
+ * emitted by runs that exit 0 with a perfect answer. In session
+ * team-20260815-115227 all four successful models produced an ~80 B
+ * `errors/NN.log` containing nothing else, so the run looked like it had four
+ * errors it did not have, and a reader scanning for real failures had to open
+ * each one to find out.
+ *
+ * Deliberately anchored on Claude Code's own `[claude-code:...]` tag rather than
+ * on the model name, so it cannot accidentally swallow a provider's message.
+ */
+const BENIGN_STDERR_PATTERNS: readonly RegExp[] = [/^\s*\[claude-code:unrecognized_model\]/];
+
+/**
+ * The part of stderr that is worth persisting — everything that is not known
+ * boilerplate. Empty means "nothing happened worth a log file".
+ *
+ * NOTE this filters only what decides whether to WRITE a success-path log. A
+ * genuine failure still persists the RAW stderr through `persistErrorLog`,
+ * because in that case even the boilerplate is context for whoever is reading.
+ */
+export function meaningfulStderr(stderr: string): string {
+  if (!stderr) return "";
+  return stderr
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !BENIGN_STDERR_PATTERNS.some((re) => re.test(line)))
+    .join("\n")
+    .trim();
+}
+
+/**
  * Write the full diagnostic log for a run.
  *
  * Always called on failure, so `errorLogPath` in the status report is never a
@@ -769,7 +804,12 @@ export async function runModels(
         //
         // Still guard the error log: persistErrorLog has just written the
         // TIMEOUT diagnostics there and a raw stderr dump would erase them.
-        if (!timedOut && stderr) {
+        // Only write a log when there is something worth reading. Every healthy
+        // child emits Claude Code's `unrecognized_model` line — normal for a
+        // proxied model — and writing it produced an `errors/NN.log` for runs
+        // that had no error at all, which is exactly the noise that hides a real
+        // one. `finish()` still writes the full log on any genuine failure.
+        if (!timedOut && meaningfulStderr(stderr)) {
           // Redacted like every other persistence point — provider stderr can
           // echo key material and this file is read by agents.
           writeFileSync(errorLogPath, redactSecrets(stderr), "utf-8");

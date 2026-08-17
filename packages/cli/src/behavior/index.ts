@@ -8,6 +8,7 @@ import { loadConfig } from "../profile-config.js";
 import { parseBehaviorConfig } from "./config.js";
 import { BehaviorEngine } from "./engine.js";
 import { PLAN_MODE_RULES } from "./rules/plan-mode.js";
+import { SESSION_CONTEXT_RULES } from "./rules/session-context.js";
 import type { BehaviorRule } from "./types.js";
 
 export { BehaviorEngine, BehaviorSession } from "./engine.js";
@@ -46,7 +47,7 @@ export type {
 } from "./types.js";
 
 /** Rules shipped with claudish. User hooks are appended to these at load time. */
-export const BUILTIN_RULES: BehaviorRule[] = [...PLAN_MODE_RULES];
+export const BUILTIN_RULES: BehaviorRule[] = [...PLAN_MODE_RULES, ...SESSION_CONTEXT_RULES];
 
 /**
  * Build an engine from a raw config value (the `behavior` key of the merged

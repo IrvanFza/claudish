@@ -602,6 +602,13 @@ export class AntigravityProviderTransport implements ProviderTransport {
   /**
    * Fetch and display per-model quota info from the Code Assist API.
    * Called on first rate limit so the user can see their actual usage.
+   *
+   * The table MUST say something about the model that was actually throttled.
+   * It used to print the buckets verbatim, and the backend returns buckets only
+   * for models it meters — so a 429 on `gemini-3.7-flash` was reported beside
+   * four unrelated models all showing "100.0% remaining", which reads as "you
+   * have plenty of quota" and makes the rate limit look inexplicable. The
+   * absence of a bucket is itself the answer, so name it.
    */
   private async logQuotaInfo(): Promise<void> {
     if (!this.accessToken || !this.projectId) return;
@@ -610,6 +617,7 @@ export class AntigravityProviderTransport implements ProviderTransport {
       if (!data?.buckets?.length) return;
 
       const lines: string[] = [];
+      let sawThrottledModel = false;
       for (const bucket of data.buckets) {
         if (!bucket.modelId) continue;
         const pct =
@@ -622,14 +630,32 @@ export class AntigravityProviderTransport implements ProviderTransport {
               minute: "2-digit",
             })
           : "?";
-        lines.push(`  ${bucket.modelId}: ${pct} remaining (resets ${reset})`);
+        // Mark the row for the model we are actually being throttled on, so the
+        // relevant line is findable in a list of similar-looking ones.
+        const mine = this.isThrottledModel(bucket.modelId);
+        if (mine) sawThrottledModel = true;
+        lines.push(`  ${mine ? "> " : "  "}${bucket.modelId}: ${pct} remaining (resets ${reset})`);
       }
-      if (lines.length > 0) {
-        logStderr(`[Antigravity] Quota status:\n${lines.join("\n")}`);
-      }
+      if (lines.length === 0) return;
+
+      const requested =
+        this.servedModelName && this.servedModelName !== this.modelName
+          ? `${this.modelName} (served as ${this.servedModelName})`
+          : this.modelName;
+      const header = sawThrottledModel
+        ? `[Antigravity] Quota status (> = ${requested}):`
+        : `[Antigravity] Quota status — NOTE: ${requested} has no quota bucket below, ` +
+          "so these figures do not explain its rate limit:";
+      logStderr(`${header}\n${lines.join("\n")}`);
     } catch {
       // Non-fatal: quota check is informational only
     }
+  }
+
+  /** Does this quota bucket describe the model this transport is serving? */
+  private isThrottledModel(bucketModelId: string): boolean {
+    const id = bucketModelId.toLowerCase();
+    return id === this.modelName.toLowerCase() || id === this.servedModelName.toLowerCase();
   }
 
   /**
