@@ -611,6 +611,57 @@ export class ComposedHandler implements ModelHandler {
     this.capturePlanUsage(response);
 
     if (!response.ok) {
+      // 4xx caused by an OPTIONAL parameter the model dialect added
+      // speculatively: let the dialect rewrite the payload and retry ONCE.
+      //
+      // This is what lets a dialect send a capability parameter optimistically
+      // instead of withholding it from every model it cannot prove supports it.
+      // Withholding fails silently — the user's setting vanishes and the only
+      // symptom is different model behaviour — whereas sending fails here,
+      // loudly, and is repaired in one round-trip that is then remembered.
+      // Motivating case: grok-4.6 accepts `reasoning_effort` but postdated the
+      // allowlist, so it silently ran at the provider's default (near-`high`)
+      // tier and blew a 900s team deadline.
+      //
+      // Bounded to a single attempt on purpose: the dialect records the verdict,
+      // so a second failure means the error was never about that parameter.
+      if (
+        response.status >= 400 &&
+        response.status < 500 &&
+        this.modelAdapter?.recoverFromRejection
+      ) {
+        const errorText = await response.clone().text();
+        const recovery = this.modelAdapter.recoverFromRejection(requestPayload, errorText);
+        if (recovery) {
+          log(`[${this.provider.displayName}] Parameter rejected — retrying: ${recovery.note}`);
+          requestPayload = recovery.payload;
+          // Re-serialize: a transport that owns its own encoding (Devin) must
+          // re-encode the changed payload rather than resend the stale bytes.
+          const retrySerialized = this.provider.serializeBody?.(requestPayload);
+          const retryHeaders = await this.provider.getHeaders();
+          retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
+          const retryResp = await fetch(endpoint, {
+            method: "POST",
+            headers: retryHeaders,
+            body: retrySerialized?.body ?? JSON.stringify(requestPayload),
+            ...(this.provider.getRequestInit?.() || {}),
+          });
+          if (retryResp.ok) {
+            response = retryResp;
+          } else {
+            // Fall through to the normal error path with the ORIGINAL response,
+            // so the user sees the real upstream complaint rather than the
+            // artefact of our retry.
+            log(
+              `[${this.provider.displayName}] Retry after ${recovery.note} still failed ` +
+                `(HTTP ${retryResp.status})`
+            );
+          }
+        }
+      }
+    }
+
+    if (!response.ok) {
       // 401: retry with forced auth refresh (OAuth token expiry)
       if (response.status === 401 && this.provider.forceRefreshAuth) {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);

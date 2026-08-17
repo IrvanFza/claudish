@@ -9,9 +9,16 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
+import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "./process-tree.js";
 import { redactSecrets } from "./redact.js";
 import { resolveClaudishSpawn } from "./spawn-claudish.js";
-import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
+import {
+  readTokenStats,
+  renderTeamStatsCompact,
+  statsDir,
+  tokenFileFor,
+  writeStatusFile,
+} from "./team-stats.js";
 import { createAssistantTextCapture } from "./team-stream-capture.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -178,6 +185,38 @@ export interface TeamRunOptions {
   heartbeatSeconds?: number;
   /** Spawn-plan factory seam for hermetic call-site tests. */
   spawnPlanner?: (models: (string | undefined)[]) => Promise<SpawnPlan>;
+  /**
+   * Extend the deadline for a model that is DEMONSTRABLY still working, rather
+   * than killing it mid-answer. Default true.
+   *
+   * Why this is on by default. In `--quiet` print mode a child emits its answer
+   * only at the very end, so a deadline that fires mid-generation destroys
+   * 100% of the work — there is no partial result to keep. That is not
+   * hypothetical: in session team-20260815-115227 grok-4.6 was killed at 900s
+   * holding 0 B, having already spent $0.15 and 111k tokens, and finished a
+   * complete 40,699 B answer 375s later. Terminating it correctly (which we now
+   * do) would have destroyed that answer outright.
+   *
+   * So the deadline stops meaning "kill here" and starts meaning "here is where
+   * I start checking whether this is still worth it". Progress is read from
+   * `stats/<id>.json`, which the child's token tracker rewrites on every token
+   * — real evidence of work, not a liveness ping.
+   *
+   * The cost is real and bounded: a run can take up to `timeout +
+   * maxGraceSeconds` and bill for it. Set false for a hard wall-clock ceiling.
+   */
+  graceExtension?: boolean;
+  /**
+   * Cap on total extension per model, in seconds. Default: the run's `timeout`,
+   * i.e. a model can take at most twice its deadline. Ignored when
+   * `graceExtension` is false.
+   */
+  maxGraceSeconds?: number;
+  /**
+   * How long a model may show no measurable progress before it is considered
+   * stalled and terminated despite `graceExtension`. Default 90.
+   */
+  stallSeconds?: number;
 }
 
 export interface TeamJudgeOptions {
@@ -242,6 +281,32 @@ const BG_CEILING_RE = /Background tasks still running after (\d+)s; terminating/
  * via `minOutputBytes`. Whitespace-only output is always caught regardless.
  */
 export const DEFAULT_MIN_OUTPUT_BYTES = 0;
+
+/**
+ * How long to wait, after a child is confirmed dead, for its stdout pipe to
+ * close so the response file on disk is final.
+ *
+ * Bounded: the pipe can only stay open while some descendant still holds the
+ * write end, and after a group SIGKILL that should be nobody. This exists so a
+ * pathological case degrades into a slightly-stale read rather than a hang.
+ */
+export const DRAIN_TIMEOUT_MS = 10_000;
+
+/** Default cadence of deadline re-checks once a run is in grace. */
+export const GRACE_INTERVAL_MS = 60_000;
+
+/** Default: no measurable progress for this long ⇒ stalled, terminate. */
+export const DEFAULT_STALL_SECONDS = 90;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    // Never hold the event loop open on a timer alone.
+    t.unref?.();
+  });
+
+/* Process-tree termination lives in ./process-tree.ts — shared with the channel
+   session manager, which had the identical orphaning bug in `cancel_session`. */
 
 /**
  * Decide whether an exit-0 run actually produced an answer.
@@ -361,6 +426,41 @@ export function classifyRunOutput(opts: {
   }
 
   return null;
+}
+
+/**
+ * stderr lines that every healthy child emits, and which say nothing about the
+ * run's outcome.
+ *
+ * `unrecognized_model` is Claude Code telling itself it does not know the model
+ * name claudish routed — which is the NORMAL case for a proxied model and is
+ * emitted by runs that exit 0 with a perfect answer. In session
+ * team-20260815-115227 all four successful models produced an ~80 B
+ * `errors/NN.log` containing nothing else, so the run looked like it had four
+ * errors it did not have, and a reader scanning for real failures had to open
+ * each one to find out.
+ *
+ * Deliberately anchored on Claude Code's own `[claude-code:...]` tag rather than
+ * on the model name, so it cannot accidentally swallow a provider's message.
+ */
+const BENIGN_STDERR_PATTERNS: readonly RegExp[] = [/^\s*\[claude-code:unrecognized_model\]/];
+
+/**
+ * The part of stderr that is worth persisting — everything that is not known
+ * boilerplate. Empty means "nothing happened worth a log file".
+ *
+ * NOTE this filters only what decides whether to WRITE a success-path log. A
+ * genuine failure still persists the RAW stderr through `persistErrorLog`,
+ * because in that case even the boilerplate is context for whoever is reading.
+ */
+export function meaningfulStderr(stderr: string): string {
+  if (!stderr) return "";
+  return stderr
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !BENIGN_STDERR_PATTERNS.some((re) => re.test(line)))
+    .join("\n")
+    .trim();
 }
 
 /**
@@ -606,6 +706,59 @@ export async function runModels(
   const requirePattern = opts.requirePattern;
   const captureMode = resolveCaptureMode(opts.captureMode);
 
+  /**
+   * Re-judge a timed-out model once its stdout pipe has closed and the response
+   * file is therefore final.
+   *
+   * A TIMEOUT is a statement about the CLOCK, not about the output. Those are
+   * separate facts and the run reported only the first: a model killed at the
+   * deadline was recorded `outputSize: 0` forever, even when a complete answer
+   * landed microseconds later. Anything downstream that trusted the run's own
+   * summary — the judging phase, a human, an orchestrating agent — discarded
+   * real work.
+   *
+   * If the child did produce a usable answer, record it as COMPLETED and say
+   * plainly that it arrived past the deadline. The file is on disk either way;
+   * this only decides whether the run ADMITS to having it.
+   */
+  function reconcileTimedOutOutput(
+    id: string,
+    finalBytes: number,
+    stdoutTail: string,
+    stderr: string
+  ): void {
+    const current = statusCache.models[id];
+    if (!current || current.state !== "TIMEOUT") return;
+    if (finalBytes <= current.outputSize) return; // nothing new arrived
+
+    const degraded = classifyRunOutput({
+      outputSize: finalBytes,
+      stdoutTail,
+      stderr,
+      minOutputBytes,
+    });
+
+    if (degraded) {
+      // More bytes, but still not an answer (an API error, a preamble). Keep
+      // TIMEOUT and just correct the byte count so the report is not a lie.
+      updateModelStatus(id, { outputSize: finalBytes });
+      return;
+    }
+
+    updateModelStatus(id, {
+      state: "COMPLETED",
+      outputSize: finalBytes,
+      completedAt: new Date().toISOString(),
+      error: undefined,
+    });
+    const note =
+      `Recovered after the deadline: the child flushed ${finalBytes} B while shutting down, ` +
+      "so its answer is complete and is being counted. The run still exceeded its timeout.";
+    const rt = runtimes.get(id);
+    if (rt) persistErrorLog(rt.errorLogPath, `RECOVERED: ${note}`, stderr, stdoutTail);
+    opts.onStatusChange?.(id, statusCache.models[id]);
+  }
+
   // Each child writes its token/cost stats here (one file per model).
   mkdirSync(statsDir(sessionPath), { recursive: true });
 
@@ -638,10 +791,18 @@ export async function runModels(
   }
   const runtimes: Map<string, ModelRuntime> = new Map();
 
-  // SIGINT handler: kill all child processes on Ctrl+C
+  // SIGINT handler: kill all child processes on Ctrl+C.
+  //
+  // This is now LOAD-BEARING rather than a convenience. Children are spawned
+  // detached, so they are no longer in the terminal's foreground process group
+  // and Ctrl+C does not reach them on its own. Signal each group directly.
+  //
+  // Synchronous by necessity — `process.exit` runs immediately after, so there
+  // is no opportunity to await a SIGKILL escalation. SIGTERM to the group is
+  // enough here because the launcher now forwards it (see bin/claudish.cjs).
   const sigintHandler = () => {
     for (const [, proc] of processes) {
-      if (!proc.killed) proc.kill("SIGTERM");
+      signalProcessTree(proc, "SIGTERM");
     }
     process.exit(1);
   };
@@ -693,6 +854,24 @@ export async function runModels(
     const proc = spawn(teamSpawnTarget.command, [...teamSpawnTarget.prefixArgs, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      // Each child leads its OWN process group, so we can signal the whole
+      // subtree with `process.kill(-pid)`.
+      //
+      // `claudish` is a tree, not a process: the bin is a Node launcher that
+      // runs the real CLI under Bun, which spawns `claude`, which spawns its
+      // own tools and MCP servers. Signalling the direct child alone reaches
+      // only the launcher — measured 2026-08-15, both SIGTERM and SIGKILL to
+      // the pid left the Bun process alive and still holding the write end of
+      // the pipe feeding `response-<id>.md`, which is how a run declared
+      // TIMEOUT with 0 B gained a complete 40,699 B answer six minutes later.
+      // Only the group kill was clean.
+      //
+      // Trade-off: a detached child no longer receives the terminal's Ctrl+C
+      // (that goes to the foreground group, which the child has just left), so
+      // the SIGINT handler below MUST kill the groups explicitly. It also means
+      // an orchestrator that dies without running its handlers leaves children
+      // behind — the same exposure as before this change, not a new one.
+      detached: KILL_PROCESS_GROUP,
       env: {
         ...process.env,
         // Point this child's token tracker at a path WE choose, so its
@@ -789,10 +968,19 @@ export async function runModels(
 
       const finish = () => {
         if (resolved) return;
-        // Don't overwrite TIMEOUT state — timeout handler may have fired
-        // between proc "exit" and outputStream "close" events
+        // The timeout handler may have fired between proc "exit" and
+        // outputStream "close". Don't clobber TIMEOUT — but do RECONCILE.
+        //
+        // Reaching here means the stdout pipe has closed, so `response-<id>.md`
+        // is final and `byteCount` is its true size. A child killed at the
+        // deadline can still have flushed a complete answer in the window
+        // between the signal and the pipe closing, and the old code threw that
+        // away: it recorded whatever byte count existed at KILL time (0 B for a
+        // `--quiet` child, which emits only at the end) and never looked again.
+        // The judging phase then scored a real answer as an empty submission.
         if (statusCache.models[anonId].state === "TIMEOUT") {
           resolved = true;
+          reconcileTimedOutOutput(anonId, byteCount, stdoutTail, stderr);
           resolve();
           return;
         }
@@ -867,15 +1055,25 @@ export async function runModels(
       outputStream.on("close", finish);
 
       proc.on("exit", (code) => {
-        // CRITICAL FIX: guard against overwriting TIMEOUT state
-        const current = statusCache.models[anonId];
-        if (current?.state === "TIMEOUT") {
-          resolved = true;
-          resolve();
-          return;
-        }
+        const timedOut = statusCache.models[anonId]?.state === "TIMEOUT";
 
-        if (stderr) {
+        // On TIMEOUT this handler must NOT settle the promise. "exit" fires
+        // BEFORE the stdout pipe closes, and an answer flushed during shutdown
+        // is still in flight at this moment — resolving here marked the run
+        // finished with the byte count from KILL time and made the later
+        // "close" a no-op, which is how a complete answer was reported as 0 B
+        // and judged as an empty submission. Let "close" drive finish(), which
+        // re-measures. `runModels` bounds the wait, so a pipe that never closes
+        // degrades to a stale read rather than a hang.
+        //
+        // Still guard the error log: persistErrorLog has just written the
+        // TIMEOUT diagnostics there and a raw stderr dump would erase them.
+        // Only write a log when there is something worth reading. Every healthy
+        // child emits Claude Code's `unrecognized_model` line — normal for a
+        // proxied model — and writing it produced an `errors/NN.log` for runs
+        // that had no error at all, which is exactly the noise that hides a real
+        // one. `finish()` still writes the full log on any genuine failure.
+        if (!timedOut && meaningfulStderr(stderr)) {
           // Redacted like every other persistence point — provider stderr can
           // echo key material and this file is read by agents.
           writeFileSync(errorLogPath, redactSecrets(stderr), "utf-8");
@@ -959,64 +1157,186 @@ export async function runModels(
   // Don't hold the event loop open on the ticker alone.
   progressHandle.unref?.();
 
-  // Wait for all processes, or until timeout fires
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  // ── Deadline enforcement ──────────────────────────────────────────────────
+  //
+  // Three things happen here that used to be one, and conflating them is what
+  // lost a paid-for answer:
+  //
+  //   1. DECIDE whether the deadline should actually end this model. A child
+  //      that is demonstrably still working gets bounded extra time instead of
+  //      being killed mid-answer — in --quiet mode a mid-generation kill
+  //      destroys 100% of the work, since nothing is emitted until the end.
+  //   2. TERMINATE for real. `proc.kill()` reaches only the launcher; the tree
+  //      below it survives and keeps the response pipe open. Kill the group and
+  //      escalate to SIGKILL.
+  //   3. WAIT for the pipe to close before returning, so `response-<id>.md` is
+  //      final when the judging phase reads it. Previously `runModels` returned
+  //      the instant the deadline fired, and judging read a file that a very
+  //      much alive child was still writing.
 
-  await Promise.race([
-    Promise.all(completionPromises),
-    new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        for (const [id, proc] of processes) {
-          const current = statusCache.models[id];
-          // Only timeout models that are still RUNNING — not ones that already
-          // completed/failed. proc.killed is NOT reliable: it's only true when
-          // the parent called .kill(), not when the child exited naturally.
-          if (current.state === "RUNNING") {
-            if (!proc.killed) proc.kill("SIGTERM");
+  const graceEnabled = opts.graceExtension ?? true;
+  const maxGraceMs = Math.max(0, (opts.maxGraceSeconds ?? timeoutMs / 1000) * 1000);
+  const stallMs = Math.max(0, (opts.stallSeconds ?? DEFAULT_STALL_SECONDS) * 1000);
 
-            // Capture diagnostics BEFORE the status flips to TIMEOUT. The exit
-            // handler short-circuits on TIMEOUT, so this is the only chance to
-            // persist what the child said — previously it was all discarded.
-            const rt = runtimes.get(id);
-            // Drain a half-received line first, or everything below reports 0 B
-            // for a child that was mid-sentence when the clock ran out.
-            rt?.flushPartial();
-            const stderr = rt?.getStderr() ?? "";
-            const stdoutTail = rt?.getStdoutTail() ?? "";
-            const bytes = rt?.getByteCount() ?? 0;
-            const detail =
-              `Killed by the orchestrator after ${timeoutMs / 1000}s with ${bytes} B of stdout. ` +
-              "That figure counts the ANSWER, not the wire format, so 0 B means the child had " +
-              `not produced an assistant message yet — "did not finish", not "produced nothing".`;
+  /**
+   * Milliseconds since this model last did measurable work, or `null` when
+   * there is NO evidence either way.
+   *
+   * Read from `stats/<id>.json`, which the child's own token tracker rewrites.
+   * Every one of those writes is driven by token usage — there is no periodic
+   * heartbeat — so `updated_at` moving means tokens actually flowed. That is
+   * what proved the grok-4.6 run was working rather than hung at the moment it
+   * was killed.
+   *
+   * `null` is deliberately NOT treated as progress. Grace is granted on
+   * positive evidence only; absence of evidence buys a model nothing, or a
+   * child that never writes a stats file would earn an extension for doing
+   * nothing at all.
+   */
+  const idleMsFor = (id: string): number | null => {
+    const s = readTokenStats(sessionPath, id);
+    if (!s || typeof s.updated_at !== "number" || s.updated_at <= 0) return null;
+    return Math.max(0, Date.now() - s.updated_at);
+  };
 
-            if (rt) persistErrorLog(rt.errorLogPath, `TIMEOUT: ${detail}`, stderr, stdoutTail);
+  /**
+   * When each model first entered grace. Grace is accounted in REAL elapsed
+   * time, not in nominal steps: the watcher re-checks far more often than it
+   * extends, so counting "one 60s grant per round" would consume a 60s budget
+   * in a handful of seconds and terminate a model that had barely been given
+   * anything.
+   */
+  const graceStartedAt = new Map<string, number>();
+  const graceUsedMs = (id: string, now: number): number => {
+    const start = graceStartedAt.get(id);
+    return start === undefined ? 0 : Math.max(0, now - start);
+  };
 
-            updateModelStatus(id, {
-              state: "TIMEOUT",
-              completedAt: new Date().toISOString(),
-              outputSize: bytes,
-              error: rt
-                ? {
-                    model: id,
-                    command: rt.command,
-                    reason: "timeout",
-                    detail,
-                    stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
-                    stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
-                    errorLogPath: rt.errorLogPath,
-                    workDir: sessionPath,
-                  }
-                : undefined,
-            });
-            opts.onStatusChange?.(id, statusCache.models[id]);
+  const runningIds = (): string[] =>
+    [...processes.keys()].filter((id) => statusCache.models[id]?.state === "RUNNING");
+
+  /** Terminate one model's tree and record the TIMEOUT verdict. */
+  const timeoutModel = async (id: string, why: string): Promise<void> => {
+    const proc = processes.get(id);
+    if (!proc || statusCache.models[id]?.state !== "RUNNING") return;
+
+    // Capture diagnostics BEFORE the status flips to TIMEOUT — the exit handler
+    // reconciles rather than re-reports, so this is the only chance to persist
+    // what the child said.
+    const rt = runtimes.get(id);
+    // Drain a half-received line first, or everything below reports 0 B for a
+    // child that was mid-sentence when the clock ran out.
+    rt?.flushPartial();
+    const stderr = rt?.getStderr() ?? "";
+    const stdoutTail = rt?.getStdoutTail() ?? "";
+    const bytes = rt?.getByteCount() ?? 0;
+    const grace = graceUsedMs(id, Date.now());
+    const detail =
+      `Killed by the orchestrator after ${(timeoutMs + grace) / 1000}s ` +
+      `(deadline ${timeoutMs / 1000}s${grace ? ` + ${grace / 1000}s grace` : ""}) ` +
+      `with ${bytes} B of stdout — ${why}. ` +
+      "That figure counts the ANSWER, not the wire format, so 0 B means the child had " +
+      `not produced an assistant message yet — "did not finish", not "produced nothing".`;
+
+    if (rt) persistErrorLog(rt.errorLogPath, `TIMEOUT: ${detail}`, stderr, stdoutTail);
+
+    updateModelStatus(id, {
+      state: "TIMEOUT",
+      completedAt: new Date().toISOString(),
+      outputSize: bytes,
+      error: rt
+        ? {
+            model: id,
+            command: rt.command,
+            reason: "timeout",
+            detail,
+            stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
+            stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
+            errorLogPath: rt.errorLogPath,
+            workDir: sessionPath,
           }
-        }
-        resolve();
-      }, timeoutMs);
-    }),
-  ]);
+        : undefined,
+    });
+    opts.onStatusChange?.(id, statusCache.models[id]);
 
-  if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    // Enforce it. A model reported dead must actually be dead — otherwise it
+    // keeps billing and keeps writing into a session the run considers closed.
+    const stopped = await terminateChildTree(proc);
+    if (!stopped) {
+      persistErrorLog(
+        rt?.errorLogPath ?? join(sessionPath, "errors", `${id}.log`),
+        "TIMEOUT: child survived SIGKILL — it may still be running and billing",
+        stderr,
+        stdoutTail
+      );
+    }
+  };
+
+  const allDone = Promise.all(completionPromises);
+  let settled = false;
+  void allDone.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    }
+  );
+
+  const deadlineWatcher = (async (): Promise<void> => {
+    await delay(timeoutMs);
+
+    for (;;) {
+      if (settled) return;
+      const running = runningIds();
+      if (running.length === 0) return;
+
+      const extended: string[] = [];
+      const now = Date.now();
+
+      for (const id of running) {
+        const idleMs = idleMsFor(id);
+        const usedGrace = graceUsedMs(id, now);
+
+        if (!graceEnabled) {
+          await timeoutModel(id, "deadline reached (grace extension disabled)");
+        } else if (usedGrace >= maxGraceMs) {
+          await timeoutModel(
+            id,
+            `grace exhausted after ${Math.round(usedGrace / 1000)}s of extra time`
+          );
+        } else if (idleMs === null) {
+          await timeoutModel(id, "deadline reached with no measurable progress to extend for");
+        } else if (idleMs >= stallMs) {
+          await timeoutModel(id, `no measurable progress for ${Math.round(idleMs / 1000)}s`);
+        } else {
+          if (!graceStartedAt.has(id)) graceStartedAt.set(id, now);
+          extended.push(id);
+        }
+      }
+
+      if (extended.length === 0) return;
+
+      // Say so. A run that silently costs twice its deadline is worse than one
+      // that ends early, so every extension is visible in status.txt and in the
+      // progress stream.
+      emitProgress("running");
+      await delay(Math.min(GRACE_INTERVAL_MS, Math.max(1_000, stallMs)));
+    }
+  })().catch(() => {
+    // The watcher keeps running after `allDone` wins the race below, so a late
+    // status/log write into a session directory the caller has already torn
+    // down must not surface as an unhandled rejection and fail the process.
+    // Nothing here can change the outcome of a run that has already settled.
+  });
+
+  await Promise.race([allDone, deadlineWatcher]);
+
+  // If the watcher won, children were just terminated. Give their stdout pipes
+  // a bounded moment to close so `response-<id>.md` is final — that close is
+  // what triggers reconciliation of any answer flushed during shutdown.
+  if (!settled) await Promise.race([allDone, delay(DRAIN_TIMEOUT_MS)]);
+
   clearInterval(progressHandle);
   // Terminal frame. Without this a status-tracking consumer never sees the run
   // close — every frame would read "running", including the last one.

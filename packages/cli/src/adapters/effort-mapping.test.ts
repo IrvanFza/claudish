@@ -370,10 +370,10 @@ describe("Grok reasoning_effort gates", () => {
     ).toBeUndefined();
   });
 
-  test("allowlist: an unknown/new grok model STRIPS (fail-safe, no 400)", () => {
-    expect(
-      grokEffort("grok-9-experimental", { output_config: { effort: "high" } })
-    ).toBeUndefined();
+  test("an unknown/new grok model SENDS effort optimistically", () => {
+    // Silently losing a supported capability is invisible; an unsupported
+    // parameter produces a loud 400 that recoverFromRejection can repair once.
+    expect(grokEffort("grok-9-experimental", { output_config: { effort: "high" } })).toBe("high");
   });
 
   test("raw thinking is always stripped", () => {

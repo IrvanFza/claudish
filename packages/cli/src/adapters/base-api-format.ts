@@ -155,6 +155,13 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   abstract getName(): string;
 
   /**
+   * Optional: repair a request that a provider rejected because of an OPTIONAL
+   * parameter this dialect added speculatively. See `ModelDialect` for the full
+   * rationale; ComposedHandler calls it at most once per request.
+   */
+  recoverFromRejection?(payload: any, errorText: string): { payload: any; note: string } | null;
+
+  /**
    * Maximum tool name length allowed by this model's API.
    * Returns null if no limit (default).
    */

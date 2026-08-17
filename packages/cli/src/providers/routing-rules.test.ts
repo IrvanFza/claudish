@@ -13,6 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RoutingRules } from "../profile-config.js";
 import {
@@ -526,12 +527,16 @@ const ENV_KEYS_TO_CLEAR = [
 const savedEnv: Record<string, string | undefined> = {};
 
 describe("route()", () => {
+  // CredentialAuthority memoizes provider resolution process-wide, so another
+  // test module's top-level credential probe can prewarm real credentials.
+  // Invalidate before and after each test to isolate host and fake keys.
   beforeEach(() => {
     // Disable 1Password for routing tests so route()'s credential resolution
     // never pulls a real op:// key from the host config (which would make a
     // "no credentials → no-route" assertion fail). Mock-free env flag → no bleed.
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
+    credentials.invalidate();
     // Snapshot and clear credential env vars so each test starts clean.
     for (const key of ENV_KEYS_TO_CLEAR) {
       savedEnv[key] = process.env[key];
@@ -550,6 +555,7 @@ describe("route()", () => {
         process.env[key] = savedEnv[key];
       }
     }
+    credentials.invalidate();
   });
 
   test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", async () => {
@@ -792,9 +798,13 @@ describe("route()", () => {
 // ---------------------------------------------------------------------------
 
 describe("route() with defaultProvider", () => {
+  // CredentialAuthority memoizes provider resolution process-wide, so another
+  // test module's top-level credential probe can prewarm real credentials.
+  // Invalidate before and after each test to isolate host and fake keys.
   beforeEach(() => {
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
+    credentials.invalidate();
     for (const key of ENV_KEYS_TO_CLEAR) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
@@ -811,6 +821,7 @@ describe("route() with defaultProvider", () => {
         process.env[key] = savedEnv[key];
       }
     }
+    credentials.invalidate();
   });
 
   test("defaultProvider appended after matched chain when not already present", async () => {

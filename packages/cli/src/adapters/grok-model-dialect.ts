@@ -18,6 +18,16 @@ import {
   type ToolCall,
   matchesModelFamily,
 } from "./base-api-format.js";
+import {
+  acceptsReasoningEffort,
+  acceptsReasoningEffortValue,
+  catalogReasoningFor,
+  fallbackReasoningEffortValue,
+  isReasoningEffortRejection,
+  rejectedReasoningEffortValue,
+  rememberReasoningEffortRejected,
+  rememberReasoningEffortValueRejected,
+} from "./grok-effort-support.js";
 import { lookupModel } from "./model-catalog.js";
 
 export class GrokModelDialect extends BaseAPIFormat {
@@ -85,13 +95,14 @@ export class GrokModelDialect extends BaseAPIFormat {
 
   /**
    * Handle request preparation — map Claude Code's effort to xAI
-   * `reasoning_effort`, gated per model via an ALLOWLIST. Grok rejects the param
-   * with HTTP 400 on models that don't accept it, and naming is NOT a reliable
-   * signal (live-verified 2026-07: grok-4.3 accepts it but grok-4.20 — same
-   * dot-decimal shape — rejects it). So we SET the param only for models known
-   * to accept it and STRIP for everything else (unknown/new models fail safe:
-   * they run without effort rather than 400 on every request). See
-   * effortToReasoningEffort.
+   * `reasoning_effort`.
+   *
+   * Gating is OPTIMISTIC and self-healing (see `grok-effort-support.ts` for the
+   * measurements). This replaced an allowlist that decided the unknown case by
+   * stripping: correct for every model it named, and silently wrong for every
+   * model xAI shipped afterwards. `grok-4.6` was the casualty — it accepts the
+   * parameter, never received it, and therefore ran at the provider's default
+   * (near-`high`) tier with no way for the user to turn it down.
    */
   protected override applyNativeReasoning(request: any, originalRequest: any): any {
     const effort = this.resolveEffortLevel(originalRequest);
@@ -119,53 +130,117 @@ export class GrokModelDialect extends BaseAPIFormat {
    * Map a canonical effort level to a Grok `reasoning_effort` value, or
    * undefined when this model does NOT accept the param (→ strip).
    *
-   * ALLOWLIST (fail-safe): only models KNOWN to accept reasoning_effort get it.
-   * Live-verified 2026-07 against api.x.ai/v1/models — of the current chat
-   * lineup ONLY grok-4.3 accepts it; grok-build-0.1 / grok-code-fast-1,
-   * grok-4.20(-0309)(-reasoning), and every *-non-reasoning id 400 with
-   * "does not support parameter reasoningEffort". Naming is NOT a reliable
-   * signal (grok-4.20 matches grok-4.x yet rejects), so we enumerate accepting
-   * families rather than guess. legacy grok-3-mini and grok-*-fast-reasoning are
-   * kept on the allowlist (historically accepting; not in today's live list).
-   * Anything else STRIPS → an unknown/new model runs without effort instead of
-   * 400-ing every request.
+   * Gates, most authoritative first:
+   *   1. `acceptsReasoningEffort` — does this model take the parameter at all?
+   *      Live evidence, then the hosted catalog, then optimistic name rules.
+   *   2. The catalog's advertised ladder — clamp into `efforts[]` rather than
+   *      guess. This is what makes a NEW model work without a claudish release:
+   *      grok-4.6 advertises `xhigh/high/medium/low` (no `none`) and grok-4.3
+   *      advertises `none`, and both come from the catalog, not from source.
+   *   3. `acceptsReasoningEffortValue` — a value the live API has rejected this
+   *      session, which covers a catalog that is cold, stale, or absent.
    */
   private effortToReasoningEffort(effort: EffortLevel): string | undefined {
-    const model = this.modelId.toLowerCase();
-
-    const isMini = model.includes("mini"); // grok-3-mini (legacy): low|high
-    const isGrok43 = /grok-4\.3(\b|[-.]|$)/.test(model); // grok-4.3 (live: accepts)
-    const isFastReasoning = model.includes("fast-reasoning"); // grok-*-fast-reasoning family
-
-    if (!(isMini || isGrok43 || isFastReasoning)) {
-      return undefined; // not on the allowlist → strip
+    if (!acceptsReasoningEffort(this.modelId)) {
+      return undefined; // positive evidence of rejection → strip
     }
 
-    // grok-3-mini tier: low | high only.
-    if (isMini) {
-      switch (effort) {
-        case "high":
-        case "xhigh":
-        case "max":
-          return "high";
-        default:
-          // none/minimal/low/medium → low (mini has no none/medium).
-          return "low";
+    let value: string;
+
+    // CATALOG FIRST — same rule OpenAIAPIFormat follows, and for the same
+    // measured reason: a name rule is wrong in both directions.
+    const reasoning = catalogReasoningFor(this.modelId);
+    const clamped = reasoning ? this.clampToAdvertisedEffort(effort, reasoning) : undefined;
+    if (clamped) {
+      value = clamped;
+    } else {
+      const model = this.modelId.toLowerCase();
+      // grok-3-mini tier: low | high only. A documented, still-accurate ladder
+      // for a legacy family that the catalog has no entry for.
+      const isMini = model.includes("mini");
+      if (isMini) {
+        switch (effort) {
+          case "high":
+          case "xhigh":
+          case "max":
+            value = "high";
+            break;
+          default:
+            // none/minimal/low/medium → low (mini has no none/medium).
+            value = "low";
+        }
+      } else {
+        switch (effort) {
+          case "none":
+            value = "none";
+            break;
+          case "minimal":
+          case "low":
+            value = "low";
+            break;
+          case "medium":
+            value = "medium";
+            break;
+          default:
+            value = "high";
+        }
       }
     }
 
-    // grok-4.3 / fast-reasoning tier: none | low | medium | high.
-    switch (effort) {
-      case "none":
-        return "none";
-      case "minimal":
-      case "low":
-        return "low";
-      case "medium":
-        return "medium";
-      default:
-        return "high";
+    // Step down past any value this model has already rejected this session.
+    // Bounded by fallbackReasoningEffortValue always moving toward less
+    // reasoning and terminating at null.
+    let guard = 0;
+    while (!acceptsReasoningEffortValue(this.modelId, value) && guard++ < 8) {
+      const next = fallbackReasoningEffortValue(value);
+      if (!next) return undefined; // nothing weaker left → send no param at all
+      value = next;
     }
+
+    return value;
+  }
+
+  /**
+   * Recover from an upstream 4xx that rejected our optional reasoning parameter.
+   *
+   * Returns a payload to retry ONCE, or null when the error is not a parameter
+   * rejection we can act on. This is what makes the optimistic default safe: an
+   * unknown model costs at most one recovered round-trip instead of silently
+   * losing its effort control forever.
+   *
+   * Narrowness matters — `grok-4.20-multi-agent-0309` also 400s, but because
+   * multi-agent models are not served on chat completions at all. Retrying that
+   * without the parameter fails identically, so it must not match here.
+   */
+  recoverFromRejection(payload: any, errorText: string): { payload: any; note: string } | null {
+    if (!payload || payload.reasoning_effort === undefined) return null;
+
+    // Case 1: the model does not take the parameter at all → drop it for good.
+    if (isReasoningEffortRejection(errorText)) {
+      rememberReasoningEffortRejected(this.modelId);
+      const next = { ...payload };
+      delete next.reasoning_effort;
+      return { payload: next, note: `dropped reasoning_effort for ${this.modelId}` };
+    }
+
+    // Case 2: the parameter is fine but this VALUE is not → step down one rung.
+    const rejected = rejectedReasoningEffortValue(errorText);
+    if (rejected) {
+      rememberReasoningEffortValueRejected(this.modelId, rejected);
+      const fallback = fallbackReasoningEffortValue(rejected);
+      const next = { ...payload };
+      if (fallback) {
+        next.reasoning_effort = fallback;
+        return {
+          payload: next,
+          note: `reasoning_effort "${rejected}" -> "${fallback}" for ${this.modelId}`,
+        };
+      }
+      delete next.reasoning_effort;
+      return { payload: next, note: `dropped unsupported reasoning_effort for ${this.modelId}` };
+    }
+
+    return null;
   }
 
   /**
