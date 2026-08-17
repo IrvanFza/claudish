@@ -2,64 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
-## [Unreleased]
+## [7.51.0] - 2026-08-17
 
-## [7.51.0] - 2026-08-18
+### Documentation
 
-### New Features
+- rescue the two session artifacts that tracked files still cite([`d05a62f`](https://github.com/MadAppGang/claudish/commit/d05a62f9b6f9994da3e868fcac7a27c21eddb922))
+- update CHANGELOG.md for v7.50.0([`b5643ca`](https://github.com/MadAppGang/claudish/commit/b5643caf7e0bf8248daec597c39481f750f04538))
 
-- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled *(providers)*
+### Other Changes
 
-  Export `GROQ_API_KEY` and `groq@llama-3.3-70b` works. No `customEndpoints`
-  block, no base URL to look up, no API path to guess. 25 vendors ship: groq,
-  cerebras, together, fireworks, deepinfra, nebius, hyperbolic, sambanova,
-  novita, baseten, perplexity, venice, chutes, featherless, parasail,
-  inference-net, aimlapi, requesty, nanogpt, cohere, scaleway, upstage, writer,
-  moonshot-cn and tuningengines.
-
-  A vendor appears **only when its key is already in your environment**, and it
-  is reachable only by typing `vendor@model` — no bundled vendor can be reached
-  by a bare model name, so none can be billed without you naming it.
-
-  Membership was decided by measurement. Each candidate was probed at its
-  configured path alongside a deliberately bogus sibling path; a route counts as
-  real only when the two replies differ. 30 candidates were tested and 5 were
-  dropped — two answered a catch-all, one returned 410 Gone, two had no DNS
-  records. **All 25 ship probe-verified, none live-verified**: the probe is
-  strong evidence that a route authenticates and weak evidence about a vendor's
-  streaming dialect, so treat an unfamiliar vendor's first real turn as the test.
-
-  Configure with `predefinedEndpoints` (`enabled` / `disable` / `enable`) or
-  switch the whole catalog off with `CLAUDISH_NO_PREDEFINED_ENDPOINTS=1`. A
-  `customEndpoints` entry of the same name fully replaces the bundled row — note
-  that a replacement does **not** inherit the vendor's conventional env var, so
-  add `"apiKey": "${GROQ_API_KEY}"` if you still want it.
-
-  Adding vendor #26 is one row of data: no provider definition, no profile, no
-  transport, no code.
-
-### Bug Fixes
-
-- honour `authScheme` and `headers` on custom endpoints *(transport)*
-
-  `OpenAIProviderTransport.getHeaders()` always signed with
-  `Authorization: Bearer …` and dropped `provider.headers`, even though
-  `custom-endpoints-loader` has always passed both fields in from your config.
-  They are now applied.
-
-  **This changes behaviour for existing user-authored custom endpoints.** An
-  entry with `"transport": "openai"` that declares `"authScheme": "x-api-key"`
-  previously sent `Authorization: Bearer <key>` — and worked if your gateway
-  accepted that. It now sends `x-api-key: <key>` and no `Authorization` header,
-  which is what the config asked for. Likewise a declared `headers` block is now
-  merged into the request instead of being ignored. If an endpoint stops
-  authenticating after upgrading, check those two fields against what your
-  gateway expects; setting `"authScheme": "bearer"` (or omitting it) restores
-  the previous signing.
-
-  No built-in provider is affected: all 12 that reach this transport were
-  enumerated and none declares either field, so every built-in's headers are
-  byte-identical to before.
+- v7.51.0 — predefined custom endpoints([`e0fd878`](https://github.com/MadAppGang/claudish/commit/e0fd878c99fc96d685dc6148e1ccecf1d1aa6188))
 
 ## [7.50.0] - 2026-08-15
 
@@ -67,10 +19,16 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - update CHANGELOG.md for v7.49.0([`b682749`](https://github.com/MadAppGang/claudish/commit/b682749c673f801ca0ac83c2c6332fc6074d86ba))
 
+### New Features
+
+- recover the full answer instead of only the final message *(team)* ([`8d9f459`](https://github.com/MadAppGang/claudish/commit/8d9f459d13fd8824d132ec29bb82e8ffab954389))
+
 ## [7.49.0] - 2026-08-15
 
 ### Bug Fixes
 
+- widen heartbeat timing margins so CI contention cannot fail them *(test)* ([`5737e01`](https://github.com/MadAppGang/claudish/commit/5737e0191b143b8717c7d84456d96694622995d9))
+- sort imports in progress-heartbeat.test.ts *(lint)* ([`b7df3f1`](https://github.com/MadAppGang/claudish/commit/b7df3f106ff849a3fb35c90cfc04833eb5f57483))
 - drop thinking blocks Anthropic cannot have signed *(native)* ([`0e8f3b0`](https://github.com/MadAppGang/claudish/commit/0e8f3b05ffe9f5839a049d3597e7b8a126c3daeb))
 - hoist inline system messages out of messages[] *(anthropic)* ([`0aeb2e8`](https://github.com/MadAppGang/claudish/commit/0aeb2e8da6005e81577678b40f8a071f740adc25))
 - find Bun on Windows, where `which` does not exist *(cli)* ([`264bd38`](https://github.com/MadAppGang/claudish/commit/264bd38df5d66f46b59e21edd4a6766d2f8d1912))
@@ -79,8 +37,6 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - answer a non-streaming request with JSON, not SSE *(compact)* ([`5dc1a75`](https://github.com/MadAppGang/claudish/commit/5dc1a7558c9630a7a9a4478e57abb09ebe01eb9b))
 - emit the terminal tail when upstream abandons a stream *(anthropic-sse)* ([`5934fec`](https://github.com/MadAppGang/claudish/commit/5934fec110c7c0d6de66ea03c3433a091f1483fd))
 - don't print the previous session's cost when a run dies early *(session)* ([`1241cfc`](https://github.com/MadAppGang/claudish/commit/1241cfcc4ab169a96dcd0a43782a46627d6af6ce))
-- widen heartbeat timing margins so CI contention cannot fail them *(test)* ([`5737e01`](https://github.com/MadAppGang/claudish/commit/5737e0191b143b8717c7d84456d96694622995d9))
-- sort imports in progress-heartbeat.test.ts *(lint)* ([`b7df3f1`](https://github.com/MadAppGang/claudish/commit/b7df3f106ff849a3fb35c90cfc04833eb5f57483))
 
 ### Documentation
 
@@ -88,8 +44,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### New Features
 
-- recover the full answer instead of only the final message *(team)* ([`8d9f459`](https://github.com/MadAppGang/claudish/commit/8d9f459d13fd8824d132ec29bb82e8ffab954389))
 - v7.49.0 — stop reporting a vote-less epilogue as succeeded *(team)* ([`28d4c27`](https://github.com/MadAppGang/claudish/commit/28d4c27016177a9ad2d581be2e37be4a208cc630))
+- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled([`bab9d84`](https://github.com/MadAppGang/claudish/commit/bab9d84986142dc5cc16dcb3db603c42a635380c))
 
 ### Other Changes
 
