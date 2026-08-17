@@ -239,6 +239,13 @@ interface PaneResult {
   state: string; // "completed" | "failed" | "awaiting_input" | "running"
   exitCode: number;
   dead: boolean;
+  /**
+   * magmux's own control panel, not a model. It ALWAYS exists (hidden without
+   * `-c`) and since magmux 0.7.0 it is reported in `results` like any other
+   * pane, as `{control: true, hidden: true, state: "panel"}`.
+   */
+  control?: boolean;
+  hidden?: boolean;
   controller?: string;
   model?: string;
   project?: string;
@@ -253,6 +260,25 @@ interface MagmuxResultsEvent {
   type: "results";
   panes: PaneResult[];
   endedAt: string;
+}
+
+/**
+ * Drop magmux's control panel from a results event, so `panes` means "the
+ * models this run launched" and nothing else.
+ *
+ * magmux 0.7.0 reports the always-present control panel alongside the command
+ * panes (`{control: true, hidden: true, state: "panel"}`). Today it lands at
+ * index N — one past the last model — so `buildTeamStatus`, which looks up
+ * panes 0..N-1 by index, happens to miss it. That is arithmetic luck, not a
+ * contract: a magmux release that ordered the panel first would silently map a
+ * `state: "panel"` entry onto a real model and record it TIMEOUT.
+ *
+ * Filtering here, at the single point where the event enters claudish, makes
+ * that impossible and keeps the rest of the file talking about models only.
+ */
+function withoutControlPanes(evt: MagmuxResultsEvent): MagmuxResultsEvent {
+  if (!Array.isArray(evt.panes)) return evt;
+  return { ...evt, panes: evt.panes.filter((p) => p?.control !== true) };
 }
 
 /**
@@ -305,7 +331,7 @@ async function subscribeToMagmux(
           const evt = JSON.parse(line) as Record<string, unknown>;
           onEvent?.(evt);
           if (evt.type === "results") {
-            finalResults = evt as unknown as MagmuxResultsEvent;
+            finalResults = withoutControlPanes(evt as unknown as MagmuxResultsEvent);
           }
         } catch {
           /* ignore malformed events */
