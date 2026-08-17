@@ -27,12 +27,16 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
   enumerated and none declares either field, so every built-in's headers are
   byte-identical to before.
 
+## [7.50.0] - 2026-08-15
+
+### Documentation
+
+- update CHANGELOG.md for v7.49.0([`b682749`](https://github.com/MadAppGang/claudish/commit/b682749c673f801ca0ac83c2c6332fc6074d86ba))
+
 ## [7.49.0] - 2026-08-15
 
 ### Bug Fixes
 
-- widen heartbeat timing margins so CI contention cannot fail them *(test)* ([`5737e01`](https://github.com/MadAppGang/claudish/commit/5737e0191b143b8717c7d84456d96694622995d9))
-- sort imports in progress-heartbeat.test.ts *(lint)* ([`b7df3f1`](https://github.com/MadAppGang/claudish/commit/b7df3f106ff849a3fb35c90cfc04833eb5f57483))
 - drop thinking blocks Anthropic cannot have signed *(native)* ([`0e8f3b0`](https://github.com/MadAppGang/claudish/commit/0e8f3b05ffe9f5839a049d3597e7b8a126c3daeb))
 - hoist inline system messages out of messages[] *(anthropic)* ([`0aeb2e8`](https://github.com/MadAppGang/claudish/commit/0aeb2e8da6005e81577678b40f8a071f740adc25))
 - find Bun on Windows, where `which` does not exist *(cli)* ([`264bd38`](https://github.com/MadAppGang/claudish/commit/264bd38df5d66f46b59e21edd4a6766d2f8d1912))
@@ -41,6 +45,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - answer a non-streaming request with JSON, not SSE *(compact)* ([`5dc1a75`](https://github.com/MadAppGang/claudish/commit/5dc1a7558c9630a7a9a4478e57abb09ebe01eb9b))
 - emit the terminal tail when upstream abandons a stream *(anthropic-sse)* ([`5934fec`](https://github.com/MadAppGang/claudish/commit/5934fec110c7c0d6de66ea03c3433a091f1483fd))
 - don't print the previous session's cost when a run dies early *(session)* ([`1241cfc`](https://github.com/MadAppGang/claudish/commit/1241cfcc4ab169a96dcd0a43782a46627d6af6ce))
+- widen heartbeat timing margins so CI contention cannot fail them *(test)* ([`5737e01`](https://github.com/MadAppGang/claudish/commit/5737e0191b143b8717c7d84456d96694622995d9))
+- sort imports in progress-heartbeat.test.ts *(lint)* ([`b7df3f1`](https://github.com/MadAppGang/claudish/commit/b7df3f106ff849a3fb35c90cfc04833eb5f57483))
 
 ### Documentation
 
@@ -48,6 +54,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### New Features
 
+- recover the full answer instead of only the final message *(team)* ([`8d9f459`](https://github.com/MadAppGang/claudish/commit/8d9f459d13fd8824d132ec29bb82e8ffab954389))
 - v7.49.0 — stop reporting a vote-less epilogue as succeeded *(team)* ([`28d4c27`](https://github.com/MadAppGang/claudish/commit/28d4c27016177a9ad2d581be2e37be4a208cc630))
 
 ### Other Changes

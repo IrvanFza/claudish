@@ -192,7 +192,7 @@ describe("formatTeamResult", () => {
     }
   });
 
-  it("warns that a shape-mismatch answer was not captured and must not become a vote", () => {
+  it("warns that a shape-mismatch answer was not produced and must not become a vote", () => {
     const output = formatTeamResult(
       status({
         "01": modelStatus("EMPTY", { id: "01", reason: "shape_mismatch" }),
@@ -200,7 +200,7 @@ describe("formatTeamResult", () => {
       SESSION_PATH
     );
 
-    expect(output).toContain("not captured");
+    expect(output).toContain("the model did not produce it");
     expect(output).toContain("do NOT count this slot as a vote");
   });
 

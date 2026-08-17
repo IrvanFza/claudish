@@ -68,7 +68,11 @@ describe("runModels timeout diagnostics", () => {
       expect(model.state).toBe("TIMEOUT");
       expect(model.error).toBeDefined();
       expect(model.error?.reason).toBe("timeout");
-      expect(model.error?.command).toBe("claudish --model hanging-model -y --stdin --quiet");
+      // Ordering is load-bearing: Claudish consumes and forwards --verbose for stream-json,
+      // then --quiet suppresses its own stderr narration.
+      expect(model.error?.command).toBe(
+        "claudish --model hanging-model -y --stdin --verbose --quiet --output-format stream-json"
+      );
       expect(model.error?.stderrSnippet).toContain(STDERR_BEFORE_TIMEOUT);
       expect(model.outputSize).toBe(Buffer.byteLength(STDOUT_BEFORE_TIMEOUT));
 

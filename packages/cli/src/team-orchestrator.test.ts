@@ -37,6 +37,49 @@ function readJson<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf-8")) as T;
 }
 
+/** Run a callback with `claudish` resolved to one of the real-process helpers. */
+async function withFakeClaudish<T>(
+  helperName: string,
+  callback: (helperPath: string) => Promise<T>
+): Promise<T> {
+  const originalPath = process.env.PATH;
+  const originalClaudishBin = process.env.CLAUDISH_BIN;
+  const originalCaptureMode = process.env.CLAUDISH_TEAM_CAPTURE;
+  const shimDir = mkdtempSync(join(tmpdir(), "team-orchestrator-shim-"));
+  const helperPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "channel",
+    "test-helpers",
+    helperName
+  );
+
+  writeFileSync(join(shimDir, "claudish"), `#!/bin/sh\nexec bun run "${helperPath}" "$@"\n`, {
+    mode: 0o755,
+  });
+
+  try {
+    // CLAUDISH_BIN outranks PATH, and a capture env override would make the
+    // default-mode assertion depend on the developer's shell.
+    delete process.env.CLAUDISH_BIN;
+    delete process.env.CLAUDISH_TEAM_CAPTURE;
+    process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
+    return await callback(helperPath);
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalClaudishBin === undefined) {
+      delete process.env.CLAUDISH_BIN;
+    } else {
+      process.env.CLAUDISH_BIN = originalClaudishBin;
+    }
+    if (originalCaptureMode === undefined) {
+      delete process.env.CLAUDISH_TEAM_CAPTURE;
+    } else {
+      process.env.CLAUDISH_TEAM_CAPTURE = originalCaptureMode;
+    }
+    rmSync(shimDir, { recursive: true, force: true });
+  }
+}
+
 // ─── Test state ───────────────────────────────────────────────────────────────
 
 let tempDir: string;
@@ -352,29 +395,13 @@ describe("team-orchestrator", () => {
   });
 
   describe("runModels — pinned spawn identity", () => {
-    it("keeps manifest.models[].model unchanged after a pinned run", async () => {
+    it("keeps manifest identity and uses the default stream-json argv contract", async () => {
       const { runModels, setupSession } = await getOrchestrator();
-      const originalPath = process.env.PATH;
-      const originalClaudishBin = process.env.CLAUDISH_BIN;
-      const shimDir = mkdtempSync(join(tmpdir(), "team-pinned-shim-"));
-      const fakeClaudish = join(
-        dirname(fileURLToPath(import.meta.url)),
-        "channel",
-        "test-helpers",
-        "fake-claudish.ts"
-      );
       const spawnPlanner = mock(async () => ({
         pinned: new Map([["vendor/model", "or@vendor/model"]]),
       }));
-      writeFileSync(join(shimDir, "claudish"), `#!/bin/sh\nexec bun run "${fakeClaudish}" "$@"\n`, {
-        mode: 0o755,
-      });
 
-      try {
-        // CLAUDISH_BIN outranks PATH in resolveClaudishSpawn, so leaving it set would defeat the fake shim.
-        delete process.env.CLAUDISH_BIN;
-        process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
-
+      await withFakeClaudish("fake-claudish.ts", async () => {
         setupSession(tempDir, ["vendor/model"], "Analyze this input");
         const status = await runModels(tempDir, {
           timeout: 5,
@@ -393,20 +420,111 @@ describe("team-orchestrator", () => {
         ) as string[];
         const modelFlag = argv.indexOf("--model");
         expect(argv[modelFlag + 1]).toBe("or@vendor/model");
+        const outputFormatFlag = argv.indexOf("--output-format");
+        expect(argv.slice(outputFormatFlag, outputFormatFlag + 2)).toEqual([
+          "--output-format",
+          "stream-json",
+        ]);
+
+        const verboseFlag = argv.indexOf("--verbose");
+        const quietFlag = argv.indexOf("--quiet");
+        expect(verboseFlag).toBeGreaterThanOrEqual(0);
+        expect(quietFlag).toBeGreaterThanOrEqual(0);
+        // Mutation guard: claudish consumes --verbose for itself and also
+        // forwards a copy to claude, which rejects print + stream-json without
+        // it. --quiet must come later so only claudish's own narration stays off.
+        expect(verboseFlag).toBeLessThan(quietFlag);
 
         // The manifest identity is re-used by the judge round; the pinned argv
         // must never replace it with the provider wire spec.
         const reread = readJson<TeamManifest>(join(tempDir, "manifest.json"));
         expect(reread.models[anonId].model).toBe("vendor/model");
-      } finally {
-        process.env.PATH = originalPath;
-        if (originalClaudishBin === undefined) {
-          delete process.env.CLAUDISH_BIN;
-        } else {
-          process.env.CLAUDISH_BIN = originalClaudishBin;
-        }
-        rmSync(shimDir, { recursive: true, force: true });
-      }
+      });
+    });
+
+    it("omits stream-json-only flags when captureMode is print", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+
+      await withFakeClaudish("fake-claudish.ts", async () => {
+        setupSession(tempDir, ["vendor/model"], "Analyze this input");
+        const status = await runModels(tempDir, {
+          timeout: 5,
+          captureMode: "print",
+          claudeFlags: ["--print-argv"],
+          spawnPlanner,
+        });
+
+        const [anonId, modelStatus] = Object.entries(status.models)[0];
+        expect(modelStatus.state).toBe("COMPLETED");
+        const argv = JSON.parse(
+          readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
+        ) as string[];
+
+        expect(argv).toContain("--quiet");
+        expect(argv).not.toContain("--output-format");
+        expect(argv).not.toContain("--verbose");
+      });
+    });
+  });
+
+  describe("runModels — stream-json answer recovery", () => {
+    it("keeps the voted answer that print mode loses to a later epilogue", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+      const input = "Review the implementation and return the required fenced vote block.";
+
+      await withFakeClaudish("fake-streamjson-child.ts", async (fakeChild) => {
+        const rawProc = Bun.spawn(
+          [process.execPath, "run", fakeChild, "--output-format", "stream-json"],
+          { stdin: "ignore", stdout: "pipe", stderr: "pipe" }
+        );
+        const [rawStream, rawStderr, rawExitCode] = await Promise.all([
+          new Response(rawProc.stdout).text(),
+          new Response(rawProc.stderr).text(),
+          rawProc.exited,
+        ]);
+        expect(rawExitCode).toBe(0);
+        expect(rawStderr).toBe("");
+
+        const recoveredDir = join(tempDir, "recovered");
+        setupSession(recoveredDir, ["vendor/model"], input);
+        const recoveredStatus = await runModels(recoveredDir, {
+          timeout: 5,
+          requirePattern: "```vote",
+          spawnPlanner,
+        });
+
+        const [recoveredId, recoveredModel] = Object.entries(recoveredStatus.models)[0];
+        const recoveredOutput = readFileSync(
+          join(recoveredDir, `response-${recoveredId}.md`),
+          "utf-8"
+        );
+        expect(recoveredOutput).toContain("```vote");
+        expect(recoveredOutput).toContain("The background task has now finished");
+        expect(recoveredModel.state).toBe("COMPLETED");
+
+        const recoveredFileSize = Buffer.byteLength(recoveredOutput);
+        const rawStreamSize = Buffer.byteLength(rawStream);
+        expect(recoveredModel.outputSize).toBe(recoveredFileSize);
+        expect(rawStreamSize).toBeGreaterThan(recoveredModel.outputSize * 8);
+
+        const printDir = join(tempDir, "print");
+        setupSession(printDir, ["vendor/model"], input);
+        const printStatus = await runModels(printDir, {
+          timeout: 5,
+          captureMode: "print",
+          requirePattern: "```vote",
+          spawnPlanner,
+        });
+
+        const [printId, printModel] = Object.entries(printStatus.models)[0];
+        const printOutput = readFileSync(join(printDir, `response-${printId}.md`), "utf-8");
+        expect(printOutput).toContain("The background task has now finished");
+        expect(printOutput).not.toContain("```vote");
+        expect(printModel.state).toBe("EMPTY");
+        expect(printModel.error?.reason).toBe("shape_mismatch");
+      });
     });
   });
 
