@@ -113,6 +113,9 @@ beforeAll(() => {
 // ─── Fast tier: socket protocol ──────────────────────────────────────────────
 
 describe("magmux socket protocol (shell commands)", () => {
+  const commandPanes = (event: Record<string, unknown>) =>
+    (event.panes as Array<Record<string, unknown>>).filter((pane) => pane.control !== true);
+
   it("broadcasts snapshot, exit, results, shutdown for a short-lived pane", async () => {
     // A pane that prints one line then exits. We sleep for 2s before
     // exiting to give the test's socket subscriber enough time to connect
@@ -149,7 +152,10 @@ describe("magmux socket protocol (shell commands)", () => {
       // The results event should contain one pane marked completed.
       const resultsEvent = sub.events.find((e) => e.type === "results")!;
       expect(Array.isArray(resultsEvent.panes)).toBe(true);
-      const panes = resultsEvent.panes as Array<Record<string, unknown>>;
+      const rawPanes = resultsEvent.panes as Array<Record<string, unknown>>;
+      // magmux always reports a control panel; claudish filters it in withoutControlPanes().
+      expect(rawPanes.filter((pane) => pane.control === true)).toHaveLength(1);
+      const panes = commandPanes(resultsEvent);
       expect(panes).toHaveLength(1);
       expect(panes[0].pane).toBe(0);
       expect(panes[0].state).toBe("completed");
@@ -177,7 +183,7 @@ describe("magmux socket protocol (shell commands)", () => {
       await sub.waitFor((events) => events.some((e) => e.type === "results"), 15_000);
 
       const resultsEvent = sub.events.find((e) => e.type === "results")!;
-      const panes = resultsEvent.panes as Array<Record<string, unknown>>;
+      const panes = commandPanes(resultsEvent);
       expect(panes).toHaveLength(1);
       expect(panes[0].state).toBe("failed");
       expect(panes[0].exitCode).toBe(37);
@@ -202,7 +208,7 @@ describe("magmux socket protocol (shell commands)", () => {
       await sub.waitFor((events) => events.some((e) => e.type === "results"), 15_000);
 
       const resultsEvent = sub.events.find((e) => e.type === "results")!;
-      const panes = (resultsEvent.panes as Array<Record<string, unknown>>).sort(
+      const panes = commandPanes(resultsEvent).sort(
         (a, b) => (a.pane as number) - (b.pane as number)
       );
       expect(panes).toHaveLength(2);
@@ -289,6 +295,9 @@ function devClaudishCommand(model: string, prompt: string): string {
 }
 
 describe("claudish team with real models and Claude Code", () => {
+  const commandPanes = (event: Record<string, unknown>) =>
+    (event.panes as Array<Record<string, unknown>>).filter((pane) => pane.control !== true);
+
   it.skipIf(!glmCapable)(
     "default mode: pane runs a real model, magmux emits completed results",
     async () => {
@@ -337,7 +346,7 @@ describe("claudish team with real models and Claude Code", () => {
         }
 
         const resultsEvent = sub.events.find((e) => e.type === "results")!;
-        const panes = resultsEvent.panes as Array<Record<string, unknown>>;
+        const panes = commandPanes(resultsEvent);
         expect(panes).toHaveLength(1);
         expect(panes[0].state).toBe("completed");
         expect(panes[0].exitCode).toBe(0);
@@ -405,7 +414,7 @@ describe("claudish team with real models and Claude Code", () => {
         // Claude Code session, via its JSONL transcript, all the way to
         // awaiting_input.
         const resultsEvent = sub.events.find((e) => e.type === "results")!;
-        const panes = resultsEvent.panes as Array<Record<string, unknown>>;
+        const panes = commandPanes(resultsEvent);
         expect(panes).toHaveLength(1);
         expect(panes[0].controller).toBe("claude-code");
         expect(panes[0].state).toBe("awaiting_input");
