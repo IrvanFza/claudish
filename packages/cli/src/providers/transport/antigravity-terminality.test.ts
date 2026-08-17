@@ -116,3 +116,14 @@ describe("AntigravityProviderTransport.classifyTerminalError", () => {
     expect(wrappedVerdict).toBe(unwrappedVerdict);
   });
 });
+
+describe("AntigravityProviderTransport auth recovery contract", () => {
+  test("opts into ComposedHandler's 401 recovery hook", () => {
+    // This provider silently omitted the hook, so a server-invalidated session with
+    // a future local expiry had no recovery path even though every other layer was correct.
+    // Deleting the method must therefore fail a test instead of becoming unchecked behavior.
+    const transport = new AntigravityProviderTransport("gemini-3.6-flash");
+
+    expect(typeof transport.forceRefreshAuth).toBe("function");
+  });
+});
