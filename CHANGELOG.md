@@ -2,6 +2,55 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.51.0] - 2026-08-17
+
+### Documentation
+
+- rescue the two session artifacts that tracked files still cite([`d05a62f`](https://github.com/MadAppGang/claudish/commit/d05a62f9b6f9994da3e868fcac7a27c21eddb922))
+- update CHANGELOG.md for v7.50.0([`b5643ca`](https://github.com/MadAppGang/claudish/commit/b5643caf7e0bf8248daec597c39481f750f04538))
+
+### Other Changes
+
+- v7.51.0 — predefined custom endpoints([`e0fd878`](https://github.com/MadAppGang/claudish/commit/e0fd878c99fc96d685dc6148e1ccecf1d1aa6188))
+
+## [7.50.0] - 2026-08-15
+
+### Documentation
+
+- update CHANGELOG.md for v7.49.0([`b682749`](https://github.com/MadAppGang/claudish/commit/b682749c673f801ca0ac83c2c6332fc6074d86ba))
+
+### New Features
+
+- recover the full answer instead of only the final message *(team)* ([`8d9f459`](https://github.com/MadAppGang/claudish/commit/8d9f459d13fd8824d132ec29bb82e8ffab954389))
+
+## [7.49.0] - 2026-08-15
+
+### Bug Fixes
+
+- widen heartbeat timing margins so CI contention cannot fail them *(test)* ([`5737e01`](https://github.com/MadAppGang/claudish/commit/5737e0191b143b8717c7d84456d96694622995d9))
+- sort imports in progress-heartbeat.test.ts *(lint)* ([`b7df3f1`](https://github.com/MadAppGang/claudish/commit/b7df3f106ff849a3fb35c90cfc04833eb5f57483))
+- drop thinking blocks Anthropic cannot have signed *(native)* ([`0e8f3b0`](https://github.com/MadAppGang/claudish/commit/0e8f3b05ffe9f5839a049d3597e7b8a126c3daeb))
+- hoist inline system messages out of messages[] *(anthropic)* ([`0aeb2e8`](https://github.com/MadAppGang/claudish/commit/0aeb2e8da6005e81577678b40f8a071f740adc25))
+- find Bun on Windows, where `which` does not exist *(cli)* ([`264bd38`](https://github.com/MadAppGang/claudish/commit/264bd38df5d66f46b59e21edd4a6766d2f8d1912))
+- point mm@/mmax@ at minimaxi.com, the silo its keys come from *(minimax)* ([`b7173d2`](https://github.com/MadAppGang/claudish/commit/b7173d2d401c97968b7251499e371c5f46e5956a))
+- give codex models a Responses body, not just a Responses endpoint *(openai)* ([`7095e64`](https://github.com/MadAppGang/claudish/commit/7095e64b5fc64402773945162e63df2762ea56eb))
+- answer a non-streaming request with JSON, not SSE *(compact)* ([`5dc1a75`](https://github.com/MadAppGang/claudish/commit/5dc1a7558c9630a7a9a4478e57abb09ebe01eb9b))
+- emit the terminal tail when upstream abandons a stream *(anthropic-sse)* ([`5934fec`](https://github.com/MadAppGang/claudish/commit/5934fec110c7c0d6de66ea03c3433a091f1483fd))
+- don't print the previous session's cost when a run dies early *(session)* ([`1241cfc`](https://github.com/MadAppGang/claudish/commit/1241cfcc4ab169a96dcd0a43782a46627d6af6ce))
+
+### Documentation
+
+- update CHANGELOG.md for v7.48.0([`ba7eb7d`](https://github.com/MadAppGang/claudish/commit/ba7eb7dade864356cbf2a805a4d09610a2e4a6ed))
+
+### New Features
+
+- v7.49.0 — stop reporting a vote-less epilogue as succeeded *(team)* ([`28d4c27`](https://github.com/MadAppGang/claudish/commit/28d4c27016177a9ad2d581be2e37be4a208cc630))
+- predefined custom endpoints — 25 measured OpenAI-compatible vendors, bundled([`bab9d84`](https://github.com/MadAppGang/claudish/commit/bab9d84986142dc5cc16dcb3db603c42a635380c))
+
+### Other Changes
+
+- let .claudemem/ be ignored globally, where its convention says it lives([`2d5fe61`](https://github.com/MadAppGang/claudish/commit/2d5fe611c8fad14441be97081cabac04e3397c0e))
+
 ## [7.48.0] - 2026-08-10
 
 ### Documentation

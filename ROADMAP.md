@@ -41,16 +41,50 @@ Default to `notifications/tasks/status`. Keep emitting `notifications/claude/cha
 
 ---
 
-## ~~Optional: `notifications/progress` as a secondary CLI-UI signal~~ — Parked
+## `notifications/progress` — shipped as a KEEPALIVE; the CLI-UI use case is still parked
 
-Status: **investigated, decisively parked, with a corrected rationale**. Not implementing.
+Status: **shipped 2026-08-14, on grounds the original parking decision never weighed.** This item used to read *"Optional: `notifications/progress` as a secondary CLI-UI signal — Parked"*. That feature is still not viable. What shipped is a different feature wearing the same notification.
 
-We considered emitting `notifications/progress` from `team`'s child-completion callback as a richer terminal UI signal. Two issues, one of which we initially got wrong:
+The parking decision was **right about rendering and wrong about relevance**. Progress notifications render nowhere — that finding stands, re-confirmed on 2.1.231 — but they also reset the client's MCP idle timer, and nothing else claudish emits does. The old note's own footnote, *"not entirely inert — it still resets the client's request timeout"*, turned out to be the whole reason to build it.
+
+### What re-opened it: measured 2026-08-14 against Claude Code **2.1.231**
+
+A real `team` call died with `MCP server "plugin:claudish:claudish" tool "team" sent no response or progress for 1800s; aborting`. Probe: three tools, identical 90s duration, `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=30000` throughout, differing only in what they put on the transport while working.
+
+| Tool emits during the 90s | Outcome |
+|---|---|
+| nothing | **aborted at 30s** |
+| `notifications/progress` every 10s | **survived 90s** → returned normally |
+| `notifications/claude/channel` every 10s | **aborted at 30s** |
+
+The silent/progress pair is the decisive comparison: same duration, same window, same server, same transport, one variable. The channel arm emitted 3 frames with no emit errors before being killed, so its abort is not an emission failure.
+
+Channel and progress are therefore **complementary, not alternatives** — channel is the visible surface with no keepalive, progress is the invisible keepalive:
+
+| | visible to agent/human | resets idle timer |
+|---|---|---|
+| `notifications/claude/channel` | ✓ | ✗ |
+| `notifications/progress` | ✗ | ✓ |
+
+**Shipped**: `packages/cli/src/mcp/progress-heartbeat.ts` — a time-driven 10s heartbeat, armed by the CallTool dispatch on `team`, `run_prompt`, and `compare_models`. Time-driven and not event-driven because `team` already emitted a channel frame on every state change and still died at exactly 1800s: a model that thinks for 30 minutes produces no state changes. Knobs, degradation rules, and the idle-window defaults are in CLAUDE.md ("The `notifications/progress` keepalive").
+
+**`anthropics/claude-code#58687` is STALE.** It reports that the client sends no `_meta.progressToken`, and was closed as not planned. On 2.1.231 the token **is** sent — observed value `2`, in every probe arm, including runs against the older `progress-regression-mock.ts`.
+
+### Still open: rendering — original trigger condition #2 remains UNMET
+
+1. ~~Claude Code's MCP SDK fixes the strict-token-validation bug~~ — **met 2026-07-29** (verified on 2.1.220).
+2. **Claude Code ships UI/agent rendering for progress notifications from custom MCP servers** (`anthropics/claude-code#4157`, `#51713`) — **still unmet**, and this stays a live watch item. Progress displays nowhere, so the "secondary CLI-UI signal" this item was originally about does not exist yet. Re-run both probes on each client upgrade. If rendering returns, the heartbeat's `message` field becomes user-visible for free, at which point its content rules (structural only — tool name, elapsed seconds, counts; never prompt text or paths) stop being a privacy precaution and start being a UX decision.
+
+### Measurement trail — how the conclusion was reached
+
+Kept in full: the 2026-08-14 finding only overturns the *relevance* verdict, not the evidence underneath it.
+
+**2026-05-09, Claude Code 2.1.133 — two blockers, both fatal on the evidence then available:**
 
 - ❌ **Claude Code does not render progress notifications anywhere observable.** Verified 2026-05-09 against Claude Code 2.1.133 with `progress-regression-mock.ts`'s `slow_with_many_progress` tool emitting 5 distinct progress messages over ~10s. Mid-flight pane capture showed no terminal-UI rendering. The agent reported verbatim: *"I did not observe any progress messages during the call... nothing was surfaced to the agent context."* Matches the Anthropic-attributed comment on `anthropics/claude-code#4157`: *"Claude Code doesn't currently have a generic UI for displaying real-time progress from custom MCP servers."*
 - ❌ **The transport-kill regression is NOT fixed in 2.1.133 — earlier note that it was, was wrong.** A first test on 2026-05-09 (`progress-regression-mock.ts`'s `slow_ping_with_progress` + `simple_ping`) reported the regression resolved. **That test was insufficient.** It used sequential `await` ordering, putting all progress notifications strictly *before* the tool response, which avoids the race. The actual trigger documented in `GLips/Figma-Context-MCP#362` is **concurrent or quick-succession tool calls** where a progress notification arrives at the client *after* its `progressToken` cleanup has run. The MCP SDK then treats it as a protocol violation (`"Connection error: Received a progress notification for an unknown token"`) and tears down stdio. This bug is documented as still affecting Claude Code 2.1.x in the field. **The `team` use case (N concurrent child sessions, each with its own `progressToken`) is the exact pattern that triggers the bug.**
 
-So implementing this not only adds code that fires into a void — it would actively destabilize `team`. Two independent reasons not to do it.
+The conclusion drawn at the time — that this would both fire into a void and destabilize `team` — followed correctly from those two bullets. Both have since moved: the transport kill was fixed (below), and the `team`-concurrency premise was a misreading. `team`'s N children are OS processes spawned by `team-orchestrator.ts`, not MCP requests; they carry no `progressToken` at all, so a `team` call has exactly **one** token and emits at most one frame per interval. The shipped heartbeat additionally keys no state by token, so parallel `tools/call` requests have nothing to collide over.
 
 ### Re-measured 2026-07-29 against Claude Code **2.1.220** — one blocker is gone, one is confirmed harder
 
@@ -81,20 +115,27 @@ regression window. **#51713 is closed, but the regression is still live in 2.1.2
 Note `notifications/progress` is not entirely inert — it still resets the client's request timeout.
 It simply has no display.
 
-**Superseded by**: `team` now reports live per-model stats over `notifications/claude/channel`
-(measured working) plus a `status.txt` in the session directory. See "Live team progress" below.
+↑ **That footnote was the whole answer, and it sat here unread for two weeks.** A line written as a
+caveat to a rejection was in fact the only reason to build the thing; the 2026-08-14 probe above
+exists because a `team` run died at 1800s and sent someone back to re-read it. Worth generalising:
+when parking an item, state what the mechanism *does* do, not only what it fails to do — the residual
+capability is the part a future failure will need.
 
-**Trigger condition for un-parking** (only #2 remains):
-1. ~~Claude Code's MCP SDK fixes the strict-token-validation bug~~ — **met 2026-07-29** (verified on 2.1.220).
-2. Claude Code ships UI/agent rendering for progress notifications from custom MCP servers
-   (`anthropics/claude-code#4157`, `#51713`). Re-run both probes on each client upgrade to detect it.
+**Superseded on the DISPLAY axis by**: `team` reports live per-model stats over
+`notifications/claude/channel` (measured working) plus a `status.txt` in the session directory. See
+"Live team progress" below. That remains true and unchanged — channel is still the only mechanism
+that reaches a reader. It is not, however, a substitute on the *liveness* axis, which is what the
+2026-08-14 measurement settled.
 
 **References**:
-- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/`
-- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/`
-- Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md`
+- Original empirical session: `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/` (lost — session dirs are gitignored and died with their worktree)
+- Community-research session that surfaced the corrected understanding: `ai-docs/sessions/dev-research-mcp-progress-community-20260509-213410-c058a909/` (lost — same)
+- Re-measurement against 2.1.220: `ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md` (lost — same)
+- Idle-timeout measurement against 2.1.231 (the three-arm probe): `ai-docs/reports/mcp-progress-keepalive/findings.md`
+- Keepalive implementation design: `ai-docs/reports/mcp-progress-keepalive/architecture.md`
 - Test artifacts: `packages/cli/src/channel/test-helpers/progress-regression-mock.ts`, `capability-probe.ts`, `capability-probe-2.ts`
-- Field evidence of the still-active bug: <https://github.com/GLips/Figma-Context-MCP/issues/362>
+- Field evidence of the transport-kill bug the latch defends against: <https://github.com/GLips/Figma-Context-MCP/issues/362>
+- Stale `progressToken` claim: <https://github.com/anthropics/claude-code/issues/58687>
 
 ---
 
@@ -109,7 +150,8 @@ stats, chosen because they are the two that actually reach a reader:
 | `notifications/claude/channel` | the agent's context (renders as a `<channel>` block) | the channel gating in CLAUDE.md — `--channels`, interactive, `.mcp.json` |
 | `<session>/status.txt` | a human, via `tail -f` | nothing; works headless and in CI |
 
-`notifications/progress` was NOT used — measured to render nowhere on 2.1.220 (see above).
+`notifications/progress` carries none of this — it renders nowhere (2.1.220, unchanged on 2.1.231).
+It now runs alongside as a pure keepalive, on the separate liveness grounds established above.
 
 **How per-model attribution works.** `token-tracker.ts` writes tokens/cost to
 `~/.claudish/tokens-<port>.json`, keyed to a port each child picks for itself, so an orchestrator

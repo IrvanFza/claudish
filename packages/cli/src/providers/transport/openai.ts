@@ -40,10 +40,38 @@ export class OpenAIProviderTransport implements ProviderTransport {
     return `${this.provider.baseUrl}${this.provider.apiPath}`;
   }
 
+  /**
+   * Honours the provider's declared `authScheme` and merges its static
+   * `headers`, mirroring AnthropicProviderTransport.
+   *
+   * Both were silently dropped until 2026-08-14: this method emitted a Bearer
+   * header and nothing else, so a `RemoteProvider` carrying `authScheme:
+   * "x-api-key"` or `headers` had those fields validated, registered, and then
+   * evaporate at the only point they matter. That is the whole reason
+   * CLAUDE.md's own documented `corp-proxy` custom endpoint (`transport:
+   * "openai"` + `authScheme: "X-Api-Key"` + `headers: {"X-Team": …}`) could not
+   * work — a user following the docs got a credential error from a config the
+   * schema had accepted.
+   *
+   * No builtin using this transport declares either field, so the default path
+   * is unchanged: absent/`"bearer"` scheme with no provider headers produces
+   * the identical single-Authorization object it always did. The `if (apiKey)`
+   * guard is kept for the same reason — a keyless provider must send no auth
+   * header rather than an empty one.
+   */
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     if (this.apiKey) {
-      headers.Authorization = `Bearer ${this.apiKey}`;
+      if (this.provider.authScheme === "x-api-key") {
+        headers["x-api-key"] = this.apiKey;
+      } else {
+        headers.Authorization = `Bearer ${this.apiKey}`;
+      }
+    }
+    // Provider headers are merged whether or not a key resolved: for a gateway
+    // whose auth lives in a custom header, they ARE the credential.
+    if (this.provider.headers) {
+      Object.assign(headers, this.provider.headers);
     }
     return headers;
   }

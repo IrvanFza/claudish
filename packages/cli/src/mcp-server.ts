@@ -23,6 +23,12 @@ import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js"
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
 import {
+  type HeartbeatHandle,
+  NOOP_HEARTBEAT,
+  resolveProgressIntervalMs,
+  startHeartbeat,
+} from "./mcp/progress-heartbeat.js";
+import {
   FIREBASE_SLUG_TO_PROVIDER_NAME,
   type RecommendedModelGroup,
   type RecommendedModelsDoc,
@@ -99,6 +105,25 @@ The session_id in the channel tag's meta attributes is the key for all tool call
 
 type ToolGroup = "low-level" | "agentic" | "channel";
 
+/**
+ * Per-call context handed to every tool handler. Built fresh in the CallTool
+ * dispatch, so nothing here is shared between concurrent calls.
+ *
+ * It is an explicit parameter rather than AsyncLocalStorage on purpose: ambient
+ * state is exactly what would let a long-lived closure (`SessionManager.onStateChange`,
+ * a `runModels` progress callback) read a `progressToken` from whatever call happens
+ * to be on the stack later, which is the one bug class this design makes unreachable.
+ */
+interface ToolCallContext {
+  /**
+   * Emit ONE keepalive frame right now, in addition to the periodic ones.
+   * Safe to call from anywhere inside the handler; a no-op when the client sent
+   * no `progressToken`, when the tool did not opt into `heartbeat`, or after the
+   * heartbeat has been stopped. Never throws.
+   */
+  reportProgress: (message?: string) => void;
+}
+
 interface ToolDefinition {
   name: string;
   description: string;
@@ -108,7 +133,27 @@ interface ToolDefinition {
     required?: string[];
   };
   group: ToolGroup;
-  handler: (args: Record<string, unknown>) => Promise<{
+  /**
+   * Opt in to the periodic `notifications/progress` keepalive. Set ONLY on tools
+   * that can block past the client's MCP idle window (30 min by default on stdio).
+   * The dispatch owns start and stop; the handler cannot leak a timer.
+   *
+   * The type is the literal `true`, not `boolean`: `heartbeat: false` has no
+   * meaning distinct from omitting the flag, and spelling it that way keeps the
+   * only legal state an opt-in.
+   */
+  heartbeat?: true;
+  /**
+   * Widening this to two parameters costs NOTHING at the existing call sites:
+   * TypeScript function types are bivariant in parameter count, so every
+   * `async (args) => …` / `async () => …` handler already in this file stays
+   * assignable verbatim. A handler that ignores `ctx` also pays nothing at
+   * runtime — its heartbeat is `NOOP_HEARTBEAT` unless it opted in above.
+   */
+  handler: (
+    args: Record<string, unknown>,
+    ctx: ToolCallContext
+  ) => Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
   }>;
@@ -311,6 +356,11 @@ const NEXT_STEP: Record<string, string> = {
   background_task_ceiling:
     "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 for children, or forbid background work in the prompt",
   empty_output: "retry once; if it repeats, drop the model",
+  shape_mismatch:
+    "the response does not carry the shape you required. Every assistant message the " +
+    "child emitted was captured, so nothing was lost in transit — the model did not " +
+    "produce it. Re-prompt with the required format restated; do NOT count this slot " +
+    "as a vote",
 };
 
 /** `18864` → `18.4KB`. */
@@ -411,10 +461,18 @@ const sanitize = sanitizeForReport;
  * capability is not enabled. `team` uses this to report per-model token/cost
  * stats while a multi-minute run is still in flight.
  *
- * Channels are the ONLY measured-working push mechanism: `notifications/progress`
- * renders nowhere on Claude Code 2.1.220 — verified empty in both the agent's
- * context and the interactive terminal UI. See
+ * Channels are the ONLY measured-working push mechanism FOR RENDERING:
+ * `notifications/progress` renders nowhere on Claude Code 2.1.220 — verified empty
+ * in both the agent's context and the interactive terminal UI. See
  * ai-docs/sessions/dev-arch-20260729-171308-1dad34b5/capability-findings.md.
+ *
+ * That says nothing about KEEPALIVE, which is the opposite result: a progress frame
+ * resets the client's MCP idle timer and a channel frame does not (measured
+ * 2026-08-14 on 2.1.231 — a real `team` run died at exactly 1800s while emitting
+ * channel frames throughout). See
+ * ai-docs/sessions/mcp-progress-idle-timeout-20260814-000000-b7e21f4a/findings.md.
+ * The two mechanisms are complementary and both stay: channel is the visible
+ * surface, `notifications/progress` (mcp/progress-heartbeat.ts) is the keepalive.
  */
 type ChannelNotifier = (params: {
   content: string;
@@ -470,6 +528,9 @@ function defineTools(
       required: ["model", "prompt"],
     },
     group: "low-level",
+    // A single reasoning model can block for many minutes with nothing on the
+    // wire. Handler body unchanged — the dispatch owns the keepalive.
+    heartbeat: true,
     handler: async (args) => {
       try {
         const result = await runPromptViaProxy(
@@ -701,7 +762,11 @@ function defineTools(
       required: ["models", "prompt"],
     },
     group: "low-level",
-    handler: async (args) => {
+    // N models run SEQUENTIALLY below, so the total blocking time is the sum of
+    // every model's latency — the easiest of the three tools to push past the
+    // client's idle window.
+    heartbeat: true,
+    handler: async (args, ctx) => {
       const modelIds = args.models as string[];
       const prompt = args.prompt as string;
       const systemPrompt = args.system_prompt as string | undefined;
@@ -727,6 +792,10 @@ function defineTools(
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        // Belt-and-braces: the periodic timer alone already suffices, but a
+        // completed model is real news, so refresh the idle timer at that moment
+        // too. Counts only — no model output, no prompt text.
+        ctx.reportProgress(`compare_models: ${results.length}/${modelIds.length} models done`);
       }
 
       let output = "# Model Comparison\n\n";
@@ -789,11 +858,34 @@ function defineTools(
             "Task prompt text (or place input.md in the session directory before calling)",
         },
         timeout: { type: "number", description: "Per-model timeout in seconds (default: 300)" },
+        require_pattern: {
+          type: "string",
+          description:
+            "Regex the response MUST match, or the slot is reported FAILED (state EMPTY, " +
+            "reason 'shape_mismatch') instead of succeeded. Strongly recommended whenever " +
+            "your prompt mandates an output shape — e.g. '```vote' for a voting panel. " +
+            "Exit code 0 is not a success oracle: it is 0 on API errors and on a child " +
+            "that simply never followed the format. Answers are no longer LOST to print " +
+            "mode (every assistant message is captured), so a mismatch now means the model " +
+            "did not produce the shape, not that the shape was discarded.",
+        },
+        min_output_bytes: {
+          type: "number",
+          description:
+            "Report a slot FAILED if it produced fewer than this many bytes (default 0 = " +
+            "off). A blunter instrument than require_pattern — short answers can be " +
+            "legitimate — so prefer require_pattern when you know the expected shape.",
+        },
       },
       required: ["mode", "path"],
     },
     group: "agentic",
-    handler: async (args) => {
+    // The tool the whole keepalive exists for: a real `run` was aborted at exactly
+    // 1800s of channel-frame-only silence. NOT gated on `channelEnabled` — that
+    // failure happened in a session with channels unregistered, so gating the
+    // keepalive behind the channel group would reproduce the bug exactly.
+    heartbeat: true,
+    handler: async (args, ctx) => {
       try {
         const mode = args.mode as string;
         const path = args.path as string;
@@ -801,6 +893,8 @@ function defineTools(
         const judges = args.judges as string[] | undefined;
         const input = args.input as string | undefined;
         const timeout = args.timeout as number | undefined;
+        const requirePattern = args.require_pattern as string | undefined;
+        const minOutputBytes = args.min_output_bytes as number | undefined;
 
         const resolved = validateSessionPath(path);
 
@@ -810,7 +904,19 @@ function defineTools(
         const teamCreatedAt = new Date().toISOString();
         const runOpts = {
           timeout,
-          onProgress: (u: { rendered: string; phase: "running" | "settled"; allFailed: boolean }) =>
+          requirePattern,
+          minOutputBytes,
+          onProgress: (u: {
+            rendered: string;
+            phase: "running" | "settled";
+            allFailed: boolean;
+          }) => {
+            // Two mechanisms, deliberately both: the channel frame below is what
+            // the agent and the human SEE, and this one is what keeps the client
+            // from aborting the call. A state change is real news, so refresh the
+            // idle timer at that moment as well as on the periodic tick. Short
+            // phase string only — the rendered grid stays on the channel path.
+            ctx.reportProgress(`team: ${u.phase}`);
             notifyChannel({
               content: u.rendered,
               sessionId: teamSessionId,
@@ -821,7 +927,8 @@ function defineTools(
               model: "team",
               elapsedSeconds: (Date.now() - Date.parse(teamCreatedAt)) / 1000,
               createdAt: teamCreatedAt,
-            }),
+            });
+          },
         };
 
         switch (mode) {
@@ -1339,6 +1446,10 @@ async function main() {
     }
   };
 
+  // Keepalive cadence for `heartbeat: true` tools. Resolved ONCE per server rather
+  // than per call, so a long-lived session cannot change its behaviour mid-flight.
+  const progressIntervalMs = resolveProgressIntervalMs();
+
   // Build tool registry
   const allTools = defineTools(sessionManager, notifyChannel);
   const enabledTools = allTools.filter((t) => enabledGroups.has(t.group));
@@ -1356,7 +1467,26 @@ async function main() {
   }));
 
   // Register CallTool handler
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  //
+  // `extra._meta` is the caller's request `_meta` (SDK protocol.ts sets it from
+  // `request.params?._meta`), which is where Claude Code puts `progressToken`. A
+  // tool marked `heartbeat: true` gets a periodic `notifications/progress`
+  // keepalive for as long as it runs: the client aborts a call that emits nothing
+  // for its idle window (30 min on stdio by default — the exact 1800s a real
+  // `team` run died at), and a progress frame is the ONLY notification measured to
+  // reset that timer. Channel frames do not.
+  //
+  // `extra.sendNotification` is preferred over `server.notification` because it is
+  // the request-scoped sender; on non-stdio transports it is what correlates the
+  // frame with its request. `notifications/progress` needs no capability
+  // declaration — the SDK always allows it.
+  //
+  // The dispatch owns start AND stop. `finally` runs after the result value is
+  // computed but before it reaches the SDK, so a frame can never be emitted after
+  // the response it belongs to — the GLips/Figma-Context-MCP#362 teardown pattern
+  // is structurally unreachable, and a handler cannot forget to stop a timer it
+  // never started.
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const tool = toolMap.get(name);
     if (!tool) {
@@ -1365,8 +1495,20 @@ async function main() {
         isError: true,
       };
     }
+
+    const heartbeat: HeartbeatHandle = tool.heartbeat
+      ? startHeartbeat({
+          token: extra._meta?.progressToken,
+          label: name,
+          intervalMs: progressIntervalMs,
+          send: (frame) =>
+            extra.sendNotification({ method: "notifications/progress", params: frame }),
+        })
+      : NOOP_HEARTBEAT;
+    const ctx: ToolCallContext = { reportProgress: (message) => heartbeat.tick(message) };
+
     try {
-      return await tool.handler(args ?? {});
+      return await tool.handler(args ?? {}, ctx);
     } catch (error) {
       return {
         content: [
@@ -1377,6 +1519,8 @@ async function main() {
         ],
         isError: true,
       };
+    } finally {
+      heartbeat.stop();
     }
   });
 

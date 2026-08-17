@@ -6,6 +6,7 @@ import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
+import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
 
@@ -25,6 +26,12 @@ import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.
  * rare and the state machine is small.
  */
 export async function startConfigTui(): Promise<void> {
+  // Register bundled endpoints before the first render: the Providers tab is
+  // built from `getAllProviders()`, so a catalog vendor the user has a key for
+  // must already be in the roster or it simply is not there to configure.
+  // Re-entry after an OAuth login calls this again — idempotent by design.
+  ensureEndpointsRegistered();
+
   // Silence proxy/handler stderr toasts ("[claudish] Error [Provider]: ...")
   // while the TUI owns the screen. Probe failures are still captured in the
   // testResults state and surfaced inline on each provider row — writing them

@@ -341,6 +341,42 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `VERTEX_PROJECT` | Vertex AI OAuth mode (`v@`) | `GOOGLE_CLOUD_PROJECT` |
 | `ANTHROPIC_API_KEY` | Placeholder (suppresses Claude Code dialog) | |
 
+#### Bundled Endpoint Catalog
+
+25 extra vendors ship inside the package as predefined endpoints. **Each appears only when its key is already present locally** (env var, alias, or `config.apiKeys`) — set the variable and `vendor@model` starts working with no config file. A key that lives only in 1Password does not activate a row (activation is synchronous); use `predefinedEndpoints.enable` for that case. See [Predefined Endpoints](docs/settings-reference.md#predefined-endpoints).
+
+All 25 rows ship *probe*-verified — the configured path was confirmed to reach the vendor's own auth layer, and a bogus sibling path to answer differently. **None is live-verified**: that is strong evidence about routing and weak evidence about a vendor's streaming dialect on a successful turn. The endpoint layer itself was verified end to end against a real API.
+
+| Variable | Provider | Notes |
+|----------|----------|-------|
+| `GROQ_API_KEY` | Groq (`groq@`) | |
+| `CEREBRAS_API_KEY` | Cerebras (`cerebras@`) | |
+| `TOGETHER_API_KEY` | Together AI (`together@`) | |
+| `FIREWORKS_API_KEY` | Fireworks AI (`fireworks@`) | |
+| `DEEPINFRA_API_KEY` | DeepInfra (`deepinfra@`) | |
+| `NEBIUS_API_KEY` | Nebius AI Studio (`nebius@`) | |
+| `HYPERBOLIC_API_KEY` | Hyperbolic (`hyperbolic@`) | |
+| `SAMBANOVA_API_KEY` | SambaNova Cloud (`sambanova@`) | |
+| `NOVITA_API_KEY` | Novita AI (`novita@`) | |
+| `BASETEN_API_KEY` | Baseten (`baseten@`) | |
+| `PERPLEXITY_API_KEY` | Perplexity Sonar (`perplexity@`) | |
+| `VENICE_API_KEY` | Venice AI (`venice@`) | |
+| `CHUTES_API_KEY` | Chutes (`chutes@`) | |
+| `FEATHERLESS_API_KEY` | Featherless AI (`featherless@`) | |
+| `PARASAIL_API_KEY` | Parasail (`parasail@`) | |
+| `INFERENCE_NET_API_KEY` | Inference.net (`inference-net@`) | |
+| `AIMLAPI_API_KEY` | AI/ML API (`aimlapi@`) | |
+| `REQUESTY_API_KEY` | Requesty (`requesty@`) | |
+| `NANOGPT_API_KEY` | NanoGPT (`nanogpt@`) | |
+| `COHERE_API_KEY` | Cohere (`cohere@`) | OpenAI-compatibility layer |
+| `SCALEWAY_API_KEY` | Scaleway Generative APIs (`scaleway@`) | |
+| `UPSTAGE_API_KEY` | Upstage Solar (`upstage@`) | |
+| `WRITER_API_KEY` | Writer Palmyra (`writer@`) | |
+| `MOONSHOT_CN_API_KEY` | Moonshot AI China region (`moonshot-cn@`) | Different service from `MOONSHOT_API_KEY` / `moonshot@` above |
+| `TUNING_ENGINES_API_KEY` | Tuning Engines (`tuningengines@`) | Self-hosted: also set `TUNING_ENGINES_BASE_URL` |
+
+Every one of these also accepts `CUSTOM_<NAME>_KEY` as an alias, and any of them can be replaced outright by a `customEndpoints` entry of the same name.
+
 #### Claudish Settings
 
 | Variable | Description | Default |
@@ -358,6 +394,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `CLAUDISH_LOCAL_QUEUE_ENABLED` | Enable/disable local model queue | `true` |
 | `CLAUDISH_DEFAULT_PROVIDER` | Default provider for bare model routing (v7.0.0+) | Auto-detected |
 | `CLAUDISH_QWEN_NO_THINK` | Disable thinking for Qwen models (`1`) | |
+| `CLAUDISH_NO_PREDEFINED_ENDPOINTS` | Turn the bundled endpoint catalog off entirely (`1`) | Catalog on |
 
 #### Claude Code Compatibility
 
@@ -376,7 +413,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 |----------|----------|---------|
 | `GEMINI_BASE_URL` | Gemini API | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | OpenAI/Azure | `https://api.openai.com` |
-| `MINIMAX_BASE_URL` | MiniMax | `https://api.minimax.io` |
+| `MINIMAX_BASE_URL` | MiniMax | `https://api.minimaxi.com` |
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot | `https://api.moonshot.ai` |
 | `ZHIPU_BASE_URL` | GLM/Zhipu | `https://open.bigmodel.cn` |
 | `ZAI_BASE_URL` | Z.AI | `https://api.z.ai` |
@@ -389,6 +426,9 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `LMSTUDIO_BASE_URL` | LM Studio (local) | `http://localhost:1234` |
 | `VLLM_BASE_URL` | vLLM (local) | `http://localhost:8000` |
 | `MLX_BASE_URL` | MLX (local) | `http://127.0.0.1:8080` |
+| `TUNING_ENGINES_BASE_URL` | Tuning Engines (`tuningengines@`), self-hosted gateway | `https://api.tuningengines.com` |
+
+**A malformed base-URL override SKIPS the provider — it never falls back to the public host.** You set the variable to keep traffic inside your own network; quietly redirecting a typo to a vendor's public endpoint would send exactly the data you were isolating to exactly the place you were isolating it from.
 
 **Priority order**: CLI flags > `CLAUDISH_*` env vars > `ANTHROPIC_*` env vars > profile config > interactive selector.
 

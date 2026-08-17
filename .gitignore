@@ -48,9 +48,13 @@ __tests__/
 *.jinja
 logs/
 
-# AI session files
-ai-docs/
-ai_docs/
+# AI session files — the per-session scratch only.
+#
+# `ai-docs/` itself IS tracked: CLAUDE.md cites durable artifacts that live under
+# it, so ignoring the whole tree made those references dangle. Only the
+# per-session working directories are ephemeral.
+ai-docs/sessions/
+ai_docs/sessions/
 ai-sessions/
 **/ai-sessions/
 
@@ -99,8 +103,6 @@ gtd/sessions/
 .claude/.statusline-worktree-*
 # Claude cache contents are local generated data and can grow quickly.
 .claude/cache/
-# Local claudemem indexes are generated from the repo and should not be committed.
-.claudemem/
 
 # Added by claudeup
 # Team MCP configuration should be committed so shared tools are discoverable.

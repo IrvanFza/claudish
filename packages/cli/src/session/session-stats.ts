@@ -87,7 +87,10 @@ const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v)
  * records no tokens at all. The caller prints no panel in that case, which is correct:
  * a summary of a session that never ran is noise, not information.
  */
-export function readSessionStats(port: number): SessionStats | null {
+export function readSessionStats(
+  port: number,
+  opts?: { readonly processStartMs?: number }
+): SessionStats | null {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(tokenFilePath(port), "utf-8"));
@@ -96,6 +99,25 @@ export function readSessionStats(port: number): SessionStats | null {
   }
   if (!raw || typeof raw !== "object") return null;
   const d = raw as Record<string, unknown>;
+
+  // Freshness gate — the token file is keyed by PORT, and a port is reusable.
+  //
+  // TokenTracker never truncates or pre-creates the file; its only write happens
+  // on a response (token-tracker.ts:382). findAvailablePort() scans from the
+  // bottom of the range, so two back-to-back runs on an idle machine land on the
+  // same port and therefore the same path. Without this check, a run that died
+  // before its first response — bad key, 400, crash — renders the PREVIOUS
+  // session's tokens, cost, savings and duration as its own, and index.ts then
+  // derives a resume id from that stale window.
+  //
+  // `started_at` is stamped when the tracker is constructed (token-tracker.ts:82),
+  // which is necessarily after this process began. So a value earlier than our own
+  // start belongs to somebody else. A file with no `started_at` predates that field
+  // and cannot be dated, and an undatable summary is exactly the one worth
+  // suppressing — a missing panel is cheaper than a confidently wrong one.
+  const processStartMs = opts?.processStartMs ?? Date.now() - Math.round(process.uptime() * 1000);
+  const trackerStartedAt = num(d.started_at);
+  if (trackerStartedAt <= 0 || trackerStartedAt < processStartMs) return null;
 
   const inputTokens = num(d.input_tokens);
   const outputTokens = num(d.output_tokens);

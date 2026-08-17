@@ -24,7 +24,10 @@ import { lookupModel, lookupModelForProvider } from "./adapters/model-catalog.js
 
 const MINIMAX_API_KEY = process.env.MINIMAX_CODING_API_KEY || process.env.MINIMAX_API_KEY;
 const SKIP_REAL_API = !MINIMAX_API_KEY;
-const MINIMAX_API_BASE = "https://api.minimax.io/anthropic/v1/messages";
+// Choose the host by key type because PAYG and coding are separate credential silos.
+const MINIMAX_API_BASE = process.env.MINIMAX_CODING_API_KEY
+  ? "https://api.minimax.io/anthropic/v1/messages"
+  : "https://api.minimaxi.com/anthropic/v1/messages";
 
 // ─── Mock slim-cache seeding ─────────────────────────────────────────────────
 

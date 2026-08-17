@@ -1,0 +1,3 @@
+team: 2 models, 2 done, 146s, 99.8k tok, free
+  01 gc@glm-5.2         done    250B   83.8k/7.7k    free
+  02 kc@k3              done    396B    3.5k/4.7k    free

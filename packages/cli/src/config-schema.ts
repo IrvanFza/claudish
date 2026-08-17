@@ -62,6 +62,37 @@ export const CustomEndpointSchema = z.discriminatedUnion("kind", [
   CustomEndpointComplexSchema,
 ]);
 
+/**
+ * Opt-out surface for the BUNDLED endpoint catalog (`predefined-catalog.ts`).
+ *
+ *   "predefinedEndpoints": {
+ *     "enabled": false,              // the whole catalog is off
+ *     "disable": ["groq"],           // individual opt-out, case-insensitive
+ *     "enable":  ["tuningengines"]   // activate despite no locally-present key
+ *   }
+ *
+ * `enable` exists because activation is otherwise inferred from a credential
+ * being present SYNCHRONOUSLY, and a key that lives only behind an `op://`
+ * reference cannot be seen without the async 1Password path — which the gate
+ * deliberately cannot reach. It is also the answer for a keyless self-hosted
+ * gateway sitting behind network auth.
+ *
+ * `disable` beats `enable`: refusals beat permissions, the same rule that puts
+ * the collision check ahead of the credential gate.
+ *
+ * NOT `.strict()`, deliberately — an unknown key here is a forward-compat
+ * config from a newer claudish, and the right response to that is to honour the
+ * keys we understand, not to discard the block. Unknown NAMES in `disable` /
+ * `enable` are likewise a silent no-op: a user who opts out of a vendor that is
+ * later dropped from the bundle should not collect a warning on every launch
+ * for a line that is now simply inert.
+ */
+export const PredefinedEndpointsConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  disable: z.array(z.string()).optional(),
+  enable: z.array(z.string()).optional(),
+});
+
 // defaultProvider can be a builtin OR the name of a custom endpoint
 // (we validate the cross-reference at load time, not in the schema).
 export const DefaultProviderSchema = z.union([BuiltinDefaultProviderSchema, z.string().min(1)]);
@@ -70,3 +101,4 @@ export type BuiltinDefaultProvider = z.infer<typeof BuiltinDefaultProviderSchema
 export type CustomEndpointSimple = z.infer<typeof CustomEndpointSimpleSchema>;
 export type CustomEndpointComplex = z.infer<typeof CustomEndpointComplexSchema>;
 export type CustomEndpoint = z.infer<typeof CustomEndpointSchema>;
+export type PredefinedEndpointsConfig = z.infer<typeof PredefinedEndpointsConfigSchema>;

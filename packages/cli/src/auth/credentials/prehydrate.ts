@@ -100,6 +100,7 @@ import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
 import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
+import { ensureEndpointsRegistered } from "../../providers/endpoint-registration.js";
 import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../../providers/model-parser.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
@@ -273,7 +274,13 @@ async function prepareParentRoutingContext(): Promise<void> {
   if (!parentRoutingContextReady) {
     parentRoutingContextReady = true;
     try {
-      loadCustomEndpoints(loadConfig());
+      // One config object for both halves — the bundled catalog's suppression
+      // set is built from this same `customEndpoints` map, and the two reading
+      // different objects (or scopes) is what could suppress a bundled row
+      // without registering its replacement.
+      const config = loadConfig();
+      ensureEndpointsRegistered({ config });
+      loadCustomEndpoints(config);
     } catch {
       // Config read failure must not block the spawn — the parent just keeps
       // the builtin-only provider set, same as any other consumer of a broken

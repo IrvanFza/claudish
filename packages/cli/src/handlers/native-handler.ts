@@ -15,6 +15,7 @@ import {
   swapAdvisorToolInBody,
 } from "./native-handler-advisor.js";
 import { wrapAnthropicError } from "./shared/anthropic-error.js";
+import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
 
 /**
@@ -79,6 +80,23 @@ export class NativeHandler implements ModelHandler {
   async handle(c: Context, payload: any): Promise<Response> {
     const originalHeaders = c.req.header();
     const target = payload.model;
+
+    // Drop thinking blocks Anthropic cannot have signed, before anything else
+    // reads the payload — so the advisor logging below dumps what actually goes
+    // on the wire rather than what arrived.
+    //
+    // Foreign reasoning reaches the client as `{type:"thinking", signature:""}`
+    // (openai-sse has no signature to give it), and a single mixed-provider
+    // session then 400s every subsequent native turn with
+    // "Invalid signature in thinking block". See thinking-signature.ts for why
+    // this belongs on the native path only, and which case it deliberately
+    // still misses.
+    const strippedThinking = stripUnsignedThinkingBlocks(payload.messages);
+    if (strippedThinking > 0) {
+      log(
+        `[Native] stripped ${strippedThinking} unsigned thinking block(s) from history for ${target} (foreign-provider origin)`
+      );
+    }
 
     // -------------------------------------------------------------------
     // Advisor-swap experiment (opt-in via CLAUDISH_SWAP_ADVISOR=1).

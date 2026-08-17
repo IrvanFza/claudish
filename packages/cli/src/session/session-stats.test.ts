@@ -43,19 +43,19 @@ function writeTokenFile(overrides: Record<string, unknown> = {}): void {
 
 describe("readSessionStats", () => {
   test("returns null for a missing, unparseable, or tokenless file", () => {
-    expect(readSessionStats(65_000)).toBeNull();
+    expect(readSessionStats(65_000, { processStartMs: 0 })).toBeNull();
 
     writeFileSync(tokenFile, "not json");
-    expect(readSessionStats(65_000)).toBeNull();
+    expect(readSessionStats(65_000, { processStartMs: 0 })).toBeNull();
 
     writeTokenFile({ input_tokens: 0, output_tokens: 0, total_tokens: 0 });
-    expect(readSessionStats(65_000)).toBeNull();
+    expect(readSessionStats(65_000, { processStartMs: 0 })).toBeNull();
   });
 
   test("treats the literal unknown context window as unavailable, not NaN", () => {
     writeTokenFile({ context_window: "unknown" });
 
-    const stats = readSessionStats(65_000);
+    const stats = readSessionStats(65_000, { processStartMs: 0 });
     expect(stats?.contextWindow).toBeNull();
     expect(stats?.contextUsed).toBeNull();
   });
@@ -63,7 +63,7 @@ describe("readSessionStats", () => {
   test("never reports a negative duration when timestamps are equal or reversed", () => {
     for (const updatedAt of [1_000, 999]) {
       writeTokenFile({ started_at: 1_000, updated_at: updatedAt });
-      expect(readSessionStats(65_000)?.durationMs).toBe(0);
+      expect(readSessionStats(65_000, { processStartMs: 0 })?.durationMs).toBe(0);
     }
   });
 
@@ -77,7 +77,7 @@ describe("readSessionStats", () => {
       output_per_m: 1,
     });
 
-    const stats = readSessionStats(65_000)!;
+    const stats = readSessionStats(65_000, { processStartMs: 0 })!;
     expect(stats.inputCostUsd + stats.outputCostUsd).toBeCloseTo(stats.costUsd, 12);
     expect(stats.inputCostUsd).toBeCloseTo(3.5, 12);
     expect(stats.outputCostUsd).toBeCloseTo(3.5, 12);
@@ -85,22 +85,22 @@ describe("readSessionStats", () => {
 
   test("uses a zero cost split when rates are absent or the billed cost is zero", () => {
     writeTokenFile({ input_per_m: undefined, output_per_m: undefined, total_cost: 4 });
-    let stats = readSessionStats(65_000)!;
+    let stats = readSessionStats(65_000, { processStartMs: 0 })!;
     expect(stats.inputCostUsd).toBe(0);
     expect(stats.outputCostUsd).toBe(0);
 
     writeTokenFile({ total_cost: 0, input_per_m: 2, output_per_m: 10 });
-    stats = readSessionStats(65_000)!;
+    stats = readSessionStats(65_000, { processStartMs: 0 })!;
     expect(stats.inputCostUsd).toBe(0);
     expect(stats.outputCostUsd).toBe(0);
   });
 
   test("prefers billed input tokens and falls back for older token files", () => {
     writeTokenFile({ input_tokens: 10_000, billed_input_tokens: 90_000 });
-    expect(readSessionStats(65_000)?.billedInputTokens).toBe(90_000);
+    expect(readSessionStats(65_000, { processStartMs: 0 })?.billedInputTokens).toBe(90_000);
 
     writeTokenFile({ input_tokens: 10_000 });
-    expect(readSessionStats(65_000)?.billedInputTokens).toBe(10_000);
+    expect(readSessionStats(65_000, { processStartMs: 0 })?.billedInputTokens).toBe(10_000);
   });
 
   test("computes savings from cumulative billed input, not the final context size", () => {
@@ -114,7 +114,7 @@ describe("readSessionStats", () => {
       total_cost: 0.25,
     });
 
-    const stats = readSessionStats(65_000)!;
+    const stats = readSessionStats(65_000, { processStartMs: 0 })!;
     if (stats.savings.length === 0) return;
 
     const billedBasis = computeSavings(billedInput, output, stats.costUsd);
@@ -141,12 +141,48 @@ describe("readSessionStats", () => {
       ],
     });
 
-    const stats = readSessionStats(65_000)!;
+    const stats = readSessionStats(65_000, { processStartMs: 0 })!;
     expect(stats.toolCalls).toEqual([
       { name: "Read", count: 3 },
       { name: "Write", count: 2 },
     ]);
     expect(stats.toolCallTotal).toBe(5);
+  });
+
+  test("rejects a stale token file from a previous session on the reused port", () => {
+    writeTokenFile({ started_at: 999 });
+
+    expect(readSessionStats(65_000, { processStartMs: 1_000 })).toBeNull();
+  });
+
+  test("returns stats when the token file started at or after this process", () => {
+    writeTokenFile({ started_at: 1_000 });
+
+    const stats = readSessionStats(65_000, { processStartMs: 1_000 });
+    expect(stats?.totalTokens).toBe(120_000);
+  });
+
+  test("returns null when the token file has no started_at", () => {
+    writeTokenFile({ started_at: undefined });
+
+    expect(readSessionStats(65_000, { processStartMs: 0 })).toBeNull();
+  });
+
+  test("returns null when the token file has started_at zero", () => {
+    writeTokenFile({ started_at: 0 });
+
+    expect(readSessionStats(65_000, { processStartMs: 0 })).toBeNull();
+  });
+
+  test("rejects a populated stale token file before accepting its real tokens", () => {
+    writeTokenFile({
+      started_at: 999,
+      input_tokens: 250_000,
+      output_tokens: 50_000,
+      total_tokens: 300_000,
+    });
+
+    expect(readSessionStats(65_000, { processStartMs: 1_000 })).toBeNull();
   });
 });
 

@@ -1,0 +1,19 @@
+{
+  "startedAt": "2026-08-11T08:54:33.110Z",
+  "models": {
+    "01": {
+      "state": "COMPLETED",
+      "exitCode": 0,
+      "startedAt": "2026-08-11T08:54:33.113Z",
+      "completedAt": "2026-08-11T08:56:49.131Z",
+      "outputSize": 250
+    },
+    "02": {
+      "state": "COMPLETED",
+      "exitCode": 0,
+      "startedAt": "2026-08-11T08:54:33.115Z",
+      "completedAt": "2026-08-11T08:56:59.347Z",
+      "outputSize": 396
+    }
+  }
+}

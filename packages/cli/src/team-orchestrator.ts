@@ -19,6 +19,7 @@ import {
   tokenFileFor,
   writeStatusFile,
 } from "./team-stats.js";
+import { createAssistantTextCapture } from "./team-stream-capture.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,32 @@ export type FailureReason =
   | "timeout"
   | "api_error"
   | "background_task_ceiling"
-  | "empty_output";
+  | "empty_output"
+  | "shape_mismatch";
+
+/**
+ * How a child's answer is read off its stdout. See TeamRunOptions.captureMode.
+ */
+export type TeamCaptureMode = "stream-json" | "print";
+
+/** Escape hatch, so `"print"` is reachable without editing a call site. */
+export const TEAM_CAPTURE_ENV_VAR = "CLAUDISH_TEAM_CAPTURE";
+
+/**
+ * Resolve the capture mode: explicit option wins, then the env var, then
+ * recovery-on by default.
+ *
+ * Only the exact string `"print"` opts out. Garbage resolves to the default
+ * rather than throwing — a typo in an env var must not fail a whole team run,
+ * and the safe direction is the one that keeps more of the answer.
+ */
+export function resolveCaptureMode(
+  explicit: TeamCaptureMode | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): TeamCaptureMode {
+  if (explicit) return explicit;
+  return env[TEAM_CAPTURE_ENV_VAR]?.trim().toLowerCase() === "print" ? "print" : "stream-json";
+}
 
 export interface ModelError {
   /** Model ID that failed (anonymized id used in the report). */
@@ -93,6 +119,42 @@ export interface TeamRunOptions {
    * Whitespace-only output is caught regardless of this setting.
    */
   minOutputBytes?: number;
+  /**
+   * Opt-in SHAPE contract: a JS regex source string the response must match, or
+   * the run is recorded EMPTY with reason `shape_mismatch`.
+   *
+   * This is the only signal that catches a child which answered correctly and
+   * then took one more turn. `claude -p` prints ONLY the final assistant
+   * message, so any post-answer turn (a background Task completing, a
+   * notification arriving) silently replaces the answer with an epilogue —
+   * exit 0, no API error, real non-whitespace prose. Measured: two models
+   * turned 7,743 and 4,737 output tokens into 250 B and 396 B of "the review
+   * above stands", and both were reported `succeeded`.
+   *
+   * Byte counts cannot separate that from a legitimately short answer (a
+   * measured 96 B reply is valid — see DEFAULT_MIN_OUTPUT_BYTES). A caller that
+   * mandated an output shape, however, KNOWS what a complete answer looks like:
+   * `team`'s prompts require a fenced ```vote block, so "```vote" is a precise
+   * oracle where length is a guess.
+   *
+   * Matched against the FULL response, not the bounded tail.
+   */
+  requirePattern?: string;
+  /**
+   * How a child's answer is captured off its stdout. Default `"stream-json"`.
+   *
+   * - `"stream-json"` — children run under `--output-format stream-json` and
+   *   the orchestrator concatenates every assistant text block. A child that
+   *   answers and then takes one more turn keeps its answer.
+   * - `"print"` — the pre-v7.50 raw pipe: whatever `claude -p` prints, which is
+   *   ONLY the final assistant message. Kept as an escape hatch for diagnosing
+   *   a capture problem by comparing the two, and reachable without a code
+   *   change via `CLAUDISH_TEAM_CAPTURE=print`.
+   *
+   * `requirePattern` is worth keeping ON under `"stream-json"`: recovery fixes
+   * answers that were LOST, not answers the model never shaped correctly.
+   */
+  captureMode?: TeamCaptureMode;
   /**
    * Called on a timer with a rendered, colourless progress block, and once more
    * when the run settles. Used to push live status somewhere a human can see it
@@ -255,8 +317,35 @@ export function classifyRunOutput(opts: {
   stdoutTail: string;
   stderr: string;
   minOutputBytes: number;
+  /** Caller's shape contract (regex source). See TeamRunOptions.requirePattern. */
+  requirePattern?: string;
+  /**
+   * The complete stdout, when the caller could read it back off disk.
+   *
+   * `stdoutTail` holds only the LAST STDOUT_TAIL_LIMIT bytes, so matching a
+   * pattern against it would silently fail for any contract whose marker sits
+   * near the START of a long answer. Falls back to the tail when absent, which
+   * is exact whenever the tail IS the whole output.
+   */
+  fullOutput?: string;
+  /**
+   * How the answer was captured. Only changes the `shape_mismatch` EXPLANATION,
+   * never the verdict: under `"print"` a missing marker is most likely an
+   * answer that was discarded, while under `"stream-json"` every assistant
+   * message was kept, so the model genuinely did not produce one. Pointing the
+   * caller at the wrong one of those costs a wasted investigation.
+   */
+  captureMode?: TeamCaptureMode;
 }): { reason: FailureReason; detail: string } | null {
-  const { outputSize, stdoutTail, stderr, minOutputBytes } = opts;
+  const {
+    outputSize,
+    stdoutTail,
+    stderr,
+    minOutputBytes,
+    requirePattern,
+    fullOutput,
+    captureMode = "print",
+  } = opts;
 
   const apiError = API_ERROR_RE.exec(stdoutTail);
   if (apiError) {
@@ -299,6 +388,41 @@ export function classifyRunOutput(opts: {
         `Child exited 0 but produced only ${outputSize} B of stdout ` +
         `(caller required at least ${minOutputBytes} B).`,
     };
+  }
+
+  // Shape contract, checked LAST: the structural failures above are cheaper and
+  // give better detail, and a run that hit one of them would fail this too —
+  // reporting "no ```vote block" for what is really an API error would send the
+  // caller after the wrong problem.
+  if (requirePattern) {
+    const haystack = fullOutput ?? stdoutTail;
+    let re: RegExp | null = null;
+    try {
+      re = new RegExp(requirePattern);
+    } catch {
+      // An unusable pattern must never fail a run that may be perfectly good.
+      // runModels validates up front so the caller hears about it before any
+      // model is spawned; this branch only guards a direct call.
+      re = null;
+    }
+    if (re && !re.test(haystack)) {
+      const cause =
+        captureMode === "stream-json"
+          ? "Every assistant message this child produced was captured and concatenated, " +
+            "so this is not the print-mode dropout: the model genuinely never emitted the " +
+            "required shape. Re-prompt it, or relax the contract."
+          : "This is the signature of a child that answered and then took one more turn: " +
+            "`claude -p` prints only the FINAL assistant message, so a background task " +
+            "completing (or any late notification) replaces the real answer with an " +
+            "epilogue about it. The answer was generated, it just was not the last thing " +
+            "said — re-run with the default stream-json capture to keep it.";
+      return {
+        reason: "shape_mismatch",
+        detail:
+          `Child exited 0 with ${outputSize} B, but the response does not match the ` +
+          `required pattern /${requirePattern}/. ${cause}`,
+      };
+    }
   }
 
   return null;
@@ -493,6 +617,49 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
 }
 
 /**
+ * Fail fast on an unusable shape contract. Deliberately called BEFORE the
+ * manifest read and the spawn loop: a bad regex discovered after N children
+ * have run would either waste the whole run or, worse, be swallowed and
+ * silently enforce nothing — which is the exact class of quiet failure this
+ * option exists to remove.
+ */
+function assertValidRequirePattern(pattern: string | undefined): void {
+  if (pattern === undefined) return;
+  try {
+    new RegExp(pattern);
+  } catch (err) {
+    throw new Error(
+      `Invalid requirePattern /${pattern}/: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
+ * Read the response back only when a shape contract needs the whole text —
+ * otherwise this is pure cost on the happy path. Callers invoke this from
+ * `finish`, which runs on the outputStream's "close", so the file is complete.
+ *
+ * Returns undefined when the read is unnecessary OR fails; the caller then
+ * falls back to the tail, and a contract checked against less text can only
+ * produce a false FAILURE, never a false success, with the detail string
+ * naming the pattern either way.
+ */
+function readFullOutputIfNeeded(opts: {
+  crashed: boolean;
+  requirePattern: string | undefined;
+  outputSize: number;
+  outputPath: string;
+}): string | undefined {
+  const { crashed, requirePattern, outputSize, outputPath } = opts;
+  if (crashed || !requirePattern || outputSize <= STDOUT_TAIL_LIMIT) return undefined;
+  try {
+    return readFileSync(outputPath, "utf-8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run all models in parallel.
  * Each model reads input.md and writes response-{ID}.md.
  * Returns when all models complete or timeout.
@@ -502,6 +669,9 @@ export async function runModels(
   opts: TeamRunOptions = {}
 ): Promise<TeamStatus> {
   const timeoutMs = (opts.timeout ?? 300) * 1000;
+
+  assertValidRequirePattern(opts.requirePattern);
+
   const manifest: TeamManifest = JSON.parse(
     readFileSync(join(sessionPath, "manifest.json"), "utf-8")
   );
@@ -533,6 +703,8 @@ export async function runModels(
   }
 
   const minOutputBytes = opts.minOutputBytes ?? DEFAULT_MIN_OUTPUT_BYTES;
+  const requirePattern = opts.requirePattern;
+  const captureMode = resolveCaptureMode(opts.captureMode);
 
   /**
    * Re-judge a timed-out model once its stdout pipe has closed and the response
@@ -603,6 +775,19 @@ export async function runModels(
     getStderr: () => string;
     getStdoutTail: () => string;
     getByteCount: () => number;
+    /**
+     * Drain any partially-received line into the byte count, tail, and response
+     * file. A no-op under `"print"` capture, which counts raw bytes as they
+     * arrive.
+     *
+     * Required by the TIMEOUT path. The stream-json capture holds an unterminated
+     * line back until its newline arrives, so a child that wrote a partial line
+     * and then hung would be reported as 0 B — destroying the one diagnostic the
+     * timeout handler exists to provide. Deliberately does NOT close the write
+     * stream: that would fire `finish()` while the status is still RUNNING and
+     * race the run to COMPLETED.
+     */
+    flushPartial: () => void;
   }
   const runtimes: Map<string, ModelRuntime> = new Map();
 
@@ -638,7 +823,25 @@ export async function runModels(
 
     // CRITICAL FIX: do NOT use -p flag (-p means --profile in claudish)
     // --stdin triggers non-interactive single-shot mode
-    const args = ["--model", spawnModel, "-y", "--stdin", "--quiet", ...(opts.claudeFlags ?? [])];
+    //
+    // ORDER IS LOAD-BEARING when recovery is on. claudish consumes --verbose as
+    // its OWN log-verbosity flag (it sets quiet=false) and separately forwards a
+    // copy to the child `claude`, which hard-errors on
+    // `--print --output-format stream-json` without it. Putting --verbose BEFORE
+    // --quiet gets the forward while letting --quiet win claudish's own
+    // verbosity — reversed, every child would narrate itself onto stderr.
+    // `--output-format stream-json` is an unknown flag to claudish and passes
+    // through to `claude` with its value.
+    const args = [
+      "--model",
+      spawnModel,
+      "-y",
+      "--stdin",
+      ...(captureMode === "stream-json"
+        ? ["--verbose", "--quiet", "--output-format", "stream-json"]
+        : ["--quiet"]),
+      ...(opts.claudeFlags ?? []),
+    ];
 
     updateModelStatus(anonId, {
       state: "RUNNING",
@@ -684,14 +887,60 @@ export async function runModels(
     // and still exits 0, so the failure signal is often here rather than on
     // stderr. Bounded so a 30 KB answer doesn't get buffered twice.
     let stdoutTail = "";
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      byteCount += chunk.length;
-      stdoutTail = (stdoutTail + chunk.toString()).slice(-STDOUT_TAIL_LIMIT);
-    });
 
-    // Stream stdout to disk via pipe — no memory buffering
     const outputStream = createWriteStream(outputPath);
-    proc.stdout?.pipe(outputStream);
+
+    /** See ModelRuntime.flushPartial. Reassigned below when recovery is on. */
+    let flushPartial: () => void = () => {};
+
+    if (captureMode === "print") {
+      // Legacy path: whatever `claude -p` printed, byte for byte.
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        byteCount += chunk.length;
+        stdoutTail = (stdoutTail + chunk.toString()).slice(-STDOUT_TAIL_LIMIT);
+      });
+      // Stream stdout to disk via pipe — no memory buffering
+      proc.stdout?.pipe(outputStream);
+    } else {
+      // Recovery path. The child's stdout is a stream-json event log, so the
+      // ANSWER has to be extracted from it rather than piped through.
+      //
+      // byteCount and stdoutTail are deliberately fed the RECOVERED prose, not
+      // the raw JSON. Every downstream consumer — the empty check, the
+      // minOutputBytes threshold, the [API Error:] match, the reported
+      // outputSize — is asking about the answer, and raw JSON bytes would
+      // inflate all of them (an empty answer wrapped in events is still
+      // kilobytes). Feeding recovered prose keeps `classifyRunOutput`
+      // completely unaware that the wire format changed.
+      const capture = createAssistantTextCapture();
+
+      const absorb = (text: string): void => {
+        if (text.length === 0) return;
+        byteCount += Buffer.byteLength(text);
+        stdoutTail = (stdoutTail + text).slice(-STDOUT_TAIL_LIMIT);
+        outputStream.write(text);
+      };
+
+      proc.stdout?.on("data", (chunk: Buffer) => absorb(capture.write(chunk.toString())));
+
+      // `capture.end()` is idempotent, so the timeout path draining early does
+      // not disturb the normal finalisation below.
+      flushPartial = () => absorb(capture.end());
+
+      // The write stream is ours to close now that nothing pipes into it, and
+      // `finish()` hangs off its "close". Both events are wired because "end"
+      // does not fire on a destroyed stream (a killed or timed-out child), and
+      // a run that never resolves is worse than one that resolves empty.
+      let captureFinalized = false;
+      const finalizeCapture = (): void => {
+        if (captureFinalized) return;
+        captureFinalized = true;
+        absorb(capture.end());
+        outputStream.end();
+      };
+      proc.stdout?.on("end", finalizeCapture);
+      proc.stdout?.on("close", finalizeCapture);
+    }
 
     // Collect stderr for error logging
     let stderr = "";
@@ -706,6 +955,7 @@ export async function runModels(
       getStderr: () => stderr,
       getStdoutTail: () => stdoutTail,
       getByteCount: () => byteCount,
+      flushPartial: () => flushPartial(),
     });
 
     // Pipe input to stdin
@@ -742,9 +992,23 @@ export async function runModels(
         // it: `claude -p` exits 0 on API errors and on background-task
         // termination, so exit code alone would file both as success.
         const crashed = exitCode !== 0;
+        const fullOutput = readFullOutputIfNeeded({
+          crashed,
+          requirePattern,
+          outputSize,
+          outputPath,
+        });
         const degraded = crashed
           ? null
-          : classifyRunOutput({ outputSize, stdoutTail, stderr, minOutputBytes });
+          : classifyRunOutput({
+              outputSize,
+              stdoutTail,
+              stderr,
+              minOutputBytes,
+              requirePattern,
+              fullOutput,
+              captureMode,
+            });
 
         const failed = crashed || degraded !== null;
         const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
@@ -960,6 +1224,9 @@ export async function runModels(
     // reconciles rather than re-reports, so this is the only chance to persist
     // what the child said.
     const rt = runtimes.get(id);
+    // Drain a half-received line first, or everything below reports 0 B for a
+    // child that was mid-sentence when the clock ran out.
+    rt?.flushPartial();
     const stderr = rt?.getStderr() ?? "";
     const stdoutTail = rt?.getStdoutTail() ?? "";
     const bytes = rt?.getByteCount() ?? 0;
@@ -968,8 +1235,8 @@ export async function runModels(
       `Killed by the orchestrator after ${(timeoutMs + grace) / 1000}s ` +
       `(deadline ${timeoutMs / 1000}s${grace ? ` + ${grace / 1000}s grace` : ""}) ` +
       `with ${bytes} B of stdout — ${why}. ` +
-      "In --quiet print mode the child emits its answer only at the end, so 0 B means " +
-      `"did not finish", not "produced nothing".`;
+      "That figure counts the ANSWER, not the wire format, so 0 B means the child had " +
+      `not produced an assistant message yet — "did not finish", not "produced nothing".`;
 
     if (rt) persistErrorLog(rt.errorLogPath, `TIMEOUT: ${detail}`, stderr, stdoutTail);
 

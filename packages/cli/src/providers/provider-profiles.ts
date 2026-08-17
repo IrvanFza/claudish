@@ -137,14 +137,58 @@ const devinProfile: ProviderProfile = {
 };
 
 /**
- * Models that reject function tools + reasoning_effort on /v1/chat/completions
- * (OpenAI 400: "use /v1/responses or set reasoning_effort to 'none'"). This is
- * a PER-MODEL constraint, not family-wide. TEMPORARY name gate — replaced by
+ * Models OpenAI will not serve over /v1/chat/completions.
+ *
+ * Two different reasons, one remedy. `gpt-5.6` rejects function tools together
+ * with reasoning_effort ("use /v1/responses or set reasoning_effort to 'none'").
+ * A `*codex*` model rejects the endpoint outright, and says so in as many words
+ * — measured 2026-08-10 straight against api.openai.com with `gpt-5.3-codex`:
+ *
+ *   POST /v1/chat/completions → 404 "This model is not supported in the
+ *                                    v1/chat/completions endpoint. Use the
+ *                                    v1/responses endpoint instead."
+ *   POST /v1/responses        → 200
+ *
+ * So this is not the tools-plus-reasoning constraint wearing a second face; it
+ * is a flatly Responses-only model. Claude Code sends tools on essentially every
+ * request, which made every codex id unusable through `oai@` rather than merely
+ * degraded.
+ *
+ * THE SUBSTRING TEST IS LOAD-BEARING, and it is not a style choice.
+ * `OpenAIProviderTransport` has carried the same rule since long before this —
+ * `modelName.toLowerCase().includes("codex")` decides both its stream format
+ * (openai.ts:31) and its endpoint (openai.ts:37) — so Layer 3 was ALREADY
+ * sending every codex id to /v1/responses. Only Layer 1 disagreed: this gate
+ * matched `gpt-5.6` alone, so `openaiProfile` built an OpenAIAPIFormat and put
+ * a Chat Completions body on a Responses endpoint. That mismatch is the whole
+ * failure, and it is exactly what OpenAI reported back:
+ *
+ *   400 unsupported_parameter — "Unsupported parameter: 'messages'. In the
+ *   Responses API, this parameter has moved to 'input'."
+ *
+ * Right endpoint, wrong body. Any narrowing of this test (a `/^gpt-.*codex/`
+ * prefix, an explicit id list) silently re-opens the split, because the
+ * transport will keep routing ids this function no longer claims. The two tests
+ * must stay identical; a test pins their agreement.
+ *
+ * Only OpenAI-served ids reach this gate — it lives inside `openaiProfile`, so
+ * `cx@` (Responses-only by construction) and every other provider are untouched.
+ *
+ * Pick the verification model carefully. /v1/models is a CATALOGUE, not a served
+ * set: of those six ids, only `gpt-5.3-codex` actually answers 200 on
+ * /v1/responses for the developer's account — the rest return 404 "Model not
+ * found" there, and `gpt-5-codex` is additionally reported DEPRECATED on
+ * /v1/chat/completions. Testing against any of them looks exactly like "the
+ * routing fix did not work" when the model is simply not being served. Same
+ * catalogue-vs-served-set trap the Antigravity and Devin providers document.
+ *
+ * Still a PER-MODEL constraint and still a TEMPORARY name gate — replaced by
  * the catalog capability record (endpoints.openai.toolsWithReasoning ===
  * "requires-responses") once route-time capability fetch lands.
  */
 function requiresResponsesApi(modelName: string): boolean {
-  return /^gpt-5\.6/.test(modelName.toLowerCase());
+  const name = modelName.toLowerCase();
+  return /^gpt-5\.6/.test(name) || name.includes("codex");
 }
 
 const openaiProfile: ProviderProfile = {

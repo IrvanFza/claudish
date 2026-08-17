@@ -57,6 +57,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `ollama@` → Ollama (local)
 - `lmstudio@` → LM Studio (local)
 - Custom endpoint names also work as provider prefixes (e.g., `my-vllm@model-name`) — see "Custom Endpoints" below
+- **Bundled catalog vendors** each use their own name as their only prefix, and appear only when their key is locally present: `groq@`, `cerebras@`, `together@`, `fireworks@`, `deepinfra@`, `nebius@`, `hyperbolic@`, `sambanova@`, `novita@`, `baseten@`, `perplexity@`, `venice@`, `chutes@`, `featherless@`, `parasail@`, `inference-net@`, `aimlapi@`, `requesty@`, `nanogpt@`, `cohere@`, `scaleway@`, `upstage@`, `writer@`, `moonshot-cn@`, `tuningengines@` — see "Predefined Endpoints" below. `moonshot-cn@` is the China-region Moonshot product, a DIFFERENT service from the builtin Kimi provider reached by `moonshot@`
 
 ### Devin Provider (`dv@`) — many vendors' models on one Cognition subscription
 
@@ -66,7 +67,7 @@ The only **binary** wire in the pipeline: Connect-protocol envelopes carrying pr
 Codec, request builder, credentials, live roster, and uid resolution live in `providers/devin/`;
 Layer 1 is `adapters/devin-api-format.ts`, Layer 3 `providers/transport/devin.ts`, the parser
 `handlers/shared/stream-parsers/devin-connect.ts`. Full reverse-engineering write-up:
-`ai-docs/sessions/dev-arch-devin-subscription-20260806-120000-a1b2c3d4/protocol-spec.md`.
+`ai-docs/sessions/dev-arch-devin-subscription-20260806-120000-a1b2c3d4/protocol-spec.md` (write-up lost — predates the ai-docs tracking fix).
 
 **Auth is the Devin CLI's own token, verbatim.** `~/.local/share/devin/credentials.toml`
 (`windsurf_api_key = "devin-session-token$<JWT>"`), overridable with `WINDSURF_API_KEY`;
@@ -173,7 +174,7 @@ The Antigravity half of the old `auth/gemini-oauth.ts` was extracted to **`auth/
 
 **Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a roster. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
-**Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md`.
+**Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
 
 ### Qwen / Alibaba: ONE service, TWO consoles, THREE isolated silos
 
@@ -288,7 +289,7 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
-**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`
+**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
 
 ### The interactive picker roster is DERIVED — never add a membership table
 
@@ -410,7 +411,7 @@ Define named custom endpoints in `~/.claudish/config.json` under the `customEndp
       "baseUrl": "https://llm.corp.internal",
       "apiPath": "/api/v2/chat/completions",
       "apiKey": "${CORP_LLM_KEY}",
-      "authScheme": "X-Api-Key",
+      "authScheme": "x-api-key",
       "headers": { "X-Team": "platform" },
       "streamFormat": "openai-sse",
       "modelPrefix": "",
@@ -429,6 +430,80 @@ Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp
 - **Runtime registration**: Endpoints call `registerRuntimeProvider()` and `registerRuntimeProfile()` to inject themselves into the provider resolver and transport layers.
 - **`models` field** (optional): When present, limits the endpoint to listed models. Omit to allow any model name.
 - **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
+- **`authScheme` is a lowercase enum** — `"bearer"` or `"x-api-key"` (`config-schema.ts`). A capitalized `"X-Api-Key"` fails Zod validation and the WHOLE entry is skipped with a stderr warning, which reads as "my endpoint disappeared" rather than as a typo. This doc carried the wrong spelling until v7.48.0; the example above is the validated one.
+
+## Predefined Endpoints (unreleased — ships in the next minor)
+
+A **predefined endpoint** is a `customEndpoints` entry that ships inside the package. The user gets `groq@llama-3.3-70b` with no config file at all, and adding vendor N+1 is appending one object literal to `providers/predefined-catalog.ts` — no new transport, no `PROVIDER_PROFILES` row, no `provider-definitions.ts` entry, no other file touched. That constraint is the feature: the two-table coupling between `BUILTIN_PROVIDERS` and `PROVIDER_PROFILES` is this project's documented worst failure class (a missing profile routes silently to OpenRouter), and a catalog row cannot create one because it never becomes a builtin. A row compiles into exactly the `CustomEndpointComplex` object a user would have hand-written and travels the same validate → definition → profile → register×3 path.
+
+25 vendors ship. PR #136 (@cerebrixos) proposed one of them — `tuningengines` — as a full built-in provider; it lands here as a data row instead, which is a better outcome for that PR than closing it.
+
+### Activation is gated on a LOCALLY-PRESENT credential
+
+A row registers only when its key is already in `process.env`, one of its aliases, or `config.apiKeys`. Not because 25 dead providers would be untidy — because registration is what makes a provider visible at all. `buildProviderDefinition` sets `shortcuts: [name]`, and both the picker roster and the `@prefix` alias table are DERIVED from that, so registering unconditionally would pollute the `@prefix` namespace and its partial-match resolver with vendors that cannot serve a request, and would cost one async credential resolution per row per picker open — each able to open a 1Password handshake on a machine where concurrent handshakes are arbitrated globally and a burst of denials trips a 15-second machine-wide suppression.
+
+Which is why the question is asked with `hasLocalApiKey()` — env → aliases → `config.apiKeys`, **sync**, structurally unable to reach the SDK. Not `credentials.isAvailable()`: a bundled row is not in the authority's map until `registerEndpoint` puts it there, so that call answers `false` for every row and the catalog would never activate at all.
+
+**The honest consequence: a key that lives ONLY behind an `op://` reference will not make its vendor appear.** Activation is sync and 1Password is async; there is no ordering that fixes this without re-opening the handshake-storm door. Once a row IS active its op:// key resolves through the normal authority path with no special-casing. Two escape hatches, both explicit:
+
+```json
+{ "predefinedEndpoints": {
+    "enabled": true,
+    "enable": ["groq", "cerebras"],
+    "disable": ["perplexity"] } }
+```
+
+`enable` registers a row regardless of credential; `disable` beats `enable`; `"enabled": false` (or `CLAUDISH_NO_PREDEFINED_ENDPOINTS=1`) turns the whole catalog off. An INVALID `predefinedEndpoints` block warns once and is treated as ABSENT rather than as "off" — a typo in an opt-out section must not silently remove providers a user relies on.
+
+**Disabling requires a RESTART, and claudish now says so.** Re-evaluation (`ensureEndpointsRegistered({ force: true })`, which the config TUI runs after a key import) can only ADD: `registerRuntimeProvider` is a `Map.set` with no removal, and the same name is simultaneously live in the credential authority, in the derived `@prefix` alias table and in any handler cache built since. De-registration was considered and NOT built — a partial removal (definition gone, credential still registered) is a provider that half-exists, which is worse than a stale one, and its only consumer is a config edit made mid-session. The actual defect was silence: "I turned it off and it kept answering" reads as a bug rather than as a documented limit. So a row that this process registered and that is no longer eligible — disabled, catalog switched off, credential gone, or now replaced by a `customEndpoints` entry — emits one warning naming the reason and stating that a restart is required.
+
+The refusals (collision with a builtin, duplicate row, already registered, replaced by user config) are checked BEFORE the permissions. A user may opt in to a vendor they have no key for; a user may not opt in to shadowing a builtin, because that is one provider quietly answering in another's namespace.
+
+### A user `customEndpoints` entry REPLACES a bundled row entirely
+
+No deep merge. The user's entry is registered by `loadCustomEndpoints` at its own call site and the bundled row simply stands aside — suppression rather than write-order, because `ensureEndpointsRegistered()` runs from six sites and "whoever registers last wins" is a guarantee a future reordering would silently flip.
+
+The consequence worth stating: **the replacement does not inherit the vendor's conventional env var.** A hand-written `customEndpoints.groq` gets `CUSTOM_GROQ_KEY`, so a perfectly good `GROQ_API_KEY` sitting in the environment is now ignored — silently, and from neither file's point of view. Claudish warns about this exactly when it can bite (the vendor's own variable is actually set) and says the fix: add `"apiKey": "${GROQ_API_KEY}"` to your entry. It stays quiet otherwise, because an unconditional line would print on every launch of a correct config, into a stderr that during an interactive session is Claude Code's own TTY.
+
+### Base-URL override (R12): a malformed override SKIPS, it does not fall back
+
+Gateway-shaped vendors declare `baseUrlEnvVars` — `tuningengines` carries `TUNING_ENGINES_BASE_URL`, the variable PR #136 shipped — because a self-hosted instance does not live at the public hostname and without the override those users cannot use the bundled row at all.
+
+The override is read through **`baseUrlOverrideCandidates()`, the same chain `getEffectiveBaseUrl()` uses**: `config.endpoints[VAR]` (what the config TUI's URL editor and `claudish config` persist) for every declared variable, then `process.env[VAR]` for every declared variable, then the bundled default. Config wins as a TIER, not per variable — matching the `apiKeys` rule. One resolver, because an earlier revision had two: this path read `process.env` only, and since the TUI writes BOTH the config entry and the env var it looked correct for the rest of the session and diverged after a restart, at which point the TUI still DISPLAYED the saved private URL while requests went to the bundled public host. UI says private, wire says public — the same data-egress class as a silent fallback, inverted.
+
+If the override is set but malformed, the row is **skipped with a warning** — from either source. It does NOT silently fall back to the bundled public URL. The reasoning is data egress: a user who exported `TUNING_ENGINES_BASE_URL` did so to keep their prompts inside their own network, and a typo that quietly redirected the traffic to a vendor's public host would send exactly the data they were isolating to exactly the place they were isolating it from. A provider that fails to appear is diagnosable in one warning line; a provider that appears and sends conversations somewhere unintended is not diagnosable at all. The check runs at the gate AND at handler build — at the gate so a bad override never produces a provider that cannot serve, at handler build so a URL exported AFTER startup is checked too.
+
+### Evidence tiers — ALL 25 rows are probe-verified. NONE is live-verified.
+
+Every row carries `evidence` and it is never read at run time; it exists for the catalog invariant test, `claudish providers --json`, and the reviewer of the next vendor PR.
+
+- `tier: "live"` — a real turn was driven through claudish with a real key. **No shipped row carries this tier.**
+- `tier: "probe"` — a POST to the CONFIGURED chat path with a deliberately invalid key was answered by the vendor's own auth layer (`verdict: "auth-realm"`, 401/403) or by its model gate (`verdict: "model-gate"`, the route resolved and rejected a nonexistent model), and the reply DIFFERED from a deliberately bogus sibling path.
+
+**25 of 25 are `probe`; 0 are `live`.** Live verification needs a paid account per vendor, and claudish holds a key for none of them. Say exactly what the probe method does and does not establish, because the difference decides what a bug report against one of these rows means:
+
+- It is **strong evidence about ROUTING** — that `baseUrl + apiPath` reaches a live endpoint which authenticates, and that the configured path is the vendor's real one rather than a catch-all. The sibling-path comparison is what buys that: a bogus sibling answering differently proves the route resolved. It exists because pass 1 ("401/403 with a JSON `error` object?") produced four false negatives, and because a status alone proves nothing about a route.
+- It is **weak evidence about the vendor's STREAMING DIALECT.** A 401 says nothing about SSE chunking, tool-call encoding, `finish_reason` vocabulary or error-body shape on a successful turn. Those remain untested per vendor until someone holding each key runs a turn.
+
+`GET /v1/models` is **never** evidence here: Alibaba's `coding-intl` roster endpoint returns its full list to a bogus key and to no key at all.
+
+**The LAYER itself is verified end to end, live.** A shipped catalog row (`tuningengines`, whose `apiPath` is byte-identical to OpenAI's) was pointed at `https://api.openai.com` via its own `TUNING_ENGINES_BASE_URL` override with a real key, and produced correct model output through the whole path — catalog → credential gate → compile → collision check → runtime registration → explicit `provider@model` routing → `OpenAIProviderTransport` → SSE parse → stdout — with no source change. The invisible-without-a-key gate, the malformed-override refusal and the placeholder-is-unset rule were confirmed on real traffic at the same time. Transcript, debug-log line numbers and the exact wire URL: `ai-docs/sessions/dev-feature-predefined-endpoints-20260814-000000-a1b2/validation/live-run.md`. That run proves the mechanism for every row; it proves the DIALECT of none of them, including Tuning Engines' own (the row was deliberately pointed away from its vendor).
+
+Measured 2026-08-14: **DeepInfra** (`/v1/openai` + `/chat/completions`), **Novita** (`/v3/openai` + `/chat/completions`) and **Perplexity** (`/chat/completions`, no `/v1`) do not use `/v1/chat/completions`. That is why `apiPath` is REQUIRED with no default — an optional field with a default makes the failure mode *omission*, and omission is invisible in review.
+
+Two rows (`parasail`, `writer`) return non-OpenAI error shapes and say so in `evidence.note`. Probed against claudish's own classifiers: both are 401s, so `isTerminalError` returns true on the status before any body is inspected, they are remapped to a 400 surfaced inline, and the 3s/15s/30s in-stream ladder is structurally unreachable (it is gated on HTTP 200 + `openai-responses-sse`/devin). `JSON.parse` failures are caught. The degradation is one long unparsed line for Writer, whose message lives at `errors[0].description` where `extractProviderMessage` does not look. Full write-up: `ai-docs/sessions/dev-feature-predefined-endpoints-20260814-000000-a1b2/validation/error-shape-probe.md`.
+
+### No model data, ever (R7)
+
+The schema is `.strict()` and has no `models`, `contextWindow`, `maxOutputTokens`, `pricing`, `capabilities` or `modelDiscovery` field, so a future contributor cannot add one by accident — an unknown key is a parse error, not a silently ignored field. A shipped roster is exactly the hardcoded model data this project forbids: it rots the moment a vendor adds a model, and the failure shape is claudish refusing a model that actually works. So a catalog vendor gets a **free-text model prompt** in the picker rather than a list. Model metadata comes from models-index or is absent.
+
+### The caveat: activation infers intent from an ambient env var
+
+A user who exported `PERPLEXITY_API_KEY` for some unrelated tool silently gains a claudish provider they never asked for. That is real, and it is stated rather than argued away.
+
+It is acceptable for one specific reason: **nothing claudish ships puts a catalog row in a bare-name routing chain.** No row declares `nativeModelPatterns` (the schema has no such field), none owns a legacy prefix, and none appears anywhere in `DEFAULT_ROUTING_RULES` — all three are pinned by `predefined-containment.test.ts`, the third because it is the one a future contributor can open with a single well-meaning edit ("`llama-*` should try Groq first"). So a row is reachable only by typing `perplexity@model` — the same explicit-access rule Devin and Qwen Plan already follow, for the same reason. The cost of the wrong inference is therefore one extra row in a picker, never a request billed to a provider the user did not choose.
+
+The one qualification, stated because the absolute version is false: `route()` appends `defaultProvider` to EVERY bare chain, so a user who sets `"defaultProvider": "groq"` really does put a catalog row in bare chains. That is explicit user action naming the vendor, not a silent path, so the safety argument survives — but "can never" does not. If a catalog row ever becomes bare-name reachable WITHOUT the user naming it, this gate has to be revisited, because the inference would then be able to move money.
 
 ## 1Password Integration (v7.6.0+)
 
@@ -793,6 +868,68 @@ bun run packages/cli/src/test-fixtures/extract-sse-from-log.ts logs/claudish_*.l
 bun test packages/cli/src/format-translation.test.ts
 ```
 
+## The `team` success oracle — why exit 0 proves nothing
+
+`claude -p` in text output mode emits **ONLY the final assistant message**. Any turn the child takes AFTER writing its answer replaces that answer on the captured surface. Isolated proof, no claudish anywhere in the path:
+
+```
+$ echo "Say exactly ALPHA_MARKER on its own line. Then run the bash command: echo hi. Then say exactly OMEGA_MARKER on its own line." | claude -p --model haiku
+OMEGA_MARKER          <- 13 bytes. ALPHA_MARKER is gone.
+```
+
+Under `--output-format stream-json --verbose` BOTH messages are present, and the `result` field equals the last message — i.e. exactly what text mode prints. **The data survives upstream; only the capture path discards it.** The trigger is any post-answer turn, most often a background `Task`/`Agent` completing, whose notification prompts an acknowledgement — and that acknowledgement becomes `response-NN.md`.
+
+Measured on claudish's `team`, deterministic 2/2 on the first attempt:
+
+| model | output tokens generated | bytes captured | exit | reported | `vote` blocks |
+|---|---|---|---|---|---|
+| `gc@glm-5.2` | 7,743 | 250 B | 0 | succeeded | 0 |
+| `kc@k3` | 4,737 | 396 B | 0 | succeeded | 0 |
+
+Both surviving texts referred to "the review and vote above" — a review that is not on disk. The originally reported incident (236 B from `glm-5.2`) is the same shape. **It is not model-specific and not a claudish bug**: a madbench eval reproduced it on `claude-haiku-4-5` through plain Claude Code, no claudish in the path, 3 consecutive runs. It is a property of the print-mode capture surface.
+
+The existing classifier could not see it because the epilogue passes every test it ran: exit code 0, no `[API Error: ...]` marker, non-whitespace output. `DEFAULT_MIN_OUTPUT_BYTES` is 0 (opt-in, off).
+
+**A byte threshold is the wrong instrument, and this is the design point.** An earlier default of 200 produced a 2/2 false-positive rate against real short answers (measured 141 B and 96 B replies, both valid). Length is a guess. A caller that MANDATED an output shape, by contrast, knows what a complete answer looks like — so `require_pattern` is a precise oracle where length is not.
+
+Detection, then:
+
+- `FailureReason` gains `shape_mismatch`; `classifyRunOutput` gains optional `requirePattern` and `fullOutput`.
+- `runModels` gains `requirePattern` and validates the regex **BEFORE reading the manifest and before spawning anything** — a bad regex discovered later would either waste the whole run or, worse, silently enforce nothing.
+- The MCP `team` tool exposes `require_pattern` and `min_output_bytes`. The reporter of the original bug had no way to opt in, which is why the option existing internally was not enough.
+
+Two ordering decisions worth keeping:
+
+1. **The shape check runs LAST**, after the api_error / background-ceiling / empty checks. A run that hit one of those would fail the shape check too, and reporting "no `vote` block" for what is really an API error sends the caller after the wrong problem.
+2. **The pattern is matched against the FULL response, not `stdoutTail`**, because that tail is capped at `STDOUT_TAIL_LIMIT` (4000 B) — a contract whose marker sits near the START of a long answer would otherwise silently never match. Mutation-tested: changing `fullOutput ?? stdoutTail` to `stdoutTail` fails the suite.
+
+### Recovery — the answer is no longer lost (v7.50.0+)
+
+Detection turned a silent wrong verdict into a loud failure, but the generated answer was still gone: the caller re-ran and paid again. Children now spawn with `--output-format stream-json` and `team-stream-capture.ts` concatenates **every** assistant text block, so a post-answer turn costs nothing.
+
+Deterministic A/B, one real captured stream replayed through `runModels` twice:
+
+| capture | `response-NN.md` | bytes | verdict |
+|---|---|---|---|
+| `print` (pre-7.50) | `OMEGA_MARKER` | 13 | EMPTY · `shape_mismatch` |
+| `stream-json` (default) | `ALPHA_MARKER` + `OMEGA_MARKER` | 27 | COMPLETED |
+
+**Concatenate-everything was chosen over "keep the last substantial message"** because "substantial" is a byte threshold, and `DEFAULT_MIN_OUTPUT_BYTES` is 0 precisely because a 200-byte default recorded two correct short answers (141 B, 96 B) as EMPTY. Intermediate "let me read that file" chatter now lands in the response file; that cost is visible and bounded, whereas a wrong "substantial" verdict discards the answer again silently. `response-NN.md` stays prose either way, so the judge phase and every downstream reader are unaffected.
+
+Four things that are load-bearing:
+
+- **Argv order.** Children get `--verbose --quiet --output-format stream-json`, and `--verbose` MUST precede `--quiet`. claudish consumes `--verbose` as its own verbosity flag *and* forwards a copy to `claude`, which hard-errors on `--print --output-format stream-json` without it (`cli.ts` ~line 645). Reversed, every child narrates itself onto stderr. Verified live end-to-end: real claudish + `gc@glm-5.2` produced stream-json on stdout with exactly one stderr line.
+- **`byteCount` and `stdoutTail` are fed the RECOVERED prose, not the raw JSON.** Every consumer — the empty check, `minOutputBytes`, the `[API Error:` match, the reported `outputSize` — is asking about the answer, and raw JSON inflates all of them (an empty answer wrapped in events is still kilobytes). `classifyRunOutput` never learns the wire format changed.
+- **Unrecognised JSON is passed through, not dropped.** Only a line that is valid JSON *and* carries a `type` in {system, assistant, user, result} is treated as an event. The rule is per-line and never latches: sniffing the format once from the first line would let a single unexpected banner silently disable recovery for a whole run and quietly restore the original bug. Worst case is raw JSON in a response file — ugly, and visibly so.
+- **Passthrough is byte-EXACT; only recovered messages get a synthesised trailing newline.** Not cosmetic: `team-timeout-repro.test.ts` pins a child that writes exactly 65536 bytes with no trailing newline to `outputSize === 65536`, and an added newline made it 65537. Two separators exist for the same reason — a blank line belongs *between messages*, while raw lines are a byte stream that already carries its own newline, and using the message separator for them inserted a blank line between every pair of prose lines.
+- **The `is_error` result event is kept.** A terminal `result` normally just repeats the final assistant message, but on a failed turn it carries the error prose print mode would have put on stdout — which is what `API_ERROR_RE` matches. Dropping it would have silently disabled `api_error` detection.
+
+`shape_mismatch` now means something different and says so: under recovery every assistant message was captured, so a missing marker means the model never produced the shape. The old "your answer was discarded" explanation survives only for `captureMode: "print"`. Escape hatch: `CLAUDISH_TEAM_CAPTURE=print` or `TeamRunOptions.captureMode`, kept for diagnosing a capture problem by comparing the two.
+
+Fixture: `test-fixtures/stream-json/haiku-post-answer-turn.jsonl`, a real capture whose `.result` is `OMEGA_MARKER` alone while the stream carries both messages. That one file is the whole bug and the whole fix.
+
+Unrelated but adjacent: `teamCommand` is exported from `team-cli.ts` and imported nowhere, so `claudish team run` is dead code that silently falls through to catalog search. The `team` surface is **MCP-only**.
+
 ## Channel Mode (v6.4.0+)
 
 The MCP server supports a channel mode that enables async model sessions with push notifications.
@@ -857,7 +994,7 @@ When rendered by Claude Code, each notification arrives in the agent's context a
 
 `meta` keys must match `[a-zA-Z0-9_]+` — Claude Code silently drops keys with hyphens or other characters. Our schema uses underscore-only keys (`session_id`, `elapsed_seconds`, etc.); when adding new `extraMeta` keys via `SignalWatcher`, keep this constraint.
 
-The `task_id` / `status` / `created_at` / `last_updated_at` fields are SEP-1686 (MCP Tasks) forward-compatibility — additive only, no current consumer behavior change. The 7-value `event` collapses to the 5-value `status` per `EVENT_TO_TASK_STATUS` in `mcp-server.ts`. When Claude Code ships `notifications/tasks/status` receiver support, the migration is a method-name swap + payload restructure; see `ROADMAP.md` (Channel notifications → Phase 2) and `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` for the full plan.
+The `task_id` / `status` / `created_at` / `last_updated_at` fields are SEP-1686 (MCP Tasks) forward-compatibility — additive only, no current consumer behavior change. The 7-value `event` collapses to the 5-value `status` per `EVENT_TO_TASK_STATUS` in `mcp-server.ts`. When Claude Code ships `notifications/tasks/status` receiver support, the migration is a method-name swap + payload restructure; see `ROADMAP.md` (Channel notifications → Phase 2) and `ai-docs/sessions/dev-research-mcp-tool-progress-20260508-235612-8d9da3e8/sep-1686-migration-schema.md` (write-up lost — predates the ai-docs tracking fix) for the full plan.
 
 ### Enabling channel rendering in Claude Code
 
@@ -929,6 +1066,30 @@ Under `--bare` the tools are not in the model's toolset when it decides what to 
 
 Assert on the protocol, never on prose: `--output-format stream-json --verbose` exposes the `init` server status, the `tools` array, and the `tool_use`/`tool_result` pair. An assertion like `stdout.includes("Recommended Models")` passes for the wrong reason — it matched output the model produced via `Bash` while MCP discovery was silently broken. Also `proc.stdin.end()` on the spawned `claude`, or every run stalls 3s on "no stdin data received".
 
+### The `notifications/progress` keepalive (`mcp/progress-heartbeat.ts`)
+
+Claude Code aborts a tool call that puts nothing on the transport for its idle window — `MCP server "plugin:claudish:claudish" tool "team" sent no response or progress for 1800s; aborting`. Measured 2026-08-14 on **2.1.231** with three tools of identical 90s duration against a 30s window (`ai-docs/reports/mcp-progress-keepalive/findings.md`):
+
+| Tool emits every 10s | Outcome |
+|---|---|
+| nothing | aborted at 30s |
+| `notifications/progress` | survived 90s |
+| `notifications/claude/channel` | aborted at 30s |
+
+Channel and progress are **complementary, not alternatives**: channel is the visible surface with no keepalive, progress is the invisible keepalive — it still renders nowhere. A tool that blocks for minutes needs both.
+
+**`heartbeat: true` is set on exactly three tools**: `team`, `run_prompt`, `compare_models`. `create_session` deliberately does NOT carry it — it returns in milliseconds with `{session_id, status:"starting"}` and cannot reach the idle timer; the session's own long life is reported over channel frames, which is a different question.
+
+**The emitter is TIME-driven, not event-driven**, and that is the load-bearing choice. `team` already emitted a channel frame on every state change and still died at exactly 1800s, because a model that thinks for 30 minutes produces no state changes — an event-driven emitter goes silent precisely while the idle timer is counting.
+
+Interval defaults to 10s (the measured-working value), overridable with `CLAUDISH_MCP_PROGRESS_INTERVAL_MS`, clamped to `[1000, 60000]`, garbage → default. Resolved once per server, not per call, so a long session cannot change cadence mid-flight. The first frame lands at t+interval, so a 200ms call stays completely silent.
+
+**An absent or invalid `progressToken` degrades to `NOOP_HEARTBEAT`** — a shared frozen handle: no timer, no frame, no warning, no throw. The token is optional in the spec, so a host that omits it has not misbehaved, and a tool call must never fail because its keepalive could not arm. (2.1.231 does send it — observed value `2` in every probe arm. `anthropics/claude-code#58687`, which reports the client sends no `_meta.progressToken`, is STALE.)
+
+**`stop()` latches; `clearInterval` alone would not be enough.** The dispatch owns start and stop in a `finally`, and `stopped` is re-checked at the top of `emit`, so a tick already queued on the macrotask queue when the response was computed is dropped instead of reaching the wire after its own response — the `GLips/Figma-Context-MCP#362` teardown pattern, where a frame arriving after the client cleaned up its token tears down stdio.
+
+**Idle-window defaults, for sizing any test or config**: 30 min on stdio, 5 min on HTTP/SSE/WS. A per-server `timeout` (ms, ≥1000) in `.mcp.json` floors it for that server only; `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` disables the check entirely. **Undocumented floor worth knowing**: values below ~30s are silently ignored by the client — `1000` and `5000` were (a silent 20s call survived a nominal 5s window), `30000` was honoured exactly. Any test using a shorter window is confounded, because its control cannot fail.
+
 ## Test Infrastructure
 
 ### Format Translation Test Harness
@@ -951,7 +1112,13 @@ The fallback VERSION in version.ts ensures compiled binaries (Homebrew, standalo
 
 ## Session Artifacts
 
-Write research/planning artifacts to `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/` — not `/tmp` (cleared on reboot). Referenced docs live there, e.g. `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md`.
+`ai-docs/` is TRACKED, but `ai-docs/sessions/` is GITIGNORED. The split is load-bearing, not bookkeeping.
+
+**Ephemeral working artifacts** — scratch notes, raw run directories, intermediate logs, one-off probe scripts — go in `ai-docs/sessions/{task-slug}-{YYYYMMDD-HHMMSS}-{hash}/`, not `/tmp` (cleared on reboot). That directory does NOT survive a fresh clone or `git worktree remove`.
+
+**Anything referenced from CLAUDE.md, or otherwise meant to outlive the session, must be written somewhere TRACKED under `ai-docs/`** — `ai-docs/reports/` for findings and write-ups, `ai-docs/benches/` for reusable evals. Both exist and hold real content. A session dir is where you work; a tracked dir is where the conclusion goes.
+
+The cost is already paid: under the old "everything in `ai-docs/sessions/`" rule, of the four session write-ups CLAUDE.md cites, **three no longer exist anywhere** — never committed, so they died with the worktree that produced them. The prose citing them survives and now points at nothing, which is why those references carry an inline "write-up lost" marker. Only `dev-feature-parent-resolve-…/baseline-evidence.md` is still readable, and only by accident.
 
 ## Learned Preferences
 

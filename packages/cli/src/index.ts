@@ -296,6 +296,8 @@ const isServeCommand = firstPositional === "serve";
 const isProvidersCommand = firstPositional === "providers";
 // Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
 const isBehaviorCommand = firstPositional === "behavior";
+// Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
+const isTeamCommand = firstPositional === "team";
 // Auth subcommands: claudish login [provider], claudish logout [provider]
 const isLoginCommand = firstPositional === "login";
 const isLogoutCommand = firstPositional === "logout";
@@ -350,6 +352,18 @@ if (isMcpMode) {
   import("./behavior-command.js").then((m) =>
     m.behaviorCommand(args.slice(behaviorArgIndex + 1)).catch((e) => {
       console.error(`[claudish behavior] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
+} else if (isTeamCommand) {
+  // Multi-model orchestration: claudish team run|run-and-judge. Routed here
+  // because an UNROUTED subcommand does not error — it falls through to the
+  // default path and `team run --models a,b` silently becomes a catalog search
+  // for the literal string "a,b", which reads like a working command.
+  const teamArgIndex = args.indexOf("team");
+  import("./team-cli.js").then((m) =>
+    m.teamCommand(args.slice(teamArgIndex + 1)).catch((e) => {
+      console.error(`[claudish team] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );
@@ -500,6 +514,22 @@ async function runCli() {
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));
+
+    // Register the bundled endpoint catalog before ANYTHING enumerates or
+    // validates providers. Two consumers below need it and both run long before
+    // the proxy (which has always registered endpoints for the request path):
+    // the interactive picker enumerates the roster, and `validateApiKeysForModels`
+    // decides whether an explicit `vendor@model` has a credential — a provider
+    // that is not registered yet reads as an unknown one.
+    //
+    // Placed AFTER parseArgs on purpose: terminal flags (`--version`, `--models`,
+    // `--probe`) exit inside it, so those paths pay nothing for a roster they
+    // never show. Sync, config-only, idempotent; dynamically imported like every
+    // other heavy module in runCli.
+    await traceSpan("startup:endpoint-registration", async () => {
+      const { ensureEndpointsRegistered } = await import("./providers/endpoint-registration.js");
+      ensureEndpointsRegistered();
+    });
 
     // Team mode: run models in parallel (skip normal Claude Code path)
     if (cliConfig.team && cliConfig.team.length > 0) {
