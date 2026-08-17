@@ -27,7 +27,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { realValue } from "../../env-placeholder.js";
-import { getApiKey } from "../../profile-config.js";
+import { resolveLocalApiKey } from "./local-api-key.js";
 import { hasOpSources, resolveOpKeyForEnvVars } from "./op-source.js";
 import type { CredentialProvider, RequestAuth, RequestAuthContext } from "./types.js";
 
@@ -105,18 +105,18 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   /**
    * SYNC: env → aliases → config.json apiKeys → declared key (custom endpoints).
    * Does NOT touch 1Password.
+   *
+   * The first three steps are `resolveLocalApiKey` — shared verbatim with the
+   * predefined-endpoint registration gate, which must answer "is this key
+   * already here?" synchronously. Two implementations of that question is the
+   * duplicate-oracle pattern the credential refactor deleted, so there is one.
+   * The 4th step stays here because a config-DECLARED key is a custom-endpoint
+   * concept with no meaning outside this class. realValue() applies at every
+   * step (see local-api-key.ts): a placeholder must never shadow 1Password.
    */
   private resolveFromEnvConfig(): string | undefined {
-    // NOTE: map alias names to their VALUES before .find — `aliases.find(a =>
-    // process.env[a])` would return the alias NAME (a truthy string), so the
-    // credential would send the literal env-var name as the API key → 401.
-    // realValue() drops unexpanded `${VAR}` placeholders at EVERY step — a host
-    // can leak one into env, and a config/declared value can carry one whose
-    // referenced variable is unset. A placeholder must never shadow 1Password.
     return (
-      realValue(process.env[this.envVar]) ||
-      this.aliases.map((a) => realValue(process.env[a])).find((v) => !!v) ||
-      realValue(getApiKey(this.envVar)) ||
+      resolveLocalApiKey({ envVar: this.envVar, aliases: this.aliases }) ||
       realValue(this.resolveDeclared())
     );
   }

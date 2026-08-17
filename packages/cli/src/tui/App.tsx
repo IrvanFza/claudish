@@ -18,6 +18,7 @@ import {
   setEndpoint,
 } from "../profile-config.js";
 import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
+import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import {
   type LocalLiveness,
   localBaseUrl,
@@ -296,6 +297,19 @@ export function App({ requestLogin }: AppProps = {}) {
   const selectedLocalEnabled =
     selectedProviderIsLocal && isLocalProviderEnabled(selectedProvider.catalogName, config);
   const refreshConfig = useCallback(() => {
+    // Re-evaluate the bundled endpoint catalog on EVERY config refresh, not
+    // just at mount. `ensureEndpointsRegistered` latches once per process,
+    // which is right for startup and wrong here: importing a 1Password key on
+    // the 1Password tab hydrates `process.env`, drops handler caches and calls
+    // this function precisely so providers light up WITHOUT a relaunch. A
+    // latched registration would never re-ask, so a just-imported GROQ_API_KEY
+    // would leave its vendor invisible until restart — reintroducing the
+    // before/after-hydration window this path exists to close.
+    //
+    // Cheap by construction (env + one cached config read + an in-binary
+    // array), and additive: an endpoint that has since been disabled stays
+    // registered for the life of the process.
+    ensureEndpointsRegistered({ force: true });
     setConfig(loadConfig());
     setBufStats(getBufferStats());
     // Bump the 1Password derivation tick too: the op:// fields are read from

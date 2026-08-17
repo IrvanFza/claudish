@@ -49,6 +49,7 @@ import {
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
+import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
@@ -468,6 +469,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
           probeTimeoutMs = parsed * 1000;
         }
       }
+      // `--probe` exits inside parseArgs, so it never reaches runCli's
+      // registration and never starts a proxy — the two places endpoints are
+      // otherwise registered. Without this a bundled (or user-declared)
+      // endpoint is absent from the very output whose job is to explain how a
+      // model routes, which is the worst possible place for it to be missing.
+      ensureEndpointsRegistered();
       await probeModelRouting(expandedModels, hasJsonFlag, {
         live: !noProbeFlag,
         timeoutMs: probeTimeoutMs,

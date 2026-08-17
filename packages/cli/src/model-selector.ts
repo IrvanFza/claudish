@@ -40,12 +40,14 @@ import {
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { collapseRoster } from "./providers/model-resolvers/registry.js";
 import { type ModelOffer, offerIsLive } from "./providers/model-resolvers/types.js";
+import { PROVIDER_FILTER_ALIAS_EXTRA } from "./providers/picker-alias-extra.js";
 import {
   type ProviderDefinition,
   getAllProviders,
   getDisplayName,
   getProviderByName,
 } from "./providers/provider-definitions.js";
+import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { isChatCapable } from "./providers/transport/probe-discovery.js";
 
 /**
@@ -139,9 +141,22 @@ const LOCAL_OR_USER_DEPLOYED = new Set<string>(["litellm", "ollama", "lmstudio"]
 
 /**
  * Pure predicate — exported for unit tests.
+ *
+ * The hardcoded set above covers the BUILTINS with no Firebase catalog. Every
+ * RUNTIME-registered provider — a user's `customEndpoints` entry, a bundled
+ * catalog row — belongs in the same class and is recognised by derivation
+ * rather than by being listed, because the whole point of those is that
+ * claudish does not know their rosters.
+ *
+ * That is not just "no data": for a name that happens to match a models-index
+ * VENDOR slug, `modelsByVendor` answers with ids from the CREATOR namespace,
+ * and the picker would then emit `vendor@<models-index id>` — an id the
+ * vendor's own endpoint is not guaranteed to accept. Failing after the user
+ * commits is worse than asking them to type a model name, and R7 forbids
+ * shipping a roster to check against.
  */
 export function isUserDeployedProvider(value: string): boolean {
-  return LOCAL_OR_USER_DEPLOYED.has(value);
+  return LOCAL_OR_USER_DEPLOYED.has(value) || getRuntimeProviders().has(value);
 }
 
 /**
@@ -492,21 +507,9 @@ function formatModelChoiceAsSpec(model: ModelInfo, spec: string, priceStr: strin
   return `${spec} (${priceStr}, ${ctxStr}${capsStr}${dateStr})`;
 }
 
-/**
- * Extra `@prefix` spellings that are NOT registered provider shortcuts.
- *
- * The alias table proper is DERIVED (see `getProviderFilterAliases`) from each
- * definition's canonical name plus its `shortcuts` — the strings claudish
- * already accepts on the command line, so `@dv` filters here exactly as
- * `dv@model` routes there. These few are picker-only conveniences with no
- * definition behind them.
- */
-const PROVIDER_FILTER_ALIAS_EXTRA: Record<string, string> = {
-  gem: "google",
-  // Legacy picker value for OpenCode Zen; the roster now uses the definition
-  // name, and both still resolve downstream.
-  zen: "opencode-zen",
-};
+// `PROVIDER_FILTER_ALIAS_EXTRA` moved to `providers/picker-alias-extra.ts` so the
+// predefined-endpoint collision check can consult it at run time without
+// importing this module's prompt/catalog graph. Semantics are unchanged.
 
 // Deliberately NOT cached. An earlier version memoized this and justified it by
 // "runtime providers register at startup, before the picker opens" — true today,
