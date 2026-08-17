@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.53.0] - 2026-08-17
+
+### Bug Fixes
+
+- stop reporting a transient 429 as terminal quota exhaustion *(antigravity)* ([`889e532`](https://github.com/MadAppGang/claudish/commit/889e532f6063afc82da699f9b807e873ef933805))
+- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
+
+### Documentation
+
+- move the predefined-endpoints evidence somewhere it survives([`c01268f`](https://github.com/MadAppGang/claudish/commit/c01268f32c18789b2a9e811671b473ca1a51d19f))
+- update CHANGELOG.md for v7.52.0([`08dfbf7`](https://github.com/MadAppGang/claudish/commit/08dfbf7a9de24617040ff983856760fdbd9ffdf4))
+
+### Other Changes
+
+- v7.53.0 — Antigravity transient 429 no longer reported as terminal quota exhaustion([`240244c`](https://github.com/MadAppGang/claudish/commit/240244c80671ab76f47f6a814cd7fa130d9fbdc0))
+
 ## [7.52.0] - 2026-08-17
 
 ### Bug Fixes
