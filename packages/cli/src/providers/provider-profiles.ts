@@ -37,10 +37,10 @@ import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AntigravityProviderTransport } from "./transport/antigravity.js";
 import { DevinProviderTransport } from "./transport/devin.js";
 import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
+import { GrokSubscriptionProviderTransport } from "./transport/grok-subscription.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
-import { GrokSubscriptionProviderTransport } from "./transport/grok-subscription.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 
