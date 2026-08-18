@@ -25,6 +25,15 @@ function remappedTerminalBody(
   return JSON.stringify(wrapAnthropicError(400, surfaced, "invalid_request_error", upstreamStatus));
 }
 
+const REGION_OPT_IN_URL = "https://opencode.ai/workspace/0123456789abcdef0123456789abcdef/go";
+const REGION_ERROR_BODY = JSON.stringify({
+  type: "error",
+  error: {
+    type: "RegionError",
+    message: `The latest version of this model is only available hosted in China and requires explicit opt in: ${REGION_OPT_IN_URL}`,
+  },
+});
+
 describe("classifyHttpError — auth-shaped model errors", () => {
   test("classifies a 401 unsupported-model response without rewriting its status", () => {
     const body = proxyErrorBody(401, "Model deepseek-v4-pro-0813 is not supported");
@@ -45,13 +54,28 @@ describe("classifyHttpError — auth-shaped model errors", () => {
     expect(result.httpStatus).toBe(401);
   });
 
+  test("classifies a 403 with the provider's opt-in link as error and preserves the full URL", () => {
+    const result = classifyHttpError(403, REGION_ERROR_BODY, 39);
+
+    expect(result.state).toBe("error");
+    expect(result.httpStatus).toBe(403);
+    expect(result.errorMessage).toContain(REGION_OPT_IN_URL);
+  });
+
+  test("keeps a URL-free invalid-key 401 classified as an authentication failure", () => {
+    const result = classifyHttpError(401, "Invalid API key.", 40);
+
+    expect(result.state).toBe("auth-failed");
+    expect(result.httpStatus).toBe(401);
+  });
+
   test("distinguishes unsupported-model and authentication wording under HTTP 403", () => {
     const unsupported = classifyHttpError(
       403,
       proxyErrorBody(403, "Unsupported model: deepseek-v4-pro-0813"),
-      39
+      41
     );
-    const forbidden = classifyHttpError(403, proxyErrorBody(403, "Forbidden"), 40);
+    const forbidden = classifyHttpError(403, proxyErrorBody(403, "Forbidden"), 42);
 
     expect(unsupported.state).toBe("model-not-found");
     expect(unsupported.httpStatus).toBe(403);
@@ -67,12 +91,12 @@ describe("classifyHttpError — auth-shaped model errors", () => {
         "Model deepseek-v4-pro-0813 is not supported",
         "Model not supported by this provider. Verify model name."
       ),
-      41
+      43
     );
     const unauthorized = classifyHttpError(
       400,
       remappedTerminalBody(401, "Unauthorized", "Check API key / OAuth credentials."),
-      42
+      44
     );
 
     expect(unsupported.state).toBe("model-not-found");
@@ -89,7 +113,7 @@ describe("classifyHttpError — auth-shaped model errors", () => {
     ] as const;
 
     for (const { status, message, state } of cases) {
-      const result = classifyHttpError(status, proxyErrorBody(status, message), 43);
+      const result = classifyHttpError(status, proxyErrorBody(status, message), 45);
       expect(result.state).toBe(state);
       expect(result.httpStatus).toBe(status);
     }
