@@ -54,7 +54,7 @@ import {
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
-import { hasModelUnsupportedWording } from "./shared/model-unsupported.js";
+import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
@@ -1630,6 +1630,16 @@ function getRecoveryHint(
     // fallback gate rather than duplicated here.
     if (isQuotaExhaustionError(status, errorText)) {
       return "Out of quota — check your plan & billing details. This won't recover on retry.";
+    }
+    // The provider already said what to do, and it is not "check your key".
+    // Measured: Zen Go answers a model the account has not opted into with
+    // `403 RegionError … requires explicit opt in: <url>`. The route, the
+    // credential and the model are all fine — so telling the user to audit a
+    // working credential talks over the fix sitting in the same sentence.
+    // Checked LAST, so a genuine auth failure that happens to cite a docs link
+    // still reaches the credential advice above via its own wording.
+    if (hasActionableLink(errorText)) {
+      return "Provider rejected the request and gave a specific fix — follow the link in the message below.";
     }
     return "Check API key / OAuth credentials.";
   }

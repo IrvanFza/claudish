@@ -12,7 +12,10 @@
  * not a silent failover to something else.
  */
 
-import { hasModelUnsupportedWording } from "../handlers/shared/model-unsupported.js";
+import {
+  hasActionableLink,
+  hasModelUnsupportedWording,
+} from "../handlers/shared/model-unsupported.js";
 
 export type ProbeState =
   | "live"
@@ -365,6 +368,20 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
         errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
       };
     }
+    // Nor is it an auth failure when the provider handed back a link to act on.
+    // Measured: Zen Go answers a model the account has not opted into with
+    // `403 RegionError … requires explicit opt in: <url>` — the credential is
+    // fine, the model IS in its live roster, and the fix is a click. Reporting
+    // `auth-failed` there points the user at a working key. `error` keeps the
+    // failure semantics (it is in `isFailureState`) without the false cause.
+    if (hasActionableLink(body)) {
+      return {
+        state: "error",
+        latencyMs,
+        httpStatus: authStatus,
+        errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
+      };
+    }
     return {
       state: "auth-failed",
       latencyMs,
@@ -423,6 +440,31 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
   };
 }
 
+/**
+ * Shorten a provider message for a probe row WITHOUT severing a URL.
+ *
+ * The row is one line, so a cap is necessary — but a blind 160-char cut removed
+ * the only actionable part of Zen Go's region error, leaving
+ * "…requires explicit opt in: https://opencode.ai/workspa..." on screen. The
+ * user is told there is a specific fix and then denied the address of it.
+ *
+ * So the link is kept whole and the PROSE around it absorbs the cut instead.
+ */
+function truncateKeepingLink(text: string, max = 160): string {
+  if (text.length <= max) return text;
+  const url = text.match(/https?:\/\/\S+/i)?.[0];
+  if (!url) return `${text.slice(0, max - 3)}...`;
+  // Reserve room for the link plus the ellipsis joining it to the trimmed prose.
+  const room = max - url.length - 4;
+  if (room <= 0) return url;
+  // Cut at a word boundary — the prose is being sacrificed for the link, so it
+  // should at least end on a whole word rather than "follow the l...".
+  const head = text.slice(0, room);
+  const lastSpace = head.lastIndexOf(" ");
+  const prose = (lastSpace > room * 0.5 ? head.slice(0, lastSpace) : head).trimEnd();
+  return `${prose}... ${url}`;
+}
+
 function extractErrorMessage(body: string): string | undefined {
   if (!body) return undefined;
   try {
@@ -430,14 +472,14 @@ function extractErrorMessage(body: string): string | undefined {
     const msg =
       parsed?.error?.message || parsed?.error?.error?.message || parsed?.message || parsed?.detail;
     if (typeof msg === "string" && msg.length > 0) {
-      return msg.length > 160 ? `${msg.slice(0, 157)}...` : msg;
+      return truncateKeepingLink(msg);
     }
   } catch {
     // not JSON, fall through
   }
   const trimmed = body.trim();
   if (!trimmed) return undefined;
-  return trimmed.length > 160 ? `${trimmed.slice(0, 157)}...` : trimmed;
+  return truncateKeepingLink(trimmed);
 }
 
 /**

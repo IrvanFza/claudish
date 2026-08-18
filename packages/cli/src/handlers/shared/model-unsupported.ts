@@ -65,3 +65,32 @@ export function hasModelUnsupportedWording(errorBody: string): boolean {
   const lower = (errorBody || "").toLowerCase();
   return UNSUPPORTED_PHRASES.some((phrase) => lower.includes(phrase));
 }
+
+/**
+ * Whether the provider already told the caller what to DO — i.e. its message
+ * carries a link to act on.
+ *
+ * A generic recovery hint is a guess. When the provider has supplied an
+ * actionable instruction, that guess stops being merely unhelpful and starts
+ * CONTRADICTING the truth sitting next to it. Measured 2026-08-19, Zen Go
+ * answers a model its account has not opted into with:
+ *
+ *   403 {"error":{"type":"RegionError","message":"The latest version of this
+ *        model is only available hosted in China and requires explicit opt in:
+ *        https://opencode.ai/workspace/<id>/go"}}
+ *
+ * The route is fine, the credential is fine, the model IS carried (it is in the
+ * live roster, so the availability filter correctly kept the provider) — the
+ * account simply has not opted into that region. claudish rendered it as
+ * "Check API key / OAuth credentials.", sending the user to audit a working key
+ * while the fix — a link — sat in the same sentence.
+ *
+ * Detecting the LINK rather than the wording is deliberate. "RegionError" is one
+ * vendor's type name for one policy; the next provider will invent a different
+ * one, and a phrase list would have to grow forever to keep up. A URL means the
+ * same thing everywhere: there is a specific place to go, and claudish should
+ * step out of the way rather than talk over it.
+ */
+export function hasActionableLink(errorBody: string): boolean {
+  return /https?:\/\/\S+/i.test(errorBody || "");
+}
