@@ -143,6 +143,67 @@ function windowFromBucket(bucket: QuotaBucket): QuotaWindow | undefined {
  * reports every bucket, since there the user is asking about the account
  * rather than about what a running session is spending.
  */
+/**
+ * The version encoded in a model id, as a comparable number, or `undefined`
+ * when the id carries no model version.
+ *
+ * There are NO dates in a quota bucket, so "newest first" has to be read off
+ * the version in the id. That makes the parser's rejections the important
+ * part, not its accepted cases — a naive "first number wins" reads
+ * `chat_20706` as version 20706 and pins Antigravity's tab-completion helper
+ * permanently above every real model.
+ *
+ * Two rejections do that work:
+ *   - the version must sit at the start or follow a `-`, so `chat_20706` /
+ *     `tab_jump_…` (which use `_`, and are `tabModelIds` server-side, not agent
+ *     models) never match;
+ *   - a numeric run with a trailing letter is a size, not a version, so
+ *     `gpt-oss-120b-medium` is not read as version 120.
+ *
+ * `-` and `.` are both accepted as separators because the vendors disagree:
+ * `gemini-3.6-flash-high` is 3.6 and `claude-sonnet-4-6` is 4.6.
+ *
+ * THE INPUT IS A WINDOW ID, NOT A RAW MODEL ID. `windowFromBucket` runs
+ * `shortenModelId` first, which strips the `gemini-` prefix — so what arrives
+ * here is `3.6-flash-high`, with the version FIRST. An earlier revision
+ * required a leading `-` and therefore failed to parse every gemini id,
+ * dropping the whole family into the unversioned bucket where it sorted
+ * alphabetically: 2.5-* above 3.6-*, i.e. exactly the complaint the sort
+ * exists to fix, silently reintroduced.
+ */
+export function parseModelVersion(modelId: string): number | undefined {
+  // Start-of-string or after a `-`, so underscore-delimited pseudo-models
+  // cannot match; and a non-alphanumeric (or end) after the digits so `120b`
+  // reads as a size rather than version 120.
+  const match = modelId.match(/(?:^|-)(\d+(?:[.-]\d+)*)(?![0-9a-z])/i);
+  if (!match) return undefined;
+  const [major, minor] = match[1].split(/[.-]/);
+  const value = Number(`${major}.${(minor ?? "0").slice(0, 3)}`);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Order windows newest-first, with unversioned ids last.
+ *
+ * Cross-vendor comparison is by raw version number, which is not a real
+ * chronology — nothing says Claude 4.6 shipped after Gemini 3.6. It is kept
+ * anyway because the alternative is a hardcoded vendor ranking, and the
+ * property the listing actually needs is that a user's current models sit
+ * above their retired ones. Within a vendor, which is where the confusion
+ * was, the order is exactly right.
+ */
+export function compareModelRecency(a: QuotaWindow, b: QuotaWindow): number {
+  const va = parseModelVersion(a.id);
+  const vb = parseModelVersion(b.id);
+  if (va === undefined && vb === undefined) return a.id.localeCompare(b.id);
+  if (va === undefined) return 1;
+  if (vb === undefined) return -1;
+  if (vb !== va) return vb - va;
+  // Same family: keep it deterministic rather than leaving Array.sort's
+  // stability to decide (e.g. 3.6-flash-high / -low / -medium / -tiered).
+  return a.id.localeCompare(b.id);
+}
+
 export function planFromBuckets(
   buckets: QuotaBucket[],
   activeModelId?: string
@@ -159,6 +220,10 @@ export function planFromBuckets(
       const w = windowFromBucket(b);
       if (w) windows.push(w);
     }
+    // Newest first. The account-wide listing is 24 windows deep, and in id
+    // order the models a user actually runs (3.6-*, 3.5-*) sit below ones they
+    // never will (2.5-*), so the useful half is off the bottom of the box.
+    windows.sort(compareModelRecency);
   }
 
   if (windows.length === 0) return undefined;

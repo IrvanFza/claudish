@@ -100,8 +100,12 @@ export interface ModelDiscoveryDescriptor {
    *   `providers/devin/devin-models.ts`; `path` is ignored.
    * - `ollama-tags`: Ollama's `{ models: [{ name, details, … }] }`. Owned by
    *   `providers/ollama-discovery.ts`, which also derives tool support.
+   * - `antigravity`: an OAuth POST to `v1internal:fetchAvailableModels`, not a
+   *   GET, so `path` is ignored. Owned by `auth/antigravity-user.ts`. Exists
+   *   because the response carries a per-subscription `maxTokens` that the
+   *   shared catalog contradicts — see the branch below.
    */
-  format: "openai-models-list" | "devin-connect" | "ollama-tags";
+  format: "openai-models-list" | "devin-connect" | "ollama-tags" | "antigravity";
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -339,6 +343,45 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
     const models: DiscoveredModel[] = served.map((model) => {
       const { wireId, ...rest } = devinRosterEntry(model);
       return { id: wireId, ...rest };
+    });
+    _failures.delete(providerName);
+    log(`[model-discovery:${providerName}] discovered ${models.length} models`);
+    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
+    return models;
+  }
+
+  // Antigravity lists over an OAuth POST to a Google internal endpoint, not a
+  // GET, so the generic path above cannot express it.
+  //
+  // The reason it is worth a branch at all is `maxTokens`: the response reports
+  // the window THIS subscription is served, and it disagrees with the shared
+  // catalog. Measured 2026-08-18 — `claude-sonnet-4-6` is 250,000 from the
+  // backend against 1,000,000 in the catalog, a 4x over-report that would have
+  // a session plan against a window it does not have. Every gemini id agrees
+  // (1,048,576 both ways), which is precisely why the gap stayed invisible.
+  //
+  // `resolveDiscoveredContextLength` already prefers a discovered window over
+  // the catalog; this branch is what finally gives it one to prefer.
+  if (descriptor.format === "antigravity") {
+    const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
+    const { setupAntigravityUser, getServedAntigravityModels } = await import(
+      "../auth/antigravity-user.js"
+    );
+    const token = await getValidAntigravityAccessToken();
+    if (!token) {
+      return recordFailure({ kind: "no-credentials", provider: providerName });
+    }
+    const { projectId } = await setupAntigravityUser(token);
+    const { servedIds, meta } = await getServedAntigravityModels(token, projectId);
+    if (servedIds.length === 0) {
+      return recordFailure({ kind: "empty-roster", provider: providerName });
+    }
+    const models: DiscoveredModel[] = servedIds.map((id) => {
+      const m = meta[id];
+      // contextWindow is left UNSET when the backend reported none
+      // (gemini-3.1-flash-image does), so the catalog still gets its turn
+      // rather than the row rendering a fabricated 0 / "N/A".
+      return m?.contextWindow ? { id, contextWindow: m.contextWindow } : { id };
     });
     _failures.delete(providerName);
     log(`[model-discovery:${providerName}] discovered ${models.length} models`);

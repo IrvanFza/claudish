@@ -164,6 +164,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "antigravity/", stripPrefix: true },
       { prefix: "go/", stripPrefix: true },
     ],
+    // Not a GET — an OAuth POST to v1internal:fetchAvailableModels, so `path`
+    // is ignored. Declared so the picker prefers the LIVE per-subscription
+    // roster and, more importantly, its per-model `maxTokens`: the backend and
+    // the shared catalog disagree by 4x on claude-sonnet-4-6 (250K vs 1M).
+    modelDiscovery: { path: "", format: "antigravity" },
     isDirectApi: true,
     description: "Antigravity subscription (ag@; go@ deprecated)",
   },

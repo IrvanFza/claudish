@@ -54,7 +54,7 @@ export interface PlanUsage {
  * How — or whether — a provider can report its plan usage.
  *
  * The negative case is a first-class value rather than an absent registry
- * entry. Six of the eight subscription providers claudish supports expose no
+ * entry. Six of the nine subscription providers claudish supports expose no
  * usage surface at all; representing that by omission makes it
  * indistinguishable from an unimplemented feature, and guarantees the research
  * gets repeated.

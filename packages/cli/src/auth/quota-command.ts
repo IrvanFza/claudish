@@ -155,6 +155,13 @@ const FRIENDLY_NAMES: Record<string, string> = {
   fugu: "sakana-subscription",
   zen: "opencode-zen-go",
   qwen: "qwen-cloud",
+  // Same divergence as `gemini` above, in the other direction: as a ROUTING
+  // prefix `grok` means the metered `x-ai` API, but someone typing
+  // `claudish quota grok` is asking about the subscription — the only one of
+  // the two that has a plan to report on. `xai` is deliberately absent: that
+  // spelling belongs unambiguously to the pay-per-token key.
+  grok: "grok-subscription",
+  supergrok: "grok-subscription",
 };
 
 async function promptForAdapter(): Promise<QuotaAdapter | undefined> {
@@ -193,13 +200,35 @@ function renderPlan(adapter: QuotaAdapter, plan: PlanUsage): void {
   );
   console.log("");
 
+  // Size the name column to the CONTENT, not a fixed width. The old constant
+  // 14 was chosen when Antigravity reported four short gemini ids; the same
+  // account now reports 24 windows including `claude-opus-4-6-thinking` and
+  // `gemini-3.6-flash-medium`, which a 14-char column truncates to
+  // `claude-opus-4…` / `3.6-flash-med…` — losing exactly the tier suffix that
+  // distinguishes one window from the next.
+  //
+  // Clamped at both ends: 14 keeps short-roster providers from collapsing into
+  // a ragged narrow column, and 28 keeps the row inside 80 columns
+  // (2 indent + 2 gutter + 28 name + 24 bar + 2 + 4 pct + 2 + reset).
+  //
+  // The +1 is the column SEPARATOR, and it is not cosmetic padding: the bar is
+  // printed immediately after the name with no space of its own, so a name that
+  // exactly fills the column butts straight against it. Antigravity's
+  // `tab_jump_flash_lite_preview` is 27 characters and did precisely that,
+  // rendering `tab_jump_flash_lite_preview░░░░` while every shorter row had a
+  // visible gap.
+  const NAME_MIN = 14;
+  const NAME_MAX = 28;
+  const widest = plan.windows.reduce((m, w) => Math.max(m, w.id.length), 0);
+  const nameWidth = Math.min(NAME_MAX, Math.max(NAME_MIN, widest + 1));
+
   for (const w of plan.windows) {
     const color = colorFor(w.used_pct);
     const bar = buildUsageBar(w.used_pct / 100, color, 24);
     const reset = w.resets_at ? formatRelativeReset(w.resets_at) : "";
-    const name = w.id.length > 14 ? `${w.id.slice(0, 13)}…` : w.id;
+    const name = w.id.length > nameWidth ? `${w.id.slice(0, nameWidth - 1)}…` : w.id;
     console.log(
-      `  ${GRY}│${R} ${WHT}${name.padEnd(14)}${R}${bar}  ${color}${String(w.used_pct).padStart(3)}%${R}  ${GRY}${I}${reset}${R}`
+      `  ${GRY}│${R} ${WHT}${name.padEnd(nameWidth)}${R}${bar}  ${color}${String(w.used_pct).padStart(3)}%${R}  ${GRY}${I}${reset}${R}`
     );
   }
 
