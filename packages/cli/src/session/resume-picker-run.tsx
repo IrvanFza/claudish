@@ -9,12 +9,13 @@
  * TWO DELIBERATE DEPARTURES FROM THE SKILL'S STOCK BOOTSTRAP, both forced by facts on
  * the ground rather than preference:
  *
- * 1. `useAlternateScreen: true`, NOT `screenMode: "alternate-screen"`. MEASURED against
- *    the installed `@opentui/core@0.1.87`: `renderer.d.ts` declares `useAlternateScreen`,
- *    `exitOnCtrlC` and `exitSignals`, and has no `screenMode` at all — that is the 0.4.x
- *    spelling. Passing it here would be an unknown key, silently ignored, and the picker
- *    would draw over the user's scrollback instead of taking its own screen. claudish
- *    pins 0.1.x on purpose (`build:binary` compiles a standalone binary).
+ * 1. `screenMode: "alternate-screen"`, NOT `useAlternateScreen: true`. The installed
+ *    `@opentui/core@0.1.107` renamed the option: `renderer.d.ts` declares
+ *    `screenMode?: ScreenMode` and no longer has `useAlternateScreen` (the 0.1.87
+ *    spelling this file previously pinned by measurement). Passing the old key would be
+ *    an unknown key, silently ignored, and the picker would draw over the user's
+ *    scrollback instead of taking its own screen. claudish pins 0.1.x on purpose
+ *    (`build:binary` compiles a standalone binary).
  *
  * 2. `installShutdown` is NOT used, even though it ships beside this file. Its contract
  *    ends in `process.exit(code)` — correct for an app whose quit key means "quit", and
@@ -72,7 +73,7 @@ export async function runResumePicker(cwd: string = process.cwd()): Promise<Pick
   setStderrQuiet(true);
 
   const renderer = await createCliRenderer({
-    useAlternateScreen: true,
+    screenMode: "alternate-screen",
     exitOnCtrlC: false, // the picker's own handler maps Ctrl+C to "cancel"
   });
   const root = createRoot(renderer);

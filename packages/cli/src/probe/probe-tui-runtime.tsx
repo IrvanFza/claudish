@@ -28,7 +28,8 @@ export async function startProbeTui(initial: ProbeAppState): Promise<ProbeRuntim
     stdout: process.stderr as unknown as NodeJS.WriteStream,
     // Inline rendering — do NOT take over the full screen. This lets the
     // final probe results persist in the scrollback after shutdown.
-    useAlternateScreen: false,
+    // (0.1.107 spelling — `useAlternateScreen` was renamed to `screenMode`.)
+    screenMode: "main-screen",
     // Mouse tracking ON so the scroll wheel drives the model-list scrollbox.
     // The scrollbox (focused) consumes wheel MouseEvents via its built-in
     // onMouseEvent. Trade-off accepted: while the probe is LIVE, the wheel
