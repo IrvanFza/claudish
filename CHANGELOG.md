@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.60.0] - 2026-08-18
+
+### Documentation
+
+- update CHANGELOG.md for v7.59.0([`c271742`](https://github.com/MadAppGang/claudish/commit/c271742b979c79371660d98e6d2f086229cbbd23))
+
+### Other Changes
+
+- v7.60.0 - one provider table, roster-fetcher registry([`8103da4`](https://github.com/MadAppGang/claudish/commit/8103da498bf705e8b77a05aaedf589fe8d32a9e8))
+
 ## [7.59.0] - 2026-08-18
 
 ### Documentation
@@ -66,6 +76,10 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - Grok usage reporting, and Antigravity stops reporting the wrong tier *(quota)* ([`4386b6a`](https://github.com/MadAppGang/claudish/commit/4386b6aa94163457ad0e558ab853a4a9645cf1bb))
+
+### Refactoring
+
+- one provider table, and a registry for roster fetchers *(providers)* ([`2956f18`](https://github.com/MadAppGang/claudish/commit/2956f1814a449a8cf1c2d455aeac6e59e5452296))
 
 ## [7.55.0] - 2026-08-18
 
