@@ -21,14 +21,21 @@ import {
   setApiKey,
   setEndpoint,
 } from "./profile-config.js";
+import { cliAnsi } from "./theme/ansi.js";
 
-// ANSI colors (matches profile-commands.ts)
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const CYAN = "\x1b[36m";
+// Theme-aware ANSI colors (matches profile-commands.ts). Refreshed at command
+// entry via refreshAnsi() — NEVER snapshotted at module load, because theme
+// detection runs at CLI startup, after this module is imported.
+let RESET = "";
+let BOLD = "";
+let DIM = "";
+let GREEN = "";
+let YELLOW = "";
+let CYAN = "";
+
+function refreshAnsi(): void {
+  ({ RESET, BOLD, DIM, GREEN, YELLOW, CYAN } = cliAnsi());
+}
 
 // ─── Provider Definitions ────────────────────────────────
 
@@ -757,6 +764,7 @@ function showCurrentConfig(): void {
  * Entry point for `claudish config`
  */
 export async function configCommand(): Promise<void> {
+  refreshAnsi();
   console.log(`\n${BOLD}${CYAN}Claudish Configuration${RESET}\n`);
 
   while (true) {

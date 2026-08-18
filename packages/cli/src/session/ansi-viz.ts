@@ -15,6 +15,7 @@
  * independently drift by a cell; two that share the maths cannot.
  */
 
+import { C } from "../tui/theme.js";
 import { pickInk } from "../tui/viz/color.js";
 import { displayWidth, splitCells } from "../tui/viz/text.js";
 import { type Ramp, ramps, tokens } from "../tui/viz/tokens.js";
@@ -110,9 +111,17 @@ export function stackedBar(segments: readonly BarSegment[], width: number): stri
  * Status chip — dark-or-light ink chosen by measured contrast, one space of padding
  * each side, same as `<Badge>`. The ink comes from `pickInk`, so a chip can never end
  * up illegible on a saturated fill the way a fixed threshold allowed.
+ *
+ * The LIGHT candidate is `C.ink` (white in BOTH themes), not `pickInk`'s default
+ * `tokens.text`: on the light palette `tokens.text` is near-black `#1f2937`, which left
+ * `pickInk` choosing between two dark inks — a deep fill like the EXIT badge's `#9e2b2b`
+ * came out black-on-maroon at 2.8:1. With white as a genuine second candidate the
+ * EXIT/FREE fills take white ink (7.4:1 / 6.2:1 on light) and the olive EST fill keeps
+ * black (5.0:1); on the dark palette `C.ink === tokens.text` (#ffffff), so the output
+ * is byte-identical to what always shipped.
  */
 export function badge(label: string, hex: string): string {
-  return `${BOLD}${fg(pickInk(hex))}${bg(hex)} ${label} ${RESET}`;
+  return `${BOLD}${fg(pickInk(hex, tokens.ink, C.ink))}${bg(hex)} ${label} ${RESET}`;
 }
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI requires them

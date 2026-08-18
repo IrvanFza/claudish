@@ -43,18 +43,22 @@ import type { SessionStats } from "./session-stats.js";
  * These identify categories, they do not grade them — so they are drawn from `C`'s
  * distinguishable hues and deliberately EXCLUDE red and green, which carry "error" and
  * "ok" everywhere else in claudish. A red slice of a tool bar would read as a failure.
+ *
+ * A FUNCTION rather than a module const: `C`'s fields are reassigned in place when the
+ * terminal theme is detected, and this module is imported at startup, BEFORE detection —
+ * a module-level `[C.blue, …]` copies the strings and would freeze the dark neons into a
+ * summary printed on a light terminal (dark `C.cyan` #00ffff is 1.25:1 against a white
+ * page — an invisible legend). The three literals (olive, muted teal, forest green) are
+ * mid-lightness in both themes and stay fixed.
  */
-const TOOL_COLORS: readonly string[] = [
-  C.blue,
-  C.cyan,
-  "#8a7d1e",
-  "#1f6d75",
-  C.magenta,
-  "#2d6e3e",
-  C.orange,
-];
-/** Anything past `TOOL_COLORS` is pooled into one "other" slice in this grey. */
-const TOOL_OTHER = C.dim;
+function toolColors(): readonly string[] {
+  return [C.blue, C.cyan, "#8a7d1e", "#1f6d75", C.magenta, "#2d6e3e", C.orange];
+}
+/** Anything past `toolColors()` is pooled into one "other" slice in this grey —
+ *  read at call time for the same reason `toolColors` is a function. */
+function toolOther(): string {
+  return C.dim;
+}
 
 const MIN_W = 62;
 const MAX_W = 96;
@@ -199,10 +203,12 @@ export function renderSessionSummary(input: SummaryInput): string[] {
 
   // ── tools ─────────────────────────────────────────────────────────────────
   if (stats.toolCallTotal > 0) {
-    const shown = stats.toolCalls.slice(0, TOOL_COLORS.length);
-    const rest = stats.toolCalls.slice(TOOL_COLORS.length).reduce((a, t) => a + t.count, 0);
-    const segs: BarSegment[] = shown.map((t, i) => ({ value: t.count, color: TOOL_COLORS[i]! }));
-    if (rest > 0) segs.push({ value: rest, color: TOOL_OTHER });
+    const toolCols = toolColors();
+    const other = toolOther();
+    const shown = stats.toolCalls.slice(0, toolCols.length);
+    const rest = stats.toolCalls.slice(toolCols.length).reduce((a, t) => a + t.count, 0);
+    const segs: BarSegment[] = shown.map((t, i) => ({ value: t.count, color: toolCols[i]! }));
+    if (rest > 0) segs.push({ value: rest, color: other });
 
     dataRow(
       "tools",
@@ -212,8 +218,8 @@ export function renderSessionSummary(input: SummaryInput): string[] {
     // The legend is the only place the bar's colours acquire meaning, so it is not
     // optional decoration — each name is painted in its slice's colour.
     const legend = shown
-      .map((t, i) => paint(`${t.name} ${t.count}`, TOOL_COLORS[i]!))
-      .concat(rest > 0 ? [paint(`other ${rest}`, TOOL_OTHER)] : []);
+      .map((t, i) => paint(`${t.name} ${t.count}`, toolCols[i]!))
+      .concat(rest > 0 ? [paint(`other ${rest}`, other)] : []);
     for (const line of wrapStyled(legend, dim(" · "), inner - LABEL_W)) {
       row(" ".repeat(LABEL_W) + line);
     }

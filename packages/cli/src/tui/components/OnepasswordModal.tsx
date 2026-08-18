@@ -452,7 +452,7 @@ export function OnepasswordModal({
         <text>
           <span fg={C.fgMuted}>{"filter: "}</span>
           {filter ? (
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {filter}
             </span>
           ) : (
@@ -492,7 +492,7 @@ export function OnepasswordModal({
                   <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>
                     {selected ? "▶ " : "  "}
                   </span>
-                  <span fg={selected ? C.white : C.fgMuted} attributes={A.boldIf(selected)}>
+                  <span fg={selected ? C.strong : C.fgMuted} attributes={A.boldIf(selected)}>
                     {row}
                   </span>
                 </text>
@@ -578,7 +578,7 @@ export function OnepasswordModal({
         <text>
           <span fg={C.fgMuted}>{"filter: "}</span>
           {filter ? (
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {filter}
             </span>
           ) : (
@@ -674,7 +674,7 @@ export function OnepasswordModal({
             focused={true}
             width={dialogW - 6}
             backgroundColor={C.bgHighlight}
-            textColor={C.white}
+            textColor={C.strong}
           />
         </box>
         {/* Env: two-Enter NAME preview. Before preview, hint to press Enter.
@@ -721,7 +721,7 @@ export function OnepasswordModal({
                 <span fg={selected ? C.cyan : C.dim} attributes={A.bold}>
                   {selected ? "▶ " : "  "}
                 </span>
-                <span fg={selected ? C.white : C.fgMuted} attributes={A.bold}>
+                <span fg={selected ? C.strong : C.fgMuted} attributes={A.bold}>
                   {opt.title}
                 </span>
               </text>
@@ -748,7 +748,7 @@ export function OnepasswordModal({
         backgroundColor={C.bg}
         textColor={C.fgMuted}
         selectedBackgroundColor={C.bgHighlight}
-        selectedTextColor={C.white}
+        selectedTextColor={C.strong}
         height={SCOPE_OPTIONS.length}
       />
     );

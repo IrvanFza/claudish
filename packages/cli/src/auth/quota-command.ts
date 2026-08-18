@@ -29,21 +29,38 @@
  */
 
 import { getShortcuts } from "../providers/provider-definitions.js";
+import { cliAnsi } from "../theme/ansi.js";
 import type { QuotaAdapter } from "./quota/adapter.js";
 import { allQuotaAdapters, resolveQuotaAdapter } from "./quota/registry.js";
 import type { PlanUsage, ProbeRecord } from "./quota/types.js";
 
-// ANSI
-const R = "\x1b[0m";
-const B = "\x1b[1m";
-const D = "\x1b[2m";
-const I = "\x1b[3m";
-const RED = "\x1b[31m";
-const GRN = "\x1b[32m";
-const YEL = "\x1b[33m";
-const CYN = "\x1b[36m";
-const WHT = "\x1b[37m";
-const GRY = "\x1b[90m";
+// Theme-aware ANSI escapes, shared by every render helper below. Refreshed at
+// command entry via refreshAnsi() — NEVER snapshotted at module load, because
+// theme detection runs at CLI startup, after this module is imported.
+let R = "";
+let B = "";
+let D = "";
+let I = "";
+let RED = "";
+let GRN = "";
+let YEL = "";
+let CYN = "";
+let WHT = "";
+let GRY = "";
+
+function refreshAnsi(): void {
+  const a = cliAnsi();
+  R = a.RESET;
+  B = a.BOLD;
+  D = a.DIM;
+  I = a.ITALIC;
+  RED = a.RED;
+  GRN = a.GREEN;
+  YEL = a.YELLOW;
+  CYN = a.CYAN;
+  WHT = a.STRONG;
+  GRY = a.GRAY;
+}
 
 const W = 58;
 
@@ -52,6 +69,7 @@ const W = 58;
 // ---------------------------------------------------------------------------
 
 export async function quotaCommand(provider?: string): Promise<void> {
+  refreshAnsi();
   const adapter = provider ? resolveAdapterFromInput(provider) : await promptForAdapter();
 
   if (!adapter) {
@@ -300,6 +318,9 @@ function colorFor(usedPct: number): string {
 }
 
 export function buildUsageBar(usedFraction: number, color: string, width = 24): string {
+  // Exported helper — refresh so a caller outside quotaCommand still gets the
+  // current theme's escapes rather than whatever an earlier entry left behind.
+  refreshAnsi();
   const clamped = Math.max(0, Math.min(1, usedFraction));
   const usedCols =
     clamped >= 1 ? width : Math.max(clamped > 0.005 ? 1 : 0, Math.round(clamped * width));

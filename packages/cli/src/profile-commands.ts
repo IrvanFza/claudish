@@ -41,15 +41,22 @@ import {
   setDefaultProfile,
   setProfile,
 } from "./profile-config.js";
+import { cliAnsi } from "./theme/ansi.js";
 
-// ANSI colors
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
-const DIM = "\x1b[2m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const CYAN = "\x1b[36m";
-const MAGENTA = "\x1b[35m";
+// Theme-aware ANSI colors, shared by every helper below. Refreshed at the top
+// of each exported command entry via refreshAnsi() — NEVER snapshotted at
+// module load, because theme detection runs at CLI startup, after import.
+let RESET = "";
+let BOLD = "";
+let DIM = "";
+let GREEN = "";
+let YELLOW = "";
+let CYAN = "";
+let MAGENTA = "";
+
+function refreshAnsi(): void {
+  ({ RESET, BOLD, DIM, GREEN, YELLOW, CYAN, MAGENTA } = cliAnsi());
+}
 
 // ─── Scope Utilities ─────────────────────────────────────
 
@@ -121,6 +128,7 @@ function scopeBadge(scope: ProfileScope, shadowed?: boolean): string {
  * Creates the first profile and config file
  */
 export async function initCommand(scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   console.log(`\n${BOLD}${CYAN}Claudish Setup Wizard${RESET}\n`);
 
   const scope = await resolveScope(scopeFlag);
@@ -175,6 +183,7 @@ export async function initCommand(scopeFlag?: ProfileScope): Promise<void> {
  * List all profiles
  */
 export async function profileListCommand(scopeFilter?: ProfileScope): Promise<void> {
+  refreshAnsi();
   const allProfiles = listAllProfiles();
 
   // Filter by scope if flag given
@@ -210,6 +219,7 @@ export async function profileListCommand(scopeFilter?: ProfileScope): Promise<vo
  * Add a new profile
  */
 export async function profileAddCommand(scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   console.log(`\n${BOLD}${CYAN}Add New Profile${RESET}\n`);
 
   const scope = await resolveScope(scopeFlag);
@@ -240,6 +250,7 @@ export async function profileAddCommand(scopeFlag?: ProfileScope): Promise<void>
  * Remove a profile
  */
 export async function profileRemoveCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   // If no scope flag and name is given, figure out where it lives
   let scope = scopeFlag;
   let profileName = name;
@@ -326,6 +337,7 @@ export async function profileRemoveCommand(name?: string, scopeFlag?: ProfileSco
  * Set default profile
  */
 export async function profileUseCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   let scope = scopeFlag;
   let profileName = name;
 
@@ -392,6 +404,7 @@ export async function profileUseCommand(name?: string, scopeFlag?: ProfileScope)
  * Show profile details
  */
 export async function profileShowCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   let profileName = name;
   let scope = scopeFlag;
 
@@ -445,6 +458,7 @@ export async function profileShowCommand(name?: string, scopeFlag?: ProfileScope
  * Edit an existing profile
  */
 export async function profileEditCommand(name?: string, scopeFlag?: ProfileScope): Promise<void> {
+  refreshAnsi();
   let scope = scopeFlag;
   let profileName = name;
 
@@ -615,6 +629,7 @@ function printModelMapping(models: ModelMapping): void {
  * Main profile command router
  */
 export async function profileCommand(args: string[]): Promise<void> {
+  refreshAnsi();
   const { scope, remainingArgs } = parseScopeFlag(args);
   const subcommand = remainingArgs[0];
   const name = remainingArgs[1];

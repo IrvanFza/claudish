@@ -2230,7 +2230,7 @@ export function App({ requestLogin }: AppProps = {}) {
         {/* Row 1: title / version / attribution / active profile. */}
         <box height={1} flexDirection="row">
           <text>
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               claudish
             </span>
             <span fg={C.dim}> ─ </span>

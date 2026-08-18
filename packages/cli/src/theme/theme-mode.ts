@@ -50,10 +50,18 @@ export function onThemeModeChange(cb: (mode: TerminalThemeMode | null) => void):
   cb(detected);
 }
 
-/** Test seam — clear state AND listeners between cases. */
+/**
+ * Test seam — restore the pre-detection state between cases.
+ *
+ * Deliberately does NOT clear the listener registry: listeners are one-time
+ * MODULE-level registrations (tui/theme.ts, viz/tokens.ts) and Bun runs sibling
+ * test files in one process, so dropping them here would silently freeze the
+ * palette for every test file that runs after this one. Resetting means
+ * "publish null again", which resolves to the dark palette — the same state a
+ * fresh process starts in.
+ */
 export function resetThemeModeForTests(): void {
-  detected = null;
-  listeners.length = 0;
+  setThemeMode(null);
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +102,11 @@ export function relativeLuminance(r: number, g: number, b: number): number {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
+// Keep the light/dark boundary at the perceptual midpoint of the encoded sRGB
+// range. Its WCAG-linearized luminance is lower than 0.5 because sRGB is gamma
+// encoded, so compare like with like rather than applying 0.5 after linearizing.
+const MID_SRGB_LUMINANCE = relativeLuminance(0.5, 0.5, 0.5);
+
 /**
  * Parse an OSC 11 reply — `\x1b]11;rgb:RRRR/GGGG/BBBB\x07` (or ST-terminated;
  * channels may be 1-4 hex digits) — into a theme mode by luminance.
@@ -108,7 +121,7 @@ export function classifyOscBackground(reply: string): TerminalThemeMode | null {
     return Number.parseInt(hex, 16) / max;
   };
   const lum = relativeLuminance(channel(m[1]!), channel(m[2]!), channel(m[3]!));
-  return lum >= 0.5 ? "light" : "dark";
+  return lum >= MID_SRGB_LUMINANCE ? "light" : "dark";
 }
 
 /**

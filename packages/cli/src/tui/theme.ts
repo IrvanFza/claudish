@@ -191,7 +191,7 @@ interface LatencyBucket {
   hex: string;
 }
 
-const LATENCY_BUCKETS: LatencyBucket[] = [
+const LATENCY_BUCKETS_DARK: LatencyBucket[] = [
   { maxMs: 500, hex: "#1f8f3b" }, // bright green
   { maxMs: 1000, hex: "#2d6e3e" }, // green (matches pillKeyBg family)
   { maxMs: 3000, hex: "#8a7d1e" }, // yellow/olive
@@ -199,12 +199,24 @@ const LATENCY_BUCKETS: LatencyBucket[] = [
   { maxMs: Number.POSITIVE_INFINITY, hex: "#9e2b2b" }, // red
 ];
 
+// Slightly deeper equivalents keep white latency ink at >= 4.5:1 on light
+// terminals without changing the shipped dark-theme bucket colors above.
+const LATENCY_BUCKETS_LIGHT: LatencyBucket[] = [
+  { maxMs: 500, hex: "#1d8738" }, // bright green
+  { maxMs: 1000, hex: "#2d6e3e" }, // green (already clears 4.5:1)
+  { maxMs: 3000, hex: "#83771c" }, // yellow/olive
+  { maxMs: 6000, hex: "#b0621c" }, // orange
+  { maxMs: Number.POSITIVE_INFINITY, hex: "#9e2b2b" }, // red
+];
+
+let activeLatencyBuckets = LATENCY_BUCKETS_DARK;
+
 function latencyBucket(ms: number): LatencyBucket {
   const v = Math.max(0, ms);
-  for (const b of LATENCY_BUCKETS) {
+  for (const b of activeLatencyBuckets) {
     if (v < b.maxMs) return b;
   }
-  return LATENCY_BUCKETS[LATENCY_BUCKETS.length - 1]!;
+  return activeLatencyBuckets[activeLatencyBuckets.length - 1]!;
 }
 
 /**
@@ -287,11 +299,14 @@ export const STAGE_BG: { network: string; server: string; streaming: string } = 
   ...STAGE_BG_DARK,
 };
 
-export const STAGE_FG = {
+/** Stage label/number colors. MUTABLE — a module-load `C.*` read would freeze
+ *  the dark neons before detection completes (found live: breakdown numbers
+ *  rendered neon cyan/pale yellow on a white page); refreshed with the mode. */
+export const STAGE_FG: { network: string; server: string; streaming: string } = {
   network: C.cyan,
   server: C.blue,
   streaming: C.yellow,
-} as const;
+};
 
 function hexToAnsiBg(hex: string): string {
   const r = Number.parseInt(hex.slice(1, 3), 16);
@@ -340,11 +355,16 @@ export function registerPaletteRefresher(fn: () => void): void {
 function applyTuiTheme(mode: "light" | "dark" | null): void {
   // Unknown stays DARK — the pre-light-theme status quo, never a guess.
   const palette = mode === "light" ? LIGHT : DARK;
+  activeLatencyBuckets = mode === "light" ? LATENCY_BUCKETS_LIGHT : LATENCY_BUCKETS_DARK;
   Object.assign(C, palette);
   Object.assign(STAGE_BG, mode === "light" ? STAGE_BG_LIGHT : STAGE_BG_DARK);
   STAGE_BG_ANSI.network = hexToAnsiBg(STAGE_BG.network);
   STAGE_BG_ANSI.server = hexToAnsiBg(STAGE_BG.server);
   STAGE_BG_ANSI.streaming = hexToAnsiBg(STAGE_BG.streaming);
+  // AFTER the C reassignment, so these read the incoming palette's accents.
+  STAGE_FG.network = C.cyan;
+  STAGE_FG.server = C.blue;
+  STAGE_FG.streaming = C.yellow;
   for (const fn of paletteRefreshers) fn();
 }
 

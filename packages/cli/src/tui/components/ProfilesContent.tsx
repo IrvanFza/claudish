@@ -195,7 +195,7 @@ export function ProfilesContent({
               <span fg={isActive ? C.orange : C.dim}>{isActive ? "●" : " "}</span>
               <span fg={C.dim}> </span>
               <span
-                fg={selected ? C.white : isActive ? C.orange : C.fgMuted}
+                fg={selected ? C.strong : isActive ? C.orange : C.fgMuted}
                 attributes={A.boldIf(selected || isActive)}
               >
                 {namePad}
@@ -203,7 +203,7 @@ export function ProfilesContent({
               <span fg={C.dim}>{"  "}</span>
               <span fg={entry.scope === "local" ? C.cyan : C.fgMuted}>{scopePad}</span>
               <span fg={C.dim}>{"  "}</span>
-              <span fg={selected ? C.white : shadowed ? C.dim : C.fgMuted}>
+              <span fg={selected ? C.strong : shadowed ? C.dim : C.fgMuted}>
                 {shadowed ? "(shadowed by local)  " : modelSummary}
               </span>
             </text>
@@ -253,7 +253,7 @@ export function ProfilesContent({
                 backgroundColor={C.bg}
                 textColor={C.fgMuted}
                 selectedBackgroundColor={C.bgHighlight}
-                selectedTextColor={C.white}
+                selectedTextColor={C.strong}
                 height={scopeOptions.length}
               />
               <text>
@@ -325,7 +325,7 @@ export function ProfilesContent({
                 <span fg={C.green} attributes={A.bold}>
                   {"> "}
                 </span>
-                <span fg={editProfileValue === "auto" ? C.yellow : C.white}>
+                <span fg={editProfileValue === "auto" ? C.yellow : C.strong}>
                   {editProfileValue}
                 </span>
                 <span fg={C.cyan}>{"█"}</span>
@@ -347,7 +347,7 @@ export function ProfilesContent({
                               <span fg={selected ? C.fgMuted : C.dim}>
                                 {s.substring(0, matchIdx)}
                               </span>
-                              <span fg={selected ? C.white : C.cyan} attributes={A.bold}>
+                              <span fg={selected ? C.strong : C.cyan} attributes={A.bold}>
                                 {s.substring(matchIdx, matchIdx + lower.length)}
                               </span>
                               <span fg={selected ? C.fgMuted : C.dim}>
@@ -355,7 +355,7 @@ export function ProfilesContent({
                               </span>
                             </>
                           ) : (
-                            <span fg={selected ? C.white : C.fgMuted}>{s}</span>
+                            <span fg={selected ? C.strong : C.fgMuted}>{s}</span>
                           )}
                         </text>
                       </box>

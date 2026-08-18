@@ -229,7 +229,7 @@ export function ProvidersContent({
             </span>
             <span>{"  "}</span>
             <span
-              fg={selected ? C.white : isReady ? C.fgMuted : C.dim}
+              fg={selected ? C.strong : isReady ? C.fgMuted : C.dim}
               attributes={A.boldIf(selected)}
             >
               {pad(p.displayName, COL_NAME)}
@@ -245,9 +245,9 @@ export function ProvidersContent({
                   blank   = method not supported (2 cells)
                 Legend at the bottom of the panel explains the icons. */}
             <>
-              <span fg={keySlot.set ? C.white : C.dim}>{keySlotGlyph}</span>
+              <span fg={keySlot.set ? C.strong : C.dim}>{keySlotGlyph}</span>
               <span> </span>
-              <span fg={oauthSlot.set ? C.white : C.dim}>{oauthSlotGlyph}</span>
+              <span fg={oauthSlot.set ? C.strong : C.dim}>{oauthSlotGlyph}</span>
             </>
             <span fg={C.dim}>{"  "}</span>
             <span
@@ -290,7 +290,7 @@ export function ProvidersContent({
             ) : tr?.status === "unavailable" && tr.error ? (
               <span fg={C.yellow}>{tr.error.replace(/\s+/g, " ").trim()}</span>
             ) : (
-              <span fg={selected ? C.white : C.dim}>{p.description}</span>
+              <span fg={selected ? C.strong : C.dim}>{p.description}</span>
             )}
           </text>
         </box>

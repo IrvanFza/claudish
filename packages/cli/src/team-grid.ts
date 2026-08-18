@@ -115,6 +115,8 @@ function resolveRouteInfo(modelId: string): RouteInfo {
  */
 // Palette for model name backgrounds. Index is passed around between panes
 // via pickBannerColor() so visually-adjacent panes never share a color.
+// Theme-independent by design: each fill is a self-contained mid-dark bg + the
+// bright-white ink painted on top, readable on both light and dark pages.
 const BANNER_BG_COLORS = [
   "48;2;40;90;180", // blue
   "48;2;140;60;160", // purple

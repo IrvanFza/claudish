@@ -19,6 +19,7 @@ import {
   STREAM_MS_FLOOR,
   describeProbeState,
 } from "../providers/probe-live.js";
+import { getThemeMode } from "../theme/theme-mode.js";
 import {
   A,
   C,
@@ -299,6 +300,16 @@ function stripAnsi(text: string): string {
 
 // ── Banner ─────────────────────────────────────────────────────────
 
+/**
+ * "ish" wordmark green — a FUNCTION resolved at render time, not a const:
+ * this module loads before theme detection completes, so a const would latch
+ * the dark value forever. Bright spring green pops against a dark terminal
+ * bg; on a light page it washes out, so light gets a deep emerald instead.
+ */
+function ishGreen(): string {
+  return getThemeMode() === "light" ? "#047857" : "#00ff7f";
+}
+
 function Banner() {
   // Big "CLAUD" in orange block letters (6 rows, ~42 cols wide), with a smaller
   // "ish" in green half-block letters — matching the official claudish wordmark
@@ -328,7 +339,6 @@ function Banner() {
   const ishLines = ["  _    _    ", " (_)__| |_  ", " | (_-< ' \\ ", " |_/__/_||_|"];
 
   const ishPad = "  "; // 2 spaces between CLAUD and "ish"
-  const ishGreen = "#00ff7f"; // bright spring green — pops against dark terminal bg
 
   // Render one banner row as: orange CLAUD text + gap + bold bright-green ish text.
   const renderBannerRow = (claudLine: string, ishLine: string | null, key: number) => (
@@ -340,7 +350,7 @@ function Banner() {
         <>
           <text>{ishPad}</text>
           <text>
-            <span fg={ishGreen} attributes={A.bold}>
+            <span fg={ishGreen()} attributes={A.bold}>
               {ishLine}
             </span>
           </text>
@@ -491,7 +501,7 @@ function ProgressBar({
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL \u2014 right-aligned, white */}
-      <span fg={C.white}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
+      <span fg={C.strong}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
       {/* BREAKDOWN \u2014 net/srv/str, each number STAGE_FG-colored, padded to a
           fixed BREAKDOWN_COL width via a trailing dim spacer. */}
       {layout.showBreakdown && (
@@ -607,9 +617,9 @@ function ModelGroup({
       {/* Section header — colored bar with centered model name, left-aligned with bars below */}
       <box flexDirection="row">
         <text>{"  "}</text>
-        <box backgroundColor="#1e3a5f">
+        <box backgroundColor={C.bgHighlight}>
           <text>
-            <span fg="#ffffff" attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {headerText}
             </span>
           </text>
@@ -830,7 +840,7 @@ function DetailLinkRow({
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL — right-aligned, white */}
-      <span fg={C.white}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
+      <span fg={C.strong}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
       {/* BREAKDOWN — net/srv/str, STAGE_FG-colored */}
       {layout.showBreakdown && (
         <>
@@ -1144,7 +1154,7 @@ function LeaderLiveRow({
     return (
       <text>
         {lead}
-        <span fg={C.white}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
+        <span fg={C.strong}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
       </text>
     );
   }
@@ -1159,7 +1169,7 @@ function LeaderLiveRow({
       {trackCells > 0 && <span fg={C.dim}>{TRACK_CHAR.repeat(trackCells)}</span>}
       <span fg={C.dim}>{"  "}</span>
       {/* TOTAL — right-aligned, white */}
-      <span fg={C.white}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
+      <span fg={C.strong}>{padStartSafe(formatLatency(t.totalMs), TOTAL_COL)}</span>
       {/* BREAKDOWN — net/srv/str values only (UNLABELED), STAGE_FG-colored. The
           leaderboard's labels live in the column header (mirrors the static
           renderLeaderboard, whose data rows are bare values too), so this is the
