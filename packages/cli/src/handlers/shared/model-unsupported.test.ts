@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasModelUnsupportedWording } from "./model-unsupported.js";
+import { hasActionableLink, hasModelUnsupportedWording } from "./model-unsupported.js";
 
 const UNSUPPORTED_PHRASES = [
   "not supported",
@@ -57,5 +57,31 @@ describe("hasModelUnsupportedWording", () => {
       expect(invoke).not.toThrow();
       expect(invoke()).toBe(false);
     }
+  });
+});
+
+describe("hasActionableLink", () => {
+  test("finds http and https URLs embedded in JSON error bodies", () => {
+    const bodies = [
+      anthropicErrorBody("RegionError", "Opt in at https://opencode.ai/workspace/test/go"),
+      anthropicErrorBody("PolicyError", "Resolve at http://provider.test/account/settings"),
+    ];
+
+    for (const body of bodies) {
+      expect(hasActionableLink(body)).toBe(true);
+    }
+  });
+
+  test("returns false for an error body with no URL", () => {
+    expect(hasActionableLink(anthropicErrorBody("authentication_error", "Invalid API key."))).toBe(
+      false
+    );
+  });
+
+  test("returns false without throwing for an empty string", () => {
+    const invoke = () => hasActionableLink("");
+
+    expect(invoke).not.toThrow();
+    expect(invoke()).toBe(false);
   });
 });

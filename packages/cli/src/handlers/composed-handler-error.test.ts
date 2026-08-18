@@ -130,6 +130,8 @@ const PAYLOAD = {
   messages: [{ role: "user", content: "hi" }],
 };
 
+const REGION_OPT_IN_URL = "https://opencode.ai/workspace/0123456789abcdef0123456789abcdef/go";
+
 function makeHandler(): ComposedHandler {
   return new ComposedHandler(makeTransport(), "fugu-ultra", "fugu-ultra", 8080, {});
 }
@@ -186,6 +188,22 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
 
     expect(captured.body?.error?.message).toContain("Check API key / OAuth credentials");
     expect(captured.body?.error?.message).not.toContain("Model not supported by this provider");
+  });
+
+  test("an actionable RegionError 403 surfaces its URL instead of an API-key hint", async () => {
+    stubUpstream(403, {
+      type: "error",
+      error: {
+        type: "RegionError",
+        message: `The latest version of this model is only available hosted in China and requires explicit opt in: ${REGION_OPT_IN_URL}`,
+      },
+    });
+    const { c, captured } = makeContext();
+
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.body?.error?.message).not.toContain("Check API key");
+    expect(captured.body?.error?.message).toContain(REGION_OPT_IN_URL);
   });
 
   test("transient 503 keeps its retryable status (Claude Code SHOULD retry)", async () => {
