@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import { TokenTracker } from "../../handlers/shared/token-tracker.js";
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
-import { PROVIDER_PROFILES } from "../../providers/provider-profiles.js";
 import { allQuotaAdapters, reportableQuotaAdapters, resolveQuotaAdapter } from "./registry.js";
 import {
   compareModelRecency,
@@ -328,13 +327,12 @@ describe("quota adapter registry integrity", () => {
     const adapters = allQuotaAdapters();
     const providerIds = adapters.map((adapter) => adapter.providerId);
     const builtinProviderIds = new Set(BUILTIN_PROVIDERS.map((provider) => provider.name));
-    const profileProviderIds = new Set(Object.keys(PROVIDER_PROFILES));
 
+    // Antigravity is already keyed by its definition name. The google -> gemini
+    // rename belongs only to the direct-API runtime path, so quota ids stay in
+    // this strict definition-name key space without alias normalization.
     const unknownBuiltinIds = providerIds.filter(
       (providerId) => !builtinProviderIds.has(providerId)
-    );
-    const unknownProfileIds = providerIds.filter(
-      (providerId) => !profileProviderIds.has(providerId)
     );
     const duplicateIds = providerIds.filter(
       (providerId, index) => providerIds.indexOf(providerId) !== index
@@ -355,7 +353,6 @@ describe("quota adapter registry integrity", () => {
     }
 
     expect(unknownBuiltinIds).toEqual([]);
-    expect(unknownProfileIds).toEqual([]);
     expect(duplicateIds).toEqual([]);
     expect(emptyLabelIds).toEqual([]);
     expect(missingProbeIds).toEqual([]);

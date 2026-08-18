@@ -8,9 +8,9 @@ interface Composition {
   endpoint: string;
 }
 
-function describeHandler(providerName: string, modelName: string): Composition {
+async function describeHandler(providerName: string, modelName: string): Promise<Composition> {
   const def = getProviderByName(providerName)!;
-  const handler: any = createHandlerForProvider({
+  const handler: any = await createHandlerForProvider({
     provider: toRemoteProvider(def),
     modelName,
     apiKey: "test-key",
@@ -63,8 +63,8 @@ const expectedCompositions = [
 
 describe("OpenCode Zen provider composition", () => {
   for (const row of expectedCompositions) {
-    test(`${row.provider} ${row.model} uses ${row.streamFormat} at ${row.endpoint}`, () => {
-      expect(describeHandler(row.provider, row.model)).toEqual({
+    test(`${row.provider} ${row.model} uses ${row.streamFormat} at ${row.endpoint}`, async () => {
+      expect(await describeHandler(row.provider, row.model)).toEqual({
         transport: row.provider,
         streamFormat: row.streamFormat,
         endpoint: row.endpoint,
@@ -73,8 +73,8 @@ describe("OpenCode Zen provider composition", () => {
   }
 
   for (const provider of ["opencode-zen-go", "opencode-zen"] as const) {
-    test(`${provider} pairs MiniMax's OpenAI format with its chat-completions endpoint`, () => {
-      const composition = describeHandler(provider, "minimax-m2.5");
+    test(`${provider} pairs MiniMax's OpenAI format with its chat-completions endpoint`, async () => {
+      const composition = await describeHandler(provider, "minimax-m2.5");
 
       // An Anthropic format paired with a chat-completions endpoint is the exact
       // mismatch that produced the 400. This pins the PAIRING, not either field alone.
@@ -82,15 +82,19 @@ describe("OpenCode Zen provider composition", () => {
       expect(composition.endpoint.endsWith("/v1/chat/completions")).toBe(true);
     });
 
-    test(`${provider} gives MiniMax the same composition as an ordinary chat model`, () => {
-      expect(describeHandler(provider, "minimax-m2.5")).toEqual(describeHandler(provider, "glm-5"));
+    test(`${provider} gives MiniMax the same composition as an ordinary chat model`, async () => {
+      expect(await describeHandler(provider, "minimax-m2.5")).toEqual(
+        await describeHandler(provider, "glm-5")
+      );
     });
 
     // The deleted special case used a case-insensitive MiniMax substring match,
     // so both casing changes and future MiniMax model ids must remain ordinary.
     for (const model of ["MiniMax-M2.5", "minimax-m3"] as const) {
-      test(`${provider} has no resurrected MiniMax special case for ${model}`, () => {
-        expect(describeHandler(provider, model)).toEqual(describeHandler(provider, "minimax-m2.5"));
+      test(`${provider} has no resurrected MiniMax special case for ${model}`, async () => {
+        expect(await describeHandler(provider, model)).toEqual(
+          await describeHandler(provider, "minimax-m2.5")
+        );
       });
     }
   }
@@ -123,18 +127,18 @@ describe("OpenAI Responses-API gate", () => {
   ] as const;
 
   for (const row of openAICompositionCases) {
-    test(`openai ${row.model} uses ${row.expected.streamFormat} at ${row.expected.endpoint}`, () => {
-      expect(describeHandler("openai", row.model)).toEqual(row.expected);
+    test(`openai ${row.model} uses ${row.expected.streamFormat} at ${row.expected.endpoint}`, async () => {
+      expect(await describeHandler("openai", row.model)).toEqual(row.expected);
     });
   }
 
-  test("a codex id routes to Responses regardless of where 'codex' appears in the name", () => {
-    expect(describeHandler("openai", "codex-mini-latest")).toEqual(responsesComposition);
+  test("a codex id routes to Responses regardless of where 'codex' appears in the name", async () => {
+    expect(await describeHandler("openai", "codex-mini-latest")).toEqual(responsesComposition);
   });
 
-  test("a codex id gets a Responses body AND a Responses endpoint (the two layers must agree)", () => {
+  test("a codex id gets a Responses body AND a Responses endpoint (the two layers must agree)", async () => {
     for (const model of ["gpt-5.4-codex", "gpt-5.3-codex", "codex-mini-latest"]) {
-      const composition = describeHandler("openai", model);
+      const composition = await describeHandler("openai", model);
 
       // The endpoint already follows the codex rule in transport/openai.ts:31,37;
       // streamFormat is what catches drift in the profile adapter choice.
@@ -143,18 +147,18 @@ describe("OpenAI Responses-API gate", () => {
     }
   });
 
-  test("a non-codex model keeps both layers on Chat Completions", () => {
-    const composition = describeHandler("openai", "gpt-5.4");
+  test("a non-codex model keeps both layers on Chat Completions", async () => {
+    const composition = await describeHandler("openai", "gpt-5.4");
 
     expect(composition.streamFormat).toBe("openai-sse");
     expect(composition.endpoint.endsWith("/v1/chat/completions")).toBe(true);
   });
 
-  test("openai-codex remains Responses-only for codex and non-codex ids", () => {
+  test("openai-codex remains Responses-only for codex and non-codex ids", async () => {
     const expected = { ...responsesComposition, transport: "openai-codex" };
 
     // This provider composes to Responses by construction, so the `openai` gate is not what decides it.
-    expect(describeHandler("openai-codex", "gpt-5.3-codex")).toEqual(expected);
-    expect(describeHandler("openai-codex", "gpt-4o")).toEqual(expected);
+    expect(await describeHandler("openai-codex", "gpt-5.3-codex")).toEqual(expected);
+    expect(await describeHandler("openai-codex", "gpt-4o")).toEqual(expected);
   });
 });

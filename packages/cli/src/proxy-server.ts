@@ -367,7 +367,7 @@ export async function createProxyServer(
         if (!apiKey) return null;
       }
 
-      const handler = createHandlerForProvider({
+      const handler = await createHandlerForProvider({
         provider: resolved.provider,
         modelName: resolved.modelName,
         apiKey,

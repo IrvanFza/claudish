@@ -42,6 +42,7 @@ import {
   type ProviderDefinition,
   type TransportType,
   baseUrlOverrideCandidates,
+  runtimeHandler,
 } from "./provider-definitions.js";
 import type { ProfileContext, ProviderProfile } from "./provider-profiles.js";
 import { registerRuntimeProfile, registerRuntimeProvider } from "./runtime-providers.js";
@@ -195,6 +196,7 @@ function buildProviderDefinition(
 
   if (ep.kind === "simple") {
     return {
+      createHandler: runtimeHandler(name),
       name,
       displayName: name,
       transport: ep.format as TransportType,
@@ -215,6 +217,7 @@ function buildProviderDefinition(
   }
 
   return {
+    createHandler: runtimeHandler(name),
     name,
     displayName: ep.displayName,
     transport: ep.transport as TransportType,
