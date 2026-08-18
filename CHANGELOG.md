@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.59.0] - 2026-08-18
+
+### Documentation
+
+- update CHANGELOG.md for v7.58.0([`4d5095e`](https://github.com/MadAppGang/claudish/commit/4d5095e694eddc9074e036fb5668d8641d765368))
+
+### New Features
+
+- drop candidates that positively do not serve the model *(routing)* ([`774bcf2`](https://github.com/MadAppGang/claudish/commit/774bcf2f5c7c3c2a7952149bad0a885144e7854a))
+
+### Other Changes
+
+- v7.59.0 — routing drops providers that do not serve the model([`fd76197`](https://github.com/MadAppGang/claudish/commit/fd761973c0b79ece3d6f0b62e9f5d36c78fb36b6))
+
 ## [7.58.0] - 2026-08-18
 
 ### Documentation
