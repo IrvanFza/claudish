@@ -13,6 +13,7 @@
 
 import { createCliRenderer } from "@opentui/core";
 import { type Root, createRoot } from "@opentui/react";
+import { applyRendererThemeMode } from "../theme/renderer-theme.js";
 import { ProbeApp, type ProbeAppState, ProbeStore } from "./probe-tui-app.js";
 
 export interface ProbeRuntime {
@@ -39,6 +40,11 @@ export async function startProbeTui(initial: ProbeAppState): Promise<ProbeRuntim
     useMouse: true,
     exitOnCtrlC: true,
   });
+
+  // Select the light/dark palette BEFORE first paint. Also feeds the static
+  // results printer, which runs later in this same process and reads the same
+  // mutable palette.
+  await applyRendererThemeMode(renderer);
 
   const store = new ProbeStore(initial);
 

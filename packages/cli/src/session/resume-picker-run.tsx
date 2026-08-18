@@ -32,6 +32,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { setStderrQuiet } from "../logger.js";
+import { applyRendererThemeMode } from "../theme/renderer-theme.js";
 import { ResumePicker } from "./resume-picker.js";
 import { discoverWorktreeGroups, enrichWorktreeGit, getRepoContext } from "./session-discovery.js";
 
@@ -76,6 +77,10 @@ export async function runResumePicker(cwd: string = process.cwd()): Promise<Pick
     screenMode: "alternate-screen",
     exitOnCtrlC: false, // the picker's own handler maps Ctrl+C to "cancel"
   });
+
+  // Light/dark palette selection BEFORE first paint (null → dark, status quo).
+  await applyRendererThemeMode(renderer);
+
   const root = createRoot(renderer);
 
   let chosen: string | null = null;
