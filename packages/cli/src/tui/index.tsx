@@ -6,6 +6,10 @@ import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
+import type { ProviderDef } from "./providers.js";
+
+/** The `claudish login <slug>` argument, derived from the provider catalog. */
+type LoginSlug = NonNullable<ProviderDef["oauthSlug"]>;
 import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import { App } from "./App.js";
 import { invalidateProbeProxyHandlers, shutdownProbeProxy } from "./probe-proxy.js";
@@ -39,11 +43,14 @@ export async function startConfigTui(): Promise<void> {
   // screen (the renderer can't invalidate cells it didn't draw).
   setStderrQuiet(true);
 
-  const loginRequest: { slug: "gemini" | "codex" | "kimi" | "antigravity" | null } = {
+  // Derived from the catalog's `oauthLoginSlug` — see the note on
+  // `ProviderDef.oauthSlug`. These were hand-written unions that had drifted to
+  // name a removed provider (`gemini`) while missing newer slugs.
+  const loginRequest: { slug: LoginSlug | null } = {
     slug: null,
   };
 
-  const requestLogin = (slug: "gemini" | "codex" | "kimi" | "antigravity"): void => {
+  const requestLogin = (slug: LoginSlug): void => {
     loginRequest.slug = slug;
   };
 

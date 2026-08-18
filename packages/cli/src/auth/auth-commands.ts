@@ -12,6 +12,7 @@ import { select } from "@inquirer/prompts";
 import { AntigravityOAuth } from "./antigravity-oauth.js";
 import { hasSharedAntigravityToken } from "./antigravity-token.js";
 import { CodexOAuth } from "./codex-oauth.js";
+import { GrokOAuth } from "./grok-oauth.js";
 import { KimiOAuth } from "./kimi-oauth.js";
 import { hasOAuthCredentials } from "./oauth-registry.js";
 
@@ -49,6 +50,13 @@ const AUTH_PROVIDERS: OAuthProvider[] = [
     prefix: "cx@",
     getInstance: () => CodexOAuth.getInstance(),
     registryKeys: ["openai-codex"],
+  },
+  {
+    name: "grok",
+    displayName: "Grok Build (SuperGrok / X Premium+)",
+    prefix: "gk@",
+    getInstance: () => GrokOAuth.getInstance(),
+    registryKeys: ["grok-subscription"],
   },
 ];
 

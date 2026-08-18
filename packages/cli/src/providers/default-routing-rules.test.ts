@@ -21,6 +21,7 @@ import {
   validateDefaultRoutingRules,
   validateRoutingRulesAgainstProviders,
 } from "./default-routing-rules.js";
+import { parseModelSpec } from "./model-parser.js";
 import { buildRoutingChain, matchRoutingRule } from "./routing-rules.js";
 
 function makeTempCatalog(
@@ -105,9 +106,29 @@ describe("DEFAULT_ROUTING_RULES pattern matching", () => {
     expect(matched).toEqual(["antigravity", "google", "openrouter"]);
   });
 
-  test("'grok-4' matches grok-* → [x-ai, openrouter]", () => {
+  test("'grok-4' puts Grok subscription before metered x-ai to avoid silent per-token billing", () => {
     const matched = matchRoutingRule("grok-4", DEFAULT_ROUTING_RULES);
-    expect(matched).toEqual(["x-ai", "openrouter"]);
+    // With both a Grok subscription and XAI_API_KEY present, the subscription must win.
+    expect(matched).toEqual(["grok-subscription", "x-ai", "openrouter"]);
+  });
+
+  test("grok-subscription routing emits an explicit parser round-trip", () => {
+    const { path, cleanup } = makeTempCatalog({
+      modelId: "grok-4.6",
+      externalId: "grok-4.6",
+      subscriptionPlans: ["grok-subscription"],
+    });
+    try {
+      const [route] = buildRoutingChain(["grok-subscription"], "grok-4.6", path);
+      const parsed = parseModelSpec(route.modelSpec);
+
+      // Losing explicitness would let the bare Grok id fall back to metered x-ai detection.
+      expect(route.modelSpec).toBe("gk@grok-4.6");
+      expect(parsed.provider).toBe("grok-subscription");
+      expect(parsed.isExplicitProvider).toBe(true);
+    } finally {
+      cleanup();
+    }
   });
 
   test("'kimi-k2.5' matches kimi-* → [kimi-coding, opencode-zen-go, kimi, openrouter] (no pinned model)", () => {

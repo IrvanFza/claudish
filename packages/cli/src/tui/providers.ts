@@ -36,8 +36,14 @@ export interface ProviderDef {
   /**
    * If set, this provider supports OAuth login via `claudish login {slug}`.
    * Used by the Providers tab `l` keybinding.
+   *
+   * DERIVED from the catalog rather than restated. This was a hand-written
+   * union, and it had already drifted: it still listed `"gemini"` — the Code
+   * Assist provider Google retired and claudish removed — while omitting every
+   * slug added since. Aliasing the catalog's own type means a new
+   * `oauthLoginSlug` cannot be accepted here and silently ignored there.
    */
-  oauthSlug?: "gemini" | "codex" | "kimi" | "antigravity";
+  oauthSlug?: ProviderDefinition["oauthLoginSlug"];
 }
 
 // Skip virtual providers that have no API key and no TUI presence

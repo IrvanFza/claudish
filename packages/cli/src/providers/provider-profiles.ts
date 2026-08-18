@@ -40,6 +40,7 @@ import { GeminiProviderTransport } from "./transport/gemini-apikey.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
 import { OllamaProviderTransport } from "./transport/ollamacloud.js";
 import { OpenAICodexTransport } from "./transport/openai-codex.js";
+import { GrokSubscriptionProviderTransport } from "./transport/grok-subscription.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 import { VertexProviderTransport, parseVertexModel } from "./transport/vertex-oauth.js";
 
@@ -190,6 +191,31 @@ function requiresResponsesApi(modelName: string): boolean {
   const name = modelName.toLowerCase();
   return /^gpt-5\.6/.test(name) || name.includes("codex");
 }
+
+/**
+ * Grok Build subscription.
+ *
+ * Ordinary OpenAI Chat Completions on the wire, so this is the standard
+ * OpenAIAPIFormat composition — the only substitution is the transport, which
+ * signs from the credential authority (6-hour token, refreshed) and adds the two
+ * client-identity headers the proxy requires.
+ *
+ * The empty api key is intentional: `GrokSubscriptionProviderTransport`
+ * overrides `getHeaders()` entirely, so the base class's key is never consulted.
+ */
+const grokSubscriptionProfile: ProviderProfile = {
+  createHandler(ctx) {
+    const transport = new GrokSubscriptionProviderTransport(ctx.provider, ctx.modelName, "");
+    const adapter = new OpenAIAPIFormat(ctx.modelName);
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      tokenStrategy: "delta-aware",
+      ...ctx.sharedOpts,
+    });
+    log(`[Proxy] Created Grok subscription handler (composed): ${ctx.modelName}`);
+    return handler;
+  },
+};
 
 const openaiProfile: ProviderProfile = {
   createHandler(ctx) {
@@ -469,6 +495,9 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
   // like grok-4.20-0309-reasoning didn't match → confusing 400 attributed
   // to "x-ai" when xAI was never actually called.
   "x-ai": openaiProfile,
+  // The subscription sibling of "x-ai" — same models, billed by the user's
+  // SuperGrok / X Premium+ plan instead of per token.
+  "grok-subscription": grokSubscriptionProfile,
   // Qwen API is OpenAI-compatible (DashScope).
   qwen: openaiProfile,
   // NOTE: poe uses transport: "poe" which has no profile factory yet —

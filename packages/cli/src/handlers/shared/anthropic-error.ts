@@ -173,6 +173,17 @@ export function extractProviderMessage(body: any): string {
 export function isTerminalError(status: number, bodyText: string, terminal429: boolean): boolean {
   // Auth / permission failures never recover on retry.
   if (status === 401 || status === 403) return true;
+  // 426 Upgrade Required is terminal BY DEFINITION — RFC 7231: the server
+  // "refuses to perform the request using the current protocol but might be
+  // willing to after the client upgrades". Re-sending the identical request can
+  // never succeed, so a retry loop only buries the fix.
+  //
+  // Not hypothetical: Grok Build's proxy enforces a minimum CLI version and
+  // answers 426 with `Your Grok CLI version (X) is outdated. Please update ...
+  // via \`grok update\``. That body matches none of the phrase lists below, so
+  // it fell through as retryable and the one actionable sentence was replaced
+  // by ~11 rounds of "API error · Retrying".
+  if (status === 426) return true;
   // Billing/quota exhaustion surfaced as a 429 (provider-specific signals).
   if (status === 429 && terminal429) return true;
 

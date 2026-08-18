@@ -294,6 +294,22 @@ describe("isTerminalError", () => {
     expect(isTerminalError(403, "forbidden", false)).toBe(true);
   });
 
+  it("treats 426 Upgrade Required as terminal for any response body", () => {
+    expect(isTerminalError(426, "any body", false)).toBe(true);
+
+    const grokBuildBody =
+      "Your Grok CLI version (1.0.0) is outdated. Please update to version 0.1.202 or later via `grok update`.";
+    // RFC 7231 makes 426 terminal: an identical retry cannot satisfy the required protocol upgrade
+    // and would only bury Grok Build's one-sentence instruction for fixing the request.
+    expect(isTerminalError(426, grokBuildBody, false)).toBe(true);
+  });
+
+  it("does not widen terminal handling to statuses neighbouring 426", () => {
+    // Only Upgrade Required is intrinsically terminal; adjacent unknown statuses stay retryable.
+    expect(isTerminalError(425, "any body", false)).toBe(false);
+    expect(isTerminalError(427, "any body", false)).toBe(false);
+  });
+
   it("treats a terminal 429 as terminal", () => {
     expect(isTerminalError(429, "insufficient_quota", true)).toBe(true);
   });
