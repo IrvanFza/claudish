@@ -50,6 +50,19 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDescriptor> = {
     expiresAtField: "expires_at",
     expiryBufferMs: 5 * 60 * 1000,
   },
+  // Grok Build - Device Authorization Grant (RFC 8628), public client
+  // Login via: claudish login grok
+  //
+  // Registered here so a stale credential reads as "logged out" rather than as
+  // a live one. Note this file is only ONE of two sources: the credential layer
+  // also falls back to the Grok CLI's own ~/.grok/auth.json, which lives
+  // outside ~/.claudish and so cannot be represented in this registry.
+  "grok-subscription": {
+    credentialFile: "grok-oauth.json",
+    validationMode: "check-expiry",
+    expiresAtField: "expires_at",
+    expiryBufferMs: 5 * 60 * 1000,
+  },
   // NOTE: there is deliberately no `google` / `gemini-codeassist` entry here.
   // Both used to point at ~/.claudish/gemini-oauth.json, the Gemini Code Assist
   // token. That product was retired by Google for individuals and the provider

@@ -26,6 +26,7 @@ export type TransportType =
   | "gemini"
   | "antigravity"
   | "devin"
+  | "grok-subscription"
   | "openrouter"
   | "ollamacloud"
   | "kimi-coding"
@@ -97,7 +98,7 @@ export interface ProviderDefinition {
    * Single source of truth: keep this in sync with AUTH_PROVIDERS in
    * src/auth/auth-commands.ts.
    */
-  oauthLoginSlug?: "codex" | "kimi" | "antigravity";
+  oauthLoginSlug?: "codex" | "kimi" | "antigravity" | "grok";
   /** Whether this is a local provider (no API key needed) */
   isLocal?: boolean;
   /** Whether this provider supports direct API access (not just via OpenRouter) */
@@ -307,6 +308,60 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     legacyPrefixes: [{ prefix: "xai/", stripPrefix: true }],
     nativeModelPatterns: [{ pattern: /^x-ai\//i }, { pattern: /^grok-/i }],
     isDirectApi: true,
+  },
+
+  // ── Grok Build subscription (SuperGrok / X Premium+) ───────────────
+  //
+  // Same models as `x-ai` above, different BILLING: this one is covered by the
+  // user's Grok subscription, while `x-ai` is metered per token against
+  // XAI_API_KEY. The same subscription-vs-metered split claudish already models
+  // for GLM (gc@/glm@), MiniMax (mmc@/mm@), Qwen (qc@/qp@) and Sakana (sc@/sakana@).
+  //
+  // Full protocol write-up: ai-docs/reports/grok-subscription/protocol-spec.md
+  {
+    name: "grok-subscription",
+    displayName: "Grok Build (subscription)",
+    transport: "grok-subscription",
+    tokenStrategy: "delta-aware",
+    // The proxy the Grok CLI itself talks to. GROK_PROXY_URL is the CLI's own
+    // override, so it is honoured here too.
+    baseUrl: "https://cli-chat-proxy.grok.com",
+    baseUrlEnvVars: ["GROK_PROXY_URL"],
+    apiPath: "/v1/chat/completions",
+    // MUST stay empty — load-bearing, not an oversight. proxy-server only runs
+    // its credential-extraction block for a NON-empty apiKeyEnvVar, and that
+    // block would happily extract this bearer token and then CACHE it, past the
+    // six-hour life it actually has. Empty makes proxy-server skip the block, so
+    // every request goes through the credential authority, which is the only
+    // place expiry is checked and a refresh happens.
+    apiKeyEnvVar: "",
+    apiKeyDescription:
+      "Grok subscription OAuth (`claudish login grok`, or an existing `grok login`)",
+    apiKeyUrl: "https://x.ai/cli",
+    // claudish drives its OWN device-authorization flow — xAI registered this
+    // as a PUBLIC client (no secret), so unlike Antigravity there is no
+    // rotating app secret forcing us through the vendor CLI.
+    oauthLoginSlug: "grok",
+    oauthFallback: "grok-oauth.json",
+    // `grok@` deliberately stays with the metered `x-ai` provider so no existing
+    // command silently changes meaning. `gk@` is the new, explicit spelling.
+    shortcuts: ["gk", "grok-subscription"],
+    shortestPrefix: "gk",
+    legacyPrefixes: [{ prefix: "gk/", stripPrefix: true }],
+    // NO nativeModelPatterns: `x-ai` already owns /^grok-/i, and patterns are
+    // first-wins on array order. Bare-name reachability comes from the `grok-*`
+    // routing chain instead, where this provider sits FIRST — subscription
+    // before metered, so a user holding both credentials is never silently
+    // billed per token for a model their subscription already covers.
+    // The served roster is ACCOUNT-SCOPED and drifts, so it is discovered, never
+    // pinned. `/v1/models` is genuinely authenticated here (401 without a token,
+    // unlike Alibaba's coding-intl roster where a 200 proves nothing), and it
+    // answers the standard OpenAI `{object, data:[{id}]}` shape. Discovery falls
+    // back to the credential authority when `apiKeyEnvVar` is empty, which also
+    // supplies the mandatory client-version headers.
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    isDirectApi: true,
+    description: "Grok on your SuperGrok or X Premium+ plan (gk@)",
   },
 
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────

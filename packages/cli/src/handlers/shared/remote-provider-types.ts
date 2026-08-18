@@ -106,6 +106,12 @@ const SUBSCRIPTION_PROVIDERS = new Set([
   // showed Sakana's per-token rate against a plan that does not charge one —
   // the same confusion that made sc@ bill PAYG once before.
   "sakana-subscription",
+  // Grok Build is billed by the user's SuperGrok / X Premium+ plan. Unlike
+  // `openai-codex` below, this is NOT dual-mode: its only credential is the
+  // Grok CLI's OIDC token, and it deliberately does not alias the metered
+  // XAI_API_KEY (that key belongs to the separate `x-ai` provider). So the
+  // flat-rate answer is unambiguous for every credential that can reach it.
+  "grok-subscription",
 ]);
 
 // DELIBERATELY NOT LISTED: `openai-codex`.

@@ -48,7 +48,13 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   "gemini-*": ["antigravity", "google", "openrouter"],
 
   // xAI Grok: direct API, then OpenRouter (no subscription tier).
-  "grok-*": ["x-ai", "openrouter"],
+  // Subscription BEFORE metered, the same order every other split family uses
+  // (glm-coding before glm, qwen-cloud before qwen-payg). A user holding both a
+  // Grok subscription and an XAI_API_KEY must never be silently billed per token
+  // for a model their plan already covers. Safe to put in the bare chain — and
+  // unlike Devin or Qwen Plan, which are explicit-access only — because these
+  // ids are xAI's own, so there is no other vendor's namespace to collide with.
+  "grok-*": ["grok-subscription", "x-ai", "openrouter"],
 
   // Kimi: the subscription endpoint speaks its own wire ids (kimi-for-coding,
   // kimi-for-coding-highspeed, k3, k3-256k) — NOT catalog names like

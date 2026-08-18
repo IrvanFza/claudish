@@ -17,6 +17,7 @@ import { AntigravityCredentialProvider } from "./antigravity-credential.js";
 import { ApiKeyCredentialProvider } from "./api-key-credential.js";
 import { makeCodexCredential } from "./codex-credential.js";
 import { DevinCredentialProvider } from "./devin-credential.js";
+import { GrokSubscriptionCredentialProvider } from "./grok-credential.js";
 import { makeKimiCodingCredential, makeKimiCredential } from "./kimi-credential.js";
 import { LocalCredentialProvider } from "./local-credential.js";
 import { NativeAnthropicCredentialProvider } from "./native-anthropic-credential.js";
@@ -150,6 +151,13 @@ export class CredentialAuthority {
     // apiKeyEnvVar: "" so the generic loop below skips it anyway — this
     // registration is what actually makes `dv@` resolvable.
     authority.register(new DevinCredentialProvider(), ["devin"]);
+    // The Grok CLI's OIDC token expires in 6 hours and this provider refreshes
+    // it, which the generic ApiKeyCredentialProvider cannot do. Its definition
+    // carries apiKeyEnvVar: "" so the generic loop below skips it anyway — this
+    // registration is what makes `gk@` resolvable. It must NOT alias onto
+    // "x-ai": that is the METERED XAI_API_KEY provider, and crossing them would
+    // let a pay-per-token key authenticate a flat-rate `SUB` provider.
+    authority.register(new GrokSubscriptionCredentialProvider(), ["grok-subscription"]);
     authority.register(makeKimiCredential(), ["kimi"]);
     // kimi-coding is a SEPARATE product with its own endpoint + KIMI_CODING_API_KEY.
     // It must NOT alias onto the regular Kimi credential, or the coding endpoint

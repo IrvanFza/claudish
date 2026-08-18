@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigFileOverride } from "../config-override.js";
+import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { setConfigFileOverride } from "../profile-config.js";
 import { API_KEY_MAP } from "./api-key-map.js";
 import {
@@ -104,6 +105,30 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
       aliases: payg.apiKeyAliases,
     });
     expect(getProviderApiKeyEnv(payg.name)).toBe(payg.apiKeyEnvVar);
+  });
+
+  test("grok-subscription keeps refreshable auth out of generic API-key caching", () => {
+    const subscription = getProviderByName("grok-subscription")!;
+
+    // A generic env-var credential would be extracted and cached past the OIDC token's lifetime.
+    expect(subscription.apiKeyEnvVar).toBe("");
+  });
+
+  test("grok-subscription does not compete with x-ai for native Grok patterns", () => {
+    const subscription = getProviderByName("grok-subscription")!;
+    const grokPatternOwner = getNativeModelPatterns().find((entry) =>
+      entry.pattern.test("grok-4.6")
+    );
+
+    // Native patterns are first-wins; the metered x-ai definition remains their sole owner.
+    expect(subscription.nativeModelPatterns).toBeUndefined();
+    expect(grokPatternOwner?.provider).toBe("x-ai");
+  });
+
+  test("Grok subscription billing stays distinct from metered x-ai billing", () => {
+    // Flat-rate Grok access must render SUB, while XAI_API_KEY usage remains per-token metered.
+    expect(isSubscriptionProvider("grok-subscription")).toBe(true);
+    expect(isSubscriptionProvider("x-ai")).toBe(false);
   });
 });
 

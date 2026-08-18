@@ -134,7 +134,10 @@ interface AppProps {
    * and re-enters startConfigTui when the child exits. App.tsx just
    * signals intent; lifecycle is the wrapper's responsibility.
    */
-  requestLogin?: (slug: "gemini" | "codex" | "kimi" | "antigravity") => void;
+  // Derived, not restated: this union had drifted the same way `ProviderDef.
+  // oauthSlug` had, still naming the removed `gemini` provider. Both now follow
+  // the catalog's `oauthLoginSlug`.
+  requestLogin?: (slug: NonNullable<ProviderDef["oauthSlug"]>) => void;
 }
 
 export function App({ requestLogin }: AppProps = {}) {
