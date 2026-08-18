@@ -9,8 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { parseModelSpec } from "./model-parser.js";
-import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
-import { PROVIDER_PROFILES } from "./provider-profiles.js";
+import { BUILTIN_PROVIDERS, getProviderByName } from "./provider-definitions.js";
 import { OpenAIProviderTransport } from "./transport/openai.js";
 
 // ---------------------------------------------------------------------------
@@ -204,18 +203,21 @@ describe("parseModelSpec — native model auto-detection", () => {
 // Section 3: Provider profiles
 // ---------------------------------------------------------------------------
 
-describe("Provider profiles", () => {
-  test("qwen-cloud shares the Anthropic-compatible profile", () => {
-    const profile = PROVIDER_PROFILES["qwen-cloud"];
-    expect(profile).toBeDefined();
-    expect(profile).toBe(PROVIDER_PROFILES["minimax-coding"]);
-    expect(profile).toBe(PROVIDER_PROFILES["kimi-coding"]);
-    expect(profile).toBe(PROVIDER_PROFILES["z-ai"]);
+describe("Provider handlers", () => {
+  test("qwen-cloud shares the Anthropic-compatible handler builder", () => {
+    const createHandler = getProviderByName("qwen-cloud")?.createHandler;
+    expect(typeof createHandler).toBe("function");
+
+    // These four providers are all natively Anthropic-compatible and must not
+    // drift onto different builders: a wrong builder silently mismatches the
+    // wire format instead of crashing.
+    expect(createHandler).toBe(getProviderByName("minimax-coding")?.createHandler);
+    expect(createHandler).toBe(getProviderByName("kimi-coding")?.createHandler);
+    expect(createHandler).toBe(getProviderByName("z-ai")?.createHandler);
   });
 
-  test("every profile omission is explicit and qwen-payg uses the Anthropic-compatible profile", () => {
-    const expectedProfilelessProviders = [
-      "google",
+  test("every handler omission is explicit and qwen-payg uses the Anthropic-compatible builder", () => {
+    const expectedHandlerlessProviders = [
       "openrouter",
       "poe",
       "ollama",
@@ -224,13 +226,14 @@ describe("Provider profiles", () => {
       "mlx",
       "native-anthropic",
     ];
-    const profilelessProviders = BUILTIN_PROVIDERS.filter(
-      (provider) => !PROVIDER_PROFILES[provider.name]
+    const handlerlessProviders = BUILTIN_PROVIDERS.filter(
+      (provider) => typeof provider.createHandler !== "function"
     ).map((provider) => provider.name);
+    const qwenPaygHandler = getProviderByName("qwen-payg")?.createHandler;
 
-    expect(profilelessProviders).toEqual(expectedProfilelessProviders);
-    expect(PROVIDER_PROFILES["qwen-payg"]).toBeDefined();
-    expect(PROVIDER_PROFILES["qwen-payg"]).toBe(PROVIDER_PROFILES["qwen-cloud"]);
+    expect(handlerlessProviders).toEqual(expectedHandlerlessProviders);
+    expect(typeof qwenPaygHandler).toBe("function");
+    expect(qwenPaygHandler).toBe(getProviderByName("qwen-cloud")?.createHandler);
   });
 });
 

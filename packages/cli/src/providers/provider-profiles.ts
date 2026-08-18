@@ -31,6 +31,7 @@ import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log, logStderr } from "../logger.js";
 import { formatProvenanceLog, resolveApiKeyProvenance } from "./api-key-provenance.js";
+import { getProviderByName } from "./provider-definitions.js";
 import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
@@ -87,7 +88,7 @@ export interface ProviderProfile {
 // Profile implementations
 // ---------------------------------------------------------------------------
 
-const geminiProfile: ProviderProfile = {
+export const geminiProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new GeminiProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     const adapter = new GeminiAPIFormat(ctx.modelName);
@@ -100,7 +101,7 @@ const geminiProfile: ProviderProfile = {
   },
 };
 
-const antigravityProfile: ProviderProfile = {
+export const antigravityProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new AntigravityProviderTransport(ctx.modelName);
     const adapter = new GeminiAPIFormat(ctx.modelName);
@@ -114,7 +115,7 @@ const antigravityProfile: ProviderProfile = {
   },
 };
 
-const devinProfile: ProviderProfile = {
+export const devinProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new DevinProviderTransport(ctx.modelName);
     const adapter = new DevinAPIFormat(ctx.modelName);
@@ -203,7 +204,7 @@ function requiresResponsesApi(modelName: string): boolean {
  * The empty api key is intentional: `GrokSubscriptionProviderTransport`
  * overrides `getHeaders()` entirely, so the base class's key is never consulted.
  */
-const grokSubscriptionProfile: ProviderProfile = {
+export const grokSubscriptionProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new GrokSubscriptionProviderTransport(ctx.provider, ctx.modelName, "");
     const adapter = new OpenAIAPIFormat(ctx.modelName);
@@ -217,7 +218,7 @@ const grokSubscriptionProfile: ProviderProfile = {
   },
 };
 
-const openaiProfile: ProviderProfile = {
+export const openaiProfile: ProviderProfile = {
   createHandler(ctx) {
     // Claude Code always sends tools, so requires-responses models must get the
     // whole Responses-API slice (endpoint + CodexAPIFormat payload + responses
@@ -250,7 +251,7 @@ const openaiProfile: ProviderProfile = {
 /** OpenAI Codex — uses the Responses API (/v1/responses) with CodexAPIFormat.
  *  Uses OpenAICodexTransport which checks for OAuth credentials first (ChatGPT subscription),
  *  falling back to API key (OPENAI_CODEX_API_KEY). */
-const openaiCodexProfile: ProviderProfile = {
+export const openaiCodexProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new OpenAICodexTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     const adapter = new CodexAPIFormat(ctx.modelName);
@@ -265,7 +266,7 @@ const openaiCodexProfile: ProviderProfile = {
 };
 
 /** Shared profile for MiniMax, Kimi, Kimi Coding, and Z.AI (all Anthropic-compatible APIs) */
-const anthropicCompatProfile: ProviderProfile = {
+export const anthropicCompatProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new AnthropicProviderTransport(ctx.provider, ctx.apiKey);
     const adapter = new AnthropicAPIFormat(ctx.modelName, ctx.provider.name);
@@ -279,7 +280,7 @@ const anthropicCompatProfile: ProviderProfile = {
 };
 
 /** GLM and GLM Coding Plan use the OpenAI-compatible API */
-const glmProfile: ProviderProfile = {
+export const glmProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new OpenAIProviderTransport(ctx.provider, ctx.modelName, ctx.apiKey);
     const adapter = new OpenAIAPIFormat(ctx.modelName);
@@ -336,7 +337,7 @@ const glmProfile: ProviderProfile = {
  * non-Go tier is structurally identical (same apiPath, same transport) and shares
  * the fix; it could not be re-measured without an OPENCODE_API_KEY.
  */
-const openCodeZenProfile: ProviderProfile = {
+export const openCodeZenProfile: ProviderProfile = {
   createHandler(ctx) {
     const zenApiKey = ctx.apiKey;
     const isGoProvider = ctx.provider.name === "opencode-zen-go";
@@ -369,7 +370,7 @@ const openCodeZenProfile: ProviderProfile = {
   },
 };
 
-const ollamaCloudProfile: ProviderProfile = {
+export const ollamaCloudProfile: ProviderProfile = {
   createHandler(ctx) {
     const transport = new OllamaProviderTransport(ctx.provider, ctx.apiKey);
     const adapter = new OllamaAPIFormat(ctx.modelName);
@@ -383,7 +384,7 @@ const ollamaCloudProfile: ProviderProfile = {
   },
 };
 
-const litellmProfile: ProviderProfile = {
+export const litellmProfile: ProviderProfile = {
   createHandler(ctx) {
     if (!ctx.provider.baseUrl) {
       logStderr("Error: LITELLM_BASE_URL or --litellm-url is required for LiteLLM provider.");
@@ -413,7 +414,7 @@ const litellmProfile: ProviderProfile = {
  *
  * Returns null if neither key nor project config is available.
  */
-const vertexProfile: ProviderProfile = {
+export const vertexProfile: ProviderProfile = {
   createHandler(ctx) {
     const hasApiKey = !!process.env.VERTEX_API_KEY;
     const vertexConfig = getVertexConfig();
@@ -483,54 +484,6 @@ const vertexProfile: ProviderProfile = {
  *
  * Lookup is O(1). Add new providers here — no changes to proxy-server.ts needed.
  */
-export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
-  gemini: geminiProfile,
-  antigravity: antigravityProfile,
-  devin: devinProfile,
-  openai: openaiProfile,
-  "openai-codex": openaiCodexProfile,
-  // xAI's API is OpenAI Chat-Completions compatible. Without this entry
-  // requests silently fell through to OpenRouter, which would only succeed
-  // if the model name suffix-matched an OpenRouter ID. Recent xAI models
-  // like grok-4.20-0309-reasoning didn't match → confusing 400 attributed
-  // to "x-ai" when xAI was never actually called.
-  "x-ai": openaiProfile,
-  // The subscription sibling of "x-ai" — same models, billed by the user's
-  // SuperGrok / X Premium+ plan instead of per token.
-  "grok-subscription": grokSubscriptionProfile,
-  // Qwen API is OpenAI-compatible (DashScope).
-  qwen: openaiProfile,
-  // NOTE: poe uses transport: "poe" which has no profile factory yet —
-  // PoeProvider class exists in transport/poe.ts but isn't wired up here.
-  // Adding it requires a poeProfile factory analogous to openaiProfile.
-  // Left out for now; Poe probe will still show 'no probe model in catalog'.
-  minimax: anthropicCompatProfile,
-  "minimax-coding": anthropicCompatProfile,
-  kimi: anthropicCompatProfile,
-  "kimi-coding": anthropicCompatProfile,
-  // Alibaba Model Studio's plan endpoint is natively Anthropic-compatible
-  // (/apps/anthropic/v1/messages), so it needs no dialect translation. The
-  // pay-as-you-go sibling serves the identical /apps/anthropic surface on a
-  // different host, so it reuses the same profile.
-  "qwen-cloud": anthropicCompatProfile,
-  "qwen-payg": anthropicCompatProfile,
-  "z-ai": anthropicCompatProfile,
-  glm: glmProfile,
-  "glm-coding": glmProfile,
-  "opencode-zen": openCodeZenProfile,
-  "opencode-zen-go": openCodeZenProfile,
-  deepseek: openaiProfile,
-  // Mistral is OpenAI Chat-Completions compatible — no dedicated adapter needed.
-  mistralai: openaiProfile,
-  // Sakana Fugu is OpenAI Chat-Completions compatible. Both siblings (token +
-  // subscription) hit the identical endpoint, so both reuse openaiProfile.
-  sakana: openaiProfile,
-  "sakana-subscription": openaiProfile,
-  ollamacloud: ollamaCloudProfile,
-  litellm: litellmProfile,
-  vertex: vertexProfile,
-};
-
 // ---------------------------------------------------------------------------
 // Public factory
 // ---------------------------------------------------------------------------
@@ -542,11 +495,27 @@ export const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
  * - The provider name is not in PROVIDER_PROFILES (unknown provider)
  * - The profile's createHandler() returns null (e.g. missing config)
  */
-export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | null {
-  const profile =
-    PROVIDER_PROFILES[ctx.provider.name] ?? getRuntimeProfiles().get(ctx.provider.name);
-  if (!profile) {
+export async function createHandlerForProvider(ctx: ProfileContext): Promise<ModelHandler | null> {
+  // `ctx.provider` is a RemoteProvider, so its name is the RUNTIME one, and
+  // toRemoteProvider renames exactly one provider on the way through:
+  // google -> gemini. Reversing it here keeps that rename in the two places
+  // that perform it, instead of forcing a second handler table keyed by the
+  // post-rename name — which is what the old PROVIDER_PROFILES map was, and why
+  // it carried a `gemini` key for a builtin called `google`.
+  const definitionName = ctx.provider.name === "gemini" ? "google" : ctx.provider.name;
+  const factory =
+    getProviderByName(definitionName)?.createHandler ??
+    getRuntimeProfiles().get(ctx.provider.name)?.createHandler;
+
+  if (!factory) {
     return null; // Unknown provider — caller should fall through to OpenRouter or return null
+  }
+  if (typeof factory !== "function") {
+    // A documented "builds nothing here" — local, virtual, dedicated handler or
+    // an unimplemented transport. Returning null is the same answer the missing
+    // map entry used to give, except now the reason is recorded next to it.
+    log(`[Proxy] ${ctx.provider.name} builds no handler here (${factory.reason}): ${factory.note}`);
+    return null;
   }
 
   // Log API key provenance so debug logs show exactly which key is used and where it came from
@@ -556,5 +525,5 @@ export function createHandlerForProvider(ctx: ProfileContext): ModelHandler | nu
   }
   log(`[Proxy] Handler: provider=${ctx.provider.name}, model=${ctx.modelName}`);
 
-  return profile.createHandler(ctx);
+  return factory(ctx);
 }

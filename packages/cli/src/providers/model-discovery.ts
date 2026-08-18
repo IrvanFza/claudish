@@ -109,6 +109,46 @@ export interface ModelDiscoveryDescriptor {
   format: "openai-models-list" | "devin-connect" | "ollama-tags" | "antigravity";
 }
 
+/**
+ * A roster fetcher for a format this module does not know how to speak.
+ *
+ * Returning `[]` means "asked, got nothing" — the caller records an
+ * `empty-roster` failure. Throwing is also fine; the caller converts it.
+ */
+export type ModelDiscoveryFetcher = (providerName: string) => Promise<DiscoveredModel[]>;
+
+const _fetchers = new Map<string, ModelDiscoveryFetcher>();
+
+/**
+ * Register a fetcher for a non-GET discovery format.
+ *
+ * This is the seam the devin branch predicted: "If a third such provider ever
+ * appears, replace this branch with a `registerModelDiscoveryFetcher(name, fn)`
+ * seam — not worth it for one." Antigravity was the third, so it exists now.
+ *
+ * The inversion is the point. Before, this generic module had to KNOW about
+ * Devin's protobuf rpcs, Antigravity's OAuth POST and Ollama's daemon shape,
+ * and adding provider #4 meant editing a file that has nothing to do with
+ * provider #4. Now each owner declares itself and this module knows none of
+ * them — the same dependency direction the merged provider table just took, and
+ * for the same reason: a registration cannot be forgotten in a second place,
+ * because there is no second place.
+ *
+ * Registration is idempotent by name; the last writer wins, so a test can
+ * substitute a fetcher without unregistering first.
+ */
+export function registerModelDiscoveryFetcher(
+  format: string,
+  fetcher: ModelDiscoveryFetcher
+): void {
+  _fetchers.set(format, fetcher);
+}
+
+/** The fetcher for a format, or undefined when nothing claims it. */
+export function getModelDiscoveryFetcher(format: string): ModelDiscoveryFetcher | undefined {
+  return _fetchers.get(format);
+}
+
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -331,80 +371,27 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   // DYNAMIC to keep the codec off the cold-start path and out of a static
   // cycle. (If a third such provider ever appears, replace this branch with a
   // `registerModelDiscoveryFetcher(name, fn)` seam — not worth it for one.)
-  if (descriptor.format === "devin-connect") {
-    const { getServedDevinModels } = await import("./devin/devin-models.js");
-    const served = await getServedDevinModels();
-    if (served.length === 0) {
+  // Formats this module cannot speak itself are served by registered fetchers.
+  // It deliberately knows NONE of them by name: the builtin bundle is imported
+  // on first miss, which both inverts the dependency and keeps the protobuf
+  // codec and the Antigravity OAuth path off the cold-start path.
+  if (descriptor.format !== "openai-models-list") {
+    let fetcher = getModelDiscoveryFetcher(descriptor.format);
+    if (!fetcher) {
+      await import("./model-discovery-builtins.js");
+      fetcher = getModelDiscoveryFetcher(descriptor.format);
+    }
+    if (!fetcher) {
+      // A declared format nothing claims. Report it as a roster miss rather
+      // than falling through to the GET path, which would hit a bogus URL.
       return recordFailure({ kind: "empty-roster", provider: providerName });
     }
-    // Carry the full variant metadata, not just id/name/window: the picker
-    // folds these 170 uids into ~42 rows and needs the group label, the cost
-    // multiplier, the promo, and the vendor's own default flag to do it.
-    const { devinRosterEntry } = await import("./model-resolvers/devin.js");
-    const models: DiscoveredModel[] = served.map((model) => {
-      const { wireId, ...rest } = devinRosterEntry(model);
-      return { id: wireId, ...rest };
-    });
+    const models = await fetcher(providerName);
+    if (models.length === 0) {
+      return recordFailure({ kind: "empty-roster", provider: providerName });
+    }
     _failures.delete(providerName);
     log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
-    return models;
-  }
-
-  // Antigravity lists over an OAuth POST to a Google internal endpoint, not a
-  // GET, so the generic path above cannot express it.
-  //
-  // The reason it is worth a branch at all is `maxTokens`: the response reports
-  // the window THIS subscription is served, and it disagrees with the shared
-  // catalog. Measured 2026-08-18 — `claude-sonnet-4-6` is 250,000 from the
-  // backend against 1,000,000 in the catalog, a 4x over-report that would have
-  // a session plan against a window it does not have. Every gemini id agrees
-  // (1,048,576 both ways), which is precisely why the gap stayed invisible.
-  //
-  // `resolveDiscoveredContextLength` already prefers a discovered window over
-  // the catalog; this branch is what finally gives it one to prefer.
-  if (descriptor.format === "antigravity") {
-    const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
-    const { setupAntigravityUser, getServedAntigravityModels } = await import(
-      "../auth/antigravity-user.js"
-    );
-    const token = await getValidAntigravityAccessToken();
-    if (!token) {
-      return recordFailure({ kind: "no-credentials", provider: providerName });
-    }
-    const { projectId } = await setupAntigravityUser(token);
-    const { servedIds, meta } = await getServedAntigravityModels(token, projectId);
-    if (servedIds.length === 0) {
-      return recordFailure({ kind: "empty-roster", provider: providerName });
-    }
-    const models: DiscoveredModel[] = servedIds.map((id) => {
-      const m = meta[id];
-      // contextWindow is left UNSET when the backend reported none
-      // (gemini-3.1-flash-image does), so the catalog still gets its turn
-      // rather than the row rendering a fabricated 0 / "N/A".
-      return m?.contextWindow ? { id, contextWindow: m.contextWindow } : { id };
-    });
-    _failures.delete(providerName);
-    log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
-    return models;
-  }
-
-  // Ollama's daemon speaks its own listing shape and carries capability data no
-  // OpenAI-compatible list has. Dynamic import keeps it off the cold-start path.
-  if (descriptor.format === "ollama-tags") {
-    const { fetchOllamaModels } = await import("./ollama-discovery.js");
-    const installed = await fetchOllamaModels({ enrichCapabilities: false });
-    if (installed.length === 0) {
-      return recordFailure({ kind: "empty-roster", provider: providerName });
-    }
-    const models: DiscoveredModel[] = installed.map((model) => ({
-      id: model.name,
-      displayName: model.name,
-      supportsTools: model.supportsTools,
-    }));
-    _failures.delete(providerName);
-    log(`[model-discovery:${providerName}] discovered ${models.length} local models`);
     _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
     return models;
   }

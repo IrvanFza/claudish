@@ -10,10 +10,15 @@
  */
 
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
+import type { ModelHandler } from "../handlers/types.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
 // Type-only import — erased at compile time, so no runtime import cycle with
 // model-discovery.ts (which imports getProviderByName from here).
 import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
+// Type-only, like ModelDiscoveryDescriptor below: erased at compile time, so
+// declaring the handler here costs nothing at module load. The 28 heavy imports
+// in provider-profiles.ts arrive only when `lazyHandler`'s thunk is invoked.
+import type { ProfileContext, ProviderProfile } from "./provider-profiles.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +51,73 @@ export interface ProviderCapabilities {
   supportsReasoning?: boolean;
 }
 
+/**
+ * Why a provider has no handler factory. A first-class value, not an omission.
+ *
+ * Eight builtins legitimately construct no handler through this path, for five
+ * different reasons, and every one of them used to be expressed by simply not
+ * appearing in a second table — which is indistinguishable from forgetting.
+ * Naming the reason is what turns "is this a bug?" into an answered question.
+ */
+export type NoHandlerReason =
+  /** Renamed before the request path sees it; the handler lives under the new name. */
+  | "renamed-at-runtime"
+  /** Served by a dedicated handler that predates this table (OpenRouter). */
+  | "dedicated-handler"
+  /** Resolved by the local-provider path, not `direct-api`. */
+  | "local"
+  /** No baseUrl — exists only so nativeModelPatterns can steer a bare name. */
+  | "virtual"
+  /** Transport exists, factory never written. A real gap, stated as one. */
+  | "unimplemented";
+
+/** A provider that deliberately builds no handler here, and says why. */
+export interface NoHandler {
+  kind: "none";
+  reason: NoHandlerReason;
+  /** Free text: what actually serves it, or what is missing. */
+  note: string;
+}
+
+/**
+ * Build a handler for one request — LAZILY.
+ *
+ * The laziness is the whole point of the shape. The construction code imports
+ * every transport, every adapter and ComposedHandler (28 static imports);
+ * provider IDENTITY is read by 33 files, most of which only want to know
+ * whether `gk@` is a real prefix and will never open a socket. A thunk keeps
+ * those two facts in ONE table without making the cheap question pay for the
+ * expensive one.
+ */
+export type LazyHandlerFactory = (ctx: ProfileContext) => Promise<ModelHandler | null>;
+
+/** Type-only view of the builder module. Erased at compile time — no runtime import. */
+type ProfileBuilders = typeof import("./provider-profiles.js");
+
+/**
+ * Wrap a builder in a deferred import.
+ *
+ * `pick` is a typed accessor rather than a string key on purpose: a key would
+ * be a third place to typo a provider name, which is the exact failure this
+ * merge exists to remove.
+ */
+function lazyHandler(pick: (m: ProfileBuilders) => ProviderProfile): LazyHandlerFactory {
+  return async (ctx) => pick(await import("./provider-profiles.js")).createHandler(ctx);
+}
+
 export interface ProviderDefinition {
+  /**
+   * How this provider builds a handler — or an explicit statement that it does
+   * not, and why.
+   *
+   * REQUIRED, and that is the point of merging the two tables. Handler wiring
+   * used to live in a separate `PROVIDER_PROFILES` map keyed by name, so adding
+   * a builtin and forgetting the second entry produced a provider that silently
+   * answered from OPENROUTER — CLAUDE.md names that this project's worst
+   * failure class. As a required field the compiler refuses the half-add, which
+   * is a stronger guarantee than any test: you cannot merge code that forgot.
+   */
+  createHandler: LazyHandlerFactory | NoHandler;
   /** Canonical provider name (lowercase, unique key) */
   name: string;
   /** Human-readable display name (proper capitalization) */
@@ -113,9 +184,56 @@ export interface ProviderDefinition {
 // Built-in provider definitions
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Handler factories — twelve builders shared across twenty-six providers.
+//
+// Declared once here rather than inline per entry because the mapping is
+// many-to-one: `openaiProfile` alone serves x-ai, qwen, deepseek, mistralai and
+// both Sakana products. Inlining would have copied the same thunk nine times,
+// which is how tables drift.
+// ---------------------------------------------------------------------------
+
+const geminiHandler = lazyHandler((m) => m.geminiProfile);
+const antigravityHandler = lazyHandler((m) => m.antigravityProfile);
+const devinHandler = lazyHandler((m) => m.devinProfile);
+const grokSubscriptionHandler = lazyHandler((m) => m.grokSubscriptionProfile);
+const openaiHandler = lazyHandler((m) => m.openaiProfile);
+const openaiCodexHandler = lazyHandler((m) => m.openaiCodexProfile);
+const anthropicCompatHandler = lazyHandler((m) => m.anthropicCompatProfile);
+const glmHandler = lazyHandler((m) => m.glmProfile);
+const openCodeZenHandler = lazyHandler((m) => m.openCodeZenProfile);
+const ollamaCloudHandler = lazyHandler((m) => m.ollamaCloudProfile);
+const litellmHandler = lazyHandler((m) => m.litellmProfile);
+const vertexHandler = lazyHandler((m) => m.vertexProfile);
+
+/** Shorthand for the five documented reasons a provider builds nothing here. */
+const noHandler = (reason: NoHandlerReason, note: string): NoHandler => ({
+  kind: "none",
+  reason,
+  note,
+});
+
+/**
+ * Handler for a provider registered at RUNTIME — a custom endpoint.
+ *
+ * Its builder cannot be named at compile time because the provider does not
+ * exist until a config file is read, so this defers to the runtime profile
+ * registry the loader populates. Still a required field on the definition, so a
+ * custom endpoint that registers a provider and forgets its profile fails the
+ * same way a builtin would: at the type level, not at request time.
+ */
+export function runtimeHandler(name: string): LazyHandlerFactory {
+  return async (ctx) => {
+    const { getRuntimeProfiles } = await import("./runtime-providers.js");
+    const profile = getRuntimeProfiles().get(name);
+    return profile ? profile.createHandler(ctx) : null;
+  };
+}
+
 export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Google Gemini (direct API) ─────────────────────────────────────
   {
+    createHandler: geminiHandler,
     name: "google",
     displayName: "Gemini",
     transport: "gemini",
@@ -144,6 +262,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // token (the `agy` keychain item), NOT a GEMINI_API_KEY. `go@` is retained as
   // a DEPRECATED alias that routes here (see model-parser.ts).
   {
+    createHandler: antigravityHandler,
     name: "antigravity",
     displayName: "Antigravity",
     transport: "antigravity",
@@ -178,6 +297,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ~/.local/share/devin/credentials.toml (or WINDSURF_API_KEY). One flat
   // subscription serving several vendors' models over a Connect-protobuf rpc.
   {
+    createHandler: devinHandler,
     name: "devin",
     displayName: "Devin",
     transport: "devin",
@@ -238,6 +358,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OpenAI (direct API) ────────────────────────────────────────────
   {
+    createHandler: openaiHandler,
     name: "openai",
     displayName: "OpenAI",
     transport: "openai",
@@ -264,6 +385,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OpenAI Codex (Responses API — ChatGPT Plus/Pro subscription) ────
   {
+    createHandler: openaiCodexHandler,
     name: "openai-codex",
     displayName: "OpenAI Codex",
     transport: "openai",
@@ -287,6 +409,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OpenRouter ─────────────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "dedicated-handler",
+      "Served by OpenRouterHandler, which predates this table. proxy-server returns null here on purpose so the request falls through to it."
+    ),
     name: "openrouter",
     displayName: "OpenRouter",
     transport: "openrouter",
@@ -309,6 +435,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── xAI / Grok (OpenAI-compatible) ──────────────────────────────────
   {
+    createHandler: openaiHandler,
     name: "x-ai",
     displayName: "xAI",
     transport: "openai",
@@ -337,6 +464,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   //
   // Full protocol write-up: ai-docs/reports/grok-subscription/protocol-spec.md
   {
+    createHandler: grokSubscriptionHandler,
     name: "grok-subscription",
     displayName: "Grok Build (subscription)",
     transport: "grok-subscription",
@@ -384,6 +512,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────
   {
+    createHandler: anthropicCompatHandler,
     name: "minimax",
     displayName: "MiniMax",
     transport: "anthropic",
@@ -419,6 +548,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── MiniMax Coding Plan ────────────────────────────────────────────
   {
+    createHandler: anthropicCompatHandler,
     name: "minimax-coding",
     displayName: "MiniMax Coding",
     transport: "anthropic",
@@ -439,6 +569,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Kimi Coding Plan (must be before Kimi — kimi-for-coding$ is more specific than kimi-*)
   {
+    createHandler: anthropicCompatHandler,
     name: "kimi-coding",
     displayName: "Kimi Coding",
     transport: "kimi-coding",
@@ -466,6 +597,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Kimi / Moonshot (Anthropic-compatible) ─────────────────────────
   {
+    createHandler: anthropicCompatHandler,
     name: "kimi",
     displayName: "Kimi",
     transport: "anthropic",
@@ -494,6 +626,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── GLM / Zhipu (OpenAI-compatible) ────────────────────────────────
   {
+    createHandler: glmHandler,
     name: "glm",
     displayName: "GLM",
     transport: "openai",
@@ -524,6 +657,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── GLM Coding Plan ────────────────────────────────────────────────
   {
+    createHandler: glmHandler,
     name: "glm-coding",
     displayName: "GLM Coding",
     transport: "openai",
@@ -544,6 +678,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Z.AI (Anthropic-compatible GLM API) ────────────────────────────
   {
+    createHandler: anthropicCompatHandler,
     name: "z-ai",
     displayName: "Z.AI",
     transport: "anthropic",
@@ -565,6 +700,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OllamaCloud ────────────────────────────────────────────────────
   {
+    createHandler: ollamaCloudHandler,
     name: "ollamacloud",
     displayName: "OllamaCloud",
     transport: "ollamacloud",
@@ -590,6 +726,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OpenCode Zen (free anonymous + paid) ───────────────────────────
   {
+    createHandler: openCodeZenHandler,
     name: "opencode-zen",
     displayName: "OpenCode Zen",
     transport: "openai",
@@ -610,6 +747,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── OpenCode Zen Go (lite plan) ────────────────────────────────────
   {
+    createHandler: openCodeZenHandler,
     name: "opencode-zen-go",
     displayName: "OpenCode Zen Go",
     transport: "openai",
@@ -638,6 +776,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Vertex AI ──────────────────────────────────────────────────────
   {
+    createHandler: vertexHandler,
     name: "vertex",
     displayName: "Vertex AI",
     transport: "vertex",
@@ -659,6 +798,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── LiteLLM ────────────────────────────────────────────────────────
   {
+    createHandler: litellmHandler,
     name: "litellm",
     displayName: "LiteLLM",
     transport: "litellm",
@@ -680,6 +820,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Poe ────────────────────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "unimplemented",
+      "PoeProvider exists in transport/poe.ts but no builder was ever written; --probe reports 'no probe model in catalog'."
+    ),
     name: "poe",
     displayName: "Poe",
     transport: "poe",
@@ -698,6 +842,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Ollama (local) ─────────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "local",
+      "Built by the local-provider path; never reaches direct-api."
+    ),
     name: "ollama",
     displayName: "Ollama",
     transport: "local",
@@ -725,6 +873,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── LM Studio (local) ──────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "local",
+      "Built by the local-provider path; never reaches direct-api."
+    ),
     name: "lmstudio",
     displayName: "LM Studio",
     transport: "local",
@@ -754,6 +906,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── vLLM (local) ───────────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "local",
+      "Built by the local-provider path; never reaches direct-api."
+    ),
     name: "vllm",
     displayName: "vLLM",
     transport: "local",
@@ -776,6 +932,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── MLX (local) ────────────────────────────────────────────────────
   {
+    createHandler: noHandler(
+      "local",
+      "Built by the local-provider path; never reaches direct-api."
+    ),
     name: "mlx",
     displayName: "MLX",
     transport: "local",
@@ -797,6 +957,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── DeepSeek (OpenAI-compatible direct API) ─────────────────────────
   {
+    createHandler: openaiHandler,
     name: "deepseek",
     displayName: "DeepSeek",
     transport: "openai",
@@ -828,6 +989,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // externalId resolution translates one to the other — so a user typing the
   // pinned id still reaches the alias, and no per-provider code is needed here.
   {
+    createHandler: openaiHandler,
     name: "mistralai",
     displayName: "Mistral",
     transport: "openai",
@@ -856,6 +1018,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Sakana Fugu (OpenAI-compatible direct API / token plan) ────────
   {
+    createHandler: openaiHandler,
     name: "sakana",
     displayName: "Sakana Fugu",
     transport: "openai",
@@ -891,6 +1054,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // SAKANA_API_KEY because the wire is identical; the subscription-vs-API
   // distinction lives in the key, set at creation in the console.)
   {
+    createHandler: openaiHandler,
     name: "sakana-subscription",
     displayName: "Sakana Fugu Subscription",
     transport: "openai",
@@ -979,6 +1143,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // so that change needs a DASHSCOPE_API_KEY to verify against, or routing that
   // consults live `modelDiscovery` instead of guessing from the id.
   {
+    createHandler: anthropicCompatHandler,
     name: "qwen-cloud",
     displayName: "Qwen Plan",
     transport: "anthropic",
@@ -1035,6 +1200,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // every other family already follows, so a user with both keys is never
   // silently billed per token for a model their plan covers.
   {
+    createHandler: anthropicCompatHandler,
     name: "qwen-payg",
     displayName: "Qwen PAYG",
     transport: "anthropic",
@@ -1062,6 +1228,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
   {
+    createHandler: openaiHandler,
     name: "qwen",
     displayName: "Qwen",
     transport: "openai",
@@ -1079,6 +1246,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Native Anthropic (Claude Code auth) ────────────────────────────
   {
+    createHandler: noHandler(
+      "virtual",
+      "No baseUrl. Exists only so nativeModelPatterns can steer a bare claude-* name to the native path."
+    ),
     name: "native-anthropic",
     displayName: "Anthropic (Native)",
     transport: "anthropic",

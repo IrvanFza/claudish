@@ -130,6 +130,68 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     expect(isSubscriptionProvider("grok-subscription")).toBe(true);
     expect(isSubscriptionProvider("x-ai")).toBe(false);
   });
+
+  test("every builtin explicitly defines how its handler is created", () => {
+    for (const provider of BUILTIN_PROVIDERS) {
+      const handler = provider.createHandler;
+
+      // This is the merged-table invariant: an omitted handler used to route silently to OpenRouter.
+      expect(handler).toBeDefined();
+      expect(
+        typeof handler === "function" ||
+          (typeof handler === "object" && handler !== null && handler.kind === "none")
+      ).toBe(true);
+    }
+  });
+
+  test("every handler-less builtin documents a supported reason", () => {
+    const supportedReasons = new Set([
+      "renamed-at-runtime",
+      "dedicated-handler",
+      "local",
+      "virtual",
+      "unimplemented",
+    ]);
+
+    for (const provider of BUILTIN_PROVIDERS) {
+      const handler = provider.createHandler;
+      if (typeof handler === "function") continue;
+
+      // A reason and note distinguish an intentional alternate path from a forgotten handler.
+      expect(supportedReasons.has(handler.reason)).toBe(true);
+      expect(handler.note.trim()).not.toBe("");
+    }
+  });
+
+  test("only the expected builtins use the no-handler sentinel", () => {
+    const handlerlessProviders = BUILTIN_PROVIDERS.filter(
+      (provider) => typeof provider.createHandler !== "function"
+    )
+      .map((provider) => provider.name)
+      .sort();
+
+    // Google is renamed to gemini at runtime but owns geminiHandler; a naive merge loses it here.
+    expect(handlerlessProviders).not.toContain("google");
+    expect(handlerlessProviders).toEqual([
+      "lmstudio",
+      "mlx",
+      "native-anthropic",
+      "ollama",
+      "openrouter",
+      "poe",
+      "vllm",
+    ]);
+  });
+
+  test("recent subscription providers have real handler factories", () => {
+    for (const providerName of ["grok-subscription", "antigravity"]) {
+      const provider = getProviderByName(providerName);
+
+      // These recent additions are regression guards for the table-drift failure this merge removes.
+      expect(provider).toBeDefined();
+      expect(typeof provider?.createHandler).toBe("function");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

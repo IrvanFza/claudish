@@ -45,6 +45,12 @@ function discoveryProvider(): ProviderDefinition {
     shortcuts: [],
     legacyPrefixes: [],
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    // Required because handler wiring once lived in PROVIDER_PROFILES, where a missing entry silently routed to OpenRouter; colocating it prevents that half-add.
+    createHandler: {
+      kind: "none",
+      reason: "virtual",
+      note: "Test fixture — never builds a handler.",
+    },
     isDirectApi: true,
   };
 }
