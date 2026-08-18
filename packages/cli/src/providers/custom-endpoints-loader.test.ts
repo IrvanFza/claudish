@@ -11,6 +11,7 @@ import {
   resolveCustomEndpointApiKey,
   resolveDeclaredEndpointKey,
 } from "./custom-endpoints-loader.js";
+import type { ProfileContext } from "./provider-profiles.js";
 import {
   clearRuntimeRegistry,
   getRuntimeProfiles,
@@ -456,5 +457,136 @@ describe("custom-endpoints-loader", () => {
     expect(second.registered).toBe(1); // still 1 per call
     // The Map stays size 1 because keys overwrite
     expect(getRuntimeProviders().size).toBe(1);
+  });
+
+  describe("complex endpoint streamFormat plumbing", () => {
+    // Regression: an Anthropic-compatible endpoint serving a Qwen-named model
+    // hits QwenModelDialect (which inherits openai-sse from BaseAPIFormat).
+    // The wire is anthropic-sse. streamFormat on the endpoint config must
+    // win over the dialect's default — otherwise the parser is wrong and the
+    // probe reports "not found".
+    function makeCtx(modelName: string): ProfileContext {
+      return {
+        provider: {
+          name: "qwen-token-plan",
+          baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+          apiPath: "/v1/messages",
+          apiKeyEnvVar: "CUSTOM_QWEN_TOKEN_PLAN_KEY",
+          prefixes: ["qwen-token-plan"],
+          authScheme: "x-api-key",
+        },
+        modelName,
+        targetModel: modelName,
+        port: 3000,
+        apiKey: "sk-test",
+        sharedOpts: {},
+      };
+    }
+
+    test("anthropic-transport + streamFormat=anthropic-sse: propages to transport.overrideStreamFormat()", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "qwen-token-plan": {
+            kind: "complex",
+            displayName: "Qwen Cloud Token Plan",
+            transport: "anthropic",
+            baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+            apiKey: "sk-test",
+            streamFormat: "anthropic-sse",
+            headers: { "anthropic-version": "2023-06-01" },
+          },
+        })
+      );
+
+      const profile = getRuntimeProfiles().get("qwen-token-plan");
+      expect(profile).toBeDefined();
+      const handler = profile!.createHandler(makeCtx("qwen3.8-max"))!;
+      expect(handler).toBeDefined();
+      // ComposedHandler stores the transport on a private `provider` field.
+      // Tap into overrideStreamFormat via that field.
+      const transport = (handler as any).provider;
+      expect(transport).toBeDefined();
+      expect(transport.overrideStreamFormat?.()).toBe("anthropic-sse");
+    });
+
+    test("openai-transport + streamFormat=openai-sse: propagates to transport.overrideStreamFormat()", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "op-aggregate": {
+            kind: "complex",
+            displayName: "OpenAI Aggregate",
+            transport: "openai",
+            baseUrl: "https://agg.example.com/v1",
+            apiKey: "k",
+            streamFormat: "openai-sse",
+          },
+        })
+      );
+
+      const profile = getRuntimeProfiles().get("op-aggregate");
+      const handler = profile!.createHandler(makeCtx("qwen3.8-max"))!;
+      const transport = (handler as any).provider;
+      expect(transport.overrideStreamFormat?.()).toBe("openai-sse");
+    });
+
+    test("no streamFormat set: transport falls back to dialect default (no override)", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "no-stream": {
+            kind: "complex",
+            displayName: "Plain",
+            transport: "anthropic",
+            baseUrl: "https://plain.example.com",
+            apiKey: "k",
+          },
+        })
+      );
+
+      const profile = getRuntimeProfiles().get("no-stream");
+      const handler = profile!.createHandler(makeCtx("claude-test"))!;
+      const transport = (handler as any).provider;
+      // No override set — returns undefined, the parser falls back to the
+      // dialect's inherited streamFormat (the historical behavior).
+      expect(transport.overrideStreamFormat?.()).toBeUndefined();
+    });
+
+    test("a configured streamFormat selects the stream PARSER, not just the transport value", () => {
+      loadCustomEndpoints(
+        makeConfig({
+          "parser-override": {
+            kind: "complex",
+            displayName: "Parser Override",
+            transport: "openai",
+            baseUrl: "https://override.example.com/v1",
+            apiKey: "k",
+            streamFormat: "anthropic-sse",
+          },
+        })
+      );
+
+      const overriddenHandler = getRuntimeProfiles()
+        .get("parser-override")!
+        .createHandler(makeCtx("qwen3.8-max"))!;
+      // resolveStreamFormat is private, but it is the parser-selection step users experience.
+      expect((overriddenHandler as any).resolveStreamFormat()).toBe("anthropic-sse");
+
+      clearRuntimeRegistry();
+      loadCustomEndpoints(
+        makeConfig({
+          "parser-default": {
+            kind: "complex",
+            displayName: "Parser Default",
+            transport: "openai",
+            baseUrl: "https://default.example.com/v1",
+            apiKey: "k",
+          },
+        })
+      );
+
+      const defaultHandler = getRuntimeProfiles()
+        .get("parser-default")!
+        .createHandler(makeCtx("qwen3.8-max"))!;
+      expect((defaultHandler as any).resolveStreamFormat()).toBe("openai-sse");
+    });
   });
 });
