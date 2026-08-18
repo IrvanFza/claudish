@@ -2,6 +2,28 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.62.0] - 2026-08-18
+
+### Bug Fixes
+
+- biome-ignore for control chars in the OSC 11 reply matcher([`9bff033`](https://github.com/MadAppGang/claudish/commit/9bff03366f98911249759adf1ec3b9e842ac59d0))
+- give the spawned pty a size, and stop blaming magmux for it (#209) *(test)* ([`76c0a93`](https://github.com/MadAppGang/claudish/commit/76c0a936b63e7cada973ca7af38c89a8b706f8d6))
+
+### Documentation
+
+- update CHANGELOG.md for v7.61.0([`69bf7b0`](https://github.com/MadAppGang/claudish/commit/69bf7b060c21840010e6457994d7013de8216f7d))
+
+### New Features
+
+- v7.61.0 - auto-detected light theme for all TUI screens and CLI output([`5fbdc56`](https://github.com/MadAppGang/claudish/commit/5fbdc56f69ac3a427f9e61aad021f4fdbcd02e9a))
+- light-theme sweep, tests, and docs — screenshot-verified both modes([`c9cb626`](https://github.com/MadAppGang/claudish/commit/c9cb6265435b8f68f3059e43492cc4b4d1d44770))
+- theme-mode core — dual light/dark palette with auto-detection([`4930e64`](https://github.com/MadAppGang/claudish/commit/4930e64207dd89f8f45059a89573ed869408becc))
+
+### Other Changes
+
+- v7.62.0 - auto-detected light theme for all TUI screens and CLI output([`8c1a3db`](https://github.com/MadAppGang/claudish/commit/8c1a3db819115c7e511d3d3763c35f3967c240ed))
+- upgrade @opentui/core+react 0.1.87 -> 0.1.107 for theme detection APIs([`bd14693`](https://github.com/MadAppGang/claudish/commit/bd14693f1d31293883d582807bc995de6f78595e))
+
 ## [7.61.0] - 2026-08-18
 
 ### Bug Fixes
