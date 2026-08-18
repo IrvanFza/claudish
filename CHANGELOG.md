@@ -2,12 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.54.0] - 2026-08-18
+
+### Documentation
+
+- update CHANGELOG.md for v7.53.0([`69dc744`](https://github.com/MadAppGang/claudish/commit/69dc74496c455cdd4fad9e05f1ab77079d3839f8))
+
+### Other Changes
+
+- v7.54.0 - fix import order, rebase onto 7.53.0([`fcbb933`](https://github.com/MadAppGang/claudish/commit/fcbb9332cb6aec736fab0eb0e1cb983f65cde698))
+
 ## [7.53.0] - 2026-08-17
 
 ### Bug Fixes
 
 - stop reporting a transient 429 as terminal quota exhaustion *(antigravity)* ([`889e532`](https://github.com/MadAppGang/claudish/commit/889e532f6063afc82da699f9b807e873ef933805))
-- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
 
 ### Documentation
 
@@ -22,6 +31,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
+- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
 - close the bug report's remaining findings, and a test-isolation defect([`e46898e`](https://github.com/MadAppGang/claudish/commit/e46898edd46deae43fe8b63893b33c62f56578ed))
 - ignore magmux's control panel when reading pane results *(team-grid)* ([`483cc83`](https://github.com/MadAppGang/claudish/commit/483cc832331a8903ed212e2bcc09d43d4645e1e9))
 - actually stop timed-out children, and stop discarding their answers *(team)* ([`26865dc`](https://github.com/MadAppGang/claudish/commit/26865dccfadcff8ce48de606fff2c535189db62e))
@@ -33,8 +43,13 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 - update CHANGELOG.md for v7.51.0([`1913b82`](https://github.com/MadAppGang/claudish/commit/1913b822152e20f3ecf86250b35d310fa4676728))
 
+### New Features
+
+- Grok Build subscription provider with its own OAuth (gk@) *(providers)* ([`091efe7`](https://github.com/MadAppGang/claudish/commit/091efe7413b374e9ee78db70798ba356c7fcfb49))
+
 ### Other Changes
 
+- v7.53.0 - Grok Build subscription provider with its own OAuth([`1cf4618`](https://github.com/MadAppGang/claudish/commit/1cf4618380195ce014429fa0fba47df3643de156))
 - v7.52.0 - enforce team timeouts, and unbreak grok-4.6 reasoning effort([`59e717b`](https://github.com/MadAppGang/claudish/commit/59e717b110637f26597294a945c9b8cb957da8b6))
 
 ## [7.51.0] - 2026-08-17
