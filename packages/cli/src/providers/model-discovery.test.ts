@@ -90,6 +90,11 @@ describe("discoverProviderModels", () => {
       shortcuts: [],
       legacyPrefixes: [],
       modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+      createHandler: {
+        kind: "none",
+        reason: "virtual",
+        note: "Test fixture — never builds a handler.",
+      },
       headers: {
         Authorization: "Bearer definition-token",
         "X-API-Key": "definition-api-key",

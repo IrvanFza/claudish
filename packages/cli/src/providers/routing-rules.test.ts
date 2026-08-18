@@ -903,6 +903,11 @@ function rosterProvider(name: string): ProviderDefinition {
     shortcuts: [],
     legacyPrefixes: [],
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    createHandler: {
+      kind: "none",
+      reason: "virtual",
+      note: "Test fixture — never builds a handler.",
+    },
     isDirectApi: true,
   };
 }
