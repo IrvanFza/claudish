@@ -365,6 +365,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.minimax.io",
     baseUrlEnvVars: ["MINIMAX_CODING_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
     apiKeyDescription: "MiniMax Coding Plan API Key",
     apiKeyUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
@@ -411,6 +412,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.moonshot.ai",
     baseUrlEnvVars: ["MOONSHOT_BASE_URL", "KIMI_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     apiKeyAliases: ["KIMI_API_KEY"],
     apiKeyDescription: "Kimi/Moonshot API Key",
@@ -468,6 +470,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     tokenStrategy: "delta-aware",
     baseUrl: "https://api.z.ai",
     apiPath: "/api/coding/paas/v4/chat/completions",
+    modelDiscovery: { path: "/api/coding/paas/v4/models", format: "openai-models-list" },
     apiKeyEnvVar: "GLM_CODING_API_KEY",
     apiKeyAliases: ["ZAI_CODING_API_KEY"],
     apiKeyDescription: "GLM Coding Plan API Key",
@@ -554,6 +557,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://opencode.ai/zen/go",
     baseUrlEnvVars: ["OPENCODE_GO_BASE_URL"],
     apiPath: "/v1/chat/completions",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     // Zen Go is a separate paid tier from the free Zen plan — keys for one
     // tier are not accepted by the other (401). Old single OPENCODE_API_KEY
     // kept as an alias for backward compat, but new users should set
@@ -834,6 +838,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.sakana.ai",
     baseUrlEnvVars: ["SAKANA_BASE_URL"],
     apiPath: "/v1/chat/completions",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     // Primary env var matches Sakana's own term ("subscription"). The old
     // SAKANA_CODING_API_KEY is kept only as a back-compat alias. NEITHER aliases
     // the API-usage SAKANA_API_KEY — that's the PAYG key and would bill prepaid

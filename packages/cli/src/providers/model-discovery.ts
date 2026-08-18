@@ -25,6 +25,7 @@
 
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
+import { VERSION } from "../version.js";
 import type { ModelOffer, RosterAxis, RosterEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
 
@@ -407,6 +408,24 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       return recordFailure({ kind: "no-credentials", provider: providerName, endpoint });
     }
   }
+
+  // Identify ourselves, and honour the definition's own headers.
+  //
+  // `getRequestAuth` mints AUTH headers only, so a roster request went out with
+  // whatever User-Agent the runtime defaults to. Measured 2026-08-18: OpenCode
+  // Zen Go answers such a request with `403 error code: 1010` — Cloudflare's
+  // browser-integrity block, not an auth failure — while the identical request
+  // carrying a User-Agent returns 200 with 26 models. Without this, adding a
+  // `modelDiscovery` entry for that provider would look like a broken endpoint
+  // and be classified `unauthorized`, sending the user to check a working key.
+  //
+  // `def.headers` is applied AFTER, so a provider that needs a specific value
+  // still wins; auth headers are applied last so nothing can displace them.
+  headers = {
+    "User-Agent": `claudish/${VERSION}`,
+    ...(def.headers ?? {}),
+    ...headers,
+  };
 
   let response: Response;
   try {
