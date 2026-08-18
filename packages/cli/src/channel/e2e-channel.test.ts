@@ -81,7 +81,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
     expect(instructions).toContain("completed");
   });
 
-  test("lists all 11 tools (6 existing + 5 channel)", async () => {
+  test("lists the exact public tool roster", async () => {
     const result = await client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -91,6 +91,7 @@ describe("Group 1: MCP Protocol — channel capability", () => {
       "get_output",
       "list_models",
       "list_sessions",
+      "preflight",
       "report_error",
       "run_prompt",
       "search_models",
