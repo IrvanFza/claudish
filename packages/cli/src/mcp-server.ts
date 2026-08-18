@@ -22,6 +22,7 @@ import { config } from "dotenv";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
+import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -34,19 +35,18 @@ import {
   type RecommendedModelsDoc,
   collectRoutingPrefixes,
   computeQuickPicks,
+  formatListingPrice,
   getRecommendedModels,
   groupRecommendedModels,
-  formatListingPrice,
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
-import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
-import { isLocalProviderName } from "./providers/model-parser.js";
-import { isReadyState, probeLink } from "./providers/probe-live.js";
-import { route } from "./providers/routing-rules.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
+import { isLocalProviderName } from "./providers/model-parser.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
+import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {

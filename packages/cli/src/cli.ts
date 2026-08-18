@@ -18,6 +18,7 @@ import {
   type RecommendedModelGroup,
   collectRoutingPrefixes,
   computeQuickPicks,
+  formatListingPrice,
   getAvailableModels,
   getModelsByProvider,
   getProviderList,
@@ -25,7 +26,6 @@ import {
   getTop100Models,
   groupRecommendedModels,
   loadModelInfo,
-  formatListingPrice,
   normalizePricingDisplay,
   searchModels,
 } from "./model-loader.js";
