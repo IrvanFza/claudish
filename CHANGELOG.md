@@ -2,6 +2,71 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.59.0] - 2026-08-18
+
+### Documentation
+
+- update CHANGELOG.md for v7.58.0([`4d5095e`](https://github.com/MadAppGang/claudish/commit/4d5095e694eddc9074e036fb5668d8641d765368))
+
+### New Features
+
+- drop candidates that positively do not serve the model *(routing)* ([`774bcf2`](https://github.com/MadAppGang/claudish/commit/774bcf2f5c7c3c2a7952149bad0a885144e7854a))
+
+### Other Changes
+
+- v7.59.0 — routing drops providers that do not serve the model([`fd76197`](https://github.com/MadAppGang/claudish/commit/fd761973c0b79ece3d6f0b62e9f5d36c78fb36b6))
+
+## [7.58.0] - 2026-08-18
+
+### Documentation
+
+- update CHANGELOG.md for v7.57.0([`ef610ae`](https://github.com/MadAppGang/claudish/commit/ef610ae0b407edb6fc6fa777d892f159a1810bfa))
+
+### New Features
+
+- keep upstream error bodies, and let /v1/models answer (#207) *(proxy)* ([`3eca767`](https://github.com/MadAppGang/claudish/commit/3eca7673261c7bc7e0d2628db0004861bbe2b219))
+
+### Other Changes
+
+- v7.58.0 — upstream error capture and /v1/models discovery (#208)([`0255a68`](https://github.com/MadAppGang/claudish/commit/0255a68954ebaf0fd62cf285311eb1216eb1158f))
+
+## [7.57.0] - 2026-08-18
+
+### Bug Fixes
+
+- stop substituting a working model for unknown names *(probe)* ([`d0322a2`](https://github.com/MadAppGang/claudish/commit/d0322a2c1ea791dcbecce6d415546ac0531290f9))
+- derive the native Opus id from the catalog; stop sending an effort Anthropic rejects *(probe)* ([`9d7d8d8`](https://github.com/MadAppGang/claudish/commit/9d7d8d8b51efc3c484f32966bc3981c4906a96c9))
+- classify an auth-shaped 401 by its body, not its status *(probe)* ([`cecc2cf`](https://github.com/MadAppGang/claudish/commit/cecc2cfe2b557f9fe5269af40de9f0be4c8e53f6))
+- make swe-* routable, explicit chains one-item, and SUB visible *(routing)* ([`eb98e84`](https://github.com/MadAppGang/claudish/commit/eb98e841bd5fc73433844b9ed53eacbe9497e47f))
+
+### Documentation
+
+- file the models-index recommended-catalog subscription gap([`97819a6`](https://github.com/MadAppGang/claudish/commit/97819a6db074229c8137bbf59e6fb55bd152d209))
+
+### New Features
+
+- live model discovery for 5 more providers, and a two-source availability resolver *(providers)* ([`8beb59b`](https://github.com/MadAppGang/claudish/commit/8beb59bf1262a1f9b17382acccc1d9a24132f59d))
+- add `preflight` — check a roster before spending a run on it *(mcp)* ([`23445b7`](https://github.com/MadAppGang/claudish/commit/23445b7ead29e305ffcf92f6375ec06e36356a68))
+
+### Other Changes
+
+- v7.57.0 — preflight tool, probe honesty, and two-source model availability([`e50d9b0`](https://github.com/MadAppGang/claudish/commit/e50d9b082da52f827ed1a9d5a6b5ad40688690be))
+- v7.56.0 — Vertex eu and global reach hosts that exist (#206)([`ba57b10`](https://github.com/MadAppGang/claudish/commit/ba57b10a94e40fbcf47aafbf2ccf1a0e7f7c5cdb))
+
+## [7.56.0] - 2026-08-18
+
+### Bug Fixes
+
+- send eu and global to hosts that exist (#204) *(vertex)* ([`1678aa9`](https://github.com/MadAppGang/claudish/commit/1678aa9be6eef6eec963716e0b7e4b3f091bba93))
+
+### Documentation
+
+- update CHANGELOG.md for v7.55.0([`a893ac5`](https://github.com/MadAppGang/claudish/commit/a893ac5652c955464ce0918daca93294a9c2e9f4))
+
+### New Features
+
+- Grok usage reporting, and Antigravity stops reporting the wrong tier *(quota)* ([`4386b6a`](https://github.com/MadAppGang/claudish/commit/4386b6aa94163457ad0e558ab853a4a9645cf1bb))
+
 ## [7.55.0] - 2026-08-18
 
 ### Bug Fixes

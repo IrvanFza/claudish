@@ -21,6 +21,8 @@ import {
   invalidateModelDiscovery,
   rankDiscoveredModels,
 } from "./model-discovery.js";
+import type { ProviderDefinition } from "./provider-definitions.js";
+import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
 const realFetch = globalThis.fetch;
 const realGetRequestAuth = credentials.getRequestAuth;
@@ -39,6 +41,7 @@ function stubJsonResponse(body: unknown, status = 200) {
 
 beforeEach(() => {
   invalidateModelDiscovery();
+  clearRuntimeRegistry();
   globalThis.fetch = realFetch;
   credentials.getRequestAuth = realGetRequestAuth;
 
@@ -52,11 +55,76 @@ beforeEach(() => {
 
 afterEach(() => {
   invalidateModelDiscovery();
+  clearRuntimeRegistry();
   globalThis.fetch = realFetch;
   credentials.getRequestAuth = realGetRequestAuth;
 });
 
 describe("discoverProviderModels", () => {
+  test("sends a claudish User-Agent on discovery requests", async () => {
+    let requestInit: RequestInit | undefined;
+    globalThis.fetch = mock(async (_input, init) => {
+      requestInit = init;
+      return new Response(JSON.stringify({ data: [{ id: "header-test-model" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    await discoverProviderModels("kimi-coding");
+
+    const requestHeaders = new Headers(requestInit?.headers);
+    expect(requestHeaders.get("User-Agent")).toMatch(/^claudish\//);
+  });
+
+  test("applies credential headers after definition headers and the default User-Agent", async () => {
+    const provider: ProviderDefinition = {
+      name: "discovery-header-merge-test",
+      displayName: "Discovery Header Merge Test",
+      transport: "openai",
+      baseUrl: "https://header-merge.invalid",
+      apiPath: "/v1/chat/completions",
+      apiKeyEnvVar: "DISCOVERY_HEADER_MERGE_TEST_API_KEY",
+      apiKeyDescription: "Offline test key",
+      apiKeyUrl: "https://header-merge.invalid/key",
+      shortcuts: [],
+      legacyPrefixes: [],
+      modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+      headers: {
+        Authorization: "Bearer definition-token",
+        "X-API-Key": "definition-api-key",
+        "User-Agent": "definition-agent",
+        "X-Definition-Header": "preserved",
+      },
+      isDirectApi: true,
+    };
+    registerRuntimeProvider(provider);
+    credentials.getRequestAuth = mock(async () => ({
+      headers: {
+        Authorization: "Bearer authority-token",
+        "X-API-Key": "authority-api-key",
+        "User-Agent": "authority-agent",
+      },
+    }));
+
+    let requestInit: RequestInit | undefined;
+    globalThis.fetch = mock(async (_input, init) => {
+      requestInit = init;
+      return new Response(JSON.stringify({ data: [{ id: "header-test-model" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    await discoverProviderModels(provider.name);
+
+    const requestHeaders = new Headers(requestInit?.headers);
+    expect(requestHeaders.get("Authorization")).toBe("Bearer authority-token");
+    expect(requestHeaders.get("X-API-Key")).toBe("authority-api-key");
+    expect(requestHeaders.get("User-Agent")).toBe("authority-agent");
+    expect(requestHeaders.get("X-Definition-Header")).toBe("preserved");
+  });
+
   test("parses an OpenAI-style model list", async () => {
     stubJsonResponse({
       data: [

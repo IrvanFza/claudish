@@ -323,15 +323,28 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "dv/", stripPrefix: true },
       { prefix: "devin/", stripPrefix: true },
     ],
-    // NO nativeModelPatterns, and no DEFAULT_ROUTING_RULES entry either. Devin's
-    // uids collide head-on with other providers' namespaces —
-    // `claude-opus-5-medium` matches native-anthropic's /^claude-/i,
-    // `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` matches GLM's,
-    // `kimi-k3-high` matches Kimi's — so a bare name must never auto-detect as
-    // Devin, and Devin must never be prepended to those chains. Same reasoning
-    // as Qwen Plan, which also serves other vendors' models: access to the plan
-    // stays EXPLICIT (`dv@claude-opus-5`). Users who want otherwise can add a
-    // rule in ~/.claudish/config.json.
+    // EXACTLY ONE pattern, and it is Cognition's OWN family.
+    //
+    // The rule this narrows: Devin's RE-SERVED uids collide head-on with other
+    // providers' namespaces — `claude-opus-5-medium` matches native-anthropic's
+    // /^claude-/i, `gpt-5-6-luna-medium` matches OpenAI's, `glm-5-2` matches
+    // GLM's, `kimi-k3-high` matches Kimi's — so those must never auto-detect as
+    // Devin, and Devin must never be prepended to their chains. That reasoning
+    // is intact: access to another vendor's model through the plan stays
+    // EXPLICIT (`dv@claude-opus-5`), same as Qwen Plan.
+    //
+    // `swe-*` is different in kind: it is Cognition's own model line, no other
+    // provider in the catalog carries it, and it collides with nothing. Without
+    // a pattern here, `parseModelSpec` sends every unrecognised bare name to
+    // native-anthropic (model-parser.ts, "No '/' - treat as native Anthropic
+    // model"), so `swe-1.7` never even reached the routing rules — it was
+    // silently rewritten to `claude-opus-4-1` and answered by a different
+    // vendor's model, probing byte-identically to a nonsense string while
+    // `dv@swe-1.7` served fine. A DEFAULT_ROUTING_RULES entry alone cannot fix
+    // that, because the native-anthropic catch-all preempts rule matching.
+    //
+    // Do NOT extend this list to Devin's re-served families.
+    nativeModelPatterns: [{ pattern: /^swe-/i }],
     modelDiscovery: { path: "", format: "devin-connect" },
     isDirectApi: true,
     description: "Devin subscription (dv@, devin@)",
@@ -542,6 +555,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.minimax.io",
     baseUrlEnvVars: ["MINIMAX_CODING_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MINIMAX_CODING_API_KEY",
     apiKeyDescription: "MiniMax Coding Plan API Key",
     apiKeyUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
@@ -590,6 +604,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.moonshot.ai",
     baseUrlEnvVars: ["MOONSHOT_BASE_URL", "KIMI_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MOONSHOT_API_KEY",
     apiKeyAliases: ["KIMI_API_KEY"],
     apiKeyDescription: "Kimi/Moonshot API Key",
@@ -649,6 +664,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     tokenStrategy: "delta-aware",
     baseUrl: "https://api.z.ai",
     apiPath: "/api/coding/paas/v4/chat/completions",
+    modelDiscovery: { path: "/api/coding/paas/v4/models", format: "openai-models-list" },
     apiKeyEnvVar: "GLM_CODING_API_KEY",
     apiKeyAliases: ["ZAI_CODING_API_KEY"],
     apiKeyDescription: "GLM Coding Plan API Key",
@@ -739,6 +755,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://opencode.ai/zen/go",
     baseUrlEnvVars: ["OPENCODE_GO_BASE_URL"],
     apiPath: "/v1/chat/completions",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     // Zen Go is a separate paid tier from the free Zen plan — keys for one
     // tier are not accepted by the other (401). Old single OPENCODE_API_KEY
     // kept as an alias for backward compat, but new users should set
@@ -1045,6 +1062,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.sakana.ai",
     baseUrlEnvVars: ["SAKANA_BASE_URL"],
     apiPath: "/v1/chat/completions",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     // Primary env var matches Sakana's own term ("subscription"). The old
     // SAKANA_CODING_API_KEY is kept only as a back-compat alias. NEITHER aliases
     // the API-usage SAKANA_API_KEY — that's the PAYG key and would bill prepaid

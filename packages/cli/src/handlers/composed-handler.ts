@@ -54,6 +54,7 @@ import {
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
+import { hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
@@ -64,6 +65,7 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker } from "./shared/token-tracker.js";
+import { captureUpstreamError } from "./shared/upstream-error-capture.js";
 
 /**
  * Backoff schedule for a retryable error that arrived inside an HTTP 200 stream.
@@ -772,6 +774,16 @@ export class ComposedHandler implements ModelHandler {
       } else {
         const errorText = await response.text();
         log(`[${this.provider.displayName}] Error: ${errorText}`);
+        // Durable copy, opt-in via CLAUDISH_UPSTREAM_ERROR_LOG. `log()` only
+        // persists under --debug, so without this the body that distinguishes a
+        // retryable rate limit from a hard quota wall is gone the moment it is
+        // classified. No-op and non-throwing when the env var is unset.
+        captureUpstreamError({
+          provider: this.provider.displayName,
+          model: this.bareModelName,
+          status: response.status,
+          body: errorText,
+        });
         // A transport that parses its provider's structured errors outranks the
         // shared substring heuristics — computed ONCE here so the user-facing
         // hint and the terminal/retryable remap below cannot disagree about what
@@ -1605,12 +1617,12 @@ function getRecoveryHint(
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
   if (status === 401 || status === 403) {
-    // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
-    if (
-      lower.includes("not supported") ||
-      lower.includes("unsupported model") ||
-      lower.includes("model not found")
-    ) {
+    // Some providers (e.g. OpenCode Zen Go) return 401 for a model they do not
+    // carry, not for a bad credential. Shared with probe-live's state
+    // classifier — see shared/model-unsupported.ts for why one predicate rather
+    // than two: this hint said "model not supported" while the probe state said
+    // `auth-failed`, so the two surfaces disagreed about the same response.
+    if (hasModelUnsupportedWording(errorText)) {
       return "Model not supported by this provider. Verify model name.";
     }
     // A plan that has run out is not an auth failure, but some providers report

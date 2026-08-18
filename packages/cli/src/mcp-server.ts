@@ -22,6 +22,7 @@ import { config } from "dotenv";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
+import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
 import {
   type HeartbeatHandle,
   NOOP_HEARTBEAT,
@@ -34,14 +35,18 @@ import {
   type RecommendedModelsDoc,
   collectRoutingPrefixes,
   computeQuickPicks,
+  formatListingPrice,
   getRecommendedModels,
   groupRecommendedModels,
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
+import { isLocalProviderName } from "./providers/model-parser.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
+import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {
@@ -606,7 +611,7 @@ function defineTools(
 
       const renderGroup = (group: RecommendedModelGroup): string => {
         const m = group.primary;
-        const pricing = normalizePricingDisplay(m.pricing?.average);
+        const pricing = formatListingPrice(m);
         const ctx = m.context || "N/A";
         const caps: string[] = [];
         if (m.supportsTools) caps.push("tools");
@@ -822,6 +827,168 @@ function defineTools(
   });
 
   // ── Agentic Tools ────────────────────────────────────────────────────
+
+  tools.push({
+    name: "preflight",
+    description:
+      "Check a roster of models BEFORE spending a run on it. For each model: which provider " +
+      "will actually serve it, whether that hop is covered by a SUBSCRIPTION or billed per " +
+      "token, and whether it is reachable right now. Call this before `team` or a batch of " +
+      "`create_session` calls — a dead or unexpectedly-metered model is then caught while " +
+      "the roster can still be adjusted, instead of costing a slot minutes into the run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        models: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Model ids to check — bare (`glm-5.2`) or explicit (`dv@swe-1.7`). Bare names go " +
+            "through the SAME routing rules and credential filter a real run would use, so " +
+            "the provider reported here is the provider that would serve it.",
+        },
+        probe: {
+          type: "boolean",
+          description:
+            "Send a real short request to each resolved route (default true). Set false for " +
+            "a routing/billing answer only — far faster, but it cannot tell you the provider " +
+            "is actually reachable, which is the failure this tool exists to catch.",
+        },
+        timeout_ms: {
+          type: "number",
+          description: "Per-model probe timeout in ms (default 20000).",
+        },
+      },
+      required: ["models"],
+    },
+    group: "agentic",
+    // N models each waiting on a live provider can sit well past the client's MCP
+    // idle window, and this tool is specifically meant to be called with a big
+    // roster — exactly the shape that gets aborted without a keepalive.
+    heartbeat: true,
+    handler: async (args, ctx) => {
+      const models = Array.isArray(args.models) ? (args.models as string[]) : [];
+      if (models.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "preflight: no models given." }],
+          isError: true,
+        };
+      }
+
+      const doProbe = args.probe !== false;
+      const timeoutMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 20_000;
+      const proxy = doProbe ? await getProxy() : null;
+
+      const rows: string[] = [];
+      const readyModels: string[] = [];
+      const failedModels: string[] = [];
+      let subCount = 0;
+      let meteredCount = 0;
+
+      for (const model of models) {
+        ctx.reportProgress(`preflight: ${model}`);
+
+        let plan: Awaited<ReturnType<typeof route>>;
+        try {
+          plan = await route(model);
+        } catch (err) {
+          failedModels.push(model);
+          rows.push(
+            `| \`${model}\` | — | — | ❌ route error | ${err instanceof Error ? err.message : String(err)} |`
+          );
+          continue;
+        }
+
+        if (plan.kind === "no-route") {
+          // No credentialed provider can serve this at all. Reported as a FAILURE
+          // rather than omitted, because "this model is not in your roster" is the
+          // single most useful thing to learn before the run rather than during it.
+          failedModels.push(model);
+          rows.push(`| \`${model}\` | — | — | ❌ no route | ${plan.reason} |`);
+          continue;
+        }
+
+        const primary = plan.primary;
+        // Billing mode is a property of the PROVIDER, not the model — the same
+        // model can be flat-rate through a plan and metered through a vendor API,
+        // and which one a bare name lands on is exactly what a caller cannot see.
+        const billing = isLocalProviderName(primary.provider)
+          ? "local"
+          : isSubscriptionProvider(primary.provider)
+            ? "SUB"
+            : "metered";
+        if (billing === "SUB") subCount++;
+        else if (billing === "metered") meteredCount++;
+
+        let status = "not probed";
+        let ok = true;
+        if (proxy) {
+          try {
+            const result = await probeLink(
+              proxy.url,
+              {
+                provider: primary.provider,
+                // route() already credential-filtered, so a miss here would be a
+                // routing bug, not a missing key.
+                modelSpec: primary.modelSpec,
+                hasCredentials: true,
+              },
+              timeoutMs
+            );
+            ok = isReadyState(result.state);
+            status = ok
+              ? `✅ ${result.state}`
+              : `❌ ${result.state}${result.errorMessage ? ` — ${result.errorMessage}` : ""}`;
+          } catch (err) {
+            ok = false;
+            status = `❌ probe error — ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+
+        if (ok) readyModels.push(model);
+        else failedModels.push(model);
+
+        const fallbacks = plan.fallbacks.length > 0 ? ` (+${plan.fallbacks.length} fallback)` : "";
+        rows.push(
+          `| \`${model}\` | ${primary.displayName}${fallbacks} | ${billing} | ${status} | \`${primary.modelSpec}\` |`
+        );
+      }
+
+      const lines = [
+        `# Preflight — ${models.length} model${models.length === 1 ? "" : "s"}`,
+        "",
+        `**Ready: ${readyModels.length}** · **Failed: ${failedModels.length}** · ` +
+          `subscription: ${subCount} · metered: ${meteredCount}`,
+        "",
+        "| Model | Provider | Billing | Status | Wire id |",
+        "|---|---|---|---|---|",
+        ...rows,
+      ];
+
+      if (failedModels.length > 0) {
+        lines.push(
+          "",
+          `⚠️ Drop or replace before running: ${failedModels.map((m) => `\`${m}\``).join(", ")}`
+        );
+      }
+      if (meteredCount > 0) {
+        lines.push(
+          "",
+          `💸 ${meteredCount} model${meteredCount === 1 ? "" : "s"} will be billed PER TOKEN. ` +
+            "A bare name can land on a metered provider when the subscription that covers it " +
+            "has no credential configured — name the provider explicitly to pin it."
+        );
+      }
+      if (!doProbe) {
+        lines.push(
+          "",
+          "ℹ️ `probe: false` — routing and billing only. Reachability was NOT checked."
+        );
+      }
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    },
+  });
 
   tools.push({
     name: "team",

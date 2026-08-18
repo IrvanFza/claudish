@@ -1,10 +1,13 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
+import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
+import { log, logStderr } from "../logger.js";
 import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
+import { providerServesModel } from "./model-availability.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { buildCredentialHint } from "./routing-hints.js";
@@ -269,6 +272,25 @@ async function routeExplicit(
       reason: `Could not build a route for "${modelSpec}".`,
     };
   }
+
+  // An explicit address is NEVER silently dropped — the user named this vendor,
+  // so a "does not serve it" verdict is something to TELL them, not something to
+  // route around. That is the difference from the bare path, where claudish
+  // assembled the chain itself and may quietly pick another link.
+  //
+  // Without this the request still fails, just later and less clearly: OpenCode
+  // Zen Go answers for a model it does not carry with HTTP 401, which reads as a
+  // credential problem and sends the user to check a key that works.
+  if ((await providerServesModel(built.provider, wireIdOf(built))) === "not-served") {
+    return {
+      kind: "no-route",
+      reason: `${built.displayName} does not serve "${model}".`,
+      hint:
+        `Check the model id, or use a bare \`${model}\` to let claudish pick a provider ` +
+        "that carries it.",
+    };
+  }
+
   return { kind: "ok", primary: built, fallbacks: [] };
 }
 
@@ -340,8 +362,77 @@ async function routeBare(
     };
   }
 
-  const [primary, ...fallbacks] = credentialed;
+  // AVAILABILITY filter — drop a candidate only when a source positively says
+  // it does not carry this model.
+  //
+  // This runs AFTER the credential filter, not before, and the order is not
+  // cosmetic: `providerServesModel` may hit the provider's own roster endpoint,
+  // which needs that provider's credential. Asking about a provider the user
+  // cannot authenticate to would be a guaranteed-failing round-trip.
+  //
+  // Only "not-served" removes anything. "unknown" — no source covers this
+  // provider, the catalog is cold, the roster endpoint was briefly down — keeps
+  // the candidate exactly where it was. That asymmetry is the whole safety
+  // property: reading absence of evidence as denial would drop every provider
+  // neither source covers, which is almost entirely the SUBSCRIPTION providers,
+  // and would move users off plans they pay for onto metered hops.
+  const availability = await Promise.all(
+    credentialed.map((candidate) => providerServesModel(candidate.provider, wireIdOf(candidate)))
+  );
+  const serving: Route[] = [];
+  const notServing: string[] = [];
+  credentialed.forEach((candidate, i) => {
+    if (availability[i] === "not-served") {
+      notServing.push(candidate.provider);
+    } else {
+      serving.push(candidate);
+    }
+  });
+
+  if (serving.length === 0) {
+    // Every credentialed provider positively denied carrying this model. That is
+    // strong evidence — "unknown" never lands here — so a clear no-route beats
+    // sending a request that each of them would reject in turn.
+    return {
+      kind: "no-route",
+      reason: `No provider serves "${model}" (checked: ${notServing.join(", ")}).`,
+      hint: buildCredentialHint(model, notServing) ?? undefined,
+    };
+  }
+
+  if (notServing.length > 0) {
+    log(`[routing] ${model}: skipped ${notServing.join(", ")} — does not serve this model`);
+    // Say it OUT LOUD only when the skip changes how the user is billed. A
+    // subscription provider dropped in favour of a metered one is a cost change
+    // they did not choose — claudish assembled this chain — which is the same
+    // reason fallback-handler announces advancing past a spent plan. Every other
+    // skip is routine and stays in the debug log.
+    const droppedSubscription = notServing.filter((p) => isSubscriptionProvider(p));
+    if (droppedSubscription.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
+      logStderr(
+        `[claudish] ${droppedSubscription.join(", ")} does not serve ${model} — ` +
+          `using ${serving[0].displayName}, which bills per token.`
+      );
+    }
+  }
+
+  const [primary, ...fallbacks] = serving;
   return { kind: "ok", primary, fallbacks };
+}
+
+/**
+ * The id a route would actually SEND, extracted from its `modelSpec`.
+ *
+ * `buildRoutingChain` emits `provider@model` for everyone except OpenRouter,
+ * whose ids are already vendor-qualified and are their own spec. Availability
+ * must be asked about the wire id, never the name the user typed — comparing the
+ * typed name would test the wrong side of an `externalId` mapping, and that
+ * mapping is exactly what a roster settles (OpenCode Zen Go serves
+ * `deepseek-v4-pro`, while the catalog id carries a date suffix).
+ */
+function wireIdOf(route: Route): string {
+  const at = route.modelSpec.indexOf("@");
+  return at === -1 ? route.modelSpec : route.modelSpec.slice(at + 1);
 }
 
 /**
