@@ -94,6 +94,23 @@ export interface ProbeLinkInput {
   credentialHint?: string;
 }
 
+/**
+ * Providers whose API validates `output_config.effort` against an enum that has
+ * no "minimal". Anthropic's is `low | medium | high | xhigh | max`, and the
+ * native passthrough reaches it directly — no adapter clamp in between — so an
+ * unmapped "minimal" is a 400 before the request is ever evaluated.
+ *
+ * "low" rather than omitting the field: the point of setting effort at all is to
+ * stop a reasoning model spending the whole probe cap on hidden reasoning and
+ * returning 200 with zero visible text. "low" preserves that intent and is
+ * accepted (both verified against the live API).
+ */
+const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic"]);
+
+function effortForProvider(provider: string): string {
+  return MINIMAL_EFFORT_UNSUPPORTED.has(provider) ? "low" : "minimal";
+}
+
 export async function probeLink(
   proxyUrl: string,
   link: ProbeLinkInput,
@@ -133,11 +150,20 @@ export async function probeLink(
         // chars — intermittent FAIL, ~60% in testing). "minimal" zeroes the
         // reasoning budget → deterministic visible output in ~1s (10/10 vs the
         // default's 2/5). The v7.11.0 effort mapping clamps "minimal" per model
-        // family and non-reasoning/non-OpenAI providers ignore output_config,
-        // so this is safe for every probe target. Real user sessions are
-        // unaffected — Claude Code builds its own output_config from the user's
-        // effort setting; this field is set ONLY here, on the probe request.
-        output_config: { effort: "minimal" },
+        // family. Real user sessions are unaffected — Claude Code builds its own
+        // output_config from the user's effort setting; this field is set ONLY
+        // here, on the probe request.
+        //
+        // "non-reasoning/non-OpenAI providers ignore output_config, so this is
+        // safe for every probe target" — that used to be written here and is
+        // FALSE. The native-anthropic link reaches api.anthropic.com directly,
+        // bypassing the effort clamp, and that API validates the enum:
+        // `output_config.effort: Input should be 'low', 'medium', 'high',
+        // 'xhigh' or 'max'`. Measured 2026-08-18 — "minimal" 400s, "low" and
+        // omitting the field both return 200. So EVERY native-anthropic probe
+        // failed on the payload before the model id was even considered, which
+        // is why that link could never report `live`.
+        output_config: { effort: effortForProvider(link.provider) },
         stream: true,
       }),
       signal: AbortSignal.timeout(timeoutMs),

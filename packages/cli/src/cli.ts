@@ -50,6 +50,7 @@ import {
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
+import { latestOpusModelId } from "./providers/catalog-client.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -1197,14 +1198,24 @@ async function probeModelRouting(
       // may fold this into a shared helper.
       if (parsed.provider === "native-anthropic") {
         // The probe hits the Anthropic API directly, so this must be a real
-        // API-valid model id — NOT Claude Code's internal alias (`claude-opus-4-8`
-        // is the CLI's tier name and the API rejects it with "not a valid model
-        // ID"). `claude-opus-4-1` is the current Opus alias the API accepts
-        // (verified against api.anthropic.com). Honor an explicit override.
+        // API-valid model id. It used to be the literal `claude-opus-4-1`, under
+        // a comment asserting that was "the current Opus alias the API accepts
+        // (verified against api.anthropic.com)" and that `claude-opus-4-8` was
+        // rejected. Measured 2026-08-18 against the real API, BOTH claims are
+        // now false: `claude-opus-4-1` returns 404 not_found_error, and
+        // `claude-opus-4-8` returns 200. A verification note carries no expiry,
+        // so it stayed confident long after the fact changed — which is exactly
+        // the failure mode the no-hardcoded-model-data rule exists to prevent.
+        //
+        // Resolved by RULE instead: newest released `claude-opus-*` in the
+        // catalog. The literal below is a cold-catalog last resort only (no
+        // cache on a first run), and is deliberately the newest id verified 200
+        // today rather than a stable-looking alias.
         const opusModel =
           process.env[ENV.CLAUDISH_MODEL_OPUS] ||
           process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL] ||
-          "claude-opus-4-1";
+          latestOpusModelId() ||
+          "claude-opus-5";
         // IMPORTANT: pin a BARE model name (no `provider@`). The proxy resolves
         // the native passthrough via `isNative` = no "/" AND no "@" — pinning
         // `native-anthropic@...` would set hasExplicitProvider=true and DEFEAT

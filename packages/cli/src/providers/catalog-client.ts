@@ -80,6 +80,9 @@ export interface ModelResolutionResult {
 /** Module-level memory cache of slim catalog entries. */
 let _memCache: SlimModelEntry[] | null = null;
 
+/** Explicit tri-state catalog override for hermetic tests. */
+let _catalogEntriesForTest: SlimModelEntry[] | null | undefined;
+
 /** In-flight warm, so concurrent callers await one fetch rather than N. */
 let _warmPromise: Promise<void> | null = null;
 
@@ -94,6 +97,7 @@ let _warmPromise: Promise<void> | null = null;
  * passthrough rather than concluding a model does not exist.
  */
 export function getCatalogEntries(): SlimModelEntry[] | null {
+  if (_catalogEntriesForTest !== undefined) return _catalogEntriesForTest;
   if (_memCache) return _memCache;
 
   const cache = readAllModelsCache();
@@ -117,13 +121,53 @@ export function getCatalogEntries(): SlimModelEntry[] | null {
   return null;
 }
 
+/**
+ * The newest Anthropic Opus id the catalog knows, or null when the catalog is
+ * cold. For the `--probe` native-Claude-Code link, which must send a REAL
+ * API-valid model id because it hits api.anthropic.com directly.
+ *
+ * Derived rather than pinned, because a pinned id here rots into a hard failure
+ * and did: `claude-opus-4-1` sat in `cli.ts` under a comment asserting it was
+ * "the current Opus alias the API accepts (verified against api.anthropic.com)".
+ * Measured 2026-08-18, that id returns **404 not_found_error**, while the same
+ * comment's claim that the API rejects `claude-opus-4-8` is also false — it
+ * returns 200. A verification note has no expiry date, so the comment stayed
+ * confident long after the fact changed.
+ *
+ * The rule is "newest released `claude-opus-*` the catalog lists", so a new Opus
+ * is picked up by the next catalog refresh with no code change. `-fast` variants
+ * are deprioritised only as a tiebreak within the same release date: either
+ * serves a probe, and preferring the base id keeps the choice deterministic.
+ */
+export function latestOpusModelId(): string | null {
+  const entries = getCatalogEntries();
+  if (!entries) return null;
+  const opus = entries.filter((e) => /^claude-opus-/i.test(e.modelId));
+  if (opus.length === 0) return null;
+  opus.sort((a, b) => {
+    const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");
+    if (byDate !== 0) return byDate;
+    const aFast = /-fast$/i.test(a.modelId) ? 1 : 0;
+    const bFast = /-fast$/i.test(b.modelId) ? 1 : 0;
+    if (aFast !== bFast) return aFast - bFast;
+    return b.modelId.localeCompare(a.modelId);
+  });
+  return opus[0].modelId;
+}
+
 /** Whether the in-memory catalog is populated. */
 export function isCatalogWarm(): boolean {
   return _memCache !== null && _memCache.length > 0;
 }
 
+/** Test seam: override catalog entries without reading disk or fetching. @internal */
+export function _setCatalogEntriesForTest(entries: SlimModelEntry[] | null): void {
+  _catalogEntriesForTest = entries;
+}
+
 /** Test seam: drop the in-memory catalog and any in-flight warm. @internal */
 export function _resetCatalogClient(): void {
+  _catalogEntriesForTest = undefined;
   _memCache = null;
   _warmPromise = null;
 }
