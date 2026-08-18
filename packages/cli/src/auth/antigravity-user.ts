@@ -164,12 +164,26 @@ export interface QuotaBucket {
  * Retrieve per-model quota usage. Returns buckets with remaining capacity per
  * model. Call after `setupAntigravityUser` (needs its projectId).
  *
- * NOTE the User-Agent: this call deliberately keeps the gemini-cli UA it was
- * written with, NOT `buildAntigravityUserAgent()`. The Antigravity transport
- * has been calling it with this exact string since v7.30.0 and it is verified
- * working end-to-end on Ultra. `loadCodeAssist` is known to gate on identity,
- * so switching the UA here is a live behavioural change, not a tidy-up — it
- * needs its own verification against a real account before it happens.
+ * THE USER-AGENT SELECTS WHICH TIER'S BUCKETS COME BACK. This call used to
+ * send the gemini-cli UA (`GeminiCLI/0.5.6/gemini-code-assist`) it was written
+ * with. That was known to be a live behavioural question rather than a
+ * cosmetic one, and the measurement has now been made — same token, same
+ * project, same endpoint, only the UA varied, on a real Ultra account
+ * (2026-08-18):
+ *
+ *   gemini-cli UA  ->  4 buckets: gemini-2.5-flash, -2.5-flash-lite,
+ *                      -2.5-pro, -3.1-flash-lite
+ *   antigravity UA -> 24 buckets: the 3.x families (3.6-flash-*, 3.5-flash-*,
+ *                      3.1-pro-*), plus claude-* and gpt-oss-* uids
+ *
+ * Those 4 are precisely the RETIRED free Code Assist served set. Identifying
+ * as gemini-cli therefore asked the backend for a product the user is not on,
+ * and the quota UI rendered "Antigravity Ultra" — a correct tier label from
+ * `loadCodeAssist`, which always identified correctly — directly above four
+ * models an Ultra subscriber does not use, all pinned at 0%.
+ *
+ * So this MUST match `loadCodeAssist`'s identity. Both calls hit the same host
+ * and the backend answers each according to who is asking.
  */
 export async function retrieveUserQuota(
   accessToken: string,
@@ -181,7 +195,7 @@ export async function retrieveUserQuota(
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
-        "User-Agent": `GeminiCLI/0.5.6/gemini-code-assist (${process.platform}; ${process.arch})`,
+        "User-Agent": buildAntigravityUserAgent(),
       },
       body: JSON.stringify({ project: projectId }),
     });
@@ -196,18 +210,49 @@ export async function retrieveUserQuota(
   }
 }
 
+/** Per-model record inside `fetchAvailableModels` (only the fields we read). */
+interface AntigravityModelRecord {
+  /** Context window, in tokens, AS SERVED BY ANTIGRAVITY. */
+  maxTokens?: number;
+  maxOutputTokens?: number;
+  displayName?: string;
+}
+
 /** The Antigravity `fetchAvailableModels` response (only the fields we read). */
 interface FetchAvailableModelsResponse {
   /** The served set — the KEYS of this dict ARE the served model ids. */
-  models?: Record<string, unknown>;
+  models?: Record<string, AntigravityModelRecord>;
   /** Backend-provided default model id (e.g. "gemini-3.6-flash-high"). */
   defaultAgentModelId?: string;
+}
+
+/** What the backend reports about one served model. */
+export interface AntigravityModelMeta {
+  /** `maxTokens` — the window THIS subscription is served, not the model's spec. */
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  displayName?: string;
 }
 
 /** The live served-set + default id for the Antigravity account. */
 export interface AntigravityServedModels {
   servedIds: string[];
   defaultId: string | null;
+  /**
+   * Per-model metadata, keyed by served id.
+   *
+   * Kept because the window Antigravity serves is NOT the model's published
+   * spec, and the two disagree by a factor of four on at least one model:
+   * measured 2026-08-18, the backend reports `claude-sonnet-4-6` at 250,000
+   * tokens while the Firebase catalog lists 1,000,000. A session that trusts
+   * the catalog plans against a window it does not have and compacts far too
+   * late — the same class of failure the context-window work in v7.24.0 fixed
+   * from the other direction.
+   *
+   * Every gemini id happens to agree (1,048,576 both ways), which is exactly
+   * why the disagreement went unnoticed: the models people look at are fine.
+   */
+  meta: Record<string, AntigravityModelMeta>;
 }
 
 let agServedCache: AntigravityServedModels | null = null;
@@ -250,7 +295,24 @@ export async function getServedAntigravityModels(
       const defaultId =
         typeof data.defaultAgentModelId === "string" ? data.defaultAgentModelId : null;
       if (servedIds.length > 0) {
-        agServedCache = { servedIds, defaultId };
+        const meta: Record<string, AntigravityModelMeta> = {};
+        for (const [id, record] of Object.entries(data.models ?? {})) {
+          // Only record fields the backend actually sent. An absent maxTokens
+          // (gemini-3.1-flash-image reports none) must stay absent so callers
+          // fall back to the catalog rather than reading a fabricated 0.
+          const entry: AntigravityModelMeta = {};
+          if (typeof record?.maxTokens === "number" && record.maxTokens > 0) {
+            entry.contextWindow = record.maxTokens;
+          }
+          if (typeof record?.maxOutputTokens === "number" && record.maxOutputTokens > 0) {
+            entry.maxOutputTokens = record.maxOutputTokens;
+          }
+          if (typeof record?.displayName === "string" && record.displayName) {
+            entry.displayName = record.displayName;
+          }
+          meta[id] = entry;
+        }
+        agServedCache = { servedIds, defaultId, meta };
         agServedCacheAt = now;
         return agServedCache;
       }
@@ -261,7 +323,7 @@ export async function getServedAntigravityModels(
     log(`[Antigravity] fetchAvailableModels error: ${err}`);
   }
   if (agServedCache) return agServedCache;
-  return { servedIds: [], defaultId: null };
+  return { servedIds: [], defaultId: null, meta: {} };
 }
 
 /** Test seam: clear the Antigravity served-models cache between tests. */

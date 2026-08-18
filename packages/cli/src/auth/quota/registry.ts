@@ -14,7 +14,7 @@
  *
  * ## Why the unsupported providers are listed
  *
- * Six of the eight subscription providers claudish supports expose no usage
+ * Six of the nine subscription providers claudish supports expose no usage
  * surface at all — no endpoint, no headers. They are registered anyway, with
  * `capability(): {kind: "none"}` carrying the probe evidence.
  *
@@ -29,6 +29,7 @@
 import type { QuotaAdapter } from "./adapter.js";
 import { antigravityQuotaAdapter } from "./sources/antigravity.js";
 import { codexQuotaAdapter } from "./sources/codex.js";
+import { grokQuotaAdapter } from "./sources/grok.js";
 import type { ProbeRecord, QuotaCapability } from "./types.js";
 
 /**
@@ -191,6 +192,7 @@ const NO_SURFACE: Array<{ id: string; label: string; evidence: ProbeRecord }> = 
 const ADAPTERS: QuotaAdapter[] = [
   codexQuotaAdapter,
   antigravityQuotaAdapter,
+  grokQuotaAdapter,
   ...NO_SURFACE.map((p) => unsupported(p.id, p.label, p.evidence)),
 ];
 

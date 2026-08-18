@@ -7,7 +7,13 @@ import { TokenTracker } from "../../handlers/shared/token-tracker.js";
 import { BUILTIN_PROVIDERS } from "../../providers/provider-definitions.js";
 import { PROVIDER_PROFILES } from "../../providers/provider-profiles.js";
 import { allQuotaAdapters, reportableQuotaAdapters, resolveQuotaAdapter } from "./registry.js";
-import { planFromBuckets, selectBucket, shortenModelId } from "./sources/antigravity.js";
+import {
+  compareModelRecency,
+  parseModelVersion,
+  planFromBuckets,
+  selectBucket,
+  shortenModelId,
+} from "./sources/antigravity.js";
 import { formatWindowMinutes, scrapeCodexHeaders } from "./sources/codex.js";
 import { PLAN_TTL_MS, type PlanUsage, epochSecondsToIso, isPlanStale, toUsedPct } from "./types.js";
 
@@ -53,6 +59,33 @@ const ANTIGRAVITY_QUOTA_BUCKETS = [
     modelId: "gemini-3.1-flash-lite",
     remainingFraction: 1,
   },
+];
+
+const ANTIGRAVITY_WINDOW_IDS = [
+  "claude-opus-4-6-thinking",
+  "claude-sonnet-4-6",
+  "2.5-flash",
+  "2.5-flash-lite",
+  "2.5-flash-thinking",
+  "2.5-pro",
+  "3-flash",
+  "3-flash-agent",
+  "3.1-flash-image",
+  "3.1-flash-lite",
+  "3.1-pro-high",
+  "3.1-pro-low",
+  "3.5-flash-extra-low",
+  "3.5-flash-low",
+  "3.6-flash-high",
+  "3.6-flash-low",
+  "3.6-flash-medium",
+  "3.6-flash-tiered",
+  "chat_20706",
+  "chat_23310",
+  "gpt-oss-120b-medium",
+  "pro-agent",
+  "tab_flash_lite_preview",
+  "tab_jump_flash_lite_preview",
 ];
 
 function codexHeaders(): Headers {
@@ -125,18 +158,103 @@ describe("Antigravity quota buckets", () => {
     expect(selectBucket(ANTIGRAVITY_QUOTA_BUCKETS, "gemini-2.5-flash-8b")).toBeUndefined();
   });
 
-  test("reports every captured bucket when there is no active model", () => {
+  test("reports every captured bucket newest-first when there is no active model", () => {
     const plan = planFromBuckets(ANTIGRAVITY_QUOTA_BUCKETS);
 
     expect(plan).toBeDefined();
     expect(plan?.windows).toHaveLength(4);
     expect(plan?.windows.map((window) => window.id)).toEqual([
+      "3.1-flash-lite",
       "2.5-flash",
       "2.5-flash-lite",
       "2.5-pro",
-      "3.1-flash-lite",
     ]);
     expect(plan?.windows.every((window) => window.used_pct === 0)).toBe(true);
+  });
+
+  test("parses agent model versions without promoting helper ids or model sizes", () => {
+    const windowIdCases: Array<[string, number]> = [
+      ["3.6-flash-high", 3.6],
+      ["3.5-flash-low", 3.5],
+      ["3.1-pro-low", 3.1],
+      ["2.5-flash", 2.5],
+      ["3-flash", 3],
+      ["claude-sonnet-4-6", 4.6],
+      ["claude-opus-4-6-thinking", 4.6],
+    ];
+
+    // Quota windows have already lost the gemini- prefix, so start-of-id
+    // versions are the load-bearing form for keeping 3.6 above 2.5.
+    for (const [modelId, expected] of windowIdCases) {
+      expect(parseModelVersion(modelId)).toBe(expected);
+    }
+
+    // The exported parser remains safe for callers that pass a raw model id.
+    expect(parseModelVersion("gemini-3.6-flash-high")).toBe(3.6);
+
+    // These underscore-delimited tabModelIds are server-side helpers, not
+    // agent versions; reading 20706/23310 would pin them above every model.
+    expect(parseModelVersion("chat_20706")).toBeUndefined();
+    expect(parseModelVersion("chat_23310")).toBeUndefined();
+    expect(parseModelVersion("tab_flash_lite_preview")).toBeUndefined();
+    expect(parseModelVersion("tab_jump_flash_lite_preview")).toBeUndefined();
+
+    // 120b is a parameter size, while pro-agent has no encoded version.
+    expect(parseModelVersion("gpt-oss-120b-medium")).toBeUndefined();
+    expect(parseModelVersion("pro-agent")).toBeUndefined();
+  });
+
+  test("orders model windows newest-first with deterministic fallbacks", () => {
+    const window = (id: string) => ({ id, used_pct: 0 });
+    const versioned = window("3.6-flash-high");
+    const unversioned = window("pro-agent");
+
+    expect(compareModelRecency(versioned, window("3.5-flash-low"))).toBeLessThan(0);
+
+    // Unversioned ids belong after real model versions in either argument order.
+    expect(compareModelRecency(versioned, unversioned)).toBeLessThan(0);
+    expect(compareModelRecency(unversioned, versioned)).toBeGreaterThan(0);
+
+    // Equal versions and two unversioned ids use lexical order rather than
+    // relying on the input order or Array.sort stability.
+    expect(compareModelRecency(window("3.6-flash-high"), window("3.6-flash-low"))).toBe(
+      "3.6-flash-high".localeCompare("3.6-flash-low")
+    );
+    expect(compareModelRecency(window("chat_23310"), window("pro-agent"))).toBe(
+      "chat_23310".localeCompare("pro-agent")
+    );
+  });
+
+  test("sorts the real 24-window listing by useful recency relationships", () => {
+    const orderedIds = ANTIGRAVITY_WINDOW_IDS.map((id) => ({ id, used_pct: 0 }))
+      .sort(compareModelRecency)
+      .map((window) => window.id);
+    const version36Ids = ANTIGRAVITY_WINDOW_IDS.filter((id) => id.startsWith("3.6-"));
+    const version25Ids = ANTIGRAVITY_WINDOW_IDS.filter((id) => id.startsWith("2.5-"));
+
+    // Every current 3.6 route must stay above every retired 2.5 route without
+    // freezing the irrelevant ordering of all 24 entries.
+    for (const currentId of version36Ids) {
+      for (const retiredId of version25Ids) {
+        expect(orderedIds.indexOf(currentId)).toBeLessThan(orderedIds.indexOf(retiredId));
+      }
+    }
+
+    const threeXIds = ANTIGRAVITY_WINDOW_IDS.filter((id) => /^3(?:\.|-)/.test(id));
+    const helperIds = [
+      "chat_20706",
+      "chat_23310",
+      "tab_flash_lite_preview",
+      "tab_jump_flash_lite_preview",
+    ];
+
+    // Server-side chat/tab helpers must remain below every 3.x agent model;
+    // their incidental digits or input position must never promote them.
+    for (const helperId of helperIds) {
+      for (const agentId of threeXIds) {
+        expect(orderedIds.indexOf(helperId)).toBeGreaterThan(orderedIds.indexOf(agentId));
+      }
+    }
   });
 
   test("reports only the active model and converts fully remaining to zero used", () => {
