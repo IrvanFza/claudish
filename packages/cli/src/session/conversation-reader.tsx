@@ -25,7 +25,9 @@
 
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
+import { getThemeMode } from "../theme/theme-mode.js";
 import { A, C } from "../tui/theme.js";
+import { pickInk } from "../tui/viz/color.js";
 import { displayWidth, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
 import { BadgeSpan, MeterSpan, Panel } from "../tui/viz/widgets.js";
@@ -69,11 +71,38 @@ const BAR_W = 1;
  * picker already imports this module and the reverse would be a cycle. One definition, two
  * screens: the chip beside a turn in the picker's preview and the chip beside the same turn
  * in the reader are the same colour by construction.
+ *
+ * This const is the DARK half, byte-identical to what always shipped; the light half and
+ * the render-time selector follow below.
  */
 export const SPEAKER = {
   you: "#39d353",
   ai: "#39c5cf",
 } as const;
+
+/**
+ * The light-terminal speakers — same green/teal identity, deepened just far enough to
+ * read as blocks on a white page while STILL taking dark ink, because dark ink is all the
+ * existing logic can deliver: `BadgeSpan`'s `pickInk` chooses between `tokens.ink`
+ * (black) and `tokens.text` (near-black `#1f2937` on light), so a light-theme fill never
+ * receives white ink, and a genuinely deep fill (e.g. `#1a7f37`, black ink 4.1:1) would
+ * come out illegible. Measured: `you` `#2da44e` is 3.22:1 as a block on the page with
+ * black ink at 6.5:1; `ai` `#0891b2` is 3.68:1 with black ink at 5.7:1. Both also serve
+ * as the reader's RAIL foreground, where ≥3:1 on the page keeps the mark visible.
+ */
+export const SPEAKER_LIGHT: Record<keyof typeof SPEAKER, string> = {
+  you: "#2da44e",
+  ai: "#0891b2",
+};
+
+/**
+ * The speaker palette for the CURRENT theme — a FUNCTION because theme detection can
+ * finish after this module loads; a module-level pick would freeze whichever mode was
+ * current at import. Same render-time rule as every `C.*` property read.
+ */
+export function speaker(): Record<keyof typeof SPEAKER, string> {
+  return getThemeMode() === "light" ? SPEAKER_LIGHT : SPEAKER;
+}
 
 /**
  * The match cap, and why it exists rather than being "the number of matches".
@@ -534,11 +563,15 @@ export function scrollbarCells(
   return cells;
 }
 
-const BAR_COLOR: Record<BarCell, string> = {
-  track: tokens.border,
-  thumb: tokens.accent,
-  hit: tokens.warn,
-};
+/**
+ * `tokens.*` READ AT CALL TIME, not at module load. `tokens` is a mutable object whose
+ * fields are reassigned when the terminal theme is detected, and detection can finish
+ * after this module is imported — a module-level `{ track: tokens.border, … }` copies
+ * the strings and would pin the DARK track/thumb/tick onto a light page.
+ */
+function barColor(cell: BarCell): string {
+  return cell === "track" ? tokens.border : cell === "thumb" ? tokens.accent : tokens.warn;
+}
 
 /**
  * One row of the transcript: rail, role chip (or its blank), wrapped text with the search
@@ -572,13 +605,14 @@ function ReaderRow({
     return (
       <text>
         <span>{" ".repeat(Math.max(0, width))}</span>
-        <span bg={BAR_COLOR[bar]}> </span>
+        <span bg={barColor(bar)}> </span>
       </text>
     );
   }
+  const sp = speaker();
   const text = turn.text.slice(row.start, row.end);
   const fg = turn.role === "user" ? tokens.text : C.fgMuted;
-  const railFg = turn.role === "user" ? SPEAKER.you : SPEAKER.ai;
+  const railFg = turn.role === "user" ? sp.you : sp.ai;
   // The rail is paid for at RAIL_W (see its definition), so the budget subtracts the
   // constant and never measures the glyph.
   const pad = Math.max(0, width - GUTTER - displayWidth(text));
@@ -589,7 +623,7 @@ function ReaderRow({
       {row.first ? (
         <BadgeSpan
           label={turn.role === "user" ? "you" : "ai"}
-          bg={turn.role === "user" ? SPEAKER.you : SPEAKER.ai}
+          bg={turn.role === "user" ? sp.you : sp.ai}
           width={ROLE_W}
         />
       ) : (
@@ -597,7 +631,7 @@ function ReaderRow({
       )}
       {hl && hl.length > 0 ? highlighted(text, hl, current, fg) : <span fg={fg}>{text}</span>}
       <span>{" ".repeat(pad)}</span>
-      <span bg={BAR_COLOR[bar]}> </span>
+      <span bg={barColor(bar)}> </span>
     </text>
   );
 }
@@ -624,8 +658,16 @@ function highlighted(text: string, hl: Hl[], current: number, fg: string): React
         </span>
       );
     const bg = hit === current ? tokens.accent : tokens.warn;
+    // Ink PICKED by contrast, not hardcoded `tokens.ink`. On the light palette both
+    // fills are DEEP (`tokens.warn` #c2410c, `tokens.accent` #2563eb) and black ink
+    // measures only 4.06:1 on them — and `pickInk`'s default light candidate is
+    // `tokens.text`, near-black on light, so the default pair cannot rescue it. `C.ink`
+    // (white in BOTH themes — the "ink on fills we own" token) is the real second
+    // candidate: measured, white wins at 5.2:1 on the light fills while black keeps
+    // winning (8.2/8.8:1) on the dark neons, so dark-theme output is byte-identical to
+    // the old hardcoded ink.
     out.push(
-      <span key={`h${i}`} fg={tokens.ink} bg={bg} attributes={A.bold}>
+      <span key={`h${i}`} fg={pickInk(bg, tokens.ink, C.ink)} bg={bg} attributes={A.bold}>
         {text.slice(start, e)}
       </span>
     );

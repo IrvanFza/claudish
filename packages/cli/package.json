@@ -26,8 +26,8 @@
     "@inquirer/prompts": "^8.0.1",
     "@inquirer/search": "^4.0.1",
     "@modelcontextprotocol/sdk": "^1.27.0",
-    "@opentui/core": "^0.1.87",
-    "@opentui/react": "^0.1.87",
+    "@opentui/core": "^0.1.107",
+    "@opentui/react": "^0.1.107",
     "dotenv": "^17.2.3",
     "react": "^19.2.4",
     "zod": "^4.1.13"

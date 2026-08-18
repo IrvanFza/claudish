@@ -16,11 +16,12 @@
 
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
+import { getThemeMode } from "../theme/theme-mode.js";
 import { A, C } from "../tui/theme.js";
 import { displayWidth, padStartTo, padTo, truncate } from "../tui/viz/text.js";
 import { ramps, tokens } from "../tui/viz/tokens.js";
 import { BadgeSpan, MeterSpan, Panel, Sparkline, SparklineSpan } from "../tui/viz/widgets.js";
-import { ConversationReader, SPEAKER } from "./conversation-reader.js";
+import { ConversationReader, speaker } from "./conversation-reader.js";
 // Aliased: this file already has a `Conversation` — the preview PANEL below. TypeScript
 // tolerates the collision because one is a type and one is a value, so `tsc` says nothing,
 // but a reader hitting `Conversation` in this file should not have to work out which of the
@@ -124,6 +125,29 @@ export const STALE_MS = 3 * 86_400_000;
 export const GH_LEVELS = ["#21262d", "#0e4429", "#006d32", "#26a641", "#39d353"] as const;
 
 /**
+ * The LIGHT terminal's contribution scale — GitHub's own light-mode greens, busiest
+ * DARKEST, because on a white page depth is what reads as intensity. Levels 1–4 are
+ * GitHub's verbatim; the empty level makes the SAME substitution the dark scale
+ * documents above, for the same measured reason: GitHub's own empty (`#ebedf0`) is
+ * 1.07:1 against the light panel `#f3f4f6` and dissolves without the gutters GitHub
+ * draws, while `#d0d7de` (Primer's light border grey) measures 1.32:1 and keeps the
+ * calendar's rectangle. Grey-vs-green hue is what separates it from level 1.
+ */
+export const GH_LEVELS_LIGHT = ["#d0d7de", "#9be9a8", "#40c463", "#30a14e", "#216e39"] as const;
+
+/**
+ * The scale for the CURRENT terminal theme — a FUNCTION, not a module const, because
+ * theme detection can finish AFTER this module loads (the OSC 11 round-trip is async,
+ * and the OpenTUI renderer publishes its own answer later still). A module-level pick
+ * would freeze whichever mode was current at import; a render-time call follows
+ * `getThemeMode()` the way every `C.*` property read already does. `null` (unknown)
+ * stays dark — the pre-light-theme status quo, never a guess.
+ */
+export function ghLevels(): typeof GH_LEVELS | typeof GH_LEVELS_LIGHT {
+  return getThemeMode() === "light" ? GH_LEVELS_LIGHT : GH_LEVELS;
+}
+
+/**
  * ONE PALETTE FOR THE WHOLE SCREEN: GitHub's dark theme.
  *
  * The previous fills were mid-lightness versions of `C`'s neon tokens, chosen on the theory
@@ -182,6 +206,15 @@ export const GH_LEVELS = ["#21262d", "#0e4429", "#006d32", "#26a641", "#39d353"]
  * (step 4) is the obvious "one hue, two lightnesses" pick and measures 3.43 against
  * `#1e3a5f`, so it fails the rule this block exists to state. `#bc8cff` is one step up the
  * same scale — 4.56, and still 8 L* below `#d2a8ff`, so the two ends stay tellable apart.
+ *
+ * ── DUAL PALETTE (light-theme support) ──────────────────────────────────────────────
+ * Everything above is the DARK half and its values are unchanged. `C` is now a dual
+ * light/dark palette selected by `getThemeMode()`, so this screen's own literals grew
+ * light twins: `GH_LEVELS_LIGHT` / `CHIP_LIGHT` / `sparkFg()`, each selected at RENDER
+ * time via `ghLevels()` / `chips()` — never at module load, because detection can
+ * complete after import. The dark rule stated in this comment (every selectable fill
+ * clears 4.0:1 against `#1e3a5f`) binds the DARK set only; the light set has its own
+ * rule, stated on `CHIP_LIGHT`, because the geometry inverts on a white page.
  */
 export const CHIP = {
   fresh: GH_LEVELS[4], //  recently used — the calendar's brightest green, #39d353
@@ -194,6 +227,52 @@ export const CHIP = {
 } as const;
 
 /**
+ * The LIGHT-theme chips. Same facts, same hues, re-tuned for a white page where the ink
+ * `pickInk` lands on is dark in BOTH of its candidates (`tokens.ink` is black and
+ * `tokens.text` is near-black `#1f2937` on light), so every fill must stay light enough
+ * to take dark ink — relative luminance above 0.179, the same boundary the dark set
+ * honours — while sitting far enough below the page to read as a block. Measured (WCAG
+ * 2.x, the same math as the dark table above):
+ *
+ *              vs #bfdbfe  vs #ffffff  black ink
+ *   fresh   #30a14e  2.33     3.32       6.33
+ *   stale   #818b98  2.43     3.45       6.08
+ *   count   #218bff  2.38     3.39       6.20
+ *   dirty   #bf8700  2.21     3.14       6.68
+ *   clean   #40c463  1.59     2.26       9.29   ← EXEMPT from the highlight rule, as above
+ *   ahead   #a475f9  2.28     3.24       6.49
+ *   behind  #b88aff  1.82     2.59       8.12
+ *
+ * The floor is `CHIP_MIN_CONTRAST_LIGHT` (1.7) against BOTH the selection wash
+ * (`C.bgHighlight`, #bfdbfe) and the white page — far below the dark set's 4.0 because
+ * the geometry inverts: on dark, the bright FILL is what carries the chip; on light, the
+ * fill is a mid-lightness block whose dark BOLD ink carries legibility (every picked ink
+ * measures ≥6:1, floor `CHIP_MIN_INK_CONTRAST`), so the block only has to separate from
+ * its background, not shout over it.
+ *
+ * `fresh`/`clean` keep the one-green-scale rule by construction — both are members of
+ * `GH_LEVELS_LIGHT` — but swap relative depth: the light scale's busiest green
+ * (`#216e39`, level 4) takes black ink at only 3.35:1, so `fresh` is level 3, the
+ * DEEPEST member whose ink still clears 4.5, and strip-only `clean` is level 2.
+ * `ahead`/`behind` stay one purple at two depths with `behind` the lighter end,
+ * preserving the dark pair's ordering; `stale` stays the desaturated neutral.
+ */
+export const CHIP_LIGHT = {
+  fresh: GH_LEVELS_LIGHT[3],
+  stale: "#818b98",
+  count: "#218bff",
+  dirty: "#bf8700",
+  clean: GH_LEVELS_LIGHT[2],
+  ahead: "#a475f9",
+  behind: "#b88aff",
+} as const satisfies Record<keyof typeof CHIP, string>;
+
+/** The chip palette for the CURRENT theme — render-time, same reasoning as `ghLevels`. */
+export function chips(): Record<keyof typeof CHIP, string> {
+  return getThemeMode() === "light" ? CHIP_LIGHT : CHIP;
+}
+
+/**
  * The chips that can land on a SELECTED row — the ones the 4.0:1 rule binds.
  *
  * Exported with `CHIP` so the rule is a TEST rather than a claim in a comment: a palette
@@ -202,8 +281,16 @@ export const CHIP = {
  * `clean` is absent because the worktree strip has no cursor and therefore no highlight.
  */
 export const SELECTABLE_CHIPS = ["fresh", "stale", "count", "dirty", "ahead", "behind"] as const;
-/** The floor those fills must clear against `C.bgHighlight`, in WCAG contrast ratio. */
+/** The floor the DARK fills must clear against `C.bgHighlight`, in WCAG contrast ratio. */
 export const CHIP_MIN_CONTRAST = 4;
+/**
+ * The LIGHT set's block floor, against BOTH the light selection wash (#bfdbfe) and the
+ * white page. Lower than the dark 4.0 on purpose — see `CHIP_LIGHT`: on light the dark
+ * bold ink carries legibility, the fill only has to read as a block.
+ */
+export const CHIP_MIN_CONTRAST_LIGHT = 1.7;
+/** WCAG AA floor for the ink `pickInk` actually lands on, on every light chip. */
+export const CHIP_MIN_INK_CONTRAST = 4.5;
 
 /**
  * "You are here", in the calendar's brightest green rather than in `C.green` (#39ff14).
@@ -212,8 +299,14 @@ export const CHIP_MIN_CONTRAST = 4;
  * scale printed a few rows above it is how a screen stops looking designed. `tokens.success`
  * keeps its neon everywhere else in claudish; inside this picker the green scale is the
  * calendar's.
+ *
+ * A function for the render-time-selection reason `ghLevels` states. On light the busiest
+ * green is the DEEP `#216e39`, which as foreground text on the strip measures 6.3:1 on the
+ * page — still the calendar's own busiest green, in both themes, by the same index.
  */
-const HERE_FG = GH_LEVELS[4];
+function hereFg(): string {
+  return ghLevels()[4];
+}
 
 /** `● ` or the two columns that hold its place. Not a chip — it has no fill. */
 const LIVE_W = 2;
@@ -368,8 +461,14 @@ function Slot({
  * (both #555), and a size column at #555 beside a chip is unreadable while at #fff it
  * competes with the title. `C` is the source of truth `viz/tokens.ts` itself adapts, so
  * this is the palette, not a stray literal.
+ *
+ * A FUNCTION, not `const MUTED = C.fgMuted`: `C` is mutated in place when the terminal
+ * theme is detected, and a module-level read copies the string — which pinned the dark
+ * `#a0a0a0` (2.3:1 on a white page) into every light-theme render. Read at call time.
  */
-const MUTED = C.fgMuted;
+function muted(): string {
+  return C.fgMuted;
+}
 
 /**
  * ONE `<text>` PER ROW, ALWAYS — the rule every row in this file now follows.
@@ -459,32 +558,33 @@ function WorktreeRow({
   const spark = series && hasActivity(series) ? series : null;
 
   // The chips a row ACTUALLY has, packed in fixed order, sparsest first.
-  const chips: Array<{ label: string; bg: string; labelW: number }> = [];
+  const chip = chips();
+  const run: Array<{ label: string; bg: string; labelW: number }> = [];
   if (cols.sync > 0 && g.ahead) {
-    chips.push({
+    run.push({
       label: `↑${padStartTo(String(g.ahead), cols.sync)}`,
-      bg: CHIP.ahead,
+      bg: chip.ahead,
       labelW: cols.sync + 1,
     });
   }
   if (cols.sync > 0 && g.behind) {
-    chips.push({
+    run.push({
       label: `↓${padStartTo(String(g.behind), cols.sync)}`,
-      bg: CHIP.behind,
+      bg: chip.behind,
       labelW: cols.sync + 1,
     });
   }
   if (cols.dirty > 0 && g.dirty) {
-    chips.push({
+    run.push({
       label: `${DIRTY_GLYPH}${padStartTo(String(g.dirty), cols.dirty)}`,
-      bg: CHIP.dirty,
+      bg: chip.dirty,
       labelW: cols.dirty + 1,
     });
   }
-  chips.push({ label: padStartTo(String(count), cols.count), bg: CHIP.count, labelW: cols.count });
-  chips.push({
+  run.push({ label: padStartTo(String(count), cols.count), bg: chip.count, labelW: cols.count });
+  run.push({
     label: padStartTo(g.lastActiveMs ? age(g.lastActiveMs) : "—", cols.age),
-    bg: stale ? CHIP.stale : CHIP.fresh,
+    bg: stale ? chip.stale : chip.fresh,
     labelW: cols.age,
   });
 
@@ -496,7 +596,7 @@ function WorktreeRow({
   // count and the age — in hard columns against the right edge, because they are always
   // last and always the same width. Only the sparse chips shift, and they shift to stay
   // attached to the group, which is the whole point.
-  const used = chips.reduce((w, c) => w + c.labelW + 2, 0) + LIVE_W;
+  const used = run.reduce((w, c) => w + c.labelW + 2, 0) + LIVE_W;
   const gap = Math.max(0, width - room - used);
 
   return (
@@ -508,10 +608,14 @@ function WorktreeRow({
       </text>
       <box height={1}>
         <text>
-          {spark ? <SparklineSpan values={spark} fg={SPARK_FG} /> : <span>{" ".repeat(room)}</span>}
+          {spark ? (
+            <SparklineSpan values={spark} fg={sparkFg()} />
+          ) : (
+            <span>{" ".repeat(room)}</span>
+          )}
           <span>{" ".repeat(gap)}</span>
           <span fg={tokens.success}>{g.activeNow ? "● " : "  "}</span>
-          {chips.map((c) => (
+          {run.map((c) => (
             <Slot key={c.bg + c.label} label={c.label} bg={c.bg} labelW={c.labelW} />
           ))}
         </text>
@@ -525,11 +629,16 @@ function WorktreeRow({
  * cell per row against a dark panel, reads as a strip of broken blocks rather than as a
  * bar — visible in the first colour capture down the whole right edge of the session
  * list. Rule 6: the chrome recedes, the data does not.
+ *
+ * Built per call because `tokens.*` are reassigned in place on theme detection — a
+ * module-level object copies the strings and would pin the DARK track onto a light panel.
  */
-const SCROLLBAR = {
-  showArrows: false,
-  trackOptions: { backgroundColor: tokens.bgPanel, foregroundColor: tokens.border },
-} as const;
+function scrollbarOptions() {
+  return {
+    showArrows: false,
+    trackOptions: { backgroundColor: tokens.bgPanel, foregroundColor: tokens.border },
+  } as const;
+}
 
 /** A week per row in the activity calendar, and the days across it. */
 const WEEK_DAYS = 7;
@@ -669,6 +778,7 @@ function ActivityCalendar({
   width: number;
 }): React.ReactNode {
   const levels = activityLevels(days);
+  const scale = ghLevels();
   const title = `activity · ${ACTIVITY_WEEKS}w `;
   // Every column the label does not own goes to the grid, and the remainder is spread one
   // cell at a time across the leading days rather than left at the end — a short final day
@@ -695,7 +805,7 @@ function ActivityCalendar({
             <span fg={tokens.trace}>{padTo(ago === 0 ? "now" : `-${ago}w`, WEEK_LABEL_W)}</span>
             {Array.from({ length: WEEK_DAYS }, (_, d) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: a calendar day is position-addressed — index IS identity
-              <span key={d} bg={GH_LEVELS[levels[w * WEEK_DAYS + d] ?? 0]}>
+              <span key={d} bg={scale[levels[w * WEEK_DAYS + d] ?? 0]}>
                 {" ".repeat(base + (d < extra ? 1 : 0))}
               </span>
             ))}
@@ -737,8 +847,16 @@ const SPARK_MIN_DAYS = 7;
  * Mid-tone blue for a trend line — bright enough to read as a shape, quiet enough to lose
  * to the worktree name beside it. `C.blue` at full strength out-shouted the name, which is
  * rule 6 (dim the chrome, saturate the signal) applied to the wrong one of the two.
+ *
+ * The light twin is `#2563eb` — the same "mid-tone of the theme's blue" rule applied to a
+ * white page (5.2:1 there, 3.6:1 on the selection wash) — and the pick is a render-time
+ * function for the reason `ghLevels` states.
  */
 const SPARK_FG = "#3f6f9e";
+const SPARK_FG_LIGHT = "#2563eb";
+function sparkFg(): string {
+  return getThemeMode() === "light" ? SPARK_FG_LIGHT : SPARK_FG;
+}
 
 /**
  * An all-zero series must render NOTHING, and this guard is not defensive tidying.
@@ -841,13 +959,13 @@ function SessionRowView({
             "running right now" is what the green dot on the title line is for. */}
         <BadgeSpan
           label={padStartTo(age(row.mtimeMs), SESSION_AGE_W)}
-          bg={Date.now() - row.mtimeMs < STALE_MS ? CHIP.fresh : CHIP.stale}
+          bg={Date.now() - row.mtimeMs < STALE_MS ? chips().fresh : chips().stale}
           width={SESSION_AGE_COL}
         />
         {/* The bar is the comparison, the numeral is the label — and `padStartTo`, so a
             column of sizes cannot jitter at the decimal point as values change. */}
         <MeterSpan pct={sizePct(row.sizeBytes, maxSize)} width={meterW} ramp={ramps.volume} />
-        <span fg={MUTED}>{padStartTo(size, SIZE_COL)}</span>
+        <span fg={muted()}>{padStartTo(size, SIZE_COL)}</span>
         {row.gitBranch ? (
           <span fg={tokens.trace}>{`  ${BRANCH_ICON} ${truncate(
             row.gitBranch,
@@ -1266,7 +1384,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
         {/* ── worktrees ─────────────────────────────────────────────────── */}
         <box width={sidebarW} flexDirection="column" minHeight={0}>
           <Panel title="worktrees" focused={pane === "worktrees"} flush flexGrow={1} flexBasis={0}>
-            <scrollbox focused={false} flexGrow={1} scrollbarOptions={SCROLLBAR}>
+            <scrollbox focused={false} flexGrow={1} scrollbarOptions={scrollbarOptions()}>
               {fresh.map((g, i) => (
                 <WorktreeRow
                   key={g.name}
@@ -1309,7 +1427,7 @@ export function ResumePicker({ groups, onDone }: PickerProps): React.ReactNode {
             flexGrow={1}
             flexBasis={0}
           >
-            <scrollbox focused={false} flexGrow={1} scrollbarOptions={SCROLLBAR}>
+            <scrollbox focused={false} flexGrow={1} scrollbarOptions={scrollbarOptions()}>
               {items.length === 0 ? (
                 <text fg={tokens.subtle}> no sessions match</text>
               ) : (
@@ -1426,15 +1544,16 @@ function WorktreeDetail({
   // ahead of them is clipped to a budget that already excludes their columns. As four
   // sibling <text>s this row hit the same Yoga shrink as the session list: at 80
   // columns the branch and the state chips were both silently shortened.
+  const chip = chips();
   const badges = [];
   if (group.dirty !== undefined) {
     badges.push({
       label: group.dirty > 0 ? `${DIRTY_GLYPH}${group.dirty} uncommitted` : "clean",
-      bg: group.dirty > 0 ? CHIP.dirty : CHIP.clean,
+      bg: group.dirty > 0 ? chip.dirty : chip.clean,
     });
   }
-  if (group.ahead) badges.push({ label: `↑${group.ahead}`, bg: CHIP.ahead });
-  if (group.behind) badges.push({ label: `↓${group.behind}`, bg: CHIP.behind });
+  if (group.ahead) badges.push({ label: `↑${group.ahead}`, bg: chip.ahead });
+  if (group.behind) badges.push({ label: `↓${group.behind}`, bg: chip.behind });
   const badgeW = badges.reduce((w, b) => w + displayWidth(b.label) + 2, 0);
 
   const marker = group.current ? "  ▶ you are here" : !group.live ? "  worktree deleted" : "";
@@ -1473,7 +1592,7 @@ function WorktreeDetail({
         <span fg={tokens.text} attributes={A.bold}>
           {truncate(group.name, nameW)}
         </span>
-        <span fg={group.current ? HERE_FG : tokens.dead}>{marker}</span>
+        <span fg={group.current ? hereFg() : tokens.dead}>{marker}</span>
         <span fg={tokens.subtle}>{`   ${BRANCH_ICON} `}</span>
         <span fg={group.live ? tokens.info : tokens.dead}>{`${truncate(branch, branchW)} `}</span>
         {badges.map((b) => (
@@ -1490,7 +1609,7 @@ function WorktreeDetail({
         {/* Same all-zero guard as the sidebar: a flat mid bar claims steady activity a
             dormant worktree does not have. `Sparkline` renders nothing for an empty array,
             so passing one is how the row simply omits it. */}
-        <Sparkline values={hasActivity(spark) ? spark : []} fg={SPARK_FG} />
+        <Sparkline values={hasActivity(spark) ? spark : []} fg={sparkFg()} />
         <text fg={tokens.trace} flexShrink={0}>
           {truncate(summary, Math.max(0, locAvail - pathW))}
         </text>
@@ -1592,6 +1711,7 @@ function Conversation({
     );
   }
   const ROLE_W = 6;
+  const sp = speaker();
   const textW = Math.max(10, width - ROLE_W - 2);
   // Newest last, and only as many as fit — the panel is 9 rows and each turn takes one.
   const shown = turns.slice(-max);
@@ -1605,10 +1725,10 @@ function Conversation({
           <span fg={tokens.trace}>{"▍"}</span>
           <BadgeSpan
             label={t.role === "user" ? "you" : "ai"}
-            bg={t.role === "user" ? SPEAKER.you : SPEAKER.ai}
+            bg={t.role === "user" ? sp.you : sp.ai}
             width={ROLE_W}
           />
-          <span fg={t.role === "user" ? tokens.text : MUTED}>{truncate(t.text, textW)}</span>
+          <span fg={t.role === "user" ? tokens.text : muted()}>{truncate(t.text, textW)}</span>
         </text>
       ))}
     </box>

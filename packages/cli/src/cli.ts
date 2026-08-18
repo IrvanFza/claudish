@@ -63,6 +63,7 @@ import {
   loadRoutingRules,
   matchRoutingRule,
 } from "./providers/routing-rules.js";
+import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig } from "./types.js";
 import { VERSION } from "./version.js";
 // Re-export from centralized provider-resolver for backwards compatibility
@@ -1574,9 +1575,7 @@ async function probeModelRouting(
 
   // ── JSON path: existing batch logic, completely unchanged output ──
   if (jsonOutput) {
-    const DIM = "\x1b[2m";
-    const YELLOW = "\x1b[33m";
-    const RESET = "\x1b[0m";
+    const { DIM, YELLOW, RESET } = cliAnsi();
 
     let liveProxy: LiveProxy | null = null;
     if (options.live) {
@@ -1991,17 +1990,20 @@ async function probeModelRouting(
  */
 function printHelp(): void {
   // ── Color palette ─────────────────────────────────────────────────────────
-  // Gated on an interactive stdout + the NO_COLOR convention so that
-  // `claudish --help | less` / redirecting to a file stays free of escape codes.
+  // Escapes come from the theme-aware cliAnsi() (classic on dark/unknown, deep
+  // truecolor on a light page, empty under NO_COLOR); the local isTTY gate is
+  // kept on top so `claudish --help | less` / redirecting to a file stays free
+  // of escape codes even when NO_COLOR is unset.
   const useColor = !!process.stdout.isTTY && !process.env.NO_COLOR;
-  const c = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
-  const bold = c("1");
-  const dim = c("2");
-  const cyan = c("36"); // section headers
-  const green = c("32"); // commands / flags
-  const yellow = c("33"); // values / placeholders
-  const magenta = c("35"); // provider shortcuts
-  const blue = c("34"); // env var names
+  const A = cliAnsi();
+  const c = (esc: string) => (s: string) => (useColor && esc ? `${esc}${s}${A.RESET}` : s);
+  const bold = c(A.BOLD);
+  const dim = c(A.DIM);
+  const cyan = c(A.CYAN); // section headers
+  const green = c(A.GREEN); // commands / flags
+  const yellow = c(A.YELLOW); // values / placeholders
+  const magenta = c(A.MAGENTA); // provider shortcuts
+  const blue = c(A.BLUE); // env var names
   // Section header helper — a colored, underlined title with a leading rule mark.
   const h = (title: string) => bold(cyan(`▌ ${title}`));
 

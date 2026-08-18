@@ -21,6 +21,8 @@ import {
   isFailureState,
   isReadyState,
 } from "../providers/probe-live.js";
+import { bgHex, cliAnsi } from "../theme/ansi.js";
+import { getThemeMode } from "../theme/theme-mode.js";
 import {
   ANSI_RESET,
   LATENCY_FG_ANSI,
@@ -35,21 +37,55 @@ import {
   tokBarCells,
 } from "../tui/theme.js";
 
-const pc = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  green: "\x1b[32m",
-  red: "\x1b[31m",
-  yellow: "\x1b[33m",
-  cyan: "\x1b[36m",
-  brightGreen: "\x1b[92m",
-  gray: "\x1b[90m",
-  // Background color for the fastest live provider row (dark green highlight).
-  bgFastest: "\x1b[48;5;22m",
-  // Background color for the slowest live provider row (muted rust — softer than pure red).
-  bgSlowest: "\x1b[48;5;95m",
-} as const;
+interface PrinterColors {
+  reset: string;
+  bold: string;
+  dim: string;
+  green: string;
+  red: string;
+  yellow: string;
+  cyan: string;
+  brightGreen: string;
+  gray: string;
+  bgFastest: string;
+  bgSlowest: string;
+}
+
+/**
+ * Build the printer palette from the theme-aware cliAnsi() escapes. Called at
+ * the top of each exported entry point (refreshPc) — NEVER at module load,
+ * because theme detection runs at CLI startup, after this module is imported.
+ */
+function buildPrinterColors(): PrinterColors {
+  const a = cliAnsi();
+  const light = getThemeMode() === "light";
+  const noColor = !!process.env.NO_COLOR;
+  return {
+    reset: a.RESET,
+    bold: a.BOLD,
+    dim: a.DIM,
+    green: a.GREEN,
+    red: a.RED,
+    yellow: a.YELLOW,
+    cyan: a.CYAN,
+    brightGreen: a.BRIGHT_GREEN,
+    gray: a.GRAY,
+    // Row-highlight fills carry the terminal's DEFAULT text color on top, so
+    // they must be picked per theme: on dark/unknown the classic dark fills
+    // (dark green / muted rust) sit under light default text; on a light page
+    // the default text is dark, so use light washes instead.
+    bgFastest: noColor ? "" : light ? bgHex("#bbf7d0") : "\x1b[48;5;22m",
+    bgSlowest: noColor ? "" : light ? bgHex("#fecaca") : "\x1b[48;5;95m",
+  };
+}
+
+// Refreshed by refreshPc() at each exported entry; every render helper below
+// reads the CURRENT palette through this binding.
+let pc: PrinterColors;
+
+function refreshPc(): void {
+  pc = buildPrinterColors();
+}
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
@@ -781,6 +817,7 @@ export function computeRequiredWidth(
   isLiveProbe: boolean,
   directKeyVar?: string
 ): number {
+  refreshPc();
   const layout = buildCardLayout(result, isLiveProbe, directKeyVar);
   return computeCardWidth(
     layout.rows,
@@ -1130,6 +1167,7 @@ function renderLeaderboard(
 }
 
 export function printProbeResults(results: ModelResult[], isLiveProbe: boolean): void {
+  refreshPc();
   const w: Writer = process.stderr.write.bind(process.stderr);
 
   w("\n");

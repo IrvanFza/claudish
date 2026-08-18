@@ -1,13 +1,67 @@
 /** @jsxImportSource @opentui/react */
 import { createTextAttributes } from "@opentui/core";
+import { onThemeModeChange } from "../theme/theme-mode.js";
 
 /**
- * btop-inspired color palette — true black base, vivid neon colors.
+ * The TUI palette — TWO palettes, selected by the detected terminal theme.
  *
- * 3 text tiers: white (primary) → gray (secondary) → dark-gray (tertiary)
- * Bluish selection highlight like btop.
+ * DARK is the original btop-inspired set (true black base, vivid neon colors)
+ * and stays byte-identical to what claudish always shipped: an unknown theme
+ * (`null` from detection) also resolves to DARK, so a terminal that never
+ * answers the OSC query gets yesterday's claudish, not a guess.
+ *
+ * LIGHT is a deep, saturated set — every text accent clears 4.5:1 against a
+ * white page (verified by `theme-contrast.test.ts`), so it stays vivid without
+ * washing out. Selection is a light-blue WASH (not a dark fill), which is why
+ * emphasized text uses `C.strong` (theme-following) rather than `C.white`:
+ * white ink on a wash would vanish.
+ *
+ * Token semantics that make both palettes work:
+ *  - `C.ink`    — ink on fills WE paint that stay mid/dark in both themes
+ *                 (pills, latency chips, active tab). Always white.
+ *  - `C.strong` — emphasized text on the PAGE or on wash fills. White on dark,
+ *                 near-black on light. Never use `C.white` for page text.
+ *
+ * `C` is intentionally MUTABLE: `theme-mode.ts` publishes the detected mode and
+ * the listener below reassigns every field in place, so the hundreds of `C.*`
+ * reads across the components pick up the right palette at render time with no
+ * plumbing. Derived escape tables (STAGE_BG_ANSI) are refreshed by the same
+ * listener; register additional derived palettes via `registerPaletteRefresher`.
  */
-export const C = {
+
+export interface TuiPalette {
+  bg: string;
+  bgAlt: string;
+  bgHighlight: string;
+  bgError: string;
+  fg: string;
+  fgMuted: string;
+  dim: string;
+  border: string;
+  focusBorder: string;
+  green: string;
+  brightGreen: string;
+  red: string;
+  yellow: string;
+  cyan: string;
+  blue: string;
+  magenta: string;
+  orange: string;
+  white: string;
+  black: string;
+  ink: string;
+  strong: string;
+  tabActiveBg: string;
+  tabInactiveBg: string;
+  tabActiveFg: string;
+  tabInactiveFg: string;
+  pillKeyBg: string;
+  pillOauthBg: string;
+  chipKeyBg: string;
+  chipLabelBg: string;
+}
+
+const DARK: TuiPalette = {
   bg: "#000000",
   bgAlt: "#111111",
   bgHighlight: "#1e3a5f",
@@ -31,6 +85,9 @@ export const C = {
   white: "#ffffff",
   black: "#000000",
 
+  ink: "#ffffff", // ink on our own mid/dark fills — same in both themes
+  strong: "#ffffff", // emphasized page text — follows the theme
+
   // Unified tab theme based on blue
   tabActiveBg: "#0088ff",
   tabInactiveBg: "#001a33",
@@ -49,7 +106,54 @@ export const C = {
   // (bright key vs. muted label), not hue.
   chipKeyBg: "#3a3a3a", // lighter gray — key segment
   chipLabelBg: "#222222", // darker gray — label segment
-} as const;
+};
+
+const LIGHT: TuiPalette = {
+  // Opaque white page, mirroring DARK's opaque true black: the 1Password modal
+  // is an absolute overlay that relies on `C.bg` to COVER the list beneath it,
+  // so the page color cannot be transparent.
+  bg: "#ffffff",
+  bgAlt: "#f3f4f6", // quiet gray band (header/footer/detail)
+  bgHighlight: "#bfdbfe", // light-blue selection WASH — dark text rides on top
+  bgError: "#fee2e2", // faint red wash for failed test rows
+
+  fg: "#1f2937",
+  fgMuted: "#4b5563",
+  dim: "#6b7280",
+
+  border: "#d1d5db",
+  focusBorder: "#2563eb",
+
+  // Deep, saturated accents — vivid on white, all >= 4.5:1 on #ffffff.
+  green: "#15803d",
+  brightGreen: "#166534",
+  red: "#dc2626",
+  yellow: "#a16207",
+  cyan: "#0e7490",
+  blue: "#1d4ed8",
+  magenta: "#9333ea",
+  orange: "#c2410c",
+  white: "#ffffff",
+  black: "#000000",
+
+  ink: "#ffffff",
+  strong: "#111827",
+
+  tabActiveBg: "#2563eb", // vivid blue pill, white ink
+  tabInactiveBg: "#e5e7eb",
+  tabActiveFg: "#ffffff",
+  tabInactiveFg: "#374151",
+
+  // The forest/teal pills are mid-lightness fills with white ink — they clear
+  // contrast on BOTH pages, so they are shared verbatim with DARK.
+  pillKeyBg: "#2d6e3e",
+  pillOauthBg: "#1f6d75",
+
+  chipKeyBg: "#d1d5db", // key segment — theme text (`C.fg`) rides on top
+  chipLabelBg: "#e5e7eb", // label segment
+};
+
+export const C: TuiPalette = { ...DARK };
 
 const bold = createTextAttributes({ bold: true });
 
@@ -87,7 +191,7 @@ interface LatencyBucket {
   hex: string;
 }
 
-const LATENCY_BUCKETS: LatencyBucket[] = [
+const LATENCY_BUCKETS_DARK: LatencyBucket[] = [
   { maxMs: 500, hex: "#1f8f3b" }, // bright green
   { maxMs: 1000, hex: "#2d6e3e" }, // green (matches pillKeyBg family)
   { maxMs: 3000, hex: "#8a7d1e" }, // yellow/olive
@@ -95,12 +199,24 @@ const LATENCY_BUCKETS: LatencyBucket[] = [
   { maxMs: Number.POSITIVE_INFINITY, hex: "#9e2b2b" }, // red
 ];
 
+// Slightly deeper equivalents keep white latency ink at >= 4.5:1 on light
+// terminals without changing the shipped dark-theme bucket colors above.
+const LATENCY_BUCKETS_LIGHT: LatencyBucket[] = [
+  { maxMs: 500, hex: "#1d8738" }, // bright green
+  { maxMs: 1000, hex: "#2d6e3e" }, // green (already clears 4.5:1)
+  { maxMs: 3000, hex: "#83771c" }, // yellow/olive
+  { maxMs: 6000, hex: "#b0621c" }, // orange
+  { maxMs: Number.POSITIVE_INFINITY, hex: "#9e2b2b" }, // red
+];
+
+let activeLatencyBuckets = LATENCY_BUCKETS_DARK;
+
 function latencyBucket(ms: number): LatencyBucket {
   const v = Math.max(0, ms);
-  for (const b of LATENCY_BUCKETS) {
+  for (const b of activeLatencyBuckets) {
     if (v < b.maxMs) return b;
   }
-  return LATENCY_BUCKETS[LATENCY_BUCKETS.length - 1]!;
+  return activeLatencyBuckets[activeLatencyBuckets.length - 1]!;
 }
 
 /**
@@ -162,18 +278,35 @@ export const ANSI_RESET = "\x1b[0m";
 // VIVID, saturated fills. These are bg-on-SPACES (no text sits on them), so the
 // "desaturate for text readability" rule that governs pillKeyBg/latencyBg does
 // NOT apply here — high-contrast hues are exactly what makes the segments pop
-// and read distinctly next to each other on the black terminal background.
-export const STAGE_BG = {
+// and read distinctly next to each other on the terminal background.
+//
+// Per-theme: the neon set pops on black but washes out on white (#ffcc00 vs a
+// white page is 1.4:1 — nearly invisible), so LIGHT swaps in deeper fills that
+// still read as cyan/blue/gold next to each other.
+const STAGE_BG_DARK = {
   network: "#00b3c4", // bright cyan
   server: "#2563ff", // bright blue
   streaming: "#ffcc00", // bright gold/yellow
 } as const;
 
-export const STAGE_FG = {
+const STAGE_BG_LIGHT = {
+  network: "#0891b2", // deep cyan
+  server: "#2563eb", // deep blue
+  streaming: "#d97706", // deep amber
+} as const;
+
+export const STAGE_BG: { network: string; server: string; streaming: string } = {
+  ...STAGE_BG_DARK,
+};
+
+/** Stage label/number colors. MUTABLE — a module-load `C.*` read would freeze
+ *  the dark neons before detection completes (found live: breakdown numbers
+ *  rendered neon cyan/pale yellow on a white page); refreshed with the mode. */
+export const STAGE_FG: { network: string; server: string; streaming: string } = {
   network: C.cyan,
   server: C.blue,
   streaming: C.yellow,
-} as const;
+};
 
 function hexToAnsiBg(hex: string): string {
   const r = Number.parseInt(hex.slice(1, 3), 16);
@@ -195,14 +328,50 @@ export function hexToAnsiFg(hex: string): string {
   return `\x1b[38;2;${r};${g};${b}m`;
 }
 
-/** ANSI background escapes for the static printer's stage segments. */
-export const STAGE_BG_ANSI = {
+/** ANSI background escapes for the static printer's stage segments.
+ *  MUTABLE — refreshed alongside `STAGE_BG` when the theme mode changes. */
+export const STAGE_BG_ANSI: { network: string; server: string; streaming: string } = {
   network: hexToAnsiBg(STAGE_BG.network),
   server: hexToAnsiBg(STAGE_BG.server),
   streaming: hexToAnsiBg(STAGE_BG.streaming),
-} as const;
+};
 
 export type ProbeStageKey = keyof typeof STAGE_BG;
+
+// ---------------------------------------------------------------------------
+// Theme application — the reactive core
+// ---------------------------------------------------------------------------
+
+/** Derived palettes (viz tokens, ramps) register here to be recomputed AFTER
+ *  `C` has been reassigned. Invoked immediately on registration so a module
+ *  loaded after detection still syncs. */
+const paletteRefreshers: Array<() => void> = [];
+
+export function registerPaletteRefresher(fn: () => void): void {
+  paletteRefreshers.push(fn);
+  fn();
+}
+
+function applyTuiTheme(mode: "light" | "dark" | null): void {
+  // Unknown stays DARK — the pre-light-theme status quo, never a guess.
+  const palette = mode === "light" ? LIGHT : DARK;
+  activeLatencyBuckets = mode === "light" ? LATENCY_BUCKETS_LIGHT : LATENCY_BUCKETS_DARK;
+  Object.assign(C, palette);
+  Object.assign(STAGE_BG, mode === "light" ? STAGE_BG_LIGHT : STAGE_BG_DARK);
+  STAGE_BG_ANSI.network = hexToAnsiBg(STAGE_BG.network);
+  STAGE_BG_ANSI.server = hexToAnsiBg(STAGE_BG.server);
+  STAGE_BG_ANSI.streaming = hexToAnsiBg(STAGE_BG.streaming);
+  // AFTER the C reassignment, so these read the incoming palette's accents.
+  STAGE_FG.network = C.cyan;
+  STAGE_FG.server = C.blue;
+  STAGE_FG.streaming = C.yellow;
+  for (const fn of paletteRefreshers) fn();
+}
+
+// Subscribe at module load: runs once with the CURRENT mode (covering the case
+// where detection completed before this module was imported) and again on every
+// later `setThemeMode`.
+onThemeModeChange(applyTuiTheme);
 
 /**
  * Throughput-heat color for a tokens/sec value, on an ABSOLUTE scale (t/s),

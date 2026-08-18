@@ -512,6 +512,16 @@ async function runCli() {
   }
 
   try {
+    // Terminal light/dark detection BEFORE any colored output — parseArgs
+    // handles --help/--models/--probe, which print colored text and exit
+    // inside. Cheap env sources always run; the OSC round-trip (bounded
+    // 150ms) only when stdin AND stdout are OUR TTYs, so a piped/proxied
+    // claudish never writes escapes into another program's stream.
+    await traceSpan("startup:theme-detect", async () => {
+      const { detectAndSetThemeMode } = await import("./theme/theme-mode.js");
+      await detectAndSetThemeMode();
+    });
+
     // Parse CLI arguments (includes profile/config load; terminal flags like
     // --version/--models/--probe exit inside — the exit-hook fallback covers them)
     const cliConfig = await traceSpan("startup:parse-args", () => parseArgs(process.argv.slice(2)));

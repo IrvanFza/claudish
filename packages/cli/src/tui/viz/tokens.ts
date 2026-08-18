@@ -36,7 +36,7 @@
  * skill's version matrix puts `--compile` on 0.1.x). Dropping it is the version
  * adaptation, not a downgrade — restore it if claudish ever moves to 0.4.x.
  */
-import { C } from "../theme.js";
+import { C, registerPaletteRefresher } from "../theme.js";
 
 /**
  * Severity / status, then chrome. A token means ONE thing across the whole app:
@@ -95,6 +95,32 @@ export const tokens: Record<
   ink: C.black, //          text on bright badges
 };
 
+// `C` is mutable (dual light/dark palette, reassigned when the terminal theme
+// is detected), but this object SNAPSHOTS its values — so it re-snapshots via
+// the theme's refresher hook, which runs after `C` has been reassigned. The
+// ramps below capture token values the same way and refresh in the same pass.
+// REGISTERED AT THE BOTTOM of this file: registration invokes the callback
+// immediately, and `ramps` must exist by then.
+function refreshTokens(): void {
+  tokens.fatal = C.red;
+  tokens.error = C.red;
+  tokens.warn = C.orange;
+  tokens.info = C.cyan;
+  tokens.debug = C.fgMuted;
+  tokens.trace = C.dim;
+  tokens.success = C.green;
+  tokens.running = C.blue;
+  tokens.idle = C.fgMuted;
+  tokens.dead = C.dim;
+  tokens.border = C.border;
+  tokens.subtle = C.dim;
+  tokens.text = C.fg;
+  tokens.accent = C.focusBorder;
+  tokens.bgPanel = C.bgAlt;
+  tokens.ink = C.black;
+  refreshRamps();
+}
+
 /**
  * A gradient's STOPS — AT LEAST ONE, and that bound is load-bearing rather than
  * pedantic. `blendStops` answers `[]` for an empty stop list, which is right for it and
@@ -148,6 +174,16 @@ export const ramps: {
   volume: [C.border, C.blue, C.cyan],
 };
 
+/** Rebuild every ramp from the CURRENT token/`C` values. Whole-tuple
+ *  replacement (never in-place mutation) because `Ramp` is a readonly tuple. */
+function refreshRamps(): void {
+  ramps.load = [tokens.success, C.yellow, tokens.error];
+  ramps.temperature = [tokens.running, tokens.success, C.orange, tokens.error];
+  ramps.network = [tokens.success, C.yellow, tokens.error];
+  ramps.savings = [tokens.error, C.yellow, tokens.success];
+  ramps.volume = [C.border, C.blue, C.cyan];
+}
+
 /** HTTP method colours (the `posting` look). Use as badge backgrounds. */
 export const methods: Record<string, string> = {
   GET: "#61AFFE",
@@ -157,3 +193,8 @@ export const methods: Record<string, string> = {
   DELETE: "#F8615C",
   OPTIONS: "#9013FE",
 };
+
+// Keep the snapshot palette in sync with the mutable `C` — see the comment on
+// `refreshTokens`. Runs once immediately (harmless: it re-writes the values the
+// initializers above already hold) and again on every theme-mode change.
+registerPaletteRefresher(refreshTokens);

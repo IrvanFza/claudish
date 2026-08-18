@@ -9,19 +9,13 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
+import { cliAnsi } from "./theme/ansi.js";
 
 const isWindows = platform() === "win32";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/claudish/latest";
 
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// ANSI color codes
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
-const GREEN = "\x1b[32m";
-const CYAN = "\x1b[36m";
-const DIM = "\x1b[2m";
 
 interface UpdateCache {
   lastCheck: number;
@@ -244,6 +238,9 @@ export async function checkForUpdates(
 
   // New version available — show single-line notification
   if (!quiet) {
+    // Resolved here, not at module load: theme detection runs at CLI startup,
+    // after this module is imported.
+    const { RESET, BOLD, GREEN, CYAN, DIM } = cliAnsi();
     console.error("");
     console.error(
       `  ${CYAN}\u250c${RESET} ${BOLD}Update available:${RESET} ${currentVersion} ${DIM}\u2192${RESET} ${GREEN}${latestVersion}${RESET}   ${DIM}Run:${RESET} ${BOLD}${CYAN}claudish update${RESET}`

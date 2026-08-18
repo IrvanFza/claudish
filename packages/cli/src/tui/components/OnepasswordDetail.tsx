@@ -98,13 +98,13 @@ export function OnepasswordDetail({ selectedEntry, testResults }: OnepasswordDet
         <span fg={C.blue} attributes={A.bold}>
           {"Kind: "}
         </span>
-        <span fg={C.white}>{kindLabel(selectedEntry.kind)}</span>
+        <span fg={C.strong}>{kindLabel(selectedEntry.kind)}</span>
       </text>
       <text>
         <span fg={C.blue} attributes={A.bold}>
           {"Value: "}
         </span>
-        <span fg={C.white}>{selectedEntry.value}</span>
+        <span fg={C.strong}>{selectedEntry.value}</span>
       </text>
       {selectedEntry.kind === "ref" && selectedEntry.envName && (
         <text>

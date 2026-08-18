@@ -11,17 +11,24 @@
 
 import { execSync } from "node:child_process";
 import { getVersion } from "./cli.js";
+import { cliAnsi } from "./theme/ansi.js";
 import { clearCache, compareVersions, fetchLatestVersionOrThrow } from "./update-checker.js";
 
-// ANSI color codes
-const RESET = "\x1b[0m";
-const BOLD = "\x1b[1m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const CYAN = "\x1b[36m";
-const RED = "\x1b[31m";
-const MAGENTA = "\x1b[35m";
-const DIM = "\x1b[2m";
+// Theme-aware ANSI escapes, shared by every helper below. Refreshed at command
+// entry via refreshAnsi() — NEVER snapshotted at module load, because theme
+// detection runs at CLI startup, after this module is imported.
+let RESET = "";
+let BOLD = "";
+let GREEN = "";
+let YELLOW = "";
+let CYAN = "";
+let RED = "";
+let MAGENTA = "";
+let DIM = "";
+
+function refreshAnsi(): void {
+  ({ RESET, BOLD, GREEN, YELLOW, CYAN, RED, MAGENTA, DIM } = cliAnsi());
+}
 
 interface InstallationInfo {
   method: "npm" | "bun" | "brew" | "unknown";
@@ -347,6 +354,7 @@ async function resolveLatestVersion(): Promise<{ version: string } | { error: st
  * Main update command entry point
  */
 export async function updateCommand(): Promise<void> {
+  refreshAnsi();
   // Get current version and installation info
   const currentVersion = getVersion();
   const installInfo = detectInstallationMethod();

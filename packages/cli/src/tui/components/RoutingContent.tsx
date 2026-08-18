@@ -131,7 +131,7 @@ export function RoutingContent({
         paddingY={1}
       >
         <text>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             {"Route Probe"}
           </span>
         </text>
@@ -144,7 +144,7 @@ export function RoutingContent({
             <span fg={C.green} attributes={A.bold}>
               {"> "}
             </span>
-            <span fg={C.white}>{probeModel}</span>
+            <span fg={C.strong}>{probeModel}</span>
             <span fg={C.cyan}>{"█"}</span>
           </text>
         </box>
@@ -191,7 +191,7 @@ export function RoutingContent({
         {/* Title row */}
         <box flexDirection="row" height={1}>
           <text>
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {probeMode === "done" ? "Probe: " : "Probing: "}
             </span>
             <span fg={C.cyan} attributes={A.bold}>
@@ -267,7 +267,7 @@ export function RoutingContent({
               <text>
                 <span fg={C.dim}>{`${idx + 1}. `}</span>
                 <span
-                  fg={isNoKey ? C.dim : isSelected ? C.white : isNotReached ? C.dim : C.fgMuted}
+                  fg={isNoKey ? C.dim : isSelected ? C.strong : isNotReached ? C.dim : C.fgMuted}
                   attributes={A.boldIf(isSelected)}
                 >
                   {nameCol}
@@ -469,7 +469,7 @@ export function RoutingContent({
                 scopeFg = C.green;
               }
               // Pattern column: white when selected, cyan when user, dim when default.
-              const patFg = sel ? C.white : isDefault ? C.fgMuted : C.cyan;
+              const patFg = sel ? C.strong : isDefault ? C.fgMuted : C.cyan;
               // Chain column: cyan when selected, fgMuted when user, dim when default.
               const chainFg = sel ? C.cyan : isDefault ? C.dim : C.fgMuted;
               return (
@@ -504,7 +504,7 @@ export function RoutingContent({
             <span fg={C.blue} attributes={A.bold}>
               {"Scope for "}
             </span>
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {routingPattern}
             </span>
             <span fg={C.blue} attributes={A.bold}>
@@ -579,7 +579,7 @@ export function RoutingContent({
             <span fg={C.green} attributes={A.bold}>
               {"> "}
             </span>
-            <span fg={C.white}>{routingPattern}</span>
+            <span fg={C.strong}>{routingPattern}</span>
             <span fg={C.cyan}>{"█"}</span>
           </text>
           <text height={1}>
@@ -600,7 +600,7 @@ export function RoutingContent({
             <span fg={C.blue} attributes={A.bold}>
               {"Select providers for "}
             </span>
-            <span fg={C.white} attributes={A.bold}>
+            <span fg={C.strong} attributes={A.bold}>
               {routingPattern}
             </span>
             <span fg={C.dim}>{" (Space=toggle, 1-9=set position, Enter=save)"}</span>
@@ -636,7 +636,7 @@ export function RoutingContent({
                       <span fg={C.dim}>{" [ ] "}</span>
                     )}
                     <span
-                      fg={isCursor ? C.white : ready ? C.fgMuted : C.dim}
+                      fg={isCursor ? C.strong : ready ? C.fgMuted : C.dim}
                       attributes={A.boldIf(isCursor)}
                     >
                       {label}

@@ -63,7 +63,7 @@ export function PrivacyContent({
         </text>
         <text> </text>
         <text>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             Never sends keys, prompts, or paths.
           </span>
         </text>
@@ -105,7 +105,7 @@ export function PrivacyContent({
           <span fg={C.blue} attributes={A.bold}>
             Buffer:{" "}
           </span>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             {bufStats.events}
           </span>
           <span fg={C.fgMuted}> events (</span>

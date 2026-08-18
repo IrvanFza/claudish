@@ -107,7 +107,7 @@ export function ProviderDetail({
             focused={true}
             width={width - 8}
             backgroundColor={C.bgHighlight}
-            textColor={C.white}
+            textColor={C.strong}
           />
         </box>
       </box>
@@ -225,7 +225,7 @@ export function ProviderDetail({
         <span fg={C.blue} attributes={A.bold}>
           Desc:{" "}
         </span>
-        <span fg={C.white}>{selectedProvider.description}</span>
+        <span fg={C.strong}>{selectedProvider.description}</span>
       </text>
       {selectedProvider.keyUrl && (
         <text>

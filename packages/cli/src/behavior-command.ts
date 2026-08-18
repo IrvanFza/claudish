@@ -22,11 +22,27 @@ import {
   resolveSeverity,
 } from "./behavior/index.js";
 import { getConfigPath, loadConfig } from "./profile-config.js";
+import { cliAnsi } from "./theme/ansi.js";
 
-const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
-const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
-const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+// Theme-aware color helpers. cliAnsi() is resolved inside each helper (i.e. at
+// render time), never at module load — theme detection runs at CLI startup,
+// after this module is imported.
+const green = (s: string) => {
+  const a = cliAnsi();
+  return `${a.GREEN}${s}${a.RESET}`;
+};
+const yellow = (s: string) => {
+  const a = cliAnsi();
+  return `${a.YELLOW}${s}${a.RESET}`;
+};
+const dim = (s: string) => {
+  const a = cliAnsi();
+  return `${a.DIM}${s}${a.RESET}`;
+};
+const bold = (s: string) => {
+  const a = cliAnsi();
+  return `${a.BOLD}${s}${a.RESET}`;
+};
 
 function severityColor(sev: string): string {
   if (sev === "fix") return green(sev);

@@ -6,6 +6,7 @@ import { _resetAntigravityTokenState } from "../auth/antigravity-token.js";
 import { getCodexOAuth } from "../auth/codex-oauth.js";
 import { getKimiOAuth } from "../auth/kimi-oauth.js";
 import { setStderrQuiet } from "../logger.js";
+import { applyRendererThemeMode } from "../theme/renderer-theme.js";
 import type { ProviderDef } from "./providers.js";
 
 /** The `claudish login <slug>` argument, derived from the provider catalog. */
@@ -57,6 +58,10 @@ export async function startConfigTui(): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: false, // Core shortcut handler
   });
+
+  // Light/dark palette selection BEFORE first paint — the renderer runs the
+  // OSC theme handshake; an unanswered query resolves null → dark (status quo).
+  await applyRendererThemeMode(renderer);
 
   // When the renderer destroys (either via q/Ctrl-C or App calling
   // renderer.destroy() after setting loginRequest), control returns

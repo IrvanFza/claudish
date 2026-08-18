@@ -145,7 +145,7 @@ export function OnepasswordContent({
           {kindLabel(e.kind).padEnd(5)}
         </span>
         <span fg={C.dim}>{"  "}</span>
-        <span fg={selected ? C.white : C.fgMuted} attributes={A.boldIf(selected)}>
+        <span fg={selected ? C.strong : C.fgMuted} attributes={A.boldIf(selected)}>
           {e.value}
         </span>
         {e.kind === "ref" && e.envName && <span fg={C.dim}>{`  → ${e.envName}`}</span>}
@@ -229,14 +229,14 @@ export function OnepasswordContent({
               <span fg={C.cyan} attributes={A.bold}>
                 {"▴ "}
               </span>
-              <span fg={C.white}>{`project: ${account.project}`}</span>
+              <span fg={C.strong}>{`project: ${account.project}`}</span>
             </>
           ) : account.global ? (
             <>
               <span fg={C.green} attributes={A.bold}>
                 {"• "}
               </span>
-              <span fg={C.white}>{`global: ${account.global}`}</span>
+              <span fg={C.strong}>{`global: ${account.global}`}</span>
             </>
           ) : (
             <span fg={C.fgMuted}>{"○ Not configured"}</span>
@@ -244,17 +244,17 @@ export function OnepasswordContent({
         </text>
         {/* Row 2: key / set / env summary. */}
         <text>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             {String(keyCount)}
           </span>
           <span fg={C.fgMuted}>{` key${keyCount === 1 ? "" : "s"}`}</span>
           <span fg={C.dim}>{"   "}</span>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             {String(setCount)}
           </span>
           <span fg={C.fgMuted}>{` set${setCount === 1 ? "" : "s"}`}</span>
           <span fg={C.dim}>{"   "}</span>
-          <span fg={C.white} attributes={A.bold}>
+          <span fg={C.strong} attributes={A.bold}>
             {String(envCount)}
           </span>
           <span fg={C.fgMuted}>{` environment${envCount === 1 ? "" : "s"}`}</span>

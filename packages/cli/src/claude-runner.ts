@@ -27,6 +27,7 @@ import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
+import { getThemeMode } from "./theme/theme-mode.js";
 import type { ClaudishConfig } from "./types.js";
 
 /**
@@ -276,15 +277,26 @@ export function createStatusLineScript(tokenFilePath: string): string {
   // Escape backslashes for Windows paths in the script
   const escapedTokenPath = tokenFilePath.replace(/\\/g, "\\\\");
 
+  // Bake the DETECTED theme into the generated script: it runs later inside
+  // Claude Code and cannot detect the terminal theme itself. Dark/unknown emits
+  // the classic bright codes byte-identical to before; a positively-detected
+  // light theme emits deep truecolor accents that stay readable on a white page.
+  const light = getThemeMode() === "light";
+  const cyanCode = light ? "38;2;14;116;144" : "96";
+  const yellowCode = light ? "38;2;161;98;7" : "93";
+  const greenCode = light ? "38;2;21;128;61" : "92";
+  const redCode = light ? "38;2;220;38;38" : "91";
+  const magentaCode = light ? "38;2;147;51;234" : "95";
+
   const script = `
 const fs = require('fs');
 const path = require('path');
 
-const CYAN = "\\x1b[96m";
-const YELLOW = "\\x1b[93m";
-const GREEN = "\\x1b[92m";
-const RED = "\\x1b[91m";
-const MAGENTA = "\\x1b[95m";
+const CYAN = "\\x1b[${cyanCode}m";
+const YELLOW = "\\x1b[${yellowCode}m";
+const GREEN = "\\x1b[${greenCode}m";
+const RED = "\\x1b[${redCode}m";
+const MAGENTA = "\\x1b[${magentaCode}m";
 const DIM = "\\x1b[2m";
 const RESET = "\\x1b[0m";
 const BOLD = "\\x1b[1m";
@@ -726,11 +738,16 @@ export function createTempSettingsFile(
     statusCommand = `node "${scriptPath}"`;
   } else {
     // Unix: Use optimized bash script
-    // ANSI color codes for visual enhancement
-    const CYAN = "\\033[96m";
-    const YELLOW = "\\033[93m";
-    const GREEN = "\\033[92m";
-    const MAGENTA = "\\033[95m";
+    // ANSI color codes for visual enhancement. The DETECTED theme is baked in
+    // at generation time — the script runs later inside Claude Code and cannot
+    // detect the theme itself. Dark/unknown emits the classic bright codes
+    // byte-identical to before; a positively-detected light theme emits deep
+    // truecolor accents that stay readable on a white page.
+    const light = getThemeMode() === "light";
+    const CYAN = light ? "\\033[38;2;14;116;144m" : "\\033[96m";
+    const YELLOW = light ? "\\033[38;2;161;98;7m" : "\\033[93m";
+    const GREEN = light ? "\\033[38;2;21;128;61m" : "\\033[92m";
+    const MAGENTA = light ? "\\033[38;2;147;51;234m" : "\\033[95m";
     const DIM = "\\033[2m";
     const RESET = "\\033[0m";
     const BOLD = "\\033[1m";

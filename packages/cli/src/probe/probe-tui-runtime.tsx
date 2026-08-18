@@ -13,6 +13,7 @@
 
 import { createCliRenderer } from "@opentui/core";
 import { type Root, createRoot } from "@opentui/react";
+import { applyRendererThemeMode } from "../theme/renderer-theme.js";
 import { ProbeApp, type ProbeAppState, ProbeStore } from "./probe-tui-app.js";
 
 export interface ProbeRuntime {
@@ -28,7 +29,8 @@ export async function startProbeTui(initial: ProbeAppState): Promise<ProbeRuntim
     stdout: process.stderr as unknown as NodeJS.WriteStream,
     // Inline rendering — do NOT take over the full screen. This lets the
     // final probe results persist in the scrollback after shutdown.
-    useAlternateScreen: false,
+    // (0.1.107 spelling — `useAlternateScreen` was renamed to `screenMode`.)
+    screenMode: "main-screen",
     // Mouse tracking ON so the scroll wheel drives the model-list scrollbox.
     // The scrollbox (focused) consumes wheel MouseEvents via its built-in
     // onMouseEvent. Trade-off accepted: while the probe is LIVE, the wheel
@@ -38,6 +40,11 @@ export async function startProbeTui(initial: ProbeAppState): Promise<ProbeRuntim
     useMouse: true,
     exitOnCtrlC: true,
   });
+
+  // Select the light/dark palette BEFORE first paint. Also feeds the static
+  // results printer, which runs later in this same process and reads the same
+  // mutable palette.
+  await applyRendererThemeMode(renderer);
 
   const store = new ProbeStore(initial);
 
