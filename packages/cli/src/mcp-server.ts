@@ -36,6 +36,7 @@ import {
   computeQuickPicks,
   getRecommendedModels,
   groupRecommendedModels,
+  formatListingPrice,
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
@@ -606,7 +607,7 @@ function defineTools(
 
       const renderGroup = (group: RecommendedModelGroup): string => {
         const m = group.primary;
-        const pricing = normalizePricingDisplay(m.pricing?.average);
+        const pricing = formatListingPrice(m);
         const ctx = m.context || "N/A";
         const caps: string[] = [];
         if (m.supportsTools) caps.push("tools");

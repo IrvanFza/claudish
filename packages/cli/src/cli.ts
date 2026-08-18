@@ -25,6 +25,7 @@ import {
   getTop100Models,
   groupRecommendedModels,
   loadModelInfo,
+  formatListingPrice,
   normalizePricingDisplay,
   searchModels,
 } from "./model-loader.js";
@@ -1027,7 +1028,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
     const modelId = rawId.length > 28 ? `${rawId.substring(0, 25)}...` : rawId;
     const modelIdPadded = modelId.padEnd(28);
 
-    const pricing = normalizePricingDisplay(m.pricing?.average);
+    const pricing = formatListingPrice(m, { compact: true });
     const pricingPadded = pricing.padEnd(10);
 
     const context = m.context || "N/A";
@@ -1332,6 +1333,66 @@ async function probeModelRouting(
   }
 
   /**
+   * The ONE chain entry an explicit `provider@model` address resolves to.
+   *
+   * `buildModelChain` returns `routes: []` for an explicit spec because there is
+   * no fallback chain to walk — it is pinned to a single provider. Emitting that
+   * raw made `--probe --json` report `chain: []` for a perfectly healthy model,
+   * with the real outcome hidden in `directProbe`. Anyone reading `chain` to
+   * decide routability concluded "dead route": `dv@swe-1.7` was filed as
+   * unroutable twice while it was serving 509-token replies.
+   *
+   * So an explicit address now yields a ONE-ITEM chain, and `[]` is reserved for
+   * its literal meaning — no provider can serve this, whether because the
+   * provider name resolves to nothing or because no fallback exists. Empty now
+   * says "no route" in both the bare and explicit cases instead of doubling as
+   * "not applicable here".
+   *
+   * Shared with `buildResultLinks` on purpose: the TUI row and the JSON chain
+   * disagreeing about the same address is the defect, not a rendering detail.
+   */
+  function buildDirectChainEntry(
+    parsed: ReturnType<typeof parseModelSpec>,
+    directProbe: ProbeResult | undefined
+  ): ReturnType<typeof buildModelChain>["chainDetails"] {
+    const providerDef = getProviderByName(parsed.provider);
+    const keyInfo = API_KEY_MAP[parsed.provider];
+    // Nothing known by this name — genuinely unroutable, so the chain stays
+    // empty and now MEANS empty.
+    if (!providerDef && !keyInfo) return [];
+
+    let hasCredentials: boolean;
+    let provenance: KeyProvenance | undefined;
+    if (providerDef?.isLocal) {
+      hasCredentials = isLocalProviderEnabled(parsed.provider);
+    } else if (!keyInfo?.envVar) {
+      hasCredentials = true;
+    } else {
+      provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+      hasCredentials =
+        provenance.hasValue || (keyInfo.aliases?.some((a) => !!process.env[a]) ?? false);
+    }
+
+    return [
+      {
+        provider: parsed.provider,
+        displayName: providerDef?.displayName ?? parsed.provider,
+        // The RESOLVED bare id, never the raw provider@-prefixed input, so the
+        // row never reads `provider@provider@model`.
+        modelSpec: parsed.model,
+        hasCredentials,
+        credentialHint: !hasCredentials
+          ? providerDef?.isLocal
+            ? "enable local provider in global config"
+            : keyInfo?.envVar
+          : undefined,
+        provenance,
+        probe: directProbe,
+      },
+    ];
+  }
+
+  /**
    * Build the provider-comparison links the Details tab renders. For EXPLICIT /
    * direct models buildModelChain returns an empty chain (the probe lives in
    * directProbe), so we synthesize a single link carrying that probe — the model
@@ -1568,7 +1629,13 @@ async function probeModelRouting(
           isExplicit: parsed.isExplicitProvider,
           routingSource: chain.source,
           matchedPattern: chain.matchedPattern,
-          chain: chainDetails,
+          // An explicit address resolves to exactly ONE route, so report it as a
+          // one-item chain rather than `[]`. `directProbe` stays for
+          // backwards-compatible readers.
+          chain:
+            chainDetails.length > 0
+              ? chainDetails
+              : buildDirectChainEntry(parsed, directProbeResult),
           directProbe: directProbeResult,
           wiring,
         });

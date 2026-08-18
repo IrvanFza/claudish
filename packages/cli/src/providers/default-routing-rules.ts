@@ -126,6 +126,26 @@ export const DEFAULT_ROUTING_RULES: RoutingRules = {
   // a fallback would claim a reachability that does not exist.
   "labs-*": ["mistralai"],
 
+  // Cognition SWE: Devin only, NO fallback — same shape as `labs-*` above, and
+  // for the same reason: no other provider in the catalog serves it, so naming
+  // a fallback would claim a reachability that does not exist.
+  //
+  // This is a DELIBERATE, NARROW amendment to the "no bare name ever routes to
+  // Devin" rule. That rule exists because Devin re-serves other vendors' models
+  // under uids that collide head-on with their namespaces — `claude-opus-5-high`
+  // matches native-anthropic's `/^claude-/i`, `gpt-5-6-luna-medium` matches
+  // OpenAI's, `glm-5-2` GLM's — so a bare name reaching Devin would answer as
+  // the wrong vendor. `swe-*` is the one family that is COGNITION'S OWN: it
+  // collides with nothing, no other provider in the catalog carries it, and the
+  // hosted catalog attributes it to `cognition-devin`. Without this rule the
+  // bare id matched nothing, fell through to native-anthropic, and was silently
+  // rewritten to `claude-opus-4-1` — a healthy backend made unreachable through
+  // the catalog's own identifier, answered by another vendor's model.
+  //
+  // The invariant still holds everywhere it was aimed: no COLLIDING bare name
+  // reaches Devin. Do not generalise this entry to Devin's re-served families.
+  "swe-*": ["devin"],
+
   // Sakana Fugu: subscription first, then token API. NO hardcoded openrouter —
   // we don't claim OpenRouter carries the model; it's reachable explicitly via
   // or@sakana/fugu (catalog-resolved). The bare "fugu" id needs its own exact
