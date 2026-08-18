@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "presets": [],
+  "imports": [
+    "community:lej-output-fixer--walk-me-through-it"
+  ],
+  "hash": "sha256:37bd448865af7d65c98d956434100b73",
+  "updatedAt": "2026-08-18T15:22:16.747Z"
+}
