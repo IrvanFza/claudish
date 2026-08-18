@@ -4,6 +4,7 @@ import {
   type AntigravityTokenDeps,
   _resetAntigravityTokenState,
   deleteSharedAntigravityToken,
+  forceRefreshAntigravityToken,
   getValidAntigravityAccessToken,
   readSharedAntigravityToken,
   writeSharedAntigravityToken,
@@ -40,7 +41,10 @@ function decodeStore(raw: string): StoreRecord {
 
 function makeFakeDeps(
   initialStore: string | null,
-  onRefresh: (setStore: (raw: string | null) => void) => void = () => {}
+  onRefresh: (
+    setStore: (raw: string | null) => void,
+    getStore: () => string | null
+  ) => void = () => {}
 ) {
   let store = initialStore;
   let refreshCallCount = 0;
@@ -62,7 +66,7 @@ function makeFakeDeps(
     },
     runAgyRefresh: () => {
       refreshCallCount += 1;
-      onRefresh(setStore);
+      onRefresh(setStore, () => store);
     },
     now: () => NOW,
   };
@@ -218,6 +222,151 @@ describe("getValidAntigravityAccessToken", () => {
         "single-flight-access-token",
         "single-flight-access-token",
       ]);
+      expect(fake.getRefreshCallCount()).toBe(1);
+    }
+  );
+});
+
+describe("forceRefreshAntigravityToken", () => {
+  test.skipIf(process.platform !== "darwin")(
+    "forces agy to re-mint a locally valid token rejected upstream",
+    async () => {
+      const original = makeToken({
+        access_token: "server-rejected-token",
+        expiry: new Date(NOW + 30 * 60_000).toISOString(),
+      });
+      let agyCalls = 0;
+      const fake = makeFakeDeps(
+        encodeStore({ token: original, id_token: "preserved-id-token" }),
+        (setStore, getStore) => {
+          const raw = getStore();
+          if (!raw) return;
+          const rec = decodeStore(raw);
+          if (Date.parse(rec.token.expiry) > NOW) return;
+
+          setStore(
+            encodeStore({
+              ...rec,
+              token: {
+                ...rec.token,
+                access_token: "fresh-token",
+                expiry: new Date(NOW + 60 * 60_000).toISOString(),
+              },
+            })
+          );
+          agyCalls += 1;
+        }
+      );
+
+      await expect(forceRefreshAntigravityToken(fake.deps)).resolves.toBe("fresh-token");
+      expect(agyCalls).toBe(1);
+      expect(fake.getRefreshCallCount()).toBe(1);
+      expect(decodeStore(fake.getStore()!).token.access_token).toBe("fresh-token");
+    }
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "restores the original store byte-for-byte when agy does not write",
+    async () => {
+      const originalStore = encodeStore({
+        token: makeToken({
+          access_token: "original-token",
+          expiry: new Date(NOW + 30 * 60_000).toISOString(),
+        }),
+        id_token: "original-id-token",
+        auth_method: "oauth",
+        preserved_field: "preserved-value",
+      });
+      const fake = makeFakeDeps(originalStore);
+
+      await expect(forceRefreshAntigravityToken(fake.deps)).rejects.toThrow(
+        /could not be re-minted/
+      );
+      expect(fake.getStore()).toBe(originalStore);
+      expect(fake.getRefreshCallCount()).toBe(1);
+    }
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "keeps agy's unusable replacement instead of restoring the original",
+    async () => {
+      const agyToken = makeToken({
+        access_token: "agy-stale-token",
+        expiry: new Date(NOW + 60_000).toISOString(),
+      });
+      const fake = makeFakeDeps(
+        encodeStore({
+          token: makeToken({
+            access_token: "original-token",
+            expiry: new Date(NOW + 30 * 60_000).toISOString(),
+          }),
+        }),
+        (setStore) => setStore(encodeStore({ token: agyToken, id_token: "agy-id-token" }))
+      );
+
+      await expect(forceRefreshAntigravityToken(fake.deps)).rejects.toThrow(
+        /could not be re-minted/
+      );
+      expect(decodeStore(fake.getStore()!)).toEqual({
+        token: agyToken,
+        id_token: "agy-id-token",
+      });
+      expect(decodeStore(fake.getStore()!).token.access_token).not.toBe("original-token");
+    }
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "rejects when no Antigravity session exists",
+    async () => {
+      const fake = makeFakeDeps(null);
+
+      await expect(forceRefreshAntigravityToken(fake.deps)).rejects.toThrow(
+        /No Antigravity session found/
+      );
+      expect(fake.getRefreshCallCount()).toBe(0);
+      expect(fake.writes).toHaveLength(0);
+    }
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "makes the refreshed token visible to the next valid-token lookup",
+    async () => {
+      const fake = makeFakeDeps(
+        encodeStore({
+          token: makeToken({
+            access_token: "original-token",
+            expiry: new Date(NOW + 30 * 60_000).toISOString(),
+          }),
+        }),
+        (setStore, getStore) => {
+          const raw = getStore();
+          if (!raw) return;
+          const rec = decodeStore(raw);
+          if (Date.parse(rec.token.expiry) > NOW) return;
+          setStore(
+            encodeStore({
+              ...rec,
+              token: {
+                ...rec.token,
+                access_token: "fresh-token",
+                expiry: new Date(NOW + 60 * 60_000).toISOString(),
+              },
+            })
+          );
+        }
+      );
+
+      // Leave the original-token lookup pending in the single-flight slot, then
+      // force the refresh and ask again before any promise continuation runs.
+      // Without forceRefreshAntigravityToken() dropping cached state up front,
+      // the final lookup aliases the stale promise and returns original-token.
+      const staleLookup = getValidAntigravityAccessToken(fake.deps);
+      const forcedRefresh = forceRefreshAntigravityToken(fake.deps);
+      const postRefreshLookup = getValidAntigravityAccessToken(fake.deps);
+
+      await expect(staleLookup).resolves.toBe("original-token");
+      await expect(forcedRefresh).resolves.toBe("fresh-token");
+      await expect(postRefreshLookup).resolves.toBe("fresh-token");
       expect(fake.getRefreshCallCount()).toBe(1);
     }
   );

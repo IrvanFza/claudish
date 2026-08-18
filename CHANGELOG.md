@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.53.0] - 2026-08-17
+
+### Bug Fixes
+
+- stop reporting a transient 429 as terminal quota exhaustion *(antigravity)* ([`889e532`](https://github.com/MadAppGang/claudish/commit/889e532f6063afc82da699f9b807e873ef933805))
+- drive magmux over its socket, not through a pty *(test)* ([`697d9ff`](https://github.com/MadAppGang/claudish/commit/697d9fff361902726b9bc057590e99d1d0b81e38))
+
+### Documentation
+
+- move the predefined-endpoints evidence somewhere it survives([`c01268f`](https://github.com/MadAppGang/claudish/commit/c01268f32c18789b2a9e811671b473ca1a51d19f))
+- update CHANGELOG.md for v7.52.0([`08dfbf7`](https://github.com/MadAppGang/claudish/commit/08dfbf7a9de24617040ff983856760fdbd9ffdf4))
+
+### Other Changes
+
+- v7.53.0 — Antigravity transient 429 no longer reported as terminal quota exhaustion([`240244c`](https://github.com/MadAppGang/claudish/commit/240244c80671ab76f47f6a814cd7fa130d9fbdc0))
+
+## [7.52.0] - 2026-08-17
+
+### Bug Fixes
+
+- close the bug report's remaining findings, and a test-isolation defect([`e46898e`](https://github.com/MadAppGang/claudish/commit/e46898edd46deae43fe8b63893b33c62f56578ed))
+- ignore magmux's control panel when reading pane results *(team-grid)* ([`483cc83`](https://github.com/MadAppGang/claudish/commit/483cc832331a8903ed212e2bcc09d43d4645e1e9))
+- actually stop timed-out children, and stop discarding their answers *(team)* ([`26865dc`](https://github.com/MadAppGang/claudish/commit/26865dccfadcff8ce48de606fff2c535189db62e))
+- source reasoning capability from the catalog, not hardcoded gates *(adapters)* ([`80d5766`](https://github.com/MadAppGang/claudish/commit/80d5766c13b19ddf64d6376f19cdb664b07ed294))
+- stop silently discarding reasoning_effort on new xAI models *(grok)* ([`b7c61d3`](https://github.com/MadAppGang/claudish/commit/b7c61d3d6f72529699e7a02ef31c3c5d116a2a2c))
+- ignore magmux's control panel when reading pane results *(team-grid)* ([`b8c456a`](https://github.com/MadAppGang/claudish/commit/b8c456a94e9f2fecad31c937420a49159fb0eaa8))
+
+### Documentation
+
+- update CHANGELOG.md for v7.51.0([`1913b82`](https://github.com/MadAppGang/claudish/commit/1913b822152e20f3ecf86250b35d310fa4676728))
+
+### Other Changes
+
+- v7.52.0 - enforce team timeouts, and unbreak grok-4.6 reasoning effort([`59e717b`](https://github.com/MadAppGang/claudish/commit/59e717b110637f26597294a945c9b8cb957da8b6))
+
 ## [7.51.0] - 2026-08-17
 
 ### Documentation

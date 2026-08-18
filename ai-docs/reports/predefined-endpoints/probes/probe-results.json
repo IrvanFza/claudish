@@ -1,0 +1,570 @@
+[
+  {
+    "name": "groq",
+    "envVar": "GROQ_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.groq.com/openai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Invalid API Key\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "cerebras",
+    "envVar": "CEREBRAS_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.cerebras.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"message\":\"Wrong API Key\",\"type\":\"invalid_request_error\",\"param\":\"api_key\",\"code\":\"wrong_api_key\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "together",
+    "envVar": "TOGETHER_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.together.xyz",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.together.xyz/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json; charset=utf-8",
+        "bodyHead": "{\n  \"id\": \"ow6ZvS7-2kFHot-a2abba1e8dce2fb0\",\n  \"error\": {\n    \"message\": \"Invalid API key provided. You can find your API key at https://api.together.ai/settings/api-keys.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": null,\n    \"code\": \"invalid_api_key\"\n  }\n}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "fireworks",
+    "envVar": "FIREWORKS_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "status": 404,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Model not found, inaccessible, and/or not deployed\",\"param\":\"model\",\"code\":\"NOT_FOUND\",\"type\":\"error\"},\"request_id\":\"chatcmpl-d6a1aee424a045bd8546c2c6e98683b4\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      },
+      {
+        "url": "https://api.fireworks.ai/inference/chat/completions",
+        "status": 404,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Path not found: /chat/completions\",\"param\":null,\"code\":\"NOT_FOUND\",\"type\":\"error\"},\"request_id\":\"0a9aa909-cf14-4fc6-957b-c668bf203f1e\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "deepinfra",
+    "envVar": "DEEPINFRA_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.deepinfra.com/v1/openai",
+    "chosenApiPath": "/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.deepinfra.com/v1/openai/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"User is not authorized to access this resource\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_api_key\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "nebius",
+    "envVar": "NEBIUS_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.studio.nebius.com",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.studio.nebius.com/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"detail\":\"Couldn't authenticate. Reason: Unable authenticate\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "hyperbolic",
+    "envVar": "HYPERBOLIC_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.hyperbolic.xyz",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.hyperbolic.xyz/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"detail\":\"Could not validate credentials\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "sambanova",
+    "envVar": "SAMBANOVA_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.sambanova.ai/v1/chat/completions",
+        "status": 404,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"The model `probe-nonexistent-model` does not exist or you do not have access to it.\",\"param\":\"model\",\"type\":\"invalid_request_error\"},\"request_id\":\"82b8f479\"}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      },
+      {
+        "url": "https://api.sambanova.ai/chat/completions",
+        "status": 404,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"The model `probe-nonexistent-model` does not exist or you do not have access to it.\",\"param\":\"model\",\"type\":\"invalid_request_error\"},\"request_id\":\"903cdec5\"}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "novita",
+    "envVar": "NOVITA_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.novita.ai/v3/openai",
+    "chosenApiPath": "/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.novita.ai/v3/openai/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"code\":401, \"reason\":\"FAILED_TO_AUTH\", \"message\":\"failed to authenticate API key\", \"metadata\":{}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "baseten",
+    "envVar": "BASETEN_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://inference.baseten.co",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://inference.baseten.co/v1/chat/completions",
+        "status": 403,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":\"please check the api-key you provided\"}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "perplexity",
+    "envVar": "PERPLEXITY_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.perplexity.ai",
+    "chosenApiPath": "/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.perplexity.ai/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Invalid API key provided. You can find your API key at https://www.perplexity.ai/settings/api.\",\"type\":\"invalid_api_key\",\"code\":401}}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "nvidia",
+    "envVar": "NVIDIA_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "status": 404,
+        "contentType": "text/plain; charset=utf-8",
+        "bodyHead": "404 page not found\n",
+        "isJson": false,
+        "hasErrorObject": false
+      },
+      {
+        "url": "https://integrate.api.nvidia.com/chat/completions",
+        "status": 404,
+        "contentType": "text/plain; charset=utf-8",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false
+      }
+    ]
+  },
+  {
+    "name": "lambda",
+    "envVar": "LAMBDA_API_KEY",
+    "verdict": "unreachable",
+    "attempts": [
+      {
+        "url": "https://api.lambda.ai/v1/chat/completions",
+        "status": null,
+        "contentType": "",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false,
+        "networkError": "Error: Unable to connect. Is the computer able to access the url?"
+      },
+      {
+        "url": "https://api.lambda.ai/chat/completions",
+        "status": null,
+        "contentType": "",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false,
+        "networkError": "Error: Was there a typo in the url or port?"
+      }
+    ]
+  },
+  {
+    "name": "venice",
+    "envVar": "VENICE_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.venice.ai/api",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.venice.ai/api/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json; charset=utf-8",
+        "bodyHead": "{\"error\":\"Authentication failed\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "chutes",
+    "envVar": "CHUTES_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://llm.chutes.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://llm.chutes.ai/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"detail\":\"Invalid token.\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "featherless",
+    "envVar": "FEATHERLESS_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.featherless.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.featherless.ai/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json; charset=utf-8",
+        "bodyHead": "{\"error\":{\"message\":\"You must be signed in to access this resource\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"unauthorized\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "parasail",
+    "envVar": "PARASAIL_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.parasail.io/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json;charset=ISO-8859-1",
+        "bodyHead": "Unauthorized. Invalid token.\n",
+        "isJson": false,
+        "hasErrorObject": false
+      },
+      {
+        "url": "https://api.parasail.io/chat/completions",
+        "status": 401,
+        "contentType": "application/json;charset=ISO-8859-1",
+        "bodyHead": "Unauthorized. Invalid token.\n",
+        "isJson": false,
+        "hasErrorObject": false
+      }
+    ]
+  },
+  {
+    "name": "kluster",
+    "envVar": "KLUSTER_API_KEY",
+    "verdict": "unreachable",
+    "attempts": [
+      {
+        "url": "https://api.kluster.ai/v1/chat/completions",
+        "status": null,
+        "contentType": "",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false,
+        "networkError": "Error: Unable to connect. Is the computer able to access the url?"
+      },
+      {
+        "url": "https://api.kluster.ai/chat/completions",
+        "status": null,
+        "contentType": "",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false,
+        "networkError": "Error: Was there a typo in the url or port?"
+      }
+    ]
+  },
+  {
+    "name": "inference-net",
+    "envVar": "INFERENCE_NET_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.inference.net",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.inference.net/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"InvalidApiKey\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "aimlapi",
+    "envVar": "AIMLAPI_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.aimlapi.com",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.aimlapi.com/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/problem+json; charset=utf-8",
+        "bodyHead": "{\"title\":\"Unauthorized\",\"status\":401,\"message\":\"Invalid JWT token #1.\",\"instance\":\"/v1/chat/completions\",\"requestId\":\"2Ve05-eqq6geWXTKfqgZB\",\"timestamp\":\"2026-08-14T00:08:50.905Z\",\"error\":{\"name\":\"UnauthorizedException\",\"message\":\"Invalid JWT token #1.\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "requesty",
+    "envVar": "REQUESTY_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://router.requesty.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://router.requesty.ai/v1/chat/completions",
+        "status": 403,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"origin\":\"router\",\"message\":\"Invalid authorization token\"}}\n",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "nanogpt",
+    "envVar": "NANOGPT_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://nano-gpt.com/api",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://nano-gpt.com/api/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Invalid session\",\"type\":\"invalid_api_key\",\"code\":\"invalid_api_key\",\"status\":401}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "cohere",
+    "envVar": "COHERE_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.cohere.ai/compatibility",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.cohere.ai/compatibility/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"id\":\"2faf6567-18ab-4f60-bcb3-9376fca5f68b\",\"message\":\"Incorrect API key provided: *************************************0000. You can find your API key at https://dashboard.cohere.com/api-keys.\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "scaleway",
+    "envVar": "SCALEWAY_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.scaleway.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.scaleway.ai/v1/chat/completions",
+        "status": 403,
+        "contentType": "application/json",
+        "bodyHead": "{\"status\":403,\"error\":\"FORBIDDEN\",\"message\":\"insufficient permissions to access the resource\"}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "upstage",
+    "envVar": "UPSTAGE_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.upstage.ai",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.upstage.ai/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Your API key is invalid. Please verify your API key or generate a new one from our API keys management page (https://console.upstage.ai/api-keys). Remember to keep your API keys secure and never share them publicly\",\"type\":\"invalid_request_error\",\"param\":\"\",\"code\":\"invalid_api_key\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "writer",
+    "envVar": "WRITER_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.writer.com/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"tpe\":\"fail.auth\",\"errors\":[{\"description\":\"Authentication Error, Invalid proxy server token passed. Received API Key = sk-...0000, Key Hash (Token) =<redacted: sha256 of the invalid probe key>. Unable to find token in cache or `LiteLLM_VerificationTokenTable`\",\"key\":\"fail.auth.generic\",\"extras\":\"key\"}],\"extras\":null}",
+        "isJson": true,
+        "hasErrorObject": false
+      },
+      {
+        "url": "https://api.writer.com/chat/completions",
+        "status": 405,
+        "contentType": "text/html; charset=utf-8",
+        "bodyHead": "<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx/1.30.1</center>\r\n<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML=\"window.__CF$cv$params={r:'a2abba463c4fbe91',t:'MTc4NjY2NjEzMw=='};var a=document.createElement('script');a.s",
+        "isJson": false,
+        "hasErrorObject": false
+      }
+    ]
+  },
+  {
+    "name": "gmi",
+    "envVar": "GMI_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.gmi-serving.com/v1/chat/completions",
+        "status": 404,
+        "contentType": "text/plain;charset=UTF-8",
+        "bodyHead": "No matching target server found for model probe-nonexistent-model",
+        "isJson": false,
+        "hasErrorObject": false
+      },
+      {
+        "url": "https://api.gmi-serving.com/chat/completions",
+        "status": 404,
+        "contentType": "text/plain;charset=UTF-8",
+        "bodyHead": "No matching target server found for model probe-nonexistent-model",
+        "isJson": false,
+        "hasErrorObject": false
+      }
+    ]
+  },
+  {
+    "name": "targon",
+    "envVar": "TARGON_API_KEY",
+    "verdict": "not-openai-shape",
+    "attempts": [
+      {
+        "url": "https://api.targon.com/v1/chat/completions",
+        "status": 410,
+        "contentType": "",
+        "bodyHead": "",
+        "isJson": false,
+        "hasErrorObject": false
+      },
+      {
+        "url": "https://api.targon.com/chat/completions",
+        "status": 404,
+        "contentType": "text/plain; charset=utf-8",
+        "bodyHead": "404 page not found\n",
+        "isJson": false,
+        "hasErrorObject": false
+      }
+    ]
+  },
+  {
+    "name": "moonshot-cn",
+    "envVar": "MOONSHOT_CN_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.moonshot.cn",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.moonshot.cn/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json; charset=utf-8",
+        "bodyHead": "{\"error\":{\"message\":\"Invalid Authentication\",\"type\":\"invalid_authentication_error\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  },
+  {
+    "name": "tuningengines",
+    "envVar": "TUNING_ENGINES_API_KEY",
+    "verdict": "authenticated",
+    "chosenBaseUrl": "https://api.tuningengines.com",
+    "chosenApiPath": "/v1/chat/completions",
+    "attempts": [
+      {
+        "url": "https://api.tuningengines.com/v1/chat/completions",
+        "status": 401,
+        "contentType": "application/json",
+        "bodyHead": "{\"error\":{\"message\":\"Provider authentication failed. Check the model provider credential configured for this deployment. Provider said: 401: Invalid API key format\",\"type\":\"auth_error\",\"param\":\"None\",\"code\":\"401\"}}",
+        "isJson": true,
+        "hasErrorObject": true
+      }
+    ]
+  }
+]
