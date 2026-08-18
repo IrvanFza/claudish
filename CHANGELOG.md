@@ -6,12 +6,20 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Bug Fixes
 
-- one index-mapping layer, applied on both parser branches *(anthropic-sse)* ([#200](https://github.com/MadAppGang/claudish/pull/200)) — closes [#127](https://github.com/MadAppGang/claudish/issues/127), thanks [@jsboige](https://github.com/jsboige)
-- honour the streamFormat a config already declares *(custom-endpoints)* ([#201](https://github.com/MadAppGang/claudish/pull/201)) — closes [#183](https://github.com/MadAppGang/claudish/issues/183), thanks [@jsboige](https://github.com/jsboige)
+- one index-mapping layer, applied on both parser branches (#200) *(anthropic-sse)* ([`b48042c`](https://github.com/MadAppGang/claudish/commit/b48042cbbee73501ceae755ecacf5e3c9b3fbbdc))
+- honour the streamFormat a config already declares (#201) *(custom-endpoints)* ([`7500062`](https://github.com/MadAppGang/claudish/commit/7500062e3328ec479fcfd9d1135a2b2b37b94f28))
 
-### Refactor
+### Documentation
 
-- resolve a model dialect with a function, not a manager *(adapters)* ([#202](https://github.com/MadAppGang/claudish/pull/202)) — closes [#79](https://github.com/MadAppGang/claudish/issues/79), thanks [@MayCXC](https://github.com/MayCXC)
+- update CHANGELOG.md for v7.54.0([`ac7aaaf`](https://github.com/MadAppGang/claudish/commit/ac7aaafe4f89e2dfff1397bc7b525b82325e2234))
+
+### Other Changes
+
+- v7.55.0 — community PR round (#203)([`a97958c`](https://github.com/MadAppGang/claudish/commit/a97958c5f56e3a4e8598d16401c783d6a0c806c4))
+
+### Refactoring
+
+- resolve a model dialect with a function, not a manager (#202) *(adapters)* ([`e658a4c`](https://github.com/MadAppGang/claudish/commit/e658a4ce1d638c66810cabd926f41d511f708c34))
 
 ## [7.54.0] - 2026-08-18
 
