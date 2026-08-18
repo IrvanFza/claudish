@@ -2,6 +2,29 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.61.0] - 2026-08-18
+
+### Bug Fixes
+
+- auth gate — detect macOS Keychain OAuth so classifier passthrough works pure-Codex on macOS([`95b682d`](https://github.com/MadAppGang/claudish/commit/95b682d592722c242f3bea5d07d10066f8de89bc))
+- attach a per-conversation prompt_cache_key to Responses requests *(codex)* ([`9e059f3`](https://github.com/MadAppGang/claudish/commit/9e059f319eae7f9bb74dd41bd667419edd3c867a))
+- stop sending reasoning_effort alongside thinking_budget *(qwen)* ([`9199adb`](https://github.com/MadAppGang/claudish/commit/9199adb467dc45953e1adeeba9f5718618d5eec1))
+- stop blaming the credential when the provider handed back a fix *(errors)* ([`586e0ea`](https://github.com/MadAppGang/claudish/commit/586e0ead7ed7fc7a78c42d8c60ef04516cd5a2c4))
+
+### Documentation
+
+- say what CLAUDISH_CLASSIFIER_DEBUG actually writes *(classifier)* ([`9ad0b6f`](https://github.com/MadAppGang/claudish/commit/9ad0b6f62f7c3de6ed831e1f5b686a93b3cb6b51))
+- update CHANGELOG.md for v7.60.0([`9ba1d3c`](https://github.com/MadAppGang/claudish/commit/9ba1d3cdddcdd124de80ef40a18ec3f0b8bd8e88))
+
+### New Features
+
+- classifier passthrough — run auto-mode permission classifier on native Anthropic([`c460eb6`](https://github.com/MadAppGang/claudish/commit/c460eb6ce4bab4c4ad5040164dc12e47df1c3913))
+- live model discovery for glm (Z.AI pay-as-you-go) *(providers)* ([`105f785`](https://github.com/MadAppGang/claudish/commit/105f78544196ec90e2bf7c3a6ad7a6926efc9744))
+
+### Other Changes
+
+- v7.61.0 — qwen reasoning-knob conflict, actionable-link errors, glm discovery([`8461a0b`](https://github.com/MadAppGang/claudish/commit/8461a0b1f705a6ba696d27f19f342a50a7afb239))
+
 ## [7.60.0] - 2026-08-18
 
 ### Documentation
