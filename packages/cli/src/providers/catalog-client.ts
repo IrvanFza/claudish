@@ -140,9 +140,21 @@ export function getCatalogEntries(): SlimModelEntry[] | null {
  * serves a probe, and preferring the base id keeps the choice deterministic.
  */
 export function latestOpusModelId(): string | null {
+  return latestAnthropicTierModelId("opus");
+}
+
+/**
+ * The newest Anthropic model id for a Claude Code tier, or null when the catalog
+ * is cold or lists none. Same rule as `latestOpusModelId` (which delegates here),
+ * generalised because `--probe sonnet` and `--probe haiku` need the same answer
+ * for their own tiers — substituting an Opus id for `sonnet` would report a
+ * different model than the one asked about.
+ */
+export function latestAnthropicTierModelId(tier: "opus" | "sonnet" | "haiku"): string | null {
   const entries = getCatalogEntries();
   if (!entries) return null;
-  const opus = entries.filter((e) => /^claude-opus-/i.test(e.modelId));
+  const family = new RegExp(`^claude-${tier}-`, "i");
+  const opus = entries.filter((e) => family.test(e.modelId));
   if (opus.length === 0) return null;
   opus.sort((a, b) => {
     const byDate = (b.releaseDate ?? "").localeCompare(a.releaseDate ?? "");

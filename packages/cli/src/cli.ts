@@ -50,7 +50,8 @@ import {
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
-import { latestOpusModelId } from "./providers/catalog-client.js";
+import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
+import { claudeCodeTierAlias } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -1197,25 +1198,42 @@ async function probeModelRouting(
       // NOTE: mirrors the upstream proxy precedence; a later routing worktree
       // may fold this into a shared helper.
       if (parsed.provider === "native-anthropic") {
-        // The probe hits the Anthropic API directly, so this must be a real
-        // API-valid model id. It used to be the literal `claude-opus-4-1`, under
-        // a comment asserting that was "the current Opus alias the API accepts
-        // (verified against api.anthropic.com)" and that `claude-opus-4-8` was
-        // rejected. Measured 2026-08-18 against the real API, BOTH claims are
-        // now false: `claude-opus-4-1` returns 404 not_found_error, and
-        // `claude-opus-4-8` returns 200. A verification note carries no expiry,
-        // so it stayed confident long after the fact changed — which is exactly
-        // the failure mode the no-hardcoded-model-data rule exists to prevent.
+        // Substitute a concrete id ONLY for a Claude Code TIER ALIAS.
         //
-        // Resolved by RULE instead: newest released `claude-opus-*` in the
-        // catalog. The literal below is a cold-catalog last resort only (no
-        // cache on a first run), and is deliberately the newest id verified 200
-        // today rather than a stable-looking alias.
-        const opusModel =
-          process.env[ENV.CLAUDISH_MODEL_OPUS] ||
-          process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL] ||
-          latestOpusModelId() ||
-          "claude-opus-5";
+        // `parseModelSpec` sends every unrecognised bare name here, so this
+        // branch receives two different things. `opus` / `sonnet` / `internal`
+        // are Claude Code's own selectors: the API rejects them as model ids
+        // while the ROUTE is healthy, so they must be resolved to something real
+        // or the probe reports a failure that does not exist. A concrete name
+        // like `swe-1.7` or a typo is the opposite case — `native-handler.ts`
+        // forwards `payload.model` VERBATIM at runtime and Anthropic answers 404,
+        // so substituting here made `--probe` report `live` for a model that
+        // could not serve one request.
+        //
+        // That substitution is why `swe-1.7` "probed byte-identically to a
+        // nonsense string": both were rewritten to the same working id before
+        // the request went out, erasing the difference the probe exists to show.
+        // Unknown names now go through untouched and the API answers for itself.
+        const tier = claudeCodeTierAlias(parsed.model);
+        // The literal is a cold-catalog last resort (first run, no cache, no env
+        // override). It replaced `claude-opus-4-1`, which sat here under a
+        // comment asserting it was "the current Opus alias the API accepts
+        // (verified against api.anthropic.com)" and that `claude-opus-4-8` was
+        // rejected — measured 2026-08-18, that id returns 404 and 4-8 returns
+        // 200, so both halves had rotted. A verification note carries no expiry
+        // date, which is the failure the no-hardcoded-model-data rule prevents.
+        const tierEnv: Record<string, string | undefined> = {
+          opus:
+            process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL],
+          sonnet:
+            process.env[ENV.CLAUDISH_MODEL_SONNET] ||
+            process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL],
+          haiku:
+            process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL],
+        };
+        const opusModel = tier
+          ? tierEnv[tier] || latestAnthropicTierModelId(tier) || "claude-opus-5"
+          : parsed.model;
         // IMPORTANT: pin a BARE model name (no `provider@`). The proxy resolves
         // the native passthrough via `isNative` = no "/" AND no "@" — pinning
         // `native-anthropic@...` would set hasExplicitProvider=true and DEFEAT
@@ -1227,7 +1245,7 @@ async function probeModelRouting(
             {
               provider: "native-anthropic",
               modelSpec: opusModel,
-              displayName: "Claude Code (Opus)",
+              displayName: tier ? `Claude Code (${tier})` : "Claude Code",
             },
           ] as FallbackRoute[],
           source: "auto-chain" as const,

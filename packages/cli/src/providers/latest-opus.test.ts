@@ -4,6 +4,7 @@ import {
   _resetCatalogClient,
   _setCatalogEntriesForTest,
   getCatalogEntries,
+  latestAnthropicTierModelId,
   latestOpusModelId,
 } from "./catalog-client.js";
 
@@ -92,5 +93,54 @@ describe("latestOpusModelId", () => {
     const selected = latestOpusModelId();
     expect(selected).toBe("claude-opus-5");
     expect(selected).not.toBe("claude-opus-4-1");
+  });
+});
+
+describe("latestAnthropicTierModelId", () => {
+  test("sonnet returns the newest Sonnet model and never an Opus model", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry("claude-opus-5", "2027-01-01"),
+      catalogEntry("claude-sonnet-4-5", "2025-09-29"),
+      catalogEntry("claude-sonnet-5", "2026-08-01"),
+    ]);
+
+    const selected = latestAnthropicTierModelId("sonnet");
+    expect(selected).toBe("claude-sonnet-5");
+    expect(selected).not.toMatch(/^claude-opus-/i);
+  });
+
+  test("haiku returns the newest Haiku model and never an Opus model", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry("claude-opus-5", "2027-01-01"),
+      catalogEntry("claude-haiku-4-5", "2025-10-15"),
+      catalogEntry("claude-haiku-5", "2026-08-01"),
+    ]);
+
+    const selected = latestAnthropicTierModelId("haiku");
+    expect(selected).toBe("claude-haiku-5");
+    expect(selected).not.toMatch(/^claude-opus-/i);
+  });
+
+  test("latestOpusModelId agrees with the generic Opus selector", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry("claude-sonnet-5", "2027-01-01"),
+      catalogEntry("claude-opus-4-8", "2025-11-24"),
+      catalogEntry("claude-opus-5", "2026-08-01"),
+    ]);
+
+    expect(latestOpusModelId()).toBe("claude-opus-5");
+    expect(latestOpusModelId()).toBe(latestAnthropicTierModelId("opus"));
+  });
+
+  test("returns null when the requested tier has no rows", () => {
+    _setCatalogEntriesForTest([
+      catalogEntry("claude-opus-5", "2026-08-01"),
+      catalogEntry("claude-sonnet-5", "2026-08-01"),
+    ]);
+
+    expect(latestAnthropicTierModelId("haiku")).toBeNull();
+    expect(latestAnthropicTierModelId("haiku") ?? "claude-haiku-fallback").toBe(
+      "claude-haiku-fallback"
+    );
   });
 });
