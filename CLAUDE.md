@@ -1051,11 +1051,26 @@ Uses the low-level `Server` class (not `McpServer`) from `@modelcontextprotocol/
 - **SignalWatcher** — per-session state machine (starting→running→tool_executing→waiting_for_input→completed/failed/cancelled)
 - **ScrollbackBuffer** — in-memory ring buffer (2000 lines) for session output
 
-### MCP Tools (11 total)
+### MCP Tools (12 total)
 
 - **Low-level** (4): `run_prompt`, `list_models`, `search_models`, `compare_models`
-- **Agentic** (2): `team`, `report_error`
+- **Agentic** (3): `preflight`, `team`, `report_error`
 - **Channel** (5): `create_session`, `send_input`, `get_output`, `cancel_session`, `list_sessions`
+
+`preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
+check a roster before committing to it, so it either shelled out to the CLI or
+discovered provisioning failures minutes in with the slots already spent — a real
+`team` run lost 3 of 10 slots that way. It reports, per model, WHICH provider
+would serve it (via `route()`, the same rules and credential filter a real run
+uses), whether that hop is flat-rate or METERED, and whether it is reachable now.
+The billing column is the non-obvious half: subscription-vs-metered is a property
+of the PROVIDER, not the model, so the same bare name can be free through a plan
+or billed per token depending on which credential is present — which is precisely
+what a caller cannot see from the model id.
+
+The roster is pinned by an EXACT frozen array in `channel/e2e-channel.test.ts`, so
+adding or removing a tool without updating that test fails CI. That is deliberate:
+it is a wire contract, and an accidental change to the tool surface should be loud.
 
 Tool gating via `CLAUDISH_MCP_TOOLS` env var: `all` (default), `low-level`, `agentic`, `channel`.
 

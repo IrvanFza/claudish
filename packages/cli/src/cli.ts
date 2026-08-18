@@ -18,6 +18,7 @@ import {
   type RecommendedModelGroup,
   collectRoutingPrefixes,
   computeQuickPicks,
+  formatListingPrice,
   getAvailableModels,
   getModelsByProvider,
   getProviderList,
@@ -49,6 +50,8 @@ import {
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
+import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
+import { claudeCodeTierAlias } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -1027,7 +1030,7 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
     const modelId = rawId.length > 28 ? `${rawId.substring(0, 25)}...` : rawId;
     const modelIdPadded = modelId.padEnd(28);
 
-    const pricing = normalizePricingDisplay(m.pricing?.average);
+    const pricing = formatListingPrice(m, { compact: true });
     const pricingPadded = pricing.padEnd(10);
 
     const context = m.context || "N/A";
@@ -1195,15 +1198,42 @@ async function probeModelRouting(
       // NOTE: mirrors the upstream proxy precedence; a later routing worktree
       // may fold this into a shared helper.
       if (parsed.provider === "native-anthropic") {
-        // The probe hits the Anthropic API directly, so this must be a real
-        // API-valid model id — NOT Claude Code's internal alias (`claude-opus-4-8`
-        // is the CLI's tier name and the API rejects it with "not a valid model
-        // ID"). `claude-opus-4-1` is the current Opus alias the API accepts
-        // (verified against api.anthropic.com). Honor an explicit override.
-        const opusModel =
-          process.env[ENV.CLAUDISH_MODEL_OPUS] ||
-          process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL] ||
-          "claude-opus-4-1";
+        // Substitute a concrete id ONLY for a Claude Code TIER ALIAS.
+        //
+        // `parseModelSpec` sends every unrecognised bare name here, so this
+        // branch receives two different things. `opus` / `sonnet` / `internal`
+        // are Claude Code's own selectors: the API rejects them as model ids
+        // while the ROUTE is healthy, so they must be resolved to something real
+        // or the probe reports a failure that does not exist. A concrete name
+        // like `swe-1.7` or a typo is the opposite case — `native-handler.ts`
+        // forwards `payload.model` VERBATIM at runtime and Anthropic answers 404,
+        // so substituting here made `--probe` report `live` for a model that
+        // could not serve one request.
+        //
+        // That substitution is why `swe-1.7` "probed byte-identically to a
+        // nonsense string": both were rewritten to the same working id before
+        // the request went out, erasing the difference the probe exists to show.
+        // Unknown names now go through untouched and the API answers for itself.
+        const tier = claudeCodeTierAlias(parsed.model);
+        // The literal is a cold-catalog last resort (first run, no cache, no env
+        // override). It replaced `claude-opus-4-1`, which sat here under a
+        // comment asserting it was "the current Opus alias the API accepts
+        // (verified against api.anthropic.com)" and that `claude-opus-4-8` was
+        // rejected — measured 2026-08-18, that id returns 404 and 4-8 returns
+        // 200, so both halves had rotted. A verification note carries no expiry
+        // date, which is the failure the no-hardcoded-model-data rule prevents.
+        const tierEnv: Record<string, string | undefined> = {
+          opus:
+            process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL],
+          sonnet:
+            process.env[ENV.CLAUDISH_MODEL_SONNET] ||
+            process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL],
+          haiku:
+            process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL],
+        };
+        const opusModel = tier
+          ? tierEnv[tier] || latestAnthropicTierModelId(tier) || "claude-opus-5"
+          : parsed.model;
         // IMPORTANT: pin a BARE model name (no `provider@`). The proxy resolves
         // the native passthrough via `isNative` = no "/" AND no "@" — pinning
         // `native-anthropic@...` would set hasExplicitProvider=true and DEFEAT
@@ -1215,7 +1245,7 @@ async function probeModelRouting(
             {
               provider: "native-anthropic",
               modelSpec: opusModel,
-              displayName: "Claude Code (Opus)",
+              displayName: tier ? `Claude Code (${tier})` : "Claude Code",
             },
           ] as FallbackRoute[],
           source: "auto-chain" as const,
@@ -1329,6 +1359,66 @@ async function probeModelRouting(
       return "auto-chain · catch-all → openrouter";
     }
     return chain.source;
+  }
+
+  /**
+   * The ONE chain entry an explicit `provider@model` address resolves to.
+   *
+   * `buildModelChain` returns `routes: []` for an explicit spec because there is
+   * no fallback chain to walk — it is pinned to a single provider. Emitting that
+   * raw made `--probe --json` report `chain: []` for a perfectly healthy model,
+   * with the real outcome hidden in `directProbe`. Anyone reading `chain` to
+   * decide routability concluded "dead route": `dv@swe-1.7` was filed as
+   * unroutable twice while it was serving 509-token replies.
+   *
+   * So an explicit address now yields a ONE-ITEM chain, and `[]` is reserved for
+   * its literal meaning — no provider can serve this, whether because the
+   * provider name resolves to nothing or because no fallback exists. Empty now
+   * says "no route" in both the bare and explicit cases instead of doubling as
+   * "not applicable here".
+   *
+   * Shared with `buildResultLinks` on purpose: the TUI row and the JSON chain
+   * disagreeing about the same address is the defect, not a rendering detail.
+   */
+  function buildDirectChainEntry(
+    parsed: ReturnType<typeof parseModelSpec>,
+    directProbe: ProbeResult | undefined
+  ): ReturnType<typeof buildModelChain>["chainDetails"] {
+    const providerDef = getProviderByName(parsed.provider);
+    const keyInfo = API_KEY_MAP[parsed.provider];
+    // Nothing known by this name — genuinely unroutable, so the chain stays
+    // empty and now MEANS empty.
+    if (!providerDef && !keyInfo) return [];
+
+    let hasCredentials: boolean;
+    let provenance: KeyProvenance | undefined;
+    if (providerDef?.isLocal) {
+      hasCredentials = isLocalProviderEnabled(parsed.provider);
+    } else if (!keyInfo?.envVar) {
+      hasCredentials = true;
+    } else {
+      provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+      hasCredentials =
+        provenance.hasValue || (keyInfo.aliases?.some((a) => !!process.env[a]) ?? false);
+    }
+
+    return [
+      {
+        provider: parsed.provider,
+        displayName: providerDef?.displayName ?? parsed.provider,
+        // The RESOLVED bare id, never the raw provider@-prefixed input, so the
+        // row never reads `provider@provider@model`.
+        modelSpec: parsed.model,
+        hasCredentials,
+        credentialHint: !hasCredentials
+          ? providerDef?.isLocal
+            ? "enable local provider in global config"
+            : keyInfo?.envVar
+          : undefined,
+        provenance,
+        probe: directProbe,
+      },
+    ];
   }
 
   /**
@@ -1567,7 +1657,13 @@ async function probeModelRouting(
           isExplicit: parsed.isExplicitProvider,
           routingSource: chain.source,
           matchedPattern: chain.matchedPattern,
-          chain: chainDetails,
+          // An explicit address resolves to exactly ONE route, so report it as a
+          // one-item chain rather than `[]`. `directProbe` stays for
+          // backwards-compatible readers.
+          chain:
+            chainDetails.length > 0
+              ? chainDetails
+              : buildDirectChainEntry(parsed, directProbeResult),
           directProbe: directProbeResult,
           wiring,
         });

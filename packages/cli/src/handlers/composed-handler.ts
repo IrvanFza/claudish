@@ -54,6 +54,7 @@ import {
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
+import { hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
@@ -1605,12 +1606,12 @@ function getRecoveryHint(
     return "Rate limited. Wait, reduce concurrency, or check plan limits.";
   }
   if (status === 401 || status === 403) {
-    // Some providers (e.g. OpenCode Zen) return 401 for unsupported models, not auth failures
-    if (
-      lower.includes("not supported") ||
-      lower.includes("unsupported model") ||
-      lower.includes("model not found")
-    ) {
+    // Some providers (e.g. OpenCode Zen Go) return 401 for a model they do not
+    // carry, not for a bad credential. Shared with probe-live's state
+    // classifier — see shared/model-unsupported.ts for why one predicate rather
+    // than two: this hint said "model not supported" while the probe state said
+    // `auth-failed`, so the two surfaces disagreed about the same response.
+    if (hasModelUnsupportedWording(errorText)) {
       return "Model not supported by this provider. Verify model name.";
     }
     // A plan that has run out is not an auth failure, but some providers report

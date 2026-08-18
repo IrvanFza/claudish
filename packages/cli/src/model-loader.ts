@@ -155,8 +155,25 @@ export interface ModelDoc {
   };
   contextWindow?: number;
   maxOutputTokens?: number;
-  /** IDs of subscription plans (e.g. "openai-codex", "kimi-coding") that include this model. */
-  availableInPlans?: string[];
+  /**
+   * IDs of subscription plans (e.g. "cognition-devin", "z-ai-glm-coding-plan")
+   * that include this model.
+   *
+   * NAME MATTERS: the backend sends `subscriptionPlans`. This field was declared
+   * as `availableInPlans` and read by nothing, so claudish was blind to it —
+   * which is how a subscription-only model with no published per-token rate came
+   * out as a bare "N/A" that reads as "unknown / not provisioned".
+   */
+  subscriptionPlans?: string[];
+  /**
+   * Vendor's own prose explaining an ABSENT `pricing` — e.g. "Cognition does not
+   * publish standalone token pricing" / "Z.ai says the standalone API is coming
+   * soon". Missing pricing is usually a deliberate vendor fact, not a data gap,
+   * and this is the sentence that says which.
+   */
+  pricingSummary?: string;
+  /** Upstream owner slug (e.g. "cognition", "z-ai"). Distinct from `provider`. */
+  owner?: string;
   capabilities?: {
     vision?: boolean;
     thinking?: boolean;
@@ -378,6 +395,48 @@ export function normalizePricingDisplay(raw?: string): string {
   if (pricing.includes("-1000000")) return "varies";
   if (pricing === "$0.00/1M" || pricing === "FREE") return "FREE";
   return pricing;
+}
+
+/**
+ * Render a model's price for a LISTING, using the model's access route to
+ * explain an absent rate instead of printing a bare "N/A".
+ *
+ * "N/A" is not a data gap for these models — it is the truthful answer, and the
+ * catalog says why per model ("Cognition does not publish standalone token
+ * pricing…", "Z.ai says the standalone API is coming soon…"). Both are
+ * subscription-only models with no published per-token rate. Printing the raw
+ * sentinel loses that entirely and reads as "unknown / never provisioned",
+ * which is exactly how `swe-1.7` was triaged as unroutable while `dv@swe-1.7`
+ * was serving 509-token replies.
+ *
+ * So when there is no rate AND the catalog names a subscription that includes
+ * the model, say `SUB` — the same label the picker already uses for a flat-rate
+ * provider (see `SUBSCRIPTION_PROVIDERS`) — qualified by the plan name. A model
+ * with neither a rate nor a subscription keeps "N/A", which now genuinely means
+ * "we don't know" rather than doubling as "subscription-only".
+ *
+ * Deliberately NOT a per-model cloud lookup: `subscription` already rides along
+ * on the recommended catalog. `catalog-client.ts` is explicit that re-querying
+ * the cloud one model at a time to fill gaps is not how this works.
+ */
+export function formatListingPrice(
+  entry: {
+    pricing?: { average?: string };
+    subscription?: { plan?: string };
+  },
+  opts?: { compact?: boolean }
+): string {
+  const rate = normalizePricingDisplay(entry.pricing?.average);
+  if (rate !== "N/A") return rate;
+  const plan = entry.subscription?.plan;
+  if (!plan) return "N/A";
+  // `compact` exists for FIXED-WIDTH tables. Plan names are unbounded in
+  // practice — "Devin" is 5, "Claude Code" is 11, so `SUB (Claude Code)` is 17
+  // against a 10-wide column — and a price cell that overflows shoves every
+  // column after it out of alignment for that ONE row, which looks like a
+  // rendering bug rather than a longer name. Markdown surfaces have no column
+  // to break, so they get the plan.
+  return opts?.compact ? "SUB" : `SUB (${plan})`;
 }
 
 /**
