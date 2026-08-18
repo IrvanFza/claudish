@@ -166,6 +166,28 @@ describe("ComposedHandler.handle — error surfacing wiring", () => {
     expect(captured.body?.error?.message).toContain("invalid api key");
   });
 
+  test("a model-unsupported 401 surfaces the model hint instead of an API-key hint", async () => {
+    stubUpstream(401, {
+      error: { message: "Model deepseek-v4-pro-0813 is not supported" },
+    });
+    const { c, captured } = makeContext();
+
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.body?.error?.message).toContain("Model not supported by this provider");
+    expect(captured.body?.error?.message).not.toContain("Check API key");
+  });
+
+  test("an invalid-key 401 surfaces the credential recovery hint", async () => {
+    stubUpstream(401, { error: { message: "Invalid API key." } });
+    const { c, captured } = makeContext();
+
+    await makeHandler().handle(c, PAYLOAD);
+
+    expect(captured.body?.error?.message).toContain("Check API key / OAuth credentials");
+    expect(captured.body?.error?.message).not.toContain("Model not supported by this provider");
+  });
+
   test("transient 503 keeps its retryable status (Claude Code SHOULD retry)", async () => {
     stubUpstream(503, { error: { message: "temporary overload", type: "server_error" } });
     const { c, captured } = makeContext();

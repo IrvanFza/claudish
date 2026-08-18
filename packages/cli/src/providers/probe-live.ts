@@ -12,6 +12,8 @@
  * not a silent failover to something else.
  */
 
+import { hasModelUnsupportedWording } from "../handlers/shared/model-unsupported.js";
+
 export type ProbeState =
   | "live"
   | "key-missing"
@@ -318,6 +320,25 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
   const upstream = status === 400 ? extractUpstreamStatus(body) : undefined;
   if (status === 401 || status === 403 || upstream === 401 || upstream === 403) {
     const authStatus = upstream ?? status;
+    // An auth-shaped status does NOT prove an auth problem. OpenCode Zen Go
+    // answers 401 with "Model <id> is not supported" for models it does not
+    // carry — measured with a real key, where `zgo@deepseek-v4-pro-0813` 401s
+    // while `zgo@kimi-k3` on the SAME key returns 200. Reporting that as
+    // `auth-failed` sent the user to check a credential that was working, and
+    // buried the live OpenRouter hop sitting further down the same chain.
+    //
+    // Classified from the BODY, using the same predicate composed-handler's hint
+    // uses, so the state and the explanation cannot disagree about one response.
+    // The status is preserved: it is what the provider really said, and rewriting
+    // it would hide the provider's misuse of 401 rather than explain it.
+    if (hasModelUnsupportedWording(body)) {
+      return {
+        state: "model-not-found",
+        latencyMs,
+        httpStatus: authStatus,
+        errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
+      };
+    }
     return {
       state: "auth-failed",
       latencyMs,
