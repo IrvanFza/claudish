@@ -160,6 +160,7 @@ export async function queryTerminalThemeMode(timeoutMs = 150): Promise<TerminalT
     const onData = (chunk: Buffer): void => {
       buffer += chunk.toString("latin1");
       // Reply ends with BEL or ST (ESC \).
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the OSC 11 reply terminator IS a control char (BEL or ESC \)
       if (/\]11;[^\x07\x1b]*(\x07|\x1b\\)/.test(buffer)) {
         finish(classifyOscBackground(buffer));
       }
