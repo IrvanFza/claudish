@@ -84,21 +84,37 @@ afterEach(() => {
 });
 
 describe("providerServesModel catalog evidence", () => {
-  test("returns serves when the matching row lists the provider", async () => {
+  test("still returns serves when the matching row lists the provider", async () => {
     _setCatalogEntriesForTest([
       catalogEntry("model-one", [{ provider: CATALOG_PROVIDER, externalId: "vendor/model-one" }]),
     ]);
 
+    // Partial coverage cannot prove a denial, but a listed provider is still
+    // positive catalog evidence and remains safe to confirm.
     expect(await providerServesModel(CATALOG_PROVIDER, "model-one")).toBe("serves");
   });
 
-  test("returns not-served when the provider is in the vocabulary but absent from the row", async () => {
+  test("returns unknown when a catalog-known provider is absent from the matching row", async () => {
     _setCatalogEntriesForTest([
       catalogEntry("model-one", [{ provider: OTHER_CATALOG_PROVIDER }]),
       catalogEntry("model-two", [{ provider: CATALOG_PROVIDER }]),
     ]);
 
-    expect(await providerServesModel(CATALOG_PROVIDER, "model-one")).toBe("not-served");
+    // Catalog coverage is partial, so absence from one row cannot deny service:
+    // openai-codex appears on only 1 of ~760 rows yet genuinely serves gpt-5.
+    // Only a complete live roster may turn absence into "not-served".
+    expect(await providerServesModel(CATALOG_PROVIDER, "model-one")).toBe("unknown");
+  });
+
+  test("returns unknown for the openai-codex thin-coverage shape", async () => {
+    _setCatalogEntriesForTest([
+      catalogEntry("the-one-listed-row", [{ provider: "openai-codex" }]),
+      catalogEntry("gpt-5", [{ provider: OTHER_CATALOG_PROVIDER }]),
+    ]);
+
+    // This models openai-codex appearing on one row but being absent from the
+    // queried row. Its real 1-of-~760 coverage is partial evidence, not a denial.
+    expect(await providerServesModel("openai-codex", "gpt-5")).toBe("unknown");
   });
 
   test("returns unknown when the provider never appears in the catalog vocabulary", async () => {

@@ -9,21 +9,19 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
 import type { RoutingRules } from "../profile-config.js";
-import {
-  ALL_MODELS_CACHE_PATH,
-  type DiskCacheV2,
-  writeAllModelsCache,
-} from "./all-models-cache.js";
+import { type DiskCacheV2, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
-import { _resetCatalogClient } from "./catalog-client.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
 import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
+import { invalidateModelDiscovery } from "./model-discovery.js";
+import type { ProviderDefinition } from "./provider-definitions.js";
 import {
   buildRoutingChain,
   matchRoutingRule,
@@ -31,41 +29,14 @@ import {
   normalizeGlmSlug,
   route,
 } from "./routing-rules.js";
+import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
 
 function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
-  const cacheDir = dirname(ALL_MODELS_CACHE_PATH);
-  const cacheDirExisted = existsSync(cacheDir);
-  const previousContents = existsSync(ALL_MODELS_CACHE_PATH)
-    ? readFileSync(ALL_MODELS_CACHE_PATH, "utf-8")
-    : null;
-
-  writeAllModelsCache(
-    {
-      version: 2,
-      lastUpdated: new Date().toISOString(),
-      entries,
-      models: [],
-    },
-    ALL_MODELS_CACHE_PATH
-  );
-
-  return () => {
-    if (previousContents === null) {
-      rmSync(ALL_MODELS_CACHE_PATH, { force: true });
-      if (!cacheDirExisted) {
-        try {
-          rmdirSync(cacheDir);
-        } catch {
-          // Another test may have created something in the shared cache dir.
-        }
-      }
-      return;
-    }
-    writeFileSync(ALL_MODELS_CACHE_PATH, previousContents, "utf-8");
-  };
+  _setCatalogEntriesForTest(entries);
+  return _resetCatalogClient;
 }
 
 function makeTempCatalog(
@@ -282,6 +253,7 @@ describe("buildRoutingChain", () => {
   let cleanupCatalog: (() => void) | undefined;
 
   beforeEach(() => {
+    _resetCatalogClient();
     cleanupCatalog = seedDefaultCatalog([
       {
         modelId: SYNTHETIC_MODEL_ID,
@@ -296,11 +268,9 @@ describe("buildRoutingChain", () => {
         ],
       },
     ]);
-    _resetCatalogClient();
   });
 
   afterEach(() => {
-    _resetCatalogClient();
     cleanupCatalog?.();
     cleanupCatalog = undefined;
   });
@@ -899,4 +869,237 @@ describe("route() with defaultProvider", () => {
 describe("import consistency", () => {
   // Identity mapping (kimi→kimi): buildRoutingChain's `?? raw` fallback resolves
   // "kimi" even if the shortcut is absent, so only this direct assertion guards it.
+});
+
+// ---------------------------------------------------------------------------
+// route() — model-availability filtering
+// ---------------------------------------------------------------------------
+
+const AVAILABILITY_MODEL = "availability-model";
+
+function routingCatalogEntry(modelId: string, providers: string[]): SlimModelEntry {
+  return {
+    modelId,
+    aliases: [],
+    sources: { test: { externalId: modelId } },
+    aggregators: providers.map((provider) => ({
+      provider,
+      externalId: modelId,
+      confidence: "api_official",
+    })),
+  };
+}
+
+function rosterProvider(name: string): ProviderDefinition {
+  return {
+    name,
+    displayName: name,
+    transport: "openai",
+    baseUrl: `https://${name}.invalid`,
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: `${name.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+    apiKeyDescription: "Offline routing-test key",
+    apiKeyUrl: "https://example.invalid/key",
+    shortcuts: [],
+    legacyPrefixes: [],
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    isDirectApi: true,
+  };
+}
+
+describe("route() model-availability filtering", () => {
+  const realFetch = globalThis.fetch;
+  const realIsAvailable = credentials.isAvailable;
+  const realGetRequestAuth = credentials.getRequestAuth;
+
+  let cachePath = "";
+  let cleanupCache: (() => void) | undefined;
+  let credentialedProviders = new Set<string>();
+  let rosters = new Map<string, string[]>();
+  let fetchCalls: string[] = [];
+
+  function allowCredentials(...providers: string[]): void {
+    credentialedProviders = new Set(providers);
+  }
+
+  function registerRoster(name: string, ...ids: string[]): void {
+    registerRuntimeProvider(rosterProvider(name));
+    rosters.set(name, ids);
+  }
+
+  beforeEach(() => {
+    _resetCatalogClient();
+    _setCatalogEntriesForTest([]);
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+
+    credentialedProviders = new Set();
+    rosters = new Map();
+    fetchCalls = [];
+
+    const tempCatalog = makeTempCatalog({ modelId: AVAILABILITY_MODEL });
+    cachePath = tempCatalog.path;
+    cleanupCache = tempCatalog.cleanup;
+
+    credentials.isAvailable = async (provider: string) => credentialedProviders.has(provider);
+    credentials.getRequestAuth = async () => ({
+      headers: { Authorization: "Bearer offline-routing-test-token" },
+    });
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const rawUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const provider = new URL(rawUrl).hostname.replace(/\.invalid$/, "");
+      fetchCalls.push(provider);
+      const ids = rosters.get(provider);
+      if (!ids) throw new Error(`Unexpected roster request for ${provider}`);
+      return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    cleanupCache?.();
+    cleanupCache = undefined;
+    _resetCatalogClient();
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+    credentials.isAvailable = realIsAvailable;
+    credentials.getRequestAuth = realGetRequestAuth;
+    globalThis.fetch = realFetch;
+  });
+
+  test("removes not-served candidates and preserves the surviving order", async () => {
+    const denied = "availability-denied";
+    registerRoster(denied, "some-other-model");
+    allowCredentials(denied, "openai", "openrouter");
+    _setCatalogEntriesForTest([routingCatalogEntry(AVAILABILITY_MODEL, ["openai", "openrouter"])]);
+
+    const plan = await route(
+      AVAILABILITY_MODEL,
+      { [AVAILABILITY_MODEL]: [denied, "openai", "openrouter"] },
+      undefined,
+      cachePath
+    );
+
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect([plan.primary.provider, ...plan.fallbacks.map((fallback) => fallback.provider)]).toEqual(
+      ["openai", "openrouter"]
+    );
+  });
+
+  test("keeps an unknown candidate when catalog coverage is partial", async () => {
+    allowCredentials("openai-codex");
+    _setCatalogEntriesForTest([
+      routingCatalogEntry(AVAILABILITY_MODEL, ["openai"]),
+      routingCatalogEntry("the-one-listed-codex-row", ["openai-codex"]),
+    ]);
+
+    // Safety guard: treating catalog absence as denial would drop nearly every
+    // subscription provider, whose catalog coverage is partial by nature.
+    const plan = await route(
+      AVAILABILITY_MODEL,
+      { [AVAILABILITY_MODEL]: ["openai-codex"] },
+      undefined,
+      cachePath
+    );
+
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai-codex");
+  });
+
+  test("keeps a candidate confirmed as serves", async () => {
+    allowCredentials("openai");
+    _setCatalogEntriesForTest([routingCatalogEntry(AVAILABILITY_MODEL, ["openai"])]);
+
+    const plan = await route(
+      AVAILABILITY_MODEL,
+      { [AVAILABILITY_MODEL]: ["openai"] },
+      undefined,
+      cachePath
+    );
+
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe("openai");
+  });
+
+  test("returns no-route naming every checked provider when all are not-served", async () => {
+    const first = "availability-denied-first";
+    const second = "availability-denied-second";
+    registerRoster(first, "other-first");
+    registerRoster(second, "other-second");
+    allowCredentials(first, second);
+
+    const plan = await route(
+      AVAILABILITY_MODEL,
+      { [AVAILABILITY_MODEL]: [first, second] },
+      undefined,
+      cachePath
+    );
+
+    expect(plan.kind).toBe("no-route");
+    if (plan.kind !== "no-route") return;
+    expect(plan.reason).toBe(
+      `No provider serves "${AVAILABILITY_MODEL}" (checked: ${first}, ${second}).`
+    );
+  });
+
+  test("explicit not-served spec returns no-route without silent substitution", async () => {
+    const denied = "availability-explicit-denied";
+    registerRoster(denied, "some-other-model");
+    allowCredentials(denied, "openai");
+
+    const plan = await route(
+      `${denied}@${AVAILABILITY_MODEL}`,
+      { [AVAILABILITY_MODEL]: ["openai"] },
+      "openai",
+      cachePath
+    );
+
+    expect(plan.kind).not.toBe("ok");
+    expect(plan.kind).toBe("no-route");
+    if (plan.kind !== "no-route") return;
+    expect(plan.reason).toContain("does not serve");
+    expect(plan.reason).toContain(AVAILABILITY_MODEL);
+  });
+
+  test("explicit serves spec returns ok with the named provider", async () => {
+    const serving = "availability-explicit-serving";
+    registerRoster(serving, AVAILABILITY_MODEL);
+    allowCredentials(serving);
+
+    const plan = await route(`${serving}@${AVAILABILITY_MODEL}`, {}, undefined, cachePath);
+
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe(serving);
+    expect(plan.fallbacks).toEqual([]);
+  });
+
+  test("checks availability only after filtering providers without credentials", async () => {
+    const noCredential = "availability-no-credential";
+    const credentialed = "availability-credentialed";
+    registerRoster(noCredential, AVAILABILITY_MODEL);
+    registerRoster(credentialed, AVAILABILITY_MODEL);
+    allowCredentials(credentialed);
+
+    const plan = await route(
+      AVAILABILITY_MODEL,
+      { [AVAILABILITY_MODEL]: [noCredential, credentialed] },
+      undefined,
+      cachePath
+    );
+
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect(plan.primary.provider).toBe(credentialed);
+    // A provider the user cannot authenticate to must never incur the
+    // guaranteed-failing roster round-trip.
+    expect(fetchCalls).toEqual([credentialed]);
+    expect(fetchCalls).not.toContain(noCredential);
+  });
 });

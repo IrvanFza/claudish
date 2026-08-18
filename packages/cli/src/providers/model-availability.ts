@@ -62,24 +62,6 @@ function rosterHas(ids: string[], wireId: string): boolean {
 }
 
 /**
- * Every provider name the catalog uses anywhere in `aggregators[]`.
- *
- * This is what makes a catalog "no" trustworthy. A provider absent from one
- * model's row but present elsewhere in the catalog is genuinely not offered for
- * that model; a provider the catalog never mentions at all is simply outside its
- * scope, and its absence from a row means nothing.
- */
-function catalogProviderVocabulary(): Set<string> | null {
-  const entries = getCatalogEntries();
-  if (!entries) return null;
-  const vocab = new Set<string>();
-  for (const entry of entries) {
-    for (const agg of entry.aggregators ?? []) vocab.add(agg.provider);
-  }
-  return vocab.size > 0 ? vocab : null;
-}
-
-/**
  * Whether `provider` serves `wireId` — the id that would actually be SENT, not
  * the name the user typed. Callers hold the resolved spec already
  * (`buildRoutingChain` computes it), and passing the typed name instead would
@@ -115,11 +97,23 @@ export async function providerServesModel(
     return "unknown";
   }
 
-  // 2. IDENTITY — the catalog, for providers it actually tracks.
+  // 2. IDENTITY — the catalog may confirm a provider SERVES a model, but it may
+  //    never conclude that one does not.
+  //
+  // Catalog coverage is PARTIAL BY NATURE, and the counts make that concrete:
+  // `openai-codex` appears on exactly 1 model row, `kimi-coding` on 4, `x-ai` on
+  // 7 — out of ~760. An earlier version of this function trusted "provider
+  // appears somewhere in the catalog, but not on THIS row" as evidence of
+  // absence. That is unsound: openai-codex really does serve `gpt-5` through the
+  // ChatGPT subscription, and the rule declared it not-served for every model
+  // but one. Caught by `route()`'s own tests, which is exactly what they are
+  // for.
+  //
+  // A live roster is different in kind: it is COMPLETE BY CONSTRUCTION, because
+  // the provider is enumerating everything the caller's key can reach. Only that
+  // may deny. The catalog can still confirm, which is free and useful.
   const entries = getCatalogEntries();
   if (!entries) return "unknown";
-  const vocab = catalogProviderVocabulary();
-  if (!vocab?.has(provider)) return "unknown";
 
   const needle = wireId.trim().toLowerCase();
   const row = entries.find(
@@ -128,9 +122,7 @@ export async function providerServesModel(
       e.aliases.some((a) => a.toLowerCase() === needle) ||
       (e.aggregators ?? []).some((a) => a.externalId?.toLowerCase() === needle)
   );
-  // No row at all: the catalog does not know this model, so it cannot say the
-  // provider lacks it. A model newer than the cache lands here.
   if (!row) return "unknown";
 
-  return (row.aggregators ?? []).some((a) => a.provider === provider) ? "serves" : "not-served";
+  return (row.aggregators ?? []).some((a) => a.provider === provider) ? "serves" : "unknown";
 }
