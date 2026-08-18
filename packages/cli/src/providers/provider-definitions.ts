@@ -503,6 +503,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.z.ai",
     baseUrlEnvVars: ["ZHIPU_BASE_URL", "GLM_BASE_URL"],
     apiPath: "/api/paas/v4/chat/completions",
+    modelDiscovery: { path: "/api/paas/v4/models", format: "openai-models-list" },
     apiKeyEnvVar: "ZHIPU_API_KEY",
     apiKeyAliases: ["GLM_API_KEY"],
     apiKeyDescription: "GLM/Zhipu API Key",
