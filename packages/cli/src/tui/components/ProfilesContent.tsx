@@ -1,6 +1,6 @@
 import { loadLocalConfig } from "../../profile-config.js";
 import type { ClaudishProfileConfig, ModelMapping } from "../../profile-config.js";
-import { PROVIDER_PREFIXES } from "../constants.js";
+import { getProviderPrefixes } from "../constants.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
 import type { Mode, Tab } from "../types.js";
@@ -130,8 +130,13 @@ export function ProfilesContent({
   // fixed width so the display name aligns into a clean second column.
   // Pad to the widest prefix + a 2-space gutter so the display-name column
   // aligns cleanly even for long prefixes like "gemini-codeassist@".
-  const prefixColW = PROVIDER_PREFIXES.reduce((max, p) => Math.max(max, p.prefix.length), 0) + 2;
-  const prefixOptions = PROVIDER_PREFIXES.map((p) => ({
+  // One call, two uses. `getProviderPrefixes()` builds a fresh array per call
+  // (deliberately — see its doc), so asking twice per render allocates twice and,
+  // worse, would let the width be computed from a different roster than the rows
+  // if a provider were ever registered between the two calls.
+  const prefixes = getProviderPrefixes();
+  const prefixColW = prefixes.reduce((max, p) => Math.max(max, p.prefix.length), 0) + 2;
+  const prefixOptions = prefixes.map((p) => ({
     name: `${p.prefix.padEnd(prefixColW)}${p.displayName}`,
     description: "",
     value: p.prefix,

@@ -27,9 +27,11 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
-import { loadCustomEndpoints } from "./providers/custom-endpoints-loader.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
-import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import {
+  ensureEndpointsRegistered,
+  getCustomEndpointResult,
+} from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { describeMissingCredential } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
@@ -184,13 +186,32 @@ export async function createProxyServer(
     // provider. Sharing the object here makes that impossible rather than
     // merely unlikely.
     const config = loadConfig();
-    ensureEndpointsRegistered({ config });
-    const customEpResult = loadCustomEndpoints(config);
+    // Registers the bundled catalog AND the user's own `customEndpoints`, in
+    // that order. Both used to happen here, which is why a custom endpoint was
+    // invisible to `--probe` and the picker (#192) — those surfaces run before
+    // any proxy exists. The count is READ rather than recomputed because the
+    // picker or `--probe` has usually latched registration already, and
+    // re-running the loader for a log line would re-register every endpoint.
+    // `force` is REQUIRED here, and it is not an optimisation to remove.
+    //
+    // The latch is per-PROCESS, while this function is told a SPECIFIC config
+    // and is the authority on what this proxy serves. Without `force`, a proxy
+    // started after anything else already registered — the picker, `--probe`,
+    // a previous `createProxyServer` in the same process — silently inherits
+    // that earlier config and drops every `customEndpoints` entry in this one.
+    //
+    // Caught by `default-provider-e2e.test.ts` C1, which sandboxes HOME and
+    // spins a fresh proxy per test: in isolation it passed, in a full-suite run
+    // the endpoint never registered. Before this change the same site called
+    // `loadCustomEndpoints(config)` unconditionally, so the behaviour was
+    // correct by accident and folding it into the latched seam is what broke it.
+    //
+    // Cheap to force: sync, one already-loaded config object, an in-binary
+    // array, and `registerRuntimeProvider` is an idempotent `Map.set` per name.
+    ensureEndpointsRegistered({ config, force: true });
+    const customEpResult = getCustomEndpointResult();
     if (customEpResult.registered > 0) {
       log(`[Proxy] Registered ${customEpResult.registered} custom endpoint(s) from config`);
-    }
-    for (const err of customEpResult.errors) {
-      logStderr(`customEndpoints['${err.name}'] failed validation: ${err.message}`);
     }
   } catch (err) {
     // Config read failure should not crash the proxy — the rest of startup

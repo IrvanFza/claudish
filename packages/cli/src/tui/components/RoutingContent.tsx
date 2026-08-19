@@ -3,7 +3,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useRef } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
 import { DEFAULT_ROUTING_RULES } from "../../providers/default-routing-rules.js";
-import { CHAIN_PROVIDERS, DETAIL_H } from "../constants.js";
+import { DETAIL_H, getChainProviders } from "../constants.js";
 import { providerIsReady } from "../providers.js";
 import { A, C } from "../theme.js";
 import type { MergedRule, Mode, ProbeEntry, ProbeMode } from "../types.js";
@@ -521,7 +521,7 @@ export function RoutingContent({
           </text>
           <text height={1}> </text>
           {/* Menu rows with cursor highlight. Same pattern as
-              add_routing_chain's CHAIN_PROVIDERS rows: backgroundColor on
+              add_routing_chain's provider rows: backgroundColor on
               the cursor row, bold on selected text. */}
           <box height={1} backgroundColor={routingScopeCursor === 0 ? C.bgHighlight : C.bg}>
             <text>
@@ -621,7 +621,7 @@ export function RoutingContent({
             focused={false}
             style={{ flexGrow: 1 }}
           >
-            {CHAIN_PROVIDERS.map((prov, idx) => {
+            {getChainProviders().map((prov, idx) => {
               const isCursor = idx === chainCursor;
               const isOn = chainSelected.has(prov.name);
               const pos = isOn ? chainOrder.indexOf(prov.name) + 1 : 0;

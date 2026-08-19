@@ -97,7 +97,7 @@ afterEach(() => {
 
 describe("user customEndpoints replacement", () => {
   test("user endpoint loaded before the bundle remains the total definition", () => {
-    expect(loadCustomEndpoints(GROQ_CONFIG)).toEqual({ registered: 1, errors: [] });
+    expect(loadCustomEndpoints(GROQ_CONFIG)).toEqual({ registered: 1, errors: [], refused: [] });
     const bundled = loadPredefinedEndpoints(GROQ_CONFIG);
 
     expect(bundled.registered).toEqual([]);
@@ -109,7 +109,7 @@ describe("user customEndpoints replacement", () => {
     const bundled = loadPredefinedEndpoints(GROQ_CONFIG);
     expect(bundled.registered).toEqual([]);
     expect(bundled.skipped).toEqual([{ name: "groq", reason: "replaced by customEndpoints" }]);
-    expect(loadCustomEndpoints(GROQ_CONFIG)).toEqual({ registered: 1, errors: [] });
+    expect(loadCustomEndpoints(GROQ_CONFIG)).toEqual({ registered: 1, errors: [], refused: [] });
 
     expectUserGroq();
   });
@@ -127,7 +127,7 @@ describe("user customEndpoints replacement", () => {
     });
 
     expect(loadPredefinedEndpoints(userOnly)).toEqual({ registered: [], skipped: [] });
-    expect(loadCustomEndpoints(userOnly)).toEqual({ registered: 1, errors: [] });
+    expect(loadCustomEndpoints(userOnly)).toEqual({ registered: 1, errors: [], refused: [] });
     expect(getProviderByName("user-only")?.baseUrl).toBe("https://user-only.example/v1");
   });
 });

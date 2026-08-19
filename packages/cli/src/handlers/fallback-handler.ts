@@ -12,6 +12,7 @@
 import type { Context } from "hono";
 import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
+import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
 import type { ModelHandler } from "./types.js";
 
@@ -203,6 +204,36 @@ export function isRetryableError(status: number, errorBody: string, provider?: s
   // prevented at the cost of the request.
   if (hasQuotaExhaustionWording(errorBody)) return true;
 
+  // ── Recover the ORIGINAL status from a remapped terminal error (#148) ──────
+  //
+  // `composed-handler` remaps terminal upstream failures (401/403/terminal-429)
+  // to 400 BEFORE this handler ever sees them, because a 400 is what makes
+  // Claude Code render the reason inline instead of looping on "API error ·
+  // Retrying". Each candidate in the chain IS a ComposedHandler, so by the time
+  // the status reaches here it is 400, falls into the model-not-found branch
+  // below, matches none of its phrases, and the chain STOPS at the first
+  // provider.
+  //
+  // Which inverts the intent exactly. "Terminal" means THIS provider will not
+  // recover on retry, and that is precisely when the next one should be tried.
+  // The errors that most warrant a fallback were the only ones that could no
+  // longer trigger one.
+  //
+  // The quota half of this was fixed first, by the wording check above — that
+  // covers a spent plan, which is the common case. What is left is a genuine
+  // credential failure: a revoked or rotated key hard-fails a model that three
+  // other credentialed providers in the same chain would have served.
+  //
+  // Deliberately ADDITIVE. It only ever turns a `false` into a `true`, using
+  // the status the upstream actually returned, and falls through to the
+  // unchanged status logic when there is no `upstream_status` to recover. A
+  // remapped 400 that carries something non-retryable (say an upstream 400) is
+  // left to the existing branches, so nothing that used to surface now hides.
+  const upstream = status === 400 ? extractUpstreamStatus(errorBody) : undefined;
+  if (upstream === 401 || upstream === 403 || upstream === 402 || upstream === 429) {
+    return true;
+  }
+
   // Auth errors — different provider might have valid credentials
   if (status === 401 || status === 403) return true;
 
@@ -343,15 +374,39 @@ export function isRetryableError(status: number, errorBody: string, provider?: s
  * correct for it — while an exhausted chain of capability/auth/model errors is not
  * going to fix itself, and burying it behind ten silent retries is what the
  * 400-not-5xx rule exists to prevent.
+ *
+ * ── The remap has to be undone HERE too (#148) ──────────────────────────────
+ *
+ * The transient test reads `e.status`, and by the time a candidate's error lands
+ * in this array `composed-handler` may already have rewritten that status to 400.
+ * So the question "was every candidate transient?" was being asked of a number
+ * that no longer says. `hasQuotaExhaustionWording` covered the common case by
+ * accident — a spent plan says so in words that survive the remap — but a bare
+ * `Too Many Requests`, or an upstream 503 remapped for some other reason, came out
+ * as a terminal 400 and Claude Code rendered a dead end where a retry was the
+ * actual remedy.
+ *
+ * This became reachable BECAUSE of the sibling fix in `isRetryableError`. Before
+ * it, a remapped 429 with no quota wording stopped the chain at the first
+ * candidate, so a full chain of them never reached this function at all. Making
+ * the chain advance is what surfaced the second half of the same defect.
+ *
+ * Scoped to 429 and 503 deliberately: exactly the set already treated as transient
+ * for un-remapped statuses, so the rule becomes independent of whether a remap
+ * happened rather than gaining a new one. A remapped 401/403/402 stays terminal
+ * and still surfaces inline, which is the whole point of the 400 doctrine.
  */
 export function exhaustedChainStatus(
   errors: Array<{ provider: string; status: number; message: string }>
 ): number {
   if (errors.length === 0) return 400;
-  const allTransient = errors.every(
-    (e) => e.status === 429 || e.status === 503 || hasQuotaExhaustionWording(e.message)
-  );
-  return allTransient ? 503 : 400;
+  const isTransient = (e: { status: number; message: string }): boolean => {
+    if (e.status === 429 || e.status === 503) return true;
+    if (hasQuotaExhaustionWording(e.message)) return true;
+    const upstream = e.status === 400 ? extractUpstreamStatus(e.message) : undefined;
+    return upstream === 429 || upstream === 503;
+  };
+  return errors.every(isTransient) ? 503 : 400;
 }
 
 /**

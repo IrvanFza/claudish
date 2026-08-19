@@ -202,9 +202,30 @@ export function providerAuthCapabilities(
   };
 }
 
-export const PROVIDERS: ProviderDef[] = getAllProviders()
-  .filter((d) => !SKIP.has(d.name))
-  .map(toProviderDef);
+/**
+ * The provider roster, built LIVE from the catalog on every call.
+ *
+ * It used to be a module-load-time `const`, and that made it a snapshot taken
+ * before `ensureEndpointsRegistered()` had run — so a runtime provider (a
+ * bundled catalog row, or the user's own `customEndpoints`) could never appear
+ * in it no matter when the caller asked. Same defect as #192, one surface over:
+ * a list that enumerates providers has to be built after registration, and the
+ * only way to guarantee that without auditing every import chain is to not
+ * cache it.
+ *
+ * Cheap enough to call per render: a filter and a map over ~40 plain objects,
+ * no I/O, no credential resolution. Readiness is decided separately by
+ * `describeSource`, which is where the cost actually is.
+ */
+export function getProviderDefs(): ProviderDef[] {
+  return getAllProviders()
+    .filter((d) => !SKIP.has(d.name))
+    .map(toProviderDef);
+}
+
+// There is deliberately NO `export const PROVIDERS` here anymore. It existed,
+// every consumer has been moved to `getProviderDefs()`, and re-adding it would
+// silently reintroduce the module-load snapshot this function exists to avoid.
 
 /**
  * Fixed 8-character visually dense key mask.

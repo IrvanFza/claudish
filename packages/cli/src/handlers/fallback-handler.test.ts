@@ -359,7 +359,17 @@ describe("Group 5: isRetryableError — unit tests via FallbackHandler behavior"
   // whether FallbackHandler tries the next candidate or stops.
 
   const { Hono } = require("hono");
-  const { FallbackHandler, isProvider } = require("./fallback-handler.js");
+  const { FallbackHandler, isProvider, isRetryableError } = require("./fallback-handler.js");
+  const { extractUpstreamStatus } = require("./shared/anthropic-error.js");
+
+  function remappedErrorBody(upstreamStatus?: unknown): string {
+    const error: Record<string, unknown> = {
+      type: "authentication_error",
+      message: "invalid api key",
+    };
+    if (upstreamStatus !== undefined) error.upstream_status = upstreamStatus;
+    return JSON.stringify({ type: "error", error });
+  }
 
   // Captured verbatim from /Users/jack/.claudish/logs/claudish_2026-08-07_08-51-52.log:23
   const ZEN_GO_INVALID_TOOL_BODY =
@@ -488,6 +498,42 @@ describe("Group 5: isRetryableError — unit tests via FallbackHandler behavior"
       '{"error":{"type":"authentication_error","message":"Gemini onboarding completed but no project ID returned."}}'
     );
     expect(result.usedFallback).toBe(true);
+  });
+
+  for (const upstreamStatus of [401, 403, 402, 429] as const) {
+    test(`remapped 400 with upstream_status ${upstreamStatus} is retryable`, () => {
+      expect(isRetryableError(400, remappedErrorBody(upstreamStatus))).toBe(true);
+    });
+  }
+
+  test("remapped 400 with non-retryable upstream_status 400 remains non-retryable", () => {
+    expect(isRetryableError(400, remappedErrorBody(400))).toBe(false);
+  });
+
+  test("400 without upstream_status preserves existing bad-request classification", () => {
+    expect(isRetryableError(400, remappedErrorBody())).toBe(false);
+    expect(isRetryableError(400, '{"error":{"message":"unknown model example"}}')).toBe(true);
+  });
+
+  test("malformed or non-numeric upstream_status is absent and never throws", () => {
+    expect(() => isRetryableError(400, "not json")).not.toThrow();
+    expect(isRetryableError(400, "not json")).toBe(false);
+    expect(() => isRetryableError(400, remappedErrorBody("401"))).not.toThrow();
+    expect(isRetryableError(400, remappedErrorBody("401"))).toBe(false);
+  });
+
+  test("extractUpstreamStatus ignores empty, malformed, and non-numeric bodies", () => {
+    expect(extractUpstreamStatus("")).toBeUndefined();
+    expect(extractUpstreamStatus("not json")).toBeUndefined();
+    expect(extractUpstreamStatus(remappedErrorBody("401"))).toBeUndefined();
+  });
+
+  test("upstream-status recovery is restricted to remapped HTTP 400 responses", () => {
+    // Mutation guard: the 500 assertion fails if the `status === 400 ?` guard
+    // is widened. A real 401 must still return true through the existing status
+    // branch, even when its body carries a non-retryable upstream_status.
+    expect(isRetryableError(500, remappedErrorBody(401))).toBe(false);
+    expect(isRetryableError(401, remappedErrorBody(400))).toBe(true);
   });
 
   for (const body of [ZEN_GO_INVALID_TOOL_BODY, ZEN_GO_PROVIDER_ERROR_BODY]) {

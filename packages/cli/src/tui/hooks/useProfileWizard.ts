@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import { loadConfig, loadLocalConfig, saveConfig, saveLocalConfig } from "../../profile-config.js";
-import { COMMON_MODELS, PROVIDER_PREFIXES } from "../constants.js";
+import { COMMON_MODELS, getProviderPrefixes } from "../constants.js";
 import type { Mode } from "../types.js";
 
 type Scope = "global" | "project";
@@ -284,11 +284,11 @@ export function useProfileWizard(args: UseProfileWizardArgs): UseProfileWizardRe
   }, []);
 
   const prefixPickerDown = useCallback(() => {
-    setProviderPickerIndex((i) => Math.min(PROVIDER_PREFIXES.length - 1, i + 1));
+    setProviderPickerIndex((i) => Math.min(getProviderPrefixes().length - 1, i + 1));
   }, []);
 
   const prefixPickerSubmit = useCallback(() => {
-    const prefix = PROVIDER_PREFIXES[providerPickerIndex]?.prefix ?? "";
+    const prefix = getProviderPrefixes()[providerPickerIndex]?.prefix ?? "";
     setEditProfileValue(prefix);
     setSuggestions(computeSuggestions(prefix));
     setSuggestionIndex(-1);

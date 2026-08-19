@@ -4,7 +4,7 @@ import { describeProbeState } from "../../providers/probe-live.js";
 import { probeProviderRoute } from "../../providers/probe-runner.js";
 import { route } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
-import { PROVIDERS, providerIsReady } from "../providers.js";
+import { getProviderDefs, providerIsReady } from "../providers.js";
 import type { ProbeEntry, ProbeMode } from "../types.js";
 
 /**
@@ -164,7 +164,7 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
           const link = chain[i]!;
           // Mirror the static credential check from hasCredentialsForProvider —
           // covers env, config, OAuth files. Local providers are always ready.
-          const provDef = PROVIDERS.find((p) => p.catalogName === link.provider);
+          const provDef = getProviderDefs().find((p) => p.catalogName === link.provider);
           const ready = provDef ? providerIsReady(provDef, config) : true;
           if (!ready) {
             setProbeResults((prev) =>

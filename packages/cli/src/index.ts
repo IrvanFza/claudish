@@ -452,14 +452,25 @@ if (isMcpMode) {
   // screen, or they'd corrupt the render buffer.
   traceSpan("startup:tui-import", () => import("./tui/index.js")).then(async (m) => {
     const { credentials } = await import("./auth/credentials/authority.js");
-    const { PROVIDERS } = await import("./tui/providers.js");
+    // Register runtime providers BEFORE the sweep below, not after.
+    //
+    // `startConfigTui()` also calls `ensureEndpointsRegistered()`, but it does so
+    // INSIDE the function — i.e. after this sweep has already run. So a bundled
+    // catalog row or a user `customEndpoints` entry whose key lives only in
+    // 1Password was enumerated by the TUI and then shown as not-configured,
+    // because the one pass that resolves op:// keys had finished before the
+    // provider existed. The latch makes the second call free.
+    const { ensureEndpointsRegistered } = await import("./providers/endpoint-registration.js");
+    ensureEndpointsRegistered();
+    const { getProviderDefs } = await import("./tui/providers.js");
+    const tuiProviders = getProviderDefs();
     await traceSpan(
       "startup:credential-resolution",
       () =>
         Promise.all(
-          PROVIDERS.map((p) => credentials.isAvailable(p.catalogName, { allowOpPrompt: true }))
+          tuiProviders.map((p) => credentials.isAvailable(p.catalogName, { allowOpPrompt: true }))
         ),
-      { providers: PROVIDERS.length }
+      { providers: tuiProviders.length }
     );
     finalizeStartupTrace("config");
     // From here the OpenTUI fullscreen owns the terminal: NO trace line may hit

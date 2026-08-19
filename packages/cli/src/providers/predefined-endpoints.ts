@@ -87,10 +87,12 @@ import {
   registerEndpoint,
 } from "./custom-endpoints-loader.js";
 import { recordEndpointUnavailable } from "./endpoint-diagnostics.js";
-import { PROVIDER_FILTER_ALIAS_EXTRA } from "./picker-alias-extra.js";
 import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import type { PredefinedEndpoint } from "./predefined-endpoint-schema.js";
-import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
+// The reserved-namespace guard is SHARED with the user-authored customEndpoints
+// path (see #191) — one definition so the two halves cannot disagree about
+// which names a builtin already owns.
+import { reservedNamespace } from "./reserved-namespace.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
 
 /** Env kill switch, mirroring `CLAUDISH_DISABLE_OP` / `CLAUDISH_NO_OP_HANDSHAKE_LOCK`. */
@@ -154,52 +156,6 @@ export function __setPredefinedCatalogForTests(rows: readonly PredefinedEndpoint
 
 function activeCatalog(): readonly PredefinedEndpoint[] {
   return catalogOverride ?? PREDEFINED_ENDPOINTS;
-}
-
-// ── The reserved namespace (R6) ─────────────────────────────────────────────
-
-/**
- * Every token a BUILTIN already answers to → the builtin that owns it.
- *
- * Built from `BUILTIN_PROVIDERS` at CALL TIME. Never a cached constant and
- * never a hand-written list: builtins get added, and a list that has to be kept
- * in sync is a list that will be out of sync exactly when it matters.
- *
- * `PROVIDER_FILTER_ALIAS_EXTRA` is included because it is part of the same
- * user-facing namespace — `@zen` and `@gem` resolve to builtins in the picker
- * even though no definition declares them — and it is a plain const the check
- * can import. Leaving it to a CI assertion would mean a row named `zen`
- * degrades correctly in CI and incorrectly in the field.
- *
- * ── What the collision actually breaks, measured ────────────────────────────
- *
- * Not what it looks like. `parseModelSpec` resolves `@` prefixes against
- * `PROVIDER_SHORTCUTS`, a MODULE-LOAD-TIME snapshot (`model-parser.ts`), so a
- * runtime registration never reaches routing at all and the "catalog row
- * hijacks `mistral@`" story is wrong. The real defect is snapshot-vs-live
- * desync, and it runs the OTHER way: the builtin keeps the prefix while
- * `getShortcuts()` — rebuilt live, runtime-last — reports the catalog row owns
- * it. The user loses the prefix they typed and the two tables disagree about
- * who answers.
- *
- * The guard is correct under either story, and the reasoning is written down
- * accurately because a wrong justification is how a correct guard gets deleted.
- */
-function reservedNamespace(): Map<string, string> {
-  const reserved = new Map<string, string>();
-  for (const def of BUILTIN_PROVIDERS) {
-    reserved.set(def.name.toLowerCase(), def.name);
-    for (const shortcut of def.shortcuts) {
-      reserved.set(shortcut.toLowerCase(), def.name);
-    }
-    for (const legacy of def.legacyPrefixes) {
-      reserved.set(legacy.prefix.replace(/[/:]+$/, "").toLowerCase(), def.name);
-    }
-  }
-  for (const [alias, owner] of Object.entries(PROVIDER_FILTER_ALIAS_EXTRA)) {
-    reserved.set(alias.toLowerCase(), owner);
-  }
-  return reserved;
 }
 
 // ── Opt-out config (R5) ─────────────────────────────────────────────────────

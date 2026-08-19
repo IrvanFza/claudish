@@ -566,9 +566,89 @@ Which is why the question is asked with `hasLocalApiKey()` — env → aliases �
 
 The refusals (collision with a builtin, duplicate row, already registered, replaced by user config) are checked BEFORE the permissions. A user may opt in to a vendor they have no key for; a user may not opt in to shadowing a builtin, because that is one provider quietly answering in another's namespace.
 
+### ONE registration seam for BOTH halves (v7.62.0) — and the two bugs that forced it
+
+`ensureEndpointsRegistered()` now registers the bundled catalog **and** the user's
+own `customEndpoints`, in that order. It used to do only the first, with
+`loadCustomEndpoints` called separately from `proxy-server.ts` and `prehydrate.ts`.
+That split cost two live bugs:
+
+- **#192 — user endpoints were invisible to every surface that enumerates providers.**
+  Both call sites run AFTER `--probe` (which `process.exit(0)`s in its own branch)
+  and after the interactive picker has drawn its list. So a configured endpoint
+  served real requests correctly and could not be seen or probed. Same defect, one
+  layer down, produced `tui/providers.ts`'s `PROVIDERS` **module-load snapshot**:
+  a `const` evaluated at import time can never contain a provider registered at
+  runtime, no matter when the caller asks. It is `getProviderDefs()` now, and there
+  is deliberately no `PROVIDERS` export left to reintroduce it — `PROVIDER_PREFIXES`
+  and `CHAIN_PROVIDERS` went the same way.
+- **#191 — a `customEndpoints` entry named after a builtin stole its credential.**
+  `credentials.registerApiKeyProvider` is a plain `Map.set` with no guard, so an
+  entry keyed `openrouter` landed in a SPLIT state: definition and profile still
+  resolved to the builtin (so `baseUrl` stayed `https://openrouter.ai`) while the
+  credential flipped. Requests to openrouter.ai were signed with
+  `CUSTOM_OPENROUTER_KEY`. Quiet in BOTH directions — the user got neither their
+  endpoint nor the builtin's key, and the config, the definition and `--probe` all
+  showed a consistent "builtin" picture.
+
+`reservedNamespace()` moved out of `predefined-endpoints.ts` into its own module so
+both halves import ONE definition of what a builtin owns (name, shortcut, legacy
+prefix, `PROVIDER_FILTER_ALIAS_EXTRA`). The bundled catalog had refused collisions
+since it shipped; user entries now do too. Refusing beats any merge: there is no
+reading of `customEndpoints.openrouter` under which sending the user's key to the
+builtin's URL is what they meant.
+
+**Each half gets its OWN `try`.** Merging them under one would couple them — a throw
+anywhere in a vendor list *claudish ships* would silently skip the user's
+hand-written endpoints, which is a strictly worse failure than the one being fixed.
+
+**ORDER IS LOAD-BEARING**: bundled first, user second. `loadPredefinedEndpoints`
+suppresses a bundled row whose name a user entry claims (R4 below) and decides that
+from `config.customEndpoints`, not from write order; registering users first would
+instead trip its `runtime.has(name) && !ownRegistrations.has(name)` branch and warn
+"already registered" about a row being correctly replaced.
+
+**CONFIG SCOPE stays GLOBAL-ONLY, deliberately.** `loadConfig()` and
+`loadLocalConfig()` are separate reads with no merge, and the catalog's suppression
+set must be built from the SAME object the loader reads — otherwise a project-scoped
+`customEndpoints.groq` suppresses the bundled row while its replacement, read from
+global config, never registers, and the provider disappears outright. A project
+`.claudish.json` declaring `customEndpoints` is therefore ignored, and
+`warnOnProjectScopedEndpoints` says so. Before, the failure was total silence.
+
+Two traps found by a multi-model review of the diff, both real:
+
+- **Ordering.** `index.ts`'s config branch resolves every provider's credentials —
+  the one pass that pulls `op://` keys — BEFORE `startConfigTui()` runs its own
+  `ensureEndpointsRegistered()`. A runtime provider whose key lives only in
+  1Password was therefore enumerated and then displayed as not-configured. The
+  config branch registers first now; the latch makes the second call free.
+- **Registration warnings must use `logStderr`, never `console.error`.**
+  `App.tsx`'s `refreshConfig` re-runs registration with `force: true` from INSIDE
+  the fullscreen TUI, on every config save and every 1Password import.
+  `tui/index.tsx` calls `setStderrQuiet(true)` on mount precisely because a raw
+  stderr write there leaves ghost cells OpenTUI cannot invalidate, and
+  `console.error` walks straight past that flag. Nothing is lost by deferring:
+  `logStderr` always writes the debug log, and a refusal has already called
+  `recordEndpointUnavailable`, so the reason resurfaces verbatim when anyone tries
+  to route to that provider. (`predefined-endpoints.ts`'s own `warnOnce` still uses
+  `console.error` and is reachable on the same path — a latent instance of the same
+  hazard.)
+
+**The latch is NOT set when the config read fails.** Latching first and returning
+would burn the one registration this process gets on a read that produced nothing:
+every later call, including one passing an explicit config, would short-circuit and
+the user would run builtin-only for the rest of the session from a transient
+failure. In practice `loadConfig()` catches its own parse errors and returns
+defaults, so the path is close to unreachable — but the ordering is what makes that
+a nicety rather than the only thing holding it up.
+
 ### A user `customEndpoints` entry REPLACES a bundled row entirely
 
-No deep merge. The user's entry is registered by `loadCustomEndpoints` at its own call site and the bundled row simply stands aside — suppression rather than write-order, because `ensureEndpointsRegistered()` runs from six sites and "whoever registers last wins" is a guarantee a future reordering would silently flip.
+No deep merge. The user's entry and the bundled row are both registered from
+`ensureEndpointsRegistered()` now, and the bundled row simply stands aside —
+suppression rather than write-order, because that seam runs from seven sites and
+"whoever registers last wins" is a guarantee a future reordering would silently flip.
 
 The consequence worth stating: **the replacement does not inherit the vendor's conventional env var.** A hand-written `customEndpoints.groq` gets `CUSTOM_GROQ_KEY`, so a perfectly good `GROQ_API_KEY` sitting in the environment is now ignored — silently, and from neither file's point of view. Claudish warns about this exactly when it can bite (the vendor's own variable is actually set) and says the fix: add `"apiKey": "${GROQ_API_KEY}"` to your entry. It stays quiet otherwise, because an unconditional line would print on every launch of a correct config, into a stderr that during an interactive session is Claude Code's own TTY.
 
@@ -800,6 +880,56 @@ This is the one place the 400-not-503 doctrine (`composed-handler.ts` ~line 461)
 **Trade-off to know:** sniffing withholds response headers until the first decisive event, capped by `DEFAULT_SNIFF_BUDGET_MS` (12s, chosen above the 0.85s–7.7s error latencies observed in the real log). On a healthy xhigh-reasoning turn that delays `message_start` by however long the model thinks before its first output item. No content is lost or reordered — the client shows a spinner either way — but time-to-first-byte is genuinely later than before. Past the budget claudish flushes and degrades gracefully to the inline-text path.
 
 `latency_ms` for a retried turn includes the backoff waits by design: the honest figure is time-to-usable-response.
+
+### The remap has a downstream reader: `upstream_status` (v7.62.0, #148)
+
+The 400-not-503 remap is right for the CLIENT and wrong for anything downstream that
+still has a decision to make from the status. `FallbackHandler.isRetryableError`
+is exactly that: every candidate in a chain IS a `ComposedHandler`, so by the time
+the fallback inspects a response the 401/403/terminal-429 has already become a 400.
+It fell into the model-not-found branch, matched none of its phrases, and **stopped
+the chain at the first provider** — inverting the intent exactly, since "terminal"
+means *this* provider will not recover on retry, which is precisely when the next
+one should be tried. The errors that most warrant a fallback were the only ones that
+could no longer trigger one.
+
+The true status was already on the wire as `error.upstream_status`, attached at the
+single remap site. `extractUpstreamStatus` is shared from `anthropic-error.ts` now
+rather than living as a private copy in `probe-live.ts`, because two private readers
+of one wire field is how they drift.
+
+Three properties keep this safe:
+
+- **Strictly ADDITIVE.** It only turns a `false` into a `true`, and only for
+  401/403/402/429. A remapped 400 carrying an upstream 400 falls through to the
+  unchanged branches, so nothing that used to surface can now be swallowed by a
+  chain advance.
+- **A pinned single provider cannot be affected at all.** `proxy-server.ts` builds
+  `candidates.length > 1 ? new FallbackHandler(candidates) : candidates[0].handler`,
+  so an explicit `provider@model` spec resolves to one candidate and never
+  constructs a `FallbackHandler`. There is no chain to advance along, which is what
+  makes "could this silently move someone onto per-token billing?" answerable with
+  *structurally no* rather than with a heuristic.
+- **The quota half was already fixed** by `hasQuotaExhaustionWording` in v7.40.0,
+  which is wording-based precisely because the status has been remapped by then.
+  This closes the auth half: a revoked or rotated key, where the wording check has
+  nothing to match on.
+
+**`exhaustedChainStatus` had the same defect, and fixing the first one exposed it.**
+It read `e.status` to decide whether a whole chain failed transiently, and by then
+the remap may have rewritten that to 400 — so it was asking a number that no longer
+says. The wording check covered the common case *by accident* (a spent plan says so
+in words that survive the remap), while a bare `Too Many Requests` came out as a
+terminal 400 where Claude Code's retry loop was the actual remedy. It only became
+reachable because `isRetryableError` now advances the chain: before, a remapped 429
+with no quota wording stopped at candidate 1 and exhaustion was never reached. Both
+now recover `upstream_status`, scoped to 429/503 — exactly the set already treated
+as transient for un-remapped statuses, so the rule became independent of whether a
+remap happened rather than gaining a new special case.
+
+The general lesson: **any code that branches on an HTTP status downstream of the
+remap is suspect.** Grep for `status ===` under `handlers/` before assuming a new
+one is safe.
 
 ## Layer 4: Behavior Compatibility Layer (`behavior/`)
 

@@ -97,7 +97,7 @@ import { ProvidersContent } from "./components/ProvidersContent.js";
 import { RoutingContent } from "./components/RoutingContent.js";
 import { RoutingDetail } from "./components/RoutingDetail.js";
 import { TabBar } from "./components/TabBar.js";
-import { CHAIN_PROVIDERS, DETAIL_H, FOOTER_H, HEADER_H, TABS_H } from "./constants.js";
+import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
 import {
@@ -106,8 +106,8 @@ import {
   isProbeProxyReady,
 } from "./probe-proxy.js";
 import {
-  PROVIDERS,
   type ProviderDef,
+  getProviderDefs,
   maskKey,
   providerAuthCapabilities,
   providerIsReady,
@@ -196,7 +196,9 @@ export function App({ requestLogin }: AppProps = {}) {
   useEffect(() => {
     if (activeTab !== "providers") return;
     let cancelled = false;
-    const localNames = PROVIDERS.filter((p) => p.isLocal).map((p) => p.catalogName);
+    const localNames = getProviderDefs()
+      .filter((p) => p.isLocal)
+      .map((p) => p.catalogName);
     if (localNames.length === 0) return;
     const sweep = async () => {
       const map = await pingLocalProviders(localNames);
@@ -286,10 +288,16 @@ export function App({ requestLogin }: AppProps = {}) {
   // freshly-started Ollama) sorts above the "not configured" divider, matching
   // its "running" status.
   const displayProviders = useMemo(() => {
-    return [...PROVIDERS].sort((a, b) => {
+    // Snapshot ONCE per computation. `getProviderDefs()` builds fresh objects
+    // on every call, so the tie-break below must index into the same array it
+    // is sorting — calling it again inside the comparator would make every
+    // `indexOf` return -1 and collapse the catalog order the sort exists to
+    // preserve.
+    const roster = getProviderDefs();
+    return [...roster].sort((a, b) => {
       const aReady = providerIsReadyForDisplay(a, config, localLiveness);
       const bReady = providerIsReadyForDisplay(b, config, localLiveness);
-      if (aReady === bReady) return PROVIDERS.indexOf(a) - PROVIDERS.indexOf(b);
+      if (aReady === bReady) return roster.indexOf(a) - roster.indexOf(b);
       return aReady ? -1 : 1;
     });
   }, [config, localLiveness]);
@@ -1287,10 +1295,10 @@ export function App({ requestLogin }: AppProps = {}) {
       if (key.name === "up" || key.name === "k") {
         setChainCursor((i) => Math.max(0, i - 1));
       } else if (key.name === "down" || key.name === "j") {
-        setChainCursor((i) => Math.min(CHAIN_PROVIDERS.length - 1, i + 1));
+        setChainCursor((i) => Math.min(getChainProviders().length - 1, i + 1));
       } else if (key.name === "space" || key.raw === " ") {
         // Toggle: add to end or remove
-        const prov = CHAIN_PROVIDERS[chainCursor];
+        const prov = getChainProviders()[chainCursor];
         if (prov.isLocal && !providerIsReady(prov, config)) {
           setStatusMsg(`${prov.displayName} is disabled. Enable it in Providers first.`);
           return;
@@ -1309,7 +1317,7 @@ export function App({ requestLogin }: AppProps = {}) {
         });
       } else if (key.raw && key.raw >= "1" && key.raw <= "9") {
         // Number key: move current provider to that position in chain
-        const prov = CHAIN_PROVIDERS[chainCursor];
+        const prov = getChainProviders()[chainCursor];
         if (prov.isLocal && !providerIsReady(prov, config)) {
           setStatusMsg(`${prov.displayName} is disabled. Enable it in Providers first.`);
           return;
@@ -1917,7 +1925,7 @@ export function App({ requestLogin }: AppProps = {}) {
         // surface as "no probe model in catalog" rather than being skipped
         // silently — that's a more useful signal than an absent row.
         const fired: string[] = [];
-        for (const prov of PROVIDERS) {
+        for (const prov of getProviderDefs()) {
           // A local server that is RUNNING right now is worth testing even if
           // the user hasn't config-enabled it yet (e.g. a freshly-started
           // Ollama) — otherwise it's invisible to Test All. Non-local providers

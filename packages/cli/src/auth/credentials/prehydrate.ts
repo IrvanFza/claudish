@@ -99,7 +99,6 @@
 import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
-import { loadCustomEndpoints } from "../../providers/custom-endpoints-loader.js";
 import { ensureEndpointsRegistered } from "../../providers/endpoint-registration.js";
 import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../../providers/model-parser.js";
 import { getOpFailures } from "../../providers/onepassword.js";
@@ -257,12 +256,17 @@ function isRoutablyPinnable(model: string): boolean {
 /**
  * Give the parent the same routing view the child would have.
  *
- * `loadCustomEndpoints` is normally called by `createProxyServer`, and the
+ * Endpoint registration is normally driven by `createProxyServer`, and the
  * parent starts no proxy for `team` / `create_session`. Without it a
  * custom-endpoint provider is unregistered here but registered in the child,
  * so the parent could pin a DIFFERENT provider than the child would pick.
  * Registration is sync, config-only and idempotent per name; the `once` guard
  * keeps it to a single config read per process.
+ *
+ * `ensureEndpointsRegistered` now covers BOTH the bundled catalog and the
+ * user's own `customEndpoints`, so the separate `loadCustomEndpoints` call that
+ * used to sit here is gone. It had to be both in the first place, which is the
+ * bug #192 describes from the other side.
  *
  * Warming the OpenRouter catalog mirrors what `proxy-server.ts` does before its
  * own `route()` call. Best-effort: on timeout the resolver falls back to the
@@ -280,7 +284,6 @@ async function prepareParentRoutingContext(): Promise<void> {
       // without registering its replacement.
       const config = loadConfig();
       ensureEndpointsRegistered({ config });
-      loadCustomEndpoints(config);
     } catch {
       // Config read failure must not block the spawn — the parent just keeps
       // the builtin-only provider set, same as any other consumer of a broken

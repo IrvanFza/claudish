@@ -3,7 +3,7 @@
  * handler (App.tsx) and the render components can import them.
  */
 
-import { PROVIDERS } from "./providers.js";
+import { getProviderDefs } from "./providers.js";
 
 // Common models offered as autocomplete suggestions in the profile editor.
 export const COMMON_MODELS = [
@@ -26,15 +26,37 @@ export const COMMON_MODELS = [
   "or@deepseek/deepseek-r1",
 ];
 
-// Provider prefix suggestions for the provider picker (e.g. "g@", "oai@", ...).
-export const PROVIDER_PREFIXES = PROVIDERS.map((p) => ({
-  prefix: p.aliases?.[0] ? `${p.aliases[0]}@` : `${p.name}@`,
-  displayName: p.displayName,
-  name: p.name,
-}));
+/**
+ * Provider prefix suggestions for the provider picker (e.g. "g@", "oai@", ...).
+ *
+ * A FUNCTION, not a const, for the same reason `getProviderDefs()` is: a
+ * module-load snapshot is taken before `ensureEndpointsRegistered()` runs, so
+ * it can never contain a provider registered at runtime — a bundled catalog row
+ * or one of the user's own `customEndpoints`. That is exactly the defect #192
+ * describes, and a `const` here would keep one corner of it alive after the
+ * rest was fixed.
+ */
+export function getProviderPrefixes(): Array<{
+  prefix: string;
+  displayName: string;
+  name: string;
+}> {
+  return getProviderDefs().map((p) => ({
+    prefix: p.aliases?.[0] ? `${p.aliases[0]}@` : `${p.name}@`,
+    displayName: p.displayName,
+    name: p.name,
+  }));
+}
 
-// Chain selector uses same PROVIDERS list for consistent naming.
-export const CHAIN_PROVIDERS = PROVIDERS;
+/**
+ * Chain selector — same roster as the prefix picker, so the two never disagree
+ * about which providers exist. A function for the same reason
+ * `getProviderPrefixes()` is: a const would freeze the list before runtime
+ * registration.
+ */
+export function getChainProviders(): ReturnType<typeof getProviderDefs> {
+  return getProviderDefs();
+}
 
 // Layout constants — header(2) + tab-bar(3) + content(flex) + detail(fixed) + footer(1).
 // Header is 2 rows: the title/version/profile text, plus a bottom-border rule.

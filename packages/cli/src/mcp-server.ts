@@ -41,6 +41,7 @@ import {
   normalizePricingDisplay,
 } from "./model-loader.js";
 import { findAvailablePort } from "./port-manager.js";
+import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName } from "./providers/model-parser.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
@@ -878,6 +879,19 @@ function defineTools(
       const doProbe = args.probe !== false;
       const timeoutMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 20_000;
       const proxy = doProbe ? await getProxy() : null;
+
+      // Register runtime providers before ANY `route()` call below.
+      //
+      // `preflight` exists to answer "which provider would serve this, and can it
+      // right now" before a caller commits slots to a `team` run. Asking that
+      // against a registry that has never been populated makes every bundled
+      // catalog row and every user `customEndpoints` entry invisible, so a model
+      // that works reports "no credentialed provider" — the exact failure mode
+      // preflight exists to prevent, produced by preflight itself. Eighth surface
+      // of #192; `--probe`, the picker and `providers --json` were the others.
+      //
+      // Sync, latched, config-only. Free after the first call.
+      ensureEndpointsRegistered();
 
       const rows: string[] = [];
       const readyModels: string[] = [];

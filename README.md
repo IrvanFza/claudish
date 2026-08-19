@@ -147,7 +147,28 @@ claudish --init
 - Follow best practices for Claudish usage
 - Suggest specialized agents for different tasks
 
-### Option 1: Interactive Mode (Easiest)
+### Option 1: Log in with a subscription you already pay for (no API key)
+
+If you have ChatGPT Plus/Pro, an Antigravity plan, a Kimi or GLM coding plan, a
+SuperGrok subscription, or Anthropic Max, `claudish login` uses it directly. No
+API key, no per-token billing.
+
+```bash
+claudish login                 # interactive picker of every provider you can log into
+claudish login codex           # ChatGPT Plus/Pro (OpenAI's own PKCE flow)
+claudish login antigravity     # Gemini via your Antigravity plan
+claudish login grok            # SuperGrok / X Premium+
+claudish login kimi            # Kimi
+
+# Then just name the model
+claudish --model cx@gpt-5.5 "implement user authentication"
+claudish --model ag@gemini-3.6-flash "add tests"
+```
+
+Run `claudish --probe cx@gpt-5.5` afterwards to confirm the credential resolved
+and see which provider will actually serve the request.
+
+### Option 2: Interactive Mode
 
 ```bash
 # Just run it - will prompt for API key and model
@@ -158,7 +179,7 @@ claudish
 # Start coding!
 ```
 
-### Option 2: With Environment Variables
+### Option 3: With Environment Variables
 
 ```bash
 # Set up environment
@@ -306,8 +327,9 @@ claudish [OPTIONS] <claude-args...>
 | `--models-refresh` | | Force refresh model cache | |
 | `--init` | | Install Claudish skill in current project | |
 | `--mcp` | | Run as MCP server | |
-| `--kimi-login` | | Login to Kimi via OAuth | |
-| `--kimi-logout` | | Clear Kimi OAuth credentials | |
+| `login [provider]` | | Log in to a subscription provider via OAuth (no argument = interactive picker) | |
+| `logout [provider]` | | Clear a provider's OAuth credentials | |
+| `--kimi-logout` | | Deprecated alias for `claudish logout kimi` | |
 | `--help-ai` | | Show AI agent usage guide | |
 | `--version` | | Show version | |
 | `--help` | `-h` | Show help message | |
@@ -329,7 +351,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | |
 | `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | |
 | `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`) | `KIMI_API_KEY` |
-| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`) | Or OAuth via `--kimi-login` |
+| `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`) | Or OAuth via `claudish login kimi` |
 | `ZHIPU_API_KEY` | GLM/Zhipu (`glm@`) | `GLM_API_KEY` |
 | `GLM_CODING_API_KEY` | GLM Coding Plan (`gc@`) | `ZAI_CODING_API_KEY` |
 | `ZAI_API_KEY` | Z.AI (`zai@`) | |

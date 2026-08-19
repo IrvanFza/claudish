@@ -27,7 +27,8 @@
 
 import { type CredentialSource, describeSource } from "./auth/credentials/source.js";
 import { loadConfig } from "./profile-config.js";
-import { PROVIDERS } from "./tui/providers.js";
+import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
+import { getProviderDefs } from "./tui/providers.js";
 
 interface ProviderStatus {
   slug: string;
@@ -52,8 +53,23 @@ interface ProviderStatus {
 export async function collectProviderStatuses(
   config: { apiKeys?: Record<string, string>; localProviders?: string[] } = loadConfig()
 ): Promise<ProviderStatus[]> {
+  // Register runtime providers BEFORE enumerating, or this list silently omits
+  // every bundled catalog row and every user `customEndpoints` entry — the
+  // same "a surface enumerated providers before registration ran" defect as
+  // #192, on the surface the profiles app reads. `getProviderDefs()` is called
+  // rather than a module-load snapshot for the same reason.
+  //
+  // Called with NO argument on purpose. The `config` parameter here is a
+  // deliberately narrow `{apiKeys?, localProviders?}` — it exists so the config
+  // TUI can classify against an UNSAVED snapshot — and handing that to
+  // registration would mean deciding the endpoint roster from an object with no
+  // `customEndpoints` and no `predefinedEndpoints` at all. Every user endpoint
+  // would vanish and every opt-out would be ignored, silently, for any caller
+  // that passed one. Registration reads the real config itself; the latch makes
+  // that free on all but the first call.
+  ensureEndpointsRegistered();
   return Promise.all(
-    PROVIDERS.map(async (p) => {
+    getProviderDefs().map(async (p) => {
       const authSource = await describeSource(p, config);
       return {
         // Canonical provider name — the slug the profiles app round-trips back

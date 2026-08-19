@@ -11,6 +11,7 @@ import {
   resolveCustomEndpointApiKey,
   resolveDeclaredEndpointKey,
 } from "./custom-endpoints-loader.js";
+import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
 import type { ProfileContext } from "./provider-profiles.js";
 import {
   clearRuntimeRegistry,
@@ -31,6 +32,12 @@ function makeConfig(customEndpoints?: Record<string, unknown>): ClaudishProfileC
 describe("custom-endpoints-loader", () => {
   beforeEach(() => {
     clearRuntimeRegistry();
+    __resetEndpointDiagnosticsForTests();
+  });
+
+  afterEach(() => {
+    clearRuntimeRegistry();
+    __resetEndpointDiagnosticsForTests();
   });
 
   test("empty config: returns 0 registered, 0 errors, registry stays empty", () => {
@@ -55,6 +62,7 @@ describe("custom-endpoints-loader", () => {
 
     expect(result.registered).toBe(1);
     expect(result.errors).toEqual([]);
+    expect(result.refused).toEqual([]);
 
     const def = getRuntimeProviders().get("my-vllm");
     expect(def).toBeDefined();
@@ -160,6 +168,82 @@ describe("custom-endpoints-loader", () => {
     expect(getRuntimeProviders().get("good1")).toBeDefined();
     expect(getRuntimeProviders().get("good2")).toBeDefined();
     expect(getRuntimeProviders().get("bad")).toBeUndefined();
+  });
+
+  describe("reserved builtin namespace", () => {
+    const collisions = [
+      { name: "openrouter", owner: "openrouter", source: "builtin name" },
+      { name: "or", owner: "openrouter", source: "builtin shortcut" },
+      { name: "xai", owner: "x-ai", source: "legacy prefix" },
+      { name: "gem", owner: "google", source: "picker-only alias" },
+      { name: "OpenRouter", owner: "openrouter", source: "case-insensitive builtin name" },
+    ] as const;
+
+    for (const { name, owner, source } of collisions) {
+      test(`refuses ${source} '${name}' and names '${owner}' as its owner`, () => {
+        const result = loadCustomEndpoints(
+          makeConfig({
+            [name]: {
+              kind: "simple",
+              url: "https://attacker.example/v1",
+              format: "openai",
+              apiKey: "sk-attacker-declared-key",
+            },
+          })
+        );
+
+        expect(result).toEqual({
+          registered: 0,
+          errors: [],
+          refused: [
+            {
+              name,
+              reason:
+                `'${name}' is already claimed by builtin provider '${owner}' ` +
+                "(as its name, a shortcut, or a legacy prefix)",
+            },
+          ],
+        });
+        expect(getRuntimeProviders().has(name)).toBe(false);
+        expect(getRuntimeProfiles().has(name)).toBe(false);
+      });
+    }
+
+    test("a refused openrouter entry cannot replace the builtin credential authority", async () => {
+      const attackerKey = "sk-attacker-declared-key";
+      const builtinKey = "sk-builtin-openrouter-test-key";
+      const originalEnv = process.env.OPENROUTER_API_KEY;
+      const originalProvider = credentials.get("openrouter");
+      expect(originalProvider).toBeDefined();
+
+      process.env.OPENROUTER_API_KEY = builtinKey;
+      credentials.invalidate("openrouter");
+      try {
+        const result = loadCustomEndpoints(
+          makeConfig({
+            openrouter: {
+              kind: "simple",
+              url: "https://attacker.example/v1",
+              format: "openai",
+              apiKey: attackerKey,
+            },
+          })
+        );
+
+        expect(result.registered).toBe(0);
+        expect(result.refused).toHaveLength(1);
+        expect(credentials.get("openrouter")).toBe(originalProvider);
+
+        const auth = await credentials.getRequestAuth("openrouter", { model: "test-model" });
+        expect(auth.headers).not.toEqual({ Authorization: `Bearer ${attackerKey}` });
+        expect(auth.headers.Authorization).toBe(`Bearer ${builtinKey}`);
+      } finally {
+        if (originalProvider) credentials.register(originalProvider, ["openrouter"]);
+        if (originalEnv === undefined) delete process.env.OPENROUTER_API_KEY;
+        else process.env.OPENROUTER_API_KEY = originalEnv;
+        credentials.invalidate("openrouter");
+      }
+    });
   });
 
   describe("resolveCustomEndpointApiKey env var expansion", () => {

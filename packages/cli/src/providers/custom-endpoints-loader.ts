@@ -45,6 +45,7 @@ import {
   runtimeHandler,
 } from "./provider-definitions.js";
 import type { ProfileContext, ProviderProfile } from "./provider-profiles.js";
+import { reservedNamespaceOwner } from "./reserved-namespace.js";
 import { registerRuntimeProfile, registerRuntimeProvider } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { LiteLLMProviderTransport } from "./transport/litellm.js";
@@ -58,6 +59,17 @@ export interface LoadResult {
   registered: number;
   /** Names of endpoints that failed validation, with their error messages. */
   errors: Array<{ name: string; message: string }>;
+  /**
+   * Entries refused for a reason that is NOT a validation failure — today only
+   * a collision with a builtin provider's namespace (#191).
+   *
+   * Kept separate from `errors` because the two need different words. An
+   * invalid entry is a typo in the user's JSON; a refused one is a perfectly
+   * well-formed entry that claudish will not honour, and telling someone to
+   * "fix the validation error" in that case sends them looking at the wrong
+   * thing.
+   */
+  refused: Array<{ name: string; reason: string }>;
 }
 
 /**
@@ -151,14 +163,50 @@ export function registerEndpoint(
 
 /**
  * Validate and register all customEndpoints from a config.
- * Invalid entries are collected into `result.errors` and skipped.
+ *
+ * Invalid entries are collected into `result.errors` and skipped. Entries whose
+ * NAME collides with a builtin provider are collected into `result.refused` and
+ * skipped — see below.
+ *
+ * ── Why a name collision is refused rather than merged (#191) ───────────────
+ *
+ * `credentials.registerApiKeyProvider` is a plain `Map.set` with no guard, so
+ * before this check an entry keyed `openrouter` landed in a split state:
+ *
+ *   definition (`getProviderByName`)   → BUILTIN wins, baseUrl stays openrouter.ai
+ *   profile (`PROVIDER_PROFILES[name]`) → BUILTIN wins
+ *   credential (`registerApiKeyProvider`) → the CUSTOM ENDPOINT, last write, no check
+ *
+ * So the user got neither half of what they asked for. Their endpoint was
+ * shadowed AND the builtin's credential was replaced, with real requests to
+ * openrouter.ai signed by `CUSTOM_OPENROUTER_KEY`, and nothing anywhere
+ * reporting either.
+ *
+ * Refusing is strictly better than any merge. There is no reading of
+ * "customEndpoints.openrouter" under which sending the user's key to the
+ * builtin's URL is what they meant, and the bundled catalog has refused exactly
+ * this since it shipped — so the two paths now agree instead of one being
+ * guarded and the other not.
+ *
+ * The refusal is LOUD by design. A provider that fails to appear is diagnosable
+ * from one warning line; a provider that appears and signs requests to someone
+ * else's host with your key is not diagnosable at all.
  */
 export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
-  const result: LoadResult = { registered: 0, errors: [] };
+  const result: LoadResult = { registered: 0, errors: [], refused: [] };
   const raw = config.customEndpoints;
   if (!raw || typeof raw !== "object") return result;
 
   for (const [name, entry] of Object.entries(raw)) {
+    const owner = reservedNamespaceOwner(name);
+    if (owner) {
+      const reason =
+        `'${name}' is already claimed by builtin provider '${owner}' ` +
+        "(as its name, a shortcut, or a legacy prefix)";
+      result.refused.push({ name, reason });
+      recordEndpointUnavailable(name, `custom endpoint was skipped because ${reason}`);
+      continue;
+    }
     try {
       registerEndpoint(name, entry);
       result.registered++;

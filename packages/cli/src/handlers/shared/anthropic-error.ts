@@ -115,6 +115,37 @@ export function wrapAnthropicError(
 }
 
 /**
+ * Recover the ORIGINAL upstream status from a remapped error body.
+ *
+ * The remap (`composed-handler.ts`, the single site that passes a fourth
+ * argument to `wrapAnthropicError`) turns a terminal upstream failure into an
+ * HTTP 400 so Claude Code surfaces it inline instead of burying it under ten
+ * rounds of "API error · Retrying". That is right for the CLIENT and wrong for
+ * anything downstream that still has a decision to make from the status, so the
+ * true status rides along in this field.
+ *
+ * Two callers need it and they were not sharing one reader: `probe-live.ts`
+ * (which would otherwise bucket a remapped auth failure as a generic
+ * "error · 400") and `fallback-handler.ts` (#148 — which would otherwise stop a
+ * provider chain dead on an error that the very next candidate could serve).
+ * A private copy in each is how they drift.
+ *
+ * Returns `undefined` for a body that is not JSON, carries no field, or carries
+ * a non-numeric one. Never throws: it runs on the error path, where something
+ * has already gone wrong.
+ */
+export function extractUpstreamStatus(body: string): number | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body);
+    const status = parsed?.error?.upstream_status;
+    return typeof status === "number" ? status : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Pull the most useful human-readable message out of an arbitrary provider
  * error body (already JSON-parsed, or a raw string). Mirrors the extraction
  * ladder in ensureAnthropicErrorFormat but usable standalone.

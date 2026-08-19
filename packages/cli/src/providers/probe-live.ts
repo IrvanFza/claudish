@@ -12,6 +12,7 @@
  * not a silent failover to something else.
  */
 
+import { extractUpstreamStatus } from "../handlers/shared/anthropic-error.js";
 import {
   hasActionableLink,
   hasModelUnsupportedWording,
@@ -294,23 +295,10 @@ async function safeReadBody(response: Response): Promise<string> {
   }
 }
 
-/**
- * Pull the proxy's structured `error.upstream_status` out of a remapped error
- * body. composed-handler remaps terminal upstream errors (401/403/terminal-429)
- * to HTTP 400 so Claude Code surfaces them instead of silently retrying, and
- * carries the ORIGINAL status in this field — without it the probe would bucket
- * a remapped auth failure as a generic "error · 400".
- */
-function extractUpstreamStatus(body: string): number | undefined {
-  if (!body) return undefined;
-  try {
-    const parsed = JSON.parse(body);
-    const status = parsed?.error?.upstream_status;
-    return typeof status === "number" ? status : undefined;
-  } catch {
-    return undefined;
-  }
-}
+// `extractUpstreamStatus` used to live here as a private copy. It is shared with
+// `fallback-handler.ts` now (#148), because both have to read the same field to
+// tell a remapped terminal error apart from a real 400, and two private readers
+// of one wire field is how they drift.
 
 /**
  * Pull the Anthropic error `type` (e.g. "connection_error") out of a proxy error
