@@ -39,6 +39,24 @@ const RUNTIME_NAME_ALIASES: Record<string, string[]> = {
   google: ["gemini"],
 };
 
+/**
+ * Map a definition's declared auth scheme onto the credential provider's.
+ *
+ * Both registration sites used to inline `=== "x-api-key" ? "x-api-key" :
+ * "bearer"`, which silently collapsed EVERY other value — including the new
+ * `"none"` — into bearer. A keyless endpoint would then have been reported
+ * uncredentialed and, if it got past that, signed with `Bearer ` and an empty
+ * key. One function so the two sites cannot disagree, and so adding a scheme is
+ * a change in one place rather than a hunt for ternaries.
+ */
+function normalizeAuthScheme(
+  scheme: "bearer" | "x-api-key" | "none" | undefined
+): "bearer" | "x-api-key" | "none" {
+  if (scheme === "x-api-key") return "x-api-key";
+  if (scheme === "none") return "none";
+  return "bearer";
+}
+
 export class CredentialAuthority {
   private registry = new Map<string, CredentialProvider>();
 
@@ -65,7 +83,7 @@ export class CredentialAuthority {
     name: string;
     envVar: string;
     aliases?: string[];
-    authScheme?: "bearer" | "x-api-key";
+    authScheme?: "bearer" | "x-api-key" | "none";
     declaredKey?: () => string | undefined;
   }): void {
     if (!descriptor.envVar) return;
@@ -74,7 +92,7 @@ export class CredentialAuthority {
         catalogName: descriptor.name,
         envVar: descriptor.envVar,
         aliases: descriptor.aliases,
-        authScheme: descriptor.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+        authScheme: normalizeAuthScheme(descriptor.authScheme),
         declaredKey: descriptor.declaredKey,
       }),
       [descriptor.name]
@@ -198,7 +216,7 @@ export class CredentialAuthority {
           catalogName: def.name,
           envVar: def.apiKeyEnvVar,
           aliases: def.apiKeyAliases,
-          authScheme: def.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+          authScheme: normalizeAuthScheme(def.authScheme),
           // Mirror the readiness affordances the old isProviderAvailable oracle
           // granted, so authority.isAuthenticated() matches hasCredentialsForProvider.
           // publicKeyFallback carries the catalog's FALLBACK KEY STRING (e.g.

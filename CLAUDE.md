@@ -434,6 +434,17 @@ not equality: runtime custom endpoints legitimately appear too (a real gain — 
 could never show one), so equality made the test order-dependent on whichever sibling test
 file had registered one.
 
+**`config-command.ts` was deleted in v7.64.0 — 809 lines of dead code holding a fourth
+hand-written provider table.** `configCommand` was exported and imported nowhere;
+`claudish config` has gone to `startConfigTui()` for a long time. The table listed `baseUrl`,
+`endpointEnvVar` and `keyUrl` per provider, i.e. exactly the data the catalog owns.
+
+What makes it worth recording rather than just deleting: it was **actively maintained while
+dead**. The light-theme sweep (`c9cb626`) restyled it and a MiniMax endpoint fix (`b7173d2`)
+corrected its hostname — two people paid to keep a table current that no code could read. A
+dead hand-written roster is worse than a live one, because nothing can ever prove it wrong.
+Check for importers before restyling a file.
+
 ### Subscription pricing is decided by BILLING, not by `modelDiscovery`
 
 `SUBSCRIPTION_PROVIDERS` (`handlers/shared/remote-provider-types.ts`) drives both the picker's
@@ -537,7 +548,62 @@ Use as: `claudish --model my-vllm@llama3.1-70b "task"` or `claudish --model corp
 - **Runtime registration**: Endpoints call `registerRuntimeProvider()` and `registerRuntimeProfile()` to inject themselves into the provider resolver and transport layers.
 - **`models` field** (optional): When present, limits the endpoint to listed models. Omit to allow any model name.
 - **`modelPrefix` field** (optional): Prepended to the user-specified model name before sending to the API.
-- **`authScheme` is a lowercase enum** — `"bearer"` or `"x-api-key"` (`config-schema.ts`). A capitalized `"X-Api-Key"` fails Zod validation and the WHOLE entry is skipped with a stderr warning, which reads as "my endpoint disappeared" rather than as a typo. This doc carried the wrong spelling until v7.48.0; the example above is the validated one.
+- **`authScheme` is a lowercase enum** — `"bearer"`, `"x-api-key"`, or `"none"` (`config-schema.ts`). A capitalized `"X-Api-Key"` fails Zod validation and the WHOLE entry is skipped with a stderr warning, which reads as "my endpoint disappeared" rather than as a typo. This doc carried the wrong spelling until v7.48.0; the example above is the validated one.
+
+### `authScheme: "none"` — endpoints that take NO credential (v7.64.0, #139)
+
+A local router or an inference server on a trusted network wants no auth header at all, and
+there was **no way to say so**. `apiKey` was `z.string().min(1)`, so `""` failed validation
+(`Too small: expected string to have >=1 characters` — which reads as a claudish bug), and any
+placeholder was sent as a real `Authorization: Bearer none`. The reporter's router rejected the
+stray header, so the workaround did not work either.
+
+```json
+{ "customEndpoints": {
+    "localrouter": {
+      "kind": "simple", "format": "openai",
+      "url": "http://127.0.0.1:8402/v1",
+      "authScheme": "none" } } }
+```
+
+`apiKey` is now optional and **must be omitted** under `"none"`; both mistakes produce an error
+that names the fix rather than describing a string length. Accepted on `simple` too — which
+previously had no `authScheme` field at all — so a keyless endpoint does not have to be
+rewritten as `complex` just to say "no auth".
+
+**It is EXPLICIT, never inferred from an absent `apiKey`.** A misspelled key field (`apikey`,
+`api_key`) would otherwise silently downgrade an endpoint to unauthenticated and send the
+user's prompts out with no credential — a failure that looks like success.
+
+**Four gates had to agree, and each is an independent revert risk:**
+
+| gate | what rejected a keyless endpoint |
+|---|---|
+| `config-schema.ts` | `apiKey: z.string().min(1)` |
+| `buildProviderDefinition` | the `simple` branch hardcoded `authScheme: "bearer"` |
+| `api-key-credential.ts` | `isAvailable()` had no "needs no credential" answer |
+| `proxy-server.ts` | the anti-poison `if (!apiKey) return null` |
+
+The last one is the instructive one: a custom endpoint ALWAYS carries a synthesized
+`CUSTOM_<NAME>_KEY`, so the variable's existence cannot be the test for whether it
+authenticates. The block is skipped on `authScheme === "none"` instead.
+
+**`"none"` is a SCHEME, not an empty key**, and that distinction is load-bearing. An empty key
+means "a credential was expected and is missing" — the routing pre-flight is right to reject
+that, since the request would 401. `"none"` means "no credential was ever expected". Encoding
+it as an empty key also breaks on the wire: `AnthropicProviderTransport`'s `else` branch emits
+`x-api-key` **unconditionally**, so an empty key there puts a literal `x-api-key: ` on the
+request, and a gateway that ignores unknown auth may still reject a malformed one.
+
+**Three inline `=== "x-api-key" ? "x-api-key" : "bearer"` ternaries had to go.** Each silently
+collapsed every other value into bearer. Two were in `authority.ts` and one in
+`registerEndpoint`; that third one is why the feature validated, registered, and then still
+demanded a key. `normalizeAuthScheme()` is now the single mapping, so adding a scheme is one
+edit rather than a hunt for ternaries.
+
+Verified live against a header-inspecting mock — `authorization: null`, `x-api-key` **absent
+from the request entirely** (not empty), and a declared `headers: {"X-Team":"platform"}` still
+delivered, since for some gateways a custom header IS the credential.
 
 ## Predefined Endpoints (unreleased — ships in the next minor)
 

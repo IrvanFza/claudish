@@ -70,7 +70,12 @@ export class OpenAIProviderTransport implements ProviderTransport {
    */
   async getHeaders(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
-    if (this.apiKey) {
+    // `authScheme: "none"` is stated explicitly rather than relying on the
+    // `this.apiKey` guard below. The guard already produces the right result
+    // (a keyless endpoint resolves to ""), but only by coincidence — a future
+    // edit that gave keyless endpoints a placeholder value would start signing
+    // them again with nothing here to say that is wrong.
+    if (this.provider.authScheme !== "none" && this.apiKey) {
       if (this.provider.authScheme === "x-api-key") {
         headers["x-api-key"] = this.apiKey;
       } else {

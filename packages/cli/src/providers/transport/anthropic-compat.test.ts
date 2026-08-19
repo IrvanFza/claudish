@@ -14,11 +14,11 @@
 import { describe, expect, it } from "bun:test";
 import { AnthropicAPIFormat } from "../../adapters/anthropic-api-format.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
-import { AnthropicCompatProvider } from "./anthropic-compat.js";
+import { AnthropicProviderTransport } from "./anthropic-compat.js";
 
 const TEST_API_KEY = "test-key-abc123";
 
-describe("AnthropicCompatProvider.getHeaders()", () => {
+describe("AnthropicProviderTransport.getHeaders()", () => {
   it("returns Authorization: Bearer header when authScheme is 'bearer'", async () => {
     const provider: RemoteProvider = {
       name: "minimax",
@@ -29,7 +29,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       authScheme: "bearer",
     };
 
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY);
     const headers = await transport.getHeaders();
 
     expect(headers.Authorization).toBe(`Bearer ${TEST_API_KEY}`);
@@ -47,7 +47,7 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       authScheme: "x-api-key",
     };
 
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY);
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
@@ -65,12 +65,32 @@ describe("AnthropicCompatProvider.getHeaders()", () => {
       // authScheme intentionally omitted — legacy / default behavior
     };
 
-    const transport = new AnthropicCompatProvider(provider, TEST_API_KEY);
+    const transport = new AnthropicProviderTransport(provider, TEST_API_KEY);
     const headers = await transport.getHeaders();
 
     expect(headers["x-api-key"]).toBe(TEST_API_KEY);
     expect(headers.Authorization).toBeUndefined();
     expect(headers["anthropic-version"]).toBe("2023-06-01");
+  });
+
+  it('omits auth keys for authScheme "none" while preserving provider headers', async () => {
+    const provider: RemoteProvider = {
+      name: "keyless-anthropic",
+      baseUrl: "https://gateway.example.com",
+      apiPath: "/v1/messages",
+      apiKeyEnvVar: "CUSTOM_KEYLESS_ANTHROPIC_KEY",
+      prefixes: ["keyless-anthropic@"],
+      authScheme: "none",
+      headers: { "X-Team": "platform" },
+    };
+
+    // A non-empty sentinel proves the explicit scheme wins over the key value.
+    const headers = await new AnthropicProviderTransport(provider, "must-not-leak").getHeaders();
+
+    expect(headers["X-Team"]).toBe("platform");
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect("Authorization" in headers).toBe(false);
+    expect("x-api-key" in headers).toBe(false);
   });
 });
 

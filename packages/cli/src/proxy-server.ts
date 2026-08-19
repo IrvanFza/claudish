@@ -418,7 +418,18 @@ export async function createProxyServer(
       // and writes a resolved op:// key through to process.env. Providers that
       // need no auth (e.g. zen/ free) have no apiKeyEnvVar → empty key.
       let apiKey = "";
-      if (resolved.provider.apiKeyEnvVar) {
+      // `authScheme: "none"` declares that this provider takes NO credential, so
+      // the whole resolution block is skipped — including the anti-poison
+      // `if (!apiKey) return null` at its end, which cannot otherwise tell
+      // "a key was required and did not resolve" from "no key was ever wanted".
+      //
+      // Checked on apiKeyEnvVar's own condition rather than inside, because a
+      // custom endpoint ALWAYS carries a synthesized `CUSTOM_<NAME>_KEY` — the
+      // variable exists whether or not the endpoint authenticates, so its
+      // presence cannot be the test. This was the last of four gates a keyless
+      // endpoint hit: schema, definition, credential authority, and here.
+      const needsNoAuth = resolved.provider.authScheme === "none";
+      if (resolved.provider.apiKeyEnvVar && !needsNoAuth) {
         // HARDENING: getRequestAuth THROWS for a name the authority never
         // registered (e.g. a runtime-renamed provider missing an alias), which
         // would surface as an HTTP 500. Degrade to the same "no credential"

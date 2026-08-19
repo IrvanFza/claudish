@@ -6,6 +6,10 @@ import { Hono } from "hono";
 import { setConfigFileOverride } from "./config-override.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import { log, logStderr } from "./logger.js";
+import { __resetEndpointDiagnosticsForTests } from "./providers/endpoint-diagnostics.js";
+import { invalidateEndpointRegistration } from "./providers/endpoint-registration.js";
+import { __resetPredefinedStateForTests } from "./providers/predefined-endpoints.js";
+import { clearRuntimeRegistry } from "./providers/runtime-providers.js";
 import { createProxyServer } from "./proxy-server.js";
 import type { ProxyServer } from "./types.js";
 
@@ -51,12 +55,54 @@ async function requestModels(
   }
 }
 
+async function requestTokenCount(
+  config: Record<string, unknown>,
+  model: string
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const tempDir = mkdtempSync(join(tmpdir(), "claudish-keyless-handler-"));
+  const configPath = join(tempDir, "config.json");
+  writeFileSync(configPath, JSON.stringify(config), "utf8");
+  setConfigFileOverride(configPath);
+  let proxy: ProxyServer | undefined;
+
+  try {
+    proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+      quiet: true,
+    });
+    // count_tokens constructs the selected provider handler, then estimates
+    // locally. It exercises the proxy's credential gate without contacting the
+    // configured upstream endpoint.
+    const response = await fetch(`${proxy.url}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+    return {
+      status: response.status,
+      body: (await response.json()) as Record<string, unknown>,
+    };
+  } finally {
+    if (proxy) await proxy.shutdown();
+    setConfigFileOverride(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 const realConsoleError = console.error;
 const realStderrWrite = process.stderr.write;
 
 afterEach(() => {
   console.error = realConsoleError;
   process.stderr.write = realStderrWrite;
+  invalidateEndpointRegistration();
+  __resetPredefinedStateForTests();
+  __resetEndpointDiagnosticsForTests();
+  clearRuntimeRegistry();
+  setConfigFileOverride(null);
 });
 
 describe("proxy unhandled-error backstop", () => {
@@ -189,5 +235,36 @@ describe("GET /v1/models", () => {
     const { status, body } = await requestModels({});
     expect(status).toBe(200);
     expect(body).toEqual({ object: "list", has_more: false, data: [] });
+  });
+});
+
+describe('proxy handler routing for authScheme "none"', () => {
+  test("does not reject a keyless custom endpoint at the anti-poison credential gate", async () => {
+    const envVar = "CUSTOM_KEYLESS_PROXY_REGRESSION_KEY";
+    const saved = process.env[envVar];
+    delete process.env[envVar];
+
+    try {
+      const { status, body } = await requestTokenCount(
+        {
+          customEndpoints: {
+            "keyless-proxy-regression": {
+              kind: "simple",
+              url: "http://127.0.0.1:1/v1",
+              format: "openai",
+              authScheme: "none",
+            },
+          },
+        },
+        "keyless-proxy-regression@test-model"
+      );
+
+      expect(process.env[envVar]).toBeUndefined();
+      expect(status).toBe(200);
+      expect(typeof body.input_tokens).toBe("number");
+    } finally {
+      if (saved === undefined) delete process.env[envVar];
+      else process.env[envVar] = saved;
+    }
   });
 });

@@ -35,7 +35,12 @@ export interface ApiKeyDescriptor {
   catalogName: string;
   envVar: string;
   aliases?: string[];
-  authScheme?: "bearer" | "x-api-key";
+  /**
+   * How to sign a request. `"none"` means this provider takes no credential at
+   * all — see the class field of the same name for why that is distinct from
+   * "the key happens to be empty".
+   */
+  authScheme?: "bearer" | "x-api-key" | "none";
   staticHeaders?: Record<string, string>;
   /**
    * Public/free API key VALUE (e.g. "public") sent when no real key resolves —
@@ -80,7 +85,18 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   readonly catalogName: string;
   private readonly envVar: string;
   private readonly aliases: string[];
-  private readonly authScheme: "bearer" | "x-api-key";
+  /**
+   * `"none"` is NOT the same as "resolved an empty key", and conflating them is
+   * what made keyless endpoints unreachable.
+   *
+   * An empty key means "a credential was expected and is missing" — the routing
+   * pre-flight is right to reject that, because the request would 401. `"none"`
+   * means "no credential was ever expected", so the provider is AVAILABLE with
+   * nothing configured and its requests carry no auth header. The two need
+   * different answers from `isAvailable()`, which is why this is a scheme rather
+   * than a sentinel key value.
+   */
+  private readonly authScheme: "bearer" | "x-api-key" | "none";
   private readonly staticHeaders: Record<string, string>;
   private readonly publicKeyFallback?: string;
   private readonly oauthFallback?: string;
@@ -191,6 +207,11 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   }
 
   async isAvailable(opts?: { allowOpPrompt?: boolean }): Promise<boolean> {
+    // A provider that takes no credential is always available. Checked FIRST and
+    // before any resolution, because there is nothing to resolve: reaching the
+    // env/config/oauth/1Password chain for it would be pure cost, and on the
+    // 1Password step a real prompt for a key that does not exist.
+    if (this.authScheme === "none") return true;
     if (this.publicKeyFallback) return true;
     // Cheap checks first — avoid the op pull when an oauth file already qualifies.
     if (this.resolveFromEnvConfig()) return true;
@@ -205,6 +226,17 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
   }
 
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
+    // No credential expected → send the static headers and nothing else. Returns
+    // before any resolution for the same reason isAvailable does.
+    //
+    // This is also why `"none"` could not be expressed by leaving the key empty:
+    // the `x-api-key` branch below emits the header UNCONDITIONALLY, so an empty
+    // key under that scheme would put a literal `x-api-key: ` on the wire — worse
+    // than no header, since a gateway that ignores unknown auth may still reject
+    // a malformed one.
+    if (this.authScheme === "none") {
+      return { headers: { ...this.staticHeaders } };
+    }
     // A real user key always wins; the catalog's public/free fallback key only
     // fills in when nothing resolved. Without this, a keyless publicKeyFallback
     // provider (e.g. OpenCode Zen) returned EMPTY headers and proxy-server

@@ -151,7 +151,12 @@ export function registerEndpoint(
     name: def.name,
     envVar: def.apiKeyEnvVar,
     aliases: def.apiKeyAliases,
-    authScheme: def.authScheme === "x-api-key" ? "x-api-key" : "bearer",
+    // Passed THROUGH, not narrowed here. This site used to inline
+    // `=== "x-api-key" ? "x-api-key" : "bearer"`, which collapsed `"none"` into
+    // bearer and left a keyless endpoint failing the routing pre-flight with
+    // "CUSTOM_<NAME>_KEY is required" — a demand for a key the user had
+    // correctly declared they do not have. The authority normalizes.
+    authScheme: def.authScheme,
     declaredKey: () => resolveDeclaredEndpointKey(validated),
   });
   // This name now has a definition, a profile and a credential, so whatever
@@ -260,7 +265,11 @@ function buildProviderDefinition(
       isDirectApi: true,
       shortestPrefix: name,
       description: ovr?.description ?? `Custom endpoint: ${name}`,
-      authScheme: "bearer",
+      // Was a hardcoded "bearer", which silently discarded the `authScheme` the
+      // simple schema now accepts — so `authScheme: "none"` validated, registered,
+      // and then demanded a key anyway. Bearer stays the DEFAULT (that is what
+      // every simple endpoint got before), but a declared scheme now survives.
+      authScheme: ep.authScheme ?? "bearer",
     };
   }
 
@@ -554,7 +563,10 @@ function buildComplexHandler(
  * Exported for unit testing.
  */
 export function resolveCustomEndpointApiKey(ep: CustomEndpoint): string {
-  const literal = ep.apiKey;
+  // Absent for `authScheme: "none"`, where the schema requires it to be omitted.
+  // An empty string is the correct answer there: every transport treats a falsy
+  // key as "emit no auth header".
+  const literal = ep.apiKey ?? "";
   const match = literal.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
   if (match) {
     return process.env[match[1]] ?? "";

@@ -50,7 +50,7 @@ export interface RemoteProvider {
   /** Optional custom headers */
   headers?: Record<string, string>;
   /** Auth scheme for the API key header (defaults to "x-api-key") */
-  authScheme?: "x-api-key" | "bearer";
+  authScheme?: "x-api-key" | "bearer" | "none";
   /**
    * Optional stream-format override surfaced via ProviderTransport.overrideStreamFormat().
    * When the transport's wire format differs from what the model's dialect would

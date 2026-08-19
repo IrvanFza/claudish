@@ -54,7 +54,16 @@ export class AnthropicProviderTransport implements ProviderTransport {
       "anthropic-version": "2023-06-01",
     };
 
-    if (this.provider.authScheme === "bearer") {
+    // `"none"` must be checked BEFORE the else, which emits `x-api-key`
+    // UNCONDITIONALLY — including for an empty key. That is why a keyless
+    // endpoint could not simply leave `apiKey` blank: it would put a literal
+    // `x-api-key: ` on the wire, and a gateway that ignores unknown auth may
+    // still reject a malformed one. An absent header is the only correct
+    // representation of "no credential".
+    if (this.provider.authScheme === "none") {
+      // Nothing to sign with. `provider.headers` is still merged below — for a
+      // gateway whose auth lives in a custom header, those ARE the credential.
+    } else if (this.provider.authScheme === "bearer") {
       headers.Authorization = `Bearer ${this.apiKey}`;
     } else {
       headers["x-api-key"] = this.apiKey;

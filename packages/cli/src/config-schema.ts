@@ -28,34 +28,100 @@ export const BuiltinDefaultProviderSchema = z.enum([
   "google",
 ]);
 
+/**
+ * How a custom endpoint authenticates.
+ *
+ * `"none"` exists because there was previously NO WAY to reach an endpoint that
+ * wants no credential — a local gateway, an inference server on a trusted
+ * network. `apiKey` was `z.string().min(1)`, so `""` failed validation, and any
+ * placeholder ("none", "x") was sent as a real `Authorization: Bearer none`
+ * header. Reported in #139 by a user whose local router rejected the stray
+ * header; the whole entry was refused with `Too small: expected string to have
+ * >=1 characters`, which reads as a bug in claudish rather than a missing
+ * feature.
+ *
+ * It is EXPLICIT rather than inferred from an absent `apiKey`. A misspelled key
+ * field ("apikey", "api_key") would otherwise silently downgrade an endpoint to
+ * unauthenticated and send the user's prompts out with no credential — a failure
+ * that looks like it worked. Requiring the declaration means the only way to get
+ * no auth is to ask for it.
+ */
+export const CustomEndpointAuthSchemeSchema = z.enum(["bearer", "x-api-key", "none"]);
+
+/**
+ * `apiKey` is required UNLESS `authScheme: "none"`, in which case it must be
+ * absent or empty.
+ *
+ * Written as a refinement rather than two schema variants so the ERROR is
+ * actionable in both directions. The old failure told the user their string was
+ * too short and left them to guess; these name the field to add.
+ */
+function requireKeyUnlessNoAuth<
+  T extends { apiKey?: string; authScheme?: "bearer" | "x-api-key" | "none" },
+>(ep: T, ctx: z.RefinementCtx): void {
+  const declared = ep.apiKey?.trim() ?? "";
+  if (ep.authScheme === "none") {
+    if (declared !== "") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["apiKey"],
+        message:
+          'authScheme "none" sends no auth header, so apiKey must be omitted. ' +
+          "Remove apiKey, or drop authScheme to send it as a bearer token.",
+      });
+    }
+    return;
+  }
+  if (declared === "") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["apiKey"],
+      message:
+        "apiKey is required. If this endpoint needs no credential, set " +
+        '"authScheme": "none" and omit apiKey entirely.',
+    });
+  }
+}
+
 // "Simple" custom endpoint: just URL + format + key.
 // Reuses existing OpenAI/Anthropic format converters and a generic transport.
-export const CustomEndpointSimpleSchema = z.object({
-  kind: z.literal("simple"),
-  url: z.url(),
-  format: z.enum(["openai", "anthropic"]),
-  apiKey: z.string().min(1),
-  modelPrefix: z.string().optional(),
-  models: z.array(z.string()).optional(),
-});
+export const CustomEndpointSimpleSchema = z
+  .object({
+    kind: z.literal("simple"),
+    url: z.url(),
+    format: z.enum(["openai", "anthropic"]),
+    // Optional so `authScheme: "none"` can omit it; the refinement below still
+    // requires it for every other scheme.
+    apiKey: z.string().optional(),
+    // `simple` used to have no authScheme at all and hardcoded bearer. It is
+    // accepted here ONLY so a keyless endpoint does not have to be rewritten as
+    // `kind: "complex"` just to say "no auth" — the narrowest widening that
+    // closes #139 for the shape the reporter actually used.
+    authScheme: CustomEndpointAuthSchemeSchema.optional(),
+    modelPrefix: z.string().optional(),
+    models: z.array(z.string()).optional(),
+  })
+  .superRefine(requireKeyUnlessNoAuth);
 
 // "Complex" custom endpoint: a runtime PROVIDER_PROFILES entry.
 // All ProviderProfile fields, with reasonable defaults documented in Phase 3.
-export const CustomEndpointComplexSchema = z.object({
-  kind: z.literal("complex"),
-  displayName: z.string(),
-  transport: z.enum(["openai", "anthropic", "gemini", "ollamacloud", "litellm"]),
-  baseUrl: z.url(),
-  apiPath: z.string().optional(),
-  apiKey: z.string().min(1),
-  authScheme: z.enum(["bearer", "x-api-key"]).optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  streamFormat: z
-    .enum(["openai-sse", "openai-responses-sse", "gemini-sse", "anthropic-sse", "ollama-jsonl"])
-    .optional(),
-  modelPrefix: z.string().optional(),
-  models: z.array(z.string()).optional(),
-});
+export const CustomEndpointComplexSchema = z
+  .object({
+    kind: z.literal("complex"),
+    displayName: z.string(),
+    transport: z.enum(["openai", "anthropic", "gemini", "ollamacloud", "litellm"]),
+    baseUrl: z.url(),
+    apiPath: z.string().optional(),
+    apiKey: z.string().optional(),
+    authScheme: CustomEndpointAuthSchemeSchema.optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    streamFormat: z
+      .enum(["openai-sse", "openai-responses-sse", "gemini-sse", "anthropic-sse", "ollama-jsonl"])
+      .optional(),
+    modelPrefix: z.string().optional(),
+    models: z.array(z.string()).optional(),
+  })
+  .superRefine(requireKeyUnlessNoAuth);
 
 export const CustomEndpointSchema = z.discriminatedUnion("kind", [
   CustomEndpointSimpleSchema,

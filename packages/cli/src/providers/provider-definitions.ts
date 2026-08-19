@@ -140,8 +140,15 @@ export interface ProviderDefinition {
   apiKeyDescription: string;
   /** URL where user can obtain an API key */
   apiKeyUrl: string;
-  /** Auth scheme for the API key header */
-  authScheme?: "x-api-key" | "bearer";
+  /**
+   * Auth scheme for the API key header.
+   *
+   * `"none"` means the provider takes NO credential — the transports emit no auth
+   * header and the credential authority reports it available with nothing
+   * configured. Only reachable from a user `customEndpoints` entry today; no
+   * builtin declares it, and none should, since every hosted vendor authenticates.
+   */
+  authScheme?: "x-api-key" | "bearer" | "none";
   /** Provider shortcuts (e.g., ["g", "gemini"] → "google") */
   shortcuts: string[];
   /** Legacy prefix patterns for backwards compat (e.g., ["g/", "gemini/"]) */

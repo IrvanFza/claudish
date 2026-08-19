@@ -10,6 +10,49 @@ const mockProvider: RemoteProvider = {
   prefixes: ["zen@"],
 };
 
+describe("OpenAIProviderTransport.getHeaders()", () => {
+  test('authScheme "none" omits auth keys while preserving provider headers', async () => {
+    const provider: RemoteProvider = {
+      name: "keyless-openai",
+      baseUrl: "https://gateway.example.com/v1",
+      apiPath: "/chat/completions",
+      apiKeyEnvVar: "CUSTOM_KEYLESS_OPENAI_KEY",
+      prefixes: ["keyless-openai@"],
+      authScheme: "none",
+      headers: { "X-Team": "platform" },
+    };
+
+    // A non-empty sentinel makes the scheme, rather than an accidentally empty
+    // key, responsible for suppressing both standard auth headers.
+    const transport = new OpenAIProviderTransport(provider, "test-model", "must-not-leak");
+    const headers = await transport.getHeaders();
+
+    expect(headers["X-Team"]).toBe("platform");
+    expect("Authorization" in headers).toBe(false);
+    expect("x-api-key" in headers).toBe(false);
+  });
+
+  test('authScheme "x-api-key" still emits the declared key', async () => {
+    const provider: RemoteProvider = {
+      name: "x-api-key-openai",
+      baseUrl: "https://gateway.example.com/v1",
+      apiPath: "/chat/completions",
+      apiKeyEnvVar: "CUSTOM_X_API_KEY_OPENAI_KEY",
+      prefixes: ["x-api-key-openai@"],
+      authScheme: "x-api-key",
+    };
+
+    const headers = await new OpenAIProviderTransport(
+      provider,
+      "test-model",
+      "declared-x-api-key"
+    ).getHeaders();
+
+    expect(headers["x-api-key"]).toBe("declared-x-api-key");
+    expect("Authorization" in headers).toBe(false);
+  });
+});
+
 describe("OpenAIProviderTransport 429 retry (#66)", () => {
   test("retries on 429 with exponential backoff", async () => {
     const transport = new OpenAIProviderTransport(mockProvider, "minimax-m2.5-free", "test-key");

@@ -580,11 +580,32 @@ For OpenAI- or Anthropic-compatible servers:
 | `kind` | `"simple"` | yes | Discriminator |
 | `url` | string | yes | Base URL of the server |
 | `format` | `"openai"` or `"anthropic"` | yes | Wire format |
-| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
+| `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
+| `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`) |
 | `modelPrefix` | string | no | Prepended to model name before sending to API |
 | `models` | string[] | no | Restrict to listed models; omit to allow any |
 
 Usage: `claudish --model my-vllm@llama3.1-70b "task"`
+
+**No-credential endpoints**: for a local router or a server on a trusted network, set
+`authScheme: "none"` and omit `apiKey`. claudish then sends no auth header at all:
+
+```json
+{
+  "customEndpoints": {
+    "localrouter": {
+      "kind": "simple",
+      "url": "http://127.0.0.1:8402/v1",
+      "format": "openai",
+      "authScheme": "none"
+    }
+  }
+}
+```
+
+A placeholder such as `"apiKey": "none"` is **not** equivalent — it is a literal key and goes
+out as `Authorization: Bearer none`, which some gateways reject. Declared `headers` are still
+sent under `authScheme: "none"`, so a gateway whose auth lives in a custom header works.
 
 ### Complex endpoint
 
@@ -617,8 +638,8 @@ Full control over transport, auth, headers, and stream format:
 | `transport` | string | yes | Transport type (e.g., `"openai"`, `"anthropic"`) |
 | `baseUrl` | string | yes | Server base URL |
 | `apiPath` | string | no | Custom API path (overrides default for transport) |
-| `apiKey` | string | no | API key; supports `${VAR}` env expansion |
-| `authScheme` | `"bearer"` or `"x-api-key"` | no | Auth header scheme (default: `bearer`). **Lowercase enum** — a capitalized `"X-Api-Key"` fails validation and the entire entry is skipped |
+| `apiKey` | string | yes, unless `authScheme: "none"` | API key; supports `${VAR}` env expansion. Must be **omitted** under `authScheme: "none"` |
+| `authScheme` | `"bearer"`, `"x-api-key"` or `"none"` | no | Auth header scheme (default: `bearer`). `"none"` sends **no auth header at all** — for a local router or a trusted-network server; do not fake it with a placeholder key, which goes out as a real `Authorization: Bearer <placeholder>`. **Lowercase enum** — a capitalized `"X-Api-Key"` fails validation and the entire entry is skipped |
 | `headers` | object | no | Additional HTTP headers |
 | `streamFormat` | string | no | Stream parser override (e.g., `"openai-sse"`, `"anthropic-sse"`) |
 | `modelPrefix` | string | no | Prepended to model name |

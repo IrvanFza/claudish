@@ -730,7 +730,7 @@ Register your own OpenAI-compatible endpoints in `~/.claudish/config.json`. See 
       "kind": "simple",
       "url": "http://gpu-box:8000/v1",
       "format": "openai",
-      "apiKey": "none"
+      "apiKey": "${VLLM_API_KEY}"
     }
   },
   "defaultProvider": "my-vllm"
@@ -738,6 +738,26 @@ Register your own OpenAI-compatible endpoints in `~/.claudish/config.json`. See 
 ```
 
 Then route to it with: `claudish --model my-vllm@llama3 "task"`
+
+**If the endpoint needs no credential** (a local router, an inference server on a trusted
+network), say so with `authScheme: "none"` and omit `apiKey` — claudish then sends no auth
+header at all:
+
+```json
+{
+  "customEndpoints": {
+    "localrouter": {
+      "kind": "simple",
+      "url": "http://127.0.0.1:8402/v1",
+      "format": "openai",
+      "authScheme": "none"
+    }
+  }
+}
+```
+
+Do **not** use a placeholder like `"apiKey": "none"` for this — that is a literal key, and it
+goes out as `Authorization: Bearer none`, which some gateways reject.
 
 ### Legacy Syntax (Deprecated)
 

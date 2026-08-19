@@ -12,6 +12,9 @@ import {
   resolveDeclaredEndpointKey,
 } from "./custom-endpoints-loader.js";
 import { __resetEndpointDiagnosticsForTests } from "./endpoint-diagnostics.js";
+import { invalidateEndpointRegistration } from "./endpoint-registration.js";
+import { __resetPredefinedStateForTests } from "./predefined-endpoints.js";
+import { getProviderByName } from "./provider-definitions.js";
 import type { ProfileContext } from "./provider-profiles.js";
 import {
   clearRuntimeRegistry,
@@ -29,15 +32,46 @@ function makeConfig(customEndpoints?: Record<string, unknown>): ClaudishProfileC
   } as ClaudishProfileConfig;
 }
 
+interface HandlerTestSeams {
+  provider?: { overrideStreamFormat?: () => unknown };
+  resolveStreamFormat?: () => unknown;
+}
+
+function handlerTestSeams(handler: unknown): HandlerTestSeams {
+  return handler as HandlerTestSeams;
+}
+
+const AUTH_SCHEME_TEST_ENV_VARS = [
+  "CUSTOM_KEYLESS_SIMPLE_REGRESSION_KEY",
+  "CUSTOM_KEYLESS_COMPLEX_REGRESSION_KEY",
+  "CUSTOM_KEYLESS_ENV_REGRESSION_KEY",
+  "CUSTOM_BEARER_REGRESSION_KEY",
+] as const;
+
 describe("custom-endpoints-loader", () => {
+  let savedAuthSchemeEnv: Map<string, string | undefined>;
+
   beforeEach(() => {
+    savedAuthSchemeEnv = new Map(
+      AUTH_SCHEME_TEST_ENV_VARS.map((name) => [name, process.env[name]])
+    );
+    for (const name of AUTH_SCHEME_TEST_ENV_VARS) delete process.env[name];
     clearRuntimeRegistry();
     __resetEndpointDiagnosticsForTests();
+    __resetPredefinedStateForTests();
+    invalidateEndpointRegistration();
   });
 
   afterEach(() => {
+    invalidateEndpointRegistration();
+    __resetPredefinedStateForTests();
     clearRuntimeRegistry();
     __resetEndpointDiagnosticsForTests();
+    for (const name of AUTH_SCHEME_TEST_ENV_VARS) {
+      const value = savedAuthSchemeEnv.get(name);
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   });
 
   test("empty config: returns 0 registered, 0 errors, registry stays empty", () => {
@@ -97,6 +131,94 @@ describe("custom-endpoints-loader", () => {
     expect(def?.transport).toBe("litellm");
     expect(def?.baseUrl).toBe("https://litellm.corp.example.com");
     expect(def?.apiPath).toBe("/v1/chat/completions");
+  });
+
+  describe('authScheme "none" registration', () => {
+    test("simple endpoint preserves the scheme and needs no credential", async () => {
+      const name = "keyless-simple-regression";
+      const result = loadCustomEndpoints(
+        makeConfig({
+          [name]: {
+            kind: "simple",
+            url: "https://keyless-openai.example.com/v1",
+            format: "openai",
+            authScheme: "none",
+          },
+        })
+      );
+
+      expect(result).toEqual({ registered: 1, errors: [], refused: [] });
+      expect(getProviderByName(name)?.authScheme).toBe("none");
+      expect(process.env.CUSTOM_KEYLESS_SIMPLE_REGRESSION_KEY).toBeUndefined();
+      expect(await credentials.isAvailable(name)).toBe(true);
+
+      const headers = (await credentials.getRequestAuth(name, { model: "m" })).headers;
+      expect("Authorization" in headers).toBe(false);
+      expect("x-api-key" in headers).toBe(false);
+    });
+
+    test("complex endpoint preserves the scheme and needs no credential", async () => {
+      const name = "keyless-complex-regression";
+      const result = loadCustomEndpoints(
+        makeConfig({
+          [name]: {
+            kind: "complex",
+            displayName: "Keyless Anthropic Gateway",
+            transport: "anthropic",
+            baseUrl: "https://keyless-anthropic.example.com",
+            authScheme: "none",
+          },
+        })
+      );
+
+      expect(result).toEqual({ registered: 1, errors: [], refused: [] });
+      expect(getProviderByName(name)?.authScheme).toBe("none");
+      expect(process.env.CUSTOM_KEYLESS_COMPLEX_REGRESSION_KEY).toBeUndefined();
+      expect(await credentials.isAvailable(name)).toBe(true);
+
+      const headers = (await credentials.getRequestAuth(name, { model: "m" })).headers;
+      expect("Authorization" in headers).toBe(false);
+      expect("x-api-key" in headers).toBe(false);
+    });
+
+    test('credential signing ignores an accidentally populated env key for scheme "none"', async () => {
+      const name = "keyless-env-regression";
+      process.env.CUSTOM_KEYLESS_ENV_REGRESSION_KEY = "must-not-leak";
+      loadCustomEndpoints(
+        makeConfig({
+          [name]: {
+            kind: "simple",
+            url: "https://keyless-env.example.com/v1",
+            format: "openai",
+            authScheme: "none",
+          },
+        })
+      );
+
+      const headers = (await credentials.getRequestAuth(name, { model: "m" })).headers;
+      expect("Authorization" in headers).toBe(false);
+      expect("x-api-key" in headers).toBe(false);
+    });
+
+    test("explicit bearer endpoint still signs with its declared key", async () => {
+      const name = "bearer-regression";
+      loadCustomEndpoints(
+        makeConfig({
+          [name]: {
+            kind: "complex",
+            displayName: "Bearer Gateway",
+            transport: "openai",
+            baseUrl: "https://bearer.example.com",
+            authScheme: "bearer",
+            apiKey: "declared-bearer-key",
+          },
+        })
+      );
+
+      const headers = (await credentials.getRequestAuth(name, { model: "m" })).headers;
+      expect(headers.Authorization).toBe("Bearer declared-bearer-key");
+      expect("x-api-key" in headers).toBe(false);
+    });
   });
 
   test("invalid simple (missing url): not registered, error reported", () => {
@@ -588,9 +710,9 @@ describe("custom-endpoints-loader", () => {
       expect(handler).toBeDefined();
       // ComposedHandler stores the transport on a private `provider` field.
       // Tap into overrideStreamFormat via that field.
-      const transport = (handler as any).provider;
+      const transport = handlerTestSeams(handler).provider;
       expect(transport).toBeDefined();
-      expect(transport.overrideStreamFormat?.()).toBe("anthropic-sse");
+      expect(transport?.overrideStreamFormat?.()).toBe("anthropic-sse");
     });
 
     test("openai-transport + streamFormat=openai-sse: propagates to transport.overrideStreamFormat()", () => {
@@ -609,8 +731,8 @@ describe("custom-endpoints-loader", () => {
 
       const profile = getRuntimeProfiles().get("op-aggregate");
       const handler = profile!.createHandler(makeCtx("qwen3.8-max"))!;
-      const transport = (handler as any).provider;
-      expect(transport.overrideStreamFormat?.()).toBe("openai-sse");
+      const transport = handlerTestSeams(handler).provider;
+      expect(transport?.overrideStreamFormat?.()).toBe("openai-sse");
     });
 
     test("no streamFormat set: transport falls back to dialect default (no override)", () => {
@@ -628,10 +750,10 @@ describe("custom-endpoints-loader", () => {
 
       const profile = getRuntimeProfiles().get("no-stream");
       const handler = profile!.createHandler(makeCtx("claude-test"))!;
-      const transport = (handler as any).provider;
+      const transport = handlerTestSeams(handler).provider;
       // No override set — returns undefined, the parser falls back to the
       // dialect's inherited streamFormat (the historical behavior).
-      expect(transport.overrideStreamFormat?.()).toBeUndefined();
+      expect(transport?.overrideStreamFormat?.()).toBeUndefined();
     });
 
     test("a configured streamFormat selects the stream PARSER, not just the transport value", () => {
@@ -652,7 +774,7 @@ describe("custom-endpoints-loader", () => {
         .get("parser-override")!
         .createHandler(makeCtx("qwen3.8-max"))!;
       // resolveStreamFormat is private, but it is the parser-selection step users experience.
-      expect((overriddenHandler as any).resolveStreamFormat()).toBe("anthropic-sse");
+      expect(handlerTestSeams(overriddenHandler).resolveStreamFormat?.()).toBe("anthropic-sse");
 
       clearRuntimeRegistry();
       loadCustomEndpoints(
@@ -670,7 +792,7 @@ describe("custom-endpoints-loader", () => {
       const defaultHandler = getRuntimeProfiles()
         .get("parser-default")!
         .createHandler(makeCtx("qwen3.8-max"))!;
-      expect((defaultHandler as any).resolveStreamFormat()).toBe("openai-sse");
+      expect(handlerTestSeams(defaultHandler).resolveStreamFormat?.()).toBe("openai-sse");
     });
   });
 });
