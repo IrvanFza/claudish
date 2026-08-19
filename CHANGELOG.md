@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.63.0] - 2026-08-19
+
+### Documentation
+
+- update CHANGELOG.md for v7.62.0([`7515317`](https://github.com/MadAppGang/claudish/commit/751531784183a856e07a4268632b182dfa843c66))
+
+### New Features
+
+- v7.63.0 — one endpoint-registration seam, and a chain that advances on a dead key([`a2cc661`](https://github.com/MadAppGang/claudish/commit/a2cc661cfafe929a49e052f1c218453f879ec3eb))
+
 ## [7.62.0] - 2026-08-18
 
 ### Bug Fixes
