@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.64.0] - 2026-08-19
+
+### Documentation
+
+- update CHANGELOG.md for v7.63.0([`c61f9f1`](https://github.com/MadAppGang/claudish/commit/c61f9f1053290f4d30859b5cc74bd1d31c78b229))
+
+### New Features
+
+- v7.64.0 — custom endpoints that take no credential, and 809 lines of dead provider table([`94ae235`](https://github.com/MadAppGang/claudish/commit/94ae2352a85ddc8ecf32fcff5f203f6adf8b21db))
+
 ## [7.63.0] - 2026-08-19
 
 ### Documentation
