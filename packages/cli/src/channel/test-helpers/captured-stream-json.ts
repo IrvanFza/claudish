@@ -11,10 +11,13 @@ import { resolve } from "node:path";
  * removed before closing the outer object so it is valid NDJSON again.
  */
 
-const PROBE_DIR = resolve(
-  import.meta.dir,
-  "../../../../../ai-docs/sessions/dev-arch-20260822-114706-c77bb53d/probes"
-);
+// TRACKED, deliberately. These captures previously lived in
+// `ai-docs/sessions/dev-arch-.../probes`, which `.gitignore:56` excludes — so the
+// tests passed on the machine that recorded them and FAILED in CI, which clones
+// fresh and has no session directory. CLAUDE.md names this exact trap ("three
+// write-ups already died this way"); this was the fourth. A test fixture is
+// something meant to outlive the session, so it belongs next to the test.
+const PROBE_DIR = resolve(import.meta.dir, "captures");
 
 export const BIDIRECTIONAL_CAPTURE_PATH = resolve(PROBE_DIR, "samples-bidirectional.txt");
 export const TOOL_TURN_CAPTURE_PATH = resolve(PROBE_DIR, "samples-tool-turn.txt");
