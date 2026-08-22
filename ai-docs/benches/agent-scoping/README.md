@@ -16,11 +16,30 @@ madbench           ai-docs/benches/agent-scoping/madbench.yaml   # the real run
 | real run | **HEALTHY · 1/1 pass · 4/4 checks · $0.0136 · 9.0s** |
 | `grade` (positive control) | **4/4 cells reproduced · 0 diverged · control holds** |
 
-**The negative control reports "does NOT hold", and that is expected here.** `cost`
-and `latency` ERROR when the harness reports no metrics, so under the mock harness
-they land as "could not grade". The property that matters is intact: **0 cells
-wrongly passed**, and both grading cells fail against a do-nothing harness. Do not
-"fix" this by deleting the guards.
+### The negative control reports "does NOT hold" — and the guards are still tested
+
+`cost` and `latency` ERROR when the harness reports no metrics, and the mock harness
+reports none, so `madbench check` can never exercise them. That is a madbench
+limitation, not a defect in this bench: **any** bench carrying those checks reports
+the same, including madbench's own `examples/bugfix-add`.
+
+**That is a reason to test them another way, not to wave the red line through.**
+Proven by falsification — both bounds set to impossible values, one real run:
+
+    Logic   cost ≤ $0.0001      0.00      <- FAILS, actual $0.0349
+    Logic   latency ≤ 1ms       0.00      <- FAILS, actual 8.7s
+
+So both guards demonstrably grade. Re-run that check any time they are changed:
+set `threshold: 0.0001` / `threshold: 1`, run once for real, confirm both score
+0.00, then `git checkout` the file.
+
+Filed upstream with a suggested fix (have the mock report synthetic metrics above
+any plausible bound, or exclude un-controllable checks from the verdict the way
+`image:` benches already are):
+`/Users/jack/mag/madbench/ai-docs/bug-negative-control-cost-latency.md`
+
+Do NOT "fix" the red line by deleting the guards — they catch real cost and latency
+regressions, and the falsification run above is the evidence that they work.
 
 Measured over 3 repeat passes (2026-08-22, `claude-haiku-4-5`):
 
