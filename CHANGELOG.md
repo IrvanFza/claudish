@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.65.0] - 2026-08-22
+
+### New Features
+
+- native Claude is a runnable `team` slot, with a first-class `agent` parameter — `internal`/`default` are SELECTORS, not model ids, and are now normalized to their Claude Code tier at the `--model` boundary. The `team` guard that rejected every native name is gone; a native slot runs on the user's own subscription through the native passthrough and, unlike a Task agent, is covered by `require_pattern`. `team` and `create_session` gain `agent` plus an open `claude_flags` passthrough, and an unknown agent is rejected against a live-discovered roster because Claude Code silently ignores one under `--input-format stream-json`([`471bbf7`](https://github.com/MadAppGang/claudish/commit/471bbf7))
+- bidirectional stream-json channel transport, and a timeout that stops reporting success([`da1b485`](https://github.com/MadAppGang/claudish/commit/da1b485))
+
+### Bug Fixes
+
+- stop `rate_limit_event` frames being captured as the model's answer — they were missing from the stream-json vocabulary and fell to the passthrough branch, turning a 2-byte reply into 191 B and defeating `min_output_bytes`([`8e1e4cb`](https://github.com/MadAppGang/claudish/commit/8e1e4cb))
+- recover evicted channel sessions from disk, and stop a NUL byte hiding a source file from grep([`bf33054`](https://github.com/MadAppGang/claudish/commit/bf33054))
+
+### Documentation
+
+- headless is not a faithful subset of interactive: `--agent` validation is silently skipped under `--input-format stream-json`, why magmux exists (agent-drives-agent, and `--headless` keeps the PTY), and how to drive a session to completion([`17e1fe9`](https://github.com/MadAppGang/claudish/commit/17e1fe9), [`a901f75`](https://github.com/MadAppGang/claudish/commit/a901f75), [`dced29f`](https://github.com/MadAppGang/claudish/commit/dced29f))
 ## [7.64.1] - 2026-08-22
 
 ### Bug Fixes

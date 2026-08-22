@@ -19,6 +19,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
+import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
 import { SessionManager } from "./channel/index.js";
@@ -93,7 +94,8 @@ When channel mode is active, you receive <channel source="claudish" ...> notific
 - tool_executing: The model is using a tool (Read, Write, Bash, etc.). May include tool_count for batched events.
 - input_required: The model is asking a question and waiting for input. Call send_input with the session_id and your answer.
 - completed: The session finished successfully. Call get_output to retrieve the full output.
-- failed: The session exited with an error. Check the content for details.
+- failed: The session exited with an error. Call get_diagnostics for the cause.
+- timeout: The session hit its timeout_seconds and was killed. Call get_diagnostics to see how far it got.
 - cancelled: The session was cancelled via cancel_session.
 
 ### Workflow
@@ -102,8 +104,12 @@ When channel mode is active, you receive <channel source="claudish" ...> notific
 2. Watch for <channel> notifications — they arrive automatically.
 3. On input_required: call send_input with the answer.
 4. On completed: call get_output to get the full response.
-5. Use list_sessions to see all active/completed sessions.
-6. Use cancel_session to stop a running session.
+5. On failed or timeout — or on a completed session whose output is empty or
+   surprising — call get_diagnostics. It returns the child's stderr, the upstream
+   error bodies, the recent event frames, the resolved model chain and the paths
+   to the full records. It needs no re-run and no debug flag.
+6. Use list_sessions to see all active/completed sessions.
+7. Use cancel_session to stop a running session.
 
 The session_id in the channel tag's meta attributes is the key for all tool calls.`;
 
@@ -395,6 +401,50 @@ function fmtSize(n: number): string {
  * Self-delimiting because MCP `resource_link` blocks arrive flattened into the
  * text stream with no separator — a consumer must be able to see where this ends.
  */
+/**
+ * Build the flag list handed to every child Claude Code process.
+ *
+ * Two inputs, deliberately: `agent` is first-class because selecting a
+ * subagent is the common case and a caller should not have to know the flag
+ * spelling, and `claude_flags` stays open because claudish forwards ANY
+ * unrecognised flag to Claude Code (cli.ts catch-all) — so `--effort`,
+ * `--permission-mode`, `--allowedTools` and anything added later work without
+ * a claudish release.
+ *
+ * The dedicated parameter WINS: if `claude_flags` also carries an `--agent`,
+ * that pair is dropped rather than emitted twice, so the effective agent is
+ * always the one the caller named explicitly.
+ */
+export function buildChildClaudeFlags(agent: unknown, claudeFlags: unknown): string[] | undefined {
+  const extra = typeof claudeFlags === "string" ? claudeFlags.split(/\s+/).filter(Boolean) : [];
+  const named = typeof agent === "string" ? agent.trim() : "";
+
+  if (named.startsWith("-")) {
+    throw new Error(
+      `Invalid 'agent': ${named}. Expected a subagent name (e.g. "dev:reviewer"), not a flag.`
+    );
+  }
+
+  const cleaned: string[] = [];
+  for (let i = 0; i < extra.length; i++) {
+    const tok = extra[i];
+    // ONLY `--agent`. NOT `--agents`, which is an unrelated Claude Code flag
+    // ("--agents <json>: JSON object defining custom agents") — stripping it
+    // would silently discard the caller's custom agent DEFINITIONS while they
+    // believe they were passed.
+    if (named && (tok === "--agent" || tok.startsWith("--agent="))) {
+      // Skip the flag and, for the space-separated form, its value. A dangling
+      // `--agent` with no value drops just the flag.
+      if (tok === "--agent" && extra[i + 1] && !extra[i + 1].startsWith("-")) i++;
+      continue;
+    }
+    cleaned.push(tok);
+  }
+
+  const flags = [...(named ? ["--agent", named] : []), ...cleaned];
+  return flags.length > 0 ? flags : undefined;
+}
+
 export function formatTeamResult(
   status: import("./team-orchestrator.js").TeamStatus,
   sessionPath: string
@@ -1024,9 +1074,14 @@ function defineTools(
           type: "array",
           items: { type: "string" },
           description:
-            "External model IDs to run (required for 'run' and 'run-and-judge' modes). " +
-            "Do NOT pass 'internal', 'default', 'opus', 'sonnet', 'haiku', or 'claude-*' model IDs — " +
-            "those are Claude Code agent selectors and must be handled via Task agents instead.",
+            "Model IDs to run (required for 'run' and 'run-and-judge' modes). " +
+            "Native Claude names ARE runnable slots and belong in this array alongside " +
+            "external models: 'internal'/'default' select the default tier, and " +
+            "'opus'/'sonnet'/'haiku'/'claude-*' select a specific one. They run on the " +
+            "user's Claude subscription through the native passthrough (no API key, no " +
+            "translation), and — unlike a Task agent — they are covered by require_pattern, " +
+            "so a native reviewer that never produced the required shape is reported FAILED " +
+            "instead of silently succeeding.",
         },
         judges: {
           type: "array",
@@ -1057,6 +1112,26 @@ function defineTools(
             "off). A blunter instrument than require_pattern — short answers can be " +
             "legitimate — so prefer require_pattern when you know the expected shape.",
         },
+        agent: {
+          type: "string",
+          description:
+            "Claude Code subagent every child runs as, e.g. 'dev:reviewer', 'dev:architect'. " +
+            "Each child is a full Claude Code session, so this loads that agent's system " +
+            "prompt and tool allowlist — the same specialisation a Task agent gets, but " +
+            "inside the team run, where require_pattern still applies. Applies to EVERY " +
+            "model in the run (native and external alike); there is no per-model form.",
+        },
+        claude_flags: {
+          type: "string",
+          description:
+            "Any other Claude Code flags, space-separated (e.g. '--effort high " +
+            "--permission-mode plan'). Unrecognised flags pass straight through to the " +
+            "child Claude Code, so anything Claude Code accepts works here. Prefer the " +
+            "dedicated 'agent' parameter for the subagent; an --agent given here is " +
+            "ignored when 'agent' is also set. NOTE: split on whitespace, so a flag " +
+            'VALUE containing spaces (e.g. --append-system-prompt "two words") cannot ' +
+            "be expressed here.",
+        },
       },
       required: ["mode", "path"],
     },
@@ -1076,6 +1151,11 @@ function defineTools(
         const timeout = args.timeout as number | undefined;
         const requirePattern = args.require_pattern as string | undefined;
         const minOutputBytes = args.min_output_bytes as number | undefined;
+        const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
+        // Reject an unknown agent BEFORE spawning N children. `team` spawns with
+        // --stdin so Claude Code would catch it, but centrally is where the two
+        // spawn sites stay consistent — see agent-availability.ts.
+        await assertAgentAvailable(args.agent as string | undefined, process.cwd());
 
         const resolved = validateSessionPath(path);
 
@@ -1087,6 +1167,7 @@ function defineTools(
           timeout,
           requirePattern,
           minOutputBytes,
+          claudeFlags: childFlags,
           onProgress: (u: {
             rendered: string;
             phase: "running" | "settled";
@@ -1122,14 +1203,14 @@ function defineTools(
             };
           }
           case "judge": {
-            const verdict = await judgeResponses(resolved, { judges });
+            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
             return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
           }
           case "run-and-judge": {
             if (!models?.length) throw new Error("'models' is required for 'run-and-judge' mode");
             setupSession(resolved, models, input);
             await runModels(resolved, runOpts);
-            const verdict = await judgeResponses(resolved, { judges });
+            const verdict = await judgeResponses(resolved, { judges, claudeFlags: childFlags });
             return { content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }] };
           }
           case "status": {
@@ -1325,9 +1406,18 @@ function defineTools(
           type: "number",
           description: "Session timeout in seconds (default: 600, max: 3600)",
         },
+        agent: {
+          type: "string",
+          description:
+            "Claude Code subagent the session runs as, e.g. 'dev:reviewer'. Equivalent to " +
+            "putting '--agent <name>' in claude_flags, and wins over one given there.",
+        },
         claude_flags: {
           type: "string",
-          description: "Extra flags to pass to claudish (space-separated)",
+          description:
+            "Any other Claude Code / claudish flags, space-separated. Unrecognised flags " +
+            "pass through to the child Claude Code. NOTE: split on whitespace, so a flag " +
+            "VALUE containing spaces cannot be expressed here.",
         },
         work_dir: {
           type: "string",
@@ -1339,9 +1429,7 @@ function defineTools(
     group: "channel",
     handler: async (args) => {
       try {
-        const claudishFlags = args.claude_flags
-          ? (args.claude_flags as string).split(/\s+/).filter(Boolean)
-          : undefined;
+        const claudishFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
 
         // Resolve the model's credential AND its route in THIS process before
         // spawning the child. Several create_session calls in flight at once
@@ -1358,6 +1446,10 @@ function defineTools(
         // an option — it is process-global and races concurrent calls.
         const requestedModel = args.model as string;
         const workDir = args.work_dir as string | undefined;
+        // The roster is cwd-dependent, so validate against the directory this
+        // session will actually run in, not the parent's.
+        await assertAgentAvailable(args.agent as string | undefined, workDir ?? process.cwd());
+
         const plan = await prehydrateCredentialsForSpawn([requestedModel], {
           pin: workDir === undefined || resolve(workDir) === process.cwd(),
         });
@@ -1498,6 +1590,62 @@ function defineTools(
     },
   });
 
+  // Diagnostics as API.
+  //
+  // Two channel sessions once ran 900 seconds of genuine billed work — 241
+  // assistant messages, ~94k output tokens, 150 tool calls — and reported
+  // success with an empty output log. The cause was one line, written to
+  // `~/.claudish/sessions/<id>/stderr.log` and left there:
+  //   [claude-code:unrecognized_model] {"model":"cx@gpt-5.6-sol"}
+  // No MCP tool returned it. Diagnosis meant reading the filesystem by hand,
+  // which an agent consuming this interface has no reason to know about — and a
+  // failure that has already happened cannot be reproduced with `--debug`.
+  //
+  // Everything this returns is captured unconditionally while the session runs.
+  tools.push({
+    name: "get_diagnostics",
+    description:
+      "Explain what a channel session actually did — stderr, upstream error bodies, the " +
+      "recent event frames, the resolved model chain, accounting, and the paths to the " +
+      "full records. Call this FIRST whenever a session fails, times out, or completes " +
+      "with empty or surprising output; it needs no re-run and no debug flag.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string", description: "Session ID from create_session" },
+        event_limit: {
+          type: "number",
+          description:
+            "How many of the most recent semantic frames to include (default: 40, max: 200). " +
+            "0 omits them; `event_log_path` always has the full record.",
+        },
+      },
+      required: ["session_id"],
+    },
+    group: "channel",
+    handler: async (args) => {
+      try {
+        const diagnostics = sessionManager.getDiagnostics(
+          args.session_id as string,
+          args.event_limit as number | undefined
+        );
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(diagnostics) }],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  });
+
   return tools;
 }
 
@@ -1530,9 +1678,24 @@ const EVENT_TO_TASK_STATUS = new Map<string, TaskStatus>([
   ["completed", "completed"],
   ["failed", "failed"],
   ["cancelled", "cancelled"],
+  // The key whose ABSENCE forced the channel wire to lie. `mapEventToTaskStatus`
+  // falls through to `?? "working"`, so a session killed by its own timeout was
+  // reported to a SEP-1686 consumer as still working — which is why the timeout
+  // path emitted `"failed"` on the wire while `SessionInfo.status` said
+  // `"timeout"`. With this key present `ChannelEventType` is the full
+  // `SessionStatus` and the timeout emits its own event; SEP-1686 has no
+  // `timeout` member, and `failed` is the only honest projection of it.
+  ["timeout", "failed"],
 ]);
 
-function mapEventToTaskStatus(event: string): TaskStatus {
+// Exported ONLY so the regression guard can call it instead of grepping this
+// file's source text. The behaviour worth guarding is the fall-through below: a
+// key missing from EVENT_TO_TASK_STATUS does not throw, it silently yields
+// "working", so a dead session (e.g. one killed by its own timeout) reports to a
+// SEP-1686 consumer as still alive. Only a real call can catch that; a source
+// regex stays green if the entry moves to a dead map, is shadowed, or ends up in
+// a comment.
+export function mapEventToTaskStatus(event: string): TaskStatus {
   return EVENT_TO_TASK_STATUS.get(event) ?? "working";
 }
 
@@ -1568,9 +1731,14 @@ async function main() {
   // See: ai-docs/sessions/.../sep-1686-migration-schema.md
   const sessionManager = new SessionManager({
     onStateChange: wrapStateChange((sessionId, event) => {
+      // `timeout` is here because it used to arrive AS `failed` — the wire had
+      // no timeout event until EVENT_TO_TASK_STATUS learned to project one — and
+      // dropping the hint when the event split in two would have been a silent
+      // regression. Both are terminal failures worth reporting, and both are now
+      // explainable without a re-run via get_diagnostics.
       const notificationContent =
-        event.type === "failed"
-          ? `${event.content}\n\nTo report this error, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
+        event.type === "failed" || event.type === "timeout"
+          ? `${event.content}\n\nCall get_diagnostics with session_id: "${sessionId}" for the stderr, the upstream error bodies and the transcript path. To report it, use the report_error tool with error_type: "provider_failure" and model: "${event.model}".`
           : event.content;
       const result = server.notification({
         method: "notifications/claude/channel",
