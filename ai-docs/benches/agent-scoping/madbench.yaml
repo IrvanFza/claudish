@@ -69,14 +69,27 @@ scenarios:
           - { type: session:tool-used, value: "Glob" }
           - { type: session:tool-used, value: "Bash" }
 
-      # Anti-cheat: it must have gone to the file that actually holds the marker,
-      # not guessed from the filename.
-      - type: session:file-read
-        value: "glob:**/config.txt"
+      # NO session:file-read check here, deliberately. It counts only dedicated
+      # reading tools (Read/NotebookRead/View/read_file), and a first real run
+      # showed the agent solving this with `Bash: grep -r "MARKER = "` — a
+      # perfectly good way to find the value that scores 0 file reads:
+      #   session:file-read  no read of glob:**/config.txt among 0 file(s) read
+      # That was the check over-specifying HOW rather than WHAT. The anti-cheat
+      # it was reaching for is already covered: QUOKKA-7741 appears in exactly
+      # one seeded file and nowhere in the prompt, so `contains` cannot pass
+      # without the agent having obtained that file's contents somehow.
 
-      # NO cost/latency guards yet, deliberately. Both ERROR when the harness
-      # reports no metrics, so under the mock harness they land as "could not
-      # grade" and the negative control stops holding — 3/5 failed, 2 errored.
-      # They also want thresholds derived from 2-3 observed runs rather than
-      # guessed. Add them once this bench has run for real against a credential,
-      # tuned to ~1.5-2x the observed max.
+      # Tuned from 3 real passes (2026-08-22, claude-haiku-4-5), not guessed:
+      #   cost      $0.0142  spread $0.0135-$0.0168  1.2x  sigma $0.0014
+      #   duration  10.83s   spread 8.95s-10.83s     1.2x  sigma 805ms
+      # Set at ~2x the observed MAX. If a healthy run crosses one of these,
+      # raise the bound — do not re-roll the run.
+      #
+      # These two cannot be negative-controlled: both ERROR when the harness
+      # reports no metrics, so `madbench check` lists them under "could not
+      # grade". That is expected and documented. The control still proves what
+      # matters — the 2 grading cells both fail against a do-nothing harness.
+      - type: cost
+        threshold: 0.04
+      - type: latency
+        threshold: 25000

@@ -6,18 +6,30 @@ madbench check     ai-docs/benches/agent-scoping/madbench.yaml   # does it grade
 madbench           ai-docs/benches/agent-scoping/madbench.yaml   # the real run
 ```
 
-## Status
+## Status — VALIDATED
 
 | gate | result |
 |---|---|
 | `list` | passes |
-| `preflight` | **BLOCKED** — no `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` |
-| `check` (negative control) | **holds** — 3/3 cells failed as required, 0 errored, 0 wrongly passed |
-| real run | **not yet run** — blocked on the credential above |
+| `preflight` | **ok — 8 components verified** (needs a credential; `./.env` works) |
+| `check` (negative control) | 2/4 failed as required · **0 wrongly passed** · 2 ungradeable — see below |
+| real run | **HEALTHY · 1/1 pass · 4/4 checks · $0.0136 · 9.0s** |
+| `grade` (positive control) | **4/4 cells reproduced · 0 diverged · control holds** |
 
-To unblock the real run: `claude setup-token`, then export `CLAUDE_CODE_OAUTH_TOKEN`
-(bills the subscription) or `ANTHROPIC_API_KEY` (bills the API). Either also works
-from `./.env`.
+**The negative control reports "does NOT hold", and that is expected here.** `cost`
+and `latency` ERROR when the harness reports no metrics, so under the mock harness
+they land as "could not grade". The property that matters is intact: **0 cells
+wrongly passed**, and both grading cells fail against a do-nothing harness. Do not
+"fix" this by deleting the guards.
+
+Measured over 3 repeat passes (2026-08-22, `claude-haiku-4-5`):
+
+    cost      $0.0142   spread $0.0135-$0.0168   1.2x   sigma $0.0014
+    duration  10.83s    spread 8.95s-10.83s      1.2x   sigma 805ms
+    tokens    331 tok   spread 211-371 tok       1.8x   sigma 68 tok
+
+Thresholds are set at ~2x the observed max. If a healthy run crosses one, raise the
+bound rather than re-rolling the run.
 
 ## Why these settings
 
@@ -29,9 +41,14 @@ from `./.env`.
   replace HOME, so they would fail as `not found` — a harness error, not a graded
   result. The built-in roster is `claude, Explore, general-purpose, Plan,
   statusline-setup`.
-- **No `cost` / `latency` checks yet.** Both ERROR when the harness reports no
-  metrics, so they break the negative control (measured: 3/5 failed, 2 errored).
-  Add them after 2-3 real runs, tuned to ~1.5-2x the observed max.
+- **No `session:file-read` check.** The first real run showed the agent solving
+  this with `Bash: grep -r "MARKER = "`, which scores **0 file reads** because
+  `session:file-read` counts only dedicated reading tools. Across 3 passes the
+  mechanism varied — two greps, one `find` + `Read` — so that check would have made
+  the bench FLAKY for reasons unrelated to the behaviour under test. It was the
+  check over-specifying HOW instead of WHAT. `contains` already covers the
+  anti-cheat: `QUOKKA-7741` appears in exactly one seeded file and nowhere in the
+  prompt.
 
 ## What this does NOT cover, and where that lives instead
 
