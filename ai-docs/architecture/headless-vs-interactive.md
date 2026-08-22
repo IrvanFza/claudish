@@ -174,6 +174,26 @@ non-zero cost:
 Both of my first two harness attempts failed exactly this way. The state flag is not the oracle;
 the content is. Same lesson as `require_pattern` in `team-capture.md`, one layer down.
 
+### A working implementation
+
+`scripts/magmux-drive-session.ts` implements the sequence above and is the thing to read (or
+copy) rather than reconstructing it:
+
+    bun scripts/magmux-drive-session.ts <id> "Reply with exactly OK and nothing else."
+    -> {"ok":true,"answer":"OK","costSeen":true,
+        "states":["boot=awaiting_input","started=running","settled=awaiting_input"]}
+
+Measured: 8/8 deterministic runs, 14-25s each; distinct prompts return their real answers
+(`BANANA`, `51` for 17x3, `PEAR`), so it reports model output rather than a fixed string; a
+forced turn deadline returns `turn_timeout` in 16.7s instead of hanging; and no run left an
+orphaned process or a stale socket.
+
+It POLLS `list` every 600ms, which was enough to validate the sequence but is not the best
+design. The protocol is built for event SUBSCRIPTION (`snapshot` / `exit` frames) — madbench's
+`internal/magmux/socket.go` consumes those instead, deriving terminal state from an `exit` event
+and its code. Prefer events over polling for anything long-lived; there is no poll-interval race
+in that model.
+
 ### Permission prompts
 
 `ClaudeCodeController` models `CtrlAwaitingPermission` distinctly from `CtrlAwaitingInput`, so a
