@@ -41,3 +41,38 @@ it can only repeat its default.
 
 Same shape as `team`'s exit 0 (`team-capture.md`): a status whose failure mode is to look
 like a confident answer. Prefer "unknown" to a plausible guess in any automated report.
+
+## A fixture must live where the test lives, never in scratch space
+
+`channel/test-helpers/captured-stream-json.ts` reads real captured stream-json frames at
+MODULE LOAD, via an IIFE. Its `PROBE_DIR` originally pointed at
+`ai-docs/sessions/dev-arch-*/probes/` — where the probe that recorded them happened to write.
+
+`.gitignore:56` excludes `ai-docs/sessions/`. So the files existed on exactly one machine and
+in no clone. In CI the `readFileSync` threw during module init, the exported consts were never
+assigned, and every test in the file died with:
+
+```
+ReferenceError: Cannot access 'CAPTURED_ASSISTANT_FRAME' before initialization.
+```
+
+which names a symbol, not a missing file — the real cause is two frames up the stack.
+
+Fixed by copying both captures VERBATIM into `packages/cli/src/channel/test-helpers/captures/`
+and pointing `PROBE_DIR` at `resolve(import.meta.dir, "captures")`. Byte-identical: fixtures
+come from real logs and must never be regenerated or reformatted in a move.
+
+**The rule, stated generally:** a fixture is BY DEFINITION something meant to outlive the
+session that produced it, so a session directory is never its home — however convenient that
+is at capture time. CLAUDE.md already warns that `ai-docs/sessions/` "does not survive a fresh
+clone or `git worktree remove`" and that "three write-ups already died this way". This was the
+fourth, and the first to take a test gate down rather than a document.
+
+The trap is that it is invisible locally in the only direction that matters: the suite is
+green on the machine that recorded the captures and red everywhere else, so local green is not
+weaker evidence than CI red — it is ACTIVELY MISLEADING. Same family as the gated diagnostic
+above: a signal that reports success because the question could only be asked where the answer
+was already yes.
+
+Cheap check before trusting any new fixture: `git ls-files <path>` must list it, and
+`git check-ignore -v <path>` must say nothing.
