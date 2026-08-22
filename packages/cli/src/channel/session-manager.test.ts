@@ -9,7 +9,14 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -414,6 +421,158 @@ describe("SessionManager", () => {
     expect(output.output).toContain(CAPTURED_ASSISTANT_PROSE);
     expect(output.output).not.toContain('"type":"stream_event"');
     expect(output.totalLines).toBeLessThan(20);
+  });
+
+  test("D1: a new manager recovers a finished session from disk", async () => {
+    const id = quickSession(manager, [], "DELTA");
+    await waitForCompleted(manager, id);
+    await waitForMeta(id);
+
+    const liveInfo = manager.getSession(id);
+    const liveOutput = manager.getOutput(id);
+    const recovered = makeManager();
+
+    const info = recovered.getSession(id);
+    const output = recovered.getOutput(id);
+    const diagnostics = recovered.getDiagnostics(id);
+
+    expect(info).toMatchObject({
+      sessionId: id,
+      model: liveInfo.model,
+      status: "completed",
+      turnsCompleted: liveInfo.turnsCompleted,
+      exitCode: liveInfo.exitCode,
+    });
+    expect(output).toMatchObject({
+      sessionId: id,
+      status: "completed",
+      turnsCompleted: liveOutput.turnsCompleted,
+      tokensUsed: liveOutput.tokensUsed,
+    });
+    // ScrollbackBuffer is chunk-boundary sensitive: live can retain a phantom
+    // trailing line that a one-append disk replay correctly cannot reproduce.
+    expect(output.output.trimEnd()).toBe(liveOutput.output.trimEnd());
+    expect(diagnostics).toMatchObject({
+      sessionId: id,
+      status: "completed",
+      model: liveInfo.model,
+      turnsCompleted: liveInfo.turnsCompleted,
+    });
+    expect(diagnostics.outputBytes).toBeGreaterThan(0);
+    expect(diagnostics.eventsTotal).toBeGreaterThan(0);
+    expect(diagnostics.recentEvents.every((event) => event.at === "")).toBe(true);
+  });
+
+  test("D2: a disk-recovered session is structurally read-only", async () => {
+    const id = quickSession(manager);
+    await waitForCompleted(manager, id);
+    await waitForMeta(id);
+
+    const recovered = makeManager();
+    expect(recovered.getSession(id).pid).toBeNull();
+    expect(recovered.sendInput(id, "hello")).toBe(false);
+    expect(recovered.cancelSession(id)).toBe(false);
+  });
+
+  test("D3: hostile session ids are rejected before disk lookup", () => {
+    const root = join(sessionsDir, "hostile-root");
+    const outside = join(root, "outside");
+    mkdirSync(join(outside, "victim"), { recursive: true });
+    writeFileSync(join(outside, "victim", "meta.json"), JSON.stringify({ model: "LEAKED" }));
+    const hostileManager = makeManager({ sessionsDir: join(root, "sessions") });
+
+    for (const id of [
+      "../outside/victim",
+      "..%2Foutside",
+      "../../etc",
+      "..",
+      ".",
+      "/etc/passwd",
+      "a/b",
+      "a\\b",
+      "with\0null",
+      "",
+      ".hidden",
+      "x".repeat(200),
+    ]) {
+      expect(() => hostileManager.getSession(id), JSON.stringify(id)).toThrow("not found");
+    }
+  });
+
+  test("D4: malformed disk records degrade to diagnostics instead of throwing", () => {
+    const cases: Array<[string, string | null]> = [
+      ["nometa", null],
+      ["halfwritten", '{"sessionId":"halfwr'],
+      ["emptymeta", ""],
+      [
+        "wrongtypes",
+        JSON.stringify({
+          sessionId: 42,
+          model: null,
+          status: "banana",
+          tokensUsed: "lots",
+          pid: 1,
+          startedAt: [],
+          elapsedSeconds: Number.NaN,
+        }),
+      ],
+      ["notjson", "[1,2,3]"],
+    ];
+
+    for (const [id, meta] of cases) {
+      const dir = join(sessionsDir, id);
+      mkdirSync(dir, { recursive: true });
+      if (meta !== null) writeFileSync(join(dir, "meta.json"), meta);
+      if (id === "halfwritten") writeFileSync(join(dir, "output.log"), "partial answer\n");
+
+      const info = manager.getSession(id);
+      const output = manager.getOutput(id);
+      const diagnostics = manager.getDiagnostics(id);
+      expect(info.sessionId).toBe(id);
+      expect(info.pid).toBeNull();
+      expect(typeof info.tokensUsed).toBe("number");
+      expect(Number.isFinite(info.elapsedSeconds)).toBe(true);
+      expect(typeof output.output).toBe("string");
+      expect(typeof diagnostics.stderrTail).toBe("string");
+      if (id !== "wrongtypes") {
+        expect(diagnostics.anomalies.length, id).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("D5: disk diagnostics stay bounded for a 4 MB event log", () => {
+    const id = "bigsession";
+    const dir = join(sessionsDir, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "meta.json"),
+      JSON.stringify({
+        sessionId: id,
+        model: "m",
+        status: "failed",
+        startedAt: new Date().toISOString(),
+      })
+    );
+
+    const frames: string[] = [];
+    let eventBytes = 0;
+    for (let i = 0; eventBytes < 4 * 1024 * 1024; i++) {
+      const frame = `${JSON.stringify({
+        type: "assistant",
+        subtype: null,
+        i,
+        pad: "x".repeat(2000),
+      })}\n`;
+      frames.push(frame);
+      eventBytes += Buffer.byteLength(frame);
+    }
+    writeFileSync(join(dir, "events.jsonl"), frames.join(""));
+
+    const diagnostics = manager.getDiagnostics(id, 200);
+    expect(Buffer.byteLength(JSON.stringify(diagnostics))).toBeLessThan(512 * 1024);
+    expect(diagnostics.eventsTotal).toBeLessThan(512);
+    expect(diagnostics.recentEvents).toHaveLength(200);
+    expect(diagnostics.recentEvents.every((event) => event.preview.length <= 800)).toBe(true);
   });
 });
 

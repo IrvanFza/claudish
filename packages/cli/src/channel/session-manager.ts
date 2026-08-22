@@ -30,12 +30,13 @@ import {
   createWriteStream,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { ENV } from "../config.js";
@@ -52,7 +53,7 @@ import {
 } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
-import { type ResultSummary, StreamJsonReducer } from "./stream-json-reducer.js";
+import { type ResultSummary, StreamJsonReducer, labelForLine } from "./stream-json-reducer.js";
 import type {
   ChannelEvent,
   SessionCreateOptions,
@@ -63,7 +64,16 @@ import type {
 
 /** One semantic frame, as `get_diagnostics` returns it. */
 export interface DiagnosticEvent {
-  /** When the frame was observed, ISO-8601. */
+  /**
+   * When the frame was observed, ISO-8601 — or `""` for a frame recovered from
+   * `events.jsonl` after the session left memory.
+   *
+   * The log stores the frame verbatim and nothing else, so the observation time
+   * is genuinely not on disk. Empty rather than back-filled from the file's
+   * mtime or the session's `completedAt`: both would be a fabricated timestamp
+   * indistinguishable from a measured one, and every frame would carry the same
+   * one. A consumer can tell the two cases apart by testing for "".
+   */
   at: string;
   /** `type[:subtype]` from the frame, or null for a line that carried no type. */
   label: string | null;
@@ -253,7 +263,116 @@ const DEFAULT_EVENT_LIMIT = 40;
  */
 const UPSTREAM_ERROR_TAIL_BYTES = 64 * 1024;
 
+/** Marker `recordStderr` leaves where it dropped the middle of the buffer. */
+const STDERR_TRUNCATION_MARKER = "[claudish] … stderr truncated to";
+
 const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "cancelled", "timeout"];
+
+/** Every `SessionStatus`, for validating one read back off disk. */
+const KNOWN_STATUSES: readonly SessionStatus[] = [
+  "starting",
+  "running",
+  "tool_executing",
+  "waiting_for_input",
+  "completed",
+  "failed",
+  "cancelled",
+  "timeout",
+];
+
+// ─── Disk fallback ───────────────────────────────────────────────────────────
+//
+// Sessions live in a Map, and two things legitimately remove them from it: the
+// 30-minute / 50-session retention policy, and the MCP server restarting. Before
+// this, either one made a finished session unreachable — `getOutput`,
+// `getSession` and `getDiagnostics` all threw `Session <id> not found` — while
+// its entire record sat complete under `<sessionsDir>/<id>/`. Measured on a real
+// session (probes/probe-gaps.ts §G-B): `meta.json` on disk with
+// `status=cancelled tokens=37076`, alongside `output.log`, `stderr.log`,
+// `events.jsonl`, `tokens.json` and `prompt.md` — and a fresh manager throwing.
+//
+// That is the same defect this whole feature exists to remove: the answer on
+// disk while the API says there is nothing. Worse here, because the point of the
+// diagnostics is that a failure which ALREADY HAPPENED can be explained without
+// re-running it — and a restart is exactly what tends to follow a crash.
+//
+// So the three READERS fall back to disk. The two MUTATORS never do; see
+// `liveEntry`.
+
+/**
+ * What a session id may contain, given that it is about to become a path
+ * segment.
+ *
+ * `createSession` mints `randomUUID().slice(0, 8)` — 8 lowercase hex — but these
+ * readers take the id from an MCP caller, so on the read path it is untrusted
+ * input heading for `join(sessionsDir, id)` and an `open`. The allowlist admits
+ * no `/`, no `\`, no NUL and no leading dot, which is what makes `..`,
+ * `../../etc/passwd` and an absolute path unrepresentable rather than merely
+ * unlikely. Wider than 8 hex on purpose: an id minted by an older or future
+ * build must still resolve.
+ */
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * Refuse to parse a `meta.json` larger than this.
+ *
+ * It is a serialised `SessionInfo` — well under 1 KB — so anything at this size
+ * is not the file we wrote, and `JSON.parse` of an arbitrarily large string is
+ * not something the error path should be doing.
+ */
+const META_READ_LIMIT = 1024 * 1024;
+
+/**
+ * Bytes of `output.log` read back, before the same 2 000-line scrollback bound
+ * the live path applies.
+ *
+ * The live `getOutput` answers from a `ScrollbackBuffer` that holds at most
+ * `scrollbackCapacity` lines (~200 KB by default), so this is the byte window
+ * that comfortably contains that many lines of prose. The recovered text is then
+ * pushed through a real `ScrollbackBuffer` so the two paths cannot disagree
+ * about ANSI stripping, line splitting or `tailLines`.
+ */
+const OUTPUT_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Bytes of `stderr.log` read back.
+ *
+ * `recordStderr` bounds what it writes at `STDERR_SIDE_LIMIT` per end (64 KB
+ * plus a marker), so this window reads a file THIS manager wrote in full —
+ * head included. That matters: the 81-byte `[claude-code:unrecognized_model]`
+ * line which motivated the diagnostics is emitted at STARTUP, and a window that
+ * only reached the tail is precisely the shape that would lose it.
+ */
+const STDERR_READ_BYTES = 256 * 1024;
+
+/**
+ * Bytes of `events.jsonl` read back.
+ *
+ * That file is capped at `EVENT_LOG_LIMIT` (4 MB) and a single `tool_result`
+ * frame can be megabytes on its own, so it is read as a bounded TAIL and never
+ * whole: a 4 MB event log must not become a 4 MB read, let alone a 4 MB MCP
+ * response. At the 200-frame ceiling this window still averages 2.6 KB a frame.
+ * `eventLogPath` is returned so the full record stays one `cat` away.
+ */
+const EVENT_TAIL_BYTES = 512 * 1024;
+
+/**
+ * `terminalReason` for a session whose directory exists but whose `meta.json`
+ * does not, or will not parse.
+ *
+ * `meta.json` is written by `writeArtifacts`, at the very end of `finalize`, so
+ * its absence means the process died before reaching a verdict — SIGKILL, a
+ * panic, a full disk, or a write caught half-way. Distinctive enough to grep.
+ */
+const NO_TERMINAL_RECORD = "claudish_no_terminal_record";
+
+/** A session reconstructed from `<sessionsDir>/<id>/`. There is no process behind it. */
+interface DiskRecord {
+  info: SessionInfo;
+  sessionDir: string;
+  /** True when `meta.json` was missing or unusable and `info` was reconstructed. */
+  partial: boolean;
+}
 
 /**
  * The argv a channel child is spawned with.
@@ -406,33 +525,29 @@ function decodeChunk(decoder: StringDecoder, chunk: Buffer | string): string {
 }
 
 /**
- * The last `maxBytes` of a JSONL file, split into whole lines.
+ * The last `maxBytes` of a file, as text, plus whether the read began mid-file.
  *
- * A positioned tail read, never a whole-file read: `upstream-errors.jsonl` is
- * written by the CHILD on every failed request, so its size is not ours to
- * bound. A first partial line is dropped rather than returned mangled.
+ * A positioned tail read, never a whole-file read: every caller reads a log
+ * whose size is not ours to bound — `upstream-errors.jsonl` is written by the
+ * CHILD on every failed request, and `events.jsonl` is capped at 4 MB.
  *
- * Returns `[]` for a file that does not exist — which is the normal case, and
- * means the session had no non-ok upstream response.
+ * Returns null for a file that does not exist, which is the ordinary case for
+ * all of them. Never throws: this is the error path.
  */
-function readTailLines(path: string, maxBytes: number): string[] {
+function readTailText(path: string, maxBytes: number): { text: string; truncated: boolean } | null {
   let fd: number | null = null;
   try {
     const size = statSync(path).size;
-    if (size === 0) return [];
+    if (size === 0) return { text: "", truncated: false };
     const start = Math.max(0, size - maxBytes);
     const length = size - start;
     const buf = Buffer.alloc(length);
     fd = openSync(path, "r");
     readSync(fd, buf, 0, length, start);
-    const lines = buf.toString("utf-8").split("\n");
-    // A read that began mid-file almost certainly began mid-line.
-    if (start > 0) lines.shift();
-    return lines.filter((line) => line.trim().length > 0);
+    return { text: buf.toString("utf-8"), truncated: start > 0 };
   } catch {
-    // Absent (the common case), unreadable, or racing a write. Diagnostics are
-    // never load-bearing.
-    return [];
+    // Absent, unreadable, or racing a write. Diagnostics are never load-bearing.
+    return null;
   } finally {
     if (fd !== null) {
       try {
@@ -442,6 +557,149 @@ function readTailLines(path: string, maxBytes: number): string[] {
       }
     }
   }
+}
+
+/**
+ * The last `maxBytes` of a JSONL file, split into whole lines.
+ *
+ * A first partial line is dropped rather than returned mangled. `[]` for a file
+ * that does not exist.
+ */
+function readTailLines(path: string, maxBytes: number): string[] {
+  const tail = readTailText(path, maxBytes);
+  if (!tail) return [];
+  const lines = tail.text.split("\n");
+  // A read that began mid-file almost certainly began mid-line.
+  if (tail.truncated) lines.shift();
+  return lines.filter((line) => line.trim().length > 0);
+}
+
+/** Byte size of a file, or 0 when it is absent or unreadable. */
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Parse a small JSON object off disk, or null.
+ *
+ * Every failure mode of the file is a null: absent, too large to be the file we
+ * wrote, unreadable, invalid JSON, or valid JSON that is not an object. A
+ * `meta.json` caught half-written by a SIGKILL is the case this exists for, and
+ * it must degrade to a partial record rather than take the reader down.
+ */
+function readJsonObject(path: string, maxBytes: number): Record<string, unknown> | null {
+  try {
+    if (fileSize(path) > maxBytes) return null;
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** A field of a `meta.json` that must be a string, or null. Never a coercion. */
+const metaString = (v: unknown): string | null =>
+  typeof v === "string" && v.length > 0 ? v : null;
+
+/** A field of a `meta.json` that must be a finite number, or null. */
+const metaNumber = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+/** A `status` field that must name a real `SessionStatus`, or null. */
+const metaStatus = (v: unknown): SessionStatus | null =>
+  typeof v === "string" && (KNOWN_STATUSES as readonly string[]).includes(v)
+    ? (v as SessionStatus)
+    : null;
+
+/**
+ * How every annotation `recordNote` writes into `output.log` begins.
+ *
+ * Coupled to the three `recordNote` call sites by convention, not by
+ * construction — they format the string themselves. Only `diskProseBytes` reads
+ * it, and only to keep our own explanations out of a metric that measures what
+ * the CHILD produced; a note that stopped matching costs a slightly generous
+ * byte count, nothing else.
+ */
+const CLAUDISH_NOTE_PREFIX = "[claudish] ";
+
+/**
+ * A tail window with its first, partial line removed.
+ *
+ * A read that began mid-file began mid-line. The exception is a window with no
+ * newline at all: that is one enormous line, and dropping it would return
+ * nothing at all rather than the end of the answer.
+ */
+function dropLeadingFragment(tail: { text: string; truncated: boolean }): string {
+  if (!tail.truncated) return tail.text;
+  const firstBreak = tail.text.indexOf("\n");
+  return firstBreak === -1 ? tail.text : tail.text.slice(firstBreak + 1);
+}
+
+/**
+ * Tokens, cost and tool calls straight from a recovered session's `tokens.json`.
+ *
+ * The proxy's own file, and the fallback for the case `meta.json` cannot cover:
+ * a run killed before `writeArtifacts` never got a `meta.json`, but the CHILD
+ * wrote this one as it went, so every token it spent is still recorded. Same
+ * authority as the live `refreshAccounting` — the proxy, never the child's own
+ * `result.total_cost_usd`, which prices every model at Anthropic's rates.
+ */
+function diskAccounting(sessionDir: string): {
+  tokensUsed: number;
+  costUsd: number;
+  toolCallCount: number;
+} {
+  const stats = readTokenStatsAt(join(sessionDir, "tokens.json"));
+  return {
+    tokensUsed:
+      (stats?.total_tokens ?? 0) || (stats?.input_tokens ?? 0) + (stats?.output_tokens ?? 0),
+    costUsd: stats?.total_cost ?? 0,
+    toolCallCount: Array.isArray(stats?.tool_calls)
+      ? stats.tool_calls.reduce((sum, t) => sum + (typeof t.count === "number" ? t.count : 0), 0)
+      : 0,
+  };
+}
+
+/**
+ * Whole seconds between an ISO start and an epoch-ms end, never negative and
+ * never `NaN` — an unparseable timestamp in a half-written `meta.json` degrades
+ * to 0 rather than putting `null` on the wire.
+ */
+function elapsedSecondsBetween(startedAt: string, endedAtMs: number): number {
+  const seconds = Math.round((endedAtMs - Date.parse(startedAt)) / 1000);
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+}
+
+/**
+ * `outputBytes` for a recovered session: prose only, not the whole log.
+ *
+ * `outputBytes` exists to answer "did this session actually say anything?", and
+ * the file it would naively be measured from also holds the `[claudish] …`
+ * notes `finalize` writes to EXPLAIN a failure. Counting those makes a session
+ * that answered with nothing report ~200 bytes — the diagnostic falsifying the
+ * exact metric it exists to explain, which is a mistake `recordNote` already
+ * documents having made once on the live path.
+ *
+ * So the notes are subtracted, whenever the whole log was read. When it was not
+ * (a log past `OUTPUT_TAIL_BYTES`) the file size is returned instead: at that
+ * size the notes are rounding error, and "did it answer at all" is already
+ * settled. The subtraction is line-accurate to within newline accounting.
+ */
+function diskProseBytes(
+  tail: { text: string; truncated: boolean } | null,
+  fileBytes: number
+): number {
+  if (!tail || tail.truncated) return fileBytes;
+  const prose = tail.text
+    .split("\n")
+    .filter((line) => !line.startsWith(CLAUDISH_NOTE_PREFIX))
+    .join("\n");
+  return Buffer.byteLength(prose, "utf-8");
 }
 
 /** One turn, in the shape `--input-format stream-json` accepts. Measured, not guessed. */
@@ -741,7 +999,7 @@ export class SessionManager {
    * first version that reaches the model.
    */
   sendInput(sessionId: string, text: string): boolean {
-    const entry = this.sessions.get(sessionId);
+    const entry = this.liveEntry(sessionId);
     if (!entry) return false;
     if (TERMINAL_STATUSES.includes(entry.info.status)) return false;
     if (entry.stdinClosed) return false;
@@ -751,7 +1009,12 @@ export class SessionManager {
     return this.writeFrame(entry, text);
   }
 
-  /** Get a session's recovered prose. */
+  /**
+   * Get a session's recovered prose.
+   *
+   * Falls back to `<sessionsDir>/<id>/output.log` for a session that has left
+   * the map — evicted, or lost to a restart. See the "Disk fallback" note above.
+   */
   getOutput(
     sessionId: string,
     tailLines?: number
@@ -765,7 +1028,7 @@ export class SessionManager {
     elapsedSeconds: number;
   } {
     const entry = this.sessions.get(sessionId);
-    if (!entry) throw new Error(`Session ${sessionId} not found`);
+    if (!entry) return this.diskOutput(this.requireDiskRecord(sessionId), tailLines);
 
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
     this.refreshAccounting(entry);
@@ -794,12 +1057,15 @@ export class SessionManager {
    * so everything here is captured unconditionally, during the run.
    */
   getDiagnostics(sessionId: string, eventLimit = DEFAULT_EVENT_LIMIT): SessionDiagnostics {
+    const limit = Math.max(0, Math.min(Math.trunc(eventLimit) || 0, EVENT_RING_SIZE));
+
     const entry = this.sessions.get(sessionId);
-    if (!entry) throw new Error(`Session ${sessionId} not found`);
+    // The restart case is the one this method exists for: a crash is followed by
+    // a restart, and the crash is what you wanted explained.
+    if (!entry) return this.diskDiagnostics(this.requireDiskRecord(sessionId), limit);
+
     this.refreshAccounting(entry);
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
-
-    const limit = Math.max(0, Math.min(Math.trunc(eventLimit) || 0, EVENT_RING_SIZE));
 
     return {
       sessionId,
@@ -869,7 +1135,7 @@ export class SessionManager {
 
   /** Cancel a session. */
   cancelSession(sessionId: string): boolean {
-    const entry = this.sessions.get(sessionId);
+    const entry = this.liveEntry(sessionId);
     if (!entry) return false;
     if (TERMINAL_STATUSES.includes(entry.info.status)) return false;
 
@@ -895,7 +1161,31 @@ export class SessionManager {
     return true;
   }
 
-  /** List sessions. */
+  /**
+   * List sessions. IN-MEMORY ONLY — deliberately, and this one was measured.
+   *
+   * The three id-addressed readers fall back to `<sessionsDir>/<id>/`, so the
+   * obvious symmetry would be for this to enumerate that directory. It does not,
+   * for two reasons found by measuring the real one (9 946 session directories
+   * on this machine; nothing prunes them, so it only grows):
+   *
+   * 1. COST. Session ids carry no ordering, so "the newest N" requires a `stat`
+   *    of every entry: 40 ms warm, 144 ms cold, synchronously, on the same
+   *    thread that pumps every live session's stdout — per call, on a tool an
+   *    agent POLLS.
+   * 2. A BOUNDED scan does not fix that, it makes the answer wrong. `readdir`
+   *    order on APFS is uncorrelated with recency: the last 2 000 of those 9 946
+   *    dirents contained 9 of the 50 genuinely-newest sessions. A capped
+   *    enumeration would present an arbitrary 18 % sample as "the session list",
+   *    and a caller cannot tell a sampled-out session from one that never
+   *    existed. Returning a list that is honestly "what this process is holding"
+   *    beats returning a lottery.
+   *
+   * Nothing is lost that matters: recovery is id-addressed and O(1) — one open
+   * of a known path — and the id is always in the caller's hand, because both
+   * `create_session` and every channel notification carry it. Discovery by
+   * browsing is a directory listing, not a diagnostic.
+   */
   listSessions(includeCompleted = false): SessionInfo[] {
     const sessions: SessionInfo[] = [];
     for (const entry of this.sessions.values()) {
@@ -910,10 +1200,15 @@ export class SessionManager {
     return sessions;
   }
 
-  /** Get a single session's info. */
+  /**
+   * Get a single session's info.
+   *
+   * Falls back to `<sessionsDir>/<id>/meta.json` for a session that has left the
+   * map. See the "Disk fallback" note above.
+   */
   getSession(sessionId: string): SessionInfo {
     const entry = this.sessions.get(sessionId);
-    if (!entry) throw new Error(`Session ${sessionId} not found`);
+    if (!entry) return this.requireDiskRecord(sessionId).info;
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
     this.refreshAccounting(entry);
     return { ...entry.info };
@@ -977,6 +1272,287 @@ export class SessionManager {
     }
     await Promise.all(promises);
     this.cleanupSigint();
+  }
+
+  // ─── Internal: the read-only disk fallback ───────────────────────────────
+
+  /**
+   * The LIVE entry for a session, or undefined. Never consults the disk.
+   *
+   * This exists to make the read-only boundary a STRUCTURAL fact rather than an
+   * incidental one. `sendInput` and `cancelSession` go through here and the
+   * three readers do not, so "a disk-recovered session can never be driven" is
+   * enforced by which accessor a method calls — visible at the call site, and
+   * impossible to lose by someone later "unifying the lookup".
+   *
+   * A recovered record describes a process that is GONE. `sendInput` on it would
+   * have no stdin to write to, and `cancelSession` no pid to signal — worse than
+   * no-ops, they would have to invent a liveness that is not there. Both keep
+   * returning `false`, which is exactly what they already returned for an
+   * unknown id, so the contract does not change.
+   */
+  private liveEntry(sessionId: string): SessionEntry | undefined {
+    return this.sessions.get(sessionId);
+  }
+
+  /**
+   * A disk record for `sessionId`, or the same `not found` the callers used to
+   * throw unconditionally.
+   *
+   * The error is unchanged on purpose: a genuinely unknown id must still look
+   * unknown, and only an id whose directory exists gets an answer.
+   */
+  private requireDiskRecord(sessionId: string): DiskRecord {
+    const record = this.loadDiskRecord(sessionId);
+    if (!record) throw new Error(`Session ${sessionId} not found`);
+    return record;
+  }
+
+  /**
+   * `<sessionsDir>/<id>`, or null when the id is not something we will join onto
+   * a path.
+   *
+   * Two independent gates, because this is the one place untrusted input reaches
+   * the filesystem. `SESSION_ID_RE` is the allowlist; the containment check
+   * afterwards is the same belt-and-braces `validateSessionPath`
+   * (team-orchestrator.ts) applies — it does not trust the regex to be the last
+   * word on what `resolve` will do with a string.
+   */
+  private diskSessionDir(sessionId: string): string | null {
+    if (!SESSION_ID_RE.test(sessionId)) return null;
+    const root = resolve(this.sessionsDir);
+    const dir = resolve(root, sessionId);
+    if (dir !== join(root, sessionId)) return null;
+    if (!dir.startsWith(root + sep)) return null;
+    return dir;
+  }
+
+  /**
+   * Rebuild a `SessionInfo` from `<sessionsDir>/<id>/`.
+   *
+   * Every field is validated, never coerced: a `meta.json` truncated mid-write
+   * by the SIGKILL that ended the session is the case this is FOR, so a missing
+   * or wrong-typed field falls back to a documented default and the record comes
+   * back `partial`. Nothing here throws.
+   */
+  private loadDiskRecord(sessionId: string): DiskRecord | null {
+    const sessionDir = this.diskSessionDir(sessionId);
+    if (sessionDir === null) return null;
+
+    let dirMtimeMs: number;
+    try {
+      const stat = statSync(sessionDir);
+      if (!stat.isDirectory()) return null;
+      dirMtimeMs = stat.mtimeMs;
+    } catch {
+      // No directory: this id was never a session here. Same answer as before.
+      return null;
+    }
+
+    const meta = readJsonObject(join(sessionDir, "meta.json"), META_READ_LIMIT);
+    const partial = meta === null;
+    const measured = diskAccounting(sessionDir);
+
+    const startedAt = metaString(meta?.startedAt) ?? new Date(dirMtimeMs).toISOString();
+    const completedAt = metaString(meta?.completedAt);
+
+    return {
+      sessionDir,
+      partial,
+      info: {
+        // The id we were ASKED for, never the one in the file: the directory
+        // name is what addresses this record, and a mismatched `sessionId` in a
+        // hand-edited meta.json must not be able to rename someone else's run.
+        sessionId,
+        model: metaString(meta?.model) ?? "unknown",
+        spawnModel: metaString(meta?.spawnModel),
+        status: metaStatus(meta?.status) ?? "failed",
+        // NEVER the pid from the file. It belonged to a process that is gone,
+        // and pids are reused — a stale one names some unrelated live process,
+        // which is a genuinely dangerous thing to hand back from a tool whose
+        // neighbours send signals. Null says what is true: no process.
+        pid: null,
+        startedAt,
+        completedAt,
+        exitCode: metaNumber(meta?.exitCode),
+        turnsCompleted: metaNumber(meta?.turnsCompleted) ?? 0,
+        tokensUsed: metaNumber(meta?.tokensUsed) || measured.tokensUsed,
+        // Wall time as it ENDED, not as it looks now. A live session reports
+        // `now - startedAt`; doing that here would make a run that finished last
+        // week report a week of elapsed time. `completedAt` when the session
+        // reached a verdict, the directory's own mtime — the last write anything
+        // made into it — when it did not.
+        elapsedSeconds: elapsedSecondsBetween(
+          startedAt,
+          completedAt ? Date.parse(completedAt) : dirMtimeMs
+        ),
+        costUsd: metaNumber(meta?.costUsd) || measured.costUsd,
+        toolCallCount: metaNumber(meta?.toolCallCount) || measured.toolCallCount,
+        // A directory with no readable `meta.json` means the process died before
+        // `writeArtifacts`, so there is no verdict to report — `failed` above
+        // plus this marker say "ended without a record", not "ended in error".
+        terminalReason: metaString(meta?.terminalReason) ?? (partial ? NO_TERMINAL_RECORD : null),
+        claudeSessionId: metaString(meta?.claudeSessionId),
+        transcriptPath: metaString(meta?.transcriptPath),
+      },
+    };
+  }
+
+  /**
+   * `getOutput` for a recovered session, from `output.log`.
+   *
+   * Replayed through a real `ScrollbackBuffer` at the manager's own capacity
+   * rather than split by hand, so the disk path cannot drift from the live one
+   * on ANSI stripping, line splitting or `tailLines` — they are the same code.
+   *
+   * `totalLines` is the count within the recovered window, which is a LOWER
+   * BOUND when the log exceeded `OUTPUT_TAIL_BYTES`. The live counter is "lines
+   * ever written" and recovering that would mean reading a whole unbounded file
+   * to produce one integer.
+   *
+   * One difference from the live path is not recoverable and is not a bug here.
+   * `ScrollbackBuffer` is CHUNK-BOUNDARY SENSITIVE: `append("x\n")` records one
+   * line, while `append("x")` then `append("\n")` records two — the second an
+   * empty one. Live, the boundaries are wherever the reducer happened to emit
+   * prose, so a one-line answer typically ends up with a phantom trailing empty
+   * line and `output` gains a trailing "\n". Replaying the file in one append
+   * does not reproduce that, because the boundaries were pipe read positions and
+   * nothing records them. Measured: live `"turn1:DELTA\n"` / totalLines 2,
+   * recovered `"turn1:DELTA"` / totalLines 1 — same answer, and the recovered
+   * one is the cleaner of the two.
+   */
+  private diskOutput(
+    record: DiskRecord,
+    tailLines?: number
+  ): {
+    sessionId: string;
+    status: SessionStatus;
+    output: string;
+    totalLines: number;
+    turnsCompleted: number;
+    tokensUsed: number;
+    elapsedSeconds: number;
+  } {
+    const tail = readTailText(join(record.sessionDir, "output.log"), OUTPUT_TAIL_BYTES);
+    const buffer = new ScrollbackBuffer(this.scrollbackCapacity);
+    if (tail?.text) buffer.append(dropLeadingFragment(tail));
+
+    const lines = buffer.getLines(tailLines);
+    return {
+      sessionId: record.info.sessionId,
+      status: record.info.status,
+      output: lines.join("\n"),
+      totalLines: buffer.totalLines,
+      turnsCompleted: record.info.turnsCompleted,
+      tokensUsed: record.info.tokensUsed,
+      elapsedSeconds: record.info.elapsedSeconds,
+    };
+  }
+
+  /**
+   * `getDiagnostics` for a recovered session, from the four logs in its
+   * directory.
+   *
+   * Three fields cannot be recovered and say so rather than guessing:
+   *
+   *   `timeoutSeconds` — 0. The caller's timeout is not part of `SessionInfo`
+   *     and so was never written; `elapsedSeconds` still stands on its own.
+   *   `anomalies`      — the reducer's tally of illegal transitions and
+   *     unparseable lines was running state and died with the process, so it
+   *     cannot be recovered. The one anomaly that CAN be observed from disk is
+   *     reported: a record with no readable `meta.json`. Reporting nothing at
+   *     all would let a reconstructed record pass for a complete one, which is
+   *     the more expensive mistake. `events.jsonl` still holds every frame the
+   *     reducer was judging.
+   *   `at` on each event — "". See `DiagnosticEvent`.
+   */
+  private diskDiagnostics(record: DiskRecord, limit: number): SessionDiagnostics {
+    const { sessionDir, info } = record;
+    const eventLogPath = join(sessionDir, "events.jsonl");
+    const upstreamErrorLogPath = join(sessionDir, "upstream-errors.jsonl");
+    const outputLogPath = join(sessionDir, "output.log");
+
+    const events = readTailLines(eventLogPath, EVENT_TAIL_BYTES);
+    const outputTail = readTailText(outputLogPath, OUTPUT_TAIL_BYTES);
+
+    return {
+      sessionId: info.sessionId,
+      status: info.status,
+      model: info.model,
+      spawnModel: info.spawnModel,
+      exitCode: info.exitCode,
+      terminalReason: info.terminalReason,
+      elapsedSeconds: info.elapsedSeconds,
+      timeoutSeconds: 0,
+      outputBytes: diskProseBytes(outputTail, fileSize(outputLogPath)),
+      turnsCompleted: info.turnsCompleted,
+      tokensUsed: info.tokensUsed,
+      costUsd: info.costUsd,
+      toolCallCount: info.toolCallCount,
+      ...this.diskStderrForDiagnostics(record),
+      anomalies: record.partial
+        ? [
+            `no readable meta.json in ${sessionDir} — this record was reconstructed from ` +
+              "the remaining artifacts, so status, exit code and timings are unknown. The " +
+              "session's process died before it could write a verdict.",
+          ]
+        : [],
+      // Bounded twice over: `limit` caps at EVENT_RING_SIZE the same as the live
+      // path, and each preview at EVENT_PREVIEW_CHARS. A 4 MB event log cannot
+      // become a 4 MB response, and did not even become a 4 MB read.
+      recentEvents:
+        limit === 0
+          ? []
+          : events.slice(-limit).map((line) => {
+              // Redacted on the READ path too. `events.jsonl` was redacted when
+              // written, but a log from an older build was not, and this is
+              // about to enter an agent's context either way.
+              const redacted = redactSecrets(line);
+              const truncated = redacted.length > EVENT_PREVIEW_CHARS;
+              return {
+                at: "",
+                label: labelForLine(line),
+                preview: truncated ? redacted.slice(0, EVENT_PREVIEW_CHARS) : redacted,
+                truncated,
+              };
+            }),
+      eventsTotal: events.length,
+      upstreamErrors: readTailLines(upstreamErrorLogPath, UPSTREAM_ERROR_TAIL_BYTES),
+      claudeSessionId: info.claudeSessionId,
+      transcriptPath: info.transcriptPath,
+      sessionDir,
+      eventLogPath,
+      upstreamErrorLogPath,
+    };
+  }
+
+  /**
+   * The disk twin of `stderrForDiagnostics`, and the same rule: filtered only
+   * for a clean `completed`, raw for everything else, redacted either way.
+   *
+   * `STDERR_READ_BYTES` exceeds what `recordStderr` will ever write, so a
+   * `stderr.log` this manager produced is read WHOLE — head included. The head
+   * is the half that matters: `[claude-code:unrecognized_model]` is a startup
+   * line, and it was the entire content of the incident these diagnostics exist
+   * to explain.
+   */
+  private diskStderrForDiagnostics(record: DiskRecord): {
+    stderrTail: string;
+    stderrFiltered: boolean;
+    stderrTruncated: boolean;
+  } {
+    const tail = readTailText(join(record.sessionDir, "stderr.log"), STDERR_READ_BYTES);
+    const raw = tail?.text ?? "";
+    const filtered = record.info.status === "completed";
+    const source = filtered ? meaningfulStderr(raw) : raw;
+    return {
+      stderrTail: redactSecrets(source).slice(-STDOUT_TAIL_LIMIT),
+      stderrFiltered: filtered,
+      // Either end can have lost bytes: the in-memory buffer may have dropped
+      // its middle before the file was written (the marker says so), or our own
+      // window may not have reached the start of the file.
+      stderrTruncated: (tail?.truncated ?? false) || raw.includes(STDERR_TRUNCATION_MARKER),
+    };
   }
 
   // ─── Internal ────────────────────────────────────────────────────────
@@ -1091,7 +1667,7 @@ export class SessionManager {
     entry.stderrTruncated = true;
     entry.stderr =
       combined.slice(0, STDERR_SIDE_LIMIT) +
-      `\n[claudish] … stderr truncated to ${STDERR_SIDE_LIMIT} bytes per end …\n` +
+      `\n${STDERR_TRUNCATION_MARKER} ${STDERR_SIDE_LIMIT} bytes per end …\n` +
       combined.slice(-STDERR_SIDE_LIMIT);
   }
 
@@ -1415,7 +1991,7 @@ export class SessionManager {
       return;
     }
     const cwd = entry.reducer.cwd ?? entry.cwd;
-    const key = `${cwd} ${uuid}`;
+    const key = `${cwd}\0${uuid}`;
     if (key === entry.transcriptKey) return;
     entry.transcriptKey = key;
     entry.info.transcriptPath = transcriptPathFor(cwd, uuid);

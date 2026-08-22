@@ -190,6 +190,28 @@ function labelFor(type: string | null, subtype: string | null): string | null {
   return subtype === null ? type : `${type}:${subtype}`;
 }
 
+/**
+ * The same label, for a line read back off `events.jsonl` rather than off the
+ * wire.
+ *
+ * Exported so the disk-recovery path in `SessionManager` cannot invent a second
+ * spelling of a label a live session already has a spelling for — two formats
+ * for the same frame would make a post-mortem's events unmatchable against a
+ * live one's. It re-parses, which the live path must never do: there the frame
+ * is already in hand and `labelFor` takes it directly.
+ */
+export function labelForLine(line: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(line);
+    if (!parsed || typeof parsed !== "object") return null;
+    const frame = parsed as Frame;
+    return labelFor(asString(frame.type), asString(frame.subtype));
+  } catch {
+    // Not JSON — the same case the reducer records as an unparseable line.
+    return null;
+  }
+}
+
 export class StreamJsonReducer {
   private _state: ChannelEventType = "starting";
   private disposed = false;
