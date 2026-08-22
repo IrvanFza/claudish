@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.64.1] - 2026-08-22
+
+### Bug Fixes
+
+- repair account-scoped probe diagnostics *(providers)* ([`73e0233`](https://github.com/MadAppGang/claudish/commit/73e02330bb643d58809525f72f9083642f7151a5))
+
+### Documentation
+
+- move architecture rationale out of CLAUDE.md into ai-docs/architecture/([`ceeef60`](https://github.com/MadAppGang/claudish/commit/ceeef606ff49c0952ce65794ca1f6ffa312625be))
+- update CHANGELOG.md for v7.64.0([`4daf804`](https://github.com/MadAppGang/claudish/commit/4daf80403122e61b395d0feb550d049fdd151cc1))
+
 ## [7.64.0] - 2026-08-19
 
 ### Documentation
