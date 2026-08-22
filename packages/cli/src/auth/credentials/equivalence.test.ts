@@ -356,11 +356,8 @@ describe("credential equivalence: kimi (oauth + api-key fallback)", async () => 
   });
 });
 
-describe("credential equivalence: opencode-zen (publicKeyFallback)", async () => {
-  // The CRITICAL Phase-B gap: a publicKeyFallback provider is ALWAYS available
-  // (isProviderAvailable returns true), even with no env/config key. The new
-  // ApiKeyCredentialProvider must replicate this.
-  test("no creds, publicKeyFallback → true", async () => assertEquivalent("opencode-zen", true));
+describe("credential equivalence: opencode-zen", async () => {
+  test("no credentials → false", async () => assertEquivalent("opencode-zen", false));
   test("with env key → true", async () => {
     process.env.OPENCODE_API_KEY = "sk-zen-123";
     await assertEquivalent("opencode-zen", true);

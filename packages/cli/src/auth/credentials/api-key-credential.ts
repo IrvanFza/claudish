@@ -239,7 +239,7 @@ export class ApiKeyCredentialProvider implements CredentialProvider {
     }
     // A real user key always wins; the catalog's public/free fallback key only
     // fills in when nothing resolved. Without this, a keyless publicKeyFallback
-    // provider (e.g. OpenCode Zen) returned EMPTY headers and proxy-server
+    // provider returned EMPTY headers and proxy-server
     // rejected the route as "no credential" before the handler was built.
     const key =
       (await this.resolveKey({ allowOpPrompt: ctx.allowOpPrompt })) || this.publicKeyFallback || "";

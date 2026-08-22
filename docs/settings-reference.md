@@ -162,7 +162,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `SAKANA_API_KEY` | Sakana Fugu API / token plan (`sakana@`, `fugu@`) | | https://console.sakana.ai/get-started |
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
 | `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`, `meta@`) | | https://ollama.com/account |
-| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`); optional for free models (falls back to `"public"` bearer) | | https://opencode.ai/ |
+| `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) | | https://opencode.ai/ |
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
 | `LITELLM_API_KEY` | LiteLLM proxy (`ll@`, `litellm@`) | | https://docs.litellm.ai/ |
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |
@@ -176,7 +176,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 - Express mode (`VERTEX_API_KEY`): Uses the Gemini API endpoint; supports Gemini models only.
 - OAuth mode (`VERTEX_PROJECT` + Application Default Credentials via `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`): Supports all Vertex models including partner models (Anthropic Claude, Mistral, etc.).
 
-**Note on OpenCode Zen**: Free-tier models (cost.input === 0) work without any API key; Claudish automatically uses `"Bearer public"`. Paid models on the zen endpoint require `OPENCODE_API_KEY`.
+**Note on OpenCode Zen**: OpenCode now rejects the historical `"Bearer public"` fallback, so configure `OPENCODE_API_KEY` before using or testing the Zen route.
 
 ### 3.4 Custom Endpoints (Remote Providers)
 
@@ -363,7 +363,7 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `sakana`, `fugu` | `sakana` | Sakana Fugu API / token plan (`SAKANA_API_KEY`) |
 | `sc` | `sakana-coding` | Sakana Fugu Subscription (`SAKANA_CODING_API_KEY` or `SAKANA_API_KEY`) |
 | `oc`, `llama`, `lc`, `meta` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`) |
-| `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY`; optional for free models) |
+| `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY`) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan |
 | `v`, `vertex` | `vertex` | Vertex AI (`VERTEX_API_KEY` or `VERTEX_PROJECT`) |
 | `mistral` | `mistralai` | Direct Mistral API (`MISTRAL_API_KEY`) |
