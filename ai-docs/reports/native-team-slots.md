@@ -250,8 +250,14 @@ cwd**, because the roster is cwd-dependent (24 names in this repo, 5 in `/tmp`).
 documents: a resolution step is an optimisation of WHERE something is checked, not a gate on
 whether the spawn proceeds.
 
-The underlying `--agent` validation gap is a **Claude Code** bug and worth reporting upstream;
-the guard here protects users in the meantime.
+**Upstream status: do NOT wait for a fix.** The CLI reference documents neither the interaction
+nor the validation. The nearest report,
+[anthropics/claude-code#15815](https://github.com/anthropics/claude-code/issues/15815), was
+**closed as not planned**. Verified with `claude` invoked directly (no claudish in the path), and
+the same run reports `result: success` with `is_error: false` and zero mentions of the bad name
+anywhere in the stream — so it is not "errors relocated into the protocol". Interactive mode
+refuses the same name with the full list, which is the divergence
+`ai-docs/architecture/headless-vs-interactive.md` records, and the reason magmux exists.
 
 ## 5. Known unrelated defect found on the way
 

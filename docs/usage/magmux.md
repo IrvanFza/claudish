@@ -25,6 +25,21 @@ You'll see a split terminal with a status bar at the bottom. Press `Ctrl-G` then
 
 ---
 
+## Why a multiplexer, and not just `claude -p`
+
+Headless mode is not interactive-without-a-TTY. It diverges, and at least one divergence is
+silent: an unknown `--agent` name exits 1 with the list of valid agents in interactive mode and
+under plain `-p`, but under `--input-format stream-json` it exits **0**, prints nothing, and runs
+the DEFAULT agent with the full tool set. The run reports `result: success`.
+
+So when an answer has to be trustworthy, claudish drives a real interactive session under
+programmatic control rather than a headless one. A multiplexer gives back what `-p` costs -- a
+real TTY and a real session -- while keeping the panes drivable and readable by a program.
+
+Measurements and the upstream status are in `ai-docs/architecture/headless-vs-interactive.md`.
+
+---
+
 ## With claudish
 
 The `--grid` flag on `claudish team run` launches magmux with one pane per model. Each pane streams output in real time while a status bar tracks progress.
