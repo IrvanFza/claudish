@@ -1,0 +1,82 @@
+description: "Does --agent reach the child and shape the session it runs?"
+harness: claude-code
+
+harness_config:
+  model: claude-haiku-4-5-20251001
+  # `Explore` is a BUILT-IN agent. Plugin agents (dev:reviewer, dev:architect)
+  # are deliberately NOT used here: sandbox levels above `workspace` replace HOME,
+  # so ~/.claude/plugins is not visible and `--agent dev:reviewer` would fail with
+  # "not found" — a harness error, not a graded result.
+  #
+  # bypassPermissions because Explore reaches for Grep/Read/Bash; in --print mode
+  # an un-approved tool call silently no-ops, which would turn a real failure into
+  # a quiet pass.
+  args: ["--agent", "Explore", "--permission-mode", "bypassPermissions"]
+
+defaults:
+  # `workspace`, NOT `home`: home replaces HOME and hides the claude.ai login in
+  # ~/.claude, so preflight blocks on "neither CLAUDE_CODE_OAUTH_TOKEN nor
+  # ANTHROPIC_API_KEY found". `workspace` still isolates the working tree, so the
+  # agent cannot touch the real repo.
+  sandbox: workspace
+  timeout: 180s
+  capture: log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What this measures, and what it deliberately does NOT
+#
+# MEASURES: that `--agent <name>` is carried through to the child and the
+# resulting Session reflects it — the agent reads real files with real tools and
+# answers from their contents.
+#
+# Why it matters here: claudish's `team` and `create_session` gained a
+# first-class `agent` parameter (471bbf7). Claude Code applies a VALID agent
+# correctly under `-p --input-format stream-json` (measured: --agent dev:reviewer
+# yields tools ["Read","Bash"]) but SILENTLY IGNORES an unknown one — exit 0, no
+# stderr, default agent, full toolset. `agent-availability.ts` guards that at the
+# MCP boundary; this bench guards the other half, that a good name still works.
+#
+# DOES NOT MEASURE: claudish-internal behaviour — native slots resolving
+# internal->opus, require_pattern catching a slot that never voted, or
+# rate_limit_event frames being kept out of the captured answer. Those are not
+# things an AGENT does, so madbench cannot grade them honestly: a check that
+# passes under the mock harness is grading nothing, which `madbench check`
+# enforces. They are covered by 48 unit tests plus measured e2e runs, recorded in
+# ai-docs/reports/native-team-slots.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+scenarios:
+  - name: explore-agent-reads-config
+    description: "Explore finds a marker that exists in exactly one seeded file"
+    testdata: ./testdata/repo
+    prompt: |
+      Somewhere in the files in the current working directory there is a line
+      of the form `MARKER = <value>`.
+
+      Find it and report the value, exactly as written, in your final message.
+    checks:
+      # Deterministic core: the value only exists inside a seeded file, so this
+      # cannot be answered without actually reading it. A no-op agent fails.
+      - type: contains
+        value: "QUOKKA-7741"
+
+      # The session shows a real read. Under the mock harness no tool is used at
+      # all, which is what keeps the negative control honest.
+      - type: any-of
+        checks:
+          - { type: session:tool-used, value: "Grep" }
+          - { type: session:tool-used, value: "Read" }
+          - { type: session:tool-used, value: "Glob" }
+          - { type: session:tool-used, value: "Bash" }
+
+      # Anti-cheat: it must have gone to the file that actually holds the marker,
+      # not guessed from the filename.
+      - type: session:file-read
+        value: "glob:**/config.txt"
+
+      # NO cost/latency guards yet, deliberately. Both ERROR when the harness
+      # reports no metrics, so under the mock harness they land as "could not
+      # grade" and the negative control stops holding — 3/5 failed, 2 errored.
+      # They also want thresholds derived from 2-3 observed runs rather than
+      # guessed. Add them once this bench has run for real against a credential,
+      # tuned to ~1.5-2x the observed max.
