@@ -732,7 +732,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     description: "Cloud Ollama (oc@, llama@)",
   },
 
-  // ── OpenCode Zen (free anonymous + paid) ───────────────────────────
+  // ── OpenCode Zen ───────────────────────────────────────────────────
   {
     createHandler: openCodeZenHandler,
     name: "opencode-zen",
@@ -743,14 +743,13 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrlEnvVars: ["OPENCODE_BASE_URL"],
     apiPath: "/v1/chat/completions",
     apiKeyEnvVar: "OPENCODE_API_KEY",
-    apiKeyDescription: "OpenCode Zen (Free)",
+    apiKeyDescription: "OpenCode Zen API Key",
     apiKeyUrl: "https://opencode.ai/",
-    publicKeyFallback: "public",
     shortcuts: ["zen"],
     shortestPrefix: "zen",
     legacyPrefixes: [{ prefix: "zen/", stripPrefix: true }],
     isDirectApi: true,
-    description: "OpenCode Zen (zen@) - free models",
+    description: "OpenCode Zen (zen@)",
   },
 
   // ── OpenCode Zen Go (lite plan) ────────────────────────────────────
@@ -1210,7 +1209,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "qwen-payg",
-    displayName: "Qwen PAYG",
+    displayName: "Qwen API",
     transport: "anthropic",
     // International endpoint. A mainland-China (aliyun.com) account is a
     // different account system on dashscope.aliyuncs.com; that user repoints

@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
 import { describeProbeState } from "../../providers/probe-live.js";
-import { probeProviderRoute } from "../../providers/probe-runner.js";
+import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
 import { route } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import { getProviderDefs, providerIsReady } from "../providers.js";
@@ -186,7 +186,7 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
               // ready-check above just gates the noisy "no key" rows.
               hasCredentials: true,
             },
-            15000
+            INTERACTIVE_PROBE_TIMEOUT_MS
           ).catch((e) => ({
             state: "error" as const,
             latencyMs: Date.now() - startMs,

@@ -60,7 +60,7 @@ describe("providerAuthSource", () => {
     expect(providerAuthSource(def({}), { apiKeys: { [ENV]: "sk-cfg" } })).toBe<AuthSource>("e+c");
   });
 
-  // Regression for the OpenCode Zen bug: a keyless/free provider
+  // A hypothetical keyless/free provider
   // (publicKeyFallback) must report a NON-NULL source so it sorts above the
   // "not configured" divider and shows a ready dot — matching providerIsReady.
   test("'public' for a keyless provider with publicKeyFallback and no user key", () => {
@@ -91,7 +91,7 @@ describe("providerIsReady agrees with providerAuthSource for the public case", (
     else process.env[ENV] = saved;
   });
 
-  // The core invariant the OpenCode Zen fix restores: the SOURCE classifier and
+  // The core invariant: the SOURCE classifier and
   // the readiness oracle must NOT disagree for a keyless provider, or the row
   // renders "ready" under "not configured".
   test("keyless provider is ready AND has a non-null source", () => {

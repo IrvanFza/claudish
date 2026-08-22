@@ -1,5 +1,5 @@
 import { DETAIL_H } from "../constants.js";
-import type { ProviderDef } from "../providers.js";
+import type { AuthSource, ProviderDef } from "../providers.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
 import type { Mode, TestResultsMap } from "../types.js";
@@ -25,6 +25,8 @@ interface ProviderDetailProps {
   hasCfgKey: boolean;
   hasEnvKey: boolean;
   hasKey: boolean;
+  /** Unified source used by the provider list and readiness classifier. */
+  authSource: AuthSource;
   /** True when the env-var key was hydrated from 1Password (not a shell env var). */
   isOpKey: boolean;
   /** True for a keyless/free provider usable via its built-in public key. */
@@ -36,6 +38,24 @@ interface ProviderDetailProps {
   isInputMode: boolean;
 }
 
+export function resolveProviderDetailKeyDisplay(input: {
+  isLocal: boolean;
+  isReady: boolean;
+  authSource: AuthSource;
+  hasEnvKey: boolean;
+  hasCfgKey: boolean;
+  isPublicKey: boolean;
+  envKeyMask: string;
+  cfgKeyMask: string;
+}): string {
+  if (input.isLocal) return input.isReady ? "enabled" : "disabled";
+  if (input.authSource === "oauth") return "oauth";
+  if (input.hasEnvKey) return input.envKeyMask;
+  if (input.hasCfgKey) return input.cfgKeyMask;
+  if (input.isPublicKey) return "free";
+  return "────────";
+}
+
 export function ProviderDetail({
   selectedProvider,
   mode,
@@ -45,6 +65,7 @@ export function ProviderDetail({
   hasCfgKey,
   hasEnvKey,
   hasKey,
+  authSource,
   isOpKey,
   isPublicKey,
   cfgKeyMask,
@@ -55,17 +76,17 @@ export function ProviderDetail({
 }: ProviderDetailProps) {
   // Show the mask of the key that's ACTUALLY being used at runtime.
   // process.env wins over config in the resolver, so env is shown first when both exist.
-  const displayKey = selectedProvider.isLocal
-    ? hasKey
-      ? "enabled"
-      : "disabled"
-    : hasEnvKey
-      ? envKeyMask
-      : hasCfgKey
-        ? cfgKeyMask
-        : isPublicKey
-          ? "free"
-          : "────────";
+  const isOAuth = authSource === "oauth";
+  const displayKey = resolveProviderDetailKeyDisplay({
+    isLocal: !!selectedProvider.isLocal,
+    isReady: hasKey,
+    authSource,
+    hasEnvKey,
+    hasCfgKey,
+    isPublicKey,
+    envKeyMask,
+    cfgKeyMask,
+  });
 
   if (isInputMode) {
     return (
@@ -191,7 +212,18 @@ export function ProviderDetail({
             </span>
           </>
         )}
-        {hasKey && !selectedProvider.isLocal && !isPublicKey && (
+        {hasKey && !selectedProvider.isLocal && isOAuth && (
+          <>
+            <span fg={C.dim}>{"   "}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"From: "}
+            </span>
+            <span fg={C.green} attributes={A.bold}>
+              {"OAuth"}
+            </span>
+          </>
+        )}
+        {hasKey && !selectedProvider.isLocal && !isPublicKey && !isOAuth && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>
