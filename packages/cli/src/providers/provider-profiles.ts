@@ -296,13 +296,11 @@ export const glmProfile: ProviderProfile = {
 
 /**
  * OpenCode Zen / Zen Go — two tiers:
- *   zen/  (opencode-zen):    free anonymous models + full paid access (OPENCODE_API_KEY)
+ *   zen/  (opencode-zen):    OpenCode Zen access (OPENCODE_API_KEY)
  *   zgo/  (opencode-zen-go): go-plan models (glm-5, minimax-m2.5, kimi-k2.5) via zen/go/v1/
  *
- * Free anonymous models work without a key: the catalog's publicKeyFallback
- * ("public") is emitted by the credential authority (ApiKeyCredentialProvider)
- * when no real key resolves, so ctx.apiKey is always populated here — keeps
- * rate-limit bucketing consistent without a second inline fallback.
+ * OpenCode no longer accepts the historical literal `Bearer public`; callers
+ * must resolve a real OPENCODE_API_KEY before this profile is constructed.
  *
  * Model routing inside the profile:
  *   - GPT-* models    → OpenAIProviderTransport (/v1/responses) + CodexAPIFormat (Responses API)

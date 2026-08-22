@@ -71,7 +71,7 @@ import {
   getProbeModel,
 } from "../providers/probe-catalog.js";
 import { describeProbeState } from "../providers/probe-live.js";
-import { probeProviderRoute } from "../providers/probe-runner.js";
+import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../providers/probe-runner.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
@@ -106,10 +106,12 @@ import {
   isProbeProxyReady,
 } from "./probe-proxy.js";
 import {
+  type AuthSource,
   type ProviderDef,
   getProviderDefs,
   maskKey,
   providerAuthCapabilities,
+  providerAuthSource,
   providerIsReady,
   providerIsReadyForDisplay,
 } from "./providers.js";
@@ -358,12 +360,15 @@ export function App({ requestLogin }: AppProps = {}) {
 
   const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
   const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
-  // Keyless/free provider (publicKeyFallback, e.g. OpenCode Zen): usable with no
-  // user key. Counts as "has key" so the detail pane shows it Ready, consistent
-  // with providerIsReady / the Providers list (no more "ready" under
-  // "not configured").
-  const selectedPublicKey = !!selectedProvider.publicKeyFallback && !hasCfgKey && !hasEnvKey;
-  const hasKey = hasCfgKey || hasEnvKey || selectedLocalEnabled || selectedPublicKey;
+  // Use the same credential-source oracle as the list. This includes OAuth,
+  // public-key affordances and configured locals; live local liveness is the
+  // one additive display-only signal. Keeping a second has-key formula here
+  // made every OAuth row say Ready above and Not configured below.
+  const selectedAuthSource: AuthSource = providerAuthSource(selectedProvider, config);
+  const selectedLocalRunning =
+    selectedProviderIsLocal && localLiveness[selectedProvider.catalogName] === "running";
+  const hasKey = selectedAuthSource !== null || selectedLocalRunning;
+  const selectedPublicKey = selectedAuthSource === "public";
   // True when the env-var value was hydrated from 1Password at startup (not a
   // genuine shell env var) — so the detail pane shows "From: 1Password", not "env".
   const isOpKey = hasEnvKey && isOpHydratedVar(selectedProvider.apiKeyEnvVar);
@@ -1057,7 +1062,7 @@ export function App({ requestLogin }: AppProps = {}) {
             // cfg, OAuth). The live request is the source of truth.
             hasCredentials: true,
           },
-          15000
+          INTERACTIVE_PROBE_TIMEOUT_MS
         );
         lastResult = result;
 
@@ -2284,6 +2289,7 @@ export function App({ requestLogin }: AppProps = {}) {
             hasCfgKey={hasCfgKey}
             hasEnvKey={hasEnvKey}
             hasKey={hasKey}
+            authSource={selectedAuthSource}
             isOpKey={isOpKey}
             isPublicKey={selectedPublicKey}
             cfgKeyMask={cfgKeyMask}

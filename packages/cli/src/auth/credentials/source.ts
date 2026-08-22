@@ -89,7 +89,7 @@ export interface SourceConfig {
  *   "env"    - env var only
  *   "cfg"    - config-file key only
  *   "public" - no user credential, but the provider ships a public/free key
- *              (publicKeyFallback) so it's usable as-is (e.g. OpenCode Zen)
+ *              (publicKeyFallback) so it's usable as-is
  *   null     - no credentials of any kind
  *
  * "public" is checked LAST among the ready sources: a real env/cfg/oauth key

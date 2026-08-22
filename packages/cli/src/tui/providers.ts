@@ -27,10 +27,10 @@ export interface ProviderDef {
   isLocal?: boolean;
   /**
    * If set, the provider is usable WITHOUT any user credential — it ships a
-   * built-in public/free key (e.g. OpenCode Zen). Sourced from the catalog's
+   * built-in public/free key. Sourced from the catalog's
    * `publicKeyFallback`. Such a provider is "ready" even with no env/cfg key,
    * which is why the readiness/source logic must treat it specially (else it
-   * lands under "not configured" yet probes green — the OpenCode Zen bug).
+   * lands under "not configured" yet probes green).
    */
   publicKeyFallback?: boolean;
   /**
