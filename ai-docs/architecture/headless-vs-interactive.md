@@ -66,17 +66,63 @@ adjacent complaint and declined it. Design around it; do not wait for it.
 
 ## Why magmux exists
 
-`docs/usage/magmux.md` presents magmux as a side-by-side viewer for `--grid`. That is what it
-does, not why it is in the dependency tree. The reason is this class of divergence: **when the
-result has to be trustworthy, run a real interactive session under programmatic control instead
-of a headless one.**
+`docs/usage/magmux.md` used to present magmux as a side-by-side viewer for `--grid`. That is a
+FEATURE, not the reason it is in the dependency tree. The reason is agent-drives-agent: `magmux
+mcp` runs magmux as an MCP server so one AI agent can spawn and DRIVE another agent's session —
+"real PTYs running real interactive tools, with a human watching every one of them". The tool
+surface is `list_sessions`, `attach_session`, `request_session`, `list_panes`, `open_pane`,
+`close_pane`, `read_pane`, `send_keys`.
 
-Interactive mode is the faithful path — it refuses the unknown agent, with the list. Headless
-mode is the one that quietly does something else. A multiplexer gives back what `-p` costs: a
-real TTY and a real session, with panes that can still be driven and read programmatically.
+**The critical property, and the one that connects to the measurement above: a magmux pane is a
+real PTY running a real interactive session, and that stays true with no terminal of your own.**
+`--headless` is about MAGMUX's output, not the pane's:
 
-`packages/magmux-{darwin,linux}-*` ship with the CLI for exactly this reason; `team-grid.ts`
-is the current consumer.
+> `--headless`  Run with no terminal: no raw mode, no alternate screen, and not one byte on
+> stdout. The socket is the whole interface — read `results` for the outcome. Turned on
+> automatically when stdin is not a terminal.
+
+So the choice is NOT "visible interactive session" vs "headless `-p`". It is:
+
+| | child sees | validation behaviour | needs a terminal? |
+|---|---|---|---|
+| `claude -p --input-format stream-json` | no TTY, print mode | **skipped, silently** | no |
+| `claude` in a magmux pane, `magmux --headless` | real PTY, interactive | correct — refuses, lists agents | **no** |
+
+That is the whole point. Automation does not have to accept print mode's divergences to get a
+programmable interface; it drives a genuinely interactive child over a socket instead.
+
+Both halves measured, not assumed. The child gets a real PTY even though magmux has no terminal:
+
+    magmux --headless -w --id ttyprobe2 -e 'sh -c "… [ -t 0 ] …; tty > FILE"'  < /dev/null
+      -> STDIN_IS_TTY
+      -> tty=/dev/ttys021
+
+(NB the first attempt at this measured `[ -t 1 ]` while redirecting stdout to a file, so it
+reported NO_TTY by construction. Isolate stdin.)
+
+And the behaviour that actually matters follows from it — same bogus agent, inside a headless
+magmux pane:
+
+    magmux --headless -w --id agentprobe -e 'sh -c "claude --agent zzz-not-real > FILE 2>&1; …"'
+      -> --agent 'zzz-not-real' not found. Available agents: claude, code-analysis:detective, …
+      -> EXIT=1
+
+Refused, with the list, from a magmux that never touched a terminal.
+
+`Controlled Sessions` closes the loop — a subscriber can drive a pane, not merely watch it,
+reading state off the socket and pushing the next instruction back in.
+
+One deliberate constraint worth knowing before you try to automate around it (`mcp_spawn.go`):
+
+> Deliberately absent: spawning. We never fork a magmux and we never exec tmux. A magmux that
+> nobody is watching defeats the whole design, in which a human sees every pane the agent drives;
+> `request_session` hands the command to the human instead.
+
+So the MCP server will not create a session for you. That is accountability, not an omission —
+an agent driving another agent is exactly the case where a human needs to be able to look.
+
+`packages/magmux-{darwin,linux}-*` ship with the CLI; `team-grid.ts` is the current consumer, and
+`--grid` is the side-by-side feature rather than the rationale.
 
 ## What this means when you are writing code here
 
