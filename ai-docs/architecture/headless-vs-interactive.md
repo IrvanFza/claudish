@@ -124,6 +124,62 @@ an agent driving another agent is exactly the case where a human needs to be abl
 `packages/magmux-{darwin,linux}-*` ship with the CLI; `team-grid.ts` is the current consumer, and
 `--grid` is the side-by-side feature rather than the rationale.
 
+## Driving an interactive session to completion — the part that bites
+
+A real session does not exit on its own. Measured 2026-08-22, both naive options FAIL, in
+opposite directions:
+
+    magmux --headless -w   --id t -e 'claude'   -> exit 0 after 6s, NOTHING done
+    magmux --headless      --id t -e 'claude'   -> still running at 40s (hangs forever)
+
+`-w` is the dangerous one because it reports success. The cause is `main.go`:
+
+    if p.dead || p.inputReady { done++ } else { running++ }
+
+`done` means dead OR **inputReady**. That is right for a one-shot child — `claudish --model X
+--stdin` runs and dies, which is why `team-grid.ts` can use `-g … -w` safely — and wrong for a
+REPL, which reaches its prompt immediately and sits there. `-w` sees "idle" and quits before any
+work happens.
+
+So neither flag drives a session. The controlled-session loop does.
+
+### The validated sequence
+
+1. Launch WITHOUT `-w`: `magmux --headless --id <name> -e 'claude'`.
+2. **Strip `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE` from the child env.** Inherited from a
+   parent Claude Code session they turn TRANSCRIPT SAVING OFF, and the transcript is
+   `ClaudeCodeController`'s primary signal. Symptom in the pane: `⚠ Transcript saving is off —
+   inherited CLAUDE_CODE_CHILD_SESSION marker`. Detection then degrades to the terminal-idle
+   heuristics, which is the fallback, not the contract.
+3. Connect to `/tmp/magmux-<name>.sock` (newline-delimited JSON; `id` round-trips verbatim).
+4. **Wait for pane state `awaiting_input` before sending anything.** Do NOT accept `running` — at
+   startup that is the splash screen, and keystrokes sent into a still-booting TUI land in the
+   input box without submitting. Measured boot: ~11s.
+5. `{"type":"send","pane":0,"text":"…"}` — types AND submits.
+6. **Wait for `running`** — proves the turn actually started.
+7. **Then wait for `awaiting_input`** — the turn settled. Measured: ~13s for a trivial prompt.
+8. Verify CONTENT, not just the state flag (`capture`, or the cost on the status line).
+9. `{"type":"close_pane","pane":0}` — magmux then exits 0 (measured ~2s).
+10. Wrap all of it in a hard timeout, and reap the process if it trips.
+
+Steps 4/6/7 are three separate edges and all three are load-bearing. Skipping any of them
+produces a run that reports settled while nothing happened — the pane shows the prompt text
+sitting unsubmitted and the status line reads `$0.00`. A correct run shows the answer and a
+non-zero cost:
+
+    ❯ Reply with exactly OK and nothing else.
+    ⏺ OK
+      * Opus | … | $0.36 | 13s
+
+Both of my first two harness attempts failed exactly this way. The state flag is not the oracle;
+the content is. Same lesson as `require_pattern` in `team-capture.md`, one layer down.
+
+### Permission prompts
+
+`ClaudeCodeController` models `CtrlAwaitingPermission` distinctly from `CtrlAwaitingInput`, so a
+driver CAN see "it asked a question" rather than hanging. The cheaper route for automation is not
+to be asked: claudish's team children already spawn with `-y`.
+
 ## What this means when you are writing code here
 
 - **Do not assume a headless run behaves like the interactive one.** Where the difference would
