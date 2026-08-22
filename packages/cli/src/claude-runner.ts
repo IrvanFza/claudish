@@ -1566,6 +1566,20 @@ export async function runClaudeWithProxy(
 }
 
 /**
+ * Signal numbers, for the `128 + signum` exit convention.
+ *
+ * Hardcoded because Node exposes `os.constants.signals` but not a portable
+ * reverse map, and these four are POSIX-fixed. `packages/cli/bin/claudish.cjs`
+ * carries the same table for the case where the CHILD dies from a signal.
+ */
+const SIGNAL_EXIT_NUMBERS: Partial<Record<NodeJS.Signals, number>> = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGTERM: 15,
+};
+
+/**
  * Setup signal handlers to gracefully shutdown
  */
 function setupSignalHandlers(
@@ -1605,7 +1619,18 @@ function setupSignalHandlers(
       } catch {
         // Ignore cleanup errors
       }
-      process.exit(0);
+      // `128 + signum`, the shell convention for "died from signal N" — NOT 0.
+      //
+      // This one line manufactured the 900-second silent success. A supervisor
+      // (the channel session manager's timeout, `team`'s deadline, a CI runner)
+      // would SIGTERM the process group, this handler would run its cleanup and
+      // exit 0, and every layer above read that 0 as "the run succeeded". The
+      // channel manager then let the exit UPGRADE a state its timeout handler
+      // had already recorded as failed, and wrote `status: "completed"` to
+      // meta.json for a session that had been killed. A graceful shutdown is
+      // still a shutdown: the process did not finish its work, and its exit
+      // code is the only place that can say so.
+      process.exit(128 + (SIGNAL_EXIT_NUMBERS[signal] ?? 0));
     });
   }
 }
