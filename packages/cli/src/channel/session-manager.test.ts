@@ -9,25 +9,18 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { mapEventToTaskStatus } from "../mcp-server.js";
 import {
   SessionManager,
   assertNoReservedFlags,
   buildChannelSpawnArgs,
   userFrame,
 } from "./session-manager.js";
-import { mapEventToTaskStatus } from "../mcp-server.js";
 import {
   CAPTURED_ASSISTANT_PROSE,
   CAPTURED_DELTA_LINE,
