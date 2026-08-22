@@ -2,7 +2,7 @@
 
 Planned-but-unimplemented work for Claudish. Items here are deliberately scoped, with explicit **trigger conditions** — what needs to be true upstream or in our codebase before each item moves to active development. If a trigger condition isn't met, leave the item parked.
 
-For shipped features and current architecture, see `CLAUDE.md`. For ad-hoc research and validation sessions, see `ai-docs/sessions/`.
+For shipped features see `CLAUDE.md`; for the engineering rationale behind them see `ai-docs/architecture/`. For ad-hoc research and validation sessions, see `ai-docs/sessions/`.
 
 ---
 
