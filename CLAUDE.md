@@ -15,6 +15,7 @@ lives in `ROADMAP.md`.
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
+- `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
 - `mcp-channel.md` — MCP tool surface, channel wire format, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
@@ -31,6 +32,7 @@ Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing
 - A provider absent from `SUBSCRIPTION_PROVIDERS` quotes flat-rate users a per-token price and accrues fictional spend.
 - Providers whose uids collide with another vendor's namespace (`devin`, `qwen-cloud`) declare no `nativeModelPatterns` and no routing rule — explicit `provider@model` access only.
 - `gk@` is the Grok SUBSCRIPTION; `grok@`/`xai@` is the metered `x-ai`. `moonshot-cn@` is a different service from `moonshot@`.
+- A new `ClaudishProfileConfig` field MUST be added to `loadConfig`'s allowlist in `profile-config.ts`; otherwise it survives on disk until the first global save and is then dropped. Bit `onepasswordEnvironments`, then `keychain`.
 
 ## Commands
 

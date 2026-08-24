@@ -1,3 +1,4 @@
+import type { CredentialSource } from "../../auth/credentials/source.js";
 import { DETAIL_H } from "../constants.js";
 import type { ProviderDef } from "../providers.js";
 /** @jsxImportSource @opentui/react */
@@ -25,10 +26,30 @@ interface ProviderDetailProps {
   hasCfgKey: boolean;
   hasEnvKey: boolean;
   hasKey: boolean;
+  /**
+   * Where the credential comes from, from the SAME classifier the provider list
+   * uses (`describeSourceSync` via `providerAuthSource`).
+   *
+   * Passed in rather than re-derived here. The detail pane used to decide
+   * readiness and key display from its own expression over `hasEnvKey` /
+   * `hasCfgKey` / `publicKeyFallback`, which knew nothing about OAuth — so every
+   * 🌐 provider showed "Not configured" directly beneath a row saying "ready".
+   */
+  authSource: CredentialSource;
   /** True when the env-var key was hydrated from 1Password (not a shell env var). */
   isOpKey: boolean;
+  /** True when the env-var key was hydrated from the macOS Keychain. */
+  isKcKey: boolean;
+  /** True when a keychain item exists for this variable, whether or not it is the value in use. */
+  hasKcKey: boolean;
+  /**
+   * Where a key typed here will be written. Named in the input box title so the
+   * store is never a surprise — this used to be plaintext config.json
+   * unconditionally, and a silent change of destination for secrets is exactly
+   * the kind of thing a user is entitled to see before pressing Enter.
+   */
+  keySaveTarget: string;
   /** True for a keyless/free provider usable via its built-in public key. */
-  isPublicKey: boolean;
   cfgKeyMask: string;
   envKeyMask: string;
   activeEndpoint: string;
@@ -45,8 +66,11 @@ export function ProviderDetail({
   hasCfgKey,
   hasEnvKey,
   hasKey,
+  authSource,
   isOpKey,
-  isPublicKey,
+  isKcKey,
+  hasKcKey,
+  keySaveTarget,
   cfgKeyMask,
   envKeyMask,
   activeEndpoint,
@@ -55,16 +79,22 @@ export function ProviderDetail({
 }: ProviderDetailProps) {
   // Show the mask of the key that's ACTUALLY being used at runtime.
   // process.env wins over config in the resolver, so env is shown first when both exist.
+  //
+  // The OAuth branch mirrors the list's own `keyDisplay` (ProvidersContent):
+  // an OAuth-authenticated provider has no key to mask, and falling through to
+  // the dashes would print "Status: ● Ready   Key: ────────", which reads as a
+  // contradiction even though both halves would be individually true.
+  const isOauthOnly = authSource === "oauth";
   const displayKey = selectedProvider.isLocal
     ? hasKey
       ? "enabled"
       : "disabled"
-    : hasEnvKey
-      ? envKeyMask
-      : hasCfgKey
-        ? cfgKeyMask
-        : isPublicKey
-          ? "free"
+    : isOauthOnly
+      ? "oauth···"
+      : hasEnvKey
+        ? envKeyMask
+        : hasCfgKey
+          ? cfgKeyMask
           : "────────";
 
   if (isInputMode) {
@@ -74,7 +104,11 @@ export function ProviderDetail({
         border
         borderStyle="single"
         borderColor={C.focusBorder}
-        title={` Set ${mode === "input_key" ? "API Key" : "Endpoint"} — ${selectedProvider.displayName} `}
+        title={
+          mode === "input_key"
+            ? ` Set API Key — ${selectedProvider.displayName} → ${keySaveTarget} `
+            : ` Set Endpoint — ${selectedProvider.displayName} `
+        }
         backgroundColor={C.bg}
         flexDirection="column"
         paddingX={1}
@@ -180,26 +214,33 @@ export function ProviderDetail({
             </span>
           </>
         )}
-        {hasKey && !selectedProvider.isLocal && isPublicKey && (
+        {/* OAuth branch FIRST among the non-local sources. Without it an
+            OAuth-only provider reaches the env/cfg block below, where both
+            flags are false and "From: " renders with nothing after it. */}
+        {hasKey && !selectedProvider.isLocal && isOauthOnly && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>
               {"From: "}
             </span>
-            <span fg={C.green} attributes={A.bold}>
-              {"public key (free)"}
+            <span fg={C.cyan} attributes={A.bold}>
+              {"oauth"}
             </span>
+            <span fg={C.fgMuted}>{" (used)"}</span>
           </>
         )}
-        {hasKey && !selectedProvider.isLocal && !isPublicKey && (
+        {hasKey && !selectedProvider.isLocal && !isOauthOnly && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>
               {"From: "}
             </span>
+            {/* Origin of the runtime value. `isKcKey` is tested BEFORE `isOpKey`
+                because the keychain is resolved first, so when both vaults could
+                supply this variable the keychain is the one that did. */}
             {hasEnvKey && (
               <span fg={C.green} attributes={A.bold}>
-                {isOpKey ? "1Password" : "env"}
+                {isKcKey ? "keychain" : isOpKey ? "1Password" : "env"}
               </span>
             )}
             {hasEnvKey && hasCfgKey && <span fg={C.fgMuted}>{" (used) + "}</span>}
@@ -210,6 +251,17 @@ export function ProviderDetail({
               </span>
             )}
             {hasCfgKey && <span fg={C.fgMuted}>{hasEnvKey ? " (shadowed)" : " (used)"}</span>}
+            {/* A keychain item that exists but is NOT the runtime value — the
+                backend is off, or a higher-priority source shadows it. Worth
+                naming explicitly: otherwise `x` reporting "removed from macOS
+                Keychain" would come as a surprise on a row that never mentioned
+                one. */}
+            {hasKcKey && !isKcKey && (
+              <>
+                <span fg={C.fgMuted}>{" + "}</span>
+                <span fg={C.fgMuted}>{"keychain (shadowed)"}</span>
+              </>
+            )}
           </>
         )}
       </text>

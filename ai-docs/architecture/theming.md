@@ -8,11 +8,63 @@ Every screen and every colored CLI line resolves through ONE detected terminal
 theme. `theme/theme-mode.ts` is the sole authority — dependency-free (never
 pulls OpenTUI into a plain CLI path) — with sources in precedence order:
 `CLAUDISH_THEME=light|dark` (override; also the deterministic lever for tests
-and screenshot harnesses) → `COLORFGBG` → a bounded OSC 11 query (only when
-stdin AND stdout are OUR TTYs, so a piped/proxied claudish never writes escapes
-into another program's stream). The three OpenTUI boots (config TUI, probe TUI,
-resume picker) instead feed `renderer.waitForThemeMode(250)` into the same
-state via `theme/renderer-theme.ts`, pre-first-paint.
+and screenshot harnesses) → a bounded **OSC 11 query** → `COLORFGBG`. The query
+runs only when stdin AND stdout are OUR TTYs, so a piped/proxied claudish never
+writes escapes into another program's stream. The three OpenTUI boots (config
+TUI, probe TUI, resume picker) instead feed `renderer.waitForThemeMode(250)`
+into the same state via `theme/renderer-theme.ts`, pre-first-paint.
+
+## OSC 11 outranks `COLORFGBG` — because `COLORFGBG` lies (2026-08-22)
+
+`COLORFGBG` used to come SECOND and short-circuit the OSC query entirely. It was
+demoted on direct evidence from a real cream terminal inside tmux:
+
+```
+COLORFGBG="15;0"          → "dark"    (bg slot 0 = black)
+OSC 11 reply, 19ms        → "light",  background #f9f6da
+```
+
+The terminal is genuinely cream. `COLORFGBG` is a HINT the emulator writes once;
+it goes stale, and tmux inherits a stale value straight across a theme change.
+Trusting it painted the dark palette onto a light terminal for every CLI surface
+— while the TUI, which asks OpenTUI's own OSC handshake, correctly rendered
+light. The two surfaces of one process disagreed about the same terminal.
+
+An OSC reply is a MEASUREMENT, and it settles the mode and the colour together,
+so those two can never contradict each other. `COLORFGBG` remains the fallback
+for terminals that do not answer, and for `detectAndSetThemeModeSync`, which
+cannot await.
+
+**A frequent measurement trap:** a `create-headless` tmux server is DETACHED —
+there is no terminal behind it to answer OSC 11, so every query looks like a
+non-answer. Probing the theme requires a pane in an ATTACHED session. An earlier
+pass concluded "tmux does not answer OSC 11" from a headless pane; tmux answers
+in 19ms.
+
+## The page colour is the terminal's own (`getTerminalBackgroundHex`)
+
+The OSC reply's RGB used to be reduced to one light/dark bit and discarded, so
+the TUI painted a hardcoded `#ffffff` / `#000000` page — the right CLASS, rarely
+the right shade, and on a cream terminal a visible white slab with a seam at
+every edge. `applyTuiTheme` now adopts the measured colour as `C.bg` when one is
+known.
+
+`C.bg` stays OPAQUE — it cannot simply be transparent, because the 1Password
+add-wizard is an absolute overlay that relies on it to occlude the list beneath.
+Matching the terminal exactly is how the page becomes invisible while remaining
+opaque.
+
+ONLY `bg` is adopted. `bgAlt` / `bgHighlight` / `bgError` stay from the palette:
+they are panel and selection washes that must remain *distinguishable from* the
+page, and deriving them from an arbitrary terminal colour is a separate problem
+with its own contrast risk. Safe by construction: the mode was classified from
+THIS colour's luminance, so the palette's foregrounds were already chosen
+against it.
+
+(`claudeup` in magus-src solves the same problem by painting no page at all —
+"accents are chosen to clear 3:1 against both backgrounds, and body text uses
+the terminal's own foreground". That is the cleaner answer where nothing needs
+to occlude; claudish cannot take it while the modal depends on an opaque page.)
 
 **Unknown resolves to DARK — the status quo, never a guess.** Every dark value
 is byte-identical to what claudish always shipped (pinned by

@@ -37,6 +37,7 @@ function classifyStartupKind(): string {
     "telemetry",
     "stats",
     "providers",
+    "keychain",
     "login",
     "logout",
     "quota",
@@ -295,6 +296,8 @@ const isConfigCommand = firstPositional === "config";
 const isServeCommand = firstPositional === "serve";
 // Providers subcommand: claudish providers --json (credential presence, no key material)
 const isProvidersCommand = firstPositional === "providers";
+// Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
+const isKeychainCommand = firstPositional === "keychain";
 // Behavior subcommand: claudish behavior rules|corpus (Layer 4 introspection)
 const isBehaviorCommand = firstPositional === "behavior";
 // Team subcommand: claudish team run|run-and-judge (multi-model orchestration)
@@ -377,6 +380,15 @@ if (isMcpMode) {
       process.exit(1);
     })
   );
+} else if (isKeychainCommand) {
+  // macOS Keychain backend: claudish keychain status|list|import|set|rm|enable|disable
+  const keychainArgIndex = args.indexOf("keychain");
+  import("./keychain-command.js").then((m) =>
+    m.keychainCommand(args.slice(keychainArgIndex + 1)).catch((e) => {
+      console.error(`[claudish keychain] ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    })
+  );
 } else if (isLoginCommand) {
   // Auth login subcommand: claudish login [provider]
   const loginProviderArg = args.find((a, i) => i > args.indexOf("login") && !a.startsWith("-"));
@@ -451,6 +463,23 @@ if (isMcpMode) {
   // slow-start line / trace table must hit stderr before the TUI owns the
   // screen, or they'd corrupt the render buffer.
   traceSpan("startup:tui-import", () => import("./tui/index.js")).then(async (m) => {
+    // Terminal background capture, BEFORE OpenTUI mounts.
+    //
+    // The TUI takes its light/dark answer from OpenTUI's own handshake
+    // (`applyRendererThemeMode`), which returns ONLY that bit — never the
+    // background COLOUR. So this path never populated it, and the page fell
+    // back to a hardcoded #ffffff that sat as a visible white slab inside a
+    // cream terminal. `detectAndSetThemeMode` runs the OSC 11 query and records
+    // the measured colour; OpenTUI still refines the MODE afterwards, and
+    // `applyTuiTheme` only paints the colour when the two agree.
+    //
+    // It must run HERE, before `createCliRenderer`: the query puts stdin in raw
+    // mode and reads it, which would fight OpenTUI for the input stream once
+    // the renderer owns it.
+    await traceSpan("startup:theme-detect", async () => {
+      const { detectAndSetThemeMode } = await import("./theme/theme-mode.js");
+      await detectAndSetThemeMode();
+    });
     const { credentials } = await import("./auth/credentials/authority.js");
     // Register runtime providers BEFORE the sweep below, not after.
     //
