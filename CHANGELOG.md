@@ -2,47 +2,15 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
-## [7.66.0] - 2026-08-25
+## [7.66.0] - 2026-08-24
 
-### Fixed
+### Documentation
 
-- **Antigravity talked to the wrong backend.** `ag@` was built from the removed
-  `gemini-codeassist` provider; the token was swapped to Antigravity's but the
-  HOST was kept. `cloudcode-pa.googleapis.com` is Code Assist's backend — the
-  product Google retired for individuals — so an Antigravity token was answered
-  *as Code Assist*: `currentTier: free-tier`, a stale roster, quota pinned at
-  100% forever, and a contentless `429 RESOURCE_EXHAUSTED` on every chat model
-  while the two inline-completion models returned 200. Antigravity's own backend
-  is `daily-cloudcode-pa.googleapis.com`, overridable with `AICODE_ENDPOINT_URL`.
-- **Antigravity model list showed unusable entries.** The roster is now filtered
-  by what the backend DECLARES — `isInternal`, modality role lists, and
-  `deprecatedModelIds` — instead of an id-prefix guess. That last one matters:
-  `gemini-3.1-pro-high` looks entirely ordinary and answers `400`, and the
-  deprecation notice is the only warning given.
-- **Newest models sorted to the bottom of the picker.** Only 6 of 19 Antigravity
-  ids had a catalog release date, and every one was an old base model, so a 2025
-  model sat on top and the newest sat at the bottom. Catalog dates are now
-  suppressed for variant rosters, which orders 3.7 > 3.6 > 3.5 > 3.1.
-- **A parameter count was read as a version.** `gpt-oss-120b-medium` parsed as
-  version 120 and outranked every model ever shipped.
-- **A 429 with no reason and no RetryInfo no longer gets a 10s backoff.** Three
-  such refusals came back in 343ms, 456ms and 722ms, so ~20s of retry sleep was
-  invented — and it blew the config TUI's 15s probe ceiling from the inside.
-- **The TUI painted a white slab inside a coloured terminal.** The page and every
-  neutral surface now take the terminal's own background, measured via OSC 11
-  (now authoritative over `COLORFGBG`, which lies under tmux).
+- update CHANGELOG.md for v7.65.0([`5f14367`](https://github.com/MadAppGang/claudish/commit/5f143677aec3ff3b8ffbd46ec078681e14927de6))
 
-### Added
+### Other Changes
 
-- **macOS Keychain as a credential backend**, resolving after `config.json` and
-  before 1Password. `claudish keychain import` copies keys from env vars or an
-  existing 1Password setup; the config TUI's Providers tab sets and deletes
-  per-provider keys. `CLAUDISH_DISABLE_KEYCHAIN=1` turns it off.
-
-### Removed
-
-- **The deprecated `go@` alias and `go/` prefix.** `go@model` now fails as an
-  unknown provider instead of routing with a warning.
+- release v7.66.0([`8f1e20d`](https://github.com/MadAppGang/claudish/commit/8f1e20d0956b60981b2915c3aeddc2c7fcab9ab6))
 
 ## [7.65.0] - 2026-08-22
 
@@ -52,6 +20,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ### Documentation
 
+- the two ways a green local run lied during the v7.65.0 release *(testing)* ([`a8361ef`](https://github.com/MadAppGang/claudish/commit/a8361efc98f3d3ac0eee659a86974e6f25f2ed83))
 - update CHANGELOG.md for v7.64.1([`b1caaa5`](https://github.com/MadAppGang/claudish/commit/b1caaa5e81565a69087fed56219f0aeb5536b12d))
 
 ## [7.64.1] - 2026-08-22
@@ -61,6 +30,8 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - repair account-scoped probe diagnostics *(providers)* ([`73e0233`](https://github.com/MadAppGang/claudish/commit/73e02330bb643d58809525f72f9083642f7151a5))
 - recover evicted sessions from disk, and stop a NUL byte hiding the file from grep *(channel)* ([`bf33054`](https://github.com/MadAppGang/claudish/commit/bf33054a224b9efe9cfe3d3bf4ad6a169e54528a))
 - stop rate_limit_event frames being captured as the model's answer *(team)* ([`8e1e4cb`](https://github.com/MadAppGang/claudish/commit/8e1e4cbdd957e1cbbcba63f6bd40cef6707d7242))
+- talk to Antigravity's backend, not Code Assist's *(antigravity)* ([`4af2c14`](https://github.com/MadAppGang/claudish/commit/4af2c14c3b3bedb1c2285c73812745aed4092eb0))
+- paint the page in the terminal's own colour, not a hardcoded slab *(tui)* ([`add2461`](https://github.com/MadAppGang/claudish/commit/add2461baa16a988ce01f12a4710f1545d7aa2cd))
 
 ### Documentation
 
@@ -76,6 +47,7 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 - bidirectional stream-json transport, and a timeout that stops reporting success *(channel)* ([`da1b485`](https://github.com/MadAppGang/claudish/commit/da1b4855d89887cf92f452a310d271e56f1f9a13))
 - working driver that runs a magmux Claude session to completion *(scripts)* ([`4ab8966`](https://github.com/MadAppGang/claudish/commit/4ab8966f4e470a8828c7593fb9c2d3be929638de))
 - native Claude is a runnable team slot, with a first-class agent param *(team)* ([`471bbf7`](https://github.com/MadAppGang/claudish/commit/471bbf77ad0677dd97f32024cd6eff4691abfbcf))
+- macOS Keychain as a credential backend *(keychain)* ([`fb37c2d`](https://github.com/MadAppGang/claudish/commit/fb37c2dcb0bae9ca541dfa4c7456b996724072fb))
 
 ### Other Changes
 
