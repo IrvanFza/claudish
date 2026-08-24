@@ -157,6 +157,21 @@ export interface ClaudishProfileConfig {
    */
   onepasswordEnvironments?: string[];
   /**
+   * macOS Keychain backend state.
+   *
+   * `enabled` is a LAZINESS GATE, not a record of what is stored. It says only
+   * "this machine uses the keychain backend", which lets `hasKeychainSource()`
+   * answer synchronously without spawning `security` for a user who has never
+   * opted in. The stored variable NAMES are deliberately not mirrored here: the
+   * keychain enumerates its own contents in one ~28ms call, and a second copy
+   * of a list is a second thing that can be wrong.
+   *
+   * Set automatically on the first successful keychain write.
+   */
+  keychain?: {
+    enabled?: boolean;
+  };
+  /**
    * Opt IN to using a real ANTHROPIC_API_KEY for native Claude models, accepting
    * metered API billing. Default (absent/false) hides the key so Claude Code
    * uses the claude.ai subscription — a key bundled into a shared .env /
@@ -297,6 +312,12 @@ export function loadConfig(): ClaudishProfileConfig {
     }
     if (config.onepasswordEnvironments !== undefined) {
       merged.onepasswordEnvironments = config.onepasswordEnvironments;
+    }
+    // Same trap as onepasswordEnvironments below: omitted from this allowlist,
+    // the block survives on disk until the first global save and is then
+    // silently dropped — which would quietly disable the keychain backend.
+    if (config.keychain !== undefined) {
+      merged.keychain = config.keychain;
     }
     if (config.anthropicApiBilling !== undefined) {
       merged.anthropicApiBilling = config.anthropicApiBilling;
@@ -774,6 +795,38 @@ export function removeApiKey(envVar: string): void {
     delete config.apiKeys[envVar];
     saveConfig(config);
   }
+}
+
+// ─── Keychain Helpers ─────────────────────────────────────
+
+/**
+ * Is the macOS Keychain backend in use on this machine?
+ *
+ * A cheap SYNC sniff, and the only thing standing between a user who has never
+ * touched the keychain and a `security` spawn they do not need. Reads config
+ * only — it never asks the keychain anything, which is the point.
+ */
+export function isKeychainEnabled(): boolean {
+  try {
+    return loadConfig().keychain?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Turn the keychain backend on or off in `~/.claudish/config.json`.
+ *
+ * Enabling does NOT move any secret; it only tells claudish the store is worth
+ * consulting. Disabling likewise leaves stored items untouched — they simply
+ * stop being read. Removing the secrets themselves is `claudish keychain rm`,
+ * which is a separate and deliberately explicit act.
+ */
+export function setKeychainEnabled(enabled: boolean): void {
+  const config = loadConfig();
+  if (!config.keychain) config.keychain = {};
+  config.keychain.enabled = enabled;
+  saveConfig(config);
 }
 
 // ─── Endpoint Helpers ─────────────────────────────────────

@@ -2171,6 +2171,17 @@ ${h("1PASSWORD")} ${dim("(SDK-based — no op CLI needed for secrets)")}
   ${green("--op-env")} ${yellow("<id>")}             Load a 1Password Environment (highest-priority source)
   ${dim("Persistent setup (single refs, sets, environments, account): claudish config -> 1Password tab")}
 
+${h("MACOS KEYCHAIN")} ${dim("(local, encrypted at rest, no desktop-app handshake)")}
+  ${green("claudish keychain status")}          Backend state and how many keys are stored
+  ${green("claudish keychain list")}            Stored variables, with ${dim("••••1234")} identification tails
+  ${green("claudish keychain import")}          Copy keys from env vars / 1Password into the keychain
+                           ${dim("--from env|1password|all   --only VAR,VAR   --dry-run   --yes")}
+  ${green("claudish keychain set")} ${yellow("<ENV_VAR>")}    Store one key (prompted, or piped on stdin — never in argv)
+  ${green("claudish keychain rm")} ${yellow("<ENV_VAR>")}     Remove one key
+  ${green("claudish keychain enable")}${dim("|")}${green("disable")}  Turn the backend on/off (moves no secrets)
+  ${dim("Resolution order: env var -> alias -> config.json -> macOS Keychain -> 1Password")}
+  ${dim("The config TUI's Providers tab writes to the keychain by default on macOS.")}
+
 ${h("CLAUDE CODE FLAG PASSTHROUGH")}
   ${dim("Any unrecognized flag is forwarded to Claude Code. Claudish flags can appear in any order.")}
     ${green("claudish")} --model grok ${yellow("--agent test")} ${yellow('"task"')}        ${dim("# --agent passes through")}

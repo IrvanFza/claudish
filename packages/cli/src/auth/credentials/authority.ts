@@ -157,7 +157,7 @@ export class CredentialAuthority {
     authority.register(makeCodexCredential(), ["openai-codex"]);
     // Antigravity is its OWN product: auth comes from the SHARED Antigravity
     // token (the agy keychain item), not a GEMINI_API_KEY. Registered under its
-    // own name so `ag@`/`go@` requests resolve here (and never onto "google").
+    // own name so `ag@` requests resolve here (and never onto "google").
     //
     // "google" is the DIRECT Gemini API (GEMINI_API_KEY), registered by the
     // generic loop below under both "google" and its runtime request-path name
@@ -219,10 +219,9 @@ export class CredentialAuthority {
           authScheme: normalizeAuthScheme(def.authScheme),
           // Mirror the readiness affordances the old isProviderAvailable oracle
           // granted, so authority.isAuthenticated() matches hasCredentialsForProvider.
-          // publicKeyFallback carries the catalog's FALLBACK KEY STRING (e.g.
-          // "public" for OpenCode Zen) so getRequestAuth can emit it when no
-          // real key resolves — not just a readiness boolean.
-          publicKeyFallback: def.publicKeyFallback,
+          // (`publicKeyFallback` was one of these and is gone — a keyless
+          // provider now declares `authScheme: "none"`, which says no credential
+          // is expected rather than inventing one. See provider-definitions.ts.)
           oauthFallback: def.oauthFallback,
         }),
         [def.name, ...(RUNTIME_NAME_ALIASES[def.name] ?? [])]

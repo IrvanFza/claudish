@@ -196,41 +196,14 @@ describe("ApiKeyCredentialProvider", () => {
     expect(auth.headers.Authorization).toBe("Bearer sk-static");
   });
 
-  test("isAvailable() is always true when publicKeyFallback is set", async () => {
-    // No env/config key at all, but a public/free key means always-available
-    // (mirrors isProviderAvailable's publicKeyFallback branch).
+  test('isAvailable() is always true when authScheme is "none"', async () => {
+    // No env/config key is needed when the provider expects no credential.
     const provider = new ApiKeyCredentialProvider({
       catalogName: "zen",
       envVar: "CLAUDISH_TEST_ZEN_KEY_UNSET",
-      publicKeyFallback: "public",
+      authScheme: "none",
     });
     expect(await provider.isAvailable()).toBe(true);
-  });
-
-  // Regression (keyless providers unroutable): the catalog's publicKeyFallback
-  // is a KEY VALUE ("public"), not just a readiness flag. It used to be narrowed
-  // to a boolean on its way into the credential layer, so getRequestAuth
-  // returned EMPTY headers for a keyless OpenCode Zen → proxy-server rejected
-  // the route as "no credential" before the handler was ever built.
-  test("getRequestAuth() emits the publicKeyFallback string when no key resolves", async () => {
-    const provider = new ApiKeyCredentialProvider({
-      catalogName: "zen",
-      envVar: "CLAUDISH_TEST_ZEN_KEY_UNSET",
-      publicKeyFallback: "public",
-    });
-    const auth = await provider.getRequestAuth(CTX);
-    expect(auth.headers.Authorization).toBe("Bearer public");
-  });
-
-  test("a real env key wins over the publicKeyFallback", async () => {
-    process.env[ENV_VAR] = "sk-real-zen-key";
-    const provider = new ApiKeyCredentialProvider({
-      catalogName: "zen",
-      envVar: ENV_VAR,
-      publicKeyFallback: "public",
-    });
-    const auth = await provider.getRequestAuth(CTX);
-    expect(auth.headers.Authorization).toBe("Bearer sk-real-zen-key");
   });
 
   test("no fallback + no key → empty headers (request path rejects the route)", async () => {
