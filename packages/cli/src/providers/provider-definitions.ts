@@ -167,8 +167,19 @@ export interface ProviderDefinition {
   capabilities?: ProviderCapabilities;
   /** Custom HTTP headers to include with requests */
   headers?: Record<string, string>;
-  /** Fallback API key value for auth-less access (e.g., "public" for free tiers) */
-  publicKeyFallback?: string;
+  // `publicKeyFallback?: string` REMOVED (2026-08-22).
+  //
+  // It carried a hardcoded literal to send as the bearer token for a vendor's
+  // "free tier" — only ever `"public"`, only ever for OpenCode Zen, and the
+  // endpoint answers 401 to it. Two things made it worse than a dead value:
+  // `isAvailable()` returned true on its mere PRESENCE without issuing any
+  // request, so the provider advertised itself Ready and the failure only
+  // appeared under a live test; and inventing a vendor's shared secret is
+  // exactly what the catalog forbids ("a default is a rule, never a pinned id").
+  //
+  // `authScheme: "none"` is the correct — and now the only — way to express a
+  // keyless endpoint. It states that NO credential is expected and sends no auth
+  // header, rather than guessing one. See config-schema.ts and proxy-server.ts.
   /** OAuth credential file under ~/.claudish/ to check as fallback */
   oauthFallback?: string;
   /**
@@ -266,8 +277,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
 
   // ── Antigravity (shared OAuth token — subscription) ────────────────
   // The individuals/Ultra subscription flow. Auth = the SHARED Antigravity
-  // token (the `agy` keychain item), NOT a GEMINI_API_KEY. `go@` is retained as
-  // a DEPRECATED alias that routes here (see model-parser.ts).
+  // token (the `agy` keychain item), NOT a GEMINI_API_KEY.
   {
     createHandler: antigravityHandler,
     name: "antigravity",
@@ -282,13 +292,11 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     // store). NOT the gemini-cli login, which mints a token the Antigravity
     // backend rejects for generation.
     oauthLoginSlug: "antigravity",
-    // "go" is the DEPRECATED alias — kept last so ag@ is the canonical prefix.
-    shortcuts: ["ag", "antigravity", "go"],
+    shortcuts: ["ag", "antigravity"],
     shortestPrefix: "ag",
     legacyPrefixes: [
       { prefix: "ag/", stripPrefix: true },
       { prefix: "antigravity/", stripPrefix: true },
-      { prefix: "go/", stripPrefix: true },
     ],
     // Not a GET — an OAuth POST to v1internal:fetchAvailableModels, so `path`
     // is ignored. Declared so the picker prefers the LIVE per-subscription
@@ -296,7 +304,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     // the shared catalog disagree by 4x on claude-sonnet-4-6 (250K vs 1M).
     modelDiscovery: { path: "", format: "antigravity" },
     isDirectApi: true,
-    description: "Antigravity subscription (ag@; go@ deprecated)",
+    description: "Antigravity subscription (ag@)",
   },
 
   // ── Devin (Cognition/Codeium subscription) ─────────────────────────
@@ -361,7 +369,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // "Code Assist for individuals" for gemini-cli's OAuth client
   // (UNSUPPORTED_CLIENT), so it could not authenticate for any consumer account.
   // The Gemini subscription flow is `antigravity` above; `g@`/`google@` remains
-  // the direct pay-per-use API. `go@` is a deprecated alias → antigravity.
+  // the direct pay-per-use API.
 
   // ── OpenAI (direct API) ────────────────────────────────────────────
   {
@@ -745,7 +753,26 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     apiKeyEnvVar: "OPENCODE_API_KEY",
     apiKeyDescription: "OpenCode Zen (Free)",
     apiKeyUrl: "https://opencode.ai/",
-    publicKeyFallback: "public",
+    // publicKeyFallback REMOVED (was `"public"`).
+    //
+    // It sent the literal string "public" as the bearer token on the theory that
+    // Zen's free tier accepts a shared sentinel. Measured 2026-08-22: the
+    // endpoint answers `401 — Missing API key`. Whether it ever worked or was
+    // withdrawn, it does not work now.
+    //
+    // Leaving it in was worse than a dead credential, because `isAvailable()`
+    // returns TRUE on the mere presence of a publicKeyFallback without issuing a
+    // request — so the provider advertised itself as Ready, sorted above the
+    // "not configured" divider, and only revealed the 401 when someone pressed
+    // `t`. A row that asserts readiness it has never verified is a worse defect
+    // than a row that admits it has no key.
+    //
+    // It also violated the catalog's own rule (CLAUDE.md): never hardcode a
+    // value discovered from a vendor — a default is a rule, not a pinned id.
+    //
+    // Zen remains reachable with a real OPENCODE_API_KEY, and `zengo@`
+    // (opencode-zen-go) is unaffected. If Zen documents a genuine keyless tier
+    // again, the right shape is live discovery, not another literal.
     shortcuts: ["zen"],
     shortestPrefix: "zen",
     legacyPrefixes: [{ prefix: "zen/", stripPrefix: true }],
@@ -1210,7 +1237,14 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   {
     createHandler: anthropicCompatHandler,
     name: "qwen-payg",
-    displayName: "Qwen PAYG",
+    // "Qwen API", not "Qwen PAYG". Every other metered provider in this catalog
+    // is named "<vendor> API" (Gemini/MiniMax/GLM/Kimi/DeepSeek/Mistral/Sakana),
+    // and this row sits directly beneath "Qwen Plan (qc@)" — so "PAYG" made the
+    // pair read as two unrelated products rather than metered-vs-plan. The
+    // pay-as-you-go distinction, which genuinely matters when picking a key,
+    // stays in apiKeyDescription below. The `name` is untouched: it is the
+    // routing slug and a wire identifier, not a label.
+    displayName: "Qwen API",
     transport: "anthropic",
     // International endpoint. A mainland-China (aliyun.com) account is a
     // different account system on dashscope.aliyuncs.com; that user repoints
@@ -1231,7 +1265,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     // qwen-cloud folds its prefix into apiPath rather than into baseUrl.
     modelDiscovery: { path: "/compatible-mode/v1/models", format: "openai-models-list" },
     isDirectApi: true,
-    description: "Alibaba Model Studio pay-as-you-go (qp@)",
+    description: "Alibaba Model Studio API, pay-as-you-go (qp@)",
   },
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────

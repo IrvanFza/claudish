@@ -237,8 +237,9 @@ export type RoutePlan =
  *   - Local transports (ollama, lmstudio, vllm, mlx) require explicit enablement
  *     (LocalCredentialProvider → isLocalProviderEnabled).
  *   - OAuth-backed providers (kimi, antigravity) accept an OAuth file or env
- *     key; publicKeyFallback / oauthFallback affordances are honored by the
- *     ApiKeyCredentialProvider.
+ *     key; the oauthFallback affordance is honored by ApiKeyCredentialProvider.
+ *     (A `publicKeyFallback` affordance also used to be honored here; it was
+ *     removed — a keyless provider now declares `authScheme: "none"`.)
  *
  * Equivalence with the previous inline logic is pinned by
  * auth/credentials/equivalence.test.ts.

@@ -322,6 +322,10 @@ function resolveDiscoveredContextLength(m: DiscoveredModel): number {
  * newest models on the plan would sort to the very bottom as undated.
  */
 function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
+  // A roster of variants the catalog does not list gets NO catalog date: the
+  // catalog would be dating a different (older, base) model, and a partially
+  // dated roster sorts its undated — newest — half to the bottom.
+  if (m.ignoreCatalogReleaseDate) return m.releaseDate;
   try {
     const catalogDate = lookupModel(m.id)?.releaseDate;
     if (catalogDate) return catalogDate;

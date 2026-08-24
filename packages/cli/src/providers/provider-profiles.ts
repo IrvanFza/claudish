@@ -296,13 +296,16 @@ export const glmProfile: ProviderProfile = {
 
 /**
  * OpenCode Zen / Zen Go — two tiers:
- *   zen/  (opencode-zen):    free anonymous models + full paid access (OPENCODE_API_KEY)
+ *   zen/  (opencode-zen):    OPENCODE_API_KEY
  *   zgo/  (opencode-zen-go): go-plan models (glm-5, minimax-m2.5, kimi-k2.5) via zen/go/v1/
  *
- * Free anonymous models work without a key: the catalog's publicKeyFallback
- * ("public") is emitted by the credential authority (ApiKeyCredentialProvider)
- * when no real key resolves, so ctx.apiKey is always populated here — keeps
- * rate-limit bucketing consistent without a second inline fallback.
+ * ZEN REQUIRES A REAL KEY (changed 2026-08-22). The catalog used to declare
+ * `publicKeyFallback: "public"`, so the credential authority emitted the literal
+ * string "public" whenever no real key resolved and `ctx.apiKey` was always
+ * populated here. Measured: the endpoint answers `401 — Missing API key` to
+ * that token, so the "free anonymous" tier it modelled does not exist (or no
+ * longer does). The affordance is removed entirely; `ctx.apiKey` can now be
+ * empty here, exactly as for any other keyed provider without a key.
  *
  * Model routing inside the profile:
  *   - GPT-* models    → OpenAIProviderTransport (/v1/responses) + CodexAPIFormat (Responses API)

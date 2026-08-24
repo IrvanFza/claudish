@@ -23,7 +23,6 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 ## Provider Shortcuts
 - `g@`, `google@` → Google Gemini (direct API, `GEMINI_API_KEY`)
 - `ag@`, `antigravity@` → Antigravity (Gemini via your Antigravity subscription — see `ai-docs/architecture/providers/antigravity.md`)
-- `go@` → **deprecated alias → `ag@`** (Gemini Code Assist for individuals was retired by Google; the provider has been REMOVED, `go@` prints a one-line deprecation notice and routes to Antigravity)
 - `oai@` → OpenAI Direct
 - `cx@`, `codex@` → OpenAI Codex (Responses API)
 - `or@`, `openrouter@` → OpenRouter
