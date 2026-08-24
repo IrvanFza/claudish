@@ -2,6 +2,48 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.66.0] - 2026-08-25
+
+### Fixed
+
+- **Antigravity talked to the wrong backend.** `ag@` was built from the removed
+  `gemini-codeassist` provider; the token was swapped to Antigravity's but the
+  HOST was kept. `cloudcode-pa.googleapis.com` is Code Assist's backend — the
+  product Google retired for individuals — so an Antigravity token was answered
+  *as Code Assist*: `currentTier: free-tier`, a stale roster, quota pinned at
+  100% forever, and a contentless `429 RESOURCE_EXHAUSTED` on every chat model
+  while the two inline-completion models returned 200. Antigravity's own backend
+  is `daily-cloudcode-pa.googleapis.com`, overridable with `AICODE_ENDPOINT_URL`.
+- **Antigravity model list showed unusable entries.** The roster is now filtered
+  by what the backend DECLARES — `isInternal`, modality role lists, and
+  `deprecatedModelIds` — instead of an id-prefix guess. That last one matters:
+  `gemini-3.1-pro-high` looks entirely ordinary and answers `400`, and the
+  deprecation notice is the only warning given.
+- **Newest models sorted to the bottom of the picker.** Only 6 of 19 Antigravity
+  ids had a catalog release date, and every one was an old base model, so a 2025
+  model sat on top and the newest sat at the bottom. Catalog dates are now
+  suppressed for variant rosters, which orders 3.7 > 3.6 > 3.5 > 3.1.
+- **A parameter count was read as a version.** `gpt-oss-120b-medium` parsed as
+  version 120 and outranked every model ever shipped.
+- **A 429 with no reason and no RetryInfo no longer gets a 10s backoff.** Three
+  such refusals came back in 343ms, 456ms and 722ms, so ~20s of retry sleep was
+  invented — and it blew the config TUI's 15s probe ceiling from the inside.
+- **The TUI painted a white slab inside a coloured terminal.** The page and every
+  neutral surface now take the terminal's own background, measured via OSC 11
+  (now authoritative over `COLORFGBG`, which lies under tmux).
+
+### Added
+
+- **macOS Keychain as a credential backend**, resolving after `config.json` and
+  before 1Password. `claudish keychain import` copies keys from env vars or an
+  existing 1Password setup; the config TUI's Providers tab sets and deletes
+  per-provider keys. `CLAUDISH_DISABLE_KEYCHAIN=1` turns it off.
+
+### Removed
+
+- **The deprecated `go@` alias and `go/` prefix.** `go@model` now fails as an
+  unknown provider instead of routing with a warning.
+
 ## [7.65.0] - 2026-08-22
 
 ### Bug Fixes
