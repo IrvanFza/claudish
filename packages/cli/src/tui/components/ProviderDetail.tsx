@@ -1,6 +1,5 @@
-import type { CredentialSource } from "../../auth/credentials/source.js";
 import { DETAIL_H } from "../constants.js";
-import type { ProviderDef } from "../providers.js";
+import type { AuthSource, ProviderDef } from "../providers.js";
 /** @jsxImportSource @opentui/react */
 import { A, C } from "../theme.js";
 import type { Mode, TestResultsMap } from "../types.js";
@@ -26,16 +25,8 @@ interface ProviderDetailProps {
   hasCfgKey: boolean;
   hasEnvKey: boolean;
   hasKey: boolean;
-  /**
-   * Where the credential comes from, from the SAME classifier the provider list
-   * uses (`describeSourceSync` via `providerAuthSource`).
-   *
-   * Passed in rather than re-derived here. The detail pane used to decide
-   * readiness and key display from its own expression over `hasEnvKey` /
-   * `hasCfgKey` / `publicKeyFallback`, which knew nothing about OAuth — so every
-   * 🌐 provider showed "Not configured" directly beneath a row saying "ready".
-   */
-  authSource: CredentialSource;
+  /** Unified source used by the provider list and readiness classifier. */
+  authSource: AuthSource;
   /** True when the env-var key was hydrated from 1Password (not a shell env var). */
   isOpKey: boolean;
   /** True when the env-var key was hydrated from the macOS Keychain. */
@@ -49,12 +40,27 @@ interface ProviderDetailProps {
    * the kind of thing a user is entitled to see before pressing Enter.
    */
   keySaveTarget: string;
-  /** True for a keyless/free provider usable via its built-in public key. */
   cfgKeyMask: string;
   envKeyMask: string;
   activeEndpoint: string;
   testResults: TestResultsMap;
   isInputMode: boolean;
+}
+
+export function resolveProviderDetailKeyDisplay(input: {
+  isLocal: boolean;
+  isReady: boolean;
+  authSource: AuthSource;
+  hasEnvKey: boolean;
+  hasCfgKey: boolean;
+  envKeyMask: string;
+  cfgKeyMask: string;
+}): string {
+  if (input.isLocal) return input.isReady ? "enabled" : "disabled";
+  if (input.authSource === "oauth") return "oauth";
+  if (input.hasEnvKey) return input.envKeyMask;
+  if (input.hasCfgKey) return input.cfgKeyMask;
+  return "────────";
 }
 
 export function ProviderDetail({
@@ -79,23 +85,16 @@ export function ProviderDetail({
 }: ProviderDetailProps) {
   // Show the mask of the key that's ACTUALLY being used at runtime.
   // process.env wins over config in the resolver, so env is shown first when both exist.
-  //
-  // The OAuth branch mirrors the list's own `keyDisplay` (ProvidersContent):
-  // an OAuth-authenticated provider has no key to mask, and falling through to
-  // the dashes would print "Status: ● Ready   Key: ────────", which reads as a
-  // contradiction even though both halves would be individually true.
-  const isOauthOnly = authSource === "oauth";
-  const displayKey = selectedProvider.isLocal
-    ? hasKey
-      ? "enabled"
-      : "disabled"
-    : isOauthOnly
-      ? "oauth···"
-      : hasEnvKey
-        ? envKeyMask
-        : hasCfgKey
-          ? cfgKeyMask
-          : "────────";
+  const isOAuth = authSource === "oauth";
+  const displayKey = resolveProviderDetailKeyDisplay({
+    isLocal: !!selectedProvider.isLocal,
+    isReady: hasKey,
+    authSource,
+    hasEnvKey,
+    hasCfgKey,
+    envKeyMask,
+    cfgKeyMask,
+  });
 
   if (isInputMode) {
     return (
@@ -217,7 +216,7 @@ export function ProviderDetail({
         {/* OAuth branch FIRST among the non-local sources. Without it an
             OAuth-only provider reaches the env/cfg block below, where both
             flags are false and "From: " renders with nothing after it. */}
-        {hasKey && !selectedProvider.isLocal && isOauthOnly && (
+        {hasKey && !selectedProvider.isLocal && isOAuth && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>
@@ -229,7 +228,18 @@ export function ProviderDetail({
             <span fg={C.fgMuted}>{" (used)"}</span>
           </>
         )}
-        {hasKey && !selectedProvider.isLocal && !isOauthOnly && (
+        {hasKey && !selectedProvider.isLocal && isOAuth && (
+          <>
+            <span fg={C.dim}>{"   "}</span>
+            <span fg={C.blue} attributes={A.bold}>
+              {"From: "}
+            </span>
+            <span fg={C.green} attributes={A.bold}>
+              {"OAuth"}
+            </span>
+          </>
+        )}
+        {hasKey && !selectedProvider.isLocal && !isOAuth && (
           <>
             <span fg={C.dim}>{"   "}</span>
             <span fg={C.blue} attributes={A.bold}>

@@ -510,30 +510,29 @@ export function validateSessionPath(sessionPath: string): string {
   return resolved;
 }
 
-// ─── Sentinel Model Validation ───────────────────────────────────────────────
+// ─── Native Model Slots ──────────────────────────────────────────────────────
 
-/**
- * Model names that are semantic directives for the calling agent, not real
- * external model IDs. These must never be passed to claudish child processes.
+/*
+ * A native-Anthropic name (`internal`, `default`, `opus`, `sonnet`, `haiku`,
+ * `claude-*`) IS a runnable team slot. It spawns like any other child; the
+ * proxy answers it through `nativeHandler` (proxy-server.ts, the `isNative`
+ * branch) with no translation, because Claude Code already speaks the Anthropic
+ * wire format, and it authenticates with the user's own subscription rather
+ * than an API key (claude-runner.ts deletes ANTHROPIC_API_KEY for these).
+ *
+ * These names used to be REJECTED here. That guard (91ee9a8) was written
+ * because they "failed with cryptic model not found errors" — but the cause was
+ * `internal`/`default` reaching Claude Code as literal model names, which it
+ * does not recognise. That is fixed at the source now: the `--model` boundary
+ * normalizes a selector to its tier (normalizeNativeModelSpec), and the child
+ * runs. Rejecting here as well would block a slot that demonstrably works, and
+ * would keep the internal reviewer outside `requirePattern` — the one guard
+ * that catches a voter which never voted.
+ *
+ * Pinning is already safe: `isRoutablyPinnable` (prehydrate.ts) excludes
+ * native-anthropic specs, so the name stays BARE and the proxy's `isNative`
+ * test (no "/" and no "@") still matches it.
  */
-const SENTINEL_MODELS = new Set([
-  "internal", // means "use a local Claude Code Task agent"
-  "default", // means "use whatever Claude Code is configured with"
-  "opus", // Claude tier selector — calling agent should handle
-  "sonnet", // Claude tier selector — calling agent should handle
-  "haiku", // Claude tier selector — calling agent should handle
-]);
-
-/**
- * Check if a model ID is a sentinel or native Anthropic model.
- * These cannot be run as external claudish processes.
- */
-function isSentinelModel(model: string): boolean {
-  const lower = model.toLowerCase();
-  if (SENTINEL_MODELS.has(lower)) return true;
-  if (lower.startsWith("claude-")) return true;
-  return false;
-}
 
 // ─── Core Functions ───────────────────────────────────────────────────────────
 
@@ -550,14 +549,6 @@ export function setupSession(sessionPath: string, models: string[], input?: stri
   if (existsSync(join(sessionPath, "manifest.json"))) {
     throw new Error(
       `Session already exists at ${sessionPath}. Use a new directory path or delete the existing session first.`
-    );
-  }
-
-  // Reject sentinel model names that should be handled by the calling agent
-  const sentinels = models.filter(isSentinelModel);
-  if (sentinels.length > 0) {
-    throw new Error(
-      `Invalid model(s) for team run: ${sentinels.join(", ")}. These are Claude Code agent selectors, not external model IDs. Use real external models (e.g., "gemini-2.0-flash", "gpt-4o", "or@deepseek/deepseek-r1"). For Claude models, use a Task agent instead of the team tool.`
     );
   }
 

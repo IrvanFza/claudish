@@ -847,7 +847,7 @@ interface ProviderChoice {
  */
 const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   openrouter: { description: "580+ models via unified API" },
-  "opencode-zen": { name: "OpenCode Zen", description: "Free models, no API key needed" },
+  "opencode-zen": { name: "OpenCode Zen", description: "OpenCode-hosted models" },
   google: { name: "Google Gemini", description: "Direct API" },
   openai: { description: "Direct API" },
   "openai-codex": { description: "ChatGPT Plus/Pro subscription (Responses API)" },
@@ -861,7 +861,7 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   kimi: { name: "Kimi / Moonshot", description: "Direct API" },
   "kimi-coding": { name: "Kimi Coding", description: "Coding subscription" },
   "qwen-cloud": { name: "Qwen Plan", description: "Alibaba Model Studio subscription" },
-  "qwen-payg": { name: "Qwen PAYG", description: "Alibaba Model Studio pay-as-you-go" },
+  "qwen-payg": { name: "Qwen API", description: "Alibaba Model Studio pay-as-you-go" },
   glm: { name: "GLM / Zhipu", description: "Direct API" },
   "glm-coding": { name: "GLM Coding Plan", description: "Coding subscription" },
   "z-ai": { name: "Z.AI", description: "Direct API" },

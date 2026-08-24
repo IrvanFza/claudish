@@ -51,7 +51,7 @@ import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
 import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
-import { claudeCodeTierAlias } from "./providers/claude-code-aliases.js";
+import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
@@ -276,7 +276,10 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Code — then behaves exactly as it does for an ordinary `--model`, and
       // only the proxy needs to know a chain exists. A plain value yields a
       // one-element chain, so this costs nothing in the common case.
-      const chain = parseModelChain(modelArg);
+      // Native SELECTORS (`internal`, `default`) are normalized to the tier they
+      // select before anything downstream sees them — Claude Code exits 1 on the
+      // selector and 0 on the tier. See normalizeNativeModelSpec.
+      const chain = parseModelChain(modelArg).map(normalizeNativeModelSpec);
       config.model = chain[0]; // Accept any model ID
       if (chain.length > 1) config.modelChain = chain;
     } else if (arg === "--model-opus") {
@@ -2230,7 +2233,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("SAKANA_API_KEY")}                  Sakana Fugu ${dim("(sakana@, fugu@)")}
   ${blue("SAKANA_SUBSCRIPTION_API_KEY")}     Sakana Fugu Subscription ${dim("(sc@; separate subscription key)")}
   ${blue("OLLAMA_API_KEY")}                  OllamaCloud ${dim("(oc@, llama@)")}
-  ${blue("OPENCODE_API_KEY")}                OpenCode Zen ${dim("(zen@; optional - free models work without it)")}
+  ${blue("OPENCODE_API_KEY")}                OpenCode Zen ${dim("(zen@)")}
   ${blue("POE_API_KEY")}                     Poe ${dim("(poe@)")}
   ${blue("LITELLM_API_KEY")}                 LiteLLM ${dim("(litellm@, ll@; needs LITELLM_BASE_URL)")}
   ${blue("VERTEX_API_KEY")}                  Vertex AI Express ${dim("(v@)")}

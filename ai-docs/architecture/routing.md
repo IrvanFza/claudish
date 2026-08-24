@@ -34,7 +34,7 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `sakana@`, `fugu@` → Sakana Fugu
 - `sc@` → Sakana Fugu Subscription
 - `qc@` → Qwen Plan (Alibaba Model Studio **Token Plan** subscription)
-- `qp@`, `dashscope@` → Qwen PAYG (Alibaba Model Studio **pay-as-you-go**, `DASHSCOPE_API_KEY`)
+- `qp@`, `dashscope@` → Qwen API (Alibaba Model Studio **pay-as-you-go**, `DASHSCOPE_API_KEY`)
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)

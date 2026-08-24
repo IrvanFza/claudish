@@ -259,3 +259,41 @@ Each item should follow the structure above:
 - **Effort estimate** (optional): rough sizing if the item moves toward action.
 
 If a trigger condition has been met, move the item to *In Progress* and create the implementation tasks. If a trigger condition becomes irrelevant or wrong, delete the item rather than leave it stale.
+
+---
+
+## Consolidate the two channel test-helper stand-ins
+
+`packages/cli/src/channel/test-helpers/` now holds **two** helpers that can echo argv:
+
+- `fake-claudish.ts` — the original; consumed by BOTH `channel/session-manager.test.ts` and
+  `team-orchestrator.test.ts`, the latter via `--print-argv` to assert the exact spawn
+  contract *including flag order*
+- `fake-channel-stream-json.ts` — added 2026-08-22 during the stream-json transport rewrite,
+  with its own `--print-argv`
+
+**Why this is parked rather than ignored.** The duplication already caused one outage of the
+guard it exists to protect. Migrating the channel tests to the new helper made `--print-argv`
+look dead in the old one; removing it turned the two `runModels — pinned spawn identity`
+tests red — and they failed EMPTY rather than asserting, so the assertions pinning the
+`--verbose`-before-`--quiet` invariant silently stopped RUNNING at exactly the moment the
+argv change made that invariant most likely to break. A guard that cannot execute reads as
+coverage. Restored the same day; a header comment on `fake-claudish.ts` now names both
+consumers, which stops the specific recurrence but not the class.
+
+**Proposed shape** (assessed 2026-08-22, not executed): keep `fake-channel-stream-json.ts`,
+give it an explicit raw/immediate argv mode distinct from its framed mode, move the two
+orchestrator tests onto it, then delete `fake-claudish.ts` after a repository-wide reference
+check.
+
+**Trigger conditions — all must hold:**
+
+1. No session is concurrently editing `team-orchestrator.test.ts` (it moved twice on
+   2026-08-22 alone; this work rewrites two of its tests).
+2. A repository-wide reference check finds no consumer of `fake-claudish.ts` beyond the two
+   known test files — a third consumer changes the answer from "consolidate" to "document".
+3. The seven channel regression guards (G1–G7) are green BEFORE starting, so any red during
+   the move is attributable to the move.
+
+**Do not start if** the only motivation is tidiness. The comment already prevents the known
+failure; this is worth doing when someone is in these files anyway, not as its own errand.

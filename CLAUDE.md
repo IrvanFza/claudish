@@ -13,6 +13,8 @@ lives in `ROADMAP.md`.
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
+- `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
+  silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux
 - `custom-endpoints.md`, `predefined-endpoints.md` — user config; the 25-vendor bundled catalog
 - `onepassword.md` — secret resolution, the four denial causes, the handshake lock, route pinning
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete

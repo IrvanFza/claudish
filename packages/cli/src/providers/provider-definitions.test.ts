@@ -114,6 +114,20 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
     expect(subscription.apiKeyEnvVar).toBe("");
   });
 
+  test("OpenCode Zen requires a real key instead of the retired public bearer", () => {
+    const zen = getProviderByName("opencode-zen")!;
+
+    // The field is gone from ProviderDefinition entirely, so a typed access no
+    // longer compiles. Assert on the object so the guard survives the removal:
+    // if anyone reintroduces the affordance, this fails.
+    expect("publicKeyFallback" in zen).toBe(false);
+    expect(zen.apiKeyEnvVar).toBe("OPENCODE_API_KEY");
+  });
+
+  test("Qwen's metered row follows the API naming convention", () => {
+    expect(getProviderByName("qwen-payg")?.displayName).toBe("Qwen API");
+  });
+
   test("grok-subscription does not compete with x-ai for native Grok patterns", () => {
     const subscription = getProviderByName("grok-subscription")!;
     const grokPatternOwner = getNativeModelPatterns().find((entry) =>

@@ -273,57 +273,76 @@ describe("team-orchestrator", () => {
     });
   });
 
-  // ── Sentinel model rejection ────────────────────────────────────────────
-  // REGRESSION: sentinel model names leaked to claudish child processes — Fixed in /dev:fix session dev-fix-20260406-131846-32b9662c
+  // ── Native model slots ─────────────────────────────────────────────────────
+  // Was "sentinel model rejection" (91ee9a8). That guard existed because
+  // `internal`/`default` reached Claude Code as literal model names and it
+  // "failed with cryptic model not found errors". The cause is fixed at the
+  // `--model` boundary now (normalizeNativeModelSpec), and a native name is a
+  // runnable slot — verified end to end: a team run with ["internal"] completed
+  // exit 0 having spawned `claudish --model opus …`, and the same run with a
+  // prompt that produced no vote block was reported EMPTY/shape_mismatch rather
+  // than succeeded. Rejecting here would put the internal reviewer back outside
+  // requirePattern, which is the guard that catches a voter that never voted.
 
-  describe("setupSession — sentinel model rejection", () => {
-    it("TEST-17: rejects 'internal' sentinel model", async () => {
+  describe("setupSession — native model slots", () => {
+    it("TEST-NS-01: accepts 'internal' as a runnable slot", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["internal"], "task")).toThrow(/internal/i);
+      const manifest = setupSession(tempDir, ["internal"], "task");
+      expect(Object.values(manifest.models).map((m) => m.model)).toEqual(["internal"]);
     });
 
-    it("TEST-18: rejects 'default' sentinel model", async () => {
+    it("TEST-NS-02: accepts 'default' as a runnable slot", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["default"], "task")).toThrow(/default/i);
+      const manifest = setupSession(tempDir, ["default"], "task");
+      expect(Object.values(manifest.models).map((m) => m.model)).toEqual(["default"]);
     });
 
-    it("TEST-19: rejects Claude tier sentinels (opus, sonnet, haiku)", async () => {
+    it("TEST-NS-03: accepts Claude tier names (opus, sonnet, haiku)", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["opus"], "task")).toThrow(/opus/i);
-      expect(() => setupSession(tempDir, ["sonnet"], "task")).toThrow(/sonnet/i);
-      expect(() => setupSession(tempDir, ["haiku"], "task")).toThrow(/haiku/i);
+      const manifest = setupSession(tempDir, ["opus", "sonnet", "haiku"], "task");
+      expect(
+        Object.values(manifest.models)
+          .map((m) => m.model)
+          .sort()
+      ).toEqual(["haiku", "opus", "sonnet"]);
     });
 
-    it("TEST-20: rejects claude-* model IDs", async () => {
+    it("TEST-NS-04: accepts claude-* model IDs", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["claude-sonnet-4-6"], "task")).toThrow(
-        /claude-sonnet-4-6/i
+      const manifest = setupSession(
+        tempDir,
+        ["claude-sonnet-4-6", "claude-3-opus-20240229"],
+        "task"
       );
-      expect(() => setupSession(tempDir, ["claude-3-opus-20240229"], "task")).toThrow(
-        /claude-3-opus/i
-      );
+      expect(Object.values(manifest.models).map((m) => m.model)).toEqual([
+        "claude-sonnet-4-6",
+        "claude-3-opus-20240229",
+      ]);
     });
 
-    it("TEST-21: rejects sentinels case-insensitively", async () => {
+    it("TEST-NS-05: preserves the caller's casing as the slot identity", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() => setupSession(tempDir, ["Internal"], "task")).toThrow(/Internal/i);
-      expect(() => setupSession(tempDir, ["OPUS"], "task")).toThrow(/OPUS/i);
+      // The manifest is the run's identity and is echoed back in status//errors,
+      // so it keeps the string the caller passed. Normalization happens in the
+      // CHILD, at its own --model boundary.
+      const manifest = setupSession(tempDir, ["Internal"], "task");
+      expect(Object.values(manifest.models).map((m) => m.model)).toEqual(["Internal"]);
     });
 
-    it("TEST-22: rejects mixed arrays containing sentinels alongside valid models", async () => {
+    it("TEST-NS-06: accepts a native slot alongside external models in one manifest", async () => {
       const { setupSession } = await getOrchestrator();
 
-      expect(() =>
-        setupSession(tempDir, ["gemini-2.0-flash", "internal", "gpt-4o"], "task")
-      ).toThrow(/internal/i);
+      const manifest = setupSession(tempDir, ["gemini-2.0-flash", "internal", "gpt-4o"], "task");
+      expect(Object.keys(manifest.models)).toHaveLength(3);
+      expect(Object.values(manifest.models).map((m) => m.model)).toContain("internal");
     });
 
-    it("TEST-23: accepts valid external model names", async () => {
+    it("TEST-NS-07: accepts valid external model names", async () => {
       const { setupSession } = await getOrchestrator();
 
       // These should NOT throw

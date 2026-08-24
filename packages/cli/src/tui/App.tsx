@@ -94,7 +94,7 @@ import {
   getProbeModel,
 } from "../providers/probe-catalog.js";
 import { describeProbeState } from "../providers/probe-live.js";
-import { probeProviderRoute } from "../providers/probe-runner.js";
+import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../providers/probe-runner.js";
 import { getProviderByName } from "../providers/provider-definitions.js";
 import { invalidateProbeDiscovery } from "../providers/transport/probe-discovery.js";
 import { clearBuffer, getBufferStats } from "../stats-buffer.js";
@@ -129,6 +129,7 @@ import {
   isProbeProxyReady,
 } from "./probe-proxy.js";
 import {
+  type AuthSource,
   type ProviderDef,
   getProviderDefs,
   maskKey,
@@ -563,14 +564,30 @@ export function App({ requestLogin }: AppProps = {}) {
   const hasCfgKey = !!config.apiKeys?.[selectedProvider.apiKeyEnvVar];
   const hasEnvKey = !!process.env[selectedProvider.apiKeyEnvVar];
   /**
+   * Does the SELECTED provider have a credential of any kind?
+   *
+   * Delegated to `providerIsReadyForDisplay` — the SAME oracle the list sorts by
+   * — rather than re-derived here. The hand-rolled expression this replaces was
+   * `hasCfgKey || hasEnvKey || selectedLocalEnabled || selectedPublicKey`, which
+   * omitted OAuth entirely: every OAuth provider (Antigravity, Devin, OpenAI
+   * Codex, Grok Build) rendered `Status: not configured` in the detail pane while
+   * the row one line above said `ready` and its own test returned valid.
+   *
+   * That is precisely the duplicate-oracle pattern `auth/credentials/source.ts`
+   * was created to end, reintroduced one surface over. Syncing two expressions
+   * would fix today's symptom and leave the next divergence waiting; deleting one
+   * of them cannot drift. `...ForDisplay` is the variant that also counts a local
+   * server that is RUNNING but not configured, which the list already honours.
+   */
+  /**
    * Every variable name this provider could have stored in the keychain —
    * primary AND aliases.
    *
    * The authority resolves a provider from any of its accepted spellings, and
    * `claudish keychain import` stores aliases too, so checking only the primary
-   * name made an alias-stored key invisible here: the row read "not
-   * configured" while requests authenticated fine, and `x` could not delete
-   * the item that was actually in use.
+   * name made an alias-stored key invisible here: the row read "not configured"
+   * while requests authenticated fine, and `x` could not delete the item that
+   * was actually in use.
    */
   const providerKeychainVars = useMemo(
     () =>
@@ -580,22 +597,8 @@ export function App({ requestLogin }: AppProps = {}) {
     [selectedProvider, keychainVars]
   );
   const hasKcKey = providerKeychainVars.length > 0;
-  /**
-   * Does the SELECTED provider have a credential of any kind?
-   *
-   * Delegated to `providerIsReady` — the same oracle the LIST uses — rather than
-   * re-derived here. The hand-rolled expression this replaces was
-   * `hasCfgKey || hasEnvKey || selectedLocalEnabled || selectedPublicKey`, which
-   * omitted OAuth entirely: every 🌐 provider (Antigravity, Devin, OpenAI Codex,
-   * Grok Build) rendered `Status: ○ Not configured` in the detail pane while the
-   * row one line above said `● ready` and its own test returned valid.
-   *
-   * That is precisely the duplicate-oracle pattern `auth/credentials/source.ts`
-   * was created to end, reintroduced one surface over. Syncing the two
-   * expressions would have fixed today's symptom and left the next divergence
-   * waiting; deleting one of them cannot drift.
-   */
-  const hasKey = providerIsReady(selectedProvider, config);
+  const selectedAuthSource: AuthSource = providerAuthSource(selectedProvider, config);
+  const hasKey = providerIsReadyForDisplay(selectedProvider, config, localLiveness);
   // True when the env-var value was hydrated from 1Password at startup (not a
   // genuine shell env var) — so the detail pane shows "From: 1Password", not "env".
   const isOpKey = hasEnvKey && isOpHydratedVar(selectedProvider.apiKeyEnvVar);
@@ -1356,7 +1359,7 @@ export function App({ requestLogin }: AppProps = {}) {
             // cfg, OAuth). The live request is the source of truth.
             hasCredentials: true,
           },
-          15000
+          INTERACTIVE_PROBE_TIMEOUT_MS
         );
         lastResult = result;
 
@@ -2702,7 +2705,7 @@ export function App({ requestLogin }: AppProps = {}) {
             hasCfgKey={hasCfgKey}
             hasEnvKey={hasEnvKey}
             hasKey={hasKey}
-            authSource={providerAuthSource(selectedProvider, config)}
+            authSource={selectedAuthSource}
             isOpKey={isOpKey}
             isKcKey={isKcKey}
             hasKcKey={hasKcKey}

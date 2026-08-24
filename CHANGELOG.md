@@ -2,6 +2,43 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.65.0] - 2026-08-22
+
+### Bug Fixes
+
+- track the stream-json captures instead of reading them from a gitignored session dir *(test)* ([`74a6541`](https://github.com/MadAppGang/claudish/commit/74a6541c4414b1f8f8a336cc50f545fdb14dce40))
+
+### Documentation
+
+- update CHANGELOG.md for v7.64.1([`b1caaa5`](https://github.com/MadAppGang/claudish/commit/b1caaa5e81565a69087fed56219f0aeb5536b12d))
+
+## [7.64.1] - 2026-08-22
+
+### Bug Fixes
+
+- repair account-scoped probe diagnostics *(providers)* ([`73e0233`](https://github.com/MadAppGang/claudish/commit/73e02330bb643d58809525f72f9083642f7151a5))
+- recover evicted sessions from disk, and stop a NUL byte hiding the file from grep *(channel)* ([`bf33054`](https://github.com/MadAppGang/claudish/commit/bf33054a224b9efe9cfe3d3bf4ad6a169e54528a))
+- stop rate_limit_event frames being captured as the model's answer *(team)* ([`8e1e4cb`](https://github.com/MadAppGang/claudish/commit/8e1e4cbdd957e1cbbcba63f6bd40cef6707d7242))
+
+### Documentation
+
+- prove the cost/latency guards grade, instead of excusing a red control *(benches)* ([`fb911bc`](https://github.com/MadAppGang/claudish/commit/fb911bc1e8689111729f27139438c927188cfc26))
+- how to actually drive a magmux session to completion, and the four traps([`dced29f`](https://github.com/MadAppGang/claudish/commit/dced29f389acda43a82b59f90220bcf2a35be8d0))
+- correct why magmux exists — agent-drives-agent, and headless keeps the PTY([`a901f75`](https://github.com/MadAppGang/claudish/commit/a901f7518d2f54743e21ce11c4fd293ef9482f19))
+- headless is not a faithful subset of interactive — and why magmux exists([`17e1fe9`](https://github.com/MadAppGang/claudish/commit/17e1fe98b2d03b7388cb37c34249a8c4961c43c0))
+- move architecture rationale out of CLAUDE.md into ai-docs/architecture/([`ceeef60`](https://github.com/MadAppGang/claudish/commit/ceeef606ff49c0952ce65794ca1f6ffa312625be))
+- update CHANGELOG.md for v7.64.0([`4daf804`](https://github.com/MadAppGang/claudish/commit/4daf80403122e61b395d0feb550d049fdd151cc1))
+
+### New Features
+
+- bidirectional stream-json transport, and a timeout that stops reporting success *(channel)* ([`da1b485`](https://github.com/MadAppGang/claudish/commit/da1b4855d89887cf92f452a310d271e56f1f9a13))
+- working driver that runs a magmux Claude session to completion *(scripts)* ([`4ab8966`](https://github.com/MadAppGang/claudish/commit/4ab8966f4e470a8828c7593fb9c2d3be929638de))
+- native Claude is a runnable team slot, with a first-class agent param *(team)* ([`471bbf7`](https://github.com/MadAppGang/claudish/commit/471bbf77ad0677dd97f32024cd6eff4691abfbcf))
+
+### Other Changes
+
+- v7.65.0 *(release)* ([`9b74034`](https://github.com/MadAppGang/claudish/commit/9b7403437e212beb939048a94bc05f857dd87091))
+
 ## [7.64.0] - 2026-08-19
 
 ### Documentation
