@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.66.1] - 2026-08-26
+
+### Bug Fixes
+
+- tell a spent plan apart from an empty balance (#219) *(probe)* ([`c044eb8`](https://github.com/MadAppGang/claudish/commit/c044eb840bc290df5190ceb5d9a1b21dcbad5b41))
+
+### Documentation
+
+- update CHANGELOG.md for v7.66.0([`62af5ca`](https://github.com/MadAppGang/claudish/commit/62af5caba96c1a00afd7ab971e94b275aaaccf4b))
+
+### Other Changes
+
+- release v7.66.1([`5f7bbb1`](https://github.com/MadAppGang/claudish/commit/5f7bbb15509e210833a419cab0aec670c5ad29af))
+
 ## [7.66.0] - 2026-08-24
 
 ### Documentation
