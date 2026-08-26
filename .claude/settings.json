@@ -18,20 +18,20 @@
     "statusline@magus": true,
     "kanban@magus": true
   },
+  "outputStyle": "composed",
   "installedPluginVersions": {
     "skill-creator@claude-plugins-official": "0.0.0",
     "designer@magus": "0.5.0",
     "gtd@magus": "2.0.1",
     "browser-use@magus": "1.4.0",
-    "kanban@magus": "1.6.0",
-    "claudish@magus": "1.0.0",
+    "kanban@magus": "1.6.2",
+    "claudish@magus": "1.1.0",
     "mnemex@magus": "1.0.0",
-    "code-analysis@magus": "5.4.0",
-    "multimodel@magus": "3.6.0",
+    "code-analysis@magus": "5.4.3",
+    "multimodel@magus": "3.10.0",
     "statusline@magus": "3.0.0",
-    "dev@magus": "4.1.0",
+    "dev@magus": "4.6.1",
     "terminal@magus": "4.1.4",
-    "madbench@magus": "0.1.1"
-  },
-  "outputStyle": "composed"
+    "madbench@magus": "0.2.4"
+  }
 }
