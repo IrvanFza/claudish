@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.67.1] - 2026-08-27
+
+### Bug Fixes
+
+- stop text tool-call recovery dispatching mangled tool names (#223)([`e82c315`](https://github.com/MadAppGang/claudish/commit/e82c31574eb09a1553fcc42cdd43dad05ec04bd2))
+
+### Documentation
+
+- update CHANGELOG.md for v7.67.0([`d96e8e6`](https://github.com/MadAppGang/claudish/commit/d96e8e652216517522e0205ecc17aa04c40a5af8))
+
+### Other Changes
+
+- release v7.67.1([`d01026e`](https://github.com/MadAppGang/claudish/commit/d01026e66cc912fc2ed8db7720e71e3ad89e93b9))
+
 ## [7.67.0] - 2026-08-27
 
 ### Documentation
