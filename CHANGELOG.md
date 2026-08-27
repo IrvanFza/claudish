@@ -4,67 +4,13 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [8.0.0] - 2026-08-27
 
-### BREAKING CHANGES
-
-- **`team(mode:"run")` no longer waits for the models.** It starts them and returns a slot
-  map immediately; poll `mode:"status"` for progress and results. A team slot is a full
-  Claude Code session and may work for a long time, and holding the tool call open made the
-  run's duration the client's problem — a real run was aborted at exactly 1800s of client
-  idle timeout. `mode:"run-and-judge"` is unchanged and still blocks.
-- **The `timeout` parameter is removed** from the `team` tool, `TeamRunOptions`, and the
-  `runModels` call sites. It controlled nothing once the deadline was deleted. `--timeout`
-  survives in `team-cli` for the magmux grid path, which has its own.
-- Consumers must migrate. See `ai-docs/reports/team-mcp-breaking-change-plugin-migration.md`.
-
-### Features
-
-- **Nothing terminates a team slot on a timer.** The stall reaper killed three of five
-  productive slots in session `team-20260827-0015`; its only progress signal was
-  `stats/<id>.json`, which advances on token flow and therefore freezes for the whole
-  duration of a local tool call. Every kill landed within 133ms of a 60s multiple — the
-  watcher's poll cadence, not a deadline. Claude Code already bounds every tool call itself
-  (Bash default 120s, max 600s), so the detector guarded a condition the harness prevents.
-- `team(mode:"cancel", slot?)` — the only thing that kills a slot now, and it kills the
-  process group. A cancelled slot records `reason: "cancelled"`, distinct from
-  `nonzero_exit`: it is a decision, not a defect.
-- `mode:"status"` reports `idle_seconds_by_slot` and `activity_by_slot`. Read together,
-  they separate a slot inside a build from one that stopped mid-answer. Reported, never
-  acted on. Once settled, `status` also carries `summary`, the result card `run` used to
-  return.
-- `input_file` on the `team` tool, preferred over `input`. A vote prompt is typically a
-  200-line brief, and inline text is echoed verbatim in the caller's terminal. Contained to
-  the working directory on the same terms as `path`.
-- Channel sessions report `idleSeconds` on `list_sessions`, `get_output` and
-  `get_diagnostics`.
-
-### Bug Fixes
-
-- **`team` mangled non-ASCII answers.** It read child stdout with `chunk.toString()`, which
-  replaces a codepoint split across a pipe read boundary with U+FFFD. Measured: a 4-byte
-  emoji became three replacement characters AND the byte count inflated 19 → 24 — and
-  `outputSize` feeds `minOutputBytes` and the empty check, so answers were MEASURED wrong,
-  not merely displayed wrong. Both subsystems now share `stdio-decode.ts`.
-- **`team`'s upstream-error capture never ran.** `captureUpstreamError` is gated on
-  `CLAUDISH_UPSTREAM_ERROR_LOG`, which `team` never set — a guaranteed no-op for every team
-  child since the feature existed. The provider body that separates a retryable rate limit
-  from a hard quota wall was discarded as soon as it was classified. Now set per slot, and
-  `ModelError.upstreamErrorLogPath` names the file only when one was written.
-- **`bun --cwd <dir> run <script>` runs nothing and exits 0.** Bun prints usage. All four
-  occurrences sat on the right of an `&&`, so `test`, `lint` and `format` silently skipped
-  `packages/macos-bridge` — 20 tests that had never run through the root scripts.
-
-### Refactor
-
-- One stream-json parser. `team` fed `createAssistantTextCapture()` directly and hand-rolled
-  the supervision; `StreamJsonReducer` is now its only production consumer. The parsers
-  disagreed on one case — valid JSON that is not stream-json vocabulary — which is now the
-  documented `keepUnrecognizedJson` option rather than one rule imposed on both.
-
 ### Documentation
 
-- `ai-docs/architecture/team-lifecycle.md` — why nothing kills a slot, the measurement that
-  removed the deadline, and the `SessionManager` adoption route that was evaluated and
-  rejected.
+- update CHANGELOG.md for v7.67.1([`ca79a7c`](https://github.com/MadAppGang/claudish/commit/ca79a7c5f588f5cef2c6c58a76d975cba1344014))
+
+### Other Changes
+
+- release v8.0.0([`56e4963`](https://github.com/MadAppGang/claudish/commit/56e4963c341004fb5c476e13cb5ea0c6bde78958))
 
 ## [7.67.1] - 2026-08-27
 
@@ -82,6 +28,11 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
 ## [7.67.0] - 2026-08-27
 
+### Bug Fixes
+
+- bun --cwd before `run` silently skips the package *(scripts)* ([`e69be3e`](https://github.com/MadAppGang/claudish/commit/e69be3e410df8a111979702c9ce155c854b1b10d))
+- share the child-supervision mechanism; two latent bugs fall out *(team)* ([`079e7e3`](https://github.com/MadAppGang/claudish/commit/079e7e3d161020b5dac502b2f48fc5efdac3a805))
+
 ### Documentation
 
 - update CHANGELOG.md for v7.66.1([`1eed670`](https://github.com/MadAppGang/claudish/commit/1eed6701e9767ac4845a592ff9de1507253312bf))
@@ -89,10 +40,17 @@ All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 ### New Features
 
 - --model-params, --effort-override, and catalog-driven ultracode presets (#220)([`cf53f4f`](https://github.com/MadAppGang/claudish/commit/cf53f4fe8a949383e3719a37dd409d6b696fc8d4))
+- non-blocking run, caller-owned cancellation, prompts from a file *(team)* ([`beaf889`](https://github.com/MadAppGang/claudish/commit/beaf88968005535f89d05b752ab9eaea6784b2dd))
+- report idle time as data; the caller decides what it means *(channel)* ([`fdde2a7`](https://github.com/MadAppGang/claudish/commit/fdde2a71f112cc60ab2cebda1348085d9689a206))
 
 ### Other Changes
 
 - release v7.67.0([`84622c0`](https://github.com/MadAppGang/claudish/commit/84622c0ad86298c61a98a409b479e720e0d64542))
+
+### Refactoring
+
+- one stream-json parser; team feeds the reducer *(team)* ([`26bc39f`](https://github.com/MadAppGang/claudish/commit/26bc39fea49e92e23df3c62483bf1706f3ff27b6))
+- delete the stall reaper; nothing kills a working slot *(team)* ([`0a4c2f0`](https://github.com/MadAppGang/claudish/commit/0a4c2f02813109fda09604d94977767b19707ce7))
 
 ## [7.66.1] - 2026-08-26
 
