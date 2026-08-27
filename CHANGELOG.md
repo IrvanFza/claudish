@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [7.67.0] - 2026-08-27
+
+### Documentation
+
+- update CHANGELOG.md for v7.66.1([`1eed670`](https://github.com/MadAppGang/claudish/commit/1eed6701e9767ac4845a592ff9de1507253312bf))
+
+### New Features
+
+- --model-params, --effort-override, and catalog-driven ultracode presets (#220)([`cf53f4f`](https://github.com/MadAppGang/claudish/commit/cf53f4fe8a949383e3719a37dd409d6b696fc8d4))
+
+### Other Changes
+
+- release v7.67.0([`84622c0`](https://github.com/MadAppGang/claudish/commit/84622c0ad86298c61a98a409b479e720e0d64542))
+
 ## [7.66.1] - 2026-08-26
 
 ### Bug Fixes
