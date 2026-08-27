@@ -4,6 +4,7 @@
  * - packages/cli/src/channel/session-manager.test.ts
  * - packages/cli/src/team-orchestrator.test.ts (--print-argv pins the exact spawn contract,
  *   including flag order)
+ * - focused spawn-environment tests (--print-env reports one selected variable)
  * A flag unused by one consumer may be load-bearing for the other; running only the channel
  * suite will not catch its removal.
  */
@@ -170,6 +171,37 @@ async function main(): Promise<void> {
   // --print-argv: expose the exact spawn contract to parent-process tests
   if (hasFlag("--print-argv")) {
     process.stdout.write(`${JSON.stringify(args)}\n`);
+    process.exit(0);
+  }
+
+  // --print-env <NAME>: expose one selected child env value as ordinary
+  // stream-json prose. Existing modes stay byte-for-byte unchanged, while
+  // both channel and team supervisors can inspect the actual spawn env.
+  const envName = getFlag("--print-env");
+  if (envName !== null) {
+    const answer = JSON.stringify({ [envName]: process.env[envName] ?? null });
+    write({
+      type: "assistant",
+      message: {
+        model: "fake",
+        role: "assistant",
+        content: [{ type: "text", text: answer }],
+      },
+      session_id: sessionId,
+    });
+    write({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      stop_reason: "end_turn",
+      session_id: sessionId,
+      terminal_reason: "completed",
+      api_error_status: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      permission_denials: [],
+      result: answer,
+    });
     process.exit(0);
   }
 

@@ -45,6 +45,7 @@ import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "../pr
 import { redactSecrets } from "../redact.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
+import { decodeChunk } from "../stdio-decode.js";
 import { STDOUT_TAIL_LIMIT, classifyRunOutput, meaningfulStderr } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
@@ -526,18 +527,8 @@ export function assertNoReservedFlags(flags: readonly string[] | undefined): voi
   }
 }
 
-/**
- * Decode one stdio chunk, holding any partial multi-byte sequence for the next.
- *
- * A `data` chunk ends at the pipe's read boundary, which lands mid-codepoint
- * often enough to matter on any non-ASCII answer. `StringDecoder` keeps the
- * dangling bytes; `Buffer.toString` replaces them with U+FFFD. Strings are
- * passed through because a test can `emit("data", "…")` directly, and
- * `StringDecoder.write` only accepts a Buffer.
- */
-function decodeChunk(decoder: StringDecoder, chunk: Buffer | string): string {
-  return typeof chunk === "string" ? chunk : decoder.write(chunk);
-}
+/* `decodeChunk` moved to ../stdio-decode.ts — `team` supervises a claudish child
+   over a pipe too, and was reading its children with `chunk.toString()`. */
 
 /**
  * The last `maxBytes` of a file, as text, plus whether the read began mid-file.
@@ -754,7 +745,13 @@ export class SessionManager {
     }
     assertNoReservedFlags(opts.claudishFlags);
 
-    const sessionId = randomUUID().slice(0, 8);
+    // A caller-supplied id must not be able to adopt or overwrite a live
+    // session: `sessions.set` would replace the entry and orphan the running
+    // child, which then bills on with nothing tracking it.
+    if (opts.sessionId !== undefined && this.sessions.has(opts.sessionId)) {
+      throw new Error(`Session id already in use: ${opts.sessionId}`);
+    }
+    const sessionId = opts.sessionId ?? randomUUID().slice(0, 8);
     // Minted here rather than discovered later: it is the child's transcript
     // filename under ~/.claude/projects/<slug>/, so knowing it BEFORE spawn
     // removes the cwd+mtime guessing a post-hoc search would need.
@@ -762,7 +759,7 @@ export class SessionManager {
     const timeout = Math.min(opts.timeoutSeconds ?? DEFAULT_TIMEOUT, MAX_TIMEOUT);
     const startedAt = new Date().toISOString();
 
-    const sessionDir = join(this.sessionsDir, sessionId);
+    const sessionDir = opts.sessionDir ?? join(this.sessionsDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     if (opts.prompt) {
       writeFileSync(join(sessionDir, "prompt.md"), opts.prompt, "utf-8");
@@ -777,7 +774,7 @@ export class SessionManager {
       claudishFlags: opts.claudishFlags,
     });
 
-    const tokenFile = join(sessionDir, "tokens.json");
+    const tokenFile = opts.tokenFile ?? join(sessionDir, "tokens.json");
     const eventLogPath = join(sessionDir, "events.jsonl");
     const upstreamErrorLogPath = join(sessionDir, "upstream-errors.jsonl");
     const cwd = opts.cwd ?? process.cwd();
@@ -885,6 +882,7 @@ export class SessionManager {
     entry.reducer = new StreamJsonReducer({
       sessionId,
       stallSeconds: this.stallSeconds,
+      keepUnrecognizedJson: opts.keepUnrecognizedJson,
       callback: (sid, data) => {
         const current = this.sessions.get(sid);
         if (!current) return;

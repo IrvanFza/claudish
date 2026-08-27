@@ -132,16 +132,52 @@ This was caught by the `--print-argv` test, whose fake child prints a JSON array
 to stdout: under the reducer's default the argv never reached the response file
 and the slot was classified EMPTY.
 
-## What is still owed
+## Spawn plumbing: what was shared, and what was deliberately not
 
-Per-slot spawn plumbing is still team's own: its argv is one-shot (`--stdin`)
-where the channel's is bidirectional (`--input-format stream-json`, which is what
-makes `send_input` work), and team owns its own directory layout, token file and
-anonymised ids. Moving team onto `SessionManager.createSession` would give each
-slot a session id addressable by `get_output`, `get_diagnostics` and
-`cancel_session`. It needs `SessionCreateOptions` to accept a caller-chosen
-session id, session directory and token file, and must preserve the single
-prehydrated 1Password handshake for the whole run.
+The obvious next step looked like making `team` a client of
+`SessionManager.createSession`, so each slot would be a channel session
+addressable by `get_output`, `get_diagnostics` and `cancel_session`. That was
+evaluated and rejected. Reading what `createSession` actually does shows why:
+
+- It calls `classifyRunOutput` with `minOutputBytes: 0` and NO `requirePattern`.
+  Team's shape contract is the one signal that catches a voter which never voted,
+  so team's policy would have to be pushed down into the session manager.
+- `requirePattern` is matched against the FULL response, not the bounded tail, so
+  the session manager would also need team's re-read-from-disk step.
+- `session-manager.ts` already imports `classifyRunOutput` FROM
+  `team-orchestrator.ts`. Adding team's options would complete the inversion: a
+  channel session manager that knows what a blind-vote panel is.
+
+The addressability was also worth less than it looked. `team` already answers the
+same questions through `mode:"status"` and `mode:"cancel"`, so the session id
+would have added convenience, not capability — at the price of that inversion,
+plus a shared `maxSessions` cap and a second copy of every answer on disk.
+
+What IS genuinely shared is the mechanism, and that was extracted:
+
+- **`stdio-decode.ts`.** A `data` chunk ends at the pipe's read boundary, which
+  can fall mid-codepoint. The channel decoded through a `StringDecoder` all
+  along; team read with `chunk.toString()`, which replaces the dangling bytes
+  with U+FFFD — permanently mangling any CJK character or emoji straddling a
+  boundary in `response-<id>.md`, and mis-sizing `outputSize`. Both now share
+  one decoder helper, one per pipe.
+- **The upstream-error log.** `captureUpstreamError` is opt-in on
+  `UPSTREAM_ERROR_LOG_ENV`, which team never set — so it was a guaranteed no-op
+  for every team child, and the provider response body that separates a
+  retryable rate limit from a hard quota wall was discarded as soon as it had
+  been classified. Team now sets it per slot (the records carry no slot id, so a
+  shared path would interleave models), and `ModelError.upstreamErrorLogPath`
+  names the file only when one was actually written.
+- **The stream-json parser**, covered above.
+
+What remains team's own is what legitimately differs: a one-shot `--stdin` argv
+against the channel's bidirectional `--input-format stream-json` (which exists so
+`send_input` works), team's directory layout, its anonymised slot ids, and its
+status file. Those are not duplication; they are two different jobs.
+
+`SessionCreateOptions` did gain `sessionId`, `sessionDir`, `tokenFile` and
+`keepUnrecognizedJson` while this was being evaluated. They are additive, tested,
+and make the adoption route available later if the trade above ever changes.
 
 ## Coverage removed with the mechanism
 

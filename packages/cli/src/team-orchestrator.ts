@@ -10,9 +10,12 @@ import {
 import { basename, join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { StreamJsonReducer } from "./channel/stream-json-reducer.js";
+import { ENV } from "./config.js";
+import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "./process-tree.js";
 import { redactSecrets } from "./redact.js";
 import { resolveClaudishSpawn } from "./spawn-claudish.js";
+import { decodeChunk, newStdioDecoder } from "./stdio-decode.js";
 import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -87,6 +90,15 @@ export interface ModelError {
   stdoutSnippet?: string;
   /** Path to the full error log file. */
   errorLogPath: string;
+  /**
+   * Path to this slot's upstream-error records, when the child wrote any.
+   *
+   * The raw provider response body for every failed request — which is what
+   * separates a retryable rate limit from a hard quota wall. Omitted when the
+   * file does not exist, so this is never a dangling reference: an unwritten
+   * file means the child never had an upstream failure to record.
+   */
+  upstreamErrorLogPath?: string;
   /** Working directory the child ran in. */
   workDir: string;
 }
@@ -978,6 +990,7 @@ export async function startModels(
   for (const [anonId, entry] of Object.entries(manifest.models)) {
     const outputPath = join(sessionPath, `response-${anonId}.md`);
     const errorLogPath = join(sessionPath, "errors", `${anonId}.log`);
+    const upstreamErrorLogPath = join(sessionPath, "errors", `${anonId}-upstream.jsonl`);
 
     // Spawn with the parent-resolved explicit spec when there is one, so the
     // child skips routing entirely and finds its key in the inherited env.
@@ -1042,7 +1055,19 @@ export async function startModels(
         // Point this child's token tracker at a path WE choose, so its
         // tokens/cost can be attributed back to this model. Without this the
         // child writes to tokens-<its-own-port>.json and nothing links the two.
-        CLAUDISH_TOKEN_FILE: tokenFileFor(sessionPath, anonId),
+        [ENV.CLAUDISH_TOKEN_FILE]: tokenFileFor(sessionPath, anonId),
+        // Un-no-op `captureUpstreamError` (handlers/composed-handler.ts), which
+        // is opt-in on this env var and was therefore a guaranteed no-op for
+        // every team child. Its own comment says what that costs: `log()` only
+        // persists under `--debug`, so the upstream body that separates a
+        // retryable rate limit from a hard quota wall is gone the moment it has
+        // been classified — and a run that already failed cannot be re-run with
+        // a flag. The channel has set this all along; team never did.
+        //
+        // Per SLOT, unconditionally: the records carry no slot id, so one shared
+        // path would interleave every model in the run into an unattributable
+        // file.
+        [UPSTREAM_ERROR_LOG_ENV]: upstreamErrorLogPath,
       },
     });
 
@@ -1059,6 +1084,18 @@ export async function startModels(
     const stampLiveness = (): void => {
       lastOutputAt = Date.now();
     };
+
+    /**
+     * One decoder per pipe, never shared.
+     *
+     * A `data` chunk ends at the pipe's read boundary, which lands mid-codepoint
+     * often enough to matter: `chunk.toString()` replaces the dangling bytes
+     * with U+FFFD, so any CJK character or emoji straddling a boundary was
+     * permanently mangled in `response-<id>.md` and mis-sized in `outputSize`.
+     * The channel has decoded this way all along; team did not.
+     */
+    const stdoutDecoder = newStdioDecoder();
+    const stderrDecoder = newStdioDecoder();
     proc.stdout?.on("data", stampLiveness);
     proc.stderr?.on("data", stampLiveness);
 
@@ -1094,7 +1131,7 @@ export async function startModels(
       // Legacy path: whatever `claude -p` printed, byte for byte.
       proc.stdout?.on("data", (chunk: Buffer) => {
         byteCount += chunk.length;
-        stdoutTail = (stdoutTail + chunk.toString()).slice(-STDOUT_TAIL_LIMIT);
+        stdoutTail = (stdoutTail + decodeChunk(stdoutDecoder, chunk)).slice(-STDOUT_TAIL_LIMIT);
       });
       // Stream stdout to disk via pipe — no memory buffering
       proc.stdout?.pipe(outputStream);
@@ -1138,7 +1175,9 @@ export async function startModels(
       // `feed` returns exactly what `capture.write` returned — the recovered
       // prose for this chunk — so every downstream consumer of `byteCount` and
       // `stdoutTail` is unaffected by the swap.
-      proc.stdout?.on("data", (chunk: Buffer) => absorb(slotReducer.feed(chunk.toString())));
+      proc.stdout?.on("data", (chunk: Buffer) =>
+        absorb(slotReducer.feed(decodeChunk(stdoutDecoder, chunk)))
+      );
 
       // `end()` is idempotent, so a caller draining early does not disturb the
       // normal finalisation below.
@@ -1165,7 +1204,7 @@ export async function startModels(
     // Collect stderr for error logging
     let stderr = "";
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      stderr += decodeChunk(stderrDecoder, chunk);
     });
 
     const command = `claudish ${args.join(" ")}`;
@@ -1274,6 +1313,11 @@ export async function startModels(
               stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
               stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
               errorLogPath,
+              // Only when the child actually wrote one. Naming a file that does
+              // not exist sends a reader after evidence that was never captured.
+              upstreamErrorLogPath: existsSync(upstreamErrorLogPath)
+                ? upstreamErrorLogPath
+                : undefined,
               workDir: sessionPath,
             },
           });

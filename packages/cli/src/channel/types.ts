@@ -126,6 +126,38 @@ export interface SessionCreateOptions {
   timeoutSeconds?: number;
   claudishFlags?: string[];
   cwd?: string;
+  /**
+   * Use this id instead of minting a random one. Must be unique among live
+   * sessions; a collision throws rather than silently adopting the existing
+   * session.
+   *
+   * `team` needs it: its slots are anonymised ids ("01".."05") that address
+   * everything else about the run — `response-<id>.md`, `stats/<id>.json`, the
+   * manifest, the status file. A random session id would mean two names for one
+   * slot and a mapping table to keep in step.
+   */
+  sessionId?: string;
+  /**
+   * Where this session's artifacts go. Defaults to `<sessionsDir>/<sessionId>`.
+   *
+   * `team` points every slot at a directory inside the TEAM run, so one run's
+   * evidence stays in one place rather than scattering across
+   * `~/.claudish/sessions` under ids nothing links back.
+   */
+  sessionDir?: string;
+  /**
+   * Where the child's token tracker writes. Defaults to `<sessionDir>/tokens.json`.
+   *
+   * `team` points it at `stats/<slot>.json`, which is what `renderTeamStatsCompact`
+   * and the status file already read.
+   */
+  tokenFile?: string;
+  /**
+   * Keep JSON lines that are not stream-json vocabulary. Default false.
+   * See `StreamJsonReducerOptions.keepUnrecognizedJson` for why the two
+   * consumers differ.
+   */
+  keepUnrecognizedJson?: boolean;
 }
 
 export interface ChannelEvent {

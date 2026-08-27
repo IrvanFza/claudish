@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { UPSTREAM_ERROR_LOG_ENV } from "./handlers/shared/upstream-error-capture.js";
 import type { ModelStatus, TeamManifest, TeamStatus, VoteResult } from "./team-orchestrator.js";
 
 // ─── Dynamic imports (resolved at runtime so the module doesn't need to exist
@@ -45,6 +46,7 @@ async function withFakeClaudish<T>(
   const originalPath = process.env.PATH;
   const originalClaudishBin = process.env.CLAUDISH_BIN;
   const originalCaptureMode = process.env.CLAUDISH_TEAM_CAPTURE;
+  const originalUpstreamErrorLog = process.env[UPSTREAM_ERROR_LOG_ENV];
   const shimDir = mkdtempSync(join(tmpdir(), "team-orchestrator-shim-"));
   const helperPath = join(
     dirname(fileURLToPath(import.meta.url)),
@@ -62,6 +64,7 @@ async function withFakeClaudish<T>(
     // default-mode assertion depend on the developer's shell.
     delete process.env.CLAUDISH_BIN;
     delete process.env.CLAUDISH_TEAM_CAPTURE;
+    delete process.env[UPSTREAM_ERROR_LOG_ENV];
     process.env.PATH = `${shimDir}:${originalPath ?? ""}`;
     return await callback(helperPath);
   } finally {
@@ -75,6 +78,11 @@ async function withFakeClaudish<T>(
       delete process.env.CLAUDISH_TEAM_CAPTURE;
     } else {
       process.env.CLAUDISH_TEAM_CAPTURE = originalCaptureMode;
+    }
+    if (originalUpstreamErrorLog === undefined) {
+      delete process.env[UPSTREAM_ERROR_LOG_ENV];
+    } else {
+      process.env[UPSTREAM_ERROR_LOG_ENV] = originalUpstreamErrorLog;
     }
     rmSync(shimDir, { recursive: true, force: true });
   }
@@ -481,6 +489,55 @@ describe("team-orchestrator", () => {
         expect(argv).toContain("--quiet");
         expect(argv).not.toContain("--output-format");
         expect(argv).not.toContain("--verbose");
+      });
+    });
+
+    it("gives every model slot its own upstream-error log path", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+
+      await withFakeClaudish("fake-claudish.ts", async () => {
+        setupSession(tempDir, ["vendor/model-a", "vendor/model-b"], "Analyze this input");
+        const status = await runModels(tempDir, {
+          claudeFlags: ["--print-env", UPSTREAM_ERROR_LOG_ENV],
+          spawnPlanner,
+        });
+
+        const manifest = readJson<TeamManifest>(join(tempDir, "manifest.json"));
+        const paths = Object.keys(manifest.models).map((anonId) => {
+          expect(status.models[anonId].state).toBe("COMPLETED");
+          const childEnv = JSON.parse(
+            readFileSync(join(tempDir, `response-${anonId}.md`), "utf-8").trim()
+          ) as Record<string, string | null>;
+          const path = childEnv[UPSTREAM_ERROR_LOG_ENV];
+
+          expect(path).toBe(join(tempDir, "errors", `${anonId}-upstream.jsonl`));
+          expect(dirname(path!)).toBe(join(tempDir, "errors"));
+          expect(path).toContain(anonId);
+          return path;
+        });
+
+        expect(new Set(paths).size).toBe(paths.length);
+      });
+    });
+
+    it("omits upstreamErrorLogPath from a recorded error when the child wrote no file", async () => {
+      const { runModels, setupSession } = await getOrchestrator();
+      const spawnPlanner = mock(async () => ({ pinned: new Map<string, string>() }));
+
+      await withFakeClaudish("fake-claudish.ts", async () => {
+        setupSession(tempDir, ["vendor/failing-model"], "Analyze this input");
+        await runModels(tempDir, {
+          claudeFlags: ["--fail"],
+          spawnPlanner,
+        });
+
+        const recorded = readJson<TeamStatus>(join(tempDir, "status.json"));
+        const [anonId, modelStatus] = Object.entries(recorded.models)[0];
+        expect(modelStatus.state).toBe("FAILED");
+        expect(modelStatus.error).toBeDefined();
+        expect(modelStatus.error).not.toHaveProperty("upstreamErrorLogPath");
+        expect(existsSync(join(tempDir, "errors", `${anonId}-upstream.jsonl`))).toBe(false);
       });
     });
   });
