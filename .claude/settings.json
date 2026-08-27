@@ -14,9 +14,7 @@
     "terminal@magus": true,
     "madbench@magus": true,
     "claudish@magus": true,
-    "mnemex@magus": true,
-    "statusline@magus": true,
-    "kanban@magus": true
+    "mnemex@magus": true
   },
   "outputStyle": "composed",
   "installedPluginVersions": {
@@ -31,7 +29,7 @@
     "multimodel@magus": "3.10.0",
     "statusline@magus": "3.0.0",
     "dev@magus": "4.6.1",
-    "terminal@magus": "4.1.4",
+    "terminal@magus": "4.2.0",
     "madbench@magus": "0.2.4"
   }
 }
