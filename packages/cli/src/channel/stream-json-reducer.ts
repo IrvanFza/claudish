@@ -70,9 +70,17 @@ const DELTA_FRAME_TYPES = new Set(["stream_event"]);
  * Non-JSON lines still go through, which is the point of the degradation rule:
  * the worst case must be an ugly answer, never a lost one.
  */
-function reachesAnswer(parsedType: string | null, isJson: boolean): boolean {
+function reachesAnswer(
+  parsedType: string | null,
+  isJson: boolean,
+  keepUnrecognizedJson: boolean
+): boolean {
   if (!isJson) return true;
-  return parsedType !== null && STREAM_JSON_EVENT_TYPES.has(parsedType);
+  if (parsedType !== null && STREAM_JSON_EVENT_TYPES.has(parsedType)) return true;
+  // JSON that is not stream-json vocabulary. A channel session's stdout is pure
+  // stream-json, so for the channel this is machine noise and dropping it keeps
+  // the answer clean. `team` needs the opposite — see keepUnrecognizedJson.
+  return keepUnrecognizedJson;
 }
 
 const TERMINAL_STATES: readonly ChannelEventType[] = [
@@ -143,6 +151,23 @@ export interface StreamJsonReducerOptions {
   callback: ReducerCallback;
   /** Seconds of stream silence before a stall notice. 0 disables the watchdog. */
   stallSeconds?: number;
+  /**
+   * Keep JSON lines that are not stream-json vocabulary, instead of dropping
+   * them. Default false.
+   *
+   * The two consumers want opposite things and both are right. A CHANNEL
+   * session's stdout is pure stream-json, so a stray JSON object is machine
+   * noise and keeping it would pollute the answer. A TEAM slot's response file
+   * is the only place a reader ever sees what the child printed, and this
+   * project has already lost real answers to a parser that decided something
+   * was not worth keeping (see ai-docs/architecture/team-capture.md) — so team
+   * preserves anything it does not positively recognise.
+   *
+   * Note the asymmetry this fixes: an UNPARSEABLE line is kept either way
+   * ("keep it, verbatim — it is the only place a reader would ever see it"),
+   * so dropping *valid* JSON was the stricter of the two rules, not the looser.
+   */
+  keepUnrecognizedJson?: boolean;
   /**
    * Fired once per terminal `result` frame. SessionManager uses the FIRST one to
    * close stdin on a one-shot session, which is what lets it reach `completed`
@@ -436,7 +461,7 @@ export class StreamJsonReducer {
 
     if (frame && type !== null) this.applyFrame(frame, type);
 
-    if (!reachesAnswer(type, frame !== null)) return "";
+    if (!reachesAnswer(type, frame !== null, this.opts.keepUnrecognizedJson ?? false)) return "";
 
     // The answer capture owns prose recovery; hand it the line exactly as it
     // arrived, newline included, so `outputBytes` agrees with what the child

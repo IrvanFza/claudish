@@ -9,11 +9,11 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
+import { StreamJsonReducer } from "./channel/stream-json-reducer.js";
 import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "./process-tree.js";
 import { redactSecrets } from "./redact.js";
 import { resolveClaudishSpawn } from "./spawn-claudish.js";
 import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
-import { createAssistantTextCapture } from "./team-stream-capture.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -228,6 +228,7 @@ interface LiveTeamRun {
   sessionPath: string;
   processes: Map<string, ChildProcess>;
   idleMsFor: (slotId: string) => number | null;
+  activityFor: (slotId: string) => string | null;
   /** Marked before the signal, so the exit handler can tell stopped from crashed. */
   cancelledSlots: Set<string>;
 }
@@ -261,6 +262,29 @@ export function teamSlotIdleSeconds(teamSessionId: string): Record<string, numbe
   for (const slotId of run.processes.keys()) {
     const idle = run.idleMsFor(slotId);
     if (idle !== null) out[slotId] = Math.round(idle / 1000);
+  }
+  return out;
+}
+
+/**
+ * What each still-running slot is doing, from the stream-json reducer:
+ * `running`, `tool_executing`, `waiting_for_input`, or a terminal state. Null
+ * for a run that is not live; a slot is absent under `"print"` capture, which
+ * emits no frames to read.
+ *
+ * The companion to `teamSlotIdleSeconds`, and the reason that number is safe to
+ * publish without a verdict attached. Ninety seconds of silence in
+ * `tool_executing` is a build running; the same ninety seconds in `running` is
+ * a model that stopped mid-answer. The old reaper could not tell those apart —
+ * it had no state at all — and killed the first kind.
+ */
+export function teamSlotActivity(teamSessionId: string): Record<string, string> | null {
+  const run = liveTeamRuns.get(teamSessionId);
+  if (!run) return null;
+  const out: Record<string, string> = {};
+  for (const slotId of run.processes.keys()) {
+    const activity = run.activityFor(slotId);
+    if (activity !== null) out[slotId] = activity;
   }
   return out;
 }
@@ -897,6 +921,17 @@ export async function startModels(
      */
     getIdleMs: () => number;
     /**
+     * What this slot is doing right now, from the shared stream-json reducer:
+     * `running`, `tool_executing`, `waiting_for_input`, a terminal state, or
+     * null under `"print"` capture, which produces no frames to read.
+     *
+     * This is the other half of the idle number. 90 seconds of silence means
+     * one thing in `tool_executing` (a build is running) and quite another in
+     * `running` (the model has stopped mid-answer), and a caller deciding
+     * whether to cancel needs both.
+     */
+    getActivity: () => string | null;
+    /**
      * Drain any partially-received line into the byte count, tail, and response
      * file. A no-op under `"print"` capture, which counts raw bytes as they
      * arrive.
@@ -1039,6 +1074,22 @@ export async function startModels(
     /** See ModelRuntime.flushPartial. Reassigned below when recovery is on. */
     let flushPartial: () => void = () => {};
 
+    /**
+     * The stream-json supervisor for this slot, or null under `"print"`.
+     *
+     * `team` used to drive `createAssistantTextCapture()` directly and hand-roll
+     * everything around it. The channel wraps that SAME capture in
+     * `StreamJsonReducer` and adds what team was missing: a state machine that
+     * knows the difference between thinking and running a tool, and `sawResult`
+     * — the child's own terminal `result` frame, which is a real completion
+     * oracle where exit 0 is not (`claude -p` exits 0 on API errors too).
+     *
+     * Two implementations of one job existed because this file predates the
+     * reducer by four months. There is now one parser; this is the caller that
+     * moved onto it.
+     */
+    let reducer: StreamJsonReducer | null = null;
+
     if (captureMode === "print") {
       // Legacy path: whatever `claude -p` printed, byte for byte.
       proc.stdout?.on("data", (chunk: Buffer) => {
@@ -1058,7 +1109,24 @@ export async function startModels(
       // inflate all of them (an empty answer wrapped in events is still
       // kilobytes). Feeding recovered prose keeps `classifyRunOutput`
       // completely unaware that the wire format changed.
-      const capture = createAssistantTextCapture();
+      const slotReducer = new StreamJsonReducer({
+        sessionId: anonId,
+        // 0 disables the reducer's stall watchdog. That watchdog ANNOUNCES
+        // silence; team publishes the number through `teamSlotIdleSeconds` and
+        // leaves the verdict to the caller, so a second opinion on the same
+        // question would only be noise. It also means no timer is armed here.
+        stallSeconds: 0,
+        // Preserve anything not positively recognised. `response-<id>.md` is the
+        // only place a reader sees what this child printed, and discarding a
+        // real answer is the failure this file has already been burned by —
+        // see ai-docs/architecture/team-capture.md.
+        keepUnrecognizedJson: true,
+        // State changes are read on demand via `getActivity`, not pushed. Team
+        // already has its own status file and progress ticker; routing reducer
+        // transitions into a second notification path would duplicate it.
+        callback: () => {},
+      });
+      reducer = slotReducer;
 
       const absorb = (text: string): void => {
         if (text.length === 0) return;
@@ -1067,21 +1135,27 @@ export async function startModels(
         outputStream.write(text);
       };
 
-      proc.stdout?.on("data", (chunk: Buffer) => absorb(capture.write(chunk.toString())));
+      // `feed` returns exactly what `capture.write` returned — the recovered
+      // prose for this chunk — so every downstream consumer of `byteCount` and
+      // `stdoutTail` is unaffected by the swap.
+      proc.stdout?.on("data", (chunk: Buffer) => absorb(slotReducer.feed(chunk.toString())));
 
-      // `capture.end()` is idempotent, so the timeout path draining early does
-      // not disturb the normal finalisation below.
-      flushPartial = () => absorb(capture.end());
+      // `end()` is idempotent, so a caller draining early does not disturb the
+      // normal finalisation below.
+      flushPartial = () => absorb(slotReducer.end());
 
       // The write stream is ours to close now that nothing pipes into it, and
       // `finish()` hangs off its "close". Both events are wired because "end"
-      // does not fire on a destroyed stream (a killed or timed-out child), and
-      // a run that never resolves is worse than one that resolves empty.
+      // does not fire on a destroyed stream (a killed child), and a run that
+      // never resolves is worse than one that resolves empty.
       let captureFinalized = false;
       const finalizeCapture = (): void => {
         if (captureFinalized) return;
         captureFinalized = true;
-        absorb(capture.end());
+        absorb(slotReducer.end());
+        // Releases the reducer's internal state. Nothing else disposes it, and
+        // a team run holds one per slot for the life of the run.
+        slotReducer.dispose();
         outputStream.end();
       };
       proc.stdout?.on("end", finalizeCapture);
@@ -1101,7 +1175,12 @@ export async function startModels(
       getStderr: () => stderr,
       getStdoutTail: () => stdoutTail,
       getByteCount: () => byteCount,
+      // The raw-pipe stamp, not `reducer.idleMs`. The reducer's clock advances
+      // per complete LINE, so a child writing one long line slowly would look
+      // quiet; this one sees every byte, on both pipes. Broadest definition of
+      // "still alive", which is the question being asked.
       getIdleMs: () => Math.max(0, Date.now() - lastOutputAt),
+      getActivity: () => reducer?.state ?? null,
       flushPartial: () => flushPartial(),
     });
 
@@ -1330,6 +1409,7 @@ export async function startModels(
     sessionPath,
     processes,
     idleMsFor: (slotId) => runtimes.get(slotId)?.getIdleMs() ?? null,
+    activityFor: (slotId) => runtimes.get(slotId)?.getActivity() ?? null,
     cancelledSlots,
   });
 

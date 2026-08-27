@@ -60,6 +60,7 @@ import {
   setupSession,
   shutdownAllTeamRuns,
   startModels,
+  teamSlotActivity,
   teamSlotIdleSeconds,
   validateSessionPath,
 } from "./team-orchestrator.js";
@@ -1341,13 +1342,18 @@ function defineTools(
                     {
                       ...status,
                       idle_seconds_by_slot: idle,
+                      // What each slot is DOING, which is what makes the idle
+                      // number readable. Silence in `tool_executing` is a build;
+                      // the same silence in `running` is a stalled answer.
+                      activity_by_slot: teamSlotActivity(teamSessionId),
                       ...(idle
                         ? {
                             note:
-                              "idle_seconds_by_slot is how long each slot has been silent. " +
-                              "It is not a failure signal: a slot running a build or test " +
-                              "suite emits nothing for minutes and is working. Nothing " +
-                              'cancels on your behalf — use mode:"cancel" if you decide to.',
+                              "idle_seconds_by_slot is how long each slot has been silent; " +
+                              "read it against activity_by_slot. Silence in tool_executing " +
+                              "is a build or test suite running, and is not a failure " +
+                              'signal. Nothing cancels on your behalf — use mode:"cancel" ' +
+                              "if you decide to.",
                           }
                         : {}),
                       // The rendered result card, once there is a result to

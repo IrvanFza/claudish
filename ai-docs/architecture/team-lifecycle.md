@@ -91,25 +91,57 @@ manifest is shuffled so the judge CHILDREN, which read `response-<id>.md` withou
 a manifest, cannot attribute answers. The orchestrating caller has always seen
 the mapping — `status.txt` prints model names beside slot ids.
 
-## What is still duplicated
+## One parser, two consumers
 
-`team` supervises its children with `createAssistantTextCapture()` plus its own
-spawn and exit handling, roughly 280 lines. The channel does the same job with
-`StreamJsonReducer`, which wraps that same capture and adds state tracking,
-`lastFrameAt`, tool-call awareness and result-frame detection.
+`team` drove `createAssistantTextCapture()` directly and hand-rolled everything
+around it. The channel wrapped that SAME capture in `StreamJsonReducer` and added
+what team lacked: a state machine that tells thinking from tool execution, and
+`sawResult` — the child's own terminal `result` frame, a real completion oracle
+where exit 0 is not (`claude -p` exits 0 on API errors too).
 
-The channel's version is strictly better and already solved the problem this file
-describes: it exempts `tool_executing` from its stall notice ("a 10-minute `Bash`
-produces no frames at all and is not stalled, it is working") and only ever emits
-a notice, never a kill.
+Two implementations of one job existed because `team-orchestrator.ts` dates from
+2026-03-20 and `stream-json-reducer.ts` from 2026-08-22. `team` now feeds the
+reducer, and `StreamJsonReducer` is the only production consumer of the capture.
+`feed()` and `end()` return exactly what `capture.write()`/`capture.end()`
+returned, so `byteCount`, `stdoutTail` and `classifyRunOutput` were unaffected by
+the swap.
 
-The two exist because `team-orchestrator.ts` dates from 2026-03-20 and
-`stream-json-reducer.ts` from 2026-08-22. Migrating `team`'s per-slot supervision
-onto `SessionManager` would delete the duplicate and give each slot a real
-session id addressable by `get_output`, `get_diagnostics` and `cancel_session`.
-That migration needs `SessionCreateOptions` to accept a caller-chosen session id,
-session directory and token file, and must preserve the single prehydrated
-1Password handshake for the whole run.
+### The one behaviour that had to be made explicit
+
+The two parsers disagreed on a line that is valid JSON but is NOT stream-json
+vocabulary — a bare array, a stray object:
+
+| Line | capture | reducer (before) |
+|---|---|---|
+| not JSON (`[API Error: …]`) | passthrough | passthrough |
+| recognised frame | recover prose | recover prose |
+| JSON, unrecognised | **passthrough** | **dropped** |
+
+Both behaviours are correct for their own consumer. A channel session's stdout is
+pure stream-json, so a stray JSON object is machine noise and keeping it would
+pollute the answer. A team slot's `response-<id>.md` is the only place a reader
+ever sees what the child printed, and this project has already lost real answers
+to a parser deciding something was not worth keeping (`team-capture.md`).
+
+So it is an option — `keepUnrecognizedJson`, default false, and `team` passes
+true — rather than one rule imposed on both. Note the asymmetry it resolves: an
+UNPARSEABLE line was always kept ("it is the only place a reader would ever see
+it"), so dropping *valid* JSON was the stricter rule, not the looser one.
+
+This was caught by the `--print-argv` test, whose fake child prints a JSON array
+to stdout: under the reducer's default the argv never reached the response file
+and the slot was classified EMPTY.
+
+## What is still owed
+
+Per-slot spawn plumbing is still team's own: its argv is one-shot (`--stdin`)
+where the channel's is bidirectional (`--input-format stream-json`, which is what
+makes `send_input` work), and team owns its own directory layout, token file and
+anonymised ids. Moving team onto `SessionManager.createSession` would give each
+slot a session id addressable by `get_output`, `get_diagnostics` and
+`cancel_session`. It needs `SessionCreateOptions` to accept a caller-chosen
+session id, session directory and token file, and must preserve the single
+prehydrated 1Password handshake for the whole run.
 
 ## Coverage removed with the mechanism
 
