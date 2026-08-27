@@ -2,42 +2,32 @@
 
 **Date:** 2026-08-27
 **Area:** Layer 1/2 stream translation, tool-call parsing
-**Severity:** medium — corrupts recorded tool counts; may corrupt dispatched tool names (unconfirmed)
-**Status:** observed, not root-caused
+**Severity:** high — the malformed name was DISPATCHED, not only recorded
+**Status:** root-caused, fixed, reproduced before and after
+
+> This supersedes the first draft of this report. That draft named a leading
+> hypothesis that is wrong, ruled out a path that is in fact the cause, and left
+> the severity question open. All three are corrected below, with the runs.
 
 ---
 
 ## Summary
 
 A `gk@grok-4.6` run recorded a tool call whose NAME is a concatenation of a tool
-name, a parameter name, a type fragment, and an argument value. The name is not a
-tool that exists.
+name, a parameter name, a type fragment, and an argument value:
 
-Recorded in `stats/02.json` of session
-`/Users/jack/mag/madbench/.claude/worktrees/keychain/ai-docs/sessions/team-20260827-0015`:
-
-```json
-"tool_calls": [
-  {"name": "Read", "count": 45},
-  {"name": "Bash", "count": 7},
-  {"name": "web_search", "count": 1},
-  {"name": "web_search_query_listOpposed[\"macos security add-generic-password -X hex password flag\"]", "count": 1},
-  {"name": "WebSearch", "count": 1}
-]
+```
+web_search_query_listOpposed["macos security add-generic-password -X hex password flag"]
 ```
 
-Decomposing the malformed name:
+Three defects combined to produce it. All three are on `openai-sse`, the busiest
+wire in claudish.
 
-| Fragment | Reads as |
-|---|---|
-| `web_search` | the tool name |
-| `query` | a parameter name |
-| `list` | a type fragment |
-| `Opposed` | unattributed |
-| `["macos security add-generic-password -X hex password flag"]` | the argument VALUE |
-
-Three separate records exist for what is plausibly one or two real calls
-(`web_search`, `WebSearch`, and the malformed entry).
+| # | Defect | Site |
+|---|---|---|
+| 1 | Text extraction ran even when the model already emitted a structured tool call | `openai-sse.ts` finalize |
+| 2 | Only Pattern 5 of six had an allowlist; Patterns 0–4 had none | `tool-call-recovery.ts` |
+| 3 | Pattern 0 captured `[^>]+`, so prose became a tool name | `tool-call-recovery.ts` |
 
 ---
 
@@ -46,107 +36,140 @@ Three separate records exist for what is plausibly one or two real calls
 | | |
 |---|---|
 | Model spec | `gk@grok-4.6+x-ai@grok-4.6+or@x-ai/grok-4.6` |
-| Provider | Grok-subscription (`"provider_name":"Grok-subscription"` in the stats file) |
+| Provider | Grok-subscription (`"provider_name":"Grok-subscription"`) |
 | Wire | `openai-sse` |
 | Host | macOS (darwin 25.6.0) |
 
 ---
 
-## What the code shows
+## Root cause
 
-`TokenTracker.recordToolUse` does not construct names. It stores what it is
-handed, trimmed:
-
-```ts
-// packages/cli/src/handlers/shared/token-tracker.ts:111
-recordToolUse(name: string): void {
-  const key = name.trim() || "unknown";
-  this.toolCallsByName.set(key, (this.toolCallsByName.get(key) ?? 0) + 1);
-}
-```
-
-Its only production call site is the single observation point in the composed
-handler:
+`extractToolCallsFromText` scrapes tool calls out of assistant prose, for local
+models that cannot emit structured `tool_calls`. Its Pattern 0 read:
 
 ```ts
-// packages/cli/src/handlers/composed-handler.ts:1373
-const observeToolCall = (name: string): void => {
-  this.tokenTracker.recordToolUse(name);
-  behaviorSession?.observeToolCall(name);
-};
+const qwenPattern = /<function=([^>]+)>([\s\S]*?)(?=<function=|$)/gi;
 ```
 
-That callback is installed as `onToolCallObserved` on every stream handler
-(`composed-handler.ts:1399, 1416, 1439, 1459, 1484`). So the name was already
-malformed when the stream handler emitted it.
+`[^>]+` accepts every character except `>`. There was no length bound, no
+character class, and no allowlist. A model that opened `<function=` in prose had
+every following character up to the next `>` taken as the tool name.
 
-Per the comment at `composed-handler.ts:1391-1393`, grok runs on the `openai-sse`
-wire, alongside GLM, Kimi, DeepSeek, Qwen, OpenRouter and LiteLLM. The defect is
-therefore on the busiest wire in claudish, not a niche one.
+Running the real function against candidate inputs, before the fix:
 
-### Ruled out
-
-The natural-language recovery path in
-`packages/cli/src/handlers/shared/tool-call-recovery.ts:192-210` is NOT the
-source. It filters every candidate against a `knownTools` allowlist before
-emitting, and `web_search_query_listOpposed[...]` is not on that list:
-
-```ts
-if (!knownTools.some((t) => t.toLowerCase() === toolName.toLowerCase())) {
-  continue;
-}
+```
+--- qwen style, name swallows all
+    name="web_search_query_listOpposed[\"macos security add-generic-password -X hex password flag\"]" source=xml_text args={}
+    *** EXACT MATCH TO REPORTED NAME ***
+--- arbitrary garbage name
+    name="TOTALLY_NOT_A_TOOL_$$$" source=xml_text args={"x":"1"}
 ```
 
-### Leading hypothesis (unverified)
+### What the first draft got wrong
 
-The `openai-sse` streaming handler assembles a tool name from streamed deltas.
-OpenAI-dialect providers send `function.name` incrementally, and a parser that
-appends deltas without respecting index boundaries will concatenate the name with
-following fields. The shape of the corrupted string matches that failure mode.
-Confirming this needs a `--debug` log from a grok run that calls a tool.
+**The leading hypothesis was wrong.** It proposed that the parser appends
+`function.name` deltas without respecting index boundaries. It does not append.
+The name is assigned once, inside `if (!t)`, and a later delta at the same index
+is ignored (`openai-sse.ts`, structured tool-call branch). Also cleared by
+inspection: the truncation map in `base-api-format.ts` only maps a short key to a
+longer original; `GrokModelDialect` matches `name="([^"]+)"` so its names cannot
+contain a quote; `collect-sse-message.ts` reads `block.name` without appending.
+
+**The "Ruled out" section was wrong.** The allowlist it quotes guards **Pattern 5**
+only, the natural-language pattern. Patterns 0–4 sit above it in the same
+function and had no guard. A `continue` inside one loop of a six-pattern function
+reads like a function-wide filter; it is not.
 
 ---
 
-## Open question: did the malformed name reach the wire?
+## The open question, answered: it reached the wire
 
-`observeToolCall` is documented as "the ONE place a completed tool call is
-observed". If the handler dispatched the tool under the same string it reported,
-then Claude Code received a tool call naming a tool that does not exist, and the
-turn was wasted. If the corruption is confined to the reporting path, the impact
-is limited to statistics.
+`onToolCallObserved` is hooked inside `send()`, the single frame writer, not at
+the `content_block_start` sites. Observation and dispatch are therefore the same
+event. Driving the real `createStreamingResponseHandler` end to end, before the fix:
 
-This is not determinable from the artifacts in hand. It decides whether the
-severity is medium or high.
+```
+OBSERVED (goes to stats/*.json):
+  "web_search_query_listOpposed[\"macos security add-generic-password -X hex password flag\"]"
+DISPATCHED to Claude Code (tool_use content_block_start):
+  "web_search_query_listOpposed[\"macos security add-generic-password -X hex password flag\"]"
 
----
+SAME SET: YES — corruption reaches the client
+```
 
-## Reproduction
-
-1. Run any `gk@grok-4.6` session with `--debug` on a task that provokes tool use,
-   including a web search attempt.
-2. Read the resulting log under `logs/`.
-3. Inspect the raw SSE frames carrying `function.name` deltas, and compare them
-   against the names passed to `onToolCallObserved`.
-4. Inspect `tool_calls` in the session's token stats file for names that are not
-   real tools.
+Claude Code received a `tool_use` block naming a tool that does not exist. The
+turn was lost. Severity is high, not medium.
 
 ---
 
-## Impact
+## The three records explained
 
-- Tool-call counts for every model on the `openai-sse` wire are unreliable. The
-  end-of-session summary and `stats/*.json` both read from this map.
-- If the corruption reaches dispatch, affected turns are lost outright.
-- Corrupted names carry ARGUMENT VALUES into a map that is written to disk and
-  surfaced in summaries. In this instance the value was a benign search query. A
-  tool call carrying a secret in an argument would place that secret into
-  `stats/*.json`, which is not a redacted surface.
+The stats file held three entries (`web_search`, `WebSearch`, and the malformed
+one) for what looked like one or two real calls. `extractToolCallsFromText` ran
+unconditionally at finalization, with no check on whether structured calls had
+already arrived. One structured call plus prose mentioning a function tag, before
+the fix:
+
+```
+Model made ONE structured tool call. Recorded tool names:
+  "WebSearch"
+  "web_search"
+count = 2
+```
+
+---
+
+## Fix
+
+| # | Change | File |
+|---|---|---|
+| 1 | Skip text extraction when `state.tools.size > 0`; pass the request's advertised tool names to the extractor | `handlers/shared/stream-parsers/openai-sse.ts` |
+| 2 | New optional `knownToolNames` parameter; `keepOnlyRealTools` applied to the return of all six patterns | `handlers/shared/tool-call-recovery.ts` |
+| 3 | Pattern 0 bounded to `TOOL_NAME_SOURCE`; `hasExtractableFunctionTag` exported so the parser's hold-back test cannot drift from it | `handlers/shared/tool-call-recovery.ts` |
+| 4 | `recordToolUse` buckets a non-identifier name under `malformed` | `handlers/shared/token-tracker.ts` |
+| 5 | `TOOL_NAME_SOURCE` / `TOOL_NAME_SHAPE` as the single definition | `adapters/tool-name-utils.ts` |
+
+Fix 3 needed fix 5's shared constant for a reason worth recording: the parser's
+text hold-back test used its own loose copy of the pattern. Tightening only the
+extractor would have left text that matches the hold-back test but not the
+extractor withheld from the client and then never emitted, a silent text loss
+with no tool call to show for it.
+
+### After the fix
+
+```
+--- qwen style clean
+    name="web_search" source=xml_text args={"query_list":"[\"macos security add-generic-password -X hex password flag\"]"}
+--- qwen style, name swallows all
+    (none)
+--- arbitrary garbage name
+    (none)
+--- unclosed function tag mid-prose
+    (none)
+```
+
+The legitimate recovery path, which is the reason this code exists, still works.
+The duplicate-dispatch case now reports `count = 1`.
+
+Suite: **2986 pass, 17 skip, 0 fail** (`packages/cli`).
+
+---
+
+## Still unknown
+
+Grok's raw bytes were not recovered. The session directory
+`/Users/jack/mag/madbench/.claude/worktrees/keychain/ai-docs/sessions/team-20260827-0015`
+no longer exists, and a sweep of `/Users/jack/mag` and `~/.claude` found no
+surviving copy of the malformed name. This is the `ai-docs/sessions/` loss mode
+`CLAUDE.md` warns about: gitignored, and removed with the worktree.
+
+The mechanism is proven and reproduced. The exact text Grok emitted is not known.
+Confirming it needs a `gk@grok-4.6` run with `--debug` on a task that provokes a
+web search.
 
 ---
 
 ## Related
 
-Found while investigating the `team` timeout defect in the same session. The
-`web_search` call that produced this entry is itself unimplemented
-(`packages/cli/src/handlers/shared/web-search-detector.ts` is a v1 stub that
-warns and passes through), which is tracked separately.
+The `web_search` tool itself is unimplemented: `handlers/shared/web-search-detector.ts`
+is a v1 stub that warns and passes through. Tracked separately.
