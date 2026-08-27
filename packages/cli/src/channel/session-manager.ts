@@ -45,12 +45,7 @@ import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "../pr
 import { redactSecrets } from "../redact.js";
 import { transcriptPathFor } from "../session/session-discovery.js";
 import { resolveClaudishSpawn } from "../spawn-claudish.js";
-import {
-  DRAIN_TIMEOUT_MS,
-  STDOUT_TAIL_LIMIT,
-  classifyRunOutput,
-  meaningfulStderr,
-} from "../team-orchestrator.js";
+import { STDOUT_TAIL_LIMIT, classifyRunOutput, meaningfulStderr } from "../team-orchestrator.js";
 import { readTokenStatsAt } from "../team-stats.js";
 import { ScrollbackBuffer } from "./scrollback-buffer.js";
 import { type ResultSummary, StreamJsonReducer, labelForLine } from "./stream-json-reducer.js";
@@ -204,6 +199,20 @@ interface SessionEntry {
 }
 
 const DEFAULT_MAX_SESSIONS = 20;
+
+/**
+ * How long to wait, after a child is confirmed dead, for its stdout pipe to
+ * close so the session's recorded output is final.
+ *
+ * Bounded: the pipe can only stay open while some descendant still holds the
+ * write end, and after a group SIGKILL that should be nobody. This exists so a
+ * pathological case degrades into a slightly-stale read rather than a hang.
+ *
+ * Previously imported from `team-orchestrator`, which pointed the channel at
+ * `team` for a constant that only the channel still uses — `team` no longer
+ * terminates children, so it no longer drains them either.
+ */
+const DRAIN_TIMEOUT_MS = 10_000;
 const DEFAULT_SCROLLBACK = 2000;
 const DEFAULT_TIMEOUT = 600;
 const MAX_TIMEOUT = 3600;
