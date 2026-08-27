@@ -275,6 +275,24 @@ export class StreamJsonReducer {
   get toolUseCount(): number {
     return this._toolUseCount;
   }
+  /**
+   * Milliseconds since the child last put ANYTHING on stdout.
+   *
+   * Reported, never acted on. Silence is not a verdict: a child inside a long
+   * `Bash` emits no frames and is working, not wedged, which is why
+   * `tool_executing` is exempt from the stall notice. The agent asking "when did
+   * session X last say something?" has context this class does not, so it gets
+   * the number and makes the call — including the call to `cancel_session`.
+   *
+   * This is the signal `team` used to lack. It polled `stats/<id>.json`, which
+   * only advances when tokens flow, so a slot compiling for 90s looked dead and
+   * was killed. Frames arrive throughout — Claude Code emits `tool_progress`
+   * heartbeats every 30s inside a long tool call — so this number stays honest
+   * where a token-flow timestamp does not.
+   */
+  get idleMs(): number {
+    return Math.max(0, Date.now() - this.lastFrameAt);
+  }
   get terminalReason(): string | null {
     return this._terminalReason;
   }

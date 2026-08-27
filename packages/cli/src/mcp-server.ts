@@ -1571,7 +1571,12 @@ function defineTools(
 
   tools.push({
     name: "list_sessions",
-    description: "List all active channel sessions. Optionally include completed sessions.",
+    description:
+      "List all active channel sessions. Optionally include completed sessions. " +
+      "Each session reports `idleSeconds`: how long since the child last emitted " +
+      "anything. Nothing kills a session for being idle — a child inside a long " +
+      "Bash call is silent and working — so this is yours to judge against the " +
+      "task you set, and `cancel_session` is yours to call if the answer is no.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1608,7 +1613,10 @@ function defineTools(
       "Explain what a channel session actually did — stderr, upstream error bodies, the " +
       "recent event frames, the resolved model chain, accounting, and the paths to the " +
       "full records. Call this FIRST whenever a session fails, times out, or completes " +
-      "with empty or surprising output; it needs no re-run and no debug flag.",
+      "with empty or surprising output; it needs no re-run and no debug flag. " +
+      "`idleSeconds` reports how long since the child last emitted a frame, and is " +
+      "null once the session is no longer live. It is information, never a verdict: " +
+      "claudish does not terminate a session for silence.",
     inputSchema: {
       type: "object",
       properties: {

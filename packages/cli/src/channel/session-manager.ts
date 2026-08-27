@@ -88,6 +88,12 @@ export interface SessionDiagnostics {
   spawnModel: string | null;
   exitCode: number | null;
   terminalReason: string | null;
+  /**
+   * Seconds since the child last emitted a frame; null when the session is not
+   * live. Reported so the caller can tell working-but-quiet from wedged.
+   * Nothing in claudish acts on it.
+   */
+  idleSeconds: number | null;
   elapsedSeconds: number;
   /** The session's own timeout, for reading `elapsedSeconds` against. */
   timeoutSeconds: number;
@@ -829,6 +835,8 @@ export class SessionManager {
         status: "starting",
         pid: proc.pid ?? null,
         startedAt,
+        // Refreshed from the reducer at every read point, like elapsedSeconds.
+        idleSeconds: 0,
         completedAt: null,
         exitCode: null,
         turnsCompleted: 0,
@@ -1035,11 +1043,14 @@ export class SessionManager {
     turnsCompleted: number;
     tokensUsed: number;
     elapsedSeconds: number;
+    /** Seconds since the child last emitted a frame. Null when not live. */
+    idleSeconds: number | null;
   } {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.diskOutput(this.requireDiskRecord(sessionId), tailLines);
 
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
+    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
     this.refreshAccounting(entry);
 
     const lines = entry.scrollback.getLines(tailLines);
@@ -1051,6 +1062,7 @@ export class SessionManager {
       turnsCompleted: entry.info.turnsCompleted,
       tokensUsed: entry.info.tokensUsed,
       elapsedSeconds: entry.info.elapsedSeconds,
+      idleSeconds: entry.info.idleSeconds,
     };
   }
 
@@ -1075,6 +1087,7 @@ export class SessionManager {
 
     this.refreshAccounting(entry);
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
+    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
 
     return {
       sessionId,
@@ -1089,6 +1102,9 @@ export class SessionManager {
       exitCode: entry.info.exitCode,
       terminalReason: entry.info.terminalReason,
       elapsedSeconds: entry.info.elapsedSeconds,
+      // Silence, reported not judged. A long `Bash` emits nothing and is
+      // working; only the caller knows if that is expected for the task it set.
+      idleSeconds: entry.info.idleSeconds,
       timeoutSeconds: entry.timeoutSeconds,
       /** Recovered assistant PROSE, not raw stream bytes — see `recordProse`. */
       outputBytes: entry.proseBytes,
@@ -1202,6 +1218,8 @@ export class SessionManager {
       if (!includeCompleted && isTerminal) continue;
       if (!isTerminal) {
         entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
+        entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
+    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
         this.refreshAccounting(entry);
       }
       sessions.push({ ...entry.info });
@@ -1219,6 +1237,7 @@ export class SessionManager {
     const entry = this.sessions.get(sessionId);
     if (!entry) return this.requireDiskRecord(sessionId).info;
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
+    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
     this.refreshAccounting(entry);
     return { ...entry.info };
   }
@@ -1376,6 +1395,10 @@ export class SessionManager {
         model: metaString(meta?.model) ?? "unknown",
         spawnModel: metaString(meta?.spawnModel),
         status: metaStatus(meta?.status) ?? "failed",
+        // A record restored from disk has no live reducer, so there is no
+        // "since the last frame" to report. Null says unknown, not zero —
+        // zero would read as "spoke just now" for a session that ended days ago.
+        idleSeconds: null,
         // NEVER the pid from the file. It belonged to a process that is gone,
         // and pids are reused — a stale one names some unrelated live process,
         // which is a genuinely dangerous thing to hand back from a tool whose
@@ -1441,6 +1464,7 @@ export class SessionManager {
     turnsCompleted: number;
     tokensUsed: number;
     elapsedSeconds: number;
+    idleSeconds: number | null;
   } {
     const tail = readTailText(join(record.sessionDir, "output.log"), OUTPUT_TAIL_BYTES);
     const buffer = new ScrollbackBuffer(this.scrollbackCapacity);
@@ -1455,6 +1479,9 @@ export class SessionManager {
       turnsCompleted: record.info.turnsCompleted,
       tokensUsed: record.info.tokensUsed,
       elapsedSeconds: record.info.elapsedSeconds,
+      // Read from disk: the process is gone, so "since the last frame" is not a
+      // question this record can answer. Null, never 0.
+      idleSeconds: null,
     };
   }
 
@@ -1492,6 +1519,8 @@ export class SessionManager {
       exitCode: info.exitCode,
       terminalReason: info.terminalReason,
       elapsedSeconds: info.elapsedSeconds,
+      // Recovered from disk — no live process to be idle. Null, never 0.
+      idleSeconds: null,
       timeoutSeconds: 0,
       outputBytes: diskProseBytes(outputTail, fileSize(outputLogPath)),
       turnsCompleted: info.turnsCompleted,
@@ -1772,6 +1801,7 @@ export class SessionManager {
     entry.info.exitCode = code;
     entry.info.completedAt = at;
     entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
+    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
     entry.stdinClosed = true;
 
     this.flushDecoders(entry);

@@ -53,6 +53,16 @@ export interface SessionInfo {
   tokensUsed: number;
   elapsedSeconds: number;
   /**
+   * Seconds since the child last put anything on stdout. Null for a session
+   * with no live reducer (already finalised, or restored from disk).
+   *
+   * INFORMATION, not a verdict. Nothing in claudish terminates a session for
+   * being idle. A child inside a long `Bash` is silent and working; only the
+   * caller knows whether that is expected for the task it set. Read this, decide,
+   * and call `cancel_session` if the answer is no.
+   */
+  idleSeconds: number | null;
+  /**
    * Real spend in USD, from the proxy's own token file.
    *
    * Deliberately NOT `result.total_cost_usd`: the child prices every model at
