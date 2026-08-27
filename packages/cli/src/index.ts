@@ -602,7 +602,6 @@ async function runCli() {
         const { setupSession, runModels } = await import("./team-orchestrator.js");
         setupSession(sessionPath, cliConfig.team, prompt);
         const status = await runModels(sessionPath, {
-          timeout: 300,
           claudeFlags: ["--json"],
         });
 

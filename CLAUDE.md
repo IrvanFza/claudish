@@ -20,6 +20,8 @@ lives in `ROADMAP.md`.
 - `keychain.md` — the macOS Keychain backend: enumerate-for-presence vs read-for-value, the `security` traps, the Providers-tab write/delete
 - `mcp-channel.md` — MCP tool surface, channel wire format, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing
+- `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns before its
+  children finish, idle time as information, and the `StreamJsonReducer` migration still owed
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
 
 Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing site: `docs/`.

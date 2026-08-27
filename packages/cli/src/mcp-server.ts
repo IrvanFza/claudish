@@ -52,10 +52,15 @@ import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
 import {
+  cancelTeamRun,
   getStatus,
   judgeResponses,
+  readTeamInputFile,
   runModels,
   setupSession,
+  shutdownAllTeamRuns,
+  startModels,
+  teamSlotIdleSeconds,
   validateSessionPath,
 } from "./team-orchestrator.js";
 import type { ProxyServer } from "./types.js";
@@ -363,7 +368,9 @@ function orderingKey(model: any): { releaseDate?: string; id?: string } {
  */
 const NEXT_STEP: Record<string, string> = {
   nonzero_exit: "read the evidence log, then retry or drop the model",
-  timeout: "raise `timeout`, or pick a faster model",
+  cancelled:
+    "you stopped this slot; nothing is wrong with it. Re-run it if you still want its vote",
+  timeout: "grid mode only — magmux ended the pane. The orchestrator has no deadline",
   api_error: "retry once, or route via a different provider (or@<model>)",
   background_task_ceiling:
     "set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 for children, or forbid background work in the prompt",
@@ -1057,14 +1064,32 @@ function defineTools(
   tools.push({
     name: "team",
     description:
-      "Run AI models on a task with anonymized outputs and optional blind judging. Modes: 'run' (execute models), 'judge' (blind-vote on existing outputs), 'run-and-judge' (full pipeline), 'status' (check progress).",
+      "Run AI models on a task with anonymized outputs and optional blind judging. " +
+      "Modes: 'run' (START the models and return a slot map immediately — it does NOT " +
+      "wait), 'status' (per-slot state, plus how long each slot has been silent), " +
+      "'cancel' (stop one slot or the whole run), 'judge' (blind-vote on existing " +
+      "outputs), 'run-and-judge' (the blocking pipeline). " +
+      "NO SLOT IS EVER KILLED ON A TIMER. A team slot is a full Claude Code session and " +
+      "may work for a long time; a slot inside a build or test suite emits nothing for " +
+      "minutes and is working, not stuck. Poll 'status', judge the silence against the " +
+      "task you set, and use 'cancel' if you decide a slot is wedged.",
     inputSchema: {
       type: "object",
       properties: {
         mode: {
           type: "string",
-          enum: ["run", "judge", "run-and-judge", "status"],
-          description: "Operation mode",
+          enum: ["run", "judge", "run-and-judge", "status", "cancel"],
+          description:
+            "Operation mode. 'run' STARTS the models and returns immediately with a " +
+            "slot map — it does not wait. Poll 'status' for progress, then 'judge' once " +
+            "the slots have finished. 'run-and-judge' is the blocking pipeline and holds " +
+            "the call open for the whole run. 'cancel' stops one slot or the whole run.",
+        },
+        slot: {
+          type: "string",
+          description:
+            "For 'cancel': the anonymised slot id to stop (e.g. '02'), from the slot map " +
+            "'run' returned. Omit to cancel every slot in the run.",
         },
         path: {
           type: "string",
@@ -1088,12 +1113,23 @@ function defineTools(
           items: { type: "string" },
           description: "Model IDs to use as judges (default: same as runners)",
         },
+        input_file: {
+          type: "string",
+          description:
+            "PREFERRED. Path to a file holding the task prompt, relative to the working " +
+            "directory. Use this rather than `input` for anything longer than a sentence: " +
+            "a prompt passed inline is echoed verbatim in the caller's terminal, where a " +
+            "200-line review brief buries every other argument and makes the call " +
+            "unreadable. Write the brief to the session directory first (input.md is the " +
+            "conventional name) and point here.",
+        },
         input: {
           type: "string",
           description:
-            "Task prompt text (or place input.md in the session directory before calling)",
+            "Task prompt as inline text. Prefer `input_file` — inline text is rendered in " +
+            "full in the caller's terminal. Passing both is an error. If neither is given, " +
+            "an input.md already present in the session directory is used.",
         },
-        timeout: { type: "number", description: "Per-model timeout in seconds (default: 300)" },
         require_pattern: {
           type: "string",
           description:
@@ -1136,10 +1172,19 @@ function defineTools(
       required: ["mode", "path"],
     },
     group: "agentic",
-    // The tool the whole keepalive exists for: a real `run` was aborted at exactly
+    // The tool the whole keepalive exists for: a real run was aborted at exactly
     // 1800s of channel-frame-only silence. NOT gated on `channelEnabled` — that
     // failure happened in a session with channels unregistered, so gating the
     // keepalive behind the channel group would reproduce the bug exactly.
+    //
+    // Still needed even though `run` no longer blocks: `run-and-judge` is the
+    // pipeline mode and holds the call open for the whole run, which is exactly
+    // the shape that hit the ceiling. `run` returning early does not remove the
+    // exposure, it just stops the common path from carrying it.
+    //
+    // The background run keeps calling `ctx.reportProgress` after `run` has
+    // returned. That is safe by contract — see ToolCallContext: a no-op once the
+    // heartbeat is stopped, and it never throws.
     heartbeat: true,
     handler: async (args, ctx) => {
       try {
@@ -1147,8 +1192,19 @@ function defineTools(
         const path = args.path as string;
         const models = args.models as string[] | undefined;
         const judges = args.judges as string[] | undefined;
-        const input = args.input as string | undefined;
-        const timeout = args.timeout as number | undefined;
+        // `input_file` is the preferred form: a team prompt is usually a long
+        // brief, and inline text is echoed in full in the caller's terminal.
+        // Accepting both would silently pick one and discard the other, which is
+        // the kind of thing a caller only discovers from the models' answers.
+        const inlineInput = args.input as string | undefined;
+        const inputFile = args.input_file as string | undefined;
+        if (inlineInput !== undefined && inputFile !== undefined) {
+          throw new Error(
+            "Pass `input_file` or `input`, not both. Prefer `input_file` — inline text is " +
+              "rendered verbatim in the caller's terminal."
+          );
+        }
+        const input = inputFile !== undefined ? readTeamInputFile(inputFile) : inlineInput;
         const requirePattern = args.require_pattern as string | undefined;
         const minOutputBytes = args.min_output_bytes as number | undefined;
         const childFlags = buildChildClaudeFlags(args.agent, args.claude_flags);
@@ -1164,7 +1220,6 @@ function defineTools(
         const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
         const teamCreatedAt = new Date().toISOString();
         const runOpts = {
-          timeout,
           requirePattern,
           minOutputBytes,
           claudeFlags: childFlags,
@@ -1197,9 +1252,66 @@ function defineTools(
           case "run": {
             if (!models?.length) throw new Error("'models' is required for 'run' mode");
             setupSession(resolved, models, input);
-            const status = await runModels(resolved, runOpts);
+            // Returns once the children EXIST, not once they finish. A team slot
+            // is a full Claude Code session and can legitimately work for a long
+            // time; holding the tool call open for that made the run's duration
+            // the client's problem, and the deadline that existed to bound it
+            // killed working slots. Poll `mode: "status"` instead.
+            const handle = await startModels(resolved, runOpts);
             return {
-              content: [{ type: "text" as const, text: formatTeamResult(status, resolved) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      started: true,
+                      team_session_id: handle.teamSessionId,
+                      session_path: handle.sessionPath,
+                      slots: handle.slots,
+                      next: {
+                        status: `team(mode:"status", path:"${handle.sessionPath}")`,
+                        cancel: `team(mode:"cancel", path:"${handle.sessionPath}", slot:"<id>")`,
+                        judge: `team(mode:"judge", path:"${handle.sessionPath}") once every slot has finished`,
+                      },
+                      note:
+                        "Nothing terminates a slot on a timer. `status` reports how many " +
+                        "seconds each slot has been silent; a slot inside a long build is " +
+                        "quiet and working. You decide whether to cancel.",
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            };
+          }
+          case "cancel": {
+            const slot = args.slot as string | undefined;
+            const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
+            const result = await cancelTeamRun(teamSessionId, slot);
+            if (!result.found) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      cancelled: [],
+                      note:
+                        "No live run for that path. It already settled (read `status`), or " +
+                        "it was started by a different process — this server can only stop " +
+                        "children it spawned.",
+                    }),
+                  },
+                ],
+              };
+            }
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ cancelled: result.cancelled }, null, 2),
+                },
+              ],
             };
           }
           case "judge": {
@@ -1215,7 +1327,41 @@ function defineTools(
           }
           case "status": {
             const status = getStatus(resolved);
-            return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
+            const teamSessionId = resolved.split("/").filter(Boolean).pop() ?? "team";
+            // Seconds of silence per slot, for RUNNING slots of a live run.
+            // Null once the run has settled — the states in `status` are final
+            // then, and there is no child left to be quiet.
+            const idle = teamSlotIdleSeconds(teamSessionId);
+            const settled = !Object.values(status.models).some((m) => m.state === "RUNNING");
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify(
+                    {
+                      ...status,
+                      idle_seconds_by_slot: idle,
+                      ...(idle
+                        ? {
+                            note:
+                              "idle_seconds_by_slot is how long each slot has been silent. " +
+                              "It is not a failure signal: a slot running a build or test " +
+                              "suite emits nothing for minutes and is working. Nothing " +
+                              'cancels on your behalf — use mode:"cancel" if you decide to.',
+                          }
+                        : {}),
+                      // The rendered result card, once there is a result to
+                      // render. This is the summary `run` used to return before
+                      // it stopped waiting; a settled `status` is now where it
+                      // belongs, since that is the call that knows the outcome.
+                      ...(settled ? { summary: formatTeamResult(status, resolved) } : {}),
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            };
           }
           default:
             throw new Error(`Unknown mode: ${mode}`);
@@ -1888,9 +2034,13 @@ async function main() {
   installWireTap();
   await server.connect(transport);
 
-  // Cleanup on shutdown
+  // Cleanup on shutdown. Both subsystems spawn children that outlive the call
+  // that started them — channel sessions always did, and team runs do now that
+  // `run` returns before its models finish — so both must be reached here or
+  // their process trees survive this one and keep billing.
   process.on("SIGTERM", () => {
     sessionManager.shutdownAll().catch(() => {});
+    shutdownAllTeamRuns().catch(() => {});
   });
 }
 

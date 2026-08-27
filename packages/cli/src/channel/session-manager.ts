@@ -1219,7 +1219,6 @@ export class SessionManager {
       if (!isTerminal) {
         entry.info.elapsedSeconds = this.getElapsed(entry.info.startedAt);
         entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
-    entry.info.idleSeconds = entry.reducer ? Math.round(entry.reducer.idleMs / 1000) : null;
         this.refreshAccounting(entry);
       }
       sessions.push({ ...entry.info });

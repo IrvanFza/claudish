@@ -423,7 +423,6 @@ describe("team-orchestrator", () => {
       await withFakeClaudish("fake-claudish.ts", async () => {
         setupSession(tempDir, ["vendor/model"], "Analyze this input");
         const status = await runModels(tempDir, {
-          timeout: 5,
           claudeFlags: ["--print-argv"],
           spawnPlanner,
         });
@@ -468,7 +467,6 @@ describe("team-orchestrator", () => {
       await withFakeClaudish("fake-claudish.ts", async () => {
         setupSession(tempDir, ["vendor/model"], "Analyze this input");
         const status = await runModels(tempDir, {
-          timeout: 5,
           captureMode: "print",
           claudeFlags: ["--print-argv"],
           spawnPlanner,
@@ -509,7 +507,6 @@ describe("team-orchestrator", () => {
         const recoveredDir = join(tempDir, "recovered");
         setupSession(recoveredDir, ["vendor/model"], input);
         const recoveredStatus = await runModels(recoveredDir, {
-          timeout: 5,
           requirePattern: "```vote",
           spawnPlanner,
         });
@@ -531,7 +528,6 @@ describe("team-orchestrator", () => {
         const printDir = join(tempDir, "print");
         setupSession(printDir, ["vendor/model"], input);
         const printStatus = await runModels(printDir, {
-          timeout: 5,
           captureMode: "print",
           requirePattern: "```vote",
           spawnPlanner,

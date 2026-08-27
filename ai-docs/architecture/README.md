@@ -33,6 +33,7 @@ three earlier write-ups this material cites were lost.
 | [`theming.md`](theming.md) | One detected theme for every surface, and the module-load palette-snapshot bug class it keeps producing (found six times) | add a colored CLI line or TUI surface |
 | [`mcp-channel.md`](mcp-channel.md) | The 12-tool MCP surface, the channel wire format, the client-side conditions gating channel rendering, and the `notifications/progress` keepalive | add or rename an MCP tool, or change channel notifications |
 | [`team-capture.md`](team-capture.md) | Why exit 0 proves nothing under `claude -p`, and the stream-json recovery that stopped discarding real answers | change how `team` spawns children or classifies their output |
+| [`team-lifecycle.md`](team-lifecycle.md) | Why nothing kills a slot on a timer, the measurement that removed the deadline, the non-blocking `run` contract, and the duplicate supervision still owed to `StreamJsonReducer` | add a deadline, change when `team` returns, or touch per-slot liveness |
 | [`debugging.md`](debugging.md) | Debug logging, `CLAUDISH_UPSTREAM_ERROR_LOG`, raw SSE capture, and the failed-translation workflow | diagnose a model producing wrong, empty, or garbled output |
 | [`testing.md`](testing.md) | The SSE-replay format-translation harness and how to add a regression test | add a format-translation regression test |
 

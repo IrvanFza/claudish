@@ -7,17 +7,12 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { type SpawnPlan, prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
-import { KILL_PROCESS_GROUP, signalProcessTree } from "./process-tree.js";
+import { KILL_PROCESS_GROUP, signalProcessTree, terminateChildTree } from "./process-tree.js";
 import { redactSecrets } from "./redact.js";
 import { resolveClaudishSpawn } from "./spawn-claudish.js";
-import {
-  renderTeamStatsCompact,
-  statsDir,
-  tokenFileFor,
-  writeStatusFile,
-} from "./team-stats.js";
+import { renderTeamStatsCompact, statsDir, tokenFileFor, writeStatusFile } from "./team-stats.js";
 import { createAssistantTextCapture } from "./team-stream-capture.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -37,6 +32,16 @@ export interface TeamManifest {
  */
 export type FailureReason =
   | "nonzero_exit"
+  /**
+   * The caller stopped this slot through `team(mode:"cancel")`. NOT a defect —
+   * the only failure reason here that reflects a decision rather than a fault.
+   */
+  | "cancelled"
+  /**
+   * Only `team-grid.ts` produces this now, mapping magmux's pane states. The
+   * orchestrator has no deadline and never terminates a slot itself — see
+   * ai-docs/architecture/team-lifecycle.md.
+   */
   | "timeout"
   | "api_error"
   | "background_task_ceiling"
@@ -109,7 +114,6 @@ export interface TeamStatus {
 }
 
 export interface TeamRunOptions {
-  timeout?: number; // seconds, default 300
   claudeFlags?: string[]; // extra flags passed to child claudish
   onStatusChange?: (id: string, status: ModelStatus) => void;
   /**
@@ -184,6 +188,134 @@ export interface TeamRunOptions {
   heartbeatSeconds?: number;
   /** Spawn-plan factory seam for hermetic call-site tests. */
   spawnPlanner?: (models: (string | undefined)[]) => Promise<SpawnPlan>;
+}
+
+/**
+ * A running team, handed back the moment its children exist.
+ *
+ * This is what makes a team run addressable without blocking on it. The caller
+ * gets the ids it needs to ask questions later, and asks them through
+ * `getStatus(sessionPath)` — which reports each slot's state, bytes and tokens —
+ * rather than by holding a tool call open for the length of the run.
+ */
+export interface TeamHandle {
+  /**
+   * Stable id for the whole run: the session directory's basename. Already the
+   * id used for this run's channel frames, so a caller correlating frames to a
+   * run needs no second identifier.
+   */
+  teamSessionId: string;
+  /** Absolute session directory. `getStatus` and `judgeResponses` both take it. */
+  sessionPath: string;
+  /**
+   * Display model → anonymised slot id, e.g. `{"grok-4.6": "02"}`.
+   *
+   * The slot id addresses everything on disk for that model: `response-<id>.md`,
+   * `stats/<id>.json`, `errors/<id>.log`, and the per-model entry in
+   * `getStatus().models`.
+   */
+  slots: Record<string, string>;
+  /**
+   * Settles when every slot has finished. Nothing needs to await it — the run
+   * completes and writes its files either way — and a caller that only polls
+   * `getStatus` can ignore it entirely.
+   */
+  done: Promise<TeamStatus>;
+}
+
+/** What the registry needs to answer questions about a run still in flight. */
+interface LiveTeamRun {
+  sessionPath: string;
+  processes: Map<string, ChildProcess>;
+  idleMsFor: (slotId: string) => number | null;
+  /** Marked before the signal, so the exit handler can tell stopped from crashed. */
+  cancelledSlots: Set<string>;
+}
+
+/**
+ * Team runs currently in flight, keyed by `teamSessionId`.
+ *
+ * This exists because `startModels` returns before its children do. Once the
+ * run outlives the call that started it, something has to let a later call
+ * reach back into it — to read how long a slot has been quiet, and to stop one.
+ *
+ * Entries are removed when the run settles, so a completed run answers from
+ * `status.json` on disk rather than from memory, and the map cannot grow without
+ * bound in a long-lived MCP server.
+ */
+const liveTeamRuns = new Map<string, LiveTeamRun>();
+
+/**
+ * Seconds each still-running slot has been silent, or null if the run is not
+ * live (never started here, or already settled — read `status.json` instead).
+ *
+ * INFORMATION ONLY. Nothing in claudish terminates a slot for being quiet. A
+ * child inside `go test ./...` writes nothing for minutes and is working; only
+ * the caller that set the task knows whether that is expected. Read this, then
+ * call `cancelTeamRun` or do not.
+ */
+export function teamSlotIdleSeconds(teamSessionId: string): Record<string, number> | null {
+  const run = liveTeamRuns.get(teamSessionId);
+  if (!run) return null;
+  const out: Record<string, number> = {};
+  for (const slotId of run.processes.keys()) {
+    const idle = run.idleMsFor(slotId);
+    if (idle !== null) out[slotId] = Math.round(idle / 1000);
+  }
+  return out;
+}
+
+/**
+ * Terminate one slot, or every slot in a run, on the caller's instruction.
+ *
+ * The ONLY thing that kills a team slot. The orchestrator used to do it on a
+ * timer and got it wrong — three productive slots died in session
+ * team-20260827-0015 because silence during a long tool call was read as death.
+ * The decision now belongs to whoever set the task and can tell a slow build
+ * from a hang.
+ *
+ * Kills the process GROUP, not the pid: `claudish` is a launcher that runs the
+ * real CLI under Bun, which runs `claude`. Signalling the direct child reaches
+ * only the launcher and leaves the tree alive, still billing and still holding
+ * the response pipe open.
+ */
+export async function cancelTeamRun(
+  teamSessionId: string,
+  slotId?: string
+): Promise<{ found: boolean; cancelled: string[] }> {
+  const run = liveTeamRuns.get(teamSessionId);
+  if (!run) return { found: false, cancelled: [] };
+
+  const targets = slotId ? (run.processes.has(slotId) ? [slotId] : []) : [...run.processes.keys()];
+
+  const cancelled: string[] = [];
+  for (const id of targets) {
+    const proc = run.processes.get(id);
+    if (!proc) continue;
+    // Marked BEFORE the signal. The exit handler can fire as soon as the process
+    // dies, and a mark set afterwards would lose the race and file a deliberate
+    // stop as a crash.
+    run.cancelledSlots.add(id);
+    await terminateChildTree(proc);
+    cancelled.push(id);
+  }
+  return { found: true, cancelled };
+}
+
+/**
+ * Terminate every live team run. Process shutdown only.
+ *
+ * Needed because `startModels` returns before its children do: a run now
+ * outlives the call that started it, so nothing else would reach these children
+ * when the host process is asked to stop. Without this they survive their parent
+ * and keep billing — the same orphaning `cancelTeamRun` guards against, one
+ * level up.
+ *
+ * The per-run SIGINT handler covers Ctrl+C. This covers SIGTERM, which that
+ * handler does not see.
+ */
+export async function shutdownAllTeamRuns(): Promise<void> {
+  await Promise.all([...liveTeamRuns.keys()].map((id) => cancelTeamRun(id).catch(() => undefined)));
 }
 
 export interface TeamJudgeOptions {
@@ -454,6 +586,37 @@ export function validateSessionPath(sessionPath: string): string {
   return resolved;
 }
 
+/**
+ * Read a task prompt from a file on disk.
+ *
+ * Exists because a `team` prompt is typically hundreds of lines — a full review
+ * brief with a required output shape. Passing that inline puts the entire text
+ * into the tool-call record, where it is rendered verbatim in the caller's
+ * terminal and buries every other argument. The prompt is already a file in
+ * practice; this lets the caller say so.
+ *
+ * Contained to the working directory on the same terms as the session path.
+ * `team` is reachable over MCP, so an unbounded path here would turn "run a
+ * team" into "read any file on this machine and put it in a prompt".
+ */
+export function readTeamInputFile(inputPath: string): string {
+  const resolved = resolve(inputPath);
+  const cwd = process.cwd();
+  if (!resolved.startsWith(`${cwd}/`) && resolved !== cwd) {
+    throw new Error(`Input file must be within current directory: ${inputPath}`);
+  }
+  if (!existsSync(resolved)) {
+    throw new Error(`Input file not found: ${resolved}`);
+  }
+  const text = readFileSync(resolved, "utf-8");
+  // A silently-empty prompt would spawn N children to answer nothing, and every
+  // one of them would bill for the attempt.
+  if (text.trim().length === 0) {
+    throw new Error(`Input file is empty: ${resolved}`);
+  }
+  return text;
+}
+
 // ─── Native Model Slots ──────────────────────────────────────────────────────
 
 /*
@@ -595,15 +758,26 @@ function readFullOutputIfNeeded(opts: {
 }
 
 /**
- * Run all models in parallel.
+ * Spawn every model in parallel and RETURN, without waiting for any of them.
+ *
+ * Resolves once the children exist: credentials are prehydrated (one 1Password
+ * handshake for the whole run, not one per model) and every process is running.
+ * The run itself continues in the background, and `handle.done` settles when the
+ * last slot finishes.
+ *
+ * Why this is the primitive rather than a blocking call. A team slot is a full
+ * Claude Code session and can legitimately work for a very long time; the
+ * previous blocking shape forced a deadline on it, and enforcing that deadline
+ * killed three productive slots in session team-20260827-0015. Nothing here
+ * imposes a deadline any more. The caller polls `getStatus`, reads how long each
+ * slot has been quiet, and decides for itself whether to keep waiting.
+ *
  * Each model reads input.md and writes response-{ID}.md.
- * Returns when all models complete or timeout.
  */
-export async function runModels(
+export async function startModels(
   sessionPath: string,
   opts: TeamRunOptions = {}
-): Promise<TeamStatus> {
-
+): Promise<TeamHandle> {
   assertValidRequirePattern(opts.requirePattern);
 
   const manifest: TeamManifest = JSON.parse(
@@ -700,8 +874,8 @@ export async function runModels(
 
   /**
    * Per-model diagnostic handles, readable from OUTSIDE the spawn closure.
-   * The timeout handler lives outside that closure and previously had no way to
-   * reach the child's stderr — which is why timed-out runs reported nothing.
+   * A caller asking "what is slot 03 doing?" cannot reach into the closure, so
+   * everything it needs to answer that is published here.
    */
   interface ModelRuntime {
     command: string;
@@ -709,6 +883,19 @@ export async function runModels(
     getStderr: () => string;
     getStdoutTail: () => string;
     getByteCount: () => number;
+    /**
+     * Milliseconds since this child last wrote ANYTHING on either pipe.
+     *
+     * Reported, never acted on. This is the signal the deleted reaper lacked: it
+     * read `stats/<id>.json`, which only advances when tokens flow, so a slot
+     * inside a 90s `go test` looked dead and was killed. Raw pipe writes keep
+     * arriving throughout — Claude Code emits `tool_progress` heartbeats every
+     * 30s inside a long tool call — so this number distinguishes quiet-and-
+     * working from wedged, which a token timestamp cannot.
+     *
+     * The caller reads it and decides. `cancelTeamRun` is how it acts.
+     */
+    getIdleMs: () => number;
     /**
      * Drain any partially-received line into the byte count, tail, and response
      * file. A no-op under `"print"` capture, which counts raw bytes as they
@@ -724,6 +911,15 @@ export async function runModels(
     flushPartial: () => void;
   }
   const runtimes: Map<string, ModelRuntime> = new Map();
+
+  /**
+   * Slots the caller asked to stop, recorded BEFORE the signal goes out.
+   *
+   * The exit handler cannot otherwise tell a deliberate stop from a crash — both
+   * arrive as a non-zero exit — and filing a cancellation as `nonzero_exit`
+   * would put a fault in the permanent record for a decision the caller made.
+   */
+  const cancelledSlots = new Set<string>();
 
   // SIGINT handler: kill all child processes on Ctrl+C.
   //
@@ -815,6 +1011,22 @@ export async function runModels(
       },
     });
 
+    /**
+     * When this child last wrote on either pipe.
+     *
+     * A SEPARATE listener from the capture below, deliberately. Capture asks
+     * "is this an answer?" and answers no for a `tool_progress` heartbeat or a
+     * thinking frame; liveness asks "is anything alive down there?" and those
+     * same frames answer yes. Conflating the two questions is precisely how the
+     * old reaper concluded that a compiling child was dead.
+     */
+    let lastOutputAt = Date.now();
+    const stampLiveness = (): void => {
+      lastOutputAt = Date.now();
+    };
+    proc.stdout?.on("data", stampLiveness);
+    proc.stderr?.on("data", stampLiveness);
+
     // Count bytes flowing through stdout for accurate outputSize tracking
     let byteCount = 0;
     // Bounded tail of stdout. Claude Code writes "[API Error: ...]" to stdout
@@ -889,6 +1101,7 @@ export async function runModels(
       getStderr: () => stderr,
       getStdoutTail: () => stdoutTail,
       getByteCount: () => byteCount,
+      getIdleMs: () => Math.max(0, Date.now() - lastOutputAt),
       flushPartial: () => flushPartial(),
     });
 
@@ -948,8 +1161,22 @@ export async function runModels(
         const state: ModelState = crashed ? "FAILED" : degraded ? "EMPTY" : "COMPLETED";
 
         if (failed) {
-          const reason: FailureReason = crashed ? "nonzero_exit" : degraded!.reason;
-          const detail = crashed ? `Child exited with code ${exitCode}.` : degraded!.detail;
+          // A slot the caller stopped exited non-zero, but it did not crash and
+          // saying so would be a lie in the permanent record. `cancelled` is the
+          // one failure reason that is not a defect: the caller looked at the
+          // evidence and decided. Nothing else in claudish can produce it.
+          const wasCancelled = cancelledSlots.has(anonId);
+          const reason: FailureReason = wasCancelled
+            ? "cancelled"
+            : crashed
+              ? "nonzero_exit"
+              : degraded!.reason;
+          const detail = wasCancelled
+            ? 'Stopped on the caller\'s instruction via team(mode:"cancel"). ' +
+              "Whatever the child had written up to that point is in its response file."
+            : crashed
+              ? `Child exited with code ${exitCode}.`
+              : degraded!.detail;
 
           persistErrorLog(errorLogPath, `${state}: ${detail}`, stderr, stdoutTail);
 
@@ -1091,17 +1318,71 @@ export async function runModels(
   // Don't hold the event loop open on the ticker alone.
   progressHandle.unref?.();
 
-  await Promise.all(completionPromises);
+  // Settlement runs in the background. Nothing awaits it here — that is the
+  // whole point of this function — but it must still tear down the ticker, emit
+  // the terminal frame, and release the SIGINT handler, or a caller that never
+  // reads `done` leaks all three.
+  const teamSessionId = basename(sessionPath);
 
-  clearInterval(progressHandle);
-  // Terminal frame. Without this a status-tracking consumer never sees the run
-  // close — every frame would read "running", including the last one.
-  emitProgress("settled");
+  // Registered BEFORE `done` is built, so a caller that cancels immediately
+  // finds the run rather than racing its own start.
+  liveTeamRuns.set(teamSessionId, {
+    sessionPath,
+    processes,
+    idleMsFor: (slotId) => runtimes.get(slotId)?.getIdleMs() ?? null,
+    cancelledSlots,
+  });
 
-  // Remove SIGINT handler after we're done
-  process.off("SIGINT", sigintHandler);
+  const done = (async (): Promise<TeamStatus> => {
+    try {
+      await Promise.all(completionPromises);
+    } finally {
+      clearInterval(progressHandle);
+      // Terminal frame. Without this a status-tracking consumer never sees the
+      // run close — every frame would read "running", including the last one.
+      emitProgress("settled");
+      process.off("SIGINT", sigintHandler);
+      // A settled run answers from status.json, not from memory. Dropping the
+      // entry is also what stops this map growing for the life of the server.
+      liveTeamRuns.delete(teamSessionId);
+    }
+    return statusCache;
+  })();
 
-  return statusCache;
+  // A caller that only polls `getStatus` never touches `done`. Without this an
+  // unobserved rejection would take down the MCP server, which hosts every
+  // other session too.
+  done.catch(() => {});
+
+  return {
+    teamSessionId,
+    sessionPath,
+    // Display model → anonymised slot. The manifest is shuffled for blind
+    // JUDGING, which protects the judge children reading response-<id>.md
+    // without a manifest. It was never hidden from the orchestrating caller —
+    // status.txt has printed model names beside slot ids all along.
+    slots: Object.fromEntries(
+      Object.entries(manifest.models).map(([anonId, entry]) => [entry.model, anonId])
+    ),
+    done,
+  };
+}
+
+/**
+ * Spawn every model and wait for all of them.
+ *
+ * The blocking form of `startModels`, kept for the pipeline modes that are
+ * inherently sequential: `run-and-judge` cannot judge answers that do not exist
+ * yet. Prefer `startModels` anywhere the caller can poll instead, because this
+ * form makes the run's duration the CALLER's problem — and an MCP client aborts
+ * a tool call that stays silent too long.
+ */
+export async function runModels(
+  sessionPath: string,
+  opts: TeamRunOptions = {}
+): Promise<TeamStatus> {
+  const handle = await startModels(sessionPath, opts);
+  return handle.done;
 }
 
 /**

@@ -100,7 +100,7 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
-        const status = await runModels(tempDir, { timeout: 5, minOutputBytes: 0 });
+        const status = await runModels(tempDir, { minOutputBytes: 0 });
 
         // Both models should be COMPLETED since they finish well before the 5s timeout
         for (const [modelId, model] of Object.entries(status.models)) {
@@ -140,7 +140,7 @@ describe("Bug #1: TIMEOUT despite successful completion", () => {
       process.env.PATH = `${fakeClaudishDir}:${originalPath}`;
 
       try {
-        const status = await runModels(tempDir, { timeout: 1, minOutputBytes: 0 });
+        const status = await runModels(tempDir, { minOutputBytes: 0 });
 
         const model = Object.values(status.models)[0];
         expectModelState("model-a", model, "COMPLETED");
@@ -192,7 +192,7 @@ exit 0
       process.env.PATH = `${largeFakeDir}:${originalPath}`;
 
       try {
-        const status = await runModels(tempDir, { timeout: 10 });
+        const status = await runModels(tempDir, {});
 
         const model = Object.values(status.models)[0];
         expectModelState("model-a", model, "COMPLETED");

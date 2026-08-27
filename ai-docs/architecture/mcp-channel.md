@@ -36,7 +36,7 @@ Three properties of that argv are load-bearing and each fails silently:
 - **`--verbose` BEFORE `--quiet`.** claudish consumes `--verbose` as its own log-verbosity
   flag AND separately forwards a copy to `claude`, which hard-errors on
   `--print --output-format stream-json` without it. Reversed, every child narrates onto
-  stderr. Same rule as `team-orchestrator.ts:818-825`.
+  stderr. Same rule as `team-orchestrator.ts:957` ("ORDER IS LOAD-BEARING").
 - **`-p` present, and followed by a FLAG.** Without it and without `--stdin`, `cli.ts:667`
   sees no positional prompt and launches the interactive picker. Unknown flags consume the
   next token as a value unless it starts with `-`.
@@ -83,8 +83,10 @@ reporting success on evidence that does not belong to it.
 and the `result` frame is by construction the LAST line the child writes — so it is exactly
 the frame still in flight at that moment. `handleExit` therefore only records
 code/signal/timestamp; `finalize()` runs when both stdio pipes have emitted `close`, or
-after `DRAIN_TIMEOUT_MS` (10 s, the same bound and the same lesson as
-`team-orchestrator.ts:293/1329`), whichever comes first. Classifying on `exit` reported a
+after `DRAIN_TIMEOUT_MS` (10 s), whichever comes first. That constant used to live in
+`team-orchestrator.ts` and be imported from here; it moved into `session-manager.ts` when
+`team` stopped terminating children and therefore stopped needing to drain them
+(see `team-lifecycle.md`). The channel is now its only user. Classifying on `exit` reported a
 complete, billed run as *"exited 0 without ever emitting a terminal `result` frame"*,
 nondeterministically. The stdio decoders are `StringDecoder`s for the same reason a chunk
 boundary must not be trusted: `Buffer.toString` turns a multi-byte character split across
@@ -144,7 +146,7 @@ opt-in.
 - **stderr follows team's success/failure split, not one rule.** `meaningfulStderr` drops
   `[claude-code:unrecognized_model]` as benign boilerplate — and that line was the ENTIRE
   content of the incident. So it is applied only to a clean `completed`; every other status
-  returns the RAW stderr, redacted. Same distinction `team-orchestrator.ts:447-455` already
+  returns the RAW stderr, redacted. Same distinction `team-orchestrator.ts:532` already
   documents: the filter decides whether to write a SUCCESS-path log, a genuine failure keeps
   the boilerplate because there it is the context. `stderrFiltered` says which rule ran.
 - **`outputBytes` counts the CHILD's prose only.** `recordNote` exists so claudish's own
