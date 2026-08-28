@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "hono";
 import { ComposedHandler } from "../handlers/composed-handler.js";
+import type { ReasoningModeCapabilities } from "../model-loader.js";
 import { type SlimModelEntry, writeAllModelsCache } from "../providers/all-models-cache.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { SessionEventRegistry } from "./index.js";
@@ -61,6 +62,22 @@ function variantEntry(
   };
 }
 
+function routeCapabilityEntry(provider: string, mode: ReasoningModeCapabilities): SlimModelEntry {
+  return {
+    modelId: BASE_MODEL_ID,
+    aliases: [`openai/${BASE_MODEL_ID}`],
+    sources: {},
+    aggregators: [
+      {
+        provider,
+        externalId: BASE_MODEL_ID,
+        confidence: provider === "openai" ? "api_official" : "gateway_official",
+        reasoning: { mode },
+      },
+    ],
+  };
+}
+
 function writeCatalog(entries: SlimModelEntry[] = [variantEntry()]): void {
   writeAllModelsCache({ entries }, cachePath);
 }
@@ -99,10 +116,44 @@ describe("resolveVariantPreset", () => {
 
     expect(resolveVariantPreset(BASE_MODEL_ID, PROVIDER, cachePath)).toEqual({
       params: { reasoning: { mode: "pro" } },
-      variantModelId: VARIANT_MODEL_ID,
       provider: PROVIDER,
       preset: PRESET,
+      sourceLabel: `variant ${VARIANT_MODEL_ID} @ ${PROVIDER}`,
     });
+  });
+
+  test("prefers supported typed route capability over the legacy variant fallback", () => {
+    makeHome();
+    writeCatalog([
+      routeCapabilityEntry("openai", {
+        status: "supported",
+        values: ["standard", "pro"],
+        default: "standard",
+      }),
+      variantEntry("openai"),
+    ]);
+
+    expect(resolveVariantPreset(BASE_MODEL_ID, "openai", cachePath)).toEqual({
+      params: { reasoning: { mode: "pro" } },
+      provider: "openai",
+      preset: PRESET,
+      sourceLabel: "route capability @ openai",
+    });
+  });
+
+  test("does not weaken explicit rejected or unknown route facts with a legacy variant", () => {
+    makeHome();
+    for (const status of ["rejected", "unknown"] as const) {
+      writeCatalog([routeCapabilityEntry("openai", { status }), variantEntry("openai")]);
+      expect(resolveVariantPreset(BASE_MODEL_ID, "openai", cachePath)).toBeUndefined();
+    }
+  });
+
+  test("requires pro to be an exact supported native value", () => {
+    makeHome();
+    writeCatalog([routeCapabilityEntry("openai", { status: "supported", values: ["standard"] })]);
+
+    expect(resolveVariantPreset(BASE_MODEL_ID, "openai", cachePath)).toBeUndefined();
   });
 
   test("returns undefined when the variant belongs to a different provider", () => {
@@ -248,10 +299,10 @@ describe("applyProInjection", () => {
 // ─── ComposedHandler wiring (step 5a-pre) ────────────────────────────────────
 
 /** Fake transport; the stubbed global fetch captures the final wire payload. */
-function makeTransport(): ProviderTransport {
+function makeTransport(provider = PROVIDER): ProviderTransport {
   return {
-    name: PROVIDER,
-    displayName: "OpenRouter",
+    name: provider,
+    displayName: provider,
     streamFormat: "openai-sse",
     getEndpoint: () => "http://localhost/v1/chat/completions",
     getHeaders: async () => ({}),
@@ -295,12 +346,20 @@ function makeClaudePayload(): Record<string, unknown> {
 function makeHandler(options: {
   proOnUltracode?: boolean;
   modelParams?: Record<string, unknown>;
+  provider?: string;
 }): ComposedHandler {
-  return new ComposedHandler(makeTransport(), `${PROVIDER}@${BASE_MODEL_ID}`, BASE_MODEL_ID, 8080, {
-    ...options,
-    sessionEventRegistry: registry,
-    catalogCachePath: cachePath,
-  });
+  const { provider = PROVIDER, ...handlerOptions } = options;
+  return new ComposedHandler(
+    makeTransport(provider),
+    `${provider}@${BASE_MODEL_ID}`,
+    BASE_MODEL_ID,
+    8080,
+    {
+      ...handlerOptions,
+      sessionEventRegistry: registry,
+      catalogCachePath: cachePath,
+    }
+  );
 }
 
 describe("ComposedHandler step 5a-pre wiring", () => {
@@ -310,6 +369,25 @@ describe("ComposedHandler step 5a-pre wiring", () => {
     const wire = stubFetchCapture();
 
     await makeHandler({ proOnUltracode: true }).handle(makeContext(), makeClaudePayload());
+
+    expect(wire.body().reasoning?.mode).toBe("pro");
+  });
+
+  test("typed OpenAI route support puts reasoning.mode=pro on the wire", async () => {
+    makeHome(FIXTURE_EFFORT_ULTRACODE_STDOUT, FIXTURE_ULTRA_EFFORT_ENTER);
+    writeCatalog([
+      routeCapabilityEntry("openai", {
+        status: "supported",
+        values: ["standard", "pro"],
+        default: "standard",
+      }),
+    ]);
+    const wire = stubFetchCapture();
+
+    await makeHandler({ proOnUltracode: true, provider: "openai" }).handle(
+      makeContext(),
+      makeClaudePayload()
+    );
 
     expect(wire.body().reasoning?.mode).toBe("pro");
   });

@@ -10,6 +10,7 @@
  * constraints, not model metadata.
  */
 
+import type { ReasoningModeCapabilities } from "../model-loader.js";
 import {
   type ModelEndpoint,
   type ReasoningCapability,
@@ -24,6 +25,7 @@ export type {
   ReasoningControl,
   RouteVariant,
 } from "../providers/all-models-cache.js";
+export type { ReasoningModeCapabilities } from "../model-loader.js";
 
 export interface ModelEntry {
   /** Model ID as stored in the slim catalog (not lowercased) */
@@ -115,6 +117,23 @@ export function lookupModelRouteVariant(
   cachePath?: string
 ): RouteVariant | undefined {
   return findCacheEntry(modelId, cachePath)?.routeVariant;
+}
+
+/**
+ * `reasoning.mode` support for the exact route selected by `provider`.
+ *
+ * The same base model can support the parameter on one host, reject it on a
+ * second, and remain unverified on a third. Never fall back to model-level
+ * reasoning metadata or another aggregator row.
+ */
+export function lookupRouteReasoningMode(
+  modelId: string,
+  provider: string,
+  cachePath?: string
+): ReasoningModeCapabilities | undefined {
+  return findCacheEntry(modelId, cachePath)?.aggregators?.find(
+    (aggregator) => aggregator.provider === provider
+  )?.reasoning?.mode;
 }
 
 /**
