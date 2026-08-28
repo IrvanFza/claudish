@@ -69,6 +69,20 @@ export type ConfidenceTier =
   | "gateway_official"
   | "api_official";
 
+export type ReasoningModeCapabilities =
+  | {
+      status: "supported";
+      values: string[];
+      default?: string;
+    }
+  | {
+      status: "rejected" | "unknown";
+    };
+
+export interface RouteReasoningCapabilities {
+  mode?: ReasoningModeCapabilities;
+}
+
 /**
  * CLI-friendly aggregator entry — flattened view of `sources` keyed by the
  * canonical CLI provider name. Mirrors `AggregatorEntry` in
@@ -105,6 +119,8 @@ export interface AggregatorEntry {
    * `contextWindow`.
    */
   contextWindow?: number;
+  /** Reasoning behavior verified for this exact serving provider/model route. */
+  reasoning?: RouteReasoningCapabilities;
 }
 
 /**
