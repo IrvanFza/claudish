@@ -19,6 +19,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
+import { searchCatalogModels } from "./adapters/model-catalog.js";
 import { assertAgentAvailable } from "./agent-availability.js";
 import { prehydrateCredentialsForSpawn } from "./auth/credentials/prehydrate.js";
 import { installWireTap, watchNotificationResult, wrapStateChange } from "./channel/diagnostics.js";
@@ -735,7 +736,13 @@ function defineTools(
 
   tools.push({
     name: "search_models",
-    description: "Search all OpenRouter models by name, provider, or capability",
+    description:
+      "Search OpenRouter's listing by name, provider, or capability, and cross-reference " +
+      "claudish's own catalog. SCOPE: the listing covers OpenRouter only, so a name's " +
+      "absence from it is NOT evidence the name is unroutable — subscription wire ids " +
+      "(`k3`) and catalog aliases live outside that namespace and are reported separately " +
+      "here. This tool cannot tell you which provider will serve a model or whether the " +
+      "hop is subscription or metered; call `preflight` for that.",
     inputSchema: {
       type: "object",
       properties: {
@@ -780,12 +787,40 @@ function defineTools(
           return compareByReleaseDateDesc(orderingKey(a.model), orderingKey(b.model));
         })
         .slice(0, maxResults);
+      // The listing above is ONE namespace. Subscription wire ids (`k3`) and
+      // catalog identities live outside it, so a miss here is not evidence a
+      // name is unroutable — and that inference is exactly what sends callers
+      // to a metered route. Always report what the catalog knows alongside it.
+      const catalogMatches = searchCatalogModels(query, Math.max(maxResults, 5));
+      const renderCatalogSection = (): string => {
+        if (catalogMatches.length === 0) return "";
+        let s = "\n## Catalog names (what claudish routes)\n\n";
+        s += "| Bare name | Matched alias | Subscription plan |\n";
+        s += "|-----------|---------------|-------------------|\n";
+        for (const m of catalogMatches) {
+          const plans = m.subscriptionPlans.length > 0 ? m.subscriptionPlans.join(", ") : "-";
+          s += `| ${m.modelId} | ${m.matchedAlias ?? "-"} | ${plans} |\n`;
+        }
+        s +=
+          "\nPass the **bare name**. Routing puts a subscription ahead of the metered API and " +
+          "rewrites the model to that plan's wire id for you. An aggregator-qualified id " +
+          "(`moonshotai/...`, `accounts/fireworks/...`) pins that aggregator and bills per token.\n";
+        return s;
+      };
+
       if (results.length === 0) {
-        return {
-          content: [{ type: "text" as const, text: `No models found matching "${query}"` }],
-        };
+        const catalog = renderCatalogSection();
+        const text = catalog
+          ? `No OpenRouter listing matches "${query}", but claudish's catalog knows these:\n${catalog}`
+          : `No models found matching "${query}".\n\n` +
+            "This searched OpenRouter's listing only. Subscription wire ids and catalog " +
+            "aliases are not in it, so this is not proof the name is unroutable. Call " +
+            "`list_models` for the recommended set, or `preflight` to test a specific name " +
+            "against real routing.";
+        return { content: [{ type: "text" as const, text }] };
       }
       let output = `# Search Results for "${query}"\n\n`;
+      output += "## OpenRouter listing\n\n";
       output += "| Model | Provider | Pricing | Context |\n";
       output += "|-------|----------|---------|----------|\n";
       for (const { model } of results) {
@@ -800,7 +835,17 @@ function defineTools(
           : "N/A";
         output += `| ${model.id} | ${provider} | ${pricing} | ${context} |\n`;
       }
-      output += `\nUse with: run_prompt(model="${results[0].model.id}", prompt="your prompt")`;
+      output += renderCatalogSection();
+      // Suggest the BARE catalog name, never the top aggregator id. The old
+      // footer recommended whatever the listing ranked first — for "kimi" that
+      // was `accounts/fireworks/routers/kimi-k3-fast`, a metered address, so
+      // the tool's own advice routed users off their subscription.
+      const suggested = catalogMatches[0]?.modelId ?? results[0].model.id;
+      output += `\nUse with: run_prompt(model="${suggested}", prompt="your prompt")`;
+      output +=
+        `\n\nTo learn which provider would actually serve \`${suggested}\`, and whether that ` +
+        "hop is covered by a subscription or billed per token, call " +
+        `\`preflight({models: ["${suggested}"]})\`. This listing cannot answer that.`;
       return { content: [{ type: "text" as const, text: output }] };
     },
   });

@@ -18,6 +18,7 @@ import {
   type SlimModelEntry,
   readAllModelsCache,
 } from "../providers/all-models-cache.js";
+import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 
 export type {
   ModelEndpoint,
@@ -367,3 +368,117 @@ export const DEFAULT_CONTEXT_WINDOW = 0;
 
 /** Default vision support when no catalog match */
 export const DEFAULT_SUPPORTS_VISION = true;
+
+/**
+ * One catalog hit for a free-text model search.
+ *
+ * `modelId` is the BARE name routing accepts. `aliases` is the load-bearing
+ * field: subscription endpoints speak their own wire ids (`k3` for `kimi-k3`,
+ * `kimi-for-coding` for `kimi-k2.7-code`), and those ids exist in NO
+ * aggregator's namespace. A search that consults only an aggregator listing
+ * therefore reports them as nonexistent, which reads as "unroutable" and sends
+ * the caller to a metered route instead.
+ */
+export interface CatalogSearchMatch {
+  /** Bare catalog identity — the name to hand to routing. */
+  modelId: string;
+  aliases: string[];
+  /** Subscription plans that include this model, verbatim from the catalog. */
+  subscriptionPlans: string[];
+  /** Set when the query matched an alias rather than the model id itself. */
+  matchedAlias?: string;
+}
+
+/**
+ * How one catalog entry matches a query, or undefined when it does not.
+ *
+ * Split out of {@link searchCatalogModels} so the matching RULE reads on its
+ * own: an id hit and an alias hit are different answers, and only the alias
+ * branch can resolve a subscription wire id to its catalog identity.
+ */
+function classifyCatalogHit(
+  entry: SlimModelEntry,
+  q: string
+): { bucket: "exact" | "id" | "alias"; matchedAlias?: string } | undefined {
+  const id = entry.modelId.toLowerCase();
+  if (id === q || stripVendorPrefix(id) === q) return { bucket: "exact" };
+
+  const aliases = entry.aliases ?? [];
+  const exactAlias = aliases.find(
+    (a) => a.toLowerCase() === q || stripVendorPrefix(a.toLowerCase()) === q
+  );
+  if (exactAlias) return { bucket: "exact", matchedAlias: exactAlias };
+
+  if (id.includes(q)) return { bucket: "id" };
+
+  const partialAlias = aliases.find((a) => a.toLowerCase().includes(q));
+  return partialAlias ? { bucket: "alias", matchedAlias: partialAlias } : undefined;
+}
+
+/**
+ * Search the local catalog cache by model id or alias.
+ *
+ * Deliberately separate from the aggregator-listing search in the MCP server:
+ * that one answers "what does OpenRouter sell", this one answers "what name
+ * does claudish know". Only the second can resolve a subscription wire id.
+ *
+ * Ranking is exact-match first (an exact alias hit is the whole point — it is
+ * how `k3` resolves to `kimi-k3`), then substring hits on the id, then
+ * substring hits on an alias.
+ *
+ * Returns [] for a cold or missing cache. Callers MUST treat that as "no
+ * information" rather than "no such model".
+ */
+export function searchCatalogModels(
+  query: string,
+  limit = 10,
+  cachePath?: string
+): CatalogSearchMatch[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  const cache = readAllModelsCache(cachePath);
+  if (!cache || cache.entries.length === 0) return [];
+
+  type Ranked = { match: CatalogSearchMatch; entry: SlimModelEntry };
+  const exact: Ranked[] = [];
+  const idPartial: Ranked[] = [];
+  const aliasPartial: Ranked[] = [];
+
+  for (const entry of cache.entries) {
+    const hit = classifyCatalogHit(entry, q);
+    if (!hit) continue;
+    const ranked: Ranked = {
+      entry,
+      match: {
+        modelId: entry.modelId,
+        aliases: entry.aliases ?? [],
+        subscriptionPlans: entry.subscriptionPlans ?? [],
+        ...(hit.matchedAlias ? { matchedAlias: hit.matchedAlias } : {}),
+      },
+    };
+    if (hit.bucket === "exact") exact.push(ranked);
+    else if (hit.bucket === "id") idPartial.push(ranked);
+    else aliasPartial.push(ranked);
+  }
+
+  // Partial hits arrive in cache order, which buries the canonical model under
+  // every superseded sibling sharing its family name: "kimi" returned five K2
+  // variants and cut off K3 entirely.
+  //
+  // Rank by SPECIFICITY first, freshness second. Freshness alone is wrong here
+  // because release dates are sparse — `kimi-k3` carries none while its own
+  // derivative `kimi-k3-256k` is dated 2026-07-16, and compareByReleaseDateDesc
+  // reads a missing date as the epoch, so the parent sorts below its variant.
+  // The shortest id containing the query is the one with the least extra
+  // material bolted on, which is what someone typing a family name means.
+  const byRelevance = (a: Ranked, b: Ranked) => {
+    const lengthDelta = a.entry.modelId.length - b.entry.modelId.length;
+    if (lengthDelta !== 0) return lengthDelta;
+    return compareByReleaseDateDesc(a.entry, b.entry);
+  };
+  idPartial.sort(byRelevance);
+  aliasPartial.sort(byRelevance);
+
+  return [...exact, ...idPartial, ...aliasPartial].slice(0, limit).map((r) => r.match);
+}
