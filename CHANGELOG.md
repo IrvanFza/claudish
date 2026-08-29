@@ -2,6 +2,24 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [8.1.0] - 2026-08-29
+
+### Bug Fixes
+
+- consume route reasoning mode capability([`dba92f7`](https://github.com/MadAppGang/claudish/commit/dba92f7f47f88515865ad8454c0f2500f1191b5e))
+
+### Documentation
+
+- update CHANGELOG.md for v8.0.0([`5ac86aa`](https://github.com/MadAppGang/claudish/commit/5ac86aae783011d3b13d62871c23c1d302cdd4ed))
+
+### New Features
+
+- search_models answers with catalog names, not a PAYG address *(mcp)* ([`7239941`](https://github.com/MadAppGang/claudish/commit/72399411a0942d8d10bcf92a025d5931271d1ff7))
+
+### Other Changes
+
+- release v8.1.0([`8673114`](https://github.com/MadAppGang/claudish/commit/867311458803890ec9639bb2e7424825f6b89502))
+
 ## [8.0.0] - 2026-08-27
 
 ### Documentation
