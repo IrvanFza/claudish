@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.2] - 2026-09-02
+
+### Bug Fixes
+
+- stop reporting a quit as a failed session (#227) *(cli)* ([`98cbb59`](https://github.com/MadAppGang/claudish/commit/98cbb59eeb3e5acdafcf32d860925cd7e6d80a3f))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.1([`ada02da`](https://github.com/MadAppGang/claudish/commit/ada02dae88fcb545175f894cde5c579f415f8c4b))
+
+### Other Changes
+
+- release v9.0.2([`61e71c2`](https://github.com/MadAppGang/claudish/commit/61e71c221953781d92eb01e12673a48840e2a1ad))
+
 ## [9.0.1] - 2026-09-02
 
 ### Bug Fixes
