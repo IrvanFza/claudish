@@ -44,6 +44,19 @@ export interface RecommendedModelEntry {
     plan: string;
     command: string;
   };
+  /**
+   * Every plan that serves this model, in the order the backend sent them.
+   * `subscription` above MIRRORS element 0 — measured across all 18 subscription
+   * rows of the live payload: mirrors=18, diverges=0 (research.md R1). It is not
+   * a curated primary, so the plural is the complete answer and the singular is
+   * the compatibility fallback, never an addition.
+   *
+   * `prefix` is OPTIONAL and genuinely absent: the four native Claude rows carry
+   * `{plan, command}` with no prefix, because their command is the bare model id
+   * (research.md R2). The singular above still declares it required; that type
+   * is already lying and is left alone here — see risk R-6.
+   */
+  subscriptions?: Array<{ prefix?: string; plan: string; command: string }>;
 }
 
 /**
@@ -374,11 +387,36 @@ export function collectRoutingPrefixes(
     out.push(native);
     seen.add(native);
   }
-  for (const sub of group.subscriptions) {
-    const p = sub.subscription?.prefix;
-    if (!p || seen.has(p)) continue;
-    seen.add(p);
-    out.push(p);
+  // `group.subscriptions` is ROWS (RecommendedModelEntry[], :282).
+  // `row.subscriptions` is ROUTES. Same word, different things — renamed here
+  // because reading one as the other reintroduces exactly the defect being fixed.
+  for (const subscriptionRow of group.subscriptions) {
+    // Plural first. An EMPTY plural is treated as an absent one: an empty array
+    // and a missing field are indistinguishable as intent, and falling back can
+    // only re-add a route the backend itself declared — it can never invent one.
+    // NOT `??`: that falls through only on null/undefined, so an empty plural
+    // would silently swallow a present singular.
+    const routes =
+      subscriptionRow.subscriptions && subscriptionRow.subscriptions.length > 0
+        ? subscriptionRow.subscriptions
+        : subscriptionRow.subscription
+          ? [subscriptionRow.subscription]
+          : [];
+    for (const route of routes) {
+      // `route?.` and not `route.`: these are WIRE elements. TypeScript types the
+      // array as non-nullable objects (:59) so it will not warn, but a JSON `null`
+      // inside `subscriptions[]` would throw a TypeError out of this function and
+      // take down the entire list_models render (mcp-server.ts) and the CLI listing
+      // (cli.ts) instead of dropping one route. The code this replaced read
+      // `sub.subscription?.prefix`; that guard is not optional here. This whole
+      // change exists because the wire omits fields we assumed were present.
+      const p = route?.prefix;
+      // LOAD-BEARING. Four native Claude rows ship a subscription entry with no
+      // `prefix` at all; without this they emit `undefined@claude-opus-5`.
+      if (!p || seen.has(p)) continue;
+      seen.add(p);
+      out.push(p);
+    }
   }
   return out;
 }
