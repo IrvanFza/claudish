@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.3] - 2026-09-03
+
+### Bug Fixes
+
+- stop the catalog deleting providers from every chain (#230) *(routing)* ([`e75ff5f`](https://github.com/MadAppGang/claudish/commit/e75ff5f2eb2b04e3f417df01b44e85810a915088))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.2([`218cb8f`](https://github.com/MadAppGang/claudish/commit/218cb8f5ff6ecc1643c22e592cf279ca86c88711))
+
 ## [9.0.2] - 2026-09-02
 
 ### Bug Fixes
