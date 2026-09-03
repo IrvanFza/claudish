@@ -65,6 +65,27 @@ export function normalizeType(type: any): string {
 }
 
 /**
+ * Collapse a JSON Schema tuple into the single element schema Gemini allows.
+ *
+ * Gemini applies one `items` schema to EVERY element, so a per-position
+ * constraint cannot survive the collapse: element 0's `enum` would reject
+ * element 1. Only a type shared by all positions carries over; mixed positions
+ * fall back to string, which any element can be rendered as.
+ */
+function collapseTupleForGemini(entries: any[]): any {
+  const positions = entries.filter((entry) => entry && typeof entry === "object");
+  const types = new Set(positions.map((entry) => normalizeType(entry.type)));
+
+  if (types.size !== 1) {
+    return { type: "string" };
+  }
+
+  const collapsed = sanitizeSchemaForGemini(positions[0]);
+  delete collapsed.enum;
+  return collapsed;
+}
+
+/**
  * Recursively sanitize schema for Gemini API compatibility
  *
  * Gemini's API is strict about schema format:
@@ -119,13 +140,27 @@ export function sanitizeSchemaForGemini(schema: any): any {
   }
 
   // Handle items (for arrays)
-  if (schema.items) {
-    if (typeof schema.items === "object" && !Array.isArray(schema.items)) {
-      result.items = sanitizeSchemaForGemini(schema.items);
-    } else if (Array.isArray(schema.items)) {
-      // Tuple validation - take first item's schema
-      result.items = sanitizeSchemaForGemini(schema.items[0]);
-    }
+  // JSON Schema spells a tuple two ways: draft-07 puts an array in `items`,
+  // 2020-12 uses `prefixItems`. Gemini understands neither, so both collapse.
+  const tupleEntries = Array.isArray(schema.prefixItems)
+    ? schema.prefixItems
+    : Array.isArray(schema.items)
+      ? schema.items
+      : null;
+
+  if (tupleEntries) {
+    result.items = collapseTupleForGemini(tupleEntries);
+  } else if (schema.items && typeof schema.items === "object") {
+    result.items = sanitizeSchemaForGemini(schema.items);
+  }
+
+  // Gemini's proto requires `items` on EVERY array. A schema that describes its
+  // elements only through prefixItems, or does not describe them at all, reaches
+  // here without one and the whole request fails with
+  //   ...parameters.properties[query].properties[where].items.items: missing field
+  // naming a field the caller never wrote. Guarantee one at every depth.
+  if (result.type === "array" && !result.items) {
+    result.items = { type: "string" };
   }
 
   // Handle nullable - Gemini doesn't support nullable directly

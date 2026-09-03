@@ -46,6 +46,53 @@ Located in `handlers/shared/stream-parsers/`:
 - `ollama-jsonl.ts` — Ollama JSONL → Claude SSE
 - `openai-responses-sse.ts` — OpenAI Responses API → Claude SSE (Codex)
 
+## Gemini tool schemas are protobuf, not JSON Schema (`handlers/shared/gemini-schema.ts`)
+
+`convertToolsToGemini` serves BOTH the Gemini direct-API handler and the Antigravity
+OAuth handler, through the single call site `adapters/gemini-api-format.ts`. A bug here
+takes out both providers at once, on the first request that carries tools.
+
+Gemini validates the request against a protobuf message, so its errors name proto
+fields, not JSON Schema keywords. Every node with `type: "array"` MUST carry `items`;
+an absent one is a missing field, not an omitted optional. The failure looks like this,
+and it names a path the caller never wrote:
+
+```
+400 * GenerateContentRequest.tools[0].function_declarations[1]
+  .parameters.properties[query].properties[where].items.items: missing field.
+```
+
+`sanitizeSchemaForGemini` copies an ALLOWLIST of keywords and silently drops the rest.
+That is what makes this class of bug recur: a tool ships a keyword the allowlist has
+never heard of, the element description vanishes, and a bare `{ type: "array" }` goes
+out. Two shapes did it before v9.0.3:
+
+- a tuple written with `prefixItems` (JSON Schema 2020-12, e.g. the `Artifact` tool's
+  `query.where`), which the allowlist did not carry;
+- a bare `{ type: "array" }` that never described its elements at all.
+
+The `Artifact` case was nested, which is why it survived review: the OUTER `items`
+existed, so the sanitizer recursed happily, and only the inner node came out bare.
+
+Two defences, and the second is the load-bearing one:
+
+1. `collapseTupleForGemini` handles both tuple spellings — 2020-12 `prefixItems` and
+   draft-07 `items: [...]`.
+2. A closing invariant: an array that still has no `items` gets `{ type: "string" }`.
+   This holds at every depth and kills the class, not the two known shapes. Keep it
+   even when a specific keyword gets handled — the next unknown keyword is the point.
+
+**A tuple cannot survive the trip.** Gemini has no tuple type, and applies ONE `items`
+schema to EVERY element. So a per-position constraint must be dropped, not carried:
+keeping element 0's `enum` would make Gemini reject element 1 for failing rules that
+were never element 1's. The collapse keeps a type only when all positions agree, and
+drops `enum`. Mixed tuples degrade to `string`, so `["cost", "gt", 5]` must be sent as
+`["cost", "gt", "5"]`. That is lossy, and it is the accepted price of not 400-ing.
+
+Guarded by `handlers/shared/gemini-schema.test.ts`, whose walker asserts that NO array
+anywhere in a converted tool lacks `items`. Mutation-proved against the pre-fix code:
+5 of 7 red, including the exact-path assertion.
+
 ## Text-based tool recovery is a fallback, and it is load-bearing on the busiest wire
 
 `openai-sse.ts` calls `extractToolCallsFromText` (`handlers/shared/tool-call-recovery.ts`)

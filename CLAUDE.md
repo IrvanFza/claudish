@@ -10,7 +10,7 @@ lives in `ROADMAP.md`.
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
 - `routing.md` — `provider@model` syntax, every provider prefix, `DEFAULT_ROUTING_RULES`, `defaultProvider`, the derived picker roster, `SUBSCRIPTION_PROVIDERS`, local models
-- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap
+- `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
