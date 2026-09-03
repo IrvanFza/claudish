@@ -19,7 +19,7 @@
   "outputStyle": "composed",
   "installedPluginVersions": {
     "skill-creator@claude-plugins-official": "0.0.0",
-    "designer@magus": "0.5.0",
+    "designer@magus": "0.6.1",
     "gtd@magus": "2.0.1",
     "browser-use@magus": "1.4.0",
     "kanban@magus": "1.6.2",
@@ -28,8 +28,8 @@
     "code-analysis@magus": "5.4.3",
     "multimodel@magus": "3.10.0",
     "statusline@magus": "3.0.0",
-    "dev@magus": "4.6.1",
+    "dev@magus": "6.0.2",
     "terminal@magus": "4.2.0",
-    "madbench@magus": "0.2.4"
+    "madbench@magus": "0.3.0"
   }
 }
