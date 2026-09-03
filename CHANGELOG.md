@@ -2,6 +2,16 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.4] - 2026-09-03
+
+### Bug Fixes
+
+- stop declaring a subscription not-served from a partial plan view (#231) *(catalog)* ([`9c6947f`](https://github.com/MadAppGang/claudish/commit/9c6947f7c04798154c40aa96401fd04aae083a72))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.3([`b2f31b6`](https://github.com/MadAppGang/claudish/commit/b2f31b6047259100849cb24e6e2e2ceec8c1397f))
+
 ## [9.0.3] - 2026-09-03
 
 ### Bug Fixes
