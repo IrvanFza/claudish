@@ -76,22 +76,77 @@ existed, so the sanitizer recursed happily, and only the inner node came out bar
 
 Two defences, and the second is the load-bearing one:
 
-1. `collapseTupleForGemini` handles both tuple spellings — 2020-12 `prefixItems` and
+1. `tupleElementSchema` handles both tuple spellings — 2020-12 `prefixItems` and
    draft-07 `items: [...]`.
 2. A closing invariant: an array that still has no `items` gets `{ type: "string" }`.
    This holds at every depth and kills the class, not the two known shapes. Keep it
    even when a specific keyword gets handled — the next unknown keyword is the point.
 
-**A tuple cannot survive the trip.** Gemini has no tuple type, and applies ONE `items`
-schema to EVERY element. So a per-position constraint must be dropped, not carried:
-keeping element 0's `enum` would make Gemini reject element 1 for failing rules that
-were never element 1's. The collapse keeps a type only when all positions agree, and
-drops `enum`. Mixed tuples degrade to `string`, so `["cost", "gt", 5]` must be sent as
-`["cost", "gt", "5"]`. That is lossy, and it is the accepted price of not 400-ing.
+## The stale comment cost more than the 400
 
-Guarded by `handlers/shared/gemini-schema.test.ts`, whose walker asserts that NO array
-anywhere in a converted tool lacks `items`. Mutation-proved against the pre-fix code:
-5 of 7 red, including the exact-path assertion.
+The same function stripped `anyOf`, `oneOf`, `minItems`, `maxItems`, `format` and
+`nullable`, under a comment asserting Gemini supports none of them. That comment
+predates v7.36.0, which repointed `gemini-*` from the retired Code Assist backend
+to Antigravity. Nobody re-measured it.
+
+Measured 2026-09-03 against the live backend — full table in
+`ai-docs/reports/gemini-tool-schema-support-20260903.md`. **`anyOf`, `oneOf`,
+`minItems`, `maxItems`, `enum` and `nullable` are all accepted.** Only `allOf` and
+`format` are still stripped, the latter because its per-type allowlist is narrow
+enough that a tool shipping `format: "uri"` is a live 400 risk.
+
+Stripping was never free. `normalizeType(undefined)` answers `"string"`, so a
+property declared as a union came out `{ type: "string" }` — the model was told to
+quote its numbers. A tuple is therefore NOT collapsed to one type; it becomes the
+UNION of its position schemas:
+
+```
+where: [field, operator, value]        # value is `{}` — any type
+
+  ->  { type: "array", maxItems: 10,
+        items: { type: "array",
+                 items: { anyOf: [ {type:"string"},
+                                   {type:"string", enum:["eq","ne", ...]},
+                                   {type:"number"}, {type:"boolean"} ] },
+                 description: "Ordered 3-element array: [string, string (one of: \"eq\", ...), any]." } }
+```
+
+A union is WIDER than a tuple and never rejects a valid call. The old collapse was
+not wider, it was WRONG: it rejected the numbers and booleans the other positions
+accept. `{}` — JSON Schema for "any value" — is the case that matters, because
+`normalizeType` silently reads it as string.
+
+**Positional binding is the one thing that cannot survive.** Gemini validates every
+element against ONE `items` schema, so "position 1 must be one of these operators"
+is unsayable. Measured live: with the enum as a bare union branch, the model
+answered `">"` and `"=="` instead of `gt` and `eq` — valid, because a free string is
+also a branch. `describeTuple` therefore writes the arity, the order AND the
+per-position enum values into the `description`, which is free-form and cannot
+wrongly reject anything. With that in place the same prompt produced `gt` and `eq`.
+
+## Validation is a live A/B, not a unit test
+
+A unit test here asserts on a payload claudish itself built, so it cannot see this
+bug class at all. The evidence is six real interactive `ag@gemini-3.6-flash-high`
+sessions — three per build, fresh session each, identical prompt, an MCP tool whose
+parameter is a `prefixItems` tuple. Full method and raw records in
+`ai-docs/reports/gemini-tool-schema-support-20260903.md`.
+
+| Build | Operator produced | Value type |
+|---|---|---|
+| pre-fix | no tool call — `400 ... function_declarations[1] ... properties[where].items.items: missing field` | — |
+| collapse to one type | `>`/`==`, `>`/`==`, `>`/`=` — 0 of 3 from the schema | `number` |
+| union + description | `gt`/`eq` — 3 of 3 from the schema | `number` |
+
+Declaration `[1]` is Claude Code's own `Artifact` tool, the same index users hit, so
+the failure is not synthetic and not confined to MCP tools.
+
+**The declared element type is not enforced.** `500` arrived as a JSON `number` on
+both accepted builds, including the one declaring `string`. Do not claim the union
+"keeps the number a number" — it was never at risk. What the narrow declaration
+costs is the vocabulary the model reads: given only a union, the model invented a
+symbolic operator in every run, and inconsistently. The description is what moved
+that to 3/3.
 
 ## Text-based tool recovery is a fallback, and it is load-bearing on the busiest wire
 

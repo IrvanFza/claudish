@@ -65,24 +65,114 @@ export function normalizeType(type: any): string {
 }
 
 /**
- * Collapse a JSON Schema tuple into the single element schema Gemini allows.
+ * The scalar branches that stand in for a position constraining nothing.
  *
- * Gemini applies one `items` schema to EVERY element, so a per-position
- * constraint cannot survive the collapse: element 0's `enum` would reject
- * element 1. Only a type shared by all positions carries over; mixed positions
- * fall back to string, which any element can be rendered as.
+ * JSON Schema writes "any value here" as `{}`. Gemini has no any-type, and
+ * `normalizeType(undefined)` answers "string", so an unconstrained position was
+ * DECLARED a string. Naming the scalars instead makes the declaration true.
+ *
+ * Measured, so the claim stays honest: Gemini does not enforce element types, and
+ * a live session on the string-declaring build still returned `500` as a JSON
+ * number. The cost of the narrow declaration is not rejection — it is that the
+ * declaration is the thing the model reads.
  */
-function collapseTupleForGemini(entries: any[]): any {
-  const positions = entries.filter((entry) => entry && typeof entry === "object");
-  const types = new Set(positions.map((entry) => normalizeType(entry.type)));
+const ANY_VALUE_BRANCHES: any[] = [{ type: "string" }, { type: "number" }, { type: "boolean" }];
 
-  if (types.size !== 1) {
-    return { type: "string" };
+/** Structural key with sorted keys, so identical union branches collapse to one. */
+function canonicalKey(value: any): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalKey).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${key}:${canonicalKey(value[key])}`)
+    .join(",")}}`;
+}
+
+function dedupeBranches(branches: any[]): any[] {
+  const seen = new Set<string>();
+  const unique: any[] = [];
+  for (const branch of branches) {
+    const key = canonicalKey(branch);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(branch);
   }
+  return unique;
+}
 
-  const collapsed = sanitizeSchemaForGemini(positions[0]);
-  delete collapsed.enum;
-  return collapsed;
+/** A position that constrains nothing: `{}`, or description-only. */
+function describesNothing(entry: any): boolean {
+  return (
+    entry.type === undefined &&
+    entry.enum === undefined &&
+    entry.properties === undefined &&
+    entry.items === undefined &&
+    entry.prefixItems === undefined &&
+    entry.anyOf === undefined &&
+    entry.oneOf === undefined
+  );
+}
+
+/** Sanitize union branches, drop the unusable ones, and collapse duplicates. */
+function unionBranches(entries: any[]): any[] {
+  const branches: any[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (describesNothing(entry)) branches.push(...ANY_VALUE_BRANCHES);
+    else branches.push(sanitizeSchemaForGemini(entry));
+  }
+  return dedupeBranches(branches);
+}
+
+/**
+ * The element schema for a tuple.
+ *
+ * Gemini validates EVERY element against one `items` schema, so a tuple's
+ * positional binding is inexpressible. The closest TRUE statement is the union
+ * of what the positions allow: wider than the tuple, and it never rejects a
+ * valid call. Collapsing to a single type instead — which claudish did until
+ * this was measured — is not wider, it is FALSE: it tells the model the other
+ * positions are strings when they are not.
+ *
+ * `anyOf` is accepted by the live backend; measured 2026-09-03, see
+ * `ai-docs/reports/gemini-tool-schema-support-20260903.md`. No sibling `type` is
+ * emitted next to it: the backend takes both, and a narrower sibling type risks
+ * being the one it enforces.
+ */
+function tupleElementSchema(entries: any[]): any {
+  const branches = unionBranches(entries);
+  if (branches.length === 0) return { type: "string" };
+  if (branches.length === 1) return branches[0];
+  return { anyOf: branches };
+}
+
+/**
+ * Say the arity, order and per-position values in prose, since the schema cannot.
+ *
+ * This is the half of a tuple Gemini cannot hold. A union permits every
+ * position's schema at every position, so an operator enum stops being a
+ * CONSTRAINT — measured live 2026-09-03, the model answered a `[field, op,
+ * value]` tuple with `">"` and `"=="` while the enum said `gt` and `eq`, and the
+ * request was valid because a free string is one of the branches.
+ *
+ * The description is the only place the positional facts can live. It is
+ * free-form, so it guides the model without being able to reject anything.
+ */
+function describeTuple(entries: any[]): string {
+  const shape = entries
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || describesNothing(entry)) return "any";
+
+      const type = normalizeType(entry.type);
+      const values = Array.isArray(entry.enum)
+        ? entry.enum.filter((v: any) => typeof v === "string" || typeof v === "number")
+        : [];
+
+      if (values.length === 0) return type;
+      return `${type} (one of: ${values.map((v: any) => JSON.stringify(v)).join(", ")})`;
+    })
+    .join(", ");
+  return `Ordered ${entries.length}-element array: [${shape}].`;
 }
 
 /**
@@ -90,11 +180,19 @@ function collapseTupleForGemini(entries: any[]): any {
  *
  * Gemini's API is strict about schema format:
  * - type must be a single string, not an array
+ * - Every `type: "array"` MUST carry `items`; an absent one is a missing proto
+ *   field, not an omitted optional
  * - No additionalProperties, $schema, $ref, $id, $defs, definitions
- * - No anyOf, oneOf, allOf (complex unions not supported)
- * - No format field (uri, date-time, etc.)
+ * - No allOf (an intersection has no Gemini equivalent)
+ * - No format (the per-type allowlist is narrow; `format: "uri"` is a 400 risk)
  * - No default, const, examples
  * - Properties inside objects must be sanitized recursively
+ *
+ * `anyOf`, `oneOf`, `minItems`, `maxItems`, `enum` and `nullable` ARE supported,
+ * measured against the live backend 2026-09-03
+ * (`ai-docs/reports/gemini-tool-schema-support-20260903.md`). They were stripped
+ * for years under a stale comment, which silently retyped every union property to
+ * a bare string. Re-measure before removing anything from this list.
  */
 export function sanitizeSchemaForGemini(schema: any): any {
   if (!schema || typeof schema !== "object") {
@@ -104,6 +202,27 @@ export function sanitizeSchemaForGemini(schema: any): any {
   // Handle arrays (shouldn't be at top level, but handle anyway)
   if (Array.isArray(schema)) {
     return schema.map((item) => sanitizeSchemaForGemini(item));
+  }
+
+  // A union is emitted as `anyOf` ALONE, with no sibling `type`, so this returns
+  // before the type/properties/items handling below. Stripping it (the old
+  // behaviour) left `normalizeType(undefined)` to answer "string", retyping a
+  // union property to a bare string and telling the model to quote its numbers.
+  const unionSource = Array.isArray(schema.anyOf)
+    ? schema.anyOf
+    : Array.isArray(schema.oneOf)
+      ? schema.oneOf
+      : null;
+
+  if (unionSource) {
+    const branches = unionBranches(unionSource);
+    if (branches.length > 0) {
+      const union: any = branches.length === 1 ? branches[0] : { anyOf: branches };
+      if (typeof schema.description === "string" && !union.description) {
+        union.description = schema.description;
+      }
+      return union;
+    }
   }
 
   const result: any = {};
@@ -139,9 +258,16 @@ export function sanitizeSchemaForGemini(schema: any): any {
     }
   }
 
+  // Length constraints survive: measured accepted 2026-09-03. Dropping them let
+  // the model emit arrays the tool would reject after the round-trip.
+  if (typeof schema.minItems === "number") result.minItems = schema.minItems;
+  if (typeof schema.maxItems === "number") result.maxItems = schema.maxItems;
+
   // Handle items (for arrays)
   // JSON Schema spells a tuple two ways: draft-07 puts an array in `items`,
-  // 2020-12 uses `prefixItems`. Gemini understands neither, so both collapse.
+  // 2020-12 uses `prefixItems`. Gemini has neither, and does not reject them
+  // either — it IGNORES the keyword and then reports `items` as missing, which
+  // is why the 400 names a field the caller never wrote.
   const tupleEntries = Array.isArray(schema.prefixItems)
     ? schema.prefixItems
     : Array.isArray(schema.items)
@@ -149,7 +275,17 @@ export function sanitizeSchemaForGemini(schema: any): any {
       : null;
 
   if (tupleEntries) {
-    result.items = collapseTupleForGemini(tupleEntries);
+    result.items = tupleElementSchema(tupleEntries);
+
+    const note = describeTuple(tupleEntries);
+    result.description = result.description ? `${result.description} ${note}` : note;
+
+    // `items: false` is the 2020-12 spelling of "nothing beyond the prefix" —
+    // the only case where the arity is a stated constraint rather than a
+    // default. Inventing one otherwise would reject arrays the tool accepts.
+    if (schema.items === false && result.maxItems === undefined) {
+      result.maxItems = tupleEntries.length;
+    }
   } else if (schema.items && typeof schema.items === "object") {
     result.items = sanitizeSchemaForGemini(schema.items);
   }
@@ -169,10 +305,13 @@ export function sanitizeSchemaForGemini(schema: any): any {
   // IMPORTANT: Do NOT copy these unsupported fields:
   // - additionalProperties (causes "Proto field is not repeating" error)
   // - $schema, $ref, $id, $defs, definitions
-  // - anyOf, oneOf, allOf (complex unions)
-  // - format (uri, date-time, etc.)
+  // - allOf (an intersection has no Gemini equivalent)
+  // - format (accepted for `int32`, but the per-type allowlist is narrow and a
+  //   tool shipping `format: "uri"` would 400 — not worth the round-trip)
   // - default, const, examples
-  // - minimum, maximum, minLength, maxLength, pattern (validation constraints)
+  // - minimum, maximum, minLength, maxLength, pattern
+  //
+  // anyOf/oneOf and minItems/maxItems ARE handled above — they are supported.
 
   return result;
 }

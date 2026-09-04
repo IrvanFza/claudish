@@ -1,6 +1,6 @@
 /**
- * Pins Gemini array-schema conversion, including nested tuple forms, because
- * Gemini rejects every array node whose request schema omits `items`.
+ * Pins Gemini array-schema conversion, including tuple unions and nested tuple
+ * forms, because Gemini rejects every array node whose request schema omits `items`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -83,23 +83,62 @@ describe("Gemini array schema conversion", () => {
     ).toEqual({ type: "number" });
   });
 
-  test("falls back to string for a mixed prefixItems tuple", () => {
+  test("converts a mixed prefixItems tuple to an ordered union", () => {
     expect(
       sanitizeSchemaForGemini({
         type: "array",
         prefixItems: [{ type: "number" }, { type: "string" }],
       }).items
-    ).toEqual({ type: "string" });
+    ).toEqual({ anyOf: [{ type: "number" }, { type: "string" }] });
   });
 
-  test("does not preserve a position-specific enum while collapsing a tuple", () => {
+  test("preserves a position-specific enum as a union branch", () => {
     const items = sanitizeSchemaForGemini({
       type: "array",
       prefixItems: [{ type: "string", enum: ["a", "b"] }, { type: "string" }],
     }).items;
 
-    expect(items).toEqual({ type: "string" });
-    expect(items).not.toHaveProperty("enum");
+    expect(items.anyOf[0]).toEqual({ type: "string", enum: ["a", "b"] });
+  });
+
+  test("keeps unconstrained Artifact values numeric and describes tuple positions", () => {
+    const where = sanitizeSchemaForGemini(ARTIFACT_QUERY_SCHEMA).properties.where;
+
+    expect(where.items.items.anyOf).toContainEqual({ type: "number" });
+    expect(where.items.description).toMatch(/Ordered 3-element array/);
+    expect(where.items.description).toContain('"eq"');
+  });
+
+  test("preserves array length constraints", () => {
+    const where = sanitizeSchemaForGemini(ARTIFACT_QUERY_SCHEMA).properties.where;
+    const bounded = sanitizeSchemaForGemini({
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+      maxItems: 2,
+    });
+
+    expect(where.maxItems).toBe(10);
+    expect(bounded.minItems).toBe(1);
+    expect(bounded.maxItems).toBe(2);
+  });
+
+  test("passes anyOf through without adding a sibling type", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      anyOf: [{ type: "number" }, { type: "string" }],
+    });
+
+    expect(sanitized).toEqual({ anyOf: [{ type: "number" }, { type: "string" }] });
+    expect(sanitized).not.toHaveProperty("type");
+  });
+
+  test("converts oneOf to anyOf without adding a sibling type", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      oneOf: [{ type: "boolean" }, { type: "string" }],
+    });
+
+    expect(sanitized).toEqual({ anyOf: [{ type: "boolean" }, { type: "string" }] });
+    expect(sanitized).not.toHaveProperty("type");
   });
 
   test("collapses a legacy draft-07 tuple", () => {
