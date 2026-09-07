@@ -1223,7 +1223,16 @@ export async function startModels(
       flushPartial: () => flushPartial(),
     });
 
-    // Pipe input to stdin
+    // Pipe input to stdin. A slot cancelled (or a child that exits) before it
+    // drains stdin closes the pipe under a pending write, and Node surfaces
+    // that as an `error` event on the stream — unhandled, it is an uncaught
+    // exception in the orchestrator, not the child. EPIPE here means only
+    // "the reader went away", which the exit/close handlers already report;
+    // anything else is still worth a log line.
+    proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      if (err?.code === "EPIPE") return;
+      stderr += `[claudish] stdin error for slot ${anonId}: ${err?.message ?? String(err)}\n`;
+    });
     proc.stdin?.write(inputContent);
     proc.stdin?.end();
 
