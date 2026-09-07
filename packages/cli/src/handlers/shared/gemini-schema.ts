@@ -84,7 +84,7 @@ function canonicalKey(value: any): string {
   if (Array.isArray(value)) return `[${value.map(canonicalKey).join(",")}]`;
   return `{${Object.keys(value)
     .sort()
-    .map((key) => `${key}:${canonicalKey(value[key])}`)
+    .map((key) => `${JSON.stringify(key)}:${canonicalKey(value[key])}`)
     .join(",")}}`;
 }
 
@@ -100,25 +100,54 @@ function dedupeBranches(branches: any[]): any[] {
   return unique;
 }
 
-/** A position that constrains nothing: `{}`, or description-only. */
+/** Keywords that annotate a schema without constraining what may satisfy it. */
+const ANNOTATION_KEYWORDS = new Set([
+  "description",
+  "title",
+  "$comment",
+  "default",
+  "examples",
+  "example",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+
+/**
+ * A position that constrains nothing: `{}`, or annotations only.
+ *
+ * Stated as a DENYLIST of annotations rather than an allowlist of constraints.
+ * An allowlist has to enumerate every constraining keyword, and the seven this
+ * first shipped with omitted `const`, `$ref`, `format`, `required`, `pattern`
+ * and the numeric bounds — so `{const: "a"}` read as "constrains nothing" and
+ * was widened to string|number|boolean, which is WORSE than the single wrong
+ * type it replaced. A denylist is closed under keywords JSON Schema has not
+ * invented yet.
+ */
 function describesNothing(entry: any): boolean {
-  return (
-    entry.type === undefined &&
-    entry.enum === undefined &&
-    entry.properties === undefined &&
-    entry.items === undefined &&
-    entry.prefixItems === undefined &&
-    entry.anyOf === undefined &&
-    entry.oneOf === undefined
-  );
+  return Object.keys(entry).every((key) => ANNOTATION_KEYWORDS.has(key));
 }
 
-/** Sanitize union branches, drop the unusable ones, and collapse duplicates. */
+/**
+ * Sanitize union branches, drop the unusable ones, and collapse duplicates.
+ *
+ * `type: "null"` branches are DROPPED. Gemini's Type enum has no null, and
+ * `normalizeType` already strips "null" from the array spelling
+ * (`type: ["string", "null"]`) a few lines above — emitting it here would have
+ * the same file removing a value in one place and sending it in another. This
+ * matters more than it looks: `{"anyOf": [{"type": "integer"}, {"type": "null"}]}`
+ * is what Pydantic/FastMCP emits for EVERY `Optional[...]` parameter, so one
+ * optional argument on one MCP server would ride on the wire untested.
+ */
 function unionBranches(entries: any[]): any[] {
   const branches: any[] = [];
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
-    if (describesNothing(entry)) branches.push(...ANY_VALUE_BRANCHES);
+    if (entry.type === "null") continue;
+    // Copies, not the shared constants: these objects reach caller-visible
+    // output, and handing out the module-level ones makes any later mutation a
+    // process-lifetime corruption that is very hard to trace back to here.
+    if (describesNothing(entry)) branches.push(...ANY_VALUE_BRANCHES.map((b) => ({ ...b })));
     else branches.push(sanitizeSchemaForGemini(entry));
   }
   return dedupeBranches(branches);
@@ -214,7 +243,21 @@ export function sanitizeSchemaForGemini(schema: any): any {
       ? schema.oneOf
       : null;
 
-  if (unionSource) {
+  // ONLY when the union is the whole schema. `anyOf` also appears ALONGSIDE a
+  // structural schema — `{type:"object", properties:{...}, anyOf:[{required:["a"]},
+  // {required:["b"]}]}` is the ordinary "one of these fields is required" idiom —
+  // and returning the union there threw the properties away, leaving a tool with
+  // no argument shape at all. Where a sibling exists the union is dropped and the
+  // structure kept, which is what the code did before unions were understood:
+  // strictly better than emitting an argument-less tool, and it invents nothing.
+  const hasStructuralSiblings =
+    schema.type !== undefined ||
+    schema.properties !== undefined ||
+    schema.required !== undefined ||
+    schema.items !== undefined ||
+    schema.prefixItems !== undefined;
+
+  if (unionSource && !hasStructuralSiblings) {
     const branches = unionBranches(unionSource);
     if (branches.length > 0) {
       const union: any = branches.length === 1 ? branches[0] : { anyOf: branches };
@@ -275,10 +318,26 @@ export function sanitizeSchemaForGemini(schema: any): any {
       : null;
 
   if (tupleEntries) {
-    result.items = tupleElementSchema(tupleEntries);
+    // In 2020-12 an `items` OBJECT alongside `prefixItems` describes the elements
+    // PAST the prefix. Ignoring it made the union narrower than the tuple, which
+    // inverts the whole point: a union is meant to be wider and so never reject a
+    // valid call, but `["a", 1, 2]` against a string-only union is rejected.
+    const restSchema =
+      Array.isArray(schema.prefixItems) && schema.items && typeof schema.items === "object"
+        ? [schema.items]
+        : [];
+    result.items = tupleElementSchema([...tupleEntries, ...restSchema]);
 
-    const note = describeTuple(tupleEntries);
-    result.description = result.description ? `${result.description} ${note}` : note;
+    // A tuple keyword is itself the evidence of arity. Without this the type stays
+    // whatever `normalizeType` defaulted to — "string" for a schema that omits
+    // `type` — and the node claims to be a string while carrying array `items`.
+    result.type = "array";
+
+    // Only the prefix has positional meaning, so the prose describes the prefix.
+    if (tupleEntries.length > 0) {
+      const note = describeTuple(tupleEntries);
+      result.description = result.description ? `${result.description} ${note}` : note;
+    }
 
     // `items: false` is the 2020-12 spelling of "nothing beyond the prefix" —
     // the only case where the arity is a stated constraint rather than a

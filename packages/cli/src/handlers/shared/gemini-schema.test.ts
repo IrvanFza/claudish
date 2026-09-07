@@ -159,3 +159,133 @@ describe("Gemini array schema conversion", () => {
     ).toEqual({ type: "array", items: { type: "string" } });
   });
 });
+
+describe("Gemini union and tuple regressions", () => {
+  test("keeps object properties and required fields alongside anyOf", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      type: "object",
+      description: "Edit a file.",
+      properties: {
+        path: { type: "string" },
+        old: { type: "string" },
+        new: { type: "string" },
+      },
+      required: ["path"],
+      anyOf: [{ required: ["old"] }, { required: ["new"] }],
+    });
+
+    expect(sanitized.type).toBe("object");
+    expect(sanitized.description).toBe("Edit a file.");
+    expect(sanitized.properties).toEqual({
+      path: { type: "string" },
+      old: { type: "string" },
+      new: { type: "string" },
+    });
+    expect(sanitized.required).toContain("path");
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("keeps properties in the nullable-object idiom", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      type: "object",
+      properties: { a: { type: "string" } },
+      anyOf: [{ type: "object" }, { type: "null" }],
+    });
+
+    expect(sanitized).toEqual({
+      type: "object",
+      properties: { a: { type: "string" } },
+    });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("does not widen const branches to unconstrained scalars", () => {
+    const sanitized = sanitizeSchemaForGemini({ anyOf: [{ const: "a" }, { const: "b" }] });
+
+    expect(sanitized).toEqual({ type: "string" });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("does not widen reference branches to unconstrained scalars", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      anyOf: [{ $ref: "#/$defs/A" }, { $ref: "#/$defs/B" }],
+    });
+
+    expect(sanitized).toEqual({ type: "string" });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("drops null branches from a nested optional parameter", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      type: "object",
+      properties: {
+        limit: { anyOf: [{ type: "integer" }, { type: "null" }], title: "Limit" },
+      },
+    });
+
+    expect(sanitized.properties.limit).toEqual({ type: "integer" });
+    expect(JSON.stringify(sanitized)).not.toMatch(/"type"\s*:\s*"null"/);
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("infers an array from prefixItems without an explicit type", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      prefixItems: [{ type: "string" }, { type: "number" }],
+    });
+
+    expect(sanitized.type).toBe("array");
+    expect(sanitized.items).toEqual({ anyOf: [{ type: "string" }, { type: "number" }] });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("includes the rest items schema in the prefixItems union", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      type: "array",
+      prefixItems: [{ type: "string" }],
+      items: { type: "number" },
+    });
+
+    expect(sanitized.items.anyOf).toContainEqual({ type: "string" });
+    expect(sanitized.items.anyOf).toContainEqual({ type: "number" });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("does not describe an empty tuple as an ordered zero-element array", () => {
+    const sanitized = sanitizeSchemaForGemini({ type: "array", items: [] });
+
+    expect(sanitized).not.toHaveProperty("description");
+    expect(sanitized).toEqual({ type: "array", items: { type: "string" } });
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("keeps distinct union branches with a crafted property name", () => {
+    const sanitized = sanitizeSchemaForGemini({
+      anyOf: [
+        { type: "object", properties: { a: { type: "string" }, b: { type: "number" } } },
+        { type: "object", properties: { 'a:{type:"string"},b': { type: "number" } } },
+      ],
+    });
+
+    expect(sanitized.anyOf).toHaveLength(2);
+    expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+  });
+
+  test("supplies items throughout the existing union test outputs", () => {
+    // Repeat the existing union inputs so their original tests remain unchanged.
+    const schemas = [
+      { type: "array", prefixItems: [{ type: "number" }, { type: "string" }] },
+      {
+        type: "array",
+        prefixItems: [{ type: "string", enum: ["a", "b"] }, { type: "string" }],
+      },
+      ARTIFACT_QUERY_SCHEMA,
+      { anyOf: [{ type: "number" }, { type: "string" }] },
+      { oneOf: [{ type: "boolean" }, { type: "string" }] },
+    ];
+
+    for (const schema of schemas) {
+      const sanitized = sanitizeSchemaForGemini(schema);
+      expect(collectArraysWithoutItems(sanitized)).toEqual([]);
+    }
+  });
+});
