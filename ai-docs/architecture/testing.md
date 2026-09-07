@@ -76,3 +76,23 @@ was already yes.
 
 Cheap check before trusting any new fixture: `git ls-files <path>` must list it, and
 `git check-ignore -v <path>` must say nothing.
+
+## A red local suite may just be a newer bun than CI pins
+
+`.github/workflows/test.yml` pins `bun-version: "1.3.10"`. A developer machine on a
+newer bun runs different bundled Unicode tables, and `tui/viz/color.test.ts` measures
+claudish's `displayWidth` fallback against a RUNTIME oracle. So the oracle moves with
+the runtime while the fallback table does not.
+
+Measured 2026-09-04 on bun 1.4.0: two `displayWidth` tests fail locally on
+U+2630–U+2637 and U+268A–U+268F (Yijing trigram and monogram symbols), whose East
+Asian Width classification differs between the two bun releases. The same commit's
+`Tests` run on main is GREEN on the pinned 1.3.10.
+
+**Do not "fix" the width table to match the newer bun** — that inverts the failure and
+breaks the pinned CI. Before treating any hermetic red as a regression, check the local
+runtime against the pinned one and look at whether CI is green on the same SHA. A test
+that compares against a runtime-provided oracle is only as stable as the runtime.
+
+Distinct from the credential-gated live tests, which skip in CI and are documented as
+non-blocking; this one is hermetic and still environmental.
