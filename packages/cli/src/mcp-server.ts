@@ -46,6 +46,7 @@ import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName } from "./providers/model-parser.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
@@ -993,11 +994,35 @@ function defineTools(
       const rows: string[] = [];
       const readyModels: string[] = [];
       const failedModels: string[] = [];
+      const nativeModels: string[] = [];
       let subCount = 0;
       let meteredCount = 0;
 
       for (const model of models) {
         ctx.reportProgress(`preflight: ${model}`);
+
+        // A bare Claude name never reaches route(): the proxy serves it on the
+        // harness's own auth and checks for that BEFORE routing. route() cannot
+        // see that path — `native-anthropic` has no credential store, so its
+        // filter drops it and the chain degrades to OpenRouter — and preflight
+        // was reporting subscription models as "no route" / "metered".
+        const native = nativeRouteFor(model);
+        if (native) {
+          // Deliberately NOT probed. The native handler authenticates by forwarding
+          // the INBOUND request's Claude Code header (native-handler.ts) and only
+          // falls back to ANTHROPIC_API_KEY. A synthetic probe from this process
+          // carries neither, so it fails "x-api-key header is required" for a
+          // healthy model and a typo alike — measured on the built bundle. That
+          // result is noise, and reporting it drove the very "drop your own
+          // model" advice this guard exists to stop. Counted in its own bucket,
+          // neither ready nor failed: the proxy will serve it on the session's
+          // auth, and that is all this process can say.
+          nativeModels.push(model);
+          rows.push(
+            `| \`${model}\` | ${native.displayName} | native | ${"not probed — served on Claude Code's own auth, which this process cannot forward"} | \`${native.modelSpec}\` |`
+          );
+          continue;
+        }
 
         let plan: Awaited<ReturnType<typeof route>>;
         try {
@@ -1069,6 +1094,7 @@ function defineTools(
         `# Preflight — ${models.length} model${models.length === 1 ? "" : "s"}`,
         "",
         `**Ready: ${readyModels.length}** · **Failed: ${failedModels.length}** · ` +
+          (nativeModels.length > 0 ? `native (not probed): ${nativeModels.length} · ` : "") +
           `subscription: ${subCount} · metered: ${meteredCount}`,
         "",
         "| Model | Provider | Billing | Status | Wire id |",

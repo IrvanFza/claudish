@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
+import { nativeRouteFor } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
-import { route } from "../../providers/routing-rules.js";
+import { type Route, route } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import { getProviderDefs, providerIsReady } from "../providers.js";
 import type { ProbeEntry, ProbeMode } from "../types.js";
@@ -96,20 +97,31 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
     // route() is async (credential resolution may pull from 1Password); the rest
     // of submit is already async, so the whole flow runs in one IIFE.
     (async () => {
-      const plan = await route(model);
-      if (plan.kind !== "ok") {
-        setProbeResults([
-          {
-            provider: "none",
-            displayName: "No routes found",
-            status: "failed",
-            error: plan.hint ?? plan.reason,
-          },
-        ]);
-        setProbeMode("done");
-        return;
+      // Same guard the proxy applies before routing: a bare Claude name is native
+      // passthrough, and route() would misreport it (see providers/native-route.ts).
+      // The native link joins the chain so the panel shows it, but it is skipped
+      // in the loop below: this probe cannot supply the Claude Code auth the
+      // native handler forwards, so any request would fail regardless of model.
+      const native = nativeRouteFor(model);
+      let chain: Route[];
+      if (native) {
+        chain = [native];
+      } else {
+        const plan = await route(model);
+        if (plan.kind !== "ok") {
+          setProbeResults([
+            {
+              provider: "none",
+              displayName: "No routes found",
+              status: "failed",
+              error: plan.hint ?? plan.reason,
+            },
+          ]);
+          setProbeMode("done");
+          return;
+        }
+        chain = [plan.primary, ...plan.fallbacks];
       }
-      const chain = [plan.primary, ...plan.fallbacks];
       // Check which routing rule matched. Case-INSENSITIVE — must mirror the
       // matching logic in matchRoutingRule (routing-rules.ts) so the probe panel
       // doesn't lie about which rule the engine actually picked.
@@ -130,7 +142,11 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
           displayName: r.displayName,
           status: "pending",
           hasKey: true,
-          reason: matchedRule ? `Custom rule: ${matchedRule[0]}` : "Default fallback chain",
+          reason: native
+            ? "Native Claude Code auth — served by the proxy, never routed"
+            : matchedRule
+              ? `Custom rule: ${matchedRule[0]}`
+              : "Default fallback chain",
         };
       });
       setProbeResults(initial);
@@ -169,6 +185,24 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
           if (!ready) {
             setProbeResults((prev) =>
               prev.map((e, idx) => (idx === i ? { ...e, status: "no_key" } : e))
+            );
+            continue;
+          }
+          // Deliberately NOT probed: the native handler authenticates with the
+          // inbound Claude Code header, which this probe cannot supply, so a
+          // request here fails for a healthy model and a typo alike. Say so.
+          if (native) {
+            setProbeResults((prev) =>
+              prev.map((e, idx) =>
+                idx === i
+                  ? {
+                      ...e,
+                      status: "unverified",
+                      reason:
+                        "Native Claude Code auth — not probed — served on Claude Code's own auth, which this process cannot forward",
+                    }
+                  : e
+              )
             );
             continue;
           }

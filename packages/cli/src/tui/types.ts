@@ -64,7 +64,12 @@ export type ProbeMode = "idle" | "input" | "running" | "done";
 export interface ProbeEntry {
   provider: string;
   displayName: string;
-  status: "pending" | "testing" | "success" | "failed" | "skipped" | "no_key";
+  /**
+   * `unverified`: the route is real but this process cannot probe it — the
+   * native Claude passthrough, whose auth is the inbound Claude Code header.
+   * Neither a success nor a failure; the panel must not fold it into either.
+   */
+  status: "pending" | "testing" | "success" | "failed" | "skipped" | "no_key" | "unverified";
   error?: string;
   ms?: number;
   hasKey?: boolean;
