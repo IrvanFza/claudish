@@ -2,6 +2,24 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.5] - 2026-09-07
+
+### Bug Fixes
+
+- swallow EPIPE on a cancelled slot's stdin *(team)* ([`03409b2`](https://github.com/MadAppGang/claudish/commit/03409b255bbf6fe37e2637fbc3069458d01eb7b9))
+- settle native names before the probe proxy is started *(diagnostics)* ([`328ebeb`](https://github.com/MadAppGang/claudish/commit/328ebebde8f11675af4893846747c66a4f56bb28))
+- stop preflight and the TUI probe misreporting native Claude names *(diagnostics)* ([`1b481d3`](https://github.com/MadAppGang/claudish/commit/1b481d3af53580c37717b2411c5cfe5783e9e9bb))
+- stop telling the agent to preflight before spawning models *(mcp)* ([`1200dd1`](https://github.com/MadAppGang/claudish/commit/1200dd1ca86278c9338de94f14b93a18038950d2))
+
+### Documentation
+
+- preflight-plan validation and the grok-4.6 stale-9.0.2 misroute *(reports)* ([`e2ebdee`](https://github.com/MadAppGang/claudish/commit/e2ebdee6b43e66f5d8787750ad0d1e7d0cb14784))
+- update CHANGELOG.md for v9.0.4([`acf18bb`](https://github.com/MadAppGang/claudish/commit/acf18bb620c368969032dea96ae954787e075abb))
+
+### Other Changes
+
+- release v9.0.5([`6ce0629`](https://github.com/MadAppGang/claudish/commit/6ce0629513fe617899cfaeac44671b6e9ace6f71))
+
 ## [9.0.4] - 2026-09-03
 
 ### Bug Fixes
