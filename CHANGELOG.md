@@ -2,6 +2,23 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.6] - 2026-09-07
+
+### Bug Fixes
+
+- stop the anyOf pass-through eating the schema around it *(gemini)* ([`77e48fe`](https://github.com/MadAppGang/claudish/commit/77e48fe21b1f14d4c1f31b90b686d432448bc542))
+- translate tuples as unions, not as one collapsed type *(gemini)* ([`59c7d31`](https://github.com/MadAppGang/claudish/commit/59c7d31b4e3bddfade8a16d8e2341446312a3360))
+- give every array schema `items` so Gemini stops 400-ing *(gemini)* ([`d37eb9f`](https://github.com/MadAppGang/claudish/commit/d37eb9f61965a6155abd64cb06cc57b9b4b45678))
+
+### Documentation
+
+- a red local suite may just be a newer bun than CI pins *(testing)* ([`b6a7f0e`](https://github.com/MadAppGang/claudish/commit/b6a7f0e9e7dc78aaee0fa9c3482a9ac66d110393))
+- update CHANGELOG.md for v9.0.5([`8d0d595`](https://github.com/MadAppGang/claudish/commit/8d0d5956d24e50390e6eb2d6911eb502efe0a9f6))
+
+### Other Changes
+
+- release v9.0.6([`773b14f`](https://github.com/MadAppGang/claudish/commit/773b14f7ebb850ae6ccc736685308b5e1392d46e))
+
 ## [9.0.5] - 2026-09-07
 
 ### Bug Fixes
