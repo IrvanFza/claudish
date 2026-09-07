@@ -26,9 +26,7 @@ describe("MCP preflight guidance", () => {
     ).toBeNull();
 
     expect(
-      joinedStringLiterals.includes(
-        "hop is subscription or metered; call `preflight` for that."
-      )
+      joinedStringLiterals.includes("hop is subscription or metered; call `preflight` for that.")
         ? "search_models tool description: found a directive to call preflight to learn routing"
         : null
     ).toBeNull();
