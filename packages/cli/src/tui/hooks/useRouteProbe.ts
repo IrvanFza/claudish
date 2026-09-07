@@ -1,6 +1,14 @@
 import { useCallback, useState } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
 import { nativeRouteFor } from "../../providers/native-route.js";
+
+/**
+ * Why a native row is never probed here: the native handler authenticates with
+ * the inbound Claude Code header, which this probe cannot supply, so a request
+ * would fail for a healthy model and a typo alike (see providers/native-route.ts).
+ */
+const REASON_NATIVE =
+  "Native Claude Code auth — not probed — served on Claude Code's own auth, which this process cannot forward";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
 import { type Route, route } from "../../providers/routing-rules.js";
@@ -162,6 +170,16 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
       // OAuth providers (e.g. antigravity after `claudish login antigravity`)
       // are tested for real instead of being misreported as missing.
       (async () => {
+        // A native chain has nothing to probe — settle it BEFORE the proxy is
+        // touched. Proxy startup failure below repaints every row `failed`,
+        // which would turn the native row back into a red "no route".
+        if (native) {
+          setProbeResults((prev) =>
+            prev.map((e) => ({ ...e, status: "unverified" as const, reason: REASON_NATIVE }))
+          );
+          setProbeMode("done");
+          return;
+        }
         // Best-effort proxy startup. If it fails we mark everything as failed
         // with a clear error.
         let proxyUrl: string;
@@ -185,24 +203,6 @@ export function useRouteProbe(config: ClaudishProfileConfig): UseRouteProbeRetur
           if (!ready) {
             setProbeResults((prev) =>
               prev.map((e, idx) => (idx === i ? { ...e, status: "no_key" } : e))
-            );
-            continue;
-          }
-          // Deliberately NOT probed: the native handler authenticates with the
-          // inbound Claude Code header, which this probe cannot supply, so a
-          // request here fails for a healthy model and a typo alike. Say so.
-          if (native) {
-            setProbeResults((prev) =>
-              prev.map((e, idx) =>
-                idx === i
-                  ? {
-                      ...e,
-                      status: "unverified",
-                      reason:
-                        "Native Claude Code auth — not probed — served on Claude Code's own auth, which this process cannot forward",
-                    }
-                  : e
-              )
             );
             continue;
           }

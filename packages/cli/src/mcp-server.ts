@@ -976,7 +976,11 @@ function defineTools(
 
       const doProbe = args.probe !== false;
       const timeoutMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 20_000;
-      const proxy = doProbe ? await getProxy() : null;
+      // Start the proxy only if something will actually be probed. Native names
+      // never are (see the loop), so an all-native roster must neither wait on
+      // proxy startup nor throw from it.
+      const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
+      const proxy = needsProxy ? await getProxy() : null;
 
       // Register runtime providers before ANY `route()` call below.
       //
