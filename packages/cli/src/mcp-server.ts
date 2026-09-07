@@ -46,6 +46,7 @@ import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName } from "./providers/model-parser.js";
+import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
@@ -741,8 +742,7 @@ function defineTools(
       "claudish's own catalog. SCOPE: the listing covers OpenRouter only, so a name's " +
       "absence from it is NOT evidence the name is unroutable — subscription wire ids " +
       "(`k3`) and catalog aliases live outside that namespace and are reported separately " +
-      "here. This tool cannot tell you which provider will serve a model or whether the " +
-      "hop is subscription or metered; call `preflight` for that.",
+      "here.",
     inputSchema: {
       type: "object",
       properties: {
@@ -815,8 +815,7 @@ function defineTools(
           : `No models found matching "${query}".\n\n` +
             "This searched OpenRouter's listing only. Subscription wire ids and catalog " +
             "aliases are not in it, so this is not proof the name is unroutable. Call " +
-            "`list_models` for the recommended set, or `preflight` to test a specific name " +
-            "against real routing.";
+            "`list_models` for the recommended set.";
         return { content: [{ type: "text" as const, text }] };
       }
       let output = `# Search Results for "${query}"\n\n`;
@@ -842,10 +841,6 @@ function defineTools(
       // the tool's own advice routed users off their subscription.
       const suggested = catalogMatches[0]?.modelId ?? results[0].model.id;
       output += `\nUse with: run_prompt(model="${suggested}", prompt="your prompt")`;
-      output +=
-        `\n\nTo learn which provider would actually serve \`${suggested}\`, and whether that ` +
-        "hop is covered by a subscription or billed per token, call " +
-        `\`preflight({models: ["${suggested}"]})\`. This listing cannot answer that.`;
       return { content: [{ type: "text" as const, text: output }] };
     },
   });
@@ -935,11 +930,11 @@ function defineTools(
   tools.push({
     name: "preflight",
     description:
-      "Check a roster of models BEFORE spending a run on it. For each model: which provider " +
-      "will actually serve it, whether that hop is covered by a SUBSCRIPTION or billed per " +
-      "token, and whether it is reachable right now. Call this before `team` or a batch of " +
-      "`create_session` calls — a dead or unexpectedly-metered model is then caught while " +
-      "the roster can still be adjusted, instead of costing a slot minutes into the run.",
+      "DIAGNOSTIC. For a roster of models, report which provider would serve each, " +
+      "whether that hop is subscription or metered, and whether it is reachable right " +
+      "now. This is for a human investigating a roster. It is NOT a step before " +
+      "`team`, `create_session` or `run_prompt` — those resolve their own routing, and " +
+      "a caller that hands them a bare model name never needs to know the route.",
     inputSchema: {
       type: "object",
       properties: {
@@ -981,7 +976,11 @@ function defineTools(
 
       const doProbe = args.probe !== false;
       const timeoutMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 20_000;
-      const proxy = doProbe ? await getProxy() : null;
+      // Start the proxy only if something will actually be probed. Native names
+      // never are (see the loop), so an all-native roster must neither wait on
+      // proxy startup nor throw from it.
+      const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
+      const proxy = needsProxy ? await getProxy() : null;
 
       // Register runtime providers before ANY `route()` call below.
       //
@@ -999,11 +998,35 @@ function defineTools(
       const rows: string[] = [];
       const readyModels: string[] = [];
       const failedModels: string[] = [];
+      const nativeModels: string[] = [];
       let subCount = 0;
       let meteredCount = 0;
 
       for (const model of models) {
         ctx.reportProgress(`preflight: ${model}`);
+
+        // A bare Claude name never reaches route(): the proxy serves it on the
+        // harness's own auth and checks for that BEFORE routing. route() cannot
+        // see that path — `native-anthropic` has no credential store, so its
+        // filter drops it and the chain degrades to OpenRouter — and preflight
+        // was reporting subscription models as "no route" / "metered".
+        const native = nativeRouteFor(model);
+        if (native) {
+          // Deliberately NOT probed. The native handler authenticates by forwarding
+          // the INBOUND request's Claude Code header (native-handler.ts) and only
+          // falls back to ANTHROPIC_API_KEY. A synthetic probe from this process
+          // carries neither, so it fails "x-api-key header is required" for a
+          // healthy model and a typo alike — measured on the built bundle. That
+          // result is noise, and reporting it drove the very "drop your own
+          // model" advice this guard exists to stop. Counted in its own bucket,
+          // neither ready nor failed: the proxy will serve it on the session's
+          // auth, and that is all this process can say.
+          nativeModels.push(model);
+          rows.push(
+            `| \`${model}\` | ${native.displayName} | native | ${"not probed — served on Claude Code's own auth, which this process cannot forward"} | \`${native.modelSpec}\` |`
+          );
+          continue;
+        }
 
         let plan: Awaited<ReturnType<typeof route>>;
         try {
@@ -1075,6 +1098,7 @@ function defineTools(
         `# Preflight — ${models.length} model${models.length === 1 ? "" : "s"}`,
         "",
         `**Ready: ${readyModels.length}** · **Failed: ${failedModels.length}** · ` +
+          (nativeModels.length > 0 ? `native (not probed): ${nativeModels.length} · ` : "") +
           `subscription: ${subCount} · metered: ${meteredCount}`,
         "",
         "| Model | Provider | Billing | Status | Wire id |",

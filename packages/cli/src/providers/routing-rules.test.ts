@@ -721,11 +721,28 @@ describe("route()", () => {
   });
 
   test("gpt-5 (bare) with OPENAI_CODEX_API_KEY → primary openai-codex", async () => {
-    process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
-    const plan = await route("gpt-5", DEFAULT_ROUTING_RULES);
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("openai-codex");
+    // Assert rule composition with an empty catalog (an absent cache file),
+    // not Codex model support: live Codex returns 400 with "The 'gpt-5' model
+    // is not supported when using Codex with a ChatGPT account".
+    //
+    // In a dev environment where codex-oauth.json exists, codex is genuinely
+    // credentialed regardless of the fake env key. Skip the strict assertion
+    // there, matching the sibling credential test. openai-codex declares no
+    // modelDiscovery, so only the catalog cache, not live discovery, is a factor.
+    const codexOauth = join(homedir(), ".claudish", "codex-oauth.json");
+    if (existsSync(codexOauth)) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "claudish-routing-empty-catalog-test-"));
+    const cachePath = join(dir, "all-models.json");
+    try {
+      process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
+      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("openai-codex");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("qwen3.7-plus prefers qwen-cloud over qwen-payg when both credentials are present", async () => {
@@ -934,14 +951,31 @@ describe("route()", () => {
   });
 
   test("ok plan returns primary plus fallbacks in order", async () => {
-    process.env.OPENAI_CODEX_API_KEY = "cx-test";
-    process.env.OPENAI_API_KEY = "oai-test";
-    process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("gpt-5", DEFAULT_ROUTING_RULES);
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("openai-codex");
-    expect(plan.fallbacks.map((r) => r.provider)).toEqual(["openai", "openrouter"]);
+    // Assert rule composition with an empty catalog (an absent cache file),
+    // not Codex model support: live Codex returns 400 with "The 'gpt-5' model
+    // is not supported when using Codex with a ChatGPT account".
+    //
+    // In a dev environment where codex-oauth.json exists, codex is genuinely
+    // credentialed regardless of the fake env key. Skip the strict assertion
+    // there, matching the sibling credential test. openai-codex declares no
+    // modelDiscovery, so only the catalog cache, not live discovery, is a factor.
+    const codexOauth = join(homedir(), ".claudish", "codex-oauth.json");
+    if (existsSync(codexOauth)) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "claudish-routing-empty-catalog-test-"));
+    const cachePath = join(dir, "all-models.json");
+    try {
+      process.env.OPENAI_CODEX_API_KEY = "cx-test";
+      process.env.OPENAI_API_KEY = "oai-test";
+      process.env.OPENROUTER_API_KEY = "or-test";
+      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("openai-codex");
+      expect(plan.fallbacks.map((r) => r.provider)).toEqual(["openai", "openrouter"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
