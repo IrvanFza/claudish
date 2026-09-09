@@ -1027,13 +1027,29 @@ async function runCli() {
       // A static import here would pull OpenTUI into `--version`, `--update` and every
       // other run that never draws anything.
       try {
-        const [{ readSessionStats }, { printSessionSummary }, { findLatestSessionId }] =
-          await Promise.all([
-            import("./session/session-stats.js"),
-            import("./session/session-summary.js"),
-            import("./session/session-discovery.js"),
-          ]);
+        const [
+          { readSessionStats },
+          { printSessionSummary },
+          { findLatestSessionId, getRepoContext },
+        ] = await Promise.all([
+          import("./session/session-stats.js"),
+          import("./session/session-summary.js"),
+          import("./session/session-discovery.js"),
+        ]);
         const stats = readSessionStats(port);
+        // A worktree cwd is carried into the resume line; the main checkout is not.
+        // `current !== root` is git's own distinction (`--git-common-dir`), already
+        // parsed by `getRepoContext` for the resume picker.
+        const repo = getRepoContext(process.cwd());
+        const worktreeCwd = repo && repo.current !== repo.root ? process.cwd() : null;
+        // THIS PROCESS's start, which is what `findLatestSessionId` documents itself as
+        // filtering by. It used to be handed `Date.now() - stats.durationMs`, and that
+        // duration measures API activity, not the session's wall clock: a run where the
+        // model worked for 5 seconds and the human read for a minute produced a 5-second
+        // window in which the child's transcript had NOT been created, so the
+        // born-during-this-run test could never match and the id fell back to whatever
+        // else was writing in the directory.
+        const runStartMs = Date.now() - Math.round(process.uptime() * 1000);
         if (stats) {
           printSessionSummary(
             {
@@ -1044,9 +1060,8 @@ async function runCli() {
               // name that re-routes from scratch — and a profile-role session
               // (modelOpus/modelSonnet/…) has no single spec to print at all.
               resumeModelSpec: explicitModel ?? null,
-              resumeId:
-                resumedSessionId ??
-                findLatestSessionId(process.cwd(), Date.now() - stats.durationMs),
+              resumeId: resumedSessionId ?? findLatestSessionId(process.cwd(), runStartMs),
+              resumeCwd: worktreeCwd,
               exitCode,
             },
             write
