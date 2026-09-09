@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.1.0] - 2026-09-09
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.9([`beea81b`](https://github.com/MadAppGang/claudish/commit/beea81baa52c530c4fcee94cddf7babd6bcfb309))
+
+### New Features
+
+- show the claudish wordmark and offer the update inline *(cli)* ([`a1d392e`](https://github.com/MadAppGang/claudish/commit/a1d392e85826e6abc623ebf3a8e27f2955a8c36d))
+
+### Other Changes
+
+- release v9.1.0([`41b2475`](https://github.com/MadAppGang/claudish/commit/41b2475242ccc7ebb0e5d97a771ae724dd505da5))
+
 ## [9.0.9] - 2026-09-09
 
 ### Bug Fixes
