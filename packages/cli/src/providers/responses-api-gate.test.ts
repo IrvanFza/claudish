@@ -45,7 +45,7 @@ const fixture: DiskCacheV2 = {
       aliases: ["openai/acme-codex-x4.0"],
       sources: {},
       contextWindow: 1050000,
-      endpoints: { openai: { api: "chat_completions" } },
+      endpoints: { openai: { api: "chat-completions" } },
       tokenParam: "max_output_tokens",
     },
   ],
