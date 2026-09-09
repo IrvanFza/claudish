@@ -168,6 +168,14 @@ team: 2 models, 2 done, 7s, 102.9k tok, $0.104
 
 **Knobs**: `onProgress` (callback) and `progressIntervalSeconds` (default 5) on `TeamRunOptions`.
 
+**A third transport reaches the polling orchestrator** (v9.2.0). The two above reach an agent's
+context and a human's terminal; neither reaches a caller polling `team(mode:"status")`, which is
+how every review panel actually watches a run. That caller had only `outputSize`, which is written
+once at completion and so reads 0 for a slot's whole life — and orchestrators read it as progress
+and reported working slots as dead. `live_output_bytes_by_slot` now carries the same live count
+`status.txt` shows, in the same unit `outputSize` ends up holding. See
+`ai-docs/architecture/team-lifecycle.md`.
+
 **Implementation**: `packages/cli/src/team-stats.ts`, wired in `team-orchestrator.ts` (ticker +
 child env) and `mcp-server.ts` (`ChannelNotifier` passed into `defineTools`).
 
@@ -247,6 +255,34 @@ never hold one. v7.33.0 ships the reachable version instead: `claudish login
 antigravity` installs and delegates to `agy`, which owns the whole credential
 lifecycle. Refresh delegates the same way (`agy models`). Do not re-open this
 expecting a claudish-native OAuth flow.
+
+---
+
+## The two bundled `claudish-usage` SKILL.md copies are stale and never mention `team`
+
+Status: not started.
+
+`skills/claudish-usage/SKILL.md` and `packages/cli/skills/claudish-usage/SKILL.md` (the
+latter shipped in the npm package's `files` array and installed into a project by
+`cli.ts:2408`) were last touched at v4.5.1. Neither mentions `team` at all, and they have
+drifted from each other on model ids (`openai/gpt-5` vs `openai/gpt-5.3`).
+
+They are NOT the plugin skill. The skill agents actually load is
+`plugins/claudish/skills/claudish-usage/SKILL.md` in the magus-src repo, which is current
+and which carries the `team` lifecycle documentation. So these two copies cannot teach a
+wrong `team` procedure — they say nothing about `team` — but a user who runs the
+install-skill path gets a document that is four major versions behind on everything else.
+
+Found while fixing the `outputSize`-as-progress misreading (v9.2.0); deliberately left
+alone there, because rewriting an unrelated stale document inside a bug fix is scope creep.
+
+**Trigger condition**: someone reports confusion from the installed skill, OR the
+install-skill path is touched for any other reason. Whoever picks it up must first decide
+whether these copies should exist at all — a third copy of a document whose real home is
+another repo is the actual defect, and deleting them plus pointing the CLI at the plugin
+may be the correct fix rather than syncing a third copy forever.
+
+**Effort**: small to decide, medium if the answer is "sync", small if the answer is "delete".
 
 ---
 
