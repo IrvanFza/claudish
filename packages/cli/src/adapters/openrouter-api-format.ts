@@ -6,11 +6,11 @@
  * - Model-specific system prompts (Grok XML fix, Gemini reasoning suppression)
  * - stream_options: { include_usage: true }
  * - include_reasoning for models that support it
- * - removeUriFormat on tool schemas
+ * - the shared OpenAI tool-schema sanitizer
  * - Tool choice mapping from Claude format
  */
 
-import { removeUriFormat } from "../transform.js";
+import { convertToolsToOpenAI } from "../handlers/shared/format/openai-tools.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 import { resolveModelDialect } from "./dialect-manager.js";
 
@@ -93,17 +93,14 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
   // ─── Tool conversion with uri format removal ──────────────────────
 
   override convertTools(claudeRequest: any, _summarize = false): any[] {
-    // Convert to OpenAI format, but strip uri format from schemas
-    return (
-      claudeRequest.tools?.map((tool: any) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: removeUriFormat(tool.input_schema),
-        },
-      })) || []
-    );
+    // Was its own copy calling removeUriFormat directly, which skipped three
+    // guards the shared sanitizer applies: the top-level oneOf/anyOf collapse,
+    // the never-undefined `parameters` object, and the pattern-portability
+    // strip that Claude Code 2.1.266's Artifact tool needs. OpenRouter forwards
+    // to OpenAI models, so it inherits OpenAI's schema validator too.
+    //
+    // `summarize` stays ignored, as this override has always ignored it.
+    return convertToolsToOpenAI(claudeRequest, false);
   }
 
   // ─── Payload with OpenRouter-specific fields ───────────────────────

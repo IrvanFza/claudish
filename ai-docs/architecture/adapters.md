@@ -363,3 +363,53 @@ providers that give you nothing else.
 Note the status here is safe to branch on: `getRecoveryHint` is called with the
 raw `response.status` at the upstream error site, upstream of the remap
 described above.
+
+## A tool `pattern` is validated by the provider, in Python (v9.0.8, `format/openai-tools.ts`)
+
+OpenAI checks every tool schema's `pattern` as JSON Schema `format: "regex"`, and
+the checker compiles the value in Python. Claude Code 2.1.266 added the `Artifact`
+tool, whose `field` property carries:
+
+```
+^(?!__.*__$)[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}"\\./[\]]{1,200}$
+```
+
+Every `cx@` session then died on its FIRST request, before any model ran:
+
+```
+HTTP 400 invalid_request_error, code invalid_function_parameters, param tools[1].parameters
+"Invalid schema for function 'Artifact': '...' is not a 'regex'."
+```
+
+Measured against `python3 -c "import re"`, one construct at a time:
+
+| pattern | Python `re` |
+|---|---|
+| the full Artifact one | `bad escape \p` |
+| its `(?!__.*__$)` lookahead alone | compiles |
+| `^[^\p{Cc}]{1,200}$` alone | `bad escape \p` |
+
+So the Unicode property escape is the whole cause, and the lookahead is innocent.
+That matters for the shape of the fix: "strip every `pattern`" throws away working
+constraints, and "strip lookarounds" fixes nothing. `isPortablePattern` instead
+allows only the escape letters Python's `re` knows (`\A \b \B \d \D \s \S \w \W \Z`,
+the character escapes, `\x \u \U \N`), plus every non-letter escape and every digit
+backreference. It also rejects a bare `(?<name>)`, which Python spells `(?P<name>)`,
+while allowing the `(?<=` and `(?<!` lookbehinds.
+
+Dropping is right because a `pattern` is ADVISORY — it steers the model, and the
+harness re-validates the tool call on arrival. An unportable one is not advisory: it
+fails the whole request. The costs are asymmetric, so a pattern that cannot be
+proven portable is not sent.
+
+Two things this uncovered:
+
+1. `openrouter-api-format.ts` had its own `convertTools` calling `removeUriFormat`
+   directly, so it skipped the top-level `oneOf` collapse, the never-undefined
+   `parameters` guard, and this strip. It now calls the shared
+   `convertToolsToOpenAI`. OpenRouter forwards to OpenAI models and inherits the
+   same validator, so the divergent copy was a latent second instance of this bug.
+2. The strip's log line is invisible in the default session log. `log()` writes to
+   the always-on structural log only through `isStructuralLogWorthy`, a whitelist.
+   Use `-d` / `--debug-claudish` (which writes `./logs/`), not `--debug` — the
+   latter is passed through to Claude Code and tells you nothing about the proxy.
