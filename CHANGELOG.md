@@ -2,6 +2,20 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.9] - 2026-09-09
+
+### Bug Fixes
+
+- stop `security` stderr corrupting the config TUI *(antigravity)* ([`f1f26e1`](https://github.com/MadAppGang/claudish/commit/f1f26e1e69cd209c7656dcca51ff9d40ada17c5a))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.8([`7b6b9b2`](https://github.com/MadAppGang/claudish/commit/7b6b9b23d517482a843448a1052b37f4947daa3c))
+
+### Other Changes
+
+- release v9.0.9([`a5748da`](https://github.com/MadAppGang/claudish/commit/a5748da2151c437587cc48d5513dba82d0ef0059))
+
 ## [9.0.8] - 2026-09-09
 
 ### Bug Fixes
