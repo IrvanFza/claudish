@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.8] - 2026-09-09
+
+### Bug Fixes
+
+- resume the right session from the right directory, and quieten the card *(session)* ([`263d0b4`](https://github.com/MadAppGang/claudish/commit/263d0b47518f863734921c5f65b251dbe040064a))
+- drop tool-schema patterns the provider cannot compile *(openai)* ([`0997da5`](https://github.com/MadAppGang/claudish/commit/0997da55db31436c79e2969a774e48ff842cc4eb))
+
+### Documentation
+
+- update CHANGELOG.md for v9.0.7([`e02d810`](https://github.com/MadAppGang/claudish/commit/e02d8109155352ed4606a8a966372909ea445613))
+
+### Other Changes
+
+- release v9.0.8([`cef2acf`](https://github.com/MadAppGang/claudish/commit/cef2acf1b209b3fed885203bd9310610602927ad))
+
 ## [9.0.7] - 2026-09-09
 
 ### Bug Fixes
