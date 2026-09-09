@@ -2,6 +2,21 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.0.7] - 2026-09-09
+
+### Bug Fixes
+
+- read the catalog's endpoint, not just its tokenParam *(openai)* ([`87b7311`](https://github.com/MadAppGang/claudish/commit/87b731115e5f99ba7b0e73cab1aac08d2bde1ea4))
+
+### Documentation
+
+- the catalog's endpoint contract has two halves *(adapters)* ([`7b8e17e`](https://github.com/MadAppGang/claudish/commit/7b8e17e9d1786f39b7c026d158f34a9b1ea8a8e5))
+- update CHANGELOG.md for v9.0.6([`9f76e77`](https://github.com/MadAppGang/claudish/commit/9f76e7702f515c249c79bd7808c410d0eeb23404))
+
+### Other Changes
+
+- release v9.0.7([`27c82eb`](https://github.com/MadAppGang/claudish/commit/27c82ebecab163d2e1b69d2e76873ec177cf3155))
+
 ## [9.0.6] - 2026-09-07
 
 ### Bug Fixes
