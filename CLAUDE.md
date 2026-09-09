@@ -53,10 +53,34 @@ Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing
 
 ## Releasing
 
-**CI/CD publishes — do NOT run `npm publish`.** Bump ALL THREE of `package.json`,
-`packages/cli/package.json` (what npm publishes; a stale value fails the publish) and
-`packages/cli/src/version.ts` (the fallback compiled binaries display). Then commit with a
-conventional message, `git tag -a v3.0.0 -m "message"`, `git push origin main --tags`.
+**CI/CD publishes — do NOT run `npm publish`.** `release.yml` fires on the `v*` tag push,
+generates `CHANGELOG.md` with `git cliff`, and publishes over OIDC. It runs NO test suite, so
+the tag is the gate: everything must be green before it leaves the machine.
+
+Bump TWO files by hand — `package.json` and `packages/cli/package.json` (what npm publishes;
+a stale value fails the publish) — then run
+`bun run --cwd packages/cli scripts/generate-version.ts`. `packages/cli/src/version.ts` is
+GENERATED from `packages/cli/package.json` and says so in its header; editing it by hand is
+silently overwritten by the next `build`.
+
+**Never `git push --tags`.** Local `v7.8.2` diverges from origin's, so `--tags` exits
+non-zero on every release — after the new tag has already landed. It reports failure over
+success, which is the one outcome an automated release cannot recover from. Push the
+explicit ref, which touches nothing else:
+
+```
+git tag -a v9.2.0 -F <message-file> <merge-sha>   # -F, not -m: backticks in -m are command substitution
+git push origin refs/tags/v9.2.0
+```
+
+Re-check `git ls-remote --tags origin refs/tags/vX.Y.Z` IMMEDIATELY before tagging, not once
+at preflight — a concurrent release burns the number in that gap, and the losing rebase
+silently drops the now-empty bump commit.
+
+**From a worktree** you cannot `git checkout main` (the primary checkout holds it). Open a PR
+and merge it, or `git push origin HEAD:main` after `git rebase origin/main`. Either way, tag
+the MERGE COMMIT, never the branch head CI did not validate. After any rebase merge, verify
+`git show origin/main:packages/cli/package.json | grep version` really carries your bump.
 
 ## Session artifacts
 
