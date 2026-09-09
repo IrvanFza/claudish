@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.2.0] - 2026-09-09
+
+### Bug Fixes
+
+- publish live answer bytes so `outputSize: 0` stops reading as "produced nothing" *(team)* ([`6597451`](https://github.com/MadAppGang/claudish/commit/65974511df340989d27485ce8e686b50d863fb14))
+
+### Documentation
+
+- correct the release instructions that would break a release([`2822052`](https://github.com/MadAppGang/claudish/commit/2822052e45ff97f2dc10dc10854f5ffae3f096ed))
+- park the stale bundled claudish-usage copies, note the third team transport *(roadmap)* ([`5f51de7`](https://github.com/MadAppGang/claudish/commit/5f51de7eb38ae484cfaf00c346a90240575bb722))
+- update CHANGELOG.md for v9.1.0([`22b9138`](https://github.com/MadAppGang/claudish/commit/22b91388bbaf0b2cb5f16a9b5007d2bbf22c8744))
+
+### Other Changes
+
+- release v9.2.0([`080ff50`](https://github.com/MadAppGang/claudish/commit/080ff50a919b0f52617f687c17ec56797e2d44e8))
+
 ## [9.1.0] - 2026-09-09
 
 ### Documentation
