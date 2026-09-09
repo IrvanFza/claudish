@@ -60,6 +60,7 @@ import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
+import { isRequestShapeError } from "./shared/request-shape.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
@@ -1662,7 +1663,7 @@ export class ComposedHandler implements ModelHandler {
  * plan from a per-minute throttle when the provider phrases both identically.
  * `undefined` — every transport without the hook — keeps the original behaviour.
  */
-function getRecoveryHint(
+export function getRecoveryHint(
   status: number,
   errorText: string,
   providerName: string,
@@ -1749,6 +1750,22 @@ function getRecoveryHint(
   if (status === 400) {
     if (lower.includes("unsupported content type") || lower.includes("unsupported_content_type")) {
       return "Model doesn't support this content format. Try a different model.";
+    }
+    // Read the provider's own attribution BEFORE guessing from prose. The size
+    // test below is a substring match on "token", and OpenAI's parameter NAMES
+    // contain that word — `max_output_tokens`, `max_completion_tokens` — so a
+    // parameter-shape rejection matched it and was reported as a size problem.
+    // Measured against `oai@gpt-6-astra`, 6.7 KB of input against a 1.05M
+    // window:
+    //
+    //   400 unknown_parameter — "Unknown parameter: 'max_output_tokens'."
+    //   rendered as → "Input too large. Reduce message history or use a
+    //                  larger-context model."
+    //
+    // The hint and the body it quotes then disagreed inside one line, and the
+    // advice sent the reader to shrink a prompt that was never the problem.
+    if (isRequestShapeError(errorText)) {
+      return "Wrong request shape for this endpoint — the provider named the parameter it rejected (see the message below). Nothing was too large; a shorter prompt will not help.";
     }
     if (lower.includes("context") || lower.includes("too long") || lower.includes("token")) {
       return "Input too large. Reduce message history or use a larger-context model.";

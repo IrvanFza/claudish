@@ -24,6 +24,7 @@ import { CodexAPIFormat } from "../adapters/codex-api-format.js";
 import { DevinAPIFormat } from "../adapters/devin-api-format.js";
 import { GeminiAPIFormat } from "../adapters/gemini-api-format.js";
 import { LiteLLMAPIFormat } from "../adapters/litellm-api-format.js";
+import { lookupModelEndpoint } from "../adapters/model-catalog.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import { getVertexConfig, validateVertexOAuthConfig } from "../auth/vertex-auth.js";
@@ -195,11 +196,35 @@ export const devinProfile: ProviderProfile = {
  * routing fix did not work" when the model is simply not being served. Same
  * catalogue-vs-served-set trap the Antigravity and Devin providers document.
  *
- * Still a PER-MODEL constraint and still a TEMPORARY name gate — replaced by
- * the catalog capability record (endpoints.openai.toolsWithReasoning ===
- * "requires-responses") once route-time capability fetch lands.
+ * THE CATALOG MAY ONLY WIDEN THIS GATE, NEVER NARROW IT. The name rule stays an
+ * unconditional `||` below for the reason above: the transport routes every
+ * `*codex*` id to /v1/responses on its own, so a catalog record that said "chat
+ * completions" for one would restore the split in the other direction —
+ * OpenAIAPIFormat's body on a Responses endpoint.
+ *
+ * The name rule alone could not stay correct, which is what this comment
+ * predicted and what then happened. `gpt-6-astra` shipped 2026-09-03, matches
+ * neither pattern, and is Responses-only. Its Chat Completions body carried the
+ * catalog's own `tokenParam` and was rejected:
+ *
+ *   400 unknown_parameter — "Unknown parameter: 'max_output_tokens'."
+ *
+ * `max_output_tokens` is the Responses spelling. claudish was already reading
+ * half of the catalog's endpoint contract — `tokenParam`, via
+ * `OpenAIAPIFormat.tokenParamName` — while ignoring the sibling field that says
+ * which wire API that spelling belongs to. Reading both is the fix. The name
+ * rule survives only as the cold-cache fallback, where the catalog has no
+ * opinion to read.
+ *
+ * @param cachePath Test seam. Points the catalog lookup at a fixture, so a test
+ *   never depends on a warm `~/.claudish/all-models.json`.
  */
-function requiresResponsesApi(modelName: string): boolean {
+export function requiresResponsesApi(modelName: string, cachePath?: string): boolean {
+  const endpoint = lookupModelEndpoint(modelName, "openai", cachePath);
+  if (endpoint?.api === "responses" || endpoint?.toolsWithReasoning === "requires-responses") {
+    return true;
+  }
+
   const name = modelName.toLowerCase();
   return /^gpt-5\.6/.test(name) || name.includes("codex");
 }
