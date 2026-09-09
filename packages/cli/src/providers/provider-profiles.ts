@@ -66,6 +66,16 @@ export interface ProfileContext {
   /** The listening port of the proxy server */
   port: number;
   /**
+   * Catalog cache path override — a TEST SEAM, unset in production.
+   *
+   * `requiresResponsesApi` reads the model catalog, which made the composition
+   * table in `provider-profiles.test.ts` depend on whichever
+   * `~/.claudish/all-models.json` the machine happened to have. That is the
+   * v7.43.0 trap: green on every dev box, and a different answer on a cold CI
+   * runner. Passing a fixture path here keeps that table hermetic.
+   */
+  catalogCachePath?: string;
+  /**
    * Shared ComposedHandler options from the outer scope.
    *
    * Every profile spreads this verbatim, so widening this Pick is how a new
@@ -185,8 +195,20 @@ export const devinProfile: ProviderProfile = {
  * transport will keep routing ids this function no longer claims. The two tests
  * must stay identical; a test pins their agreement.
  *
- * Only OpenAI-served ids reach this gate — it lives inside `openaiProfile`, so
- * `cx@` (Responses-only by construction) and every other provider are untouched.
+ * THE GATE IS HOST-BLIND, and the comment here used to say otherwise ("only
+ * OpenAI-served ids reach this gate"). `openaiProfile` is many-to-one — it also
+ * serves x-ai, qwen, deepseek and mistralai (`provider-definitions.ts:228`) — so
+ * every one of those hosts reaches this function. `endpoints.openai` is keyed by
+ * TRANSPORT FAMILY, not by host, so the catalog cannot say "responses on OpenAI,
+ * chat completions on x-ai" about one model id.
+ *
+ * Measured 2026-09-09 against the live catalog, nothing is mis-served by that:
+ * all 8 Responses-only ids are `gpt-*`, which no other host under this profile
+ * carries. The exposure is a future id served by two hosts on different APIs.
+ *
+ * `cx@` really is untouched, for a different reason than the old comment gave:
+ * `openaiCodexProfile` builds `CodexAPIFormat` unconditionally and never calls
+ * this function at all.
  *
  * Pick the verification model carefully. /v1/models is a CATALOGUE, not a served
  * set: of those six ids, only `gpt-5.3-codex` actually answers 200 on
@@ -259,7 +281,7 @@ export const openaiProfile: ProviderProfile = {
     // Claude Code always sends tools, so requires-responses models must get the
     // whole Responses-API slice (endpoint + CodexAPIFormat payload + responses
     // SSE) swapped together — same composition the Zen profile uses for gpt-*.
-    if (requiresResponsesApi(ctx.modelName)) {
+    if (requiresResponsesApi(ctx.modelName, ctx.catalogCachePath)) {
       const responsesProvider = { ...ctx.provider, apiPath: "/v1/responses" };
       const transport = new OpenAIProviderTransport(responsesProvider, ctx.modelName, ctx.apiKey);
       const adapter = new CodexAPIFormat(ctx.modelName);
