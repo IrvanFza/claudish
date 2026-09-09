@@ -536,7 +536,8 @@ async function runCli() {
   const { createDiagOutput } = await import("./diag-output.js");
   const { findAvailablePort } = await import("./port-manager.js");
   const { createProxyServer } = await import("./proxy-server.js");
-  const { checkForUpdates } = await import("./update-checker.js");
+  const { checkForUpdatesInteractive } = await import("./update-prompt.js");
+  const { printLogo } = await import("./branding.js");
   const { warmCatalogIfNeeded } = await import("./launcher/catalog-warm.js");
   endImports();
 
@@ -647,6 +648,18 @@ async function runCli() {
       process.exit(0);
     }
 
+    // Interactive banner. First thing a human sees, so it goes before the
+    // first-run confirmation and the update prompt below. On stderr with the
+    // rest of the launcher chatter, so a caller reading claudish's stdout
+    // (`--stdin`, a piped session) never has to parse around it.
+    //
+    // The gate matches the update check's below, so the prompt never appears
+    // without its banner: `quiet` already covers --json (parseArgs forces quiet
+    // for JSON output) and every single-shot run.
+    if (cliConfig.interactive && !cliConfig.quiet && process.stderr.isTTY) {
+      printLogo(process.stderr, { version: getVersion() });
+    }
+
     // First-run auto-approve confirmation
     // Auto-approve is enabled by default, but on first run we confirm with the user.
     // If user explicitly passed --no-auto-approve, skip the prompt entirely.
@@ -722,11 +735,24 @@ async function runCli() {
       }
     }
 
-    // Check for updates (only in interactive mode, skip in JSON output mode)
+    // Check for updates (only in interactive mode, skip in JSON output mode).
+    // Interactive runs OFFER the update rather than only announcing it; a
+    // successful install leaves this process running the version it replaced,
+    // so the only correct next step is to exit and let the user run again.
+    // `--stdin` has no human to answer, so it degrades to the notice.
     if (cliConfig.interactive && !cliConfig.jsonOutput) {
-      await traceSpan("startup:update-check", () =>
-        checkForUpdates(getVersion(), { quiet: cliConfig.quiet })
+      const updateStep = await traceSpan(
+        "startup:update-check",
+        () =>
+          checkForUpdatesInteractive(getVersion(), {
+            quiet: cliConfig.quiet,
+            canPrompt: !cliConfig.stdin,
+          }),
+        { mayIncludeUserPrompt: true }
       );
+      if (updateStep === "restart-required") {
+        process.exit(0);
+      }
     }
 
     // Check if Claude Code is installed

@@ -499,7 +499,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Reset accumulated cost statistics
       config.resetCosts = true;
     } else if (arg === "--version") {
-      printVersion();
+      await printVersion();
       process.exit(0);
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
@@ -1197,10 +1197,37 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
 // now go directly through `getRecommendedModels()` in model-loader.ts.
 
 /**
- * Print version information
+ * Print version information.
+ *
+ * Two renderings, because `--version` has two audiences:
+ *  - piped or redirected (`VERSION=$(claudish --version)`, the Homebrew release
+ *    test in release.yml) gets the single parseable line it always got, and no
+ *    network call;
+ *  - a TTY gets the wordmark, the version, and — if npm has a newer build — the
+ *    update notice.
+ *
+ * The update lookup is cache-first (24h, shared with the startup check). On a
+ * cold cache it makes ONE short attempt: `--version` must stay quick, so a slow
+ * registry costs 1.5s and then prints nothing rather than stalling.
  */
-function printVersion(): void {
-  console.log(`claudish version ${VERSION}`);
+async function printVersion(): Promise<void> {
+  if (!process.stdout.isTTY) {
+    console.log(`claudish version ${VERSION}`);
+    return;
+  }
+
+  const { printLogo } = await import("./branding.js");
+  printLogo(process.stdout, { version: VERSION, trailingBlankLine: false });
+
+  const { getLatestVersionCached, isUpgrade, formatUpdateNotice } = await import(
+    "./update-checker.js"
+  );
+  const latestVersion = await getLatestVersionCached({ timeoutMs: 1500 });
+  if (latestVersion && isUpgrade(latestVersion, VERSION)) {
+    console.log("");
+    console.log(formatUpdateNotice(VERSION, latestVersion));
+  }
+  console.log("");
 }
 
 /**
