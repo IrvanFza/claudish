@@ -67,6 +67,59 @@ that runs the real CLI under Bun, which runs `claude`, so signalling the direct
 child reaches only the launcher and leaves the tree billing and holding the
 response pipe open.
 
+## `outputSize` is not a progress signal, and callers read it as one
+
+`outputSize` is written exactly once per slot, in `finish()`, so a RUNNING slot
+carries the `0` it was initialised with for its whole life. This is correct — the
+field means "size of the final answer" and there is no final answer yet — and it
+is also the single most misread number the tool emits.
+
+Measured 2026-09-08, session `dev-feature-advisor-any-model-20260909-0001`: an
+orchestrator polling a four-slot review panel saw
+
+```json
+"01": { "state": "RUNNING", "exitCode": null, "outputSize": 0 }
+```
+
+against a `startedAt` twenty-two minutes old, and told the user the slot had
+produced nothing in twenty-two minutes. It had produced plenty;
+`idle_seconds_by_slot` for that slot was 2. The orchestrator caught itself on the
+next poll and had to correct the report in front of the user.
+
+Nothing in the payload contradicted the misreading. The `note` explained
+`idle_seconds_by_slot` and `activity_by_slot` and said nothing about
+`outputSize`, and the skill's own step-2 example showed `outputSize` on the
+COMPLETED slot and omitted it from the RUNNING one — the one place a reader could
+have been warned instead skipped the case.
+
+**The fix publishes the number that was already being counted.**
+`ModelRuntime.getByteCount()` has always tracked answer bytes as they arrive, in
+the same unit `outputSize` ends up holding (recovered prose, not raw
+stream-json). `teamSlotLiveBytes()` exports it and `mode: "status"` returns it as
+`live_output_bytes_by_slot`. A running slot now has a true volume number beside
+its true liveness numbers.
+
+**`outputSize` itself was deliberately not changed.** Making it report live bytes
+while RUNNING would have made the misleading number true, at the cost of the one
+distinction a caller actually needs: `formatTeamResult` and `classifyRunOutput`
+both read `outputSize` as final-answer size, and an EMPTY slot is defined by that
+field being small. Overload it and `0` no longer separates "still working" from
+"exited having produced nothing". One name, one meaning.
+
+**The note is keyed on RUNNING, not on liveness.** The previous note appeared only
+when `teamSlotIdleSeconds()` returned non-null, i.e. only for runs this server
+spawned. A run whose server restarted under it still shows RUNNING slots from
+`status.json`, with all three liveness maps null — which is precisely a reader
+about to misjudge an `outputSize` of 0, and now the one who most needs telling.
+The not-live wording names no liveness field, because naming a null field sends
+the reader after evidence that is not there.
+
+Guarded by `packages/cli/src/team-status-payload.test.ts`. The load-bearing
+assertion is the ordering one: `outputSize` must appear in the note BEFORE
+`live_output_bytes_by_slot`. A plain "does the note mention outputSize" check
+survives gutting the warning, because the remedy clause mentions the field too;
+the ordering check does not.
+
 ## Why `run` does not block
 
 A team slot is a full Claude Code session and can legitimately work for a long

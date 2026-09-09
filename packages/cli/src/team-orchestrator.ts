@@ -241,6 +241,7 @@ interface LiveTeamRun {
   processes: Map<string, ChildProcess>;
   idleMsFor: (slotId: string) => number | null;
   activityFor: (slotId: string) => string | null;
+  liveBytesFor: (slotId: string) => number | null;
   /** Marked before the signal, so the exit handler can tell stopped from crashed. */
   cancelledSlots: Set<string>;
 }
@@ -297,6 +298,34 @@ export function teamSlotActivity(teamSessionId: string): Record<string, string> 
   for (const slotId of run.processes.keys()) {
     const activity = run.activityFor(slotId);
     if (activity !== null) out[slotId] = activity;
+  }
+  return out;
+}
+
+/**
+ * Bytes of ANSWER each still-running slot has produced so far, or null for a run
+ * that is not live here.
+ *
+ * The field `outputSize` is not this. `outputSize` is written once, in `finish()`,
+ * so it reads 0 for the whole life of a RUNNING slot however much that slot has
+ * written — and a caller that reads it as progress concludes a working slot
+ * produced nothing. That misreading is the reason this exists.
+ *
+ * Same unit as `outputSize`, deliberately: both count recovered answer prose, so
+ * this number grows into the one the slot finishes with. It lags by at most one
+ * unterminated line, which the stream-json reducer holds back until its newline
+ * arrives (see `ModelRuntime.flushPartial`).
+ *
+ * Volume, not liveness. Read it with `teamSlotIdleSeconds` and `teamSlotActivity`:
+ * a slot can legitimately sit at 0 B for minutes while a build runs.
+ */
+export function teamSlotLiveBytes(teamSessionId: string): Record<string, number> | null {
+  const run = liveTeamRuns.get(teamSessionId);
+  if (!run) return null;
+  const out: Record<string, number> = {};
+  for (const slotId of run.processes.keys()) {
+    const bytes = run.liveBytesFor(slotId);
+    if (bytes !== null) out[slotId] = bytes;
   }
   return out;
 }
@@ -1463,6 +1492,7 @@ export async function startModels(
     processes,
     idleMsFor: (slotId) => runtimes.get(slotId)?.getIdleMs() ?? null,
     activityFor: (slotId) => runtimes.get(slotId)?.getActivity() ?? null,
+    liveBytesFor: (slotId) => runtimes.get(slotId)?.getByteCount() ?? null,
     cancelledSlots,
   });
 

@@ -21,7 +21,8 @@ lives in `ROADMAP.md`.
 - `mcp-channel.md` — MCP tool surface, channel wire format, progress keepalive
 - `team-capture.md` — why `team`'s exit 0 proves nothing
 - `team-lifecycle.md` — why no slot is ever killed on a timer, why `run` returns before its
-  children finish, idle time as information, and why `keepUnrecognizedJson` is an option
+  children finish, idle time as information, why `outputSize` reads 0 on a RUNNING slot and
+  what to read instead, and why `keepUnrecognizedJson` is an option
   rather than one rule for both the channel and `team`
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
 
