@@ -288,3 +288,78 @@ remap happened rather than gaining a new special case.
 The general lesson: **any code that branches on an HTTP status downstream of the
 remap is suspect.** Grep for `status ===` under `handlers/` before assuming a new
 one is safe.
+
+## The catalog's endpoint contract has two halves (v9.0.7)
+
+`gpt-6-astra` was in the catalog and could not run. The child exited 1 on
+
+```
+400 unknown_parameter — "Unknown parameter: 'max_output_tokens'."
+```
+
+`max_output_tokens` is not a wrong parameter. It is the RESPONSES spelling, and
+the catalog says so in the same record that names it:
+
+```json
+{ "modelId": "gpt-6-astra",
+  "endpoints": { "openai": { "api": "responses",
+                             "toolsWithReasoning": "requires-responses" } },
+  "tokenParam": "max_output_tokens" }
+```
+
+claudish read `tokenParam` (in `OpenAIAPIFormat.tokenParamName`) and ignored
+`endpoints.openai.api`. `lookupModelEndpoint` had been written for that field
+and had **never had a caller**. So the request carried the Responses parameter
+name to the Chat Completions endpoint.
+
+Reading one half is worse than reading neither. Had the gate ignored
+`tokenParam` too, the name rule would have guessed `max_tokens` and the request
+would have been merely suboptimal instead of rejected. A parameter name is only
+meaningful against the API it belongs to, so the two fields must be read
+together or not at all.
+
+**Why the name rule could not survive.** `requiresResponsesApi` decided the wire
+API from `/^gpt-5\.6/ || includes("codex")`. `gpt-6-astra` shipped 2026-09-03
+and matches neither. This is the failure mode CLAUDE.md names — *a default is a
+rule, never a pinned id* — arriving on a schedule nobody controls: the rule was
+correct when written and was falsified by a release. The gate now reads the
+catalog first and keeps the name rule as the cold-cache fallback, the same
+catalog-first shape `tokenParamName` already used for the sibling question.
+
+**The catalog may only WIDEN that gate, never narrow it.**
+`OpenAIProviderTransport.getEndpoint()` independently forces `/v1/responses` for
+any name containing `codex`. A catalog record that said "chat completions" for
+such an id would put an `OpenAIAPIFormat` body on a Responses endpoint — the
+same format/endpoint split the Zen Go MiniMax bug produced, in the other
+direction. The name rule therefore stays an unconditional `||`.
+
+### A hint that infers must not outrank a body that states
+
+The same 400 was rendered as:
+
+```
+Input too large. Reduce message history or use a larger-context model.
+```
+
+for a 6.7 KB prompt against a 1.05M window. `getRecoveryHint`'s 400 branch
+detects an oversized prompt with `lower.includes("token")`, and OpenAI's
+parameter NAMES contain that word — `max_output_tokens`,
+`max_completion_tokens`. So a parameter rejection matched the size test and the
+advice contradicted the body printed beside it on the same line. A reader
+following it would shrink a prompt that was never the problem.
+
+`isRequestShapeError` (`handlers/shared/request-shape.ts`) now runs first and
+reads the provider's own `code`. It is deliberately narrow: a genuine overflow
+names a LENGTH, not a parameter (`context_length_exceeded`, "maximum context
+length is N tokens"), so widening the predicate is how the size hint — which
+still has to work — gets broken.
+
+This is the third entry in this file where a heuristic talked over a provider
+that had already stated the fact, after `RegionError`'s link and MiniMax's plan
+wording. The general lesson: **when the provider ships a structured `code`,
+branch on it before pattern-matching its prose.** Prose heuristics are for
+providers that give you nothing else.
+
+Note the status here is safe to branch on: `getRecoveryHint` is called with the
+raw `response.status` at the upstream error site, upstream of the remap
+described above.
