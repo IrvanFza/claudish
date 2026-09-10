@@ -166,6 +166,13 @@ export interface AdvisorModelStatus {
   callable: boolean;
   /** Env-var name of the credential it needs, e.g. `OPENAI_API_KEY`. */
   credentialName: string;
+  /**
+   * Why this model is uncallable for a reason that is NOT a missing credential
+   * — today, an alias the live catalog could not resolve to a wire id
+   * (`AdvisorRoute.unresolvedAlias`). Present ⇒ `callable` is false, and this
+   * sentence replaces the missing-credential one in the refusal or the notice.
+   */
+  unresolved?: string;
 }
 
 /** Pure: status of one model given its route and credential presence. */
@@ -174,11 +181,25 @@ export function advisorModelStatus(
   route: AdvisorRoute,
   presence: AdvisorCredentialPresence
 ): AdvisorModelStatus {
+  const credentialName = advisorCredentialEnvName(route.credential);
+  // A key cannot make an unsendable id sendable, so this outranks presence.
+  if (route.unresolvedAlias) {
+    return {
+      model,
+      route,
+      callable: false,
+      credentialName,
+      unresolved:
+        `${model} is a claudish alias, not a model id ${route.host} accepts, and the model ` +
+        "catalog holds no id for it (it is cold or has never been fetched), so claudish would " +
+        `have to POST "${route.unresolvedAlias}" verbatim`,
+    };
+  }
   return {
     model,
     route,
     callable: presence[route.credential] === true,
-    credentialName: advisorCredentialEnvName(route.credential),
+    credentialName,
   };
 }
 
@@ -189,6 +210,11 @@ export function describeMissingCredential(s: AdvisorModelStatus): string {
     `${s.model} calls ${s.route.host} and needs ${s.credentialName}${also ? ` (or ${also})` : ""}; ` +
     "none found in env, config, keychain or 1Password"
   );
+}
+
+/** Why a model cannot be called: its own reason when it has one, else the credential. */
+function describeUncallable(s: AdvisorModelStatus): string {
+  return s.unresolved ?? describeMissingCredential(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +429,7 @@ export function decideAdvisorStartup(facts: AdvisorLaunchFacts): AdvisorStartupD
       kind: "refuse",
       reason:
         `advisor panel model${missingPanel.length > 1 ? "s" : ""} cannot be called: ` +
-        `${missingPanel.map(describeMissingCredential).join("; ")}. ` +
+        `${missingPanel.map(describeUncallable).join("; ")}. ` +
         "Set the key, or remove the model from --advisor.",
     };
   }
@@ -416,7 +442,7 @@ export function decideAdvisorStartup(facts: AdvisorLaunchFacts): AdvisorStartupD
       return {
         kind: "refuse",
         reason:
-          `collector ${describeMissingCredential(cs)}. ` +
+          `collector ${describeUncallable(cs)}. ` +
           'Set the key, name another collector ("a,b:collector"), or end the value with ":" for no collector.',
       };
     }
@@ -428,9 +454,13 @@ export function decideAdvisorStartup(facts: AdvisorLaunchFacts): AdvisorStartupD
     // (fetchMultiModelAdvice's fallback); the end result is unchanged, it is
     // only made visible, and the call that cannot succeed is skipped.
     effectiveCollector = null;
-    collectorLine =
-      `none — the default collector ${cs.model} needs ${cs.credentialName}, which was not ` +
-      "found; panel answers will be concatenated";
+    collectorLine = cs.unresolved
+      ? // Same rule, other cause: an alias the catalog could not resolve. Sending
+        // it anyway is a guaranteed rejection from the endpoint, so the DEFAULTED
+        // collector is dropped here too rather than failing on the first call.
+        `none — ${cs.unresolved}; panel answers will be concatenated`
+      : `none — the default collector ${cs.model} needs ${cs.credentialName}, which was not ` +
+        "found; panel answers will be concatenated";
   } else if (cs) {
     collectorLine = describeRoute(cs);
   }

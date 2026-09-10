@@ -38,7 +38,7 @@ import { lookupModelTokenParam } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
 import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
-import { getCatalogEntries } from "../providers/catalog-client.js";
+import { getCatalogEntries, latestAnthropicTierModelId } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
@@ -736,7 +736,7 @@ export function joinOrStartAdvisorCall(
   sessionId: string | undefined,
   start: () => Promise<AdvisorToolResult>
 ): { promise: Promise<AdvisorToolResult>; joined: boolean } {
-  const key = `${sessionKeyFor(sessionId)} ${toolUseId}`;
+  const key = `${sessionKeyFor(sessionId)}\u0000${toolUseId}`;
   const existing = inFlightAdvisorCalls.get(key);
   if (existing) return { promise: existing, joined: true };
 
@@ -1328,6 +1328,140 @@ export function extractBlocksAsText(content: any): string {
     .join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// What the PANEL is asked (the transcript, minus claudish's own plumbing)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the tool_result for the call BEING ANSWERED is replaced with.
+ *
+ * Claude Code has no local implementation of the function tool claudish swaps
+ * in, so it answers its own tool_use with `Error: No such tool available:
+ * advisor` and claudish replaces that on the way upstream. The panel, however,
+ * was handed the transcript with the error still in it, and answered about the
+ * error: run C returned 2964 bytes beginning "The requested workflow is
+ * currently impossible because the runtime explicitly ret…", and in run B the
+ * advisors scolded the main model for "passing {}". Neither is the question.
+ *
+ * The block is not deleted, because a tool_use with no tool_result is a
+ * malformed transcript for several of the panel endpoints. It is neutralised.
+ */
+const ADVISOR_PLUMBING_MARKER =
+  "(handled by the claudish proxy — this advisor call is what you are being asked to answer; there is no local tool output)";
+
+/** Fields an advisor `input` object may carry the question in, most specific first. */
+const ADVISOR_QUESTION_FIELDS = [
+  "question",
+  "prompt",
+  "query",
+  "request",
+  "task",
+  "topic",
+  "context",
+  "input",
+  "text",
+] as const;
+
+/** Cap on the question text quoted back to the panel. */
+const MAX_ADVISOR_QUESTION_CHARS = 4000;
+
+/**
+ * The question an advisor `tool_use` asked, from its own `input`, or null when
+ * it carries none.
+ *
+ * The swapped tool declares an EMPTY input schema ("takes no arguments; the
+ * advisor will read the full conversation history"), so `{}` is the expected
+ * case and not an error — it means "advise on the conversation", which
+ * `advisorQuestionMessage` then says in words. A model that ignores the schema
+ * and passes a field anyway is taken at its word: that field IS the question.
+ */
+export function describeAdvisorQuestion(input: unknown): string | null {
+  const clip = (s: string) =>
+    s.length > MAX_ADVISOR_QUESTION_CHARS
+      ? `${s.slice(0, MAX_ADVISOR_QUESTION_CHARS)}…`
+      : s || null;
+  if (typeof input === "string") return clip(input.trim());
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const obj = input as Record<string, unknown>;
+  for (const field of ADVISOR_QUESTION_FIELDS) {
+    const value = obj[field];
+    if (typeof value === "string" && value.trim().length > 0) return clip(value.trim());
+  }
+  if (Object.keys(obj).length === 0) return null;
+  try {
+    return clip(JSON.stringify(obj));
+  } catch {
+    return null;
+  }
+}
+
+/** The final user turn: what the panel is being asked, stated plainly. */
+function advisorQuestionMessage(question: string | null): string {
+  const body =
+    question === null
+      ? "The assistant named no explicit question, so its question is the conversation itself: " +
+        "advise it on the decision it now faces, the risks in the approach it has taken, and what " +
+        "it should do next."
+      : `The assistant's question is:\n\n${question}`;
+  return (
+    "[claudish] The coding assistant paused the work above and consulted its advisor. " +
+    "You are the advisor.\n\n" +
+    `${body}\n\n` +
+    "Answer that question, using the conversation above as context. The advisor tool is provided " +
+    "by the claudish proxy and has no implementation inside the assistant's harness, so any tool " +
+    "error about it is plumbing: do not treat it as the subject, and do not comment on how the " +
+    "call was made."
+  );
+}
+
+/**
+ * The message list ONE advisor call sends to every panel model: the whole
+ * conversation, minus claudish's own plumbing error for THIS call, plus a final
+ * user turn stating the question.
+ *
+ * Detection is STRUCTURAL — the `tool_use_id` of the call being answered, which
+ * claudish minted the record for — never the error phrase. Text the harness or
+ * the model wrote is untrusted input, and a phrase test would neutralise any
+ * tool result that merely quoted the phrase (the same trap
+ * `reportUnrecordedAdvisorCalls` documents). No OTHER tool_result is touched:
+ * another tool's output is legitimate context.
+ *
+ * Returns a new list; the caller's payload, which is the live upstream request,
+ * is never mutated — only the messages and blocks that change are copied.
+ */
+export function prepareAdvisorPanelMessages(messages: unknown, toolUseId: string): any[] {
+  if (!Array.isArray(messages)) return [];
+  let question: string | null = null;
+
+  const prepared = messages.map((msg: any) => {
+    if (!msg || typeof msg !== "object" || !Array.isArray(msg.content)) return msg;
+    let changed = false;
+    const content = msg.content.map((block: any) => {
+      if (!block || typeof block !== "object") return block;
+      if (block.type === "tool_use" && block.name === ADVISOR_TOOL_NAME && block.id === toolUseId) {
+        question ??= describeAdvisorQuestion(block.input);
+        return block;
+      }
+      if (block.type === "tool_result" && block.tool_use_id === toolUseId) {
+        changed = true;
+        return {
+          ...block,
+          content: [{ type: "text", text: ADVISOR_PLUMBING_MARKER }],
+          is_error: false,
+        };
+      }
+      return block;
+    });
+    return changed ? { ...msg, content } : msg;
+  });
+
+  prepared.push({
+    role: "user",
+    content: [{ type: "text", text: advisorQuestionMessage(question) }],
+  });
+  return prepared;
+}
+
 const ADVISOR_SYSTEM_PROMPT = `You are a strategic advisor to a coding agent. \
 You have been given the full conversation history between a user and a Claude Code \
 coding assistant. The assistant has paused to consult you for guidance.
@@ -1374,6 +1508,14 @@ export interface AdvisorRoute {
   credential: AdvisorRouteKind;
   /** The model id placed in the request body, after catalog resolution. */
   wireModel: string;
+  /**
+   * Set to the ALIAS when `wireModel` is one the live catalog could not resolve
+   * to an id the endpoint accepts — `haiku` with a cold catalog. Such a route
+   * must NEVER be POSTed: `haiku` is claudish/Claude Code vocabulary, and
+   * api.anthropic.com rejects it. Startup refuses a collector the user named
+   * and drops a DEFAULTED one; the runtime reports it as a collector failure.
+   */
+  unresolvedAlias?: string;
 }
 
 const ADVISOR_ENDPOINTS: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze({
@@ -1408,11 +1550,17 @@ export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"):
 
   if (role === "collector" && isAnthropicModel(parsed)) {
     const model = parsed.model;
-    const aliasResolved =
-      model === "haiku" || model === "sonnet" || model === "opus"
-        ? findEntryByAlias(model)?.modelId
-        : null;
-    return routeOf("anthropic", aliasResolved ?? model);
+    const tier = anthropicTierAlias(model);
+    if (!tier) return routeOf("anthropic", model);
+    // Two LIVE sources, no pinned id: the catalog's own alias table, then the
+    // "newest `claude-<tier>-*` the catalog lists" rule `--probe` already uses.
+    // The alias itself is never the answer — it used to fall through as
+    // `?? model`, so the default collector POSTed the literal `haiku` to
+    // api.anthropic.com, which rejects it, after the notice had told the user
+    // `haiku -> api.anthropic.com (ANTHROPIC_API_KEY, billed per token)`.
+    const resolved = findEntryByAlias(model)?.modelId ?? latestAnthropicTierModelId(tier);
+    if (!resolved) return { ...routeOf("anthropic", model), unresolvedAlias: model };
+    return routeOf("anthropic", resolved);
   }
 
   const provider = parsed.provider;
@@ -2084,6 +2232,17 @@ async function callAdvisorModel(
   return executeAdvisorFetch(plan, fetchImpl);
 }
 
+/**
+ * The Claude Code TIER an advisor spec names as a bare alias (`haiku`), or null
+ * for anything already spelled as a model id (`claude-haiku-4-5`). Only an
+ * alias needs resolving; an id is passed through as the user wrote it, because
+ * the API may serve a model newer than the catalog.
+ */
+function anthropicTierAlias(model: string): "opus" | "sonnet" | "haiku" | null {
+  const m = model.toLowerCase();
+  return m === "opus" || m === "sonnet" || m === "haiku" ? m : null;
+}
+
 function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
   const m = parsed.model.toLowerCase();
   return (
@@ -2136,6 +2295,19 @@ async function callCollectorModel(
       .join("\n\n");
 
     const route = advisorRouteFor(collectorSpec, "collector");
+
+    // An alias the catalog could not resolve is refused HERE rather than POSTed:
+    // startup normally refuses or drops such a collector first, so this covers
+    // the paths that never ran it (legacy env-var mode, a cache that went cold
+    // after launch). The panel's own answers are still delivered.
+    if (route.unresolvedAlias) {
+      throw new Error(
+        `"${route.unresolvedAlias}" is a claudish alias, not a model id ${route.host} accepts, and ` +
+          "the model catalog holds no id for it, so claudish refused to send it. Name the " +
+          'collector by its full model id (for example "claude-haiku-4-5"), or refresh the ' +
+          "catalog (`claudish --models-refresh`)."
+      );
+    }
 
     if (route.kind === "anthropic") {
       plan = planAnthropicCollector(collectorSpec, route, adviceText, apiKeys.anthropic);
@@ -2403,8 +2575,14 @@ export interface RunAdvisorCallParams {
 export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<AdvisorCallOutcome> {
   const { toolUseId, messages, models, collector, apiKeys, fetchImpl } = params;
 
+  // What the panel is ASKED: the transcript with claudish's own "No such tool"
+  // plumbing for THIS call neutralised, and the advisor's question stated last.
+  // Built once and shared by every panel model, so they all answer the same
+  // question. Never mutates `messages` — it is the live upstream payload.
+  const panelMessages = prepareAdvisorPanelMessages(messages, toolUseId);
+
   const panel = await Promise.all(
-    models.map((m) => callAdvisorModel(m, messages, apiKeys, fetchImpl))
+    models.map((m) => callAdvisorModel(m, panelMessages, apiKeys, fetchImpl))
   );
   const successful = panel.filter(
     (o): o is AdvisorModelOutcome & { text: string } => o.origin === "upstream"
