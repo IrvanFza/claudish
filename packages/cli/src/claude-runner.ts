@@ -1273,6 +1273,120 @@ export function resolveAdvisorToolEnv(
   return { vars: { [ADVISOR_TOOL_ENV_VAR]: "1" }, source: "claudish" };
 }
 
+/**
+ * The advisor model claudish names for the SPAWNED Claude Code.
+ *
+ * It exists for one reason: to get past Claude Code's own gate. The function that
+ * builds the advisor tool spec opens `if(!eA()||!e)return;` where `e` is the
+ * advisor MODEL, and there is no default anywhere — with no `--advisor <model>`,
+ * no `advisorModel` setting and no `/advisor` command, `e` is `undefined`, so no
+ * tool entry and no advisor system prompt are emitted at all (research:
+ * `claude-code-gate-v2.md` §0, §4). That is why every real run reported
+ * "request offers N tool(s) but no advisor".
+ *
+ * **This model is never actually consulted.** claudish intercepts the advisor
+ * call and answers it with its own multi-model panel, so the name only has to be
+ * one Claude Code ACCEPTS, not one anybody wants an answer from.
+ *
+ * `sonnet` is verified acceptable against that document: it is one of the three
+ * public aliases in the `/advisor` picker's own list (`Cmo=["fable","opus",
+ * "sonnet"]`, §2) and one of the three Claude Code's own warning text tells users
+ * to switch to (§7). It clears the advisor-model checks: `Tr()` (account
+ * entitlement) passes for a public alias; the fable/credits refusal
+ * (`Wg && dve()`) applies only to `claude-fable-*`; and rank >= 2 (`Gcn`) plus the
+ * base/advisor rank pairing (`ofe`) are short-circuited outright by
+ * `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`, which `resolveAdvisorToolEnv`
+ * has already set (§8).
+ */
+export const CLAUDISH_CHILD_ADVISOR_MODEL = "sonnet";
+
+/** Where the child's advisor MODEL came from. Mirrors `AdvisorToolEnv.source`. */
+export interface AdvisorModelArg {
+  /** Argv to append for the child. Empty unless claudish is the one naming a model. */
+  args: string[];
+  /** The model that will be in effect, whoever chose it. Undefined only when `off`. */
+  model?: string;
+  /**
+   * `claudish` — we named {@link CLAUDISH_CHILD_ADVISOR_MODEL}; `inherited` — the
+   * user's own Claude Code settings already define `advisorModel` and we passed
+   * nothing, so theirs stands; `off` — `--advisor` was not given on this launch.
+   * The startup notice (advisor-startup.ts) reports which; nothing prints it here.
+   */
+  source: "claudish" | "inherited" | "off";
+}
+
+/**
+ * The `advisorModel` the user's own Claude Code settings resolve to, or undefined.
+ *
+ * Reuses the same source list and the same tolerant parser as
+ * `discoverUserStatusLineCommand`, plus the managed-settings file that
+ * `managedSettingsForcesClaudeAi` reads — one settings reader, not two.
+ *
+ * Precedence is Claude Code's, LAST WINS, with the OS *managed* tier last because
+ * it is the one tier nothing can override. A tier that sets the key to a
+ * non-string or an empty string CLEARS it rather than being skipped, because
+ * that is what Claude Code's own reader does:
+ * `typeof e.advisorModel==="string" && e.advisorModel!=="" ? … : undefined`.
+ *
+ * Never throws: this runs on the launch path, and a malformed settings file must
+ * not be able to stop a session from starting.
+ */
+export function discoverUserAdvisorModel(
+  claudeArgs: string[] = [],
+  cwd: string = process.cwd()
+): string | undefined {
+  const sources = userSettingsFileCandidates(cwd).filter((file) => existsSync(file));
+
+  // An explicit --settings value outranks the files but not the managed tier. It is
+  // pushed unfiltered because it may be inline JSON rather than a path.
+  const idx = claudeArgs.indexOf("--settings");
+  const settingsArg = idx === -1 ? undefined : claudeArgs[idx + 1];
+  if (settingsArg) sources.push(settingsArg);
+
+  const managed = managedSettingsPath();
+  if (existsSync(managed)) sources.push(managed);
+
+  let effective: string | undefined;
+  for (const source of sources) {
+    const layer = parseSettingsArgSafe(source);
+    if (!layer || !("advisorModel" in layer)) continue;
+    const value = layer.advisorModel;
+    effective = typeof value === "string" && value !== "" ? value : undefined;
+  }
+  return effective;
+}
+
+/**
+ * Decide the advisor-MODEL argv for the spawned Claude Code.
+ *
+ * The `--advisor <model>` FLAG is used rather than writing `advisorModel` into the
+ * temp `--settings` overlay, because the child reads the flag first and falls back
+ * to the settings key only when the flag is absent (research §4: `bi=Oe??MWt()`),
+ * and the research found no print-mode exclusion for it — `-p` drives the same
+ * engine, and the flag is on Claude Code's recognised-flag lists, so it cannot be
+ * mistaken for the positional prompt. It also takes exactly one value, so it does
+ * not swallow anything that follows.
+ *
+ * The user's own choice is never overridden: when their settings already define
+ * `advisorModel`, claudish adds NO flag, so their value is what the child resolves.
+ * With `--advisor` absent nothing is added at all — no flag, no settings key.
+ */
+export function resolveAdvisorModelArg(
+  config: ClaudishConfig,
+  cwd: string = process.cwd()
+): AdvisorModelArg {
+  if (!config.advisor) return { args: [], source: "off" };
+
+  const userChoice = discoverUserAdvisorModel(config.claudeArgs, cwd);
+  if (userChoice) return { args: [], model: userChoice, source: "inherited" };
+
+  return {
+    args: ["--advisor", CLAUDISH_CHILD_ADVISOR_MODEL],
+    model: CLAUDISH_CHILD_ADVISOR_MODEL,
+    source: "claudish",
+  };
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
@@ -1326,6 +1440,10 @@ export async function runClaudeWithProxy(
   // mergeUserSettingsIfPresent, which splices --settings out of claudeArgs.
   const userStatusLineCommand = discoverUserStatusLineCommand(config.claudeArgs);
 
+  // Same timing constraint as the status line: this reads the user's --settings
+  // value, which mergeUserSettingsIfPresent splices out of claudeArgs below.
+  const advisorModelArg = resolveAdvisorModelArg(config);
+
   // Create temporary settings file with custom status line for this instance
   const {
     path: tempSettingsPath,
@@ -1341,6 +1459,12 @@ export async function runClaudeWithProxy(
 
   // Add settings file flag (our merged temp file, applies to this instance only)
   claudeArgs.push("--settings", tempSettingsPath);
+
+  // Name an advisor model so Claude Code actually BUILDS the advisor tool. Empty
+  // unless `--advisor` was given and the user's own settings name no advisorModel
+  // (see resolveAdvisorModelArg). Pushed here, ahead of -p and the passthrough
+  // args, so its single value can never be confused with the positional prompt.
+  claudeArgs.push(...advisorModelArg.args);
 
   // Interactive mode - no automatic arguments
   if (config.interactive) {
@@ -1434,6 +1558,14 @@ export async function runClaudeWithProxy(
   if (advisorToolEnv.source !== "off") {
     debugLog(
       `[claude-runner] ${ADVISOR_TOOL_ENV_VAR}=${env[ADVISOR_TOOL_ENV_VAR]} (${advisorToolEnv.source})`
+    );
+  }
+
+  // The model name only — never a credential, and the flag carries none.
+  if (advisorModelArg.source !== "off") {
+    debugLog(
+      `[claude-runner] child advisor model=${advisorModelArg.model} (${advisorModelArg.source}` +
+        `${advisorModelArg.source === "inherited" ? "; user setting kept, no --advisor passed" : " via --advisor"})`
     );
   }
 
