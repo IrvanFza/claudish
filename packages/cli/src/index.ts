@@ -14,9 +14,14 @@ import {
   suppressStartupTraceTerminalOutput,
   traceSpan,
 } from "./startup-trace.js";
-// A leaf that imports NOTHING — see its header. Static here on purpose: it must
-// not drag anything into this file's cold-start graph.
+// Two leaves that import NOTHING — see their headers. Static here on purpose: they
+// must not drag anything into this file's cold-start graph.
 import { canDrawTui } from "./tui/runtime/can-draw-tui.js";
+import {
+  type ModelPickerGate,
+  requiresExplicitModel,
+  shouldOpenPicker,
+} from "./tui/runtime/should-open-picker.js";
 
 // ── Startup-timing analytics (startup-trace.ts) ─────────────────────────────
 // Every launch appends one JSON line to ~/.claudish/startup-metrics.jsonl; a
@@ -783,22 +788,35 @@ async function runCli() {
 
     // Show interactive model selector ONLY when no model configuration exists
     // Skip if: explicit --model, OR profile provides tier mappings (Claude Code uses these internally)
-    const hasProfileTiers =
+    const hasProfileTiers = Boolean(
       cliConfig.modelOpus ||
-      cliConfig.modelSonnet ||
-      cliConfig.modelHaiku ||
-      cliConfig.modelSubagent;
+        cliConfig.modelSonnet ||
+        cliConfig.modelHaiku ||
+        cliConfig.modelSubagent
+    );
     // `--advisor` with no main model is a native session: Claude Code picks its own
-    // model, so there is nothing to select and nothing to demand. Both gates below
-    // were satisfied by --advisor implying --monitor; the predicate replaces that.
+    // model, so there is nothing to select and nothing to demand. It rides INSIDE the
+    // gate below, beside `monitor`, rather than as a separate `&&` at each call site:
+    // a term carried by only one of the two gates is how they drift apart.
     const advisorNativeSession = isAdvisorNativeSession(cliConfig);
-    if (
-      cliConfig.interactive &&
-      !cliConfig.monitor &&
-      !advisorNativeSession &&
-      !cliConfig.model &&
-      !hasProfileTiers
-    ) {
+    // ONE predicate behind BOTH gates below (tui/runtime/should-open-picker.ts), and the
+    // second is the exact complement of the first, so no input can skip the picker
+    // silently AND keep the error quiet. The `interactive` flag alone is not enough:
+    // cli.ts turns it on whenever no prompt was given, which includes `claudish <
+    // /dev/null`, a CI runner and a detached run — none of which can answer a prompt.
+    // Hence the TTY term, from the same oracle the resume picker uses below.
+    const pickerCanDraw = canDrawTui();
+    // Rebuilt per call rather than hoisted: the picker ASSIGNS cliConfig.model between
+    // the two gates, and the second one must see the model the first one obtained.
+    const pickerGate = (): ModelPickerGate => ({
+      interactive: cliConfig.interactive,
+      monitor: cliConfig.monitor,
+      advisorNativeSession,
+      model: cliConfig.model,
+      hasProfileTiers,
+    });
+
+    if (shouldOpenPicker(pickerGate(), pickerCanDraw)) {
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
@@ -808,14 +826,14 @@ async function runCli() {
       console.log(""); // Empty line after selection
     }
 
-    // In non-interactive mode, model must be specified (via --model, env var, or profile)
-    if (
-      !cliConfig.interactive &&
-      !cliConfig.monitor &&
-      !advisorNativeSession &&
-      !cliConfig.model &&
-      !hasProfileTiers
-    ) {
+    // No picker could run — non-interactive, or no terminal to draw one on — so the
+    // model has to come from the command line (--model, env var, or profile). NOT a
+    // fallback to the line-oriented prompt: in a non-TTY that prompt is the bug, not
+    // the safety net, so "falling back" would be falling back to a hang. These three
+    // lines — naming four ways to supply a model — are what a piped bare `claudish`
+    // prints now, where it used to paint a provider list into stdout and then block
+    // forever (measured: 195 bytes of menu, cursor-hide escape, killed at 45s).
+    if (requiresExplicitModel(pickerGate(), pickerCanDraw)) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag, set CLAUDISH_MODEL env var, or use --profile");
       console.error("Try: claudish --models");
