@@ -64,6 +64,7 @@ import {
   missingAdvisorResult,
   prepareLegacyStubResult,
   recordAdvisorEventsFromResponseBody,
+  recoverUnassociatedAdvisorResult,
   reportUnrecordedAdvisorCalls,
   resolveAdvisorCredential,
   rewriteAdvisorToolResults,
@@ -346,7 +347,12 @@ async function applyAdvisorRequestSide(
             apiKeys,
             cfg,
           });
-          markAdvisorCallConsumed(id, outcome.result, sessionId);
+          // The false return is honoured, never dropped: an answer claudish
+          // cannot attach to the call is an answer the model will not receive,
+          // so the model is told that and the log is corrected to match.
+          if (!markAdvisorCallConsumed(id, outcome.result, sessionId)) {
+            return recoverUnassociatedAdvisorResult(cfg, outcome);
+          }
           return outcome.result;
         };
 

@@ -503,8 +503,23 @@ export async function evaluateAdvisorStartup(
   const early = refusalBeforeCredentials({ childEnv, mainModels, panel });
   if (early) return { kind: "refuse", reason: early };
 
-  const panelRoutes = panel.map((m) => routeAdvisorModel(m, "panel"));
-  const collectorRoute = collector ? routeAdvisorModel(collector, "collector") : null;
+  // A spec the routing cannot turn into a valid wire id is refused HERE, with
+  // the reason the router gave. `advisorRouteFor` throws for exactly that case
+  // (e.g. a subscription prefix that is not an OpenRouter vendor namespace and
+  // whose model the catalog does not place on OpenRouter); building the invalid
+  // id anyway used to pass startup on the strength of the OpenRouter key alone
+  // and fail on the first advisor call.
+  let panelRoutes: AdvisorRoute[];
+  let collectorRoute: AdvisorRoute | null;
+  try {
+    panelRoutes = panel.map((m) => routeAdvisorModel(m, "panel"));
+    collectorRoute = collector ? routeAdvisorModel(collector, "collector") : null;
+  } catch (err) {
+    return {
+      kind: "refuse",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
   const needed = new Set<AdvisorCredential>(panelRoutes.map((r) => r.credential));
   if (collectorRoute) needed.add(collectorRoute.credential);
   const presence = await deps.resolveCredentials(needed);

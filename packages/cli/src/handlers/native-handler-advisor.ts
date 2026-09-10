@@ -35,8 +35,14 @@
 
 import { appendFileSync } from "node:fs";
 import { credentials } from "../auth/credentials/authority.js";
-import { getLogFilePath, log, logStderr } from "../logger.js";
-import { resolveModelNameSync } from "../providers/catalog-client.js";
+import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
+import { readAllModelsCache } from "../providers/all-models-cache.js";
+import {
+  externalIdFor,
+  getCatalogEntries,
+  resolveExternalId,
+  resolveModelNameSync,
+} from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
@@ -174,12 +180,75 @@ const ORIGIN_RECORD_KINDS: ReadonlySet<string> = new Set([
  * string value — none of `"`, `\` or a structural character is produced — so
  * the scrubbed line is still valid JSON.
  */
+/** What a redacted credential is replaced with, in every sink and in model text. */
+const REDACTED = "[redacted]";
+
 function scrubSecrets(text: string): string {
   return text
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[redacted]")
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}/g, "[redacted]")
-    .replace(/\bxai-[A-Za-z0-9_-]{16,}/g, "[redacted]");
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, `Bearer ${REDACTED}`)
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, REDACTED)
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}/g, REDACTED)
+    .replace(/\bxai-[A-Za-z0-9_-]{16,}/g, REDACTED);
+}
+
+/**
+ * Below this length a "secret" is not distinctive enough to redact BY VALUE:
+ * an empty or one-character key would match everywhere and shred the message.
+ * A real credential is far longer; a short one is caught by shape, or not at all.
+ */
+const MIN_REDACTABLE_SECRET_LENGTH = 8;
+
+/**
+ * THE sanitiser for provider-controlled text, applied ONCE before the text
+ * enters an `AdvisorModelOutcome` — so the model text, the terminal warning and
+ * every log sink all carry the same sanitised value. It used to be applied only
+ * to the log line, and the reason went RAW into the tool_result the MAIN MODEL
+ * reads and into the terminal: a panel endpoint that echoes the key it rejected
+ * ("Incorrect API key provided: sk-…") sent that key across a vendor boundary.
+ *
+ * Two layers:
+ *   1. BY VALUE — the exact credentials presented on THIS call. Nothing else can
+ *      recognise a key with no recognisable shape (a bare uuid, an internal
+ *      token), and this is the only text where such a key can appear at all.
+ *   2. BY SHAPE — the known key formats (`scrubSecrets`), for a credential this
+ *      call did not present: a key quoted by the provider from its own state, or
+ *      one a proxy in between added.
+ *
+ * Replacements only shorten a run of key characters, so a JSON-serialized record
+ * stays valid JSON after `scrubSecrets` runs over it a second time in
+ * `logAdvisorEvent` (defence in depth: a record may carry text from elsewhere).
+ */
+export function sanitizeAdvisorReason(
+  text: string,
+  secretValues: Iterable<string | undefined> = []
+): string {
+  let out = text;
+  for (const secret of secretValues) {
+    const value = secret?.trim();
+    if (!value || value.length < MIN_REDACTABLE_SECRET_LENGTH) continue;
+    out = out.split(value).join(REDACTED);
+  }
+  return scrubSecrets(out);
+}
+
+/**
+ * The credential values a request actually presented, read back from the very
+ * headers that were sent. Taking them from the headers rather than from
+ * `AdvisorApiKeys` is deliberate: it is the exact string on the wire, so a
+ * provider echoing it back is matched character for character.
+ */
+function credentialValuesInHeaders(headers: Record<string, string>): string[] {
+  const values: string[] = [];
+  const bearer = headers.Authorization ?? headers.authorization;
+  if (bearer) values.push(bearer.replace(/^Bearer\s+/i, "").trim());
+  const apiKey = headers["x-api-key"];
+  if (apiKey) values.push(apiKey.trim());
+  return values;
+}
+
+/** Every key an advisor call could have signed with, for by-value redaction. */
+function credentialValuesOf(apiKeys: AdvisorApiKeys): string[] {
+  return Object.values(apiKeys).filter((v): v is string => typeof v === "string");
 }
 
 /**
@@ -192,12 +261,21 @@ function scrubSecrets(text: string): string {
  * (`--debug-claudish`), so a real run can be checked from the debug log alone.
  *
  * The record is serialized and scrubbed ONCE, and the same scrubbed line goes
- * to both sinks. The file used to get the raw record while only the debug
+ * to every sink. The file used to get the raw record while only the debug
  * mirror was scrubbed, so a provider error body that echoed a key landed in
  * clear text in a file that outlives the session.
+ *
+ * ORIGIN RECORDS DO NOT DEPEND ON DEBUG MODE. Provenance is what the design
+ * promises for EVERY advisor call, so `advisor_call`,
+ * `advisor_collector_call` and `advisor_rewrite` are appended to claudish's
+ * always-on log (`~/.claudish/logs/claudish_*.log`, `--log-off` turns it off)
+ * as well. They used to be written only with `--debug-claudish` or an explicit
+ * `CLAUDISH_SWAP_ADVISOR_LOG`, so an ordinary run kept no per-call record at
+ * all. The other kinds — marker greps, body dumps — remain opt-in noise.
  */
 export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, unknown>): void {
-  const record = { ts: new Date().toISOString(), ...event };
+  const ts = new Date().toISOString();
+  const record = { ts, ...event };
   let line: string;
   try {
     line = scrubSecrets(JSON.stringify(record));
@@ -205,16 +283,18 @@ export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, un
     // a record that will not serialize is a logging problem only
     return;
   }
-  if (
-    typeof event.kind === "string" &&
-    ORIGIN_RECORD_KINDS.has(event.kind) &&
-    getLogFilePath() !== null
-  ) {
-    log(`${ADVISOR_ORIGIN_LOG_PREFIX} ${line}`);
+  if (typeof event.kind === "string" && ORIGIN_RECORD_KINDS.has(event.kind)) {
+    if (getLogFilePath() !== null) log(`${ADVISOR_ORIGIN_LOG_PREFIX} ${line}`);
+    appendLine(getAlwaysOnLogPath(), `[${ts}] ${ADVISOR_ORIGIN_LOG_PREFIX} ${line}`);
   }
-  if (!cfg.logPath) return;
+  appendLine(cfg.logPath, line);
+}
+
+/** Appends one complete line to `path`, or does nothing. Never throws. */
+function appendLine(path: string | null | undefined, line: string): void {
+  if (!path) return;
   try {
-    appendFileSync(cfg.logPath, `${line}\n`);
+    appendFileSync(path, `${line}\n`);
   } catch {
     // silent — don't break the proxy if the log file is unwritable
   }
@@ -314,7 +394,12 @@ function logAdvisorMarkers(cfg: AdvisorSwapConfig, text: string): void {
 export const ADVISOR_STUB_PATHS = Object.freeze({
   /** Legacy `CLAUDISH_SWAP_ADVISOR=1` with no panel: the canary stub is delivered. */
   LEGACY_STUB: "S1",
-  /** A recorded call reached the rewrite with no prepared result (internal error). */
+  /**
+   * A recorded call reached the rewrite with no prepared result, or its answer
+   * could not be associated with it because the record was gone by the time the
+   * answer arrived (`reportUnassociatedAdvisorResult`). Either way claudish
+   * holds no result for a call it is answering: an internal error.
+   */
   PREPARED_RESULT_MISSING: "S2",
   /** The canary text itself (`stubAdvisorAdvice`), the advisor-disabled answer. */
   DISABLED_STUB: "S3",
@@ -444,7 +529,34 @@ function sessionKeyFor(sessionId?: string): string {
   return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : NO_SESSION_BUCKET;
 }
 
+/**
+ * How many panel calls are running for a tool-use id right now. Keyed by id
+ * ALONE, not by (session, id): the state entry for an id can live in
+ * `NO_SESSION_BUCKET` while the request running it has a session, so a
+ * session-keyed test would fail to protect exactly the entry that is about to
+ * be adopted. Maintained by `joinOrStartAdvisorCall`.
+ */
+const inFlightByToolUseId = new Map<string, number>();
+
+/**
+ * An id with a panel call IN FLIGHT. Such an entry is never evicted and never
+ * expires: dropping it while its own advice is being fetched means
+ * `markAdvisorCallConsumed` cannot associate the result, the model is handed a
+ * claudish error instead of the advice that did arrive, and the log claims
+ * `origin: "upstream"` for text the model never saw.
+ */
+function isCallInFlight(toolUseId: string): boolean {
+  return (inFlightByToolUseId.get(toolUseId) ?? 0) > 0;
+}
+
+/** True when any call in `bucket` is in flight, which pins the whole bucket. */
+function bucketHasInFlightCall(bucket: Map<string, PendingAdvisorCall>): boolean {
+  for (const id of bucket.keys()) if (isCallInFlight(id)) return true;
+  return false;
+}
+
 function isExpired(call: PendingAdvisorCall, now: number): boolean {
+  if (isCallInFlight(call.toolUseId)) return false;
   return now - call.lastSeenAt > ADVISOR_PENDING_LIMITS.ttlMs;
 }
 
@@ -469,25 +581,35 @@ function touchBucket(key: string): Map<string, PendingAdvisorCall> | undefined {
   return bucket;
 }
 
-/** Returns the bucket for `key`, creating it (and evicting the LRU session) if needed. */
+/**
+ * Returns the bucket for `key`, creating it (and evicting the LRU session) if
+ * needed. A session holding a call IN FLIGHT is skipped: the cap may be
+ * exceeded for as long as that call runs, which is bounded by the panel and
+ * collector timeouts, rather than losing the call's own state under it.
+ */
 function bucketForWrite(key: string): Map<string, PendingAdvisorCall> {
   const existing = touchBucket(key);
   if (existing) return existing;
   const bucket = new Map<string, PendingAdvisorCall>();
   pendingBySession.set(key, bucket);
   while (pendingBySession.size > ADVISOR_PENDING_LIMITS.maxSessions) {
-    const oldest = pendingBySession.keys().next().value;
-    if (oldest === undefined || oldest === key) break;
-    pendingBySession.delete(oldest);
+    const evictable = [...pendingBySession].find(
+      ([k, b]) => k !== key && !bucketHasInFlightCall(b)
+    );
+    if (!evictable) break;
+    pendingBySession.delete(evictable[0]);
   }
   return bucket;
 }
 
-/** Inserts `call` as most-recently-used, evicting the LRU entry past the cap. */
+/**
+ * Inserts `call` as most-recently-used, evicting the LRU entry past the cap —
+ * skipping any entry whose panel call is in flight (see `isCallInFlight`).
+ */
 function putCall(bucket: Map<string, PendingAdvisorCall>, call: PendingAdvisorCall): void {
   bucket.delete(call.toolUseId);
   if (bucket.size >= ADVISOR_PENDING_LIMITS.maxCallsPerSession) {
-    const oldest = bucket.keys().next().value;
+    const oldest = [...bucket.keys()].find((id) => !isCallInFlight(id));
     if (oldest !== undefined) bucket.delete(oldest);
   }
   bucket.set(call.toolUseId, call);
@@ -628,9 +750,29 @@ export function joinOrStartAdvisorCall(
     inFlightAdvisorCalls.delete(oldest);
   }
 
+  // The id counts as in flight from BEFORE `start()` runs, so nothing its own
+  // first await lets in can evict the state entry it is about to fill.
+  inFlightByToolUseId.set(toolUseId, (inFlightByToolUseId.get(toolUseId) ?? 0) + 1);
   // `.finally` (never a `try/finally` inside the IIFE) so the cleanup cannot
   // run before `promise` is assigned: its callback is always a microtask.
-  const promise: Promise<AdvisorToolResult> = start().finally(() => {
+  // The refcount is released unconditionally — the map entry may already have
+  // been dropped by the cap loop above, and a leaked count would pin an entry
+  // for the life of the process.
+  const release = () => {
+    const left = (inFlightByToolUseId.get(toolUseId) ?? 1) - 1;
+    if (left > 0) inFlightByToolUseId.set(toolUseId, left);
+    else inFlightByToolUseId.delete(toolUseId);
+  };
+  let started: Promise<AdvisorToolResult>;
+  try {
+    started = start();
+  } catch (err) {
+    // A synchronous throw would otherwise pin the id in flight forever.
+    release();
+    throw err;
+  }
+  const promise: Promise<AdvisorToolResult> = started.finally(() => {
+    release();
     if (inFlightAdvisorCalls.get(key) === promise) inFlightAdvisorCalls.delete(key);
   });
   inFlightAdvisorCalls.set(key, promise);
@@ -873,6 +1015,8 @@ export function _debug_setAdvisorClock(now: (() => number) | null): void {
  */
 export function _debug_resetTrackedAdvisorIds(): void {
   pendingBySession.clear();
+  inFlightAdvisorCalls.clear();
+  inFlightByToolUseId.clear();
   streamFrameBuffer.reset();
   reportedUnrecorded.clear();
   clock = Date.now;
@@ -1049,11 +1193,47 @@ function toolResultText(content: unknown): string {
 }
 
 /**
+ * The tool_use ids in THIS payload that belong to an advisor tool_use block —
+ * `{type:"tool_use", name:"advisor"}` in an assistant message. The same
+ * structural test the capture path uses (`collectAdvisorIdsFromValue`), applied
+ * to the conversation history Claude Code re-sends on every turn.
+ *
+ * This is the ONLY thing that may identify an advisor call in a payload, next
+ * to claudish's own recorded state. The model's output is untrusted input: it
+ * can contain any string, including claudish's and Claude Code's own error
+ * phrases, so no detection may rest on text the model produced.
+ */
+export function advisorToolUseIdsInPayload(payload: Record<string, unknown>): Set<string> {
+  const ids = new Set<string>();
+  const messages = payload.messages;
+  if (!Array.isArray(messages)) return ids;
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const content = (msg as any).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "tool_use" || b.name !== ADVISOR_TOOL_NAME) continue;
+      if (typeof b.id === "string" && b.id.length > 0) ids.add(b.id);
+    }
+  }
+  return ids;
+}
+
+/**
  * Stub path S10: finds advisor tool_results still carrying Claude Code's
  * `No such tool available: advisor` error for an id this request's session
  * never recorded — an advisor call that was never rewritten. Run it AFTER the
  * rewrite. Each (session, id) is logged (`advisor_rewrite`, origin `absent`)
  * and warned about once. Returns the ids newly reported.
+ *
+ * STRUCTURE FIRST, TEXT ONLY AS CORROBORATION. The id must belong to an actual
+ * advisor `tool_use` block in this payload. Matching the error phrase alone
+ * made any tool that PRINTED the phrase mint an advisor record: observed live,
+ * the model ran `rg -n "advisor" …` and its Bash tool_result produced a fake
+ * S10 record and the user-visible warning "claudish never saw the advisor tool
+ * call" for a Bash call id.
  */
 export function reportUnrecordedAdvisorCalls(
   cfg: AdvisorSwapConfig,
@@ -1062,6 +1242,8 @@ export function reportUnrecordedAdvisorCalls(
 ): string[] {
   const messages = payload.messages;
   if (!Array.isArray(messages)) return [];
+  const advisorIds = advisorToolUseIdsInPayload(payload);
+  if (advisorIds.size === 0) return [];
   const reported: string[] = [];
   for (const msg of messages) {
     if (!msg || typeof msg !== "object" || (msg as any).role !== "user") continue;
@@ -1071,6 +1253,7 @@ export function reportUnrecordedAdvisorCalls(
       if (!block || typeof block !== "object" || (block as any).type !== "tool_result") continue;
       const toolUseId = (block as any).tool_use_id;
       if (typeof toolUseId !== "string") continue;
+      if (!advisorIds.has(toolUseId)) continue;
       if (!NO_SUCH_ADVISOR_TOOL.test(toolResultText((block as any).content))) continue;
       if (lookupAdvisorCall(toolUseId, sessionId)) continue;
       const memo = `${sessionKeyFor(sessionId)}\u0000${toolUseId}`;
@@ -1241,11 +1424,92 @@ export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"):
   if (provider === "openai" || provider === "oai") return routeOf("openai", parsed.model);
 
   // Everything else -> OpenRouter
-  const rawModelId =
-    parsed.isExplicitProvider && provider !== "openrouter"
-      ? `${provider}/${parsed.model}`
-      : parsed.model;
-  return routeOf("openrouter", resolveModelNameSync(rawModelId, "openrouter").resolvedId);
+  if (!parsed.isExplicitProvider || provider === "openrouter") {
+    return routeOf("openrouter", resolveModelNameSync(parsed.model, "openrouter").resolvedId);
+  }
+  return routeOf("openrouter", openRouterWireModelFor(provider, parsed.model));
+}
+
+/**
+ * Is `vendor` a namespace OpenRouter actually publishes — the `x-ai` of
+ * `x-ai/grok-4.6`? Answered from the LIVE catalog's own OpenRouter external
+ * ids, never from a provider roster in this repo (a pinned roster is exactly
+ * what goes stale, and CLAUDE.md forbids one).
+ *
+ * A namespace match rather than an exact-id match on purpose: a model released
+ * after the last catalog refresh must still be callable under a vendor the
+ * catalog does know.
+ */
+function isOpenRouterVendorNamespace(vendor: string): boolean {
+  const entries = getCatalogEntries();
+  if (!entries) return false;
+  const prefix = `${vendor.toLowerCase()}/`;
+  return entries.some((e) => externalIdFor(e, "openrouter")?.toLowerCase().startsWith(prefix));
+}
+
+/**
+ * The OpenRouter vendor namespaces the catalog associates with a SUBSCRIPTION
+ * routing identity — `queryPlans[].routing.nativeModelProviders`, e.g.
+ * `openai-codex` → `["openai"]`, `grok-subscription` → `["x-ai"]`. Live data,
+ * published by the catalog for exactly this translation.
+ */
+function nativeVendorsForProvider(providerUid: string): string[] {
+  const vendors = new Set<string>();
+  try {
+    for (const plan of readAllModelsCache()?.plans ?? []) {
+      if (plan.routing?.providerUid !== providerUid) continue;
+      for (const native of plan.routing.nativeModelProviders ?? []) vendors.add(native);
+    }
+  } catch {
+    // a cache that will not read is the cold case below
+  }
+  return [...vendors];
+}
+
+/**
+ * The id OpenRouter accepts for an EXPLICITLY prefixed spec (`cx@gpt-5.6-sol`).
+ *
+ * The old rule was `${provider}/${model}` for every explicit provider. That is
+ * only true when the prefix happens to be an OpenRouter VENDOR namespace. A
+ * subscription provider uid is not one, so `cx@gpt-5.6-sol` became the
+ * nonexistent OpenRouter id `openai-codex/gpt-5.6-sol` and `gk@grok-4.6` became
+ * `grok-subscription/grok-4.6` — startup checked only the OpenRouter key,
+ * declared the model callable, and the first panel call failed or answered from
+ * no named model. (The advisor never routes through `route()`, so a
+ * subscription prefix here can only ever mean "which model", never "bill it to
+ * my subscription": panel calls are metered by design.)
+ *
+ * Resolution order, all of it live catalog metadata:
+ *   1. the prefix IS an OpenRouter vendor namespace → keep `vendor/model`;
+ *   2. the catalog's own OpenRouter external id for that model name;
+ *   3. the vendor namespaces the catalog publishes for this subscription uid
+ *      (`routing.nativeModelProviders`);
+ *   4. cold catalog → the historical id, because nothing is known and nothing
+ *      can therefore be declared invalid;
+ *   5. otherwise REFUSE. Never construct a wire id already known to be invalid.
+ */
+function openRouterWireModelFor(provider: string, model: string): string {
+  const vendorPrefixed = `${provider}/${model}`;
+  if (isOpenRouterVendorNamespace(provider)) return vendorPrefixed;
+
+  const byModelName = resolveExternalId(model, "openrouter");
+  if (byModelName?.includes("/")) return byModelName;
+
+  for (const vendor of nativeVendorsForProvider(provider)) {
+    if (isOpenRouterVendorNamespace(vendor)) return `${vendor}/${model}`;
+  }
+
+  if (getCatalogEntries() === null) {
+    return resolveModelNameSync(vendorPrefixed, "openrouter").resolvedId;
+  }
+
+  throw new Error(
+    `${provider}@${model} cannot be resolved to a model OpenRouter serves: "${provider}" is not an ` +
+      "OpenRouter vendor namespace, and the catalog lists no OpenRouter id for " +
+      `"${model}". Advisor panel models are always called metered, so a subscription prefix ` +
+      `buys nothing here — use the bare model name ("${model}"), or name the OpenRouter id ` +
+      'in full ("openrouter@vendor/model").'
+  );
 }
 
 /**
@@ -1456,11 +1720,22 @@ interface ObservedResponse {
   bytes: number;
 }
 
+/**
+ * The ONE constructor of a failed outcome, and therefore the one place the
+ * provider's own words are sanitised (`sanitizeAdvisorReason`). Every consumer
+ * — the tool_result the MAIN MODEL reads, the terminal warning, the advisor log
+ * file, the debug mirror and the always-on log — reads `reason` from here, so
+ * none of them can see the raw text.
+ *
+ * `secrets` is the credentials this very call presented; they are redacted by
+ * value, on top of the known key shapes.
+ */
 function stubOutcome(
   base: Pick<AdvisorModelOutcome, "role" | "requestedModel" | "route">,
   stubPath: AdvisorStubPath,
   reason: string,
   latencyMs: number,
+  secrets: readonly (string | undefined)[],
   observed?: ObservedResponse
 ): AdvisorModelOutcome {
   return {
@@ -1471,7 +1746,7 @@ function stubOutcome(
     latencyMs,
     origin: "stub",
     stubPath,
-    reason,
+    reason: sanitizeAdvisorReason(reason, secrets),
   };
 }
 
@@ -1510,6 +1785,9 @@ async function executeAdvisorFetch(
   fetchImpl?: typeof fetch
 ): Promise<AdvisorModelOutcome> {
   const base = { role: plan.role, requestedModel: plan.requestedModel, route: plan.route };
+  // The exact credential values this request presents, for by-value redaction
+  // of anything the provider echoes back.
+  const secrets = credentialValuesInHeaders(plan.headers);
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
   const controller = plan.timeoutMs ? new AbortController() : undefined;
@@ -1531,7 +1809,8 @@ async function executeAdvisorFetch(
         base,
         plan.errorStubPath,
         describeFetchError(err, plan.timeoutMs),
-        elapsed()
+        elapsed(),
+        secrets
       );
     }
 
@@ -1544,6 +1823,7 @@ async function executeAdvisorFetch(
         plan.errorStubPath,
         `HTTP ${resp.status} but the body could not be read: ${describeFetchError(err, plan.timeoutMs)}`,
         elapsed(),
+        secrets,
         { status: resp.status, source: "http_status", bytes: 0 }
       );
     }
@@ -1561,6 +1841,7 @@ async function executeAdvisorFetch(
         plan.errorStubPath,
         `HTTP ${observed.status}: ${summarizeErrorBody(bodyText)}`,
         elapsed(),
+        secrets,
         observed
       );
     }
@@ -1574,6 +1855,7 @@ async function executeAdvisorFetch(
         plan.emptyStubPath,
         `HTTP ${observed.status} but the response body is not JSON`,
         elapsed(),
+        secrets,
         observed
       );
     }
@@ -1585,6 +1867,7 @@ async function executeAdvisorFetch(
         plan.emptyStubPath,
         `HTTP ${observed.status} but the response carried no advice text`,
         elapsed(),
+        secrets,
         observed
       );
     }
@@ -1654,7 +1937,8 @@ async function callAdvisorModel(
       base,
       ADVISOR_STUB_PATHS.PANEL_ERROR,
       `could not build the request: ${errorMessageOf(err)}`,
-      0
+      0,
+      credentialValuesOf(apiKeys)
     );
   }
   return executeAdvisorFetch(plan, fetchImpl);
@@ -1745,7 +2029,8 @@ async function callCollectorModel(
       base,
       ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
       `could not build the request: ${errorMessageOf(err)}`,
-      0
+      0,
+      credentialValuesOf(apiKeys)
     );
   }
   return executeAdvisorFetch(plan, fetchImpl);
@@ -1867,6 +2152,77 @@ function warnOnAdvisorFailures(
       ? "advice from the other models was still delivered"
       : "the model received an error report instead of advice";
   warn(`advisor call ${o.toolUseId} — ${detail} (${verdict})`);
+}
+
+/**
+ * The call finished, but claudish could not attach its result to the tracked
+ * call (`markAdvisorCallConsumed` returned false) — the state entry is gone.
+ *
+ * That return used to be ignored. The advice was then logged as
+ * `origin: "upstream"` while the rewrite, finding no cached result, handed the
+ * model `missingAdvisorResult` — a claudish error. The log said one thing and
+ * the model saw another, which is the exact failure the provenance records
+ * exist to make impossible. (An in-flight call can no longer be evicted, so
+ * this is now defence in depth rather than the expected path.)
+ *
+ * Writes a CORRECTING `advisor_rewrite` record — the last record for a
+ * tool-use id is the one that describes what the model received — listing every
+ * model whose advice was lost in `failedModels`, and returns the text the model
+ * gets instead.
+ *
+ * It also REPAIRS the state entry, because otherwise the model would receive
+ * nothing at all: `rewriteAdvisorToolResults` only touches a block whose id is
+ * tracked, and the id not being tracked is exactly why we are here. Re-recording
+ * it makes the failure deliverable now and replayable on later turns, as any
+ * other delivered result is.
+ */
+export function recoverUnassociatedAdvisorResult(
+  cfg: AdvisorSwapConfig | undefined,
+  outcome: AdvisorCallOutcome,
+  warn: (message: string) => void = warnAdvisor
+): AdvisorToolResult {
+  const lost = [
+    ...outcome.panel.map((p) => p.requestedModel),
+    ...(outcome.collectorOutcome ? [outcome.collectorOutcome.requestedModel] : []),
+  ];
+  const result: AdvisorToolResult = {
+    text:
+      `${ADVISOR_ERROR_PREFIX} claudish could not associate the advisor answer with call ` +
+      `${outcome.toolUseId}: its record was gone by the time the answer arrived, so the advice ` +
+      `from ${lost.length > 0 ? lost.join(", ") : "the panel"} could not be delivered. ` +
+      ADVISOR_ERROR_SUFFIX,
+    isError: true,
+  };
+  const sessionId = outcome.sessionId ?? undefined;
+  rememberAdvisorToolUseId(outcome.toolUseId, sessionId);
+  markAdvisorCallConsumed(outcome.toolUseId, result, sessionId);
+  log(
+    `[advisor] call ${outcome.toolUseId}: the result could not be associated with the tracked call (stub path ${ADVISOR_STUB_PATHS.PREPARED_RESULT_MISSING})`
+  );
+  if (cfg) {
+    logAdvisorEvent(cfg, {
+      kind: "advisor_rewrite",
+      event: "advisor_rewrite",
+      toolUseId: outcome.toolUseId,
+      sessionId: outcome.sessionId,
+      // This record CORRECTS the one runAdvisorCall wrote for the same id.
+      corrects: "advisor_rewrite",
+      panel: outcome.panel.map((p) => p.requestedModel),
+      originsByModel: Object.fromEntries(
+        outcome.panel.map((p) => [p.requestedModel, "stub" satisfies AdviceOrigin])
+      ),
+      failedModels: lost,
+      collector: outcome.collector,
+      collectorOrigin: outcome.collectorOutcome ? ("stub" satisfies AdviceOrigin) : null,
+      resultOrigin: "stub" satisfies AdviceOrigin,
+      stubPath: ADVISOR_STUB_PATHS.PREPARED_RESULT_MISSING,
+      isError: true,
+    });
+  }
+  warn(
+    `advisor call ${outcome.toolUseId}: the panel answered, but claudish no longer had a record of the call, so the model received an error report instead of the advice`
+  );
+  return result;
 }
 
 export interface RunAdvisorCallParams {
