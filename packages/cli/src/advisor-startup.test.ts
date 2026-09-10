@@ -4,6 +4,7 @@ import {
   type AdvisorModelStatus,
   type AdvisorRoute,
   type AdvisorStartupDecision,
+  advisorModelStatus,
   decideAdvisorStartup,
   evaluateAdvisorStartup,
 } from "./advisor-startup.js";
@@ -159,6 +160,78 @@ describe("decideAdvisorStartup", () => {
     expect(decision.effectiveCollector).toBeNull();
     expect(decision.notice.some((line) => line.includes("haiku"))).toBe(true);
     expect(decision.notice.some((line) => line.includes("concatenated"))).toBe(true);
+  });
+
+  describe("unresolved collector aliases", () => {
+    const unresolvedRoute: AdvisorRoute = {
+      ...anthropicRoute,
+      unresolvedAlias: "haiku",
+    };
+
+    it("keeps an unresolved alias uncallable even when its credential is present", () => {
+      const status = advisorModelStatus("haiku", unresolvedRoute, { anthropic: true });
+
+      expect(status.callable).toBe(false);
+      expect(status.unresolved).toBeTruthy();
+      expect(status.unresolved).toContain("haiku");
+    });
+
+    it("refuses an unresolved collector named by the user", () => {
+      const collector = "haiku";
+      const panelStatus = [modelStatus("openai/gpt-5.6-sol", openAiRoute)];
+      expect(panelStatus.every((status) => status.callable)).toBe(true);
+
+      const decision = decideAdvisorStartup(
+        facts({
+          collector,
+          collectorDefaulted: false,
+          panelStatus,
+          collectorStatus: advisorModelStatus(collector, unresolvedRoute, { anthropic: true }),
+        })
+      );
+
+      expect(decision.kind).toBe("refuse");
+      if (decision.kind === "refuse") expect(decision.reason).toContain(collector);
+    });
+
+    it("drops an unresolved default collector and explains concatenation", () => {
+      const collector = "haiku";
+      const decision = expectProceed(
+        decideAdvisorStartup(
+          facts({
+            collector,
+            collectorDefaulted: true,
+            collectorStatus: advisorModelStatus(collector, unresolvedRoute, { anthropic: true }),
+          })
+        )
+      );
+
+      expect(decision.effectiveCollector).toBeNull();
+      expect(decision.notice.some((line) => line.includes(collector))).toBe(true);
+      expect(decision.notice.some((line) => line.includes("concatenat"))).toBe(true);
+    });
+
+    it.each([true, false])(
+      "keeps a resolved collector when collectorDefaulted is %p",
+      (collectorDefaulted) => {
+        const collector = "anthropic/claude-haiku-4-5";
+        const resolvedRoute: AdvisorRoute = {
+          ...anthropicRoute,
+          wireModel: "claude-haiku-4-5",
+        };
+        const decision = expectProceed(
+          decideAdvisorStartup(
+            facts({
+              collector,
+              collectorDefaulted,
+              collectorStatus: advisorModelStatus(collector, resolvedRoute, { anthropic: true }),
+            })
+          )
+        );
+
+        expect(decision.effectiveCollector).toBe(collector);
+      }
+    );
   });
 
   it("refuses when a main-model path cannot carry tools", () => {

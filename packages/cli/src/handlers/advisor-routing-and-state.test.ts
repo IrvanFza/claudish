@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { _setCatalogEntriesForTest } from "../providers/catalog-client.js";
 import {
   ADVISOR_STUB_PATHS,
   _debug_resetTrackedAdvisorIds,
@@ -8,6 +9,7 @@ import {
   markAdvisorCallConsumed,
   recordAdvisorEventsFromResponseBody,
   rewriteAdvisorToolResults,
+  runAdvisorCall,
 } from "./native-handler-advisor.js";
 
 const cfg = { enabled: true, logPath: undefined };
@@ -51,6 +53,14 @@ function resultBlock(payload: Record<string, unknown>): any {
 
 afterEach(() => {
   _debug_resetTrackedAdvisorIds();
+});
+
+beforeEach(() => {
+  _setCatalogEntriesForTest(null);
+});
+
+afterEach(() => {
+  _setCatalogEntriesForTest(null);
 });
 
 describe("advisorRouteFor", () => {
@@ -167,5 +177,119 @@ describe("ADVISOR_STUB_PATHS", () => {
     expect([...values].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))).toEqual(
       Array.from({ length: 10 }, (_, index) => `S${index + 1}`)
     );
+  });
+});
+
+describe("OpenRouter advisor wire-model resolution", () => {
+  it("refuses a known model that only publishes another vendor's external id", () => {
+    _setCatalogEntriesForTest([
+      {
+        modelId: "kimi-k3",
+        aliases: [],
+        sources: {
+          "fireworks-api": { externalId: "accounts/fireworks/models/kimi-k3" },
+        },
+      },
+    ]);
+
+    expect(() => advisorRouteFor("kimi-k3", "panel")).toThrow(/kimi-k3/);
+  });
+
+  it("resolves a bare served model to OpenRouter's published id", () => {
+    _setCatalogEntriesForTest([
+      {
+        modelId: "grok-4.6",
+        aliases: [],
+        sources: { "openrouter-api": { externalId: "x-ai/grok-4.6" } },
+      },
+    ]);
+
+    expect(advisorRouteFor("grok-4.6", "panel").wireModel).toBe("x-ai/grok-4.6");
+  });
+
+  it("resolves a subscription prefix to the OpenRouter vendor id", () => {
+    _setCatalogEntriesForTest([
+      {
+        modelId: "gpt-5.6-sol",
+        aliases: [],
+        sources: { "openrouter-api": { externalId: "openai/gpt-5.6-sol" } },
+      },
+    ]);
+
+    const route = advisorRouteFor("cx@gpt-5.6-sol", "panel");
+
+    expect(route.kind).toBe("openrouter");
+    expect(route.wireModel).toBe("openai/gpt-5.6-sol");
+    expect(route.wireModel).not.toBe("openai-codex/gpt-5.6-sol");
+    expect(route.wireModel).not.toBe("cx/gpt-5.6-sol");
+  });
+});
+
+describe("advisor request token parameter routing", () => {
+  const messages = [{ role: "user", content: "Review this fixture." }];
+  const apiKeys = {
+    openai: "test-openai-key",
+    openrouter: "test-openrouter-key",
+    google: "test-google-key",
+  };
+
+  async function captureRequest(
+    model: string
+  ): Promise<{ url: URL; body: Record<string, unknown> }> {
+    let capturedInput: RequestInfo | URL | undefined;
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        capturedInput = input;
+        capturedInit = init;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+      { preconnect(_url: string | URL): void {} }
+    ) as typeof fetch;
+
+    await runAdvisorCall({
+      toolUseId: `advisor-token-param-${model}`,
+      messages,
+      models: [model],
+      collector: null,
+      apiKeys,
+      fetchImpl,
+      warn: () => {},
+    });
+
+    if (capturedInput === undefined || capturedInit?.body === undefined) {
+      throw new Error(`Expected ${model} to issue an advisor request`);
+    }
+    return {
+      url: new URL(String(capturedInput)),
+      body: JSON.parse(String(capturedInit.body)) as Record<string, unknown>,
+    };
+  }
+
+  it("uses max_completion_tokens on the direct OpenAI route", async () => {
+    const request = await captureRequest("openai@some-model");
+
+    expect(request.url.host).toBe("api.openai.com");
+    expect(request.body).toHaveProperty("max_completion_tokens");
+    expect(request.body).not.toHaveProperty("max_tokens");
+  });
+
+  it("uses max_tokens on the OpenRouter route", async () => {
+    const request = await captureRequest("openrouter@acme/some-model");
+
+    expect(request.url.host).toBe("openrouter.ai");
+    expect(request.body).toHaveProperty("max_tokens");
+    expect(request.body).not.toHaveProperty("max_completion_tokens");
+  });
+
+  it("uses max_tokens on the direct Google route", async () => {
+    const request = await captureRequest("google@gemini-fixture");
+
+    expect(request.url.host).toBe("generativelanguage.googleapis.com");
+    expect(request.body).toHaveProperty("max_tokens");
+    expect(request.body).not.toHaveProperty("max_completion_tokens");
   });
 });
