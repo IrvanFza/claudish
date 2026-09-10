@@ -124,7 +124,6 @@ afterEach(() => {
 });
 
 describe("advisor capture from parsed OpenAI SSE", () => {
-  // EXPECTED FAILURE: openai-sse currently emits end_turn and drops this fixture's advisor call.
   it("records the parser-produced non-Anthropic advisor tool-use id", async () => {
     const sessionId = "advisor-capture-parser-stream-001";
     const scanner = createAdvisorStreamScanner(cfg, sessionId);
@@ -138,7 +137,6 @@ describe("advisor capture from parsed OpenAI SSE", () => {
     expect(_debug_getTrackedAdvisorIds(sessionId)).toEqual([parserProducedId]);
   });
 
-  // EXPECTED FAILURE: openai-sse currently emits end_turn and drops this fixture's advisor call.
   it.each([
     [16, "advisor-capture-split-16-002"],
     [64, "advisor-capture-split-64-003"],
@@ -154,7 +152,6 @@ describe("advisor capture from parsed OpenAI SSE", () => {
     }
   );
 
-  // EXPECTED FAILURE: openai-sse currently emits end_turn and drops this fixture's advisor call.
   it("records the same id when a chunk boundary lands on a newline inside an SSE event", async () => {
     const sessionId = "advisor-capture-split-newline-004";
     const parsedSse = await readParsedSse(advisorFixture);
