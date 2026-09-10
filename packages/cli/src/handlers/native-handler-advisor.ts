@@ -34,15 +34,11 @@
  */
 
 import { appendFileSync } from "node:fs";
+import { lookupModelTokenParam } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import { getAlwaysOnLogPath, getLogFilePath, log, logStderr } from "../logger.js";
-import { readAllModelsCache } from "../providers/all-models-cache.js";
-import {
-  externalIdFor,
-  getCatalogEntries,
-  resolveExternalId,
-  resolveModelNameSync,
-} from "../providers/catalog-client.js";
+import { type SlimModelEntry, readAllModelsCache } from "../providers/all-models-cache.js";
+import { getCatalogEntries } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
 import { parseModelSpec } from "../providers/model-parser.js";
 import { extractProviderMessage, extractUpstreamStatus } from "./shared/anthropic-error.js";
@@ -1425,9 +1421,90 @@ export function advisorRouteFor(modelSpec: string, role: "panel" | "collector"):
 
   // Everything else -> OpenRouter
   if (!parsed.isExplicitProvider || provider === "openrouter") {
-    return routeOf("openrouter", resolveModelNameSync(parsed.model, "openrouter").resolvedId);
+    return routeOf("openrouter", openRouterWireModelFor(null, parsed.model));
   }
   return routeOf("openrouter", openRouterWireModelFor(provider, parsed.model));
+}
+
+/**
+ * The id OPENROUTER itself publishes for a catalog entry, or null.
+ *
+ * ONLY the two places the catalog records an OpenRouter id are read: the
+ * `openrouter` aggregator row and the `openrouter-api` source. Deliberately
+ * NARROWER than `externalIdFor(entry, "openrouter")`, whose last resort is "any
+ * source carrying a vendor-prefixed id" — for a model OpenRouter does not serve
+ * that returns ANOTHER VENDOR's external id, because a Fireworks id
+ * (`accounts/fireworks/models/kimi-k3`) also contains a slash. That is exactly
+ * what shipped: the bare panel name `kimi-k3` went on the wire to OpenRouter as
+ * `accounts/fireworks/models/kimi-k3` and every call 400'd
+ * ("is not a valid model ID"). A wire id for OpenRouter may only ever come from
+ * OpenRouter's own catalog data.
+ */
+function openRouterIdOf(entry: SlimModelEntry): string | null {
+  const fromAggregator = entry.aggregators?.find((a) => a.provider === "openrouter")?.externalId;
+  if (fromAggregator) return fromAggregator;
+  return entry.sources["openrouter-api"]?.externalId ?? null;
+}
+
+/**
+ * What the LIVE catalog knows about serving `name` on OpenRouter.
+ *
+ * `not-served` is a positive fact, not an absence: the catalog HAS the model and
+ * publishes no OpenRouter id for it. It is the one case that must never be
+ * turned into a wire id — see `openRouterIdOf`.
+ */
+type OpenRouterIdLookup =
+  | { kind: "id"; id: string }
+  /** The catalog knows this model and lists no OpenRouter id for it. */
+  | { kind: "not-served" }
+  /** Cold catalog, or a name it has never heard of: nothing is known. */
+  | { kind: "unknown" };
+
+/**
+ * Resolves a model NAME to the id OpenRouter serves, from live catalog data
+ * only. The chain mirrors `resolveExternalId`'s (exact id, alias, then the
+ * provider's own ids), but every id it can return comes from `openRouterIdOf`.
+ *
+ * An already-slashed name is the user naming a full OpenRouter id: it is kept,
+ * because OpenRouter can serve a model newer than the last catalog refresh.
+ */
+function lookupOpenRouterId(name: string): OpenRouterIdLookup {
+  const entries = getCatalogEntries();
+  if (!entries) return { kind: "unknown" };
+  const lower = name.toLowerCase();
+
+  if (name.includes("/")) {
+    const match = entries.find((e) => openRouterIdOf(e)?.toLowerCase() === lower);
+    return { kind: "id", id: match ? (openRouterIdOf(match) as string) : name };
+  }
+
+  // Exact canonical id is AUTHORITATIVE, including its "OpenRouter does not
+  // serve this" answer: falling through would resolve a different model that
+  // merely shares part of the name.
+  const byModelId = entries.find((e) => e.modelId.toLowerCase() === lower);
+  if (byModelId) {
+    const id = openRouterIdOf(byModelId);
+    return id ? { kind: "id", id } : { kind: "not-served" };
+  }
+
+  // An alias identifies one model just as its canonical id does, so its answer
+  // is final too — including "not served".
+  const byAlias = entries.find((e) => e.aliases.some((a) => a.toLowerCase() === lower));
+  if (byAlias) {
+    const id = openRouterIdOf(byAlias);
+    return id ? { kind: "id", id } : { kind: "not-served" };
+  }
+
+  // The name may be the tail of an OpenRouter id (`grok-4.6` → `x-ai/grok-4.6`).
+  const suffix = `/${lower}`;
+  for (const entry of entries) {
+    const id = openRouterIdOf(entry);
+    if (id && (id.toLowerCase() === lower || id.toLowerCase().endsWith(suffix))) {
+      return { kind: "id", id };
+    }
+  }
+
+  return { kind: "unknown" };
 }
 
 /**
@@ -1444,7 +1521,7 @@ function isOpenRouterVendorNamespace(vendor: string): boolean {
   const entries = getCatalogEntries();
   if (!entries) return false;
   const prefix = `${vendor.toLowerCase()}/`;
-  return entries.some((e) => externalIdFor(e, "openrouter")?.toLowerCase().startsWith(prefix));
+  return entries.some((e) => openRouterIdOf(e)?.toLowerCase().startsWith(prefix));
 }
 
 /**
@@ -1467,7 +1544,8 @@ function nativeVendorsForProvider(providerUid: string): string[] {
 }
 
 /**
- * The id OpenRouter accepts for an EXPLICITLY prefixed spec (`cx@gpt-5.6-sol`).
+ * The id OpenRouter accepts for one advisor spec — `provider` is the EXPLICIT
+ * prefix the user typed (`cx@gpt-5.6-sol`), or null for a bare name.
  *
  * The old rule was `${provider}/${model}` for every explicit provider. That is
  * only true when the prefix happens to be an OpenRouter VENDOR namespace. A
@@ -1487,21 +1565,40 @@ function nativeVendorsForProvider(providerUid: string): string[] {
  *   4. cold catalog → the historical id, because nothing is known and nothing
  *      can therefore be declared invalid;
  *   5. otherwise REFUSE. Never construct a wire id already known to be invalid.
+ *
+ * A BARE name (`provider === null`) has no prefix to consult, so only steps 2
+ * and 4 apply: the catalog's OpenRouter id, else the name unchanged when the
+ * catalog has never heard of it (it may be newer than the last refresh), else
+ * REFUSE — which `evaluateAdvisorStartup` turns into a startup refusal naming
+ * the model. It used to be `resolveModelNameSync(model, "openrouter")`, whose
+ * fallback answers with ANY vendor-prefixed external id the entry carries, so
+ * `kimi-k3` — a model OpenRouter does not serve — went on the wire as the
+ * Fireworks id `accounts/fireworks/models/kimi-k3` and 400'd on every call.
  */
-function openRouterWireModelFor(provider: string, model: string): string {
+function openRouterWireModelFor(provider: string | null, model: string): string {
+  const lookup = lookupOpenRouterId(model);
+
+  if (provider === null || provider === "openrouter") {
+    if (lookup.kind === "id") return lookup.id;
+    if (lookup.kind === "unknown") return model;
+    throw new Error(
+      `${model} cannot be used as an advisor model: the catalog lists no OpenRouter id for it ` +
+        "(OpenRouter is where every unprefixed advisor model is called), so claudish has no id " +
+        "OpenRouter would accept. Name a model OpenRouter serves, or give the id in full " +
+        '("openrouter@vendor/model").'
+    );
+  }
+
   const vendorPrefixed = `${provider}/${model}`;
   if (isOpenRouterVendorNamespace(provider)) return vendorPrefixed;
 
-  const byModelName = resolveExternalId(model, "openrouter");
-  if (byModelName?.includes("/")) return byModelName;
+  if (lookup.kind === "id") return lookup.id;
 
   for (const vendor of nativeVendorsForProvider(provider)) {
     if (isOpenRouterVendorNamespace(vendor)) return `${vendor}/${model}`;
   }
 
-  if (getCatalogEntries() === null) {
-    return resolveModelNameSync(vendorPrefixed, "openrouter").resolvedId;
-  }
+  if (getCatalogEntries() === null) return vendorPrefixed;
 
   throw new Error(
     `${provider}@${model} cannot be resolved to a model OpenRouter serves: "${provider}" is not an ` +
@@ -1619,6 +1716,51 @@ export async function resolveAdvisorCredential(
   return fromAuthority(ADVISOR_AUTHORITY_PROVIDER[credential], "any");
 }
 
+/** How many output tokens an advisor or collector call asks for. */
+const ADVISOR_MAX_OUTPUT_TOKENS = 2048;
+
+/**
+ * The output-token parameter THIS ROUTE accepts, and the budget to put in it.
+ *
+ * Per ROUTE, because the parameter belongs to the endpoint, not to the model:
+ *
+ * - `openrouter` and `google` keep `max_tokens`. Both normalise it for every
+ *   model they serve, and run D proves it live (deepseek-v4-pro, HTTP 200).
+ * - `openai` (api.openai.com) asks the LIVE catalog, via the same
+ *   `tokenParam` field claudish's OpenAI chat-completions converter reads first
+ *   (`OpenAIApiFormat.tokenParamName` → `lookupModelTokenParam`). That converter
+ *   is the existing per-format rule; its catalog lookup is the part that is
+ *   right, and it is reused here rather than restated. Its private name-based
+ *   fallback (`gpt-5`/`o1`/`o3`/`o4` → `max_completion_tokens`) is NOT copied —
+ *   a second copy of a guess is exactly what CLAUDE.md's "no hardcoded roster"
+ *   rule is about, and this endpoint has a better default (below).
+ *
+ * ONE endpoint-level correction on the catalog's answer: `max_output_tokens` is
+ * the RESPONSES-API spelling. The catalog says exactly that for gpt-5.6-sol
+ * (`endpoints.openai.api === "responses"`), but the advisor always POSTs
+ * `/v1/chat/completions`, which does not accept it. On this route it becomes
+ * `max_completion_tokens` — the spelling OpenAI's own 400 asked for:
+ *   "Unsupported parameter: 'max_tokens' is not supported with this model.
+ *    Use 'max_completion_tokens' instead."
+ * (observed twice for gpt-5.6-sol, runs phase7b-B and phase7b-C).
+ *
+ * An unknown model on the openai route defaults to `max_completion_tokens`,
+ * the current chat-completions spelling; `max_tokens` is the deprecated one and
+ * is precisely what the newer models reject.
+ */
+function advisorTokenParamFor(route: AdvisorRoute): string {
+  if (route.kind !== "openai") return "max_tokens";
+  let fromCatalog: string | undefined;
+  try {
+    fromCatalog = lookupModelTokenParam(route.wireModel);
+  } catch {
+    // The lookup rejects a `provider@model` string outright; a wire id it will
+    // not read is simply no information, like a cold cache.
+  }
+  if (fromCatalog === "max_tokens" || fromCatalog === "max_completion_tokens") return fromCatalog;
+  return "max_completion_tokens";
+}
+
 /** Builds an OpenAI chat-completions request for a non-Anthropic route. */
 function buildAdvisorRequest(
   route: AdvisorRoute,
@@ -1638,14 +1780,12 @@ function buildAdvisorRequest(
     headers["HTTP-Referer"] = "https://claudish.com";
     headers["X-Title"] = "Claudish Advisor";
   }
-  return {
-    headers,
-    body: {
-      model: route.wireModel,
-      max_tokens: 2048,
-      messages: [{ role: "system", content: systemPrompt }, ...convertToOpenAIMessages(messages)],
-    },
+  const body: Record<string, unknown> = {
+    model: route.wireModel,
+    messages: [{ role: "system", content: systemPrompt }, ...convertToOpenAIMessages(messages)],
   };
+  body[advisorTokenParamFor(route)] = ADVISOR_MAX_OUTPUT_TOKENS;
+  return { headers, body };
 }
 
 /**
