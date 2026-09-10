@@ -161,6 +161,44 @@ export function shouldHideIncidentalAnthropicKey(
 }
 
 /**
+ * The placeholder ANTHROPIC_API_KEY claudish puts in a PROXIED child's env. Its only
+ * job is suppressing Claude Code's login dialog; the proxy handles real auth.
+ */
+export const CLAUDISH_PLACEHOLDER_API_KEY =
+  "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
+
+/** The placeholder ANTHROPIC_AUTH_TOKEN paired with CLAUDISH_PLACEHOLDER_API_KEY. */
+export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
+
+/**
+ * Remove claudish's OWN placeholder credentials that were inherited from a parent
+ * proxied session.
+ *
+ * The proxy-auth branch of runClaudeWithProxy puts the placeholders in the child
+ * Claude Code env, and from there they leak into every process that session
+ * starts: tool shells, tmux panes, nested claudish runs, `team` slots. A claudish
+ * launched from such an env with a native Claude model would forward
+ * `Authorization: Bearer <placeholder>` to api.anthropic.com and get 401 on every
+ * request.
+ *
+ * Only an EXACT match is removed. Any other value is the user's own credential and
+ * is left alone. Mutates `env` in place and returns the names it deleted, never
+ * the values.
+ */
+export function scrubInheritedClaudishPlaceholders(env: NodeJS.ProcessEnv): { removed: string[] } {
+  const removed: string[] = [];
+  if (env.ANTHROPIC_AUTH_TOKEN === CLAUDISH_PLACEHOLDER_AUTH_TOKEN) {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    removed.push("ANTHROPIC_AUTH_TOKEN");
+  }
+  if (env.ANTHROPIC_API_KEY === CLAUDISH_PLACEHOLDER_API_KEY) {
+    delete env.ANTHROPIC_API_KEY;
+    removed.push("ANTHROPIC_API_KEY");
+  }
+  return { removed };
+}
+
+/**
  * Does the environment carry a resolvable Anthropic credential? Used to decide
  * whether classifier passthrough can safely preserve Claude Code's real auth
  * (skipping the placeholder key) without stranding Claude Code at a login gate.
@@ -1423,12 +1461,26 @@ export async function runClaudeWithProxy(
       // needs. Reading its mere presence as "bill me per token" is an expensive
       // misread, and the failure is silent — you find out on the invoice. So
       // hide it by default and SAY so; opt back in explicitly when API billing
-      // is what you want. ANTHROPIC_AUTH_TOKEN is left alone — nothing bundles
-      // one incidentally, so setting it is always a deliberate act.
+      // is what you want. A user's own ANTHROPIC_AUTH_TOKEN is left alone, because
+      // nothing bundles one by accident, so setting it is a deliberate act.
+      //
+      // The one exception is claudish's OWN placeholder pair. The proxy-auth
+      // branch below puts it in every proxied child, and from there it leaks
+      // into every process that session starts (tool shells, tmux panes,
+      // nested claudish runs, `team` slots). If it is inherited here, Claude
+      // Code sends `Bearer <placeholder>` and Anthropic returns 401 on every
+      // request. Scrub it FIRST, and only on an exact match, so a scrubbed
+      // placeholder key is not later reported as a hidden real key.
       //
       // See shouldHideIncidentalAnthropicKey for why this is narrower than the
       // shouldPreserveNativeAuth condition guarding this branch.
-      if (shouldHideIncidentalAnthropicKey(config)) {
+      const scrubbed = scrubInheritedClaudishPlaceholders(env);
+      if (scrubbed.removed.length > 0) {
+        debugLog(
+          `[claude-runner] Removed inherited claudish placeholder credentials: ${scrubbed.removed.join(", ")}`
+        );
+      }
+      if (shouldHideIncidentalAnthropicKey(config, env)) {
         delete env.ANTHROPIC_API_KEY;
         hidAnthropicApiKey = true;
       }
@@ -1452,9 +1504,8 @@ export async function runClaudeWithProxy(
       // not work as expected". So overwrite unconditionally with placeholders —
       // their only job is suppressing the login dialog (#13: a placeholder API
       // key alone still redirected to the payment page, hence the token too).
-      env.ANTHROPIC_API_KEY =
-        "sk-ant-api03-placeholder-not-used-proxy-handles-auth-with-openrouter-key-xxxxxxxxxxxxxxxxxxxxx";
-      env.ANTHROPIC_AUTH_TOKEN = "placeholder-token-not-used-proxy-handles-auth";
+      env.ANTHROPIC_API_KEY = CLAUDISH_PLACEHOLDER_API_KEY;
+      env.ANTHROPIC_AUTH_TOKEN = CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
 
       // Drive Claude Code's NATIVE auto-compaction to fire before a backend whose
       // real context window is smaller than the model's advertised spec rejects
