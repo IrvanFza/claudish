@@ -45,6 +45,11 @@ import { OllamaAPIFormat } from "./adapters/ollama-api-format.js";
 import { credentials } from "./auth/credentials/authority.js";
 import type { AdvisorToolEnv } from "./claude-runner.js";
 import { ADVISOR_TOOL_ENV_VAR } from "./claude-runner.js";
+import {
+  type AdvisorRoute,
+  type AdvisorRouteKind,
+  advisorRouteFor,
+} from "./handlers/native-handler-advisor.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
 import { type TransportType, getProviderByName } from "./providers/provider-definitions.js";
@@ -69,80 +74,25 @@ export function isClaudeCodeBoolTrue(value: string | undefined): boolean {
 // ---------------------------------------------------------------------------
 
 /** The credential an advisor call signs with. */
-export type AdvisorCredential = "google" | "openai" | "openrouter" | "anthropic";
+export type AdvisorCredential = AdvisorRouteKind;
 
-/** Shape of `AdvisorRoute` as exported by handlers/native-handler-advisor.ts. */
-export interface AdvisorRoute {
-  kind: AdvisorCredential;
-  host: string;
-  credential: AdvisorCredential;
-  wireModel: string;
-}
+/** Where one advisor model's request goes; the call path's own type. */
+export type { AdvisorRoute };
 
 export type AdvisorRole = "panel" | "collector";
 
 /**
- * TEMPORARY STAND-IN — delete when `advisorRouteFor` lands.
+ * The ONE place this module asks where an advisor model is sent. It is the
+ * advisor call path's own routing (`advisorRouteFor`), so the host and the
+ * credential startup checks are the ones the first advisor call will use.
  *
- * TODO(P9/advisorRouteFor): `advisorRouteFor(modelSpec, role)` is being
- * exported from handlers/native-handler-advisor.ts as the single source of
- * truth for advisor routing. It did not exist when P9 was written. Replace the
- * ONE call site (`routeAdvisorModel` below) with that import and delete this
- * function and the two local types above. Until then this mirrors, branch for
- * branch, `buildAdvisorRequest` + `isAnthropicModel` at the time of writing:
- * collector-only Anthropic branch; `google`/`gemini` → Gemini API;
- * `openai`/`oai` → api.openai.com (metered OPENAI_API_KEY, never the Codex
- * login); everything else → OpenRouter. `wireModel` is NOT catalog-resolved
- * here; startup never sends it.
- */
-function advisorRouteForStandIn(modelSpec: string, role: AdvisorRole): AdvisorRoute {
-  const parsed = parseModelSpec(modelSpec);
-  const m = parsed.model.toLowerCase();
-  if (
-    role === "collector" &&
-    (parsed.provider === "anthropic" ||
-      m.startsWith("claude-") ||
-      m === "haiku" ||
-      m === "sonnet" ||
-      m === "opus")
-  ) {
-    return {
-      kind: "anthropic",
-      host: "api.anthropic.com",
-      credential: "anthropic",
-      wireModel: parsed.model,
-    };
-  }
-  if (parsed.provider === "google" || parsed.provider === "gemini") {
-    return {
-      kind: "google",
-      host: "generativelanguage.googleapis.com",
-      credential: "google",
-      wireModel: parsed.model,
-    };
-  }
-  if (parsed.provider === "openai" || parsed.provider === "oai") {
-    return {
-      kind: "openai",
-      host: "api.openai.com",
-      credential: "openai",
-      wireModel: parsed.model,
-    };
-  }
-  const wireModel =
-    parsed.isExplicitProvider && parsed.provider !== "openrouter"
-      ? `${parsed.provider}/${parsed.model}`
-      : parsed.model;
-  return { kind: "openrouter", host: "openrouter.ai", credential: "openrouter", wireModel };
-}
-
-/**
- * The ONE place this module asks where an advisor model is sent.
- * TODO(P9/advisorRouteFor): `return advisorRouteFor(modelSpec, role);` via
- * `import { advisorRouteFor } from "./handlers/native-handler-advisor.js";`.
+ * The credential SET is still computed here, not by `advisorCredentialsFor`:
+ * that one counts the collector only when the panel has more than one model
+ * (the only case in which it runs), while startup checks a collector the user
+ * named whatever the panel size.
  */
 export function routeAdvisorModel(modelSpec: string, role: AdvisorRole): AdvisorRoute {
-  return advisorRouteForStandIn(modelSpec, role);
+  return advisorRouteFor(modelSpec, role);
 }
 
 // ---------------------------------------------------------------------------

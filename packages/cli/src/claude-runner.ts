@@ -187,15 +187,33 @@ export const CLAUDISH_PLACEHOLDER_AUTH_TOKEN = "placeholder-token-not-used-proxy
  */
 export function scrubInheritedClaudishPlaceholders(env: NodeJS.ProcessEnv): { removed: string[] } {
   const removed: string[] = [];
-  if (env.ANTHROPIC_AUTH_TOKEN === CLAUDISH_PLACEHOLDER_AUTH_TOKEN) {
-    delete env.ANTHROPIC_AUTH_TOKEN;
-    removed.push("ANTHROPIC_AUTH_TOKEN");
-  }
-  if (env.ANTHROPIC_API_KEY === CLAUDISH_PLACEHOLDER_API_KEY) {
-    delete env.ANTHROPIC_API_KEY;
-    removed.push("ANTHROPIC_API_KEY");
+  for (const name of ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] as const) {
+    if (isClaudishPlaceholderCredential(name, env[name])) {
+      delete env[name];
+      removed.push(name);
+    }
   }
   return { removed };
+}
+
+/**
+ * Is `value` claudish's OWN placeholder for the env variable `name`? Only an exact
+ * match counts, and only for the variable that placeholder belongs to. Every other
+ * value, including unset, is not a placeholder.
+ */
+export function isClaudishPlaceholderCredential(name: string, value: string | undefined): boolean {
+  if (name === "ANTHROPIC_API_KEY") return value === CLAUDISH_PLACEHOLDER_API_KEY;
+  if (name === "ANTHROPIC_AUTH_TOKEN") return value === CLAUDISH_PLACEHOLDER_AUTH_TOKEN;
+  return false;
+}
+
+/** Set, non-empty, and not claudish's own placeholder. */
+function isRealAnthropicEnvCredential(
+  env: NodeJS.ProcessEnv,
+  name: "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN"
+): boolean {
+  const value = env[name];
+  return Boolean(value) && !isClaudishPlaceholderCredential(name, value);
 }
 
 /**
@@ -220,7 +238,14 @@ export function hasResolvableAnthropicAuth(
   const env = deps.env ?? process.env;
   const fileExists = deps.fileExists ?? existsSync;
   const keychainProbe = deps.keychainProbe ?? defaultKeychainAnthropicProbe;
-  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return true;
+  // claudish's own placeholders leak from a parent proxied session into every
+  // process it starts. They authenticate nothing, so they do not count.
+  if (
+    isRealAnthropicEnvCredential(env, "ANTHROPIC_API_KEY") ||
+    isRealAnthropicEnvCredential(env, "ANTHROPIC_AUTH_TOKEN")
+  ) {
+    return true;
+  }
   if (fileExists(join(homedir(), ".claude", ".credentials.json"))) return true;
   return keychainProbe();
 }

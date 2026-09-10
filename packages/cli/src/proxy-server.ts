@@ -12,9 +12,15 @@ import {
   isAutoModeClassifierRequest,
   rewriteClassifierForNative,
 } from "./classifier-passthrough.js";
+import {
+  type AdvisorPresenceMonitor,
+  createAdvisorPresenceMonitor,
+  withAdvisorSwap,
+} from "./handlers/advisor-decorator.js";
 import { ComposedHandler, type ComposedHandlerOptions } from "./handlers/composed-handler.js";
 import { FallbackHandler } from "./handlers/fallback-handler.js";
 import type { FallbackCandidate } from "./handlers/fallback-handler.js";
+import { loadAdvisorSwapConfig } from "./handlers/native-handler-advisor.js";
 import { NativeHandler } from "./handlers/native-handler.js";
 import { wrapAnthropicError } from "./handlers/shared/anthropic-error.js";
 import type { ModelHandler } from "./handlers/types.js";
@@ -256,6 +262,28 @@ export async function createProxyServer(
     options.advisorModels,
     options.advisorCollector
   );
+
+  /**
+   * The advisor for ANY main model. `withAdvisorSwap` is applied to the RESULT
+   * of `getHandlerForRequest` at the request site — never inside it, and never
+   * to a FallbackHandler candidate: `FallbackHandler` tests its candidates with
+   * `instanceof ComposedHandler`, and `count_tokens` tests the resolved handler
+   * with `instanceof NativeHandler`; a wrapper in either place hides them.
+   *
+   * With the advisor off (no --advisor, no CLAUDISH_SWAP_ADVISOR=1) this
+   * returns the handler itself: no swap, no scan, no records (BC20). The
+   * monitor branch of `getHandlerForRequest` is untouched; a `--monitor`
+   * launch without the advisor never reaches the wrapper.
+   */
+  const advisorPresence = createAdvisorPresenceMonitor();
+  const withAdvisor = (handler: ModelHandler, presence?: AdvisorPresenceMonitor): ModelHandler =>
+    withAdvisorSwap(
+      handler,
+      loadAdvisorSwapConfig(options.advisorModels, options.advisorCollector),
+      {
+        presence,
+      }
+    );
   /**
    * Request-shaping options that must reach EVERY ComposedHandler, whatever
    * route built it. Defined once and spread at each construction site (and
@@ -1098,10 +1126,15 @@ export async function createProxyServer(
         // Rewrite onto the native Claude model + strip 400-prone fields (see
         // classifier-passthrough.ts). Log first — it reads the original body.model.
         rewriteClassifierForNative(body, options.classifier.model);
-        return nativeHandler.handle(c, body);
+        // Wrapped like every other request so the advisor work NativeHandler
+        // used to do here still happens; not counted by the absent-tool
+        // monitor, which watches the main loop.
+        return await withAdvisor(nativeHandler).handle(c, body);
       }
 
-      const handler = await getHandlerForRequest(body.model);
+      // The advisor wrapper goes on the RESOLVED handler (FallbackHandler
+      // included), once per request. See `withAdvisor` above.
+      const handler = withAdvisor(await getHandlerForRequest(body.model), advisorPresence);
 
       // Route. The `await` is load-bearing: `return handler.handle(...)` hands
       // the promise back BEFORE it settles, so a rejection escapes this

@@ -34,7 +34,7 @@
  */
 
 import { appendFileSync } from "node:fs";
-import { log, logStderr } from "../logger.js";
+import { getLogFilePath, log, logStderr } from "../logger.js";
 import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
 import { parseModelSpec } from "../providers/model-parser.js";
@@ -152,13 +152,53 @@ export function stripAdvisorBeta(betaHeader: string | undefined): {
   };
 }
 
+/** Prefix of the debug-log line that mirrors each advice-origin record. */
+export const ADVISOR_ORIGIN_LOG_PREFIX = "[advisor-origin]";
+
+/** The P7 records that also go to the debug log (`--debug-claudish`). */
+const ORIGIN_RECORD_KINDS: ReadonlySet<string> = new Set([
+  "advisor_call",
+  "advisor_collector_call",
+  "advisor_rewrite",
+]);
+
 /**
- * Appends a structured log entry to the configured advisor-swap log file.
- * Safe to call even if no log path is set (no-op in that case).
+ * Defence in depth for the debug-log mirror. The records carry no key or
+ * header field by construction; `reason` quotes the provider's own error
+ * body, and some providers echo the key they rejected.
+ */
+function scrubSecrets(text: string): string {
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[redacted]")
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}/g, "[redacted]")
+    .replace(/\bxai-[A-Za-z0-9_-]{16,}/g, "[redacted]");
+}
+
+/**
+ * Appends a structured log entry to the configured advisor-swap log file
+ * (`CLAUDISH_SWAP_ADVISOR_LOG`); a no-op for the file when no path is set.
+ *
+ * The origin records (`advisor_call`, `advisor_collector_call`,
+ * `advisor_rewrite`) are ALSO written, one compact JSON line each after
+ * `[advisor-origin]`, to claudish's debug log whenever it is on
+ * (`--debug-claudish`), so a real run can be checked from the debug log alone.
  */
 export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, unknown>): void {
+  const record = { ts: new Date().toISOString(), ...event };
+  if (
+    typeof event.kind === "string" &&
+    ORIGIN_RECORD_KINDS.has(event.kind) &&
+    getLogFilePath() !== null
+  ) {
+    try {
+      log(`${ADVISOR_ORIGIN_LOG_PREFIX} ${scrubSecrets(JSON.stringify(record))}`);
+    } catch {
+      // a record that will not serialize is a logging problem only
+    }
+  }
   if (!cfg.logPath) return;
-  const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;
+  const line = `${JSON.stringify(record)}\n`;
   try {
     appendFileSync(cfg.logPath, line);
   } catch {
@@ -452,6 +492,7 @@ function rememberAdvisorToolUseId(id: string, sessionId?: string): void {
     return;
   }
   putCall(bucket, { toolUseId: id, sessionKey: key, recordedAt: now, lastSeenAt: now });
+  log(`[advisor] recorded advisor tool_use ${id} (session=${key})`);
 }
 
 /**
