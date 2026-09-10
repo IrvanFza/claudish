@@ -413,3 +413,42 @@ does a dialect-aware native-value path earn its complexity.
 
 **Do not** widen `EffortLevel` itself to accommodate one provider. It is the canonical
 vocabulary Claude Code emits, and the clamp table is what maps it onto each provider.
+
+---
+
+## Route `--advisor` panel calls through subscription-aware routing
+
+Status: not started. Deliberately out of scope for the any-model advisor work.
+
+Every `--advisor` panel model and collector is called through `advisorRouteFor`
+(`handlers/native-handler-advisor.ts`) with a raw metered API key: api.openai.com with
+`OPENAI_API_KEY`, the direct Gemini API with `GEMINI_API_KEY`, api.anthropic.com with
+`ANTHROPIC_API_KEY` for a Claude collector, and OpenRouter with `OPENROUTER_API_KEY` for
+everything else. It never calls `route()`. So a Codex, SuperGrok or Antigravity subscriber pays
+per token for panel calls, and a `cx@` or `gk@` panel spec goes to OpenRouter.
+
+This is visible, not silent: the startup notice prints each panel model's host and key with
+"billed per token" under "panel calls never use a subscription", and a panel model with no key
+is refused at startup.
+
+**Why parked.** Making the panel subscription-aware means sending each panel call through the
+routing chain (the credential authority's OAuth arms, per-provider transports,
+`SUBSCRIPTION_PROVIDERS` billing) instead of one bare `fetch` per model. That rewrites the advice
+retrieval path, which the stub paths and origin records were built around, and the feature's
+out-of-scope list protected panel behaviour.
+
+**Trigger condition** (either is sufficient):
+
+1. A user asks to run the panel on their subscription, or reports unexpected metered spend from
+   panel calls.
+2. The panel's advice retrieval path is being reworked for another reason.
+
+**Must still hold after the change:** origin records still separate `upstream` from `stub` per
+model; billing is decided by the credential that signed (`RequestAuth.arm`), never by the
+provider name (CLAUDE.md invariants); the startup refusal and notice keep reading the same single
+routing function as the runtime.
+
+**Effort**: medium to large.
+
+Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
+`ai-docs/sessions/dev-feature-advisor-any-model-20260909-0001/scope-decisions.md` (gitignored).
