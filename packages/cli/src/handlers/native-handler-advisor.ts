@@ -1319,17 +1319,22 @@ function describeFetchError(err: unknown, timeoutMs?: number): string {
  * `error.upstream_status` when some remapping layer wrote it, so normally the
  * source is `http_status`. No status is invented when no response arrived.
  */
-async function executeAdvisorFetch(plan: AdvisorFetchPlan): Promise<AdvisorModelOutcome> {
+async function executeAdvisorFetch(
+  plan: AdvisorFetchPlan,
+  fetchImpl?: typeof fetch
+): Promise<AdvisorModelOutcome> {
   const base = { role: plan.role, requestedModel: plan.requestedModel, route: plan.route };
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
   const controller = plan.timeoutMs ? new AbortController() : undefined;
   const timer = controller ? setTimeout(() => controller.abort(), plan.timeoutMs) : undefined;
+  // Resolved per call, so an omitted seam is exactly the global fetch of today.
+  const doFetch = fetchImpl ?? fetch;
 
   try {
     let resp: Response;
     try {
-      resp = await fetch(plan.route.url, {
+      resp = await doFetch(plan.route.url, {
         method: "POST",
         headers: plan.headers,
         body: JSON.stringify(plan.body),
@@ -1439,7 +1444,8 @@ function errorMessageOf(err: unknown): string {
 async function callAdvisorModel(
   modelSpec: string,
   messages: any[],
-  apiKeys: AdvisorApiKeys
+  apiKeys: AdvisorApiKeys,
+  fetchImpl?: typeof fetch
 ): Promise<AdvisorModelOutcome> {
   let plan: AdvisorFetchPlan;
   try {
@@ -1465,7 +1471,7 @@ async function callAdvisorModel(
       0
     );
   }
-  return executeAdvisorFetch(plan);
+  return executeAdvisorFetch(plan, fetchImpl);
 }
 
 function isAnthropicModel(parsed: ReturnType<typeof parseModelSpec>): boolean {
@@ -1510,7 +1516,8 @@ function planAnthropicCollector(
 async function callCollectorModel(
   collectorSpec: string,
   advice: Array<{ model: string; text: string }>,
-  apiKeys: AdvisorApiKeys
+  apiKeys: AdvisorApiKeys,
+  fetchImpl?: typeof fetch
 ): Promise<AdvisorModelOutcome> {
   let plan: AdvisorFetchPlan;
   try {
@@ -1555,7 +1562,7 @@ async function callCollectorModel(
       0
     );
   }
-  return executeAdvisorFetch(plan);
+  return executeAdvisorFetch(plan, fetchImpl);
 }
 
 /** The panel section for a model that produced no advice. Names model and reason. */
@@ -1638,7 +1645,10 @@ function logAdvisorCallOutcome(cfg: AdvisorSwapConfig, o: AdvisorCallOutcome): v
 }
 
 /** One warning per call in which any model failed, naming each model and reason. */
-function warnOnAdvisorFailures(o: AdvisorCallOutcome): void {
+function warnOnAdvisorFailures(
+  o: AdvisorCallOutcome,
+  warn: (message: string) => void = warnAdvisor
+): void {
   const failed = [...o.panel, ...(o.collectorOutcome ? [o.collectorOutcome] : [])].filter(
     (m) => m.origin !== "upstream"
   );
@@ -1655,7 +1665,7 @@ function warnOnAdvisorFailures(o: AdvisorCallOutcome): void {
     o.resultOrigin === "upstream"
       ? "advice from the other models was still delivered"
       : "the model received an error report instead of advice";
-  warnAdvisor(`advisor call ${o.toolUseId} — ${detail} (${verdict})`);
+  warn(`advisor call ${o.toolUseId} — ${detail} (${verdict})`);
 }
 
 export interface RunAdvisorCallParams {
@@ -1668,6 +1678,19 @@ export interface RunAdvisorCallParams {
   apiKeys: AdvisorApiKeys;
   /** When given, the P7 records are written to its advisor log. */
   cfg?: AdvisorSwapConfig;
+  /**
+   * Test seam: HTTP client for panel and collector calls. Defaults to the
+   * global fetch, resolved at call time. Production callers leave it unset;
+   * it exists so tests can drive the failure paths (S4-S9) without a network.
+   */
+  fetchImpl?: typeof fetch;
+  /**
+   * Test seam: receives the per-failure warning. Defaults to the sanctioned
+   * warning channel (`warnAdvisor` -> `logStderr`, which adds the `[advisor] `
+   * prefix; the seam receives the message without it). Production callers
+   * leave it unset.
+   */
+  warn?: (message: string) => void;
 }
 
 /**
@@ -1681,9 +1704,11 @@ export interface RunAdvisorCallParams {
  * warning.
  */
 export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<AdvisorCallOutcome> {
-  const { toolUseId, messages, models, collector, apiKeys } = params;
+  const { toolUseId, messages, models, collector, apiKeys, fetchImpl } = params;
 
-  const panel = await Promise.all(models.map((m) => callAdvisorModel(m, messages, apiKeys)));
+  const panel = await Promise.all(
+    models.map((m) => callAdvisorModel(m, messages, apiKeys, fetchImpl))
+  );
   const successful = panel.filter(
     (o): o is AdvisorModelOutcome & { text: string } => o.origin === "upstream"
   );
@@ -1712,7 +1737,8 @@ export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<Advi
     collectorOutcome = await callCollectorModel(
       collector,
       successful.map((o) => ({ model: o.requestedModel, text: o.text })),
-      apiKeys
+      apiKeys,
+      fetchImpl
     );
     if (collectorOutcome.origin === "upstream" && collectorOutcome.text !== undefined) {
       result = { text: collectorOutcome.text, isError: false };
@@ -1746,7 +1772,7 @@ export async function runAdvisorCall(params: RunAdvisorCallParams): Promise<Advi
         : "")
   );
   if (params.cfg) logAdvisorCallOutcome(params.cfg, outcome);
-  warnOnAdvisorFailures(outcome);
+  warnOnAdvisorFailures(outcome, params.warn);
   return outcome;
 }
 
