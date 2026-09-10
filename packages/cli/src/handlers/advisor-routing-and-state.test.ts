@@ -160,7 +160,7 @@ describe("rewriteAdvisorToolResults", () => {
 
 describe("ADVISOR_STUB_PATHS", () => {
   it("names each distinct stub path from S1 through S10", () => {
-    const values = Object.values(ADVISOR_STUB_PATHS);
+    const values: string[] = Object.values(ADVISOR_STUB_PATHS);
 
     expect(values).toHaveLength(10);
     expect(new Set(values).size).toBe(10);

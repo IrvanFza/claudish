@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import {
-  decideAdvisorStartup,
-  evaluateAdvisorStartup,
   type AdvisorLaunchFacts,
   type AdvisorModelStatus,
   type AdvisorRoute,
   type AdvisorStartupDecision,
+  decideAdvisorStartup,
+  evaluateAdvisorStartup,
 } from "./advisor-startup.js";
 import { resolveAdvisorToolEnv } from "./claude-runner.js";
 import type { ClaudishConfig } from "./types.js";
@@ -34,6 +34,7 @@ function config(overrides: Partial<ClaudishConfig> = {}): ClaudishConfig {
 const openAiRoute: AdvisorRoute = {
   kind: "openai",
   host: "api.openai.com",
+  url: "https://api.openai.com/v1/chat/completions",
   credential: "openai",
   wireModel: "gpt-5.6-sol",
 };
@@ -41,6 +42,7 @@ const openAiRoute: AdvisorRoute = {
 const googleRoute: AdvisorRoute = {
   kind: "google",
   host: "generativelanguage.googleapis.com",
+  url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   credential: "google",
   wireModel: "gemini-2.5-pro",
 };
@@ -48,6 +50,7 @@ const googleRoute: AdvisorRoute = {
 const anthropicRoute: AdvisorRoute = {
   kind: "anthropic",
   host: "api.anthropic.com",
+  url: "https://api.anthropic.com/v1/messages",
   credential: "anthropic",
   wireModel: "haiku",
 };
@@ -84,17 +87,14 @@ function expectProceed(decision: AdvisorStartupDecision) {
 
 describe("decideAdvisorStartup", () => {
   describe("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", () => {
-    it.each(["1", "true", "yes", "on", " TRUE "])(
-      "refuses when the child value is %p",
-      (value) => {
-        const decision = decideAdvisorStartup(
-          facts({ childEnv: { [ENABLE_ENV_VAR]: "1", [DISABLE_ENV_VAR]: value } })
-        );
+    it.each(["1", "true", "yes", "on", " TRUE "])("refuses when the child value is %p", (value) => {
+      const decision = decideAdvisorStartup(
+        facts({ childEnv: { [ENABLE_ENV_VAR]: "1", [DISABLE_ENV_VAR]: value } })
+      );
 
-        expect(decision.kind).toBe("refuse");
-        if (decision.kind === "refuse") expect(decision.reason).toContain(DISABLE_ENV_VAR);
-      }
-    );
+      expect(decision.kind).toBe("refuse");
+      if (decision.kind === "refuse") expect(decision.reason).toContain(DISABLE_ENV_VAR);
+    });
 
     it.each(["2", "false", "0", ""])(
       "does not refuse for the disable variable when the child value is %p",
@@ -243,9 +243,7 @@ describe("decideAdvisorStartup", () => {
     const matching = expectProceed(
       decideAdvisorStartup(
         facts({
-          mainModels: [
-            { model: "openai/gpt-5.6-sol", providerName: "openai", carriesTools: true },
-          ],
+          mainModels: [{ model: "openai/gpt-5.6-sol", providerName: "openai", carriesTools: true }],
         })
       )
     );
@@ -273,12 +271,17 @@ describe("evaluateAdvisorStartup", () => {
     let credentialLookups = 0;
     const toolEnv = resolveAdvisorToolEnv(config({ advisor: false }), {});
 
-    const decision = await evaluateAdvisorStartup(config({ advisor: false }), toolEnv, {}, {
-      resolveCredentials: async () => {
-        credentialLookups += 1;
-        return {};
-      },
-    });
+    const decision = await evaluateAdvisorStartup(
+      config({ advisor: false }),
+      toolEnv,
+      {},
+      {
+        resolveCredentials: async () => {
+          credentialLookups += 1;
+          return {};
+        },
+      }
+    );
 
     expect(decision).toBeNull();
     expect(credentialLookups).toBe(0);

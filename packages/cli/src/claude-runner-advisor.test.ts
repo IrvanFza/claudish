@@ -4,6 +4,12 @@ import {
   isAdvisorNativeSession,
   resolveAdvisorToolEnv,
 } from "./claude-runner.js";
+import {
+  CLAUDISH_PLACEHOLDER_API_KEY,
+  CLAUDISH_PLACEHOLDER_AUTH_TOKEN,
+  isClaudishPlaceholderCredential,
+  scrubInheritedClaudishPlaceholders,
+} from "./claude-runner.js";
 import type { ClaudishConfig } from "./types.js";
 
 function config(overrides: Partial<ClaudishConfig> = {}): ClaudishConfig {
@@ -99,5 +105,115 @@ describe("resolveAdvisorToolEnv", () => {
 
   it("exports the Claude Code advisor variable name", () => {
     expect(ADVISOR_TOOL_ENV_VAR).toBe("CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL");
+  });
+});
+
+describe("claudish placeholder credential handling", () => {
+  it("removes the exact auth-token placeholder and reports it", () => {
+    const env = { ANTHROPIC_AUTH_TOKEN: CLAUDISH_PLACEHOLDER_AUTH_TOKEN };
+
+    const result = scrubInheritedClaudishPlaceholders(env);
+
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(result.removed).toEqual(["ANTHROPIC_AUTH_TOKEN"]);
+  });
+
+  it("removes the exact API-key placeholder and reports it", () => {
+    const env = { ANTHROPIC_API_KEY: CLAUDISH_PLACEHOLDER_API_KEY };
+
+    const result = scrubInheritedClaudishPlaceholders(env);
+
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(result.removed).toEqual(["ANTHROPIC_API_KEY"]);
+  });
+
+  it("leaves real-looking Anthropic credentials untouched", () => {
+    const env = {
+      ANTHROPIC_AUTH_TOKEN: "sk-ant-oat01-abc",
+      ANTHROPIC_API_KEY: "sk-ant-api03-xyz",
+    };
+
+    const result = scrubInheritedClaudishPlaceholders(env);
+
+    expect(env).toEqual({
+      ANTHROPIC_AUTH_TOKEN: "sk-ant-oat01-abc",
+      ANTHROPIC_API_KEY: "sk-ant-api03-xyz",
+    });
+    expect(result.removed).toEqual([]);
+  });
+
+  it("leaves values that merely contain placeholder text untouched", () => {
+    const env = {
+      ANTHROPIC_AUTH_TOKEN: `prefix-${CLAUDISH_PLACEHOLDER_AUTH_TOKEN}`,
+      ANTHROPIC_API_KEY: `${CLAUDISH_PLACEHOLDER_API_KEY}-suffix`,
+    };
+
+    const result = scrubInheritedClaudishPlaceholders(env);
+
+    expect(env).toEqual({
+      ANTHROPIC_AUTH_TOKEN: `prefix-${CLAUDISH_PLACEHOLDER_AUTH_TOKEN}`,
+      ANTHROPIC_API_KEY: `${CLAUDISH_PLACEHOLDER_API_KEY}-suffix`,
+    });
+    expect(result.removed).toEqual([]);
+  });
+
+  it("leaves unrelated environment variables untouched", () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/test/bin",
+      HOME: "/test/home",
+      FOO: "bar",
+      ANTHROPIC_AUTH_TOKEN: CLAUDISH_PLACEHOLDER_AUTH_TOKEN,
+      ANTHROPIC_API_KEY: CLAUDISH_PLACEHOLDER_API_KEY,
+    };
+
+    const result = scrubInheritedClaudishPlaceholders(env);
+
+    expect(env).toEqual({ PATH: "/test/bin", HOME: "/test/home", FOO: "bar" });
+    expect(result.removed).toEqual(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]);
+  });
+
+  it("recognizes only the exact placeholder for the matching variable name", () => {
+    expect(
+      isClaudishPlaceholderCredential("ANTHROPIC_AUTH_TOKEN", CLAUDISH_PLACEHOLDER_AUTH_TOKEN)
+    ).toBe(true);
+    expect(isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", CLAUDISH_PLACEHOLDER_API_KEY)).toBe(
+      true
+    );
+    expect(
+      isClaudishPlaceholderCredential("ANTHROPIC_AUTH_TOKEN", CLAUDISH_PLACEHOLDER_API_KEY)
+    ).toBe(false);
+    expect(
+      isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", CLAUDISH_PLACEHOLDER_AUTH_TOKEN)
+    ).toBe(false);
+    expect(isClaudishPlaceholderCredential("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-abc")).toBe(false);
+    expect(
+      isClaudishPlaceholderCredential("ANTHROPIC_API_KEY", `${CLAUDISH_PLACEHOLDER_API_KEY}-suffix`)
+    ).toBe(false);
+    expect(
+      isClaudishPlaceholderCredential("UNRELATED_VARIABLE", CLAUDISH_PLACEHOLDER_AUTH_TOKEN)
+    ).toBe(false);
+  });
+});
+
+describe("resolveAdvisorToolEnv gaps", () => {
+  it("keeps the advisor variable absent when the advisor option and parent variable are absent", () => {
+    const result = resolveAdvisorToolEnv(config(), {});
+
+    expect(Object.keys(result.vars)).toEqual([]);
+    expect(result.source).toBe("off");
+  });
+
+  it("returns no vars when the advisor variable is inherited", () => {
+    const parentEnv = {
+      [ADVISOR_TOOL_ENV_VAR]: "true",
+      PATH: "/test/bin",
+      HOME: "/test/home",
+      FOO: "bar",
+    };
+
+    const result = resolveAdvisorToolEnv(config({ advisor: true }), parentEnv);
+
+    expect(Object.keys(result.vars)).toEqual([]);
+    expect(result.source).toBe("inherited");
   });
 });
