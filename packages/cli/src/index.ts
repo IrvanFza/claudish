@@ -520,9 +520,12 @@ if (isMcpMode) {
  */
 async function runCli() {
   const endImports = beginSpan("startup:cli-imports");
-  const { checkClaudeInstalled, runClaudeWithProxy, isAdvisorNativeSession } = await import(
-    "./claude-runner.js"
-  );
+  const {
+    checkClaudeInstalled,
+    runClaudeWithProxy,
+    isAdvisorNativeSession,
+    resolveAdvisorToolEnv,
+  } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
@@ -901,6 +904,33 @@ async function runCli() {
         if (resolution.deprecationWarning) {
           console.warn(`[claudish] ${resolution.deprecationWarning}`);
         }
+      }
+    }
+
+    // === --advisor: startup refusals and notice ===
+    // Anything decidable at launch is a refusal HERE — after the main model is
+    // known (picker, key validation) and before a port is bound or the child
+    // spawns — rather than a session that silently has no advisor (R5). The
+    // notice goes to STDERR unconditionally, `quiet` included: in -p mode stdout
+    // belongs to Claude Code alone, and the cost line (N2) is not optional.
+    // `cliConfig.advisor` is set only by the --advisor flag on this command line
+    // (N1); nothing stored can turn it on. Decision logic: advisor-startup.ts.
+    if (cliConfig.advisor) {
+      const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
+      const decision = await traceSpan("startup:advisor-check", () =>
+        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig))
+      );
+      if (decision?.kind === "refuse") {
+        process.stderr.write(
+          `[claudish] Error: --advisor cannot work in this launch: ${decision.reason}\n`
+        );
+        process.exit(1);
+      }
+      if (decision?.kind === "proceed") {
+        // A DEFAULTED collector that cannot be called is dropped here, before
+        // createProxyServer reads advisorCollector, so no doomed call is made.
+        cliConfig.advisorCollector = decision.effectiveCollector;
+        process.stderr.write(`${decision.notice.join("\n")}\n`);
       }
     }
 

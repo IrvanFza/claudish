@@ -134,6 +134,12 @@ function clearAllModelCaches(): void {
 export function parseAdvisorFlag(value: string): {
   models: string[];
   collector: string | null;
+  /**
+   * True only when `collector` is the default `"haiku"` supplied above (2+
+   * models, no ":"), not a collector the user typed. Startup drops a defaulted
+   * collector that cannot be called, but refuses a named one (advisor-startup.ts).
+   */
+  collectorDefaulted: boolean;
 } {
   const colonIdx = value.lastIndexOf(":");
   let advisorPart: string;
@@ -163,7 +169,11 @@ export function parseAdvisorFlag(value: string): {
     collector = collectorPart;
   }
 
-  return { models, collector };
+  return {
+    models,
+    collector,
+    collectorDefaulted: models.length > 1 && collectorPart === undefined,
+  };
 }
 
 /**
@@ -368,6 +378,7 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const parsed = parseAdvisorFlag(modelsArg);
       config.advisorModels = parsed.models;
       config.advisorCollector = parsed.collector;
+      config.advisorCollectorDefaulted = parsed.collectorDefaulted;
       // NOT `config.monitor = true`. Monitor forces every request to
       // NativeHandler (proxy-server.ts:564), which made `--advisor --model
       // grok-4.6` serve grok from api.anthropic.com. The advisor is its own

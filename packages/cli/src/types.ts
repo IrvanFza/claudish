@@ -120,6 +120,14 @@ export interface ClaudishConfig {
   advisor?: boolean;
   advisorModels?: string[]; // Advisor models from --advisor flag
   advisorCollector?: string | null; // Collector model (null = no synthesis)
+  /**
+   * True when `advisorCollector` was NOT named by the user: `parseAdvisorFlag`
+   * supplied its default (`haiku`, for 2+ panel models with no `:`). Startup
+   * treats the two differently — a NAMED collector that cannot be called is a
+   * refusal, a DEFAULTED one is dropped (collector → null) with a notice. See
+   * advisor-startup.ts. Launch-only, like `advisor`: never in ClaudishProfileConfig.
+   */
+  advisorCollectorDefaulted?: boolean;
 }
 
 // Anthropic API Types

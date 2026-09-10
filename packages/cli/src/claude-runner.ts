@@ -1182,7 +1182,8 @@ export interface AdvisorToolEnv {
   /**
    * `claudish` — we set it; `inherited` — the parent environment already had a
    * value and it reaches the child untouched; `off` — `--advisor` was not given.
-   * The startup notice reports which (a later phase); nothing prints it here.
+   * The startup notice (advisor-startup.ts, printed by index.ts) reports which;
+   * nothing prints it here.
    */
   source: "claudish" | "inherited" | "off";
 }
@@ -1330,7 +1331,7 @@ export async function runClaudeWithProxy(
   const modelDisplayName = modelId || config.profile || "default";
   // Resolved BEFORE the env literal so the "set by claudish" / "inherited from
   // your environment" distinction is recorded rather than lost in a spread. The
-  // startup notice that reports it lands in a later phase; nothing prints here.
+  // startup notice that reports it is printed by index.ts before this runs.
   const advisorToolEnv = resolveAdvisorToolEnv(config);
   const env: Record<string, string> = {
     ...process.env,
