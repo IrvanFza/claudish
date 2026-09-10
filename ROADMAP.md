@@ -418,9 +418,10 @@ vocabulary Claude Code emits, and the clamp table is what maps it onto each prov
 
 ## Regression test: a Responses stream that dies mid tool-call
 
-Status: fix shipped, test NOT written. Codex could not author it — it lost its own
-backend connection (`ERROR: Reconnecting... 4/5`) during the same network fault that
-produced the bug, 43 minutes with nothing written.
+Status: DONE. Fix shipped, unit test written and mutation-proven, and the client-side
+behaviour verified end to end against a real Claude Code run (see
+`ai-docs/reports/truncated-toolcall-live-verification.md`). Kept here for the method,
+which is reusable for any "does the harness honour this wire signal" question.
 
 The fix is in `openai-responses-sse.ts`: when `openToolBlocks` is non-empty in the
 parser's catch block, the turn ends with an SSE `error` event instead of `end_turn`,
@@ -453,7 +454,8 @@ first argument delta is line 97, and it completes at line 103.
 `false`, confirm test 1 goes red and test 2 stays green, then restore the file by copy —
 never `git checkout` or `git stash`, the index is shared with sibling worktrees.
 
-**Also unverified**: that Claude Code discards a partial tool block on a mid-stream
-`error` event. The supporting argument is that `openai-sse.ts`, `gemini-sse.ts`,
-`ollama-jsonl.ts` and `devin-connect.ts` all already end a stream fault this way. A real
-claudish run against the built binary is the measurement that would settle it.
+**VERIFIED 2026-09-10**: Claude Code DOES discard a partial tool block on a mid-stream
+`error` event. Measured before/after against the same mock upstream: released v9.0.8
+executed the truncated `Write` and returned `InputValidationError`, while the fixed build
+executed no tool at all and retried the turn. Method and raw evidence:
+`ai-docs/reports/truncated-toolcall-live-verification.md`.
