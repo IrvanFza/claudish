@@ -14,7 +14,9 @@
     "terminal@magus": true,
     "madbench@magus": true,
     "claudish@magus": true,
-    "mnemex@magus": true
+    "mnemex@magus": true,
+    "bunjs@magus": true,
+    "setup@magus": true
   },
   "outputStyle": "composed",
   "installedPluginVersions": {
@@ -28,8 +30,10 @@
     "code-analysis@magus": "5.4.3",
     "multimodel@magus": "4.0.2",
     "statusline@magus": "3.0.0",
-    "dev@magus": "7.0.0",
+    "dev@magus": "7.3.0",
     "terminal@magus": "5.0.0",
-    "madbench@magus": "0.3.0"
+    "madbench@magus": "0.3.0",
+    "bunjs@magus": "0.4.4",
+    "setup@magus": "1.2.1"
   }
 }

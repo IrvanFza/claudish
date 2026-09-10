@@ -2,6 +2,40 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.2.1] - 2026-09-10
+
+### Bug Fixes
+
+- an explicit -y no longer still asks "Enable auto-approve?"([`30b3cbf`](https://github.com/MadAppGang/claudish/commit/30b3cbf4a80de9d5d2b7306dd9c414e274d42198))
+- a stream that dies mid tool-call no longer reports a completed turn([`9560d00`](https://github.com/MadAppGang/claudish/commit/9560d00f0718bfe10adab61912d7150fb4f88ea9))
+- close shell and prompt injection in issue-triage *(ci)* ([`d7d48c3`](https://github.com/MadAppGang/claudish/commit/d7d48c347471ed24a46f16bf45da3b9f32d0c545))
+
+### Documentation
+
+- preserve the truncated-toolcall verification harness([`86330c4`](https://github.com/MadAppGang/claudish/commit/86330c42729b18c32e662a47a6d50f5698219e36))
+- prove Claude Code honours a mid-stream error event([`28c8628`](https://github.com/MadAppGang/claudish/commit/28c8628d1af9466ed6f0547e1ca6d113f2b8eff0))
+- update CHANGELOG.md for v9.2.0([`1e8e83a`](https://github.com/MadAppGang/claudish/commit/1e8e83a5557a2de2c5f6e7352b4d738c45d0ca6b))
+
+### Other Changes
+
+- release v9.2.1([`729bfb3`](https://github.com/MadAppGang/claudish/commit/729bfb36802a9ae579a467900359b28ca5da84f0))
+
+## [9.2.0] - 2026-09-09
+
+### Bug Fixes
+
+- publish live answer bytes so `outputSize: 0` stops reading as "produced nothing" *(team)* ([`6597451`](https://github.com/MadAppGang/claudish/commit/65974511df340989d27485ce8e686b50d863fb14))
+
+### Documentation
+
+- correct the release instructions that would break a release([`2822052`](https://github.com/MadAppGang/claudish/commit/2822052e45ff97f2dc10dc10854f5ffae3f096ed))
+- park the stale bundled claudish-usage copies, note the third team transport *(roadmap)* ([`5f51de7`](https://github.com/MadAppGang/claudish/commit/5f51de7eb38ae484cfaf00c346a90240575bb722))
+- update CHANGELOG.md for v9.1.0([`22b9138`](https://github.com/MadAppGang/claudish/commit/22b91388bbaf0b2cb5f16a9b5007d2bbf22c8744))
+
+### Other Changes
+
+- release v9.2.0([`080ff50`](https://github.com/MadAppGang/claudish/commit/080ff50a919b0f52617f687c17ec56797e2d44e8))
+
 ## [9.1.0] - 2026-09-09
 
 ### Documentation

@@ -452,3 +452,47 @@ routing function as the runtime.
 
 Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
 `ai-docs/sessions/dev-feature-advisor-any-model-20260909-0001/scope-decisions.md` (gitignored).
+
+## Regression test: a Responses stream that dies mid tool-call
+
+Status: DONE. Fix shipped, unit test written and mutation-proven, and the client-side
+behaviour verified end to end against a real Claude Code run (see
+`ai-docs/reports/truncated-toolcall-live-verification.md`). Kept here for the method,
+which is reusable for any "does the harness honour this wire signal" question.
+
+The fix is in `openai-responses-sse.ts`: when `openToolBlocks` is non-empty in the
+parser's catch block, the turn ends with an SSE `error` event instead of `end_turn`,
+so Claude Code cannot execute a tool call whose argument JSON was cut mid-object.
+Rationale and the evidence behind it: `ai-docs/architecture/adapters.md`, section
+"A stream that dies mid tool-call".
+
+**Trigger condition**: a stable connection to the Codex backend. Nothing else blocks it.
+
+**The spec** (kept here because `ai-docs/sessions/` does not survive a fresh clone):
+
+Append one `describe` block to
+`packages/cli/src/handlers/shared/stream-parsers/openai-responses-sse.test.ts`, reusing
+its `createMockContext` / `parseClaudeSseStream` helpers. Derive the upstream body from
+the REAL capture `test-fixtures/sse-responses/gpt-5.6-sol-responses-turn1.sse` — do not
+hand-write SSE. In that fixture the first `function_call` item is added at line 94, its
+first argument delta is line 97, and it completes at line 103.
+
+- Test 1 — cut the fixture just after line 97, then `controller.error(new TypeError("The
+  socket connection was closed unexpectedly"))`, which is the production error text.
+  Assert: an `event: error` frame with `error.type === "api_error"`; NO `message_delta`
+  carrying `stop_reason: "end_turn"`; a `tool_use` `content_block_start` WAS emitted (or
+  the test can pass vacuously by the tool never starting); every block start has exactly
+  one matching stop.
+- Test 2 — cut during `response.output_text.delta`, before any `function_call` item, and
+  error the stream identically. Assert `stop_reason: "end_turn"` and a text block
+  containing `[Stream error:`. This pins the branch that must NOT change.
+
+**Acceptance criterion**: mutation-test it. Force the `if (toolCallCutOff)` condition to
+`false`, confirm test 1 goes red and test 2 stays green, then restore the file by copy —
+never `git checkout` or `git stash`, the index is shared with sibling worktrees.
+
+**VERIFIED 2026-09-10**: Claude Code DOES discard a partial tool block on a mid-stream
+`error` event. Measured before/after against the same mock upstream: released v9.0.8
+executed the truncated `Write` and returned `InputValidationError`, while the fixed build
+executed no tool at all and retried the turn. Method and raw evidence:
+`ai-docs/reports/truncated-toolcall-live-verification.md`.

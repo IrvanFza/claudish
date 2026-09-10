@@ -675,9 +675,17 @@ async function runCli() {
     // would steal the prompt from the child `claude`'s stdin and hang.
     const rawArgs = process.argv.slice(2);
     const explicitNoAutoApprove = rawArgs.includes("--no-auto-approve");
+    // An explicit YES needs no confirmation either. Without this, `-y` set a
+    // value that was already the default and the prompt still fired, so an
+    // INTERACTIVE machine-driven run with a fresh config blocked forever on
+    // stdin — madbench reports it as "agent never started: agent did not start
+    // within 1m0s". The --print skip below never covered it, because the
+    // interactive path is exactly the one it excludes.
+    const explicitAutoApprove = rawArgs.includes("-y") || rawArgs.includes("--auto-approve");
     if (
       cliConfig.autoApprove &&
       !explicitNoAutoApprove &&
+      !explicitAutoApprove &&
       !cliConfig.stdin &&
       cliConfig.interactive
     ) {
