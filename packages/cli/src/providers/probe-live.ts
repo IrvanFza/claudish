@@ -206,6 +206,16 @@ export async function probeLink(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // A probe must FAIL FAST. Every probe POSTs /v1/messages through the
+        // proxy, so it enters the same handler as a real turn — and a real
+        // turn now holds an unreachable provider open for the whole tier-1
+        // deadline. Without this header, probing an unreachable link would
+        // burn the probe's own timeout and then report `timeout` (the probe's
+        // abort fires first) instead of `network-error`, breaking `--probe`
+        // and the config TUI's Test All for exactly the failure they exist to
+        // diagnose — and multiplying a Test All run by that timeout per dead
+        // link.
+        "x-claudish-no-recovery": "1",
       },
       body: JSON.stringify({
         model: link.modelSpec,

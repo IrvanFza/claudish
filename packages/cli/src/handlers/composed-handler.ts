@@ -38,6 +38,8 @@ import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middlewa
 import { deepMergeParams } from "../model-params.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
+import { recoveryClock } from "../recovery/clock.js";
+import { resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -75,6 +77,14 @@ import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
 import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
+import {
+  type ConnectionErrorInfo,
+  MIN_ATTEMPT_SLOT_MS,
+  mergeSignalIntoInit,
+  refreshDeadlineAt,
+  tier1DeadlineAt,
+  withConnectionRetry,
+} from "./shared/transient-retry.js";
 import { captureUpstreamError } from "./shared/upstream-error-capture.js";
 
 /**
@@ -410,6 +420,184 @@ export class ComposedHandler implements ModelHandler {
     return c.json(wrapAnthropicError(400, msg, "connection_error"), 400 as any);
   }
 
+  /**
+   * The inbound client's abort signal, or one that never fires.
+   *
+   * It fires sub-millisecond when Claude Code goes away — measured at
+   * 0.49–0.86 ms across twelve trials, in the HELD shape (handler awaiting, no
+   * headers sent) as well as the streaming one. Nothing in this codebase read
+   * it before recovery existed, which is also why a fallback matters: a caller
+   * that builds a Context without a real `Request` must get a signal that never
+   * aborts rather than a crash.
+   */
+  private clientSignal(c: Context): AbortSignal {
+    try {
+      const signal = c.req?.raw?.signal;
+      if (signal) return signal;
+    } catch {
+      // A synthesised Context. Fall through.
+    }
+    return new AbortController().signal;
+  }
+
+  /**
+   * Should the retry ladder be skipped entirely, answering today's immediate
+   * 400? Returns the REASON, or null to proceed.
+   *
+   * THREE GATES, AND DELIBERATELY NO FOURTH. Each is a fact available at this
+   * instant — a request header, configuration, and the clock.
+   *
+   * There is NO special case for a refused loopback address, and that absence
+   * is a decision rather than an omission. An earlier design skipped the ladder
+   * for `refused` + loopback when the recovery UI was off, on the reasoning
+   * that a stopped local server will not start itself. It was cut for two
+   * reasons. The narrow one: the predicate was a regression generator — every
+   * revision of it either fired universally (skipping recovery everywhere) or
+   * fired never, and both times the defect was invisible because the SAME rule
+   * decided the tests. The broad one, which is the real one: this is not a
+   * feature for Ollama. It is the general answer to "claudish could not reach
+   * the host", and a general rule that carves out one address family stops
+   * being general. A user who restarts their server mid-ladder gets their turn
+   * back, exactly as a user whose VPN reconnects does.
+   */
+  private shouldSkipTier1(c: Context, deadlineAt: number): string | null {
+    // Probes MUST fail fast. Every probe POSTs through this handler, so
+    // without this gate `--probe` and the config TUI's Test All would each
+    // hold an unreachable link open for the full deadline and then misreport
+    // it as a timeout — breaking the two tools that diagnose this exact fault.
+    if (c.req.header("x-claudish-no-recovery") === "1") return "probe";
+    // The CI / scripted-`-p` master switch. Off restores today's behaviour
+    // everywhere, byte for byte.
+    if (!resolveRecoveryEnabled()) return "recovery-disabled";
+    // Attempt 1 already spent the budget. A guard, not a hope.
+    if (recoveryClock().now() + MIN_ATTEMPT_SLOT_MS > deadlineAt) return "no-budget";
+    return null;
+  }
+
+  /**
+   * Run tier-1 recovery for one classified connection failure.
+   *
+   * Callers reach this from inside their own `catch`, never before, and only
+   * after `classifyConnectionError` returned non-null. `value` means the
+   * operation eventually succeeded and the caller carries on with it;
+   * `respond` means the caller returns that Response immediately. An
+   * unclassifiable failure on a LATER attempt is rethrown from here, exactly as
+   * an unclassifiable first failure is rethrown by the caller.
+   */
+  private async recoverConnection<T>(
+    c: Context,
+    first: unknown,
+    conn: ConnectionErrorInfo,
+    endpoint: string,
+    op: (signal: AbortSignal) => Promise<T>,
+    ctx: {
+      startTime: number;
+      deadlineAt: number;
+      fallbackMeta?: { chain: string[]; attempts: number };
+      retryAttempted?: boolean;
+      authType?: "api-key" | "oauth" | "none";
+      site: string;
+    }
+  ): Promise<{ kind: "value"; value: T } | { kind: "respond"; response: Response }> {
+    const skip = this.shouldSkipTier1(c, ctx.deadlineAt);
+    if (skip) {
+      log(
+        `[Recovery] skipped (${skip}) — ${this.provider.displayName} at ${endpoint}, site=${ctx.site}`
+      );
+      return {
+        kind: "respond",
+        response: this.respondConnectionError(c, first, conn, endpoint, ctx),
+      };
+    }
+
+    // Lift Bun's per-request idle timeout so the hold is bounded by OUR
+    // deadline rather than by the server's. `c.env` IS the Bun `Server` and
+    // `c.env.timeout` is a real two-arity function — measured: a request given
+    // `0` survived SIX times its `idleTimeout` where the un-disarmed control
+    // died at 1.6×. Called HERE, inside the catch, and never on a healthy
+    // request.
+    try {
+      (c.env as { timeout?: (req: Request, seconds: number) => void } | undefined)?.timeout?.(
+        c.req.raw,
+        0
+      );
+    } catch {
+      // An older Bun, or a synthesised Context. The deadline still holds; only
+      // the server's own ceiling might cut it short, and that is today's
+      // behaviour rather than a regression.
+    }
+
+    const result = await withConnectionRetry(op, first, {
+      providerName: this.provider.name,
+      providerDisplayName: this.provider.displayName,
+      resolveEndpoint: (err) => this.connectionEndpointFor(err, endpoint),
+      deadlineAt: ctx.deadlineAt,
+      signal: this.clientSignal(c),
+    });
+
+    switch (result.kind) {
+      case "ok":
+        return { kind: "value", value: result.value };
+      case "threw":
+        // Classification runs on every attempt. Something that is not a
+        // connection failure must keep its own route out of here.
+        throw result.error;
+      case "client_gone":
+        this.recordClientGone(ctx.startTime, ctx.fallbackMeta, result.episodeId, result.attempts);
+        // Nobody reads this. It exists so Hono has an object to return for a
+        // socket that is already gone.
+        return { kind: "respond", response: new Response(null, { status: 499 }) };
+      default: {
+        log(
+          `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
+            `in ${result.recoveryMs}ms (episode ${result.episodeId}, outcome ${result.kind}) — ` +
+            "answering connection_error"
+        );
+        return {
+          kind: "respond",
+          response: this.respondConnectionError(c, result.error, result.conn, result.endpoint, {
+            ...ctx,
+            retryAttempted: true,
+          }),
+        };
+      }
+    }
+  }
+
+  /** Stats for a request whose client went away mid-recovery. */
+  private recordClientGone(
+    startTime: number,
+    fallbackMeta: { chain: string[]; attempts: number } | undefined,
+    episodeId: string,
+    attempts: number
+  ): void {
+    log(
+      `[Recovery] client disconnected after ${attempts} attempts (episode ${episodeId}) — ` +
+        "releasing the request"
+    );
+    try {
+      recordStats({
+        model_id: this.targetModel,
+        provider_name: this.provider.name,
+        stream_format: this.provider.streamFormat,
+        latency_ms: Math.round(performance.now() - startTime),
+        success: false,
+        http_status: 0,
+        error_class: "network",
+        error_code: "client_disconnected",
+        token_strategy: this.options.tokenStrategy ?? "standard",
+        adapter_name: this.getActiveAdapterName(),
+        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        fallback_used: fallbackMeta !== undefined,
+        fallback_chain: fallbackMeta?.chain,
+        fallback_attempts: fallbackMeta?.attempts,
+        invocation_mode: this.options.invocationMode ?? "auto-route",
+      });
+    } catch {
+      // Stats must never crash claudish
+    }
+  }
+
   async handle(c: Context, payload: any): Promise<Response> {
     const startTime = performance.now();
     // latency_ms = time-to-first-byte (from request send to successful response).
@@ -645,10 +833,6 @@ export class ComposedHandler implements ModelHandler {
     if (this.provider.refreshAuth) {
       try {
         await this.provider.refreshAuth();
-        // Update display name in case auth resolved it (e.g., Gemini tier detection)
-        if (this.provider.displayName) {
-          this.tokenTracker.setProviderDisplayName(this.provider.displayName);
-        }
         // Quota is DELIBERATELY not fetched here.
         //
         // This used to await getQuotaRemaining with a 2s cap on every single
@@ -670,44 +854,71 @@ export class ComposedHandler implements ModelHandler {
         // user across every provider in the chain — off a subscription onto
         // metered billing — for an outage on their own machine.
         //
-        // No retry ladder here yet: this phase only stops the misclassification.
         const conn = classifyConnectionError(err);
         if (conn) {
-          return this.respondConnectionError(c, err, conn, this.connectionEndpointFor(err), {
-            startTime,
-            fallbackMeta,
+          // The refresh path's deadline is DELIBERATELY earlier than the fetch
+          // path's. Both live in the same request and share one budget; if a
+          // refresh recovers at the very end of it and then succeeds, the flow
+          // proceeds to the primary fetch — byte-identical to today's
+          // expression and therefore unclamped — and a maximal connect hang
+          // would land the response write a whole connect timeout past the
+          // deadline.
+          const outcome = await this.recoverConnection(
+            c,
+            err,
+            conn,
+            this.connectionEndpointFor(err),
+            () => this.provider.refreshAuth!(),
+            {
+              startTime,
+              deadlineAt: refreshDeadlineAt(tier1DeadlineAt(c)),
+              fallbackMeta,
+              authType: "oauth",
+              site: "refreshAuth",
+            }
+          );
+          if (outcome.kind === "respond") return outcome.response;
+          // Recovered: fall through as if the first refresh had succeeded.
+        } else {
+          log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
+          logStderr(
+            `Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`
+          );
+          reportError({
+            error: err,
+            providerName: this.provider.name,
+            providerDisplayName: this.provider.displayName,
+            streamFormat: this.provider.streamFormat,
+            modelId: this.targetModel,
+            httpStatus: 401,
+            isStreaming: false,
+            retryAttempted: false,
+            isInteractive: this.isInteractive,
             authType: "oauth",
-            site: "refreshAuth",
           });
+          // A terminal setup failure (misconfiguration, revoked entitlement) can
+          // never succeed on retry. Answering 401 sent the client into ~11 retries
+          // over two minutes of backoff, with the actionable message hidden behind
+          // "API error · Retrying". 400 is not retryable, so the explanation lands
+          // inline on the first attempt.
+          if (err?.terminal) {
+            return c.json(
+              wrapAnthropicError(400, err.message, "invalid_request_error"),
+              400 as any
+            );
+          }
+          // Return 401 (auth failure) so FallbackHandler treats this as retryable and
+          // moves to the next provider in the chain. 503 (connection error) would stop
+          // the fallback chain since it is not retryable by design.
+          return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
         }
-        log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
-        logStderr(
-          `Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`
-        );
-        reportError({
-          error: err,
-          providerName: this.provider.name,
-          providerDisplayName: this.provider.displayName,
-          streamFormat: this.provider.streamFormat,
-          modelId: this.targetModel,
-          httpStatus: 401,
-          isStreaming: false,
-          retryAttempted: false,
-          isInteractive: this.isInteractive,
-          authType: "oauth",
-        });
-        // A terminal setup failure (misconfiguration, revoked entitlement) can
-        // never succeed on retry. Answering 401 sent the client into ~11 retries
-        // over two minutes of backoff, with the actionable message hidden behind
-        // "API error · Retrying". 400 is not retryable, so the explanation lands
-        // inline on the first attempt.
-        if (err?.terminal) {
-          return c.json(wrapAnthropicError(400, err.message, "invalid_request_error"), 400 as any);
-        }
-        // Return 401 (auth failure) so FallbackHandler treats this as retryable and
-        // moves to the next provider in the chain. 503 (connection error) would stop
-        // the fallback chain since it is not retryable by design.
-        return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
+      }
+      // Update display name in case auth resolved it (e.g., Gemini tier
+      // detection). Moved out of the `try` so it runs after a RECOVERED
+      // refresh too — a refresh that only succeeded on attempt four resolved
+      // the same names as one that succeeded on attempt one.
+      if (this.provider.displayName) {
+        this.tokenTracker.setProviderDisplayName(this.provider.displayName);
       }
     }
     // Update context window if provider dynamically discovered it
@@ -755,17 +966,28 @@ export class ComposedHandler implements ModelHandler {
       headers = await this.provider.getHeaders(payload);
     } catch (err: any) {
       const conn = classifyConnectionError(err);
-      if (conn) {
-        return this.respondConnectionError(
-          c,
-          err,
-          conn,
-          this.connectionEndpointFor(err, endpoint),
-          { startTime, fallbackMeta, authType: "oauth", site: "getHeaders" }
-        );
+      if (!conn) {
+        // Anything else keeps its existing route out of here untouched.
+        throw err;
       }
-      // Anything else keeps its existing route out of here untouched.
-      throw err;
+      const outcome = await this.recoverConnection<Record<string, string>>(
+        c,
+        err,
+        conn,
+        this.connectionEndpointFor(err, endpoint),
+        () => this.provider.getHeaders(),
+        {
+          startTime,
+          // An auth site with the unclamped primary fetch still ahead of it —
+          // same reservation as the refreshAuth catch, same reason.
+          deadlineAt: refreshDeadlineAt(tier1DeadlineAt(c)),
+          fallbackMeta,
+          authType: "oauth",
+          site: "getHeaders",
+        }
+      );
+      if (outcome.kind === "respond") return outcome.response;
+      headers = outcome.value;
     }
 
     // 6a. The body is NOT necessarily JSON. A transport may serialize the
@@ -802,16 +1024,49 @@ export class ComposedHandler implements ModelHandler {
       // host — check your network/DNS" instead of a mystifying 500. (A Tailscale
       // MagicDNS outage making chatgpt.com unresolvable is what motivated this.)
       const conn = classifyConnectionError(error);
-      if (conn) {
-        // Status 400, NOT 503, and every field below is shared with the four
-        // other sites that can fail this way — see respondConnectionError.
-        return this.respondConnectionError(c, error, conn, endpoint, {
-          startTime,
-          fallbackMeta,
-          site: "fetch",
-        });
-      }
-      throw error;
+      if (!conn) throw error;
+
+      // Every construct below is built HERE, inside the catch, after
+      // classification returned non-null. A successful request never executes
+      // one line of it, and the expression above is byte-identical to what it
+      // was before recovery existed — including its `enqueueRequest` ternary.
+      //
+      // The re-issue must go through that SAME ternary. Six transports
+      // implement `enqueueRequest`, and what they implement is not decoration:
+      // a bounded 429 loop with `Retry-After`, a served-set model-fallback
+      // chain, and the local concurrency gate that stops `ollama@llama3.2:3`
+      // running four inferences at once. Skipping it would make the attempt
+      // that finally CONNECTS behave differently from the one that failed —
+      // and at the moment a network returns, N woken waiters would stampede
+      // unqueued into a provider that has just come back.
+      const doFetchWith = (sig: AbortSignal) =>
+        fetch(
+          endpoint,
+          mergeSignalIntoInit(
+            {
+              method: "POST",
+              headers,
+              body: serialized?.body ?? JSON.stringify(requestPayload),
+              ...requestInit,
+            },
+            sig
+          )
+        );
+      const reissue = (sig: AbortSignal) => {
+        const attempt = () => doFetchWith(sig);
+        return this.provider.enqueueRequest
+          ? this.provider.enqueueRequest(attempt, { signal: sig })
+          : attempt();
+      };
+
+      const outcome = await this.recoverConnection<Response>(c, error, conn, endpoint, reissue, {
+        startTime,
+        deadlineAt: tier1DeadlineAt(c),
+        fallbackMeta,
+        site: "fetch",
+      });
+      if (outcome.kind === "respond") return outcome.response;
+      response = outcome.value;
     }
 
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
@@ -892,28 +1147,46 @@ export class ComposedHandler implements ModelHandler {
           // for a provider that accepts it while the machine is offline. An
           // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
           // out of here is untouched.
-          let retryResp: Response;
-          try {
+          const doParamRetry = async (sig?: AbortSignal): Promise<Response> => {
             const retryHeaders = await this.provider.getHeaders(payload);
             retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
-            retryResp = await fetch(endpoint, {
-              method: "POST",
-              headers: retryHeaders,
-              body: retrySerialized?.body ?? JSON.stringify(requestPayload),
-              ...(this.provider.getRequestInit?.() || {}),
-            });
+            return fetch(
+              endpoint,
+              mergeSignalIntoInit(
+                {
+                  method: "POST",
+                  headers: retryHeaders,
+                  body: retrySerialized?.body ?? JSON.stringify(requestPayload),
+                  ...(this.provider.getRequestInit?.() || {}),
+                },
+                sig
+              )
+            );
+          };
+          let retryResp: Response;
+          try {
+            retryResp = await doParamRetry();
           } catch (err: any) {
             const conn = classifyConnectionError(err);
-            if (conn) {
-              return this.respondConnectionError(
-                c,
-                err,
-                conn,
-                this.connectionEndpointFor(err, endpoint),
-                { startTime, fallbackMeta, retryAttempted: true, site: "parameter-recovery" }
-              );
-            }
-            throw err;
+            if (!conn) throw err;
+            const outcome = await this.recoverConnection<Response>(
+              c,
+              err,
+              conn,
+              this.connectionEndpointFor(err, endpoint),
+              doParamRetry,
+              {
+                startTime,
+                // The full budget: this site runs AFTER the primary fetch, so
+                // there is no unclamped attempt left ahead of it to reserve for.
+                deadlineAt: tier1DeadlineAt(c),
+                fallbackMeta,
+                retryAttempted: true,
+                site: "parameter-recovery",
+              }
+            );
+            if (outcome.kind === "respond") return outcome.response;
+            retryResp = outcome.value;
           }
           if (retryResp.ok) {
             response = retryResp;
@@ -934,20 +1207,33 @@ export class ComposedHandler implements ModelHandler {
       // 401: retry with forced auth refresh (OAuth token expiry)
       if (response.status === 401 && this.provider.forceRefreshAuth) {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);
-        try {
-          await this.provider.forceRefreshAuth();
+        // The forced refresh AND the retry fetch that follows it, as one
+        // re-issuable operation. Both are network calls and either can fail
+        // transiently, so a ladder that could only re-run one of them would
+        // leave the other exactly as exposed as it was.
+        const doAuthRetry = async (sig?: AbortSignal): Promise<Response> => {
+          await this.provider.forceRefreshAuth!();
           const retryHeaders = await this.provider.getHeaders(payload);
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.
           retryHeaders["Content-Type"] = serialized?.contentType ?? "application/json";
           const retryInit = this.provider.getRequestInit?.() || {};
-          const retryResp = await fetch(endpoint, {
-            method: "POST",
-            headers: retryHeaders,
-            body: serialized?.body ?? JSON.stringify(requestPayload),
-            ...retryInit,
-          });
+          return fetch(
+            endpoint,
+            mergeSignalIntoInit(
+              {
+                method: "POST",
+                headers: retryHeaders,
+                body: serialized?.body ?? JSON.stringify(requestPayload),
+                ...retryInit,
+              },
+              sig
+            )
+          );
+        };
+        /** Returns a Response to answer with, or null to carry on streaming. */
+        const settleAuthRetry = async (retryResp: Response): Promise<Response | null> => {
           if (retryResp.ok) {
             response = retryResp; // fall through to stream handling below
           } else {
@@ -996,9 +1282,14 @@ export class ComposedHandler implements ModelHandler {
             }
             return c.json(wrapAnthropicError(retryResp.status, errorText), retryResp.status as any);
           }
+          return null;
+        };
+        try {
+          const answered = await settleAuthRetry(await doAuthRetry());
+          if (answered) return answered;
         } catch (err: any) {
           // CLASSIFY FIRST, exactly as in the refreshAuth catch above, and for a
-          // sharper reason: this `try` wraps BOTH `forceRefreshAuth()` AND the
+          // sharper reason: this path covers BOTH `forceRefreshAuth()` AND the
           // raw retry `fetch` that follows it, so "the network dropped while we
           // were re-signing a request" arrives here and left as an unconditional
           // `authentication_error` 401. `isRetryableError` reads 401 as
@@ -1008,59 +1299,67 @@ export class ComposedHandler implements ModelHandler {
           // this whole area exists to prevent.
           const conn = classifyConnectionError(err);
           if (conn) {
-            return this.respondConnectionError(
+            const outcome = await this.recoverConnection<Response>(
               c,
               err,
               conn,
               this.connectionEndpointFor(err, endpoint),
+              doAuthRetry,
               {
                 startTime,
+                deadlineAt: tier1DeadlineAt(c),
                 fallbackMeta,
                 retryAttempted: true,
                 authType: "oauth",
                 site: "forceRefreshAuth",
               }
             );
-          }
-          log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
-          logStderr(
-            `Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`
-          );
-          reportError({
-            error: err,
-            providerName: this.provider.name,
-            providerDisplayName: this.provider.displayName,
-            streamFormat: this.provider.streamFormat,
-            modelId: this.targetModel,
-            httpStatus: 401,
-            isStreaming: false,
-            retryAttempted: true,
-            isInteractive: this.isInteractive,
-            authType: "oauth",
-          });
-          try {
-            const { error_class, error_code } = classifyError(err, 401, err.message);
-            recordStats({
-              model_id: this.targetModel,
-              provider_name: this.provider.name,
-              stream_format: this.provider.streamFormat,
-              latency_ms: Math.round(performance.now() - startTime),
-              success: false,
-              http_status: 401,
-              error_class,
-              error_code,
-              token_strategy: this.options.tokenStrategy ?? "standard",
-              adapter_name: this.getActiveAdapterName(),
-              middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
-              fallback_used: fallbackMeta !== undefined,
-              fallback_chain: fallbackMeta?.chain,
-              fallback_attempts: fallbackMeta?.attempts,
-              invocation_mode: this.options.invocationMode ?? "auto-route",
+            if (outcome.kind === "respond") return outcome.response;
+            const answered = await settleAuthRetry(outcome.value);
+            if (answered) return answered;
+            // Recovered and streaming: `response` was reassigned by
+            // settleAuthRetry. Fall through to the shared stream handling.
+          } else {
+            log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
+            logStderr(
+              `Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`
+            );
+            reportError({
+              error: err,
+              providerName: this.provider.name,
+              providerDisplayName: this.provider.displayName,
+              streamFormat: this.provider.streamFormat,
+              modelId: this.targetModel,
+              httpStatus: 401,
+              isStreaming: false,
+              retryAttempted: true,
+              isInteractive: this.isInteractive,
+              authType: "oauth",
             });
-          } catch {
-            // Stats must never crash claudish
+            try {
+              const { error_class, error_code } = classifyError(err, 401, err.message);
+              recordStats({
+                model_id: this.targetModel,
+                provider_name: this.provider.name,
+                stream_format: this.provider.streamFormat,
+                latency_ms: Math.round(performance.now() - startTime),
+                success: false,
+                http_status: 401,
+                error_class,
+                error_code,
+                token_strategy: this.options.tokenStrategy ?? "standard",
+                adapter_name: this.getActiveAdapterName(),
+                middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+                fallback_used: fallbackMeta !== undefined,
+                fallback_chain: fallbackMeta?.chain,
+                fallback_attempts: fallbackMeta?.attempts,
+                invocation_mode: this.options.invocationMode ?? "auto-route",
+              });
+            } catch {
+              // Stats must never crash claudish
+            }
+            return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
           }
-          return c.json(wrapAnthropicError(401, err.message, "authentication_error"), 401 as any);
         }
       } else {
         const errorText = await response.text();

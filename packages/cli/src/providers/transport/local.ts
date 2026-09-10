@@ -48,6 +48,11 @@ export class LocalTransport implements ProviderTransport {
   private config: LocalProviderConfig;
   private modelName: string;
   private concurrency?: number;
+  /**
+   * SUCCESS-ONLY latch: true once a probe has actually reached the server.
+   * A FAILED probe must never set it — see the comment at the end of
+   * `checkHealth()` for what setting it there made `refreshAuth()` return.
+   */
   private healthChecked = false;
   private isHealthy = false;
   /**
@@ -159,9 +164,17 @@ export class LocalTransport implements ProviderTransport {
     return {};
   }
 
-  async enqueueRequest(fetchFn: () => Promise<Response>): Promise<Response> {
+  async enqueueRequest(
+    fetchFn: () => Promise<Response>,
+    opts?: { signal?: AbortSignal }
+  ): Promise<Response> {
     if (!LocalModelQueue.isEnabled()) return fetchFn();
-    return LocalModelQueue.getInstance().enqueue(fetchFn, this.name, this.concurrency);
+    return LocalModelQueue.getInstance().enqueue(
+      fetchFn,
+      this.name,
+      this.concurrency,
+      opts?.signal
+    );
   }
 
   /**
@@ -256,7 +269,24 @@ export class LocalTransport implements ProviderTransport {
       log(`[${this.displayName}] /v1/models failed: ${e?.message || e}`);
     }
 
-    this.healthChecked = true;
+    // `healthChecked` latches SUCCESS ONLY. It used to be set here too, and
+    // that made a retried `refreshAuth()` a LIE: `refreshAuth` opens with
+    // `if (this.healthChecked) return;`, so the second call issued no probe and
+    // DID NOT THROW — it returned successfully for a server that was still
+    // dead. Harmless while nothing called it twice inside a request; the moment
+    // a retry ladder does, attempt 2 resolves instantly, the episode closes as
+    // "recovered", and a recovery record is written for an outage that never
+    // ended, while the real failure re-appears milliseconds later from the
+    // fetch path as a second, unrelated-looking episode.
+    //
+    // Three consequences of the fix, all wanted:
+    //   - a retried refreshAuth() RE-PROBES, which is the entire point;
+    //   - a dead local server costs one extra probe per request instead of
+    //     latching unhealthy for the process lifetime. Against a refused
+    //     loopback port that probe returns in ~1 ms;
+    //   - a recovered server now runs fetchContextWindow(). Today it never
+    //     does: the failed probe latched the flag that guards it, so the
+    //     provider served forever on a stale context window.
     this.isHealthy = false;
     log(`[${this.displayName}] Health check FAILED - provider not available`);
     return false;

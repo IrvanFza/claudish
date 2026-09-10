@@ -61,6 +61,17 @@ export const ENV = {
   // Classifier passthrough (auto-mode permission classifier → native Anthropic)
   CLAUDISH_CLASSIFIER_PROVIDER: "CLAUDISH_CLASSIFIER_PROVIDER", // "anthropic" enables classifier passthrough
   CLAUDISH_CLASSIFIER_MODEL: "CLAUDISH_CLASSIFIER_MODEL", // native Claude model to rewrite the classifier onto (also enables)
+  // Connection-recovery switches. CLAUDISH_RECOVERY turns the retry ladder
+  // itself off (the CI / scripted `-p` escape: without it an unreachable
+  // endpoint is held for the whole tier-1 deadline instead of failing at once).
+  // CLAUDISH_RECOVERY_UI says whether claudish may own a surface on which the
+  // reason is legible. Both accept 1/true and 0/false, like CLAUDISH_DEBUG.
+  CLAUDISH_RECOVERY: "CLAUDISH_RECOVERY",
+  CLAUDISH_RECOVERY_UI: "CLAUDISH_RECOVERY_UI",
+  // Claude Code's own per-request client timeout. NOT claudish's variable — it
+  // is READ, never written, because it is the hard ceiling any in-request hold
+  // must land inside. See recovery/settings.ts's resolveTier1DeadlineMs.
+  API_TIMEOUT_MS: "API_TIMEOUT_MS",
 } as const;
 
 // OpenRouter API Configuration

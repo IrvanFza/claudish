@@ -157,6 +157,12 @@ function isStructuralLogWorthy(msg: string): boolean {
     // empty and whose failure the user most needs named.
     msg.startsWith("[Claude Code]") ||
     msg.startsWith("[Fallback]") ||
+    // Connection-recovery episodes: which target, which attempt, how long the
+    // next gap is, and how the episode ended. Without this entry the ladder's
+    // only trace is behind `-d`, and the one thing a user reports about an
+    // outage is that the session hung — a report nobody can check against a
+    // log that was never written.
+    msg.startsWith("[Recovery]") ||
     msg.startsWith("[Streaming] ===") || // HANDLER STARTED
     msg.startsWith("[Streaming] Chunk:") ||
     msg.startsWith("[Streaming] Received") ||
