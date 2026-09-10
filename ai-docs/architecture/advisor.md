@@ -426,4 +426,70 @@ not evidence; read `origin` and `stubPath` from a real run.
 
 ## Validation evidence
 
-TO BE FILLED after the Phase 7 real runs.
+Real `claudish` launches, each on a clean build of the named commit, from a
+terminal pane that carried claudish's placeholder auth token. Evidence files are
+listed at the end of this section.
+
+### Before an advisor model was passed (commit 7aaaa24)
+
+Claude Code offered **no advisor tool in any configuration**, so the swap never
+ran. Every request logged `[advisor-swap] request offers N tool(s) but no
+advisor`, and no `advisor_call` record exists anywhere. A control run on the
+RELEASED build behaved the same way, so this was not caused by the change: the
+released build implements `--advisor` and ships `advisor_20260301` but never
+sets `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`, and even with that variable
+set Claude Code 2.1.267 offers nothing without an advisor model.
+
+The claim that `--advisor` with no `--model` "already worked" was never
+supported by a run.
+
+### After the advisor model is passed (commit 6216b79)
+
+Every `--advisor` run logs `child advisor model=sonnet (claudish via
+--advisor)`, Claude Code offers `advisor_20260301`, and the proxy logs
+`replaced advisor_20260301 with function tool 'advisor'`. The "no advisor"
+warning appears zero times.
+
+| Run | Main model | Advisor tool | Advisor calls | Result |
+|---|---|---|---|---|
+| A | `cx@gpt-6-astra` (Claude Code's own default) | offered | 2 | stubbed by the `max_tokens` defect below |
+| B | `claude-sonnet-5`, native | offered | 2 | same defect |
+| C | `grok-4.6`, xAI | offered | 2 | same defect |
+| C2 | `grok-4.6`, advisor `deepseek-v4-pro` | offered | 2 | **both HTTP 200, real advice** |
+| D | `grok-4.6`, panel of two plus collector | offered | 2 rounds | panel and collector `upstream`; one member stubbed, named in `failedModels`, `isError: false` |
+| E | `grok-4.6`, no `--advisor` | not offered | 0 | no swap, no records, no log file |
+
+What these runs prove, beyond unit tests:
+
+- **Capture by tool name, not id prefix.** Run C's advisor ids were
+  `call-<uuid>-<index>` from the `openai-sse` parser. They were captured and
+  rewritten. Under the old prefix-anchored regexes this is precisely the case
+  that silently did nothing.
+- **Retained entries.** The second advisor call in a session logs
+  `replayed=[<first id>]`: a re-sent `tool_result` gets the stored advice
+  instead of "No such tool available".
+- **Opt-in per launch.** Run E produced no advisor traffic of any kind.
+- **Failures are loud.** A failed panel call reached the model as text naming
+  the model and the reason, raised one warning, and recorded `origin: "stub"`
+  with its stub path. The main model then told the user the tool was failing,
+  rather than treating an error as advice.
+
+### Defects these runs found, which no test had caught
+
+- The OpenAI route sent `max_tokens`; that endpoint requires
+  `max_completion_tokens`, so the plan's own example panel model returned 400.
+- A bare panel name resolved to another provider's id
+  (`accounts/fireworks/models/kimi-k3`) on the OpenRouter route.
+- `reportUnrecordedAdvisorCalls` matched the phrase "No such tool available:
+  advisor" in ANY tool_result text, so a model running `rg "advisor"` in Bash
+  minted a fake advisor record and a false user-visible warning. Text the model
+  wrote is untrusted input and can never be the sole signal.
+
+### Evidence files
+
+Under the session directory (gitignored):
+`validation/phase7-*` for the pre-fix runs including the released-build control,
+`validation/phase7b-*` for the runs above, each with the pane output, the
+claudish debug log and the advisor origin records. The Grok SSE fixture carrying
+a real advisor tool call is committed at
+`packages/cli/src/test-fixtures/sse-responses/grok-4.6-openai-advisor-turn1.sse`.
