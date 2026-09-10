@@ -129,37 +129,39 @@ describe("LocalTransport.refreshAuth — the evidence survives the health check"
   });
 
   /**
-   * THE PROBE-COUNT TRIPWIRE.
+   * THE PROBE COUNT — a retried `refreshAuth()` must actually re-probe.
    *
-   * `refreshAuth()` opens with `if (this.healthChecked) return;`, and
-   * `checkHealth()` sets `healthChecked = true` on FAILURE as well as on
-   * success. The measured consequence, pinned below: the SECOND `refreshAuth()`
-   * touches no network AND DOES NOT THROW — it returns successfully for a
-   * server that is still dead.
+   * This was a TRIPWIRE pinning a bug, and the bug is now fixed; the test is
+   * flipped rather than deleted, because the reason it existed is the reason it
+   * still matters.
    *
-   * That is harmless today, because nothing calls `refreshAuth()` twice within
-   * a request. It stops being harmless the moment a retry ladder does: attempt
-   * 2 would return `ok` instantly, the episode would close as "recovered", and
-   * a recovery record would be written for an outage that never ended.
+   * `refreshAuth()` opens with `if (this.healthChecked) return;`. `checkHealth()`
+   * used to set `healthChecked = true` on FAILURE as well as on success, so the
+   * SECOND `refreshAuth()` touched no network AND DID NOT THROW — it returned
+   * successfully for a server that was still dead.
    *
-   * This test therefore pins the CURRENT behaviour deliberately, as a tripwire:
-   * whoever makes the latch success-only will see this test go red and must
-   * read this comment before changing the numbers. It is not an endorsement.
+   * Harmless while nothing called it twice inside a request. The retry ladder
+   * calls it twice. Attempt 2 would have resolved instantly, the episode would
+   * have closed as "recovered", and a recovery record would have been written
+   * for an outage that never ended — while the real failure reappeared
+   * milliseconds later from the fetch path looking like a separate incident.
+   *
+   * The latch now records success only (`local.ts:271`). So: both calls probe,
+   * and both throw.
    */
-  test("TRIPWIRE: the health-check latch currently suppresses the second probe entirely", async () => {
+  test("a retried refreshAuth re-probes and still throws while the server is down", async () => {
     const probes = stubFailingProbes();
     const transport = new LocalTransport(OLLAMA_CONFIG, "llama3.2");
 
     await expect(transport.refreshAuth()).rejects.toThrow("Cannot connect to Ollama");
     const afterFirst = probes.count;
 
-    // Second call: no throw, no probe.
-    await transport.refreshAuth();
+    // Second call: probes again, and still reports the server as unreachable.
+    // A resolve here is the "recovered from an outage that never ended" bug.
+    await expect(transport.refreshAuth()).rejects.toThrow("Cannot connect to Ollama");
 
     expect(afterFirst).toBe(2); // /api/tags then /v1/models
-    expect(probes.count).toBe(afterFirst); // ← flip to `afterFirst + 2` when the
-    // latch becomes success-only. If this line is the only one you change, also
-    // change the `.resolves` above to `.rejects`.
+    expect(probes.count).toBe(afterFirst + 2); // and again, rather than latching
   });
 });
 

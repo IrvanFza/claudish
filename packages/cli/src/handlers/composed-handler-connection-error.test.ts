@@ -107,7 +107,19 @@ interface CapturedResponse {
 function makeContext(): { c: Context; captured: CapturedResponse } {
   const captured: CapturedResponse = {};
   const c = {
-    req: { header: () => ({}) },
+    // These tests exercise CLASSIFICATION and STATUS, not the retry ladder —
+    // see the file header: "These tests add NO retry machinery and assert
+    // none." They opt out of the ladder exactly the way `probe-live.ts:157`
+    // does, with the header `composed-handler.ts:441` reads.
+    //
+    // Without this, a provoked connect failure enters the ladder and every
+    // assertion below times out at the test runner's limit instead of failing
+    // honestly — 12 tests reporting ~5000ms, which reads as a hang rather than
+    // as the deliberate behaviour change it is.
+    req: {
+      header: (name?: string) =>
+        name === undefined ? {} : name === "x-claudish-no-recovery" ? "1" : undefined,
+    },
     header: () => {},
     body: (body: BodyInit | null, init?: ResponseInit) => new Response(body, init),
     json: (body: unknown, status?: number) => {
