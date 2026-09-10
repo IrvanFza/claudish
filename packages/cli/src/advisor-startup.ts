@@ -42,13 +42,14 @@
  */
 
 import { OllamaAPIFormat } from "./adapters/ollama-api-format.js";
-import { credentials } from "./auth/credentials/authority.js";
 import type { AdvisorToolEnv } from "./claude-runner.js";
 import { ADVISOR_TOOL_ENV_VAR } from "./claude-runner.js";
 import {
+  ADVISOR_AUTHORITY_PROVIDER,
   type AdvisorRoute,
   type AdvisorRouteKind,
   advisorRouteFor,
+  resolveAdvisorCredential,
 } from "./handlers/native-handler-advisor.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { nativeRouteFor } from "./providers/native-route.js";
@@ -100,53 +101,55 @@ export function routeAdvisorModel(modelSpec: string, role: AdvisorRole): Advisor
 // ---------------------------------------------------------------------------
 
 /**
- * Authority registry name for each advisor credential. `anthropic` is the
- * `native-anthropic` provider, which resolves exactly ANTHROPIC_API_KEY
- * (env → config → op://) and never the Claude Code OAuth token.
- */
-const AUTHORITY_NAME: Record<AdvisorCredential, string> = {
-  google: "google",
-  openai: "openai",
-  openrouter: "openrouter",
-  anthropic: "native-anthropic",
-};
-
-/**
  * The key's name as a user would set it. Read from the provider definition (the
  * same one the authority registered), except `anthropic`, whose
  * `native-anthropic` definition deliberately carries no env var.
+ *
+ * The registry name per credential is `ADVISOR_AUTHORITY_PROVIDER`, owned by
+ * the advisor call path — the same table its credential lookup reads.
  */
 export function advisorCredentialEnvName(credential: AdvisorCredential): string {
   if (credential === "anthropic") return "ANTHROPIC_API_KEY";
-  return getProviderByName(AUTHORITY_NAME[credential])?.apiKeyEnvVar || `a ${credential} API key`;
+  return (
+    getProviderByName(ADVISOR_AUTHORITY_PROVIDER[credential])?.apiKeyEnvVar ||
+    `a ${credential} API key`
+  );
+}
+
+/**
+ * A second env var the credential ALSO accepts, for the refusal sentence. Only
+ * Google has one: `resolveAdvisorCredential` falls back to GOOGLE_API_KEY,
+ * which the authority's `google` provider (GEMINI_API_KEY) never reads.
+ */
+function alsoAcceptedEnvName(credential: AdvisorCredential): string | null {
+  return credential === "google" ? "GOOGLE_API_KEY" : null;
 }
 
 /** Whether each credential resolved. Booleans only — no secret is kept. */
 export type AdvisorCredentialPresence = Partial<Record<AdvisorCredential, boolean>>;
 
 /**
- * Resolve credential PRESENCE through the credential authority, for only the
- * credentials this launch needs. The one side-effecting function in this
- * module (it may open 1Password, as the runtime would on the first advisor
- * call); `evaluateAdvisorStartup` takes it as a dependency.
+ * Resolve credential PRESENCE for only the credentials this launch needs. The
+ * one side-effecting function in this module (it may open 1Password, as the
+ * runtime would on the first advisor call); `evaluateAdvisorStartup` takes it
+ * as a dependency.
  *
- * A credential is present when the authority returns a non-empty value in any
- * auth header. The api-key half ALWAYS returns an object — `{headers:{}}` with
- * no key — so the object's existence proves nothing (CLAUDE.md).
+ * It asks `resolveAdvisorCredential`, the advisor call path's OWN lookup, so
+ * this check cannot disagree with the runtime about what is callable. Two
+ * lookups disagreed before: the runtime accepted GOOGLE_API_KEY and this one
+ * did not, so a working Google panel model was refused at launch.
+ *
+ * PRESENCE ONLY: the resolved value is tested and dropped here — never
+ * returned, logged or printed. The api-key half of a credential ALWAYS returns
+ * an object (`{headers:{}}`, or one carrying only static non-auth headers), so
+ * neither the object nor "some header is non-empty" proves a key (CLAUDE.md);
+ * the shared lookup reads the auth headers alone.
  */
 export async function resolveAdvisorCredentials(
   needed: ReadonlySet<AdvisorCredential>
 ): Promise<AdvisorCredentialPresence> {
-  const present = async (credential: AdvisorCredential): Promise<boolean> => {
-    try {
-      const auth = await credentials.getRequestAuth(AUTHORITY_NAME[credential], { model: "" });
-      return Object.values(auth.headers).some(
-        (v) => typeof v === "string" && v.replace(/^Bearer\s+/i, "").trim().length > 0
-      );
-    } catch {
-      return false;
-    }
-  };
+  const present = async (credential: AdvisorCredential): Promise<boolean> =>
+    Boolean(await resolveAdvisorCredential(credential));
   const list = [...needed];
   const results = await Promise.all(list.map(present));
   const out: AdvisorCredentialPresence = {};
@@ -181,8 +184,9 @@ export function advisorModelStatus(
 
 /** The sentence a refusal uses for a model whose credential is missing. */
 export function describeMissingCredential(s: AdvisorModelStatus): string {
+  const also = alsoAcceptedEnvName(s.route.credential);
   return (
-    `${s.model} calls ${s.route.host} and needs ${s.credentialName}; ` +
+    `${s.model} calls ${s.route.host} and needs ${s.credentialName}${also ? ` (or ${also})` : ""}; ` +
     "none found in env, config, keychain or 1Password"
   );
 }

@@ -34,6 +34,7 @@
  */
 
 import { appendFileSync } from "node:fs";
+import { credentials } from "../auth/credentials/authority.js";
 import { getLogFilePath, log, logStderr } from "../logger.js";
 import { resolveModelNameSync } from "../providers/catalog-client.js";
 import { findEntryByAlias } from "../providers/catalog-query.js";
@@ -163,9 +164,15 @@ const ORIGIN_RECORD_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Defence in depth for the debug-log mirror. The records carry no key or
- * header field by construction; `reason` quotes the provider's own error
- * body, and some providers echo the key they rejected.
+ * Defence in depth for EVERY sink a record reaches — the advisor log file and
+ * the debug-log mirror. The records carry no key or header field by
+ * construction; `reason` quotes the provider's own error body, and some
+ * providers echo the key they rejected. The file outlives the session, so it
+ * is the sink that most needs this (it was previously written raw).
+ *
+ * The replacements only ever shorten a run of key characters inside a JSON
+ * string value — none of `"`, `\` or a structural character is produced — so
+ * the scrubbed line is still valid JSON.
  */
 function scrubSecrets(text: string): string {
   return text
@@ -183,24 +190,31 @@ function scrubSecrets(text: string): string {
  * `advisor_rewrite`) are ALSO written, one compact JSON line each after
  * `[advisor-origin]`, to claudish's debug log whenever it is on
  * (`--debug-claudish`), so a real run can be checked from the debug log alone.
+ *
+ * The record is serialized and scrubbed ONCE, and the same scrubbed line goes
+ * to both sinks. The file used to get the raw record while only the debug
+ * mirror was scrubbed, so a provider error body that echoed a key landed in
+ * clear text in a file that outlives the session.
  */
 export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, unknown>): void {
   const record = { ts: new Date().toISOString(), ...event };
+  let line: string;
+  try {
+    line = scrubSecrets(JSON.stringify(record));
+  } catch {
+    // a record that will not serialize is a logging problem only
+    return;
+  }
   if (
     typeof event.kind === "string" &&
     ORIGIN_RECORD_KINDS.has(event.kind) &&
     getLogFilePath() !== null
   ) {
-    try {
-      log(`${ADVISOR_ORIGIN_LOG_PREFIX} ${scrubSecrets(JSON.stringify(record))}`);
-    } catch {
-      // a record that will not serialize is a logging problem only
-    }
+    log(`${ADVISOR_ORIGIN_LOG_PREFIX} ${line}`);
   }
   if (!cfg.logPath) return;
-  const line = `${JSON.stringify(record)}\n`;
   try {
-    appendFileSync(cfg.logPath, line);
+    appendFileSync(cfg.logPath, `${line}\n`);
   } catch {
     // silent — don't break the proxy if the log file is unwritable
   }
@@ -560,6 +574,75 @@ export function markAdvisorCallConsumed(
 }
 
 /**
+ * Panel calls currently RUNNING, keyed exactly as the pending state is: the
+ * request's session key (`NO_SESSION_BUCKET` when it has none) and the
+ * tool-use id.
+ *
+ * WHY: a delivered result is only visible once `markAdvisorCallConsumed` has
+ * run, i.e. after the whole panel returned. Claude Code retrying a request
+ * that carries the same advisor tool_result (socket reset, harness retry)
+ * therefore used to find no cached result and run the ENTIRE panel a second
+ * time — every panel model gets the full conversation again and the user pays
+ * twice. The loop is awaited before the upstream request is sent, so the
+ * window is the whole call: up to the panel timeout plus the collector
+ * timeout. The second request now joins the first call instead of starting
+ * one; after completion the cached-result path serves later turns as before.
+ *
+ * Entries are removed in a `finally`, so this map holds only calls actually in
+ * flight. It is bounded like the pending state (the same per-session and
+ * session caps, multiplied) in case a pathological caller outruns that: past
+ * the cap the oldest entries are dropped, which only costs a later retry its
+ * de-duplication.
+ */
+const inFlightAdvisorCalls = new Map<string, Promise<AdvisorToolResult>>();
+
+const MAX_IN_FLIGHT_ADVISOR_CALLS =
+  ADVISOR_PENDING_LIMITS.maxSessions * ADVISOR_PENDING_LIMITS.maxCallsPerSession;
+
+/**
+ * Runs `start` for (session, toolUseId), or joins the run already in flight
+ * for that key.
+ *
+ * `joined: true` means the returned promise belongs to ANOTHER request: this
+ * caller started nothing and pays for nothing. The owner is responsible for
+ * `markAdvisorCallConsumed`, so a joiner reads the delivered result from the
+ * pending state as any later turn does — or from the promise, which resolves
+ * to the same `AdvisorToolResult`.
+ *
+ * A rejection is not swallowed: it reaches every waiter exactly as it reached
+ * the owner. The entry is gone by then, so a caller that would rather run its
+ * own call after someone else's failure can simply call this again.
+ */
+export function joinOrStartAdvisorCall(
+  toolUseId: string,
+  sessionId: string | undefined,
+  start: () => Promise<AdvisorToolResult>
+): { promise: Promise<AdvisorToolResult>; joined: boolean } {
+  const key = `${sessionKeyFor(sessionId)} ${toolUseId}`;
+  const existing = inFlightAdvisorCalls.get(key);
+  if (existing) return { promise: existing, joined: true };
+
+  while (inFlightAdvisorCalls.size >= MAX_IN_FLIGHT_ADVISOR_CALLS) {
+    const oldest = inFlightAdvisorCalls.keys().next().value;
+    if (oldest === undefined) break;
+    inFlightAdvisorCalls.delete(oldest);
+  }
+
+  // `.finally` (never a `try/finally` inside the IIFE) so the cleanup cannot
+  // run before `promise` is assigned: its callback is always a microtask.
+  const promise: Promise<AdvisorToolResult> = start().finally(() => {
+    if (inFlightAdvisorCalls.get(key) === promise) inFlightAdvisorCalls.delete(key);
+  });
+  inFlightAdvisorCalls.set(key, promise);
+  return { promise, joined: false };
+}
+
+/** Test/debug: the keys of the panel calls currently in flight. */
+export function _debug_getInFlightAdvisorCallKeys(): string[] {
+  return [...inFlightAdvisorCalls.keys()];
+}
+
+/**
  * Reassembles SSE events across chunk boundaries.
  *
  * Anthropic splits `content_block_start` across byte boundaries, so a
@@ -889,6 +972,8 @@ export function prepareLegacyStubResult(
     sessionId: sessionId ?? null,
     panel: [],
     originsByModel: {},
+    // No model was called, so none failed (see logAdvisorCallOutcome).
+    failedModels: [],
     collector: null,
     collectorOrigin: null,
     resultOrigin: "stub" satisfies AdviceOrigin,
@@ -1005,6 +1090,9 @@ export function reportUnrecordedAdvisorCalls(
         sessionId: sessionId ?? null,
         panel,
         originsByModel: Object.fromEntries(panel.map((m) => [m, "absent" satisfies AdviceOrigin])),
+        // No model was called — `resultOrigin: "absent"` is the signal here, and
+        // counting never-called models as failures would inflate any audit.
+        failedModels: [],
         collector: cfg.collector ?? null,
         collectorOrigin: cfg.collector ? ("absent" satisfies AdviceOrigin) : null,
         resultOrigin: "absent" satisfies AdviceOrigin,
@@ -1182,6 +1270,91 @@ export function advisorCredentialsFor(
   return needed;
 }
 
+/**
+ * The credential-authority provider each advisor credential resolves through.
+ * `anthropic` is `native-anthropic`, which resolves exactly ANTHROPIC_API_KEY
+ * (env → config → keychain → op://) and never the Claude Code OAuth token.
+ */
+export const ADVISOR_AUTHORITY_PROVIDER: Readonly<Record<AdvisorRouteKind, string>> = Object.freeze(
+  {
+    google: "google",
+    openai: "openai",
+    openrouter: "openrouter",
+    anthropic: "native-anthropic",
+  }
+);
+
+/**
+ * True for the placeholder key claude-runner installs in proxy-auth mode
+ * (`sk-ant-api03-placeholder-not-used-…`). It is not a credential: sending it
+ * to api.anthropic.com is a guaranteed 401. Matched loosely on purpose — every
+ * placeholder claudish or a wrapper has ever installed says so in its value,
+ * and a real Anthropic key does not.
+ */
+export function isPlaceholderAnthropicKey(key: string): boolean {
+  return /placeholder/i.test(key);
+}
+
+/**
+ * THE advisor credential lookup: the startup check and the runtime call path
+ * both resolve through this one function, so they cannot disagree about
+ * whether a launch is possible. They did: startup asked the authority alone
+ * and refused a Google panel model the runtime would have called with
+ * GOOGLE_API_KEY.
+ *
+ * Only the two auth headers a credential provider signs with are read
+ * (`Authorization` / `x-api-key`). The api-key half ALWAYS returns an object —
+ * `{headers:{}}` with no key, or one carrying only static non-auth headers —
+ * so neither the object nor "some header is non-empty" proves a credential
+ * (CLAUDE.md).
+ *
+ * google: the authority's `google` provider is the DIRECT Gemini API
+ * (GEMINI_API_KEY); Antigravity and Code Assist are registered under their own
+ * names, and nothing may alias `google`. GOOGLE_API_KEY, which that provider
+ * therefore never reads, stays a last-resort env fallback because the advisor
+ * always accepted it.
+ *
+ * anthropic (collector only): ANTHROPIC_API_KEY as the authority resolves it,
+ * never claudish's placeholder and never ANTHROPIC_AUTH_TOKEN — which the
+ * native-anthropic provider would otherwise hand out as an `x-api-key`, and
+ * which is the subscription arm's OAuth token. Claude Code's inbound
+ * `authorization` bearer is not visible here at all; the runtime's own
+ * inbound-`x-api-key` preference lives at its call site.
+ *
+ * Returns the secret, so a caller that needs presence only (the startup check)
+ * must test it and drop it — never log or print it.
+ */
+export async function resolveAdvisorCredential(
+  credential: AdvisorRouteKind
+): Promise<string | undefined> {
+  const fromAuthority = async (provider: string, header: "any" | "x-api-key") => {
+    try {
+      const auth = await credentials.getRequestAuth(provider, { model: "" });
+      const bearer = auth.headers.Authorization?.replace(/^Bearer\s+/i, "").trim();
+      const apiKey = auth.headers["x-api-key"]?.trim();
+      return (header === "x-api-key" ? apiKey : bearer || apiKey) || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  if (credential === "anthropic") {
+    const key = await fromAuthority(ADVISOR_AUTHORITY_PROVIDER.anthropic, "x-api-key");
+    if (!key || key === process.env.ANTHROPIC_AUTH_TOKEN || isPlaceholderAnthropicKey(key)) {
+      return undefined;
+    }
+    return key;
+  }
+  if (credential === "google") {
+    return (
+      (await fromAuthority(ADVISOR_AUTHORITY_PROVIDER.google, "any")) ||
+      process.env.GOOGLE_API_KEY?.trim() ||
+      undefined
+    );
+  }
+  return fromAuthority(ADVISOR_AUTHORITY_PROVIDER[credential], "any");
+}
+
 /** Builds an OpenAI chat-completions request for a non-Anthropic route. */
 function buildAdvisorRequest(
   route: AdvisorRoute,
@@ -1263,6 +1436,19 @@ interface AdvisorFetchPlan {
   /** Stub path when the call failed outright. */
   errorStubPath: AdvisorStubPath;
 }
+
+/** Abort a panel call after this long; a failure like any other (stub path S7). */
+const ADVISOR_PANEL_TIMEOUT_MS = 60_000;
+
+/**
+ * Abort a collector call after this long — BOTH collector routes. The
+ * Anthropic collector had no timeout at all, so a collector that never
+ * answered stalled a LIVE request indefinitely (the panel loop is awaited
+ * before the upstream request is sent). A timeout is a recorded failure like
+ * any other: origin `stub`, stub path S9, and the unchanged fall-back to the
+ * panel's unsynthesized sections.
+ */
+const ADVISOR_COLLECTOR_TIMEOUT_MS = 30_000;
 
 interface ObservedResponse {
   status: number;
@@ -1457,7 +1643,7 @@ async function callAdvisorModel(
       route,
       headers,
       body,
-      timeoutMs: 60_000,
+      timeoutMs: ADVISOR_PANEL_TIMEOUT_MS,
       extractText: extractChatCompletionText,
       emptyStubPath: ADVISOR_STUB_PATHS.PANEL_EMPTY,
       errorStubPath: ADVISOR_STUB_PATHS.PANEL_ERROR,
@@ -1506,7 +1692,7 @@ function planAnthropicCollector(
       system: COLLECTOR_SYSTEM_PROMPT,
       messages: [{ role: "user", content: adviceText }],
     },
-    // No timeout: the Anthropic collector never had one.
+    timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
     extractText: extractAnthropicText,
     emptyStubPath: ADVISOR_STUB_PATHS.ANTHROPIC_COLLECTOR_EMPTY,
     errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
@@ -1543,7 +1729,7 @@ async function callCollectorModel(
         route,
         headers,
         body,
-        timeoutMs: 30_000,
+        timeoutMs: ADVISOR_COLLECTOR_TIMEOUT_MS,
         extractText: extractChatCompletionText,
         emptyStubPath: ADVISOR_STUB_PATHS.COLLECTOR_EMPTY,
         errorStubPath: ADVISOR_STUB_PATHS.COLLECTOR_FAILED,
@@ -1625,6 +1811,20 @@ function logAdvisorCallOutcome(cfg: AdvisorSwapConfig, o: AdvisorCallOutcome): v
   if (o.collectorOutcome) {
     logAdvisorEvent(cfg, modelCallRecord("advisor_collector_call", o.collectorOutcome, o));
   }
+  // `failedModels`: every panel member — and the collector, when it ran and
+  // failed — whose origin is not `upstream`. Empty when nothing failed.
+  //
+  // WHY THE FIELD EXISTS. A PARTIAL panel failure (one member failed, another
+  // answered, no collector) deliberately keeps `isError: false` and
+  // `resultOrigin: "upstream"`: the model still receives the other members'
+  // REAL advice, with the failure named in the text, and `is_error: true`
+  // would tell it the whole call failed. That decision stands. But it left the
+  // record for a partial failure indistinguishable from a clean one at a
+  // glance — `originsByModel` carries the same truth, keyed per model, which
+  // an audit has to walk. This is that truth as one flat list.
+  const failedModels = [...o.panel, ...(o.collectorOutcome ? [o.collectorOutcome] : [])]
+    .filter((m) => m.origin !== "upstream")
+    .map((m) => m.requestedModel);
   logAdvisorEvent(cfg, {
     kind: "advisor_rewrite",
     event: "advisor_rewrite",
@@ -1632,6 +1832,7 @@ function logAdvisorCallOutcome(cfg: AdvisorSwapConfig, o: AdvisorCallOutcome): v
     sessionId: o.sessionId,
     panel: o.panel.map((p) => p.requestedModel),
     originsByModel: Object.fromEntries(o.panel.map((p) => [p.requestedModel, p.origin])),
+    failedModels,
     collector: o.collector,
     collectorOrigin: o.collectorOutcome
       ? o.collectorOutcome.origin

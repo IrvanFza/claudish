@@ -42,7 +42,6 @@
  */
 
 import type { Context } from "hono";
-import { credentials } from "../auth/credentials/authority.js";
 // The HARNESS extractSessionId: takes the whole request and reads
 // `metadata.user_id`'s JSON `session_id`. NOT the same-named function in
 // session-events/index.ts, which takes the metadata object instead.
@@ -52,17 +51,21 @@ import {
   type AdvisorApiKeys,
   type AdvisorRouteKind,
   type AdvisorSwapConfig,
+  type AdvisorToolResult,
   NO_SESSION_BUCKET,
   advisorCredentialsFor,
   createAdvisorStreamScanner,
   findPendingAdvisorToolResults,
   getAdvisorCall,
+  isPlaceholderAnthropicKey,
+  joinOrStartAdvisorCall,
   logAdvisorEvent,
   markAdvisorCallConsumed,
   missingAdvisorResult,
   prepareLegacyStubResult,
   recordAdvisorEventsFromResponseBody,
   reportUnrecordedAdvisorCalls,
+  resolveAdvisorCredential,
   rewriteAdvisorToolResults,
   runAdvisorCall,
   stubAdvisorAdvice,
@@ -100,63 +103,33 @@ const MAX_JSON_SCAN_CHARS = 16 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 /**
- * True for the placeholder key claude-runner installs in proxy-auth mode
- * (`sk-ant-api03-placeholder-not-used-…`). It is not a credential: sending it
- * to api.anthropic.com is a guaranteed 401.
- */
-function isPlaceholderAnthropicKey(key: string): boolean {
-  return /placeholder/i.test(key);
-}
-
-/**
- * Resolve the advisor keys through the credential authority — env → aliases →
- * config → keychain → op:// — the single layer every other signer uses. Only
- * the credentials the configured routes need (`advisorCredentialsFor`) are
- * resolved, so an unused provider never triggers a 1Password handshake.
+ * Resolve the advisor keys for one request through `resolveAdvisorCredential`
+ * (native-handler-advisor.ts) — the SAME function the `--advisor` startup
+ * check asks, so a launch startup accepted is a launch this can sign, and a
+ * launch it refuses is one that really has no key. They used to be two
+ * lookups, and the runtime's extra GOOGLE_API_KEY fallback made startup refuse
+ * launches the runtime would have served.
  *
- * google: the authority's "google" provider is the DIRECT Gemini API
- * (GEMINI_API_KEY); Antigravity and Code Assist are registered under their own
- * names. GOOGLE_API_KEY, which that provider does not alias, stays as a
- * last-resort env fallback because the advisor always accepted it.
+ * Only the credentials the configured routes need (`advisorCredentialsFor`)
+ * are resolved, so an unused provider never triggers a 1Password handshake.
  *
- * anthropic (collector only): the inbound `x-api-key` when it is a real key,
- * else ANTHROPIC_API_KEY from the authority. The inbound `authorization`
- * header is Claude Code's OAuth bearer and is NEVER sent to a collector; nor is
- * ANTHROPIC_AUTH_TOKEN, which the native-anthropic provider would otherwise
- * hand out as an `x-api-key`.
+ * The one rule that belongs HERE and not in the shared resolver: for the
+ * Anthropic collector, this request's own inbound `x-api-key` wins when it is
+ * a real key. The inbound `authorization` header is Claude Code's OAuth bearer
+ * and is NEVER sent to a collector.
  */
 export async function resolveAdvisorKeys(
   needed: ReadonlySet<AdvisorRouteKind>,
   inboundApiKey: string | undefined
 ): Promise<AdvisorApiKeys> {
-  const keyFromAuthority = async (name: string): Promise<string | undefined> => {
-    try {
-      const auth = await credentials.getRequestAuth(name, { model: "" });
-      const k = auth.headers.Authorization?.replace(/^Bearer\s+/i, "") || auth.headers["x-api-key"];
-      return k || undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const googleKey = async (): Promise<string | undefined> =>
-    (await keyFromAuthority("google")) || process.env.GOOGLE_API_KEY || undefined;
   const anthropicKey = async (): Promise<string | undefined> => {
     if (inboundApiKey && !isPlaceholderAnthropicKey(inboundApiKey)) return inboundApiKey;
-    try {
-      const auth = await credentials.getRequestAuth("native-anthropic", { model: "" });
-      const k = auth.headers["x-api-key"];
-      if (!k || k === process.env.ANTHROPIC_AUTH_TOKEN || isPlaceholderAnthropicKey(k)) {
-        return undefined;
-      }
-      return k;
-    } catch {
-      return undefined;
-    }
+    return resolveAdvisorCredential("anthropic");
   };
   const [openrouter, google, openai, anthropic] = await Promise.all([
-    needed.has("openrouter") ? keyFromAuthority("openrouter") : undefined,
-    needed.has("google") ? googleKey() : undefined,
-    needed.has("openai") ? keyFromAuthority("openai") : undefined,
+    needed.has("openrouter") ? resolveAdvisorCredential("openrouter") : undefined,
+    needed.has("google") ? resolveAdvisorCredential("google") : undefined,
+    needed.has("openai") ? resolveAdvisorCredential("openai") : undefined,
     needed.has("anthropic") ? anthropicKey() : undefined,
   ]);
   return { openrouter, google, openai, anthropic };
@@ -337,6 +310,9 @@ async function applyAdvisorRequestSide(
   let rewrittenIds: string[] = [];
 
   if (cfg.models && cfg.models.length > 0) {
+    // Bound once: TypeScript drops the narrowing of `cfg.models` inside the
+    // async closure below, and `as string[]` there would hide a real change.
+    const models = cfg.models;
     // Pass 1 restores advice already delivered on earlier turns, so the panel
     // below reads the conversation the model actually saw.
     rewriteAdvisorToolResults(payload, cachedResult, sessionId);
@@ -344,30 +320,61 @@ async function applyAdvisorRequestSide(
     const pendingIds = findPendingAdvisorToolResults(payload, sessionId);
     if (pendingIds.length > 0) {
       const freshIds: string[] = [];
+      // Results this request has in hand. `cachedResult` covers every normal
+      // case; this is the fall-back for one it cannot — a call whose entry was
+      // evicted while the panel ran, which would otherwise take stub path S2
+      // although the advice is right here.
+      const delivered = new Map<string, AdvisorToolResult>();
       let apiKeys: AdvisorApiKeys | undefined;
       for (const id of pendingIds) {
         if (cachedResult(id)) continue;
-        apiKeys ??= await resolveKeys(
-          advisorCredentialsFor(cfg.models, cfg.collector),
-          c.req.header("x-api-key")
-        );
-        const outcome = await runAdvisorCall({
-          toolUseId: id,
-          sessionId,
-          messages: payload.messages as any[],
-          models: cfg.models,
-          collector: cfg.collector ?? null,
-          apiKeys,
-          cfg,
-        });
-        markAdvisorCallConsumed(id, outcome.result, sessionId);
-        freshIds.push(id);
+
+        // One panel run per (session, tool_use id), even if Claude Code has
+        // two requests in flight for it — see joinOrStartAdvisorCall. Key
+        // resolution is inside, so a retry cannot race past it either.
+        const runPanel = async (): Promise<AdvisorToolResult> => {
+          apiKeys ??= await resolveKeys(
+            advisorCredentialsFor(models, cfg.collector),
+            c.req.header("x-api-key")
+          );
+          const outcome = await runAdvisorCall({
+            toolUseId: id,
+            sessionId,
+            messages: payload.messages as any[],
+            models,
+            collector: cfg.collector ?? null,
+            apiKeys,
+            cfg,
+          });
+          markAdvisorCallConsumed(id, outcome.result, sessionId);
+          return outcome.result;
+        };
+
+        let { promise, joined } = joinOrStartAdvisorCall(id, sessionId, runPanel);
+        if (joined) {
+          log(
+            `[advisor-swap] advisor call ${id} is already running for this session; joined it instead of running the panel again (session=${sessionLabel})`
+          );
+          try {
+            delivered.set(id, await promise);
+            continue;
+          } catch (err) {
+            // The other request's call failed. Its entry is already gone, so
+            // running our own is safe and cannot re-bill a live call.
+            log(
+              `[advisor-swap] the in-flight advisor call ${id} failed (${errorMessage(err)}); running our own`
+            );
+            ({ promise, joined } = joinOrStartAdvisorCall(id, sessionId, runPanel));
+          }
+        }
+        delivered.set(id, await promise);
+        if (!joined) freshIds.push(id);
       }
       // Pass 2: every tracked call now has a result. The S2 fallback is
       // unreachable by construction and reports itself as an error if not.
       rewrittenIds = rewriteAdvisorToolResults(
         payload,
-        (id) => cachedResult(id) ?? missingAdvisorResult(id),
+        (id) => cachedResult(id) ?? delivered.get(id) ?? missingAdvisorResult(id),
         sessionId
       );
       if (rewrittenIds.length > 0) {
