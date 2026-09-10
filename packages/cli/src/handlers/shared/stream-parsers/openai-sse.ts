@@ -18,6 +18,40 @@ import {
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
 import { messageStartUsage } from "./message-start-usage.js";
 
+/**
+ * Hard ceiling, in characters, on ONE logged raw SSE payload.
+ *
+ * The debug log is the source of record for test fixtures — `extract-sse-from-log.ts`
+ * reads these very lines back and writes them out as `.sse` replay files — so the
+ * payload has to reach the log VERBATIM. A payload cut mid-JSON yields a fixture that
+ * `JSON.parse` rejects, and the parser's `catch` swallows that, so the corruption only
+ * ever surfaces as a wrong `stop_reason` several layers away. That is exactly what the
+ * previous 300-character cap did to `grok-4.6-openai-advisor-turn1.sse`.
+ *
+ * 1M characters is a backstop against a pathological provider, not a content limit: a
+ * normal chunk is a few hundred bytes, and even a whole tool call with inlined arguments
+ * is orders of magnitude under it. Nothing that fits in a real turn can be cut by it.
+ */
+export const SSE_LOG_MAX_CHARS = 1_000_000;
+
+/**
+ * Appended when — and only when — a payload exceeded {@link SSE_LOG_MAX_CHARS}.
+ *
+ * A cut payload is never left looking whole. This marker is not valid JSON and not
+ * plausible content, so both a human reading the log and `extract-sse-from-log.ts`
+ * can tell an incomplete line from a complete one.
+ */
+export const SSE_LOG_TRUNCATION_MARKER = "<<<CLAUDISH_SSE_TRUNCATED>>>";
+
+/**
+ * Render a raw SSE `data:` payload for the debug log: verbatim, unless it is
+ * absurdly large, in which case it is cut and unmistakably flagged as cut.
+ */
+export function formatRawSseLogPayload(dataStr: string): string {
+  if (dataStr.length <= SSE_LOG_MAX_CHARS) return dataStr;
+  return `${dataStr.substring(0, SSE_LOG_MAX_CHARS)} ${SSE_LOG_TRUNCATION_MARKER} original_chars=${dataStr.length}`;
+}
+
 export interface StreamingState {
   usage: any;
   finalized: boolean;
@@ -490,7 +524,8 @@ export function createStreamingResponseHandler(
             for (const line of lines) {
               if (!line.trim() || !line.startsWith("data: ")) continue;
               const dataStr = line.slice(6);
-              log(`[SSE:openai] ${dataStr.substring(0, 300)}`);
+              // Verbatim: this line IS the fixture source (see SSE_LOG_MAX_CHARS).
+              log(`[SSE:openai] ${formatRawSseLogPayload(dataStr)}`);
               if (dataStr === "[DONE]") {
                 await finalize("done");
                 return;
