@@ -31,9 +31,7 @@ describe("isAdvisorNativeSession", () => {
   });
 
   it("is false when a Claude model is set", () => {
-    expect(isAdvisorNativeSession(config({ advisor: true, model: "claude-sonnet-5" }))).toBe(
-      false
-    );
+    expect(isAdvisorNativeSession(config({ advisor: true, model: "claude-sonnet-5" }))).toBe(false);
   });
 
   it("is false when a non-Claude model is set", () => {
@@ -53,9 +51,7 @@ describe("isAdvisorNativeSession", () => {
       )
     ).toBe(false);
     expect(
-      isAdvisorNativeSession(
-        config({ advisor: false, monitor: false, model: "claude-sonnet-5" })
-      )
+      isAdvisorNativeSession(config({ advisor: false, monitor: false, model: "claude-sonnet-5" }))
     ).toBe(false);
     expect(isAdvisorNativeSession(config({ monitor: true, modelChain: ["fallback"] }))).toBe(false);
     expect(isAdvisorNativeSession(config({ monitor: false }))).toBe(false);
