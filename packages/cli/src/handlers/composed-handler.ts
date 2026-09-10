@@ -56,6 +56,7 @@ import {
   wrapAnthropicError,
 } from "./shared/anthropic-error.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
+import type { ConnectionErrorKind } from "./shared/connection-error.js";
 import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
@@ -311,6 +312,104 @@ export class ComposedHandler implements ModelHandler {
     return this.getAdapter().getName();
   }
 
+  /**
+   * Which host to name in a connection-failure message.
+   *
+   * A connect failure raised while MINTING A TOKEN happened against the auth
+   * host, not the inference endpoint — for `gk@` those are `auth.x.ai` and
+   * `api.x.ai`. A transport that knows better attaches `claudishEndpoint` to the
+   * error it rethrows; otherwise fall back to the request endpoint, and finally
+   * to the provider name so the sentence is never blank.
+   */
+  private connectionEndpointFor(error: unknown, requestEndpoint?: string): string {
+    const attached = (error as { claudishEndpoint?: unknown })?.claudishEndpoint;
+    if (typeof attached === "string" && attached.length > 0) return attached;
+    if (requestEndpoint) return requestEndpoint;
+    try {
+      return this.provider.getEndpoint(this.targetModel);
+    } catch {
+      return this.provider.displayName;
+    }
+  }
+
+  /**
+   * The ONE response shape for "claudish could not reach the host".
+   *
+   * Every outbound call in this handler that can throw without a Response must
+   * classify first and come here, or rethrow unchanged. None may invent a
+   * status of its own — that is the rule this method exists to make cheap to
+   * follow, because the two statuses a hand-written site reaches for are both
+   * wrong:
+   *
+   *   - **401** (what the auth catches returned) is read by
+   *     `fallback-handler.ts`'s `isRetryableError` as retryable, so a network
+   *     outage during a token refresh ADVANCES THE CHAIN — silently moving a
+   *     subscription user onto a per-token provider, during an outage, for a
+   *     fault that had nothing to do with their credentials.
+   *   - **500** (what an unclassified throw becomes at `proxy-server.ts`) hides
+   *     the actionable sentence behind a stack dump.
+   *
+   * 400 with type `connection_error` is neither: `isRetryableError` stops the
+   * chain, Claude Code renders it inline instead of behind "API error ·
+   * Retrying", and `probe-live`'s classifier keys off the TYPE (status-agnostic)
+   * to report "network error".
+   */
+  private respondConnectionError(
+    c: Context,
+    error: unknown,
+    conn: { kind: ConnectionErrorKind; code: string },
+    endpoint: string,
+    ctx: {
+      startTime: number;
+      fallbackMeta?: { chain: string[]; attempts: number };
+      retryAttempted?: boolean;
+      authType?: "api-key" | "oauth" | "none";
+      /** Where the failure happened, for the debug log only. */
+      site?: string;
+    }
+  ): Response {
+    const msg = buildConnectionErrorMessage(conn.kind, this.provider.displayName, endpoint);
+    log(
+      `[${this.provider.displayName}] ${msg} (code=${conn.code}${ctx.site ? `, site=${ctx.site}` : ""})`
+    );
+    logStderr(`Error: ${msg}`);
+    reportError({
+      error,
+      providerName: this.provider.name,
+      providerDisplayName: this.provider.displayName,
+      streamFormat: this.provider.streamFormat,
+      modelId: this.targetModel,
+      httpStatus: undefined,
+      isStreaming: false,
+      retryAttempted: ctx.retryAttempted ?? false,
+      isInteractive: this.isInteractive,
+      ...(ctx.authType ? { authType: ctx.authType } : {}),
+    });
+    try {
+      const { error_class, error_code } = classifyError(error, undefined);
+      recordStats({
+        model_id: this.targetModel,
+        provider_name: this.provider.name,
+        stream_format: this.provider.streamFormat,
+        latency_ms: Math.round(performance.now() - ctx.startTime),
+        success: false,
+        http_status: 0,
+        error_class,
+        error_code,
+        token_strategy: this.options.tokenStrategy ?? "standard",
+        adapter_name: this.getActiveAdapterName(),
+        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        fallback_used: ctx.fallbackMeta !== undefined,
+        fallback_chain: ctx.fallbackMeta?.chain,
+        fallback_attempts: ctx.fallbackMeta?.attempts,
+        invocation_mode: this.options.invocationMode ?? "auto-route",
+      });
+    } catch {
+      // Stats must never crash claudish
+    }
+    return c.json(wrapAnthropicError(400, msg, "connection_error"), 400 as any);
+  }
+
   async handle(c: Context, payload: any): Promise<Response> {
     const startTime = performance.now();
     // latency_ms = time-to-first-byte (from request send to successful response).
@@ -560,6 +659,27 @@ export class ComposedHandler implements ModelHandler {
         // anyway, and Antigravity polls a free endpoint off the request path.
         // Neither can delay a turn, because neither does any work during one.
       } catch (err: any) {
+        // CLASSIFY FIRST — before `err.terminal`, before anything invents a
+        // status. `refreshAuth()` is a NETWORK call for most transports
+        // (Antigravity makes three, Vertex mints a token, a local provider
+        // probes its own server), so "the refresh threw" and "the credential is
+        // bad" are two different facts and only one of them is this catch's
+        // subject. Answering 401 for the network one is not a cosmetic
+        // mislabel: `fallback-handler.ts`'s `isRetryableError` treats 401 as
+        // retryable, so a DNS or refused-connection failure here walked the
+        // user across every provider in the chain — off a subscription onto
+        // metered billing — for an outage on their own machine.
+        //
+        // No retry ladder here yet: this phase only stops the misclassification.
+        const conn = classifyConnectionError(err);
+        if (conn) {
+          return this.respondConnectionError(c, err, conn, this.connectionEndpointFor(err), {
+            startTime,
+            fallbackMeta,
+            authType: "oauth",
+            site: "refreshAuth",
+          });
+        }
         log(`[${this.provider.displayName}] Auth/health check failed: ${err.message}`);
         logStderr(
           `Error [${this.provider.displayName}]: Auth/health check failed — ${err.message}. Check credentials and server.`
@@ -618,7 +738,35 @@ export class ComposedHandler implements ModelHandler {
     const endpoint = this.provider.getEndpoint(this.targetModel);
     // The ORIGINAL inbound body, not the normalized `claudeRequest` clone: a
     // header carrying conversation identity must see what Claude Code sent.
-    const headers = await this.provider.getHeaders(payload);
+    //
+    // `getHeaders()` sat outside EVERY try, and for some transports it is the
+    // request's first network touch — `gk@` reaches
+    // `resolveGrokAccessToken()` → `fetch(auth.x.ai/oauth2/token)` from here
+    // when the cached token has expired. An unclassified throw escaped `handle()`
+    // entirely and landed in one of two places, neither of which says anything
+    // true: `fallback-handler.ts`'s catch, which records `status: 0` and
+    // ADVANCES THE CHAIN with not even the per-token cost warning (that warning
+    // sits on the non-throwing branch), or — for a single-candidate route, where
+    // no FallbackHandler exists — `proxy-server.ts`'s bare 500.
+    //
+    // The touch is refresh-conditional, which makes this rare, not safe.
+    let headers: Record<string, string>;
+    try {
+      headers = await this.provider.getHeaders(payload);
+    } catch (err: any) {
+      const conn = classifyConnectionError(err);
+      if (conn) {
+        return this.respondConnectionError(
+          c,
+          err,
+          conn,
+          this.connectionEndpointFor(err, endpoint),
+          { startTime, fallbackMeta, authType: "oauth", site: "getHeaders" }
+        );
+      }
+      // Anything else keeps its existing route out of here untouched.
+      throw err;
+    }
 
     // 6a. The body is NOT necessarily JSON. A transport may serialize the
     // payload itself (Devin encodes Connect-protobuf, credential and all).
@@ -649,59 +797,19 @@ export class ComposedHandler implements ModelHandler {
     } catch (error: any) {
       // A failure to even REACH the provider (DNS can't resolve, connection
       // refused, host unreachable) is a LOCAL network problem, not an upstream
-      // server error. Surface it as a 503 connection_error with an honest,
+      // server error. Surface it as a connection_error with an honest,
       // actionable message so Claude Code and the config probe show "can't reach
       // host — check your network/DNS" instead of a mystifying 500. (A Tailscale
       // MagicDNS outage making chatgpt.com unresolvable is what motivated this.)
       const conn = classifyConnectionError(error);
       if (conn) {
-        const msg = buildConnectionErrorMessage(conn.kind, this.provider.displayName, endpoint);
-        log(`[${this.provider.displayName}] ${msg} (code=${conn.code})`);
-        logStderr(`Error: ${msg}`);
-        reportError({
-          error,
-          providerName: this.provider.name,
-          providerDisplayName: this.provider.displayName,
-          streamFormat: this.provider.streamFormat,
-          modelId: this.targetModel,
-          httpStatus: undefined,
-          isStreaming: false,
-          retryAttempted: false,
-          isInteractive: this.isInteractive,
+        // Status 400, NOT 503, and every field below is shared with the four
+        // other sites that can fail this way — see respondConnectionError.
+        return this.respondConnectionError(c, error, conn, endpoint, {
+          startTime,
+          fallbackMeta,
+          site: "fetch",
         });
-        try {
-          const { error_class, error_code } = classifyError(error, undefined);
-          recordStats({
-            model_id: this.targetModel,
-            provider_name: this.provider.name,
-            stream_format: this.provider.streamFormat,
-            latency_ms: Math.round(performance.now() - startTime),
-            success: false,
-            http_status: 0,
-            error_class,
-            error_code,
-            token_strategy: this.options.tokenStrategy ?? "standard",
-            adapter_name: this.getActiveAdapterName(),
-            middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
-            fallback_used: fallbackMeta !== undefined,
-            fallback_chain: fallbackMeta?.chain,
-            fallback_attempts: fallbackMeta?.attempts,
-            invocation_mode: this.options.invocationMode ?? "auto-route",
-          });
-        } catch {
-          // Stats must never crash claudish
-        }
-        // Status 400, NOT 503. Both stop claudish's own fallback chain
-        // (isRetryableError treats each as terminal), but Claude Code retries a
-        // 503 as overloaded_error — ten rounds of "API error · Retrying ·
-        // attempt N/10" with the real reason buried behind the banner, which is
-        // exactly the failure this fix exists to kill. A 400 is rendered
-        // verbatim and inline by Claude Code's native error UI, so the user
-        // reads "check your network/DNS" in the transcript instead of watching
-        // a retry counter. The `connection_error` TYPE is what carries the
-        // meaning: probe-live's classifyHttpError keys off it (status-agnostic)
-        // to report "network error" rather than a generic client error.
-        return c.json(wrapAnthropicError(400, msg, "connection_error"), 400 as any);
       }
       throw error;
     }
@@ -772,14 +880,41 @@ export class ComposedHandler implements ModelHandler {
           // Re-serialize: a transport that owns its own encoding (Devin) must
           // re-encode the changed payload rather than resend the stale bytes.
           const retrySerialized = this.provider.serializeBody?.(requestPayload);
-          const retryHeaders = await this.provider.getHeaders(payload);
-          retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
-          const retryResp = await fetch(endpoint, {
-            method: "POST",
-            headers: retryHeaders,
-            body: retrySerialized?.body ?? JSON.stringify(requestPayload),
-            ...(this.provider.getRequestInit?.() || {}),
-          });
+          // This re-fetch had NO `try` at all. A connection throw therefore
+          // escaped handle() entirely and landed in `fallback-handler.ts`'s
+          // catch, which pushes `{ status: 0 }` and advances the chain
+          // unconditionally — the same silent move onto metered billing the
+          // auth catches make, reached from a different direction.
+          //
+          // A classified failure answers with the network truth rather than
+          // re-reporting the original parameter complaint: the parameter is no
+          // longer what is wrong, and repeating it would send the chain hunting
+          // for a provider that accepts it while the machine is offline. An
+          // UNCLASSIFIED throw is rethrown unchanged, so the existing 500 route
+          // out of here is untouched.
+          let retryResp: Response;
+          try {
+            const retryHeaders = await this.provider.getHeaders(payload);
+            retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
+            retryResp = await fetch(endpoint, {
+              method: "POST",
+              headers: retryHeaders,
+              body: retrySerialized?.body ?? JSON.stringify(requestPayload),
+              ...(this.provider.getRequestInit?.() || {}),
+            });
+          } catch (err: any) {
+            const conn = classifyConnectionError(err);
+            if (conn) {
+              return this.respondConnectionError(
+                c,
+                err,
+                conn,
+                this.connectionEndpointFor(err, endpoint),
+                { startTime, fallbackMeta, retryAttempted: true, site: "parameter-recovery" }
+              );
+            }
+            throw err;
+          }
           if (retryResp.ok) {
             response = retryResp;
           } else {
@@ -862,6 +997,31 @@ export class ComposedHandler implements ModelHandler {
             return c.json(wrapAnthropicError(retryResp.status, errorText), retryResp.status as any);
           }
         } catch (err: any) {
+          // CLASSIFY FIRST, exactly as in the refreshAuth catch above, and for a
+          // sharper reason: this `try` wraps BOTH `forceRefreshAuth()` AND the
+          // raw retry `fetch` that follows it, so "the network dropped while we
+          // were re-signing a request" arrives here and left as an unconditional
+          // `authentication_error` 401. `isRetryableError` reads 401 as
+          // retryable, so the upstream's 401 plus a network blip got relabelled
+          // as an auth failure and ADVANCED THE CHAIN — a subscription user
+          // moved onto a metered candidate mid-outage, which is the one outcome
+          // this whole area exists to prevent.
+          const conn = classifyConnectionError(err);
+          if (conn) {
+            return this.respondConnectionError(
+              c,
+              err,
+              conn,
+              this.connectionEndpointFor(err, endpoint),
+              {
+                startTime,
+                fallbackMeta,
+                retryAttempted: true,
+                authType: "oauth",
+                site: "forceRefreshAuth",
+              }
+            );
+          }
           log(`[${this.provider.displayName}] Auth refresh failed: ${err.message}`);
           logStderr(
             `Error [${this.provider.displayName}]: Authentication failed — ${err.message}. Check API key.`

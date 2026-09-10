@@ -122,7 +122,14 @@ export class VertexProviderTransport implements ProviderTransport {
     try {
       this.cachedAuth = await credentials.getRequestAuth("vertex", { model: this.parsed.model });
     } catch (e: any) {
-      throw new Error(`Vertex AI auth failed: ${e.message}`);
+      // `{ cause: e }` is load-bearing, not decoration. `classifyConnectionError`
+      // finds a connection failure by walking `.code` and then the `.cause` chain
+      // to depth 8 (connection-error.ts:56-68). Rethrowing a bare Error discards
+      // both, so a DNS/refused failure while minting the Vertex token classified
+      // as `null` and ComposedHandler's refreshAuth catch answered 401 — which
+      // `isRetryableError` treats as retryable, walking the user down the
+      // fallback chain during a network outage.
+      throw new Error(`Vertex AI auth failed: ${e.message}`, { cause: e });
     }
   }
 

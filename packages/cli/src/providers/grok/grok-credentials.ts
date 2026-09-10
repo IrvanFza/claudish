@@ -423,8 +423,16 @@ async function performRefresh(cred: GrokCredential): Promise<string> {
   } catch (error) {
     // A network failure is NOT terminal — it can self-heal, so let the normal
     // retry path see it rather than rendering a dead-end 400.
+    // `{ cause }` so `classifyConnectionError` can find the real syscall code
+    // instead of depending on Bun's connect sentence surviving inside the
+    // interpolated message above — which it does today, by luck, and would stop
+    // doing the moment either side of that string is reworded. This is the
+    // FIRST network touch of a `gk@` request (ComposedHandler calls getHeaders()
+    // before the upstream fetch), so an unclassifiable failure here escapes into
+    // the fallback chain with `status: 0`.
     throw new Error(
-      `Could not reach ${tokenEndpoint} to refresh the Grok token: ${(error as Error).message}`
+      `Could not reach ${tokenEndpoint} to refresh the Grok token: ${(error as Error).message}`,
+      { cause: error }
     );
   }
 

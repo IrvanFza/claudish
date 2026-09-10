@@ -50,6 +50,17 @@ export class LocalTransport implements ProviderTransport {
   private concurrency?: number;
   private healthChecked = false;
   private isHealthy = false;
+  /**
+   * The last error a health probe THREW, kept so `refreshAuth()` can hand it on
+   * as a `cause`. `checkHealth()` catches its probe failures and only logs them;
+   * without this field the syscall error — the sole evidence that this was a
+   * failure to REACH the server rather than a server saying no — is destroyed
+   * inside the catch, and `classifyConnectionError` returns `null` for every
+   * ollama/lmstudio/vllm outage.
+   */
+  private lastProbeError: unknown;
+  /** The URL of the probe that failed, for the same reason. */
+  private lastProbeUrl: string | undefined;
   private _contextWindow = 32768;
 
   constructor(config: LocalProviderConfig, modelName: string, options?: { concurrency?: number }) {
@@ -162,7 +173,20 @@ export class LocalTransport implements ProviderTransport {
 
     const healthy = await this.checkHealth();
     if (!healthy) {
-      throw new Error(this.getConnectionErrorMessage());
+      // `{ cause }` is the whole point. `classifyConnectionError` walks `.code`
+      // and then the `.cause` chain to depth 8; the sentence below carries
+      // neither a code nor any phrase the message fallback matches, so a bare
+      // `new Error(msg)` classified as `null` and a stopped Ollama reached
+      // ComposedHandler's refreshAuth catch as an unclassified failure — 401,
+      // which `isRetryableError` treats as retryable, walking the user down the
+      // fallback chain and onto metered billing while their own machine was
+      // simply not running the server.
+      throw Object.assign(
+        new Error(this.getConnectionErrorMessage(), {
+          cause: this.lastProbeError,
+        }),
+        { claudishEndpoint: this.lastProbeUrl ?? this.config.baseUrl }
+      );
     }
 
     await this.fetchContextWindow();
@@ -182,9 +206,14 @@ export class LocalTransport implements ProviderTransport {
   private async checkHealth(): Promise<boolean> {
     if (this.healthChecked) return this.isHealthy;
 
+    // Each probe attempt starts from a clean slate: a stale error from an
+    // earlier attempt must never be handed on as this failure's cause.
+    this.lastProbeError = undefined;
+    this.lastProbeUrl = undefined;
+
     // Try Ollama-specific health check first
+    const healthUrl = `${this.config.baseUrl}/api/tags`;
     try {
-      const healthUrl = `${this.config.baseUrl}/api/tags`;
       log(`[${this.displayName}] Trying health check: ${healthUrl}`);
       const response = await fetch(healthUrl, {
         method: "GET",
@@ -199,12 +228,16 @@ export class LocalTransport implements ProviderTransport {
       }
       log(`[${this.displayName}] /api/tags returned ${response.status}, trying /v1/models`);
     } catch (e: any) {
+      // KEEP the error, do not merely log it. See `lastProbeError`'s docs: this
+      // catch is where the connect evidence used to die.
+      this.lastProbeError = e;
+      this.lastProbeUrl = healthUrl;
       log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
     }
 
     // Try generic OpenAI-compatible health check
+    const modelsUrl = `${this.config.baseUrl}/v1/models`;
     try {
-      const modelsUrl = `${this.config.baseUrl}/v1/models`;
       log(`[${this.displayName}] Trying health check: ${modelsUrl}`);
       const response = await fetch(modelsUrl, {
         method: "GET",
@@ -218,6 +251,8 @@ export class LocalTransport implements ProviderTransport {
       }
       log(`[${this.displayName}] /v1/models returned ${response.status}`);
     } catch (e: any) {
+      this.lastProbeError = e;
+      this.lastProbeUrl = modelsUrl;
       log(`[${this.displayName}] /v1/models failed: ${e?.message || e}`);
     }
 

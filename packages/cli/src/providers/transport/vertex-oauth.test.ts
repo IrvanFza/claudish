@@ -22,6 +22,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { VertexConfig } from "../../auth/vertex-auth.js";
+import { classifyConnectionError } from "../../handlers/shared/connection-error.js";
 
 const {
   buildVertexOAuthEndpoint: actualBuildVertexOAuthEndpoint,
@@ -164,6 +165,38 @@ describe("VertexProviderTransport — delegated auth", () => {
     expect(refreshTokenMock).toHaveBeenCalledTimes(1);
     // Re-delegated artifact carries the refreshed token.
     expect((await t.getHeaders()).Authorization).toBe("Bearer vertex-token-B");
+  });
+
+  test("refreshAuth() preserves the credential failure as `cause`", async () => {
+    // `classifyConnectionError` finds a network failure by walking `.code` and
+    // then the `.cause` chain to depth 8. This catch used to rethrow a bare
+    // `new Error("Vertex AI auth failed: …")`, discarding both — so a DNS or
+    // refused-connection failure while minting the token classified as `null`,
+    // ComposedHandler's refreshAuth catch answered 401, and `isRetryableError`
+    // read that as retryable and walked the user down the fallback chain during
+    // a network outage. One extra argument is the whole fix; this pins it.
+    const underlying = Object.assign(new Error("Unable to connect."), {
+      code: "ConnectionRefused",
+    });
+    getRequestAuthMock = mock(async () => {
+      throw underlying;
+    });
+
+    const t = new VertexProviderTransport(config, parseVertexModel("gemini-2.5-flash"));
+
+    let thrown: unknown;
+    try {
+      await t.refreshAuth();
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect((thrown as Error).message).toContain("Vertex AI auth failed");
+    expect((thrown as Error).cause).toBe(underlying);
+    expect(classifyConnectionError(thrown)).toEqual({
+      kind: "refused",
+      code: "ConnectionRefused",
+    });
   });
 
   test("getEndpoint() / getRequestInit() unchanged; anthropic transformPayload unchanged", () => {
