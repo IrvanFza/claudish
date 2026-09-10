@@ -17,6 +17,7 @@ import { confirm, input, search, select } from "@inquirer/prompts";
 import { lookupModel, lookupModelCapabilities } from "./adapters/model-catalog.js";
 import { credentials } from "./auth/credentials/authority.js";
 import { isSubscriptionProvider } from "./handlers/shared/remote-provider-types.js";
+import { log } from "./logger.js";
 import {
   type AggregatorEntry,
   type ModelDoc,
@@ -458,13 +459,54 @@ function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
  * `pplx-embed`, then `bge`), and recurred each time, because a list is made in
  * more than one place. Every list either UI can render now returns through here.
  *
- * Honest limit: `isChatCapable` is name-based, so `gemini-3.5-transcribe` still
- * gets through (`transcribe` is in none of its patterns). Adding a pattern has a
- * real false-positive risk on model names, and the catalog's own modality field
- * can answer it properly — that is a models-index issue, not a CLI regex.
+ * HONEST LIMIT, AND IT IS LOGGED RATHER THAN LEFT AS A COMMENT. `isChatCapable`
+ * reads a model ID, and an ID is not a modality contract. The transcribe / voice
+ * / video families now have patterns (`probe-discovery.ts`, which records why),
+ * but a generator whose name says nothing — `seedance-2.5` (video),
+ * `flux-2-pro` (image) — cannot be excluded without a vendor-family blacklist,
+ * which is the workaround that has already recurred three times.
+ *
+ * The complete fix is a modality field on the slim catalog payload; `ModelDoc`
+ * carries `capabilities.imageGeneration` / `audioInput` / `audioOutput` /
+ * `embedding` and the slim entry carries none of them, so every aggregator-served
+ * list is name-classified only. That is a models-index gap, filed there. What is
+ * owed HERE is visibility, so the residue is named ONCE per process in the debug
+ * log — a picker screenshot is otherwise the only place it shows up.
  */
 export function toPickerRows(models: ModelInfo[]): ModelInfo[] {
-  return sortModelsNewestFirst(dedupeModels(models.filter((m) => isChatCapable(m.id))));
+  const kept = sortModelsNewestFirst(dedupeModels(models.filter((m) => isChatCapable(m.id))));
+  logModalityGapOnce(kept);
+  return kept;
+}
+
+/** Names that are known non-chat but carry no modality signal in the ID itself. */
+const UNINFERABLE_NON_CHAT = [/\bseedance\b/i, /\bflux\b/i, /\bveo\b/i, /\bimagen\b/i];
+
+let _modalityGapLogged = false;
+
+/**
+ * Say in the log which rows survived the name filter but are known-suspect, and
+ * say why nothing more can be done in this repo.
+ *
+ * ONCE per process: `toPickerRows` is the chokepoint for every list either UI
+ * renders, so a per-call line would be dozens of identical lines per picker open.
+ * It never writes to a terminal — `log()` goes to the debug file — because the
+ * renderer owns the terminal while the picker is up.
+ */
+function logModalityGapOnce(kept: ModelInfo[]): void {
+  if (_modalityGapLogged) return;
+  const suspect = kept.filter((m) => UNINFERABLE_NON_CHAT.some((re) => re.test(m.id)));
+  if (suspect.length === 0) return;
+  _modalityGapLogged = true;
+  log(
+    `[Models] ${suspect.length} row(s) may not be chat models and cannot be classified from the id: ` +
+      `${suspect
+        .slice(0, 8)
+        .map((m) => m.id)
+        .join(
+          ", "
+        )}. The slim catalog carries no modality field — models-index gap, not a CLI regex.`
+  );
 }
 
 /**
@@ -1300,6 +1342,53 @@ export async function loadModelsForPickerProvider(
   } catch {
     return [];
   }
+}
+
+/**
+ * The models a picker provider SERVES, from the catalog's local served-by index.
+ *
+ * The synchronous twin of `loadModelsForPickerProvider`, and the source of the
+ * OpenTUI picker's ONE flat cross-provider list. It answers the same question
+ * through the same two chokepoints (`toPickerRows`, `dedupeByProviderSpec`) and
+ * differs in exactly one way: it never leaves the machine. That matters because
+ * the flat list asks about every provider at once, and 22 concurrent
+ * `?provider=` queries were measured taking 10 s and returning zero rows —
+ * "this provider has no models", which is the defect this whole feature exists
+ * to remove, manufactured by the fix for it.
+ *
+ * `servedByVendor` records why the served-by index is not a second authority.
+ */
+export function servedModelsForProvider(
+  providerValue: string,
+  catalog: CatalogClient
+): ModelInfo[] {
+  const firebaseSlug = pickerProviderToFirebaseSlug[providerValue] ?? providerValue;
+  return dedupeByProviderSpec(
+    providerValue,
+    toPickerRows(catalog.servedByVendor(firebaseSlug).map(catalogModelToModelInfo))
+  );
+}
+
+/**
+ * The `provider@` shortcut a picker row prints in its provider column — `or@`,
+ * `cx@`, `kc@`, `gk@`.
+ *
+ * DERIVED FROM THE DEFINITION, never a table. It is the SHORTEST spelling that
+ * parses back to this provider, which is what makes the column double as a
+ * lesson in the `provider@model` syntax the CLI already takes on argv, and what
+ * makes it collision-proof where the old provider rail was not (the rail
+ * truncated two different providers to the same `opencod…`).
+ *
+ * DELIBERATELY NOT `pickerModelPrefix`. That one applies the readability
+ * OVERRIDES (`google@`, `openrouter@`) because it builds the spec the user will
+ * copy off their screen; a fixed-width column wants the short form, and the full
+ * spec is on the detail line one row below. Both derive from the same definition,
+ * so neither can name a provider the other cannot.
+ */
+export function providerShortcut(providerValue: string): string {
+  const def = getProviderByName(providerValue);
+  const prefix = def?.shortestPrefix || def?.shortcuts?.[0];
+  return prefix ? `${prefix}@` : `${providerValue}@`;
 }
 
 async function searchModelsForPickerProvider(

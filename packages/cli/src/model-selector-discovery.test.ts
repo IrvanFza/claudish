@@ -102,6 +102,9 @@ function stubCatalog(rows: CatalogModel[] | null): CatalogClient {
     async searchModels() {
       return [];
     },
+    servedByVendor() {
+      return rows === null ? [] : rows;
+    },
   };
 }
 

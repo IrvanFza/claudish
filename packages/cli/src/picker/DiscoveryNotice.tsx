@@ -28,6 +28,7 @@
 import type { ReactNode } from "react";
 import type { PickerDiscoveryOutcome } from "../model-selector.js";
 import { type BannerSeverity, ErrorBanner } from "../tui/components/ErrorBanner.js";
+import { displayWidth } from "../tui/viz/text.js";
 
 /** What a notice is, before it is a component — pure, so it can be asserted. */
 export interface NoticeContent {
@@ -36,7 +37,14 @@ export interface NoticeContent {
   lines: string[];
   /** A chip at the head of row one, e.g. `HTTP 401`. */
   badge?: string;
-  /** Drawn in the border, and only when the banner is bordered. */
+  /**
+   * The dialog's right-hand status — `live roster unavailable`, `empty roster`.
+   *
+   * It is the FIRST of the three encodings of one fact, and it is the loudest,
+   * because a title in a border is read before anything inside it. The others are
+   * the per-row `catalog` mark and the provenance sentence. All three derive from
+   * this same `NoticeContent`, so they cannot disagree.
+   */
   title: string;
 }
 
@@ -62,17 +70,27 @@ function oneRow(line: string): string {
 
 /**
  * The provenance sentence — the line that says the list below is NOT the live
- * roster.
+ * roster, AND that being in the list does not mean it will run.
  *
- * It is the third of the three encodings of that one fact (the panel title and the
- * per-row `CAT` chip are the others), and it is never dropped, because it is the one
- * the user's own report was about. It says the same thing
- * `formatDiscoveryFailureNotice` says for the `catalog` fallback, so a reader who
- * sees both the panel and the scrollback line reads one sentence twice rather than
- * two sentences that have to be reconciled.
+ * IT IS TWO CLAIMS, AND THE SECOND ONE IS THE ONE THAT WAS MISSING. The stderr
+ * wording says where the rows came from ("cloud-catalog entries … not its live
+ * roster"), which is a statement about provenance. What it never said is the
+ * CONSEQUENCE: discovery failed because the credential was rejected, so nothing
+ * has confirmed that this account can call any of these models. A reader who is
+ * told only "these are catalog entries" reasonably concludes the list is merely
+ * differently-sourced, picks one, and finds out at launch. So the sentence names
+ * the count, the provenance and the risk in that order.
+ *
+ * This is the third of the three encodings of the same fact — the dialog title
+ * (`live roster unavailable`), the per-row `catalog` mark, and this — and all
+ * three derive from ONE value, the outcome variant, so they cannot disagree.
  */
-function provenance(displayName: string): string {
-  return `Showing ${displayName}'s cloud-catalog entries below — not its live roster.`;
+function provenance(displayName: string, rows: number): string {
+  const n = rows === 1 ? "row" : "rows";
+  return (
+    `The ${rows} ${n} below are catalog entries, not ${displayName}'s live roster — ` +
+    "they do not confirm access, so launching one may still fail."
+  );
 }
 
 /**
@@ -104,8 +122,8 @@ export function discoveryNoticeContent(
 }
 
 /** What to say when nothing supplied a fallback list either. */
-function nextStep(hasFallback: boolean, displayName: string): string {
-  return hasFallback ? provenance(displayName) : "Press c to type a model id directly.";
+function nextStep(rows: number, displayName: string): string {
+  return rows > 0 ? provenance(displayName, rows) : "Press c to type a model id directly.";
 }
 
 type Failed = Extract<PickerDiscoveryOutcome, { kind: "failed" }>;
@@ -119,21 +137,34 @@ type Collapsed = Extract<PickerDiscoveryOutcome, { kind: "collapsed-empty" }>;
  * and the scrollback line cannot drift apart. All that happens here is one row per
  * line, and the HTTP status moved into a chip.
  */
-function failedContent({ failure, notice, fallbackRows }: Failed, _name: string): NoticeContent {
+function failedContent({ failure, notice, fallbackRows }: Failed, name: string): NoticeContent {
   const badge = failure.status === undefined ? undefined : `HTTP ${failure.status}`;
   const lines: string[] = [];
   for (const raw of notice) {
     const line = oneRow(raw);
     if (line === "") continue;
+    // The formatter's own closing line is REPLACED, not appended to. It says where
+    // the rows came from and stops there; the panel's version says what that means
+    // for the user's next keystroke (`provenance`, above). Two sentences making
+    // overlapping claims about the same list is exactly the reconciliation this
+    // file exists to avoid, so the shorter one gives way here — and the stderr path
+    // keeps it verbatim, which is the whole reason the formatter and the sink are
+    // separate.
+    if (/^Showing .* not its live roster\.$/.test(line)) continue;
+    if (line === "Falling back to manual model entry.") continue;
     // De-duplicate the status: it is the badge now, and spending nine columns of a
     // 78-column headline saying it twice costs the end of the sentence.
     lines.push(badge === undefined ? line : line.replace(` (${badge})`, ""));
   }
+  lines.push(nextStep(fallbackRows.length, name));
   return {
     severity: "error",
     lines,
     ...(badge === undefined ? {} : { badge }),
-    title: fallbackRows.length > 0 ? "discovery failed · showing catalog" : "discovery failed",
+    // The dialog RIGHT-hand status. "unavailable" rather than "failed": the
+    // provider is not broken, claudish could not read its roster, and the two read
+    // very differently to someone deciding whether to trust the rows below.
+    title: "live roster unavailable",
   };
 }
 
@@ -149,7 +180,7 @@ function emptyRosterContent({ failure, fallbackRows }: EmptyRoster, name: string
     severity: "notice",
     lines: [
       `${name}'s model list is empty${at} and listed nothing.`,
-      nextStep(fallbackRows.length > 0, name),
+      nextStep(fallbackRows.length, name),
     ],
     title: "empty roster",
   };
@@ -168,7 +199,7 @@ function allFilteredContent(
     `${name} served ${servedCount} model${servedCount === 1 ? "" : "s"}, none of them chat-capable.`,
   ];
   if (sampleIds.length > 0) lines.push(`e.g. ${sampleIds.join(", ")}`);
-  lines.push(nextStep(fallbackRows.length > 0, name));
+  lines.push(nextStep(fallbackRows.length, name));
   return { severity: "notice", lines, title: "nothing chat-capable" };
 }
 
@@ -177,7 +208,7 @@ function collapsedContent({ chatCount, fallbackRows }: Collapsed, name: string):
   const lines = [
     `${chatCount} chat-capable model${chatCount === 1 ? "" : "s"} collapsed to zero choices — please report this.`,
   ];
-  if (fallbackRows.length > 0) lines.push(provenance(name));
+  if (fallbackRows.length > 0) lines.push(provenance(name, fallbackRows.length));
   return { severity: "notice", lines, title: "no choices" };
 }
 
@@ -205,49 +236,105 @@ export function mergeCredentialLines(lines: string[], width: number): string[] {
   return [...lines.slice(0, i), merged, ...lines.slice(i + 2)];
 }
 
-export interface DiscoveryNoticeProps {
-  outcome: PickerDiscoveryOutcome;
-  displayName: string;
-  /** Usable columns, for truncation and for the merge decision. */
-  width: number;
-  /** Terminal rows, so the banner can choose its chrome budget. */
-  height: number;
-  /** Hard cap on content rows. 4 borderless, 6 inside a border. */
-  maxLines: number;
-  /** A full rounded border (2 rows) instead of the 1-column left rule (0 rows). */
-  bordered: boolean;
+/**
+ * Greedy word wrap, measured in CELLS.
+ *
+ * `ErrorBanner` deliberately does not wrap — it truncates, so a JSON body cannot
+ * spill three rows mid-token — and that is right for a headline whose tail is an
+ * upstream payload. It is wrong for the provenance sentence, whose tail ("so
+ * launching one may still fail") is the single most useful clause in the state and
+ * the one a truncation would take first. So the caller wraps, and the banner still
+ * truncates whatever a wrap could not fix.
+ *
+ * Built on `displayWidth` rather than `String.length`: a CJK model id counts double
+ * in cells and half in code units, which is the same reason `padEnd`/`slice` are
+ * banned in `viz/text.ts`.
+ */
+export function wrapWords(text: string, width: number): string[] {
+  const w = Math.max(8, Math.floor(width));
+  if (displayWidth(text) <= w) return [text];
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const next = line === "" ? word : `${line} ${word}`;
+    if (displayWidth(next) <= w) {
+      line = next;
+      continue;
+    }
+    if (line !== "") out.push(line);
+    line = word;
+  }
+  if (line !== "") out.push(line);
+  return out;
 }
 
 /**
- * THE BANNER'S ROW BUDGET IS A BUDGET, NOT A PRIORITY ORDER — four rows at
- * `height < 30`, and the four lines that must never be dropped do not fit in four
- * rows WITH a border (the border alone is two of them). That contradiction is
- * resolved by measurement rather than by ranking: below 30 rows the banner is a
- * 1-column left rule in the severity colour, which costs one COLUMN and zero ROWS.
+ * The rows a notice will actually paint — merged, wrapped and capped.
  *
- * Lines past `maxLines` are dropped from the END, which is the same order the design
- * names — the upstream `detail` body goes first because it is already the tail of
- * the truncated headline, then the sample ids. The full text is never lost: it goes
- * to the deferred stderr write after teardown, and to the debug log.
+ * PURE, AND EXPORTED, because the dialog has to know the COUNT before it lays out:
+ * the banner and the list share one inline row budget, and the rows that give way
+ * are the list's. A component that only knew its own height would have to be
+ * measured after the fact, which inline mode does not forgive.
+ *
+ * Lines past `maxRows` are dropped from the END, which is the priority order the
+ * caller built them in: cause, then recovery, then provenance. Nothing is lost —
+ * the full text goes to the deferred stderr write after teardown and to the debug
+ * log.
+ */
+export function noticeRows(
+  content: NoticeContent,
+  width: number,
+  maxRows: number
+): { severity: BannerSeverity; badge?: string; lines: string[] } {
+  const merged = mergeCredentialLines(content.lines, width);
+  const wrapped: string[] = [];
+  for (const [i, line] of merged.entries()) {
+    // Row one carries the badge, so it wraps against a shorter width. It is also
+    // the one line allowed to be truncated rather than wrapped: its tail is the
+    // upstream error body, which reads no better across two rows than across one.
+    if (i === 0) wrapped.push(line);
+    else wrapped.push(...wrapWords(line, width));
+  }
+  return {
+    severity: content.severity,
+    ...(content.badge === undefined ? {} : { badge: content.badge }),
+    lines: wrapped.slice(0, Math.max(1, Math.floor(maxRows))),
+  };
+}
+
+export interface DiscoveryNoticeProps {
+  outcome: PickerDiscoveryOutcome;
+  displayName: string;
+  /** Usable columns, for truncation, wrapping and the merge decision. */
+  width: number;
+  /** Hard cap on content rows — the banner's half of the dialog's row budget. */
+  maxRows: number;
+}
+
+/**
+ * The banner, inside the dialog, as a 1-column left rule in the severity colour.
+ *
+ * BORDERLESS, UNCONDITIONALLY. The previous build gated a full border on terminal
+ * height, which was one more responsive branch to reason about and to photograph.
+ * Inside a dialog that already has a border, a second one is chrome around chrome:
+ * the rule costs one COLUMN and zero ROWS, and rows are the scarce axis when the
+ * whole thing is inline in someone's scrollback.
  */
 export function DiscoveryNotice({
   outcome,
   displayName,
   width,
-  maxLines,
-  bordered,
+  maxRows,
 }: DiscoveryNoticeProps): ReactNode {
   const content = discoveryNoticeContent(outcome, displayName);
   if (content === null) return null;
-  const merged = mergeCredentialLines(content.lines, width);
+  const rows = noticeRows(content, width, maxRows);
   return (
     <ErrorBanner
-      severity={content.severity}
-      lines={merged.slice(0, Math.max(1, maxLines))}
+      severity={rows.severity}
+      lines={rows.lines}
       width={width}
-      title={content.title}
-      bordered={bordered}
-      {...(content.badge === undefined ? {} : { badge: content.badge })}
+      {...(rows.badge === undefined ? {} : { badge: rows.badge })}
     />
   );
 }

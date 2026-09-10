@@ -39,9 +39,28 @@ const SMALL_MODEL_PATTERNS = [
 
 /**
  * Models that can't handle a `/v1/chat/completions` probe request: image
- * generation, embeddings, TTS, ASR. These often appear in /v1/models lists
- * alongside chat models (especially on LiteLLM aggregators) but will 404
- * or 400 the probe. Filter them out before ranking.
+ * generation, embeddings, TTS, ASR, speech-to-text, video generation. These
+ * often appear in /v1/models lists alongside chat models (especially on
+ * LiteLLM aggregators) but will 404 or 400 the probe. Filter them out before
+ * ranking.
+ *
+ * WHAT THIS CANNOT DO, STATED RATHER THAN IMPLIED. Every pattern here reads a
+ * model ID, and an ID is not a modality contract. The three families below were
+ * added after a screenshot of the model picker listed all seven of
+ * `mai-transcribe-2`, `mai-transcribe-1.5`, `gpt-transcribe`, `mai-voice-2`,
+ * `mai-voice-2-flash`, `flux-3-video` and `seedance-2.5` as launchable coding
+ * models — and only six of those seven say what they are in their name.
+ * `seedance-2.5` is a video generator whose ID carries no signal at all, and
+ * `flux-2-*` is an image generator for the same reason; neither can be excluded
+ * here without a vendor-family blacklist, which is the workaround this file has
+ * already paid for three times (`:498`, then `pplx-embed`, then `bge`).
+ *
+ * The complete fix is a modality field on the catalog document — `ModelDoc`
+ * already carries `capabilities.imageGeneration` / `audioInput` / `audioOutput`
+ * / `embedding`, but the SLIM payload every aggregator list is built from
+ * carries none of them. That is a models-index gap and it is filed there, not
+ * patched here. `toPickerRows` (model-selector.ts) logs the residue once per
+ * process so the gap is visible in a debug log rather than only in a screenshot.
  */
 const NON_CHAT_PATTERNS = [
   /\bimage\b/i,
@@ -58,7 +77,21 @@ const NON_CHAT_PATTERNS = [
   /\bmoderation\b/i,
   /\brerank/i,
   /\bspeech\b/i,
-  /-(image|tts|audio|embedding|vision-only)(-|$)/i,
+  // Speech-to-text. `gemini-3.5-transcribe` is the case `toPickerRows` named as
+  // getting through, and `mai-transcribe-*` / `gpt-transcribe` are the observed
+  // leaks. No chat model in any served roster carries the word.
+  /\btranscribe\b/i,
+  /\btranscription\b/i,
+  // Text-to-speech under a name that does not say `tts`: `mai-voice-2`,
+  // `mai-voice-2-flash`.
+  /\bvoice\b/i,
+  // Video GENERATION (`flux-3-video`, `*-video-gen`). Accepted risk, recorded:
+  // a future video-UNDERSTANDING chat model named `video-something` would be
+  // dropped too. No such model is in any roster today, and the alternative —
+  // listing a generator as a coding target — fails at launch instead of in the
+  // list.
+  /\bvideo\b/i,
+  /-(image|tts|audio|embedding|vision-only|transcribe|voice|video|speech)(-|$)/i,
 ];
 
 function isSmallName(name: string): boolean {

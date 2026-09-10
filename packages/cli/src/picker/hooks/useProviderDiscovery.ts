@@ -35,6 +35,20 @@ export interface DiscoveryState {
   startedAt: number | null;
   /** Every outcome seen this session, so a revisit costs nothing. */
   seen: ReadonlyMap<string, PickerDiscoveryOutcome>;
+  /**
+   * Discard this provider's settled outcome and ask again.
+   *
+   * A DISCOVERY FAILURE IS OFTEN TRANSIENT AND THE PREVIOUS BUILD HAD NO WAY BACK.
+   * A timeout, a laptop that just came off a captive portal, a key pasted into
+   * another shell — every one of those is fixed by asking a second time, and the
+   * only recourse the picker offered was to quit it and start again, which throws
+   * away the whole credential sweep. `r` is the answer.
+   *
+   * It clears the memo as well as the outcome, deliberately: the memo exists so
+   * that ARROWING back to a provider costs nothing, and a retry is the one moment
+   * where "you already asked" is the wrong answer.
+   */
+  retry: (provider: string) => void;
 }
 
 export function useProviderDiscovery(
@@ -85,6 +99,24 @@ export function useProviderDiscovery(
     [source]
   );
 
+  const retry = useCallback(
+    (name: string): void => {
+      inflight.current.delete(name);
+      reported.current.delete(name);
+      setOutcomes((prev) => {
+        const next = new Map(prev);
+        next.delete(name);
+        return next;
+      });
+      // The elapsed clock restarts HERE rather than inside `load`, whose own
+      // `setStarted` is deliberately write-once so an arrow-key revisit does not
+      // reset a running counter. A retry is a new request and gets a new clock.
+      setStarted((prev) => ({ ...prev, [name]: Date.now() }));
+      load(name);
+    },
+    [load]
+  );
+
   useEffect(() => {
     if (provider === null || !wanted) return;
     load(provider);
@@ -95,6 +127,7 @@ export function useProviderDiscovery(
   return {
     outcome,
     busy,
+    retry,
     startedAt: busy && provider !== null ? (started[provider] ?? null) : null,
     seen: outcomes,
   };

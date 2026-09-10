@@ -19,7 +19,7 @@
  * none of them is reachable from outside:
  *
  *   · `loading`  the warm path settles in under 100 ms, so the in-flight frames
- *                (V2/V3/V4) cannot be photographed on a real run at all.
+ *                cannot be photographed on a real run at all.
  *   · `empty`    a provider that answers correctly with nothing chat-capable.
  *   · `filtered` a provider that serves only embeddings or wildcard routes.
  *   · `timeout`  an unreachable endpoint, on demand.
@@ -31,9 +31,8 @@
 
 import type { ModelInfo, PickerDiscoveryOutcome } from "../../model-selector.js";
 import {
-  type CatalogLoad,
   type PickerDataSource,
-  type RailChoice,
+  type PickerProviderChoice,
   createPickerDataSource,
 } from "../PickerDataSource.js";
 
@@ -47,7 +46,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * Scenarios that forge a discovery OUTCOME also claim discovery for every provider,
- * so the state is on screen wherever the cursor happens to start. Without that, a
+ * so the state is on screen wherever the cursor happens to be scoped. Without that, a
  * capture would have to drive keystrokes to a particular provider and would break the
  * moment the picker order changed.
  */
@@ -58,17 +57,16 @@ export function createFixtureDataSource(name: string): PickerDataSource {
   const real = createPickerDataSource();
   const forced = FORCED_OUTCOME.has(scenario);
   // `loading` claims discovery too — not to forge an outcome (it has none; it never
-  // settles) but so that whichever provider the cursor starts on exercises the ROSTER
-  // indicator. Without it the first provider is OpenRouter, which has no discovery, and
-  // the one affordance with a published deadline would never appear in a capture.
+  // settles) but so that a scoped provider exercises the ROSTER indicator, whose
+  // deadline shape is otherwise unreachable in a capture.
   const claimsDiscovery = forced || scenario === "loading";
 
   return {
-    providerRoster(): RailChoice[] {
+    providerRoster(): PickerProviderChoice[] {
       return real
         .providerRoster()
         .map((r) =>
-          claimsDiscovery ? { ...r, hasDiscovery: true, discoveryShape: "deadline" } : r
+          claimsDiscovery ? { ...r, hasDiscovery: true, discoveryShape: "deadline" as const } : r
         );
     },
 
@@ -78,8 +76,8 @@ export function createFixtureDataSource(name: string): PickerDataSource {
     async *probeCredentials(names: string[]): AsyncIterable<[string, boolean]> {
       // EVERY PROVIDER READY, and that is a forgery with a purpose: a capture runs with
       // credential sources disabled so it cannot raise a 1Password or Keychain prompt on
-      // the user's desktop, which leaves the real rail three rows long and says nothing
-      // about how the rail looks for a configured user.
+      // the user's desktop, which leaves the real roster three rows long and says nothing
+      // about how the list looks for a configured user.
       for (const n of names) {
         if (scenario === "loading") await sleep(600);
         yield [n, true];
@@ -87,8 +85,12 @@ export function createFixtureDataSource(name: string): PickerDataSource {
       if (scenario === "loading") await NEVER; // hold the `done/total` meter mid-sweep
     },
 
-    loadCatalog(): Promise<CatalogLoad> {
-      return scenario === "loading" ? NEVER : real.loadCatalog();
+    ensureCatalog(): Promise<void> {
+      return scenario === "loading" ? NEVER : real.ensureCatalog();
+    },
+
+    servedModels(provider: string): ModelInfo[] {
+      return real.servedModels(provider);
     },
 
     async discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
@@ -98,7 +100,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
       // The fallback list is the REAL vendor catalog for this provider, because the
       // defect being rendered is precisely that an unmarked fallback list reads as a
       // healthy short roster — and that only shows on real rows.
-      const fallbackRows = await real.catalogModels(provider).catch((): ModelInfo[] => []);
+      const fallbackRows = real.servedModels(provider);
       const displayName = real.displayName(provider);
 
       if (scenario === "empty") {
@@ -158,10 +160,6 @@ export function createFixtureDataSource(name: string): PickerDataSource {
         ],
         fallbackRows,
       };
-    },
-
-    catalogModels(provider: string): Promise<ModelInfo[]> {
-      return scenario === "loading" ? NEVER : real.catalogModels(provider);
     },
   };
 }

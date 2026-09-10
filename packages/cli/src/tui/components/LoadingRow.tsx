@@ -32,7 +32,7 @@
 
 import type { ColorInput } from "@opentui/core";
 import type { ReactNode } from "react";
-import { displayWidth, padStartTo } from "../viz/text.js";
+import { displayWidth, padStartTo, padTo } from "../viz/text.js";
 import { type Ramp, ramps, tokens } from "../viz/tokens.js";
 import { MeterSpan } from "../viz/widgets.js";
 import { ShimmerSpan } from "./Shimmer.js";
@@ -54,6 +54,17 @@ export interface LoadingRowProps {
   ramp?: Ramp;
   /** Shimmer colour. Defaults to the in-flight tier. */
   fg?: ColorInput;
+  /**
+   * Put the LABEL first, padded to this many columns, instead of last.
+   *
+   * The default (bar · figure · label) reads well in a horizontal strip where the
+   * bars line up and the labels trail off. It reads badly as a stacked list of
+   * named operations, which is what a loading DIALOG is: there the reader is
+   * scanning "what is claudish doing", so the names have to form the left column
+   * and the bars the second. Both orders keep one `<text>` per row, and the
+   * padding is what makes the bars align.
+   */
+  labelWidth?: number;
 }
 
 /**
@@ -77,6 +88,7 @@ export function LoadingRow({
   valueWidth,
   ramp = ramps.volume,
   fg,
+  labelWidth,
 }: LoadingRowProps): ReactNode {
   // Read at RENDER time: `C`/`tokens` are reassigned in place when the terminal
   // theme is detected, and a module-level capture would pin the dark palette.
@@ -84,14 +96,31 @@ export function LoadingRow({
   const valueFg = tokens.text;
   const determinate = pct !== undefined;
   const column = value === undefined ? 0 : Math.max(valueWidth ?? 0, displayWidth(value));
+  const bar = determinate ? (
+    <MeterSpan pct={pct} width={width} ramp={ramp} />
+  ) : (
+    <ShimmerSpan frame={frame} width={width} {...(fg === undefined ? {} : { fg })} />
+  );
+
+  if (labelWidth !== undefined) {
+    return (
+      <text flexShrink={0}>
+        <span fg={labelFg}>{padTo(label, labelWidth)}</span>
+        <span> </span>
+        {bar}
+        {value === undefined ? null : (
+          <>
+            <span> </span>
+            <span fg={valueFg}>{padTo(value, column)}</span>
+          </>
+        )}
+      </text>
+    );
+  }
 
   return (
     <text flexShrink={0}>
-      {determinate ? (
-        <MeterSpan pct={pct} width={width} ramp={ramp} />
-      ) : (
-        <ShimmerSpan frame={frame} width={width} {...(fg === undefined ? {} : { fg })} />
-      )}
+      {bar}
       {value === undefined ? null : (
         <>
           <span> </span>

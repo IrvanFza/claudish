@@ -1,22 +1,39 @@
 /** @jsxImportSource @opentui/react */
 /**
- * picker/rows.tsx — one model row, one provider rail row, and the pure arithmetic
- * behind both.
+ * picker/rows.tsx — one model row, one provider row, one column header, and the
+ * pure label arithmetic behind them.
  *
- * A RENDERING CHANGE, NOT A DATA CHANGE — which is the single largest risk
- * reduction available in this feature. The row the old picker printed was
- * `kimi@kimi-k3 ($9.00/1M, 1M [TRV], 2026-07)`: a price, a context window, three
- * capability flags and a release date, four visual encodings concatenated into one
- * parenthetical string. Every value a rich row needs therefore ALREADY reaches the
- * view, so this file adds no fetch, no field and no plumbing, and a row regression
- * can only ever be visual.
+ * PLAIN ALIGNED TEXT. NO METERS, NO GRADIENTS, NO PER-ROW CHIPS. The build this
+ * replaces drew a context meter and a price meter on every row, and the reason it
+ * had to is written down: a whole-frame graphics-density gate counts a list row
+ * carrying a bar as a graphics row, so on a screen whose content IS a list there is
+ * no way to pass it without decorating every row. The result was measured — of 32
+ * visible rows, 19 read `1M`, and their bars were indistinguishable. Two full
+ * columns of gradient encoding one repeated value, beside the numerals that already
+ * said it.
+ *
+ * A meter belongs where a bounded value VARIES and where a reader is comparing
+ * magnitudes rather than reading names. In this file there is exactly one such
+ * place and it is not here — it is the loading dialog, where `done/total` is real
+ * progress over countable work.
+ *
+ * COLOUR ENCODES MEANING, ONE MEANING EACH, APP-WIDE:
+ *
+ *   `FREE`     success   costs nothing
+ *   `SUB`      warn      a flat-rate plan, so no per-token number exists
+ *   `local`    trace     runs on this machine
+ *   `catalog`  warn      NOT this provider's live roster — see `DiscoveryNotice`
+ *   `N/A`      dead      the catalog does not say
+ *   selection  accent + `C.bgHighlight`, and a `▶` so it survives greyscale
+ *
+ * Anything else is body ink. In particular the price NUMERAL is not colour-coded:
+ * a value takes discrete buckets or nothing at all, and three buckets of dollars
+ * would put a third meaning on `success` in a column already carrying `FREE`.
  *
  * ONE `<text>` PER ROW, ALWAYS. Yoga claws columns back from the LAST `<text>`
  * child of a row, which is how a branch name once rendered as `mai` with thirty
  * free columns beside it (`resume-picker.tsx:473-484`). So every cell is a
- * `<span>` inside a single text node, and the widgets used here are the `*Span`
- * twin `MeterSpan` — never `Meter`, which is a `<text>` and
- * cannot nest.
+ * `<span>` inside a single text node.
  *
  * COLOUR IS READ AT RENDER TIME, never captured in a module-level `const`:
  * `C`/`tokens` are reassigned in place when the terminal theme is detected, and a
@@ -29,93 +46,42 @@ import type { ReactNode } from "react";
 import type { ModelInfo } from "../model-selector.js";
 import { A, C } from "../tui/theme.js";
 import { padStartTo, padTo, truncate } from "../tui/viz/text.js";
-import { ramps, tokens } from "../tui/viz/tokens.js";
-import { MeterSpan } from "../tui/viz/widgets.js";
+import { tokens } from "../tui/viz/tokens.js";
 import type { BillingMode } from "./PickerDataSource.js";
-import type { RailLayout, RowLayout } from "./layout.js";
+import { GAPS, type RowLayout } from "./layout.js";
 
 /** Readiness, in `ProvidersContent.tsx:225`'s exact vocabulary. */
 export type Readiness = "pending" | "ready" | "missing";
 
-/**
- * LOG-SCALED, and that is not a refinement — it is what makes the column readable.
- *
- * A picker list spans 8 K (a small local pull) to 1 M (Gemini): two and a half
- * decades. On a linear scale every model except the top one paints at or near zero,
- * so the meter would carry no information for 95% of the rows while looking like it
- * did. On a log scale the decades are evenly spaced and a 128 K model reads as
- * visibly larger than a 32 K one.
- *
- * Bounds come from the CURRENTLY FILTERED list, so the column re-scales as the user
- * narrows it — the comparison a reader is making is always against what they can
- * see. A degenerate range (one row, or every row identical) yields 100: a full bar
- * is the honest answer when the largest thing visible is also the smallest.
- *
- * THE SCALE'S FLOOR IS AT LEAST SIX DOUBLINGS BELOW THE LARGEST, never simply the
- * list's own minimum — MEASURED on the first capture. A roster of 250 K and 1 M models
- * scaled to its own bounds paints every 250 K row at exactly 0%: an empty track, which
- * is the glyph `Meter` uses for "nothing", under a numeral that says 250 K. The column
- * stops carrying information precisely when the list is homogeneous, which is most
- * lists. Anchoring the floor at `max / 64` makes the bar mean something stable — "how
- * big, on a log scale spanning at least six doublings" — and the 250 K row reads at two
- * thirds instead of at zero.
- *
- * `NaN` for an absent window, deliberately: `MeterSpan` paints `NaN` as a dim `╌`
- * run, while 0 paints the same full `░` track a healthy-but-tiny window paints.
- * Absent data and small data must not look alike.
- */
-export function contextMeterPct(ctx: number | undefined, min: number, max: number): number {
-  if (!ctx || !Number.isFinite(ctx) || ctx <= 0) return Number.NaN;
-  if (!Number.isFinite(max) || max <= 0) return 100;
-  const lo = Math.min(Number.isFinite(min) && min > 0 ? min : max, max / 64);
-  if (max <= lo) return 100;
-  const pct = (100 * (Math.log(ctx) - Math.log(lo))) / (Math.log(max) - Math.log(lo));
-  return Math.min(100, Math.max(0, pct));
-}
+/** Where a list came from — the one value that drives every provenance encoding. */
+export type ListOrigin = "roster" | "catalog";
 
 /**
- * THE FILL IS CHEAPNESS, NOT COST, and the ramp is why.
+ * What the price column prints.
  *
- * `ramps.savings` runs red → yellow → green, so a FULL bar is green. A meter
- * colours cells by position along the fill, so if length encoded cost the dearest
- * model on screen would paint a full green bar — red meaning "cheap" on one row and
- * green meaning "expensive" on the next, which is the one-colour-one-meaning rule
- * broken inside a single column. Encoding cheapness instead makes a long green bar
- * "costs you least" and a one-cell red stub "costs you most", which is both true
- * and the direction a reader scanning for a cheap model wants.
- *
- * Log-scaled for the same reason as the context meter: per-token prices on one
- * screen span $0.05 to $15 per million.
+ * `resolveProviderDisplayPrice` is the ONE function allowed to decide what a row
+ * costs (its `isSubscriptionProvider`-first rule is test-pinned) and it answers a
+ * display string, so this only ever RESHAPES that answer — it never recomputes it.
+ * Two reshapes, both to buy columns back for the model name: the `/1M` suffix goes
+ * because the column header says `$/1M` once for the whole list, and `LOCAL`
+ * becomes `local` because a local model has no price at all and shouting is for
+ * things that cost money.
  */
-export function priceMeterPct(price: number | undefined, min: number, max: number): number {
-  if (price === undefined || !Number.isFinite(price) || price < 0) return Number.NaN;
-  if (price === 0) return 100;
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= min) return 100;
-  const clamped = Math.min(Math.max(price, min), max);
-  const t = (Math.log(clamped) - Math.log(min)) / (Math.log(max) - Math.log(min));
-  return Math.min(100, Math.max(0, 100 * (1 - t)));
+export function priceLabel(display: string, billing: BillingMode): string {
+  if (billing === "local") return "local";
+  const s = (display || "N/A").trim();
+  if (s === "LOCAL") return "local";
+  if (s === "SUB" || s === "FREE" || s === "N/A") return s;
+  return s.replace(/\s*\/\s*1M$/i, "");
 }
 
-/**
- * `$9.00/1M` → 9. `SUB`, `LOCAL`, `N/A` → undefined.
- *
- * Parsed rather than plumbed because `resolveProviderDisplayPrice` is the ONE
- * function allowed to decide what a row costs (its `isSubscriptionProvider`-first
- * rule is test-pinned), and it answers a display string. Re-deriving the number
- * from a second source would be a second opinion about money.
- */
-export function parseDisplayPrice(display: string): number | undefined {
-  const m = /\d+(\.\d+)?/.exec(display);
-  if (!m) return undefined;
-  const n = Number.parseFloat(m[0]);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-/** The rail's billing tag — right-aligned text, the colour carrying the meaning. */
-export function billingTag(mode: BillingMode): { text: string; fg: string } {
-  if (mode === "sub") return { text: "SUB", fg: tokens.success };
-  if (mode === "local") return { text: "LOCAL", fg: tokens.running };
-  return { text: "$", fg: tokens.subtle };
+/** The one colour each price label is allowed to have. */
+export function priceFg(label: string): string {
+  if (label === "FREE") return tokens.success;
+  if (label === "SUB") return tokens.warn;
+  if (label === "local") return tokens.trace;
+  if (label === "N/A") return tokens.dead;
+  return tokens.text;
 }
 
 /** `●` ready · `○` needs a key · `◌` probe in flight — `ProvidersContent.tsx:225`. */
@@ -125,96 +91,79 @@ export function readinessGlyph(r: Readiness): { glyph: string; fg: string } {
   return { glyph: "◌", fg: tokens.warn };
 }
 
-/** Where a list came from — the one value that drives all three fallback encodings. */
-export type ListOrigin = "roster" | "catalog";
-
-/**
- * A flat-rate price gets a dim `╌` run where the METER would be, and its word in
- * `tokens.success` where the numeral would be — never a 0% or zero-width meter. A
- * subscription has no per-token number, and an empty bar in the cheapness column would
- * read as "the cheapest thing on screen", which is a different claim from "this is not
- * billed per token". `Meter` makes the same distinction for `NaN`, in the same glyph.
- *
- * NOT A `BadgeSpan`, AND THAT IS MEASURED. The first capture rendered ` SUB ` as a chip
- * on all 21 rows of a subscription provider's roster, and the chips — adjacent rows,
- * same fill, no gap between them — fused into one solid green RECTANGLE down the price
- * column with the labels floating in it. That is the failure `viz/widgets.tsx` records
- * for 24 `UP` chips in a service list, arriving vertically instead of horizontally. A
- * chip is for a status that DISTINGUISHES a row; when every row carries it, the chip is
- * a wall. The rail's per-provider `SUB` tag already says it once, where it is true of
- * the provider rather than of each model.
- */
-function isFlatRateLabel(priceText: string): boolean {
-  return priceText === "SUB" || priceText === "LOCAL" || priceText === "FREE";
+/** The provider view's billing word, in the same colours a model row uses. */
+export function billingLabel(mode: BillingMode): { text: string; fg: string } {
+  if (mode === "sub") return { text: "SUB", fg: tokens.warn };
+  if (mode === "local") return { text: "local", fg: tokens.trace };
+  return { text: "$", fg: tokens.subtle };
 }
 
-/** Flat rate is `success` (it costs nothing more), absent is `dead`, a rate is body ink. */
-function priceFg(priceText: string, flat: boolean): string {
-  if (flat) return tokens.success;
-  return priceText === "N/A" ? tokens.dead : tokens.text;
+const SPACES = "                                        ";
+const gap = (n: number): string => SPACES.slice(0, Math.max(0, n));
+
+/**
+ * The column header. It exists so the four fixed cells are NAMED rather than
+ * guessed at, which is the cheapest possible answer to "what is happening here":
+ * the previous build printed `262K` and `$30.00/1M` beside two unlabelled bars.
+ */
+export function ColumnHeader({ layout }: { layout: RowLayout }): ReactNode {
+  return (
+    <box height={1} flexShrink={0}>
+      <text>
+        <span fg={tokens.trace}>{"  "}</span>
+        <span fg={tokens.trace}>{padTo("model", layout.id)}</span>
+        <span>{gap(GAPS.afterId)}</span>
+        <span fg={tokens.trace}>{padStartTo("provider", layout.provider)}</span>
+        <span>{gap(GAPS.afterProvider)}</span>
+        <span fg={tokens.trace}>{padStartTo("ctx", layout.ctx)}</span>
+        <span>{gap(GAPS.afterCtx)}</span>
+        <span fg={tokens.trace}>{padStartTo("$/1M", layout.price)}</span>
+        {layout.mark > 0 ? <span fg={tokens.trace}>{padStartTo("", layout.mark)}</span> : null}
+      </text>
+    </box>
+  );
 }
 
 export interface ModelRowProps {
   model: ModelInfo;
+  /** The routing shortcut of the provider that would serve it — `or@`, `kc@`. */
+  shortcut: string;
+  /** Whatever `resolveProviderDisplayPrice` said, already reshaped by `priceLabel`. */
+  price: string;
   layout: RowLayout;
   cursor: boolean;
-  /** 0–100, or `NaN` for an absent window. From `contextMeterPct`. */
-  ctxPct: number;
-  /** 0–100, `NaN` when there is no per-token rate to compare. */
-  pricePct: number;
-  /** Whatever `resolveProviderDisplayPrice` said — `SUB`, `$1.25/1M`, `N/A`. */
-  priceText: string;
-  /** `catalog` adds the `CAT` chip that says this row is not the live roster. */
+  /** `catalog` marks a row that is NOT from the provider's live roster. */
   origin: ListOrigin;
 }
 
 export function ModelRow({
   model,
+  shortcut,
+  price,
   layout,
   cursor,
-  ctxPct,
-  pricePct,
-  priceText,
   origin,
 }: ModelRowProps): ReactNode {
   // Render-time reads — see the file header.
   const idFg = cursor ? C.strong : tokens.text;
-  const flat = isFlatRateLabel(priceText);
-
-  // THE WASH LIVES ON THE BOX, not on the `<text>`: a text node is only as wide as
-  // its content, so a row highlighted that way stops at its last glyph and reads as
-  // a floating chip rather than as a bar. The box fills the panel's width — which is
-  // why the panel is `flush`, so there is no padding gutter to break the band — and
-  // `height={1}` keeps a row from overprinting its neighbour. Same construction as
-  // `resume-picker.tsx:999`.
   return (
+    // THE WASH LIVES ON THE BOX, not on the `<text>`: a text node is only as wide
+    // as its content, so a row highlighted that way stops at its last glyph and
+    // reads as a floating chip rather than as a bar. `height={1}` keeps a row from
+    // overprinting its neighbour.
     <box height={1} flexShrink={0} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text attributes={A.boldIf(cursor)}>
         <span fg={cursor ? tokens.accent : tokens.trace}>{cursor ? "▶ " : "  "}</span>
         <span fg={idFg}>{padTo(model.id, layout.id)}</span>
-        <span> </span>
-        <MeterSpan pct={ctxPct} width={layout.ctx} ramp={ramps.volume} />
-        <span> </span>
-        <span fg={tokens.subtle}>{padStartTo(model.context || "N/A", layout.ctxNum)}</span>
-        {layout.price > 0 ? <span> </span> : null}
-        {layout.price > 0 && flat ? <span fg={tokens.dead}>{"╌".repeat(layout.price)}</span> : null}
-        {layout.price > 0 && !flat ? (
-          <MeterSpan pct={pricePct} width={layout.price} ramp={ramps.savings} />
-        ) : null}
-        <span> </span>
-        <span fg={priceFg(priceText, flat)}>{padStartTo(priceText, layout.priceNum)}</span>
-        {layout.caps > 0 ? <span> </span> : null}
-        {layout.caps > 0 ? capsCell(model, layout.caps) : null}
-        {layout.date > 0 ? <span> </span> : null}
-        {layout.date > 0 ? (
-          <span fg={tokens.trace}>
-            {padStartTo(model.releaseDate ? model.releaseDate.slice(0, 7) : "—", layout.date)}
-          </span>
-        ) : null}
-        {layout.mark > 0 ? <span> </span> : null}
+        <span>{gap(GAPS.afterId)}</span>
+        <span fg={tokens.subtle}>{padStartTo(shortcut, layout.provider)}</span>
+        <span>{gap(GAPS.afterProvider)}</span>
+        <span fg={tokens.subtle}>{padStartTo(model.context || "N/A", layout.ctx)}</span>
+        <span>{gap(GAPS.afterCtx)}</span>
+        <span fg={priceFg(price)}>{padStartTo(price, layout.price)}</span>
         {layout.mark > 0 ? (
-          <span fg={tokens.warn} attributes={A.boldIf(origin === "catalog")}>
-            {padStartTo(origin === "catalog" ? "cat" : "", layout.mark - 1)}
+          <span fg={tokens.warn}>
+            {padStartTo(origin === "catalog" ? "catalog" : "", layout.mark)}
           </span>
         ) : null}
       </text>
@@ -222,139 +171,96 @@ export function ModelRow({
   );
 }
 
-/**
- * THE `cat` MARK SAYS "THIS ROW IS NOT THE LIVE ROSTER", in the warn colour, on every
- * row of a fallback list — and it is TEXT rather than a chip for the third time in this
- * file, for the reason the other two record.
- *
- * MEASURED: as a `BadgeSpan` it was right on the four-row Kimi fallback and wrong on the
- * seventeen-row OpenRouter one, where seventeen identical orange chips in adjacent rows
- * fused into a solid slab down the panel — louder than the list it was annotating, and
- * no longer reading as seventeen labels. A chip marks a row that DIFFERS from its
- * neighbours; a whole-list property gets a coloured word. The loud encodings of this
- * same fact are the panel title and the banner, which appear once each.
- *
- * The column is reserved on BOTH kinds of list (it renders blank on a live one), so the
- * cells left of it do not move between them.
- *
- * Defect 4 of the measured failure is that a cloud-catalog fallback list renders
- * identically to a healthy roster — prices, descriptions, the lot — so the eye goes
- * to the list, the list looks fine, and it is simply short. That is the user's
- * complaint verbatim. Three encodings fix it and all three derive from ONE value (the
- * outcome variant that produced the list): the panel title, the banner's provenance
- * sentence, and this chip.
- *
- * Outside the budget because the budget is EXACT: a provenance cell that consumed
- * columns would re-size every other cell between a live list and a fallback list, so
- * the two would not be visually comparable. Overflow clips at the panel edge, which
- * is the failure mode every widget in `viz/` prefers — visible, and attributable to
- * the row.
- */
-
-/**
- * `[TRV]` — one letter per capability, bright when present, `tokens.dead` when not.
- * Five columns for all three flags, identical at every width.
- *
- * DELIBERATELY NOT `BadgeSpan` CHIPS, AND THAT IS MEASURED. The first wide capture
- * rendered the capability column as three chips per row, and because every model in a
- * roster carries the same capability, the `T` chips down 21 adjacent rows fused into
- * one solid green RECTANGLE — `viz/widgets.tsx`'s measured 24-`UP`-chips failure,
- * arriving vertically. The general rule this settles: a chip marks a row that DIFFERS
- * from its neighbours; a per-row ATTRIBUTE column, where every row has a value, uses
- * coloured glyphs. The one chip left in a model row is `CAT`, which marks a whole list
- * whose provenance the reader must not miss.
- *
- * It still survives greyscale and colour-blindness, because the letters are the label:
- * `[T··]` and `[TRV]` differ in glyphs, not only in hue.
- */
-function capsCell(model: ModelInfo, width: number): ReactNode {
-  const flags: Array<{ label: string; on: boolean; color: string }> = [
-    { label: "T", on: model.supportsTools === true, color: tokens.success },
-    { label: "R", on: model.supportsReasoning === true, color: tokens.running },
-    { label: "V", on: model.supportsVision === true, color: C.magenta },
-  ];
-  return (
-    <>
-      <span fg={tokens.trace}>{"["}</span>
-      {flags.map((f) => (
-        <span key={f.label} fg={f.on ? f.color : tokens.dead}>
-          {f.label}
-        </span>
-      ))}
-      <span fg={tokens.trace}>{"]"}</span>
-      {width > 5 ? <span>{" ".repeat(width - 5)}</span> : null}
-    </>
-  );
-}
-
-export interface RailRowProps {
+export interface ProviderRowProps {
   label: string;
+  shortcut: string;
   readiness: Readiness;
   billing: BillingMode;
-  /** Served-model count once a list for this provider has landed; `null` until then. */
+  /** Models this provider serves, or `null` before the catalog has answered. */
   count: number | null;
+  /** Does this provider list its own roster? Decides what `0` in the catalog means. */
+  hasDiscovery: boolean;
+  /** Why it is not selectable — an env var name, or empty. */
+  note: string;
   cursor: boolean;
-  focused: boolean;
-  layout: RailLayout;
+  /** Usable content columns. */
+  inner: number;
 }
 
 /**
- * One provider. The glyph is readiness, the tag is billing, the count is how many
- * models this session has actually seen for it — `null`, drawn `—`, until a list
- * lands, because a count invented before the list is a number with no source.
+ * One provider, in the `p` dialog.
  *
- * The cursor wash is `bgHighlight` while the rail has focus and the quieter `bgAlt`
- * while the model pane does, so the screen always shows exactly one active cursor.
+ * IT IS A DIALOG, NOT A RAIL, and that is the fix for the complaint. The rejected
+ * build put a 19-column provider rail permanently beside the model list, which
+ * gave the screen two cursors with only a border colour to say which one the arrow
+ * keys drove — "super unclear what is happening", precisely described. It also
+ * truncated two different providers to the same `opencod…`. At full dialog width
+ * the names are whole, and only one list is ever on screen.
  */
-export function ProviderRailRow({
+export function ProviderRow({
   label,
+  shortcut,
   readiness,
   billing,
   count,
+  hasDiscovery,
+  note,
   cursor,
-  focused,
-  layout,
-}: RailRowProps): ReactNode {
+  inner,
+}: ProviderRowProps): ReactNode {
   const { glyph, fg } = readinessGlyph(readiness);
-  const tag = billingTag(billing);
+  const bill = billingLabel(billing);
+  // The right-hand cell carries EITHER a count OR the env var a missing provider
+  // wants, and the env var is the longer of the two by a wide margin
+  // (`MOONSHOT_API_KEY` is 16, `needs ` makes 22). It is sized for the env var,
+  // because a truncated variable name is worse than useless — `needs MOON…` sends
+  // the reader looking for a variable that does not exist.
+  const countCell = 26;
+  const shortcutCell = 9;
+  const billCell = 6;
+  const nameCell = Math.max(6, inner - 2 - 2 - shortcutCell - billCell - countCell - 3);
+  // `0 models` IS A DIFFERENT CLAIM FOR A DISCOVERY PROVIDER, and printing it there
+  // would be the original defect in miniature: Devin and Antigravity carry no catalog
+  // entries by design and ask their own endpoint for a roster the moment you scope to
+  // them, so "0 models" reads as "this provider has nothing" about a provider that
+  // has not been asked yet.
+  const countText =
+    count === null
+      ? "—"
+      : count === 0 && hasDiscovery
+        ? "asks its own roster"
+        : `${count} model${count === 1 ? "" : "s"}`;
   return (
-    <box
-      height={1}
-      flexShrink={0}
-      backgroundColor={cursor ? (focused ? C.bgHighlight : C.bgAlt) : undefined}
-    >
+    <box height={1} flexShrink={0} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text attributes={A.boldIf(cursor)}>
+        <span fg={cursor ? tokens.accent : tokens.trace}>{cursor ? "▶ " : "  "}</span>
         <span fg={fg}>{glyph}</span>
         <span> </span>
-        <span fg={cursor ? tokens.accent : tokens.text}>{padTo(label, layout.label)}</span>
-        {layout.tag > 0 ? <span> </span> : null}
-        {layout.tag > 0 ? <span fg={tag.fg}>{padStartTo(tag.text, layout.tag)}</span> : null}
-        {layout.count > 0 ? <span> </span> : null}
-        {layout.count > 0 ? (
-          <span fg={tokens.subtle}>
-            {padStartTo(count === null ? "—" : String(count), layout.count)}
-          </span>
-        ) : null}
+        <span fg={cursor ? C.strong : tokens.text}>{padTo(label, nameCell)}</span>
+        <span> </span>
+        <span fg={tokens.subtle}>{padTo(shortcut, shortcutCell)}</span>
+        <span fg={bill.fg}>{padTo(bill.text, billCell)}</span>
+        <span fg={readiness === "missing" ? tokens.dead : tokens.subtle}>
+          {padStartTo(readiness === "missing" && note !== "" ? note : countText, countCell)}
+        </span>
       </text>
     </box>
   );
 }
 
 /**
- * A dim, NON-SELECTABLE row for something the rail is deliberately not listing —
- * the providers with no credential, collapsed, and the local providers that are in
- * the catalog but not enabled in config.
+ * A dim, NON-SELECTABLE row for something a list is deliberately not showing.
  *
  * An unexplained absence is the defect class this whole feature is about, so the
- * rail says the number out loud. It stays unselectable because a row that cannot be
+ * number is said out loud. It stays unselectable because a row that cannot be
  * picked must not look like one that can: offering it would trade a silent absence
  * for a dead end.
  */
-export function RailHintRow({ text, width }: { text: string; width: number }): ReactNode {
+export function HintRow({ text, width }: { text: string; width: number }): ReactNode {
   return (
     <box height={1} flexShrink={0}>
       <text>
-        <span fg={tokens.trace}>{truncate(text, width)}</span>
+        <span fg={tokens.trace}>{truncate(`  ${text}`, width)}</span>
       </text>
     </box>
   );

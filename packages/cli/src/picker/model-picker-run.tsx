@@ -10,9 +10,21 @@
  *
  * THREE DEPARTURES FROM THE SKILL'S STOCK BOOTSTRAP, each forced by a fact:
  *
- * 1. `screenMode: "alternate-screen"`, never `useAlternateScreen: true`. The installed
- *    `@opentui/core@0.1.107` renamed the option; the old key is an unknown key,
- *    SILENTLY ignored, and the picker would draw over the user's scrollback.
+ * 1. `screenMode: "main-screen"` — INLINE, and never `useAlternateScreen`. Two
+ *    separate facts are packed into that one line.
+ *
+ *    The KEY: `@opentui/core@0.1.107` renamed `useAlternateScreen` to `screenMode`,
+ *    and the old key is an unknown key — silently ignored, no warning, no type
+ *    error.
+ *
+ *    The VALUE: the picker is a one-shot command, which is the row the guidance's
+ *    own `screenMode` table assigns to `main-screen`. The first build chose the
+ *    alternate screen and was rejected. Inline is not cosmetic here — it is what
+ *    makes the dialog read as a program ASKING something rather than a program that
+ *    has taken the terminal, it keeps the shell prompt and the claudish banner
+ *    (`printLogo`, already written above) on screen so the dialog needs no branding
+ *    of its own, and it means the failure notice is still in the scrollback after
+ *    the picker closes instead of being discarded with the alternate buffer.
  *
  * 2. `installShutdown` is not used. Its contract ends in `process.exit(code)`, which is
  *    right for an app whose quit key means quit and wrong for a picker, whose entire job
@@ -26,15 +38,17 @@
  *    the terminal behind a live renderer leaves cells OpenTUI cannot invalidate — ghost
  *    characters, not an exception, which is why no test catches it.
  *
- * AND ONE WRITE THAT IS DELIBERATE. The alternate screen is DISCARDED by
- * `renderer.destroy()`, so the in-panel failure notice is gone the instant the user
- * picks a model and Claude Code starts. A scrollback line is the only durable record,
- * and it is the record the current behaviour already provides — including to a user who
- * pipes stderr to a file. So every failure seen during the session is buffered and
- * written once, after teardown, at the same point `resume-picker-run.tsx:115` restores
- * stderr. Every failure, in order, not just the one the user landed on: today each
- * failed selection prints immediately, so a session that tried two failing providers
- * leaves two diagnostics, and writing one would be a quiet narrowing.
+ * AND ONE WRITE THAT IS DELIBERATE, WHICH INLINE MODE MAKES SMALLER BUT NOT
+ * UNNECESSARY. Inline rendering leaves the last frame in the scrollback, so the
+ * in-dialog failure notice survives `destroy()` — that is one of the reasons for
+ * choosing it. What it does NOT survive is truncation: the dialog shows five rows of
+ * a notice that may carry an upstream JSON body, and a user piping stderr to a file
+ * gets nothing from a rendered frame at all. So every failure seen during the session
+ * is buffered and written once, after teardown, at the same point
+ * `resume-picker-run.tsx:115` restores stderr. Every failure, in order, not just the
+ * one the user landed on: today each failed selection prints immediately, so a session
+ * that tried two failing providers leaves two diagnostics, and writing one would be a
+ * quiet narrowing.
  */
 
 import { createCliRenderer } from "@opentui/core";
@@ -87,7 +101,14 @@ export async function runModelPicker(
   setStderrQuiet(true);
 
   const renderer = await createCliRenderer({
-    screenMode: "alternate-screen",
+    screenMode: "main-screen",
+    // MEASURED: without this, `destroy()` WIPES the region and inline mode buys
+    // nothing over the alternate screen — a tmux capture taken one second after Esc
+    // held nothing but the shell's own `EXIT=0`, with the dialog and the claudish
+    // banner both gone. Leaving the last frame is the whole point of rendering
+    // inline: what the user chose, and any discovery failure they were shown, stay
+    // in the scrollback where they can be read after Claude Code has started.
+    clearOnShutdown: false,
     exitOnCtrlC: false, // the picker maps Ctrl+C to "cancel", which RETURNS a value
   });
 

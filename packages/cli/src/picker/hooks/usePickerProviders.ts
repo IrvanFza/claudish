@@ -1,22 +1,25 @@
 /**
- * usePickerProviders — the rail's roster, and the credential probe that fills it in.
+ * usePickerProviders — the provider roster, and the credential probe that fills it
+ * in.
  *
- * FRAME ONE IS NEVER BLANK, STRUCTURALLY. The roster comes from
- * `source.providerRoster()`, which is synchronous and derived from the provider
- * definitions, so the first render already lists every pickable provider with a `◌`
- * pending marker. The probe then flips each row to `●` or `○` as it settles. That
- * incremental fill IS the loading affordance for the ~30 `credentials.isAvailable`
- * calls — each of which may read env, config, an OAuth file, the macOS Keychain and
- * the 1Password SDK — and it is why `probeCredentials` is an AsyncIterable rather
- * than one awaited map: a map would hold every row hostage to the slowest handshake.
+ * `done/total` FROM THIS HOOK IS THE ONE DETERMINATE BAR IN THE PICKER, and it
+ * earns the bar because both numbers are real: the roster is derived
+ * synchronously from the provider definitions, so `total` is known before the
+ * first probe starts, and `done` is work actually completed. Nothing else the
+ * picker waits on has a denominator, and nothing else gets a meter.
+ *
+ * `probeCredentials` is an AsyncIterable rather than one awaited map for the same
+ * reason: each of ~31 `credentials.isAvailable` calls may read env, config, an
+ * OAuth file, the macOS Keychain and the 1Password SDK, and a single awaited map
+ * would hold every answer hostage to the slowest handshake.
  *
  * MEMBERSHIP IN THE STEADY STATE IS IDENTICAL TO TODAY'S. The old picker filtered
- * unready providers out entirely (`getProviderChoices`), which made the first frame
- * wait for every probe. This mounts the UNFILTERED roster and then collapses the
- * unready ones into one dim, non-selectable summary row — so the rail does not
- * lengthen, no row can be picked that would fail later at `validateApiKeysForModels`,
- * and the absence is EXPLAINED rather than silent, which is the principle the rest of
- * the feature is built on.
+ * unready providers out entirely (`getProviderChoices`), which made the first
+ * frame wait for every probe. This mounts the UNFILTERED roster: a provider with
+ * no credential contributes no MODEL rows (they would fail later at
+ * `validateApiKeysForModels`, after the picker has closed) but it keeps its place
+ * in the `p` dialog, with the env var it wants — so the absence is EXPLAINED
+ * rather than silent, which is the principle the rest of the feature is built on.
  *
  * ONE FAN-OUT PER MOUNT, never per render: `selectModel` hoisted this call for
  * exactly that reason (its comment at `model-selector.ts:660-668`), and the profile
@@ -24,20 +27,24 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import type { PickerDataSource, RailChoice } from "../PickerDataSource.js";
+import type { PickerDataSource, PickerProviderChoice } from "../PickerDataSource.js";
 import type { Readiness } from "../rows.js";
 
-export interface RailRow extends RailChoice {
+export interface ProviderState extends PickerProviderChoice {
   readiness: Readiness;
 }
 
 export interface PickerProvidersState {
+  /** The roster as handed over — stable identity, for downstream memos. */
+  roster: PickerProviderChoice[];
   /** Every pickable provider, in picker order, readiness included. */
-  rows: RailRow[];
-  /** Ready providers — the selectable ones. */
-  ready: RailRow[];
+  rows: ProviderState[];
+  /** Ready providers — the ones that contribute model rows. */
+  ready: ProviderState[];
+  /** The same set, by name, for the flat list's membership test. */
+  readySet: ReadonlySet<string>;
   /** Settled-but-unready providers, collapsed behind one summary row. */
-  missing: RailRow[];
+  missing: ProviderState[];
   /** Probes settled so far. */
   done: number;
   /** Probes in total — known synchronously, which is what makes this real progress. */
@@ -76,15 +83,19 @@ export function usePickerProviders(source: PickerDataSource): PickerProvidersSta
     };
   }, [source, roster]);
 
-  const rows: RailRow[] = roster.map((r) => {
+  const rows: ProviderState[] = roster.map((r) => {
     const settled = readiness[r.value];
     return { ...r, readiness: settled === undefined ? "pending" : settled ? "ready" : "missing" };
   });
   const done = Object.keys(readiness).length;
 
+  const readyRows = rows.filter((r) => r.readiness === "ready");
+
   return {
+    roster,
     rows,
-    ready: rows.filter((r) => r.readiness === "ready"),
+    ready: readyRows,
+    readySet: new Set(readyRows.map((r) => r.value)),
     missing: rows.filter((r) => r.readiness === "missing"),
     done,
     total: roster.length,

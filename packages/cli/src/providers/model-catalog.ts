@@ -82,6 +82,29 @@ export interface CatalogClient {
    * Cross-vendor search. Delegates to Firebase `?search=...` for live results.
    */
   searchModels(term: string, limit?: number): Promise<CatalogModel[]>;
+
+  /**
+   * Every model the slim catalog says this vendor SERVES — synchronous, local,
+   * no network, for EVERY slug rather than only the aggregator ones.
+   *
+   * WHY IT EXISTS SEPARATELY FROM `modelsByVendor`. The picker draws ONE flat
+   * cross-provider list, so it asks this question about ~31 providers at once.
+   * `modelsByVendor` answers it for an owner slug with a live `?provider=` query,
+   * and 22 of those fired together took 10 s and returned nothing (measured:
+   * every one aborted on its shared timeout, while the same query alone takes
+   * ~1.1 s). A picker cannot spend that, and it must not degrade to "this
+   * provider has no models", which is the exact complaint this feature exists to
+   * remove.
+   *
+   * IT IS NOT A SECOND AUTHORITY. `aggregators[].provider` is already the
+   * served-by index — `modelsByVendor`'s own owner branch filters its rich
+   * lineage list THROUGH it (`filterToServedByProvider`) precisely because
+   * lineage is not service. This reads the same field for the same question and
+   * skips the lineage query, so its membership is the served-by set exactly. The
+   * cost is per-model richness: `description` and the owner slug are absent from
+   * the slim payload, so a row's blurb is derived rather than editorial.
+   */
+  servedByVendor(vendorSlug: string): CatalogModel[];
 }
 
 // ─── Slug classification ─────────────────────────────────────────────────────
@@ -242,12 +265,16 @@ function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
     // the default provider) rendered its capability column entirely dead while the
     // data sat in the cache. Visible the moment a row carries a capability column.
     //
-    // `tools` is NOT here because the slim payload does not carry it: that is a
-    // models-index gap, not a CLI one, and inventing `true` would be worse than a
-    // dim glyph. Recorded rather than guessed.
+    // `supportsTools` IS carried by the slim payload (~97% of models, per its own
+    // field doc) and was left unmapped here, so every aggregator-served row showed
+    // a dead tools flag while the answer sat one property away. It is forwarded
+    // ONLY when present — `undefined` stays `undefined` rather than becoming
+    // `false`, because "the catalog does not say" and "this model cannot take
+    // tools" are different claims and only the second one disqualifies a model.
     capabilities: {
       ...(entry.supportsVision === undefined ? {} : { vision: entry.supportsVision }),
       ...(entry.reasoning === undefined ? {} : { thinking: true }),
+      ...(entry.supportsTools === undefined ? {} : { tools: entry.supportsTools }),
     },
   };
 }
@@ -373,6 +400,22 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
     async searchModels(term: string, limit = 50): Promise<CatalogModel[]> {
       const docs = await _searchModels(term, limit);
       return docs.map(modelDocToCatalogModel);
+    },
+
+    servedByVendor(vendorSlug: string): CatalogModel[] {
+      const slug = vendorSlug.toLowerCase();
+      // Local-only vendors are absent from the catalog BY DESIGN, so an empty
+      // answer here is a fact, not a miss. Their rosters come from their own
+      // daemons through `modelDiscovery`.
+      if (NO_CATALOG_VENDOR_SLUGS.has(slug)) return [];
+      const { entries } = readSlimCacheWithFreshness(_readSlimCache);
+      const out: CatalogModel[] = [];
+      for (const entry of entries) {
+        if (entry.aggregators?.some((agg) => agg.provider.toLowerCase() === slug)) {
+          out.push(slimEntryToCatalogModel(entry));
+        }
+      }
+      return out;
     },
   };
 }

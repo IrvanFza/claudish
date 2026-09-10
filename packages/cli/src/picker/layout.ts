@@ -1,374 +1,220 @@
 /**
- * picker/layout.ts — every column budget the picker spends, in one place.
+ * picker/layout.ts — every column and row budget the picker dialog spends, in one
+ * place.
  *
- * Flexbox owns the BOXES; arithmetic owns the widths of the data widgets, because
- * `Meter`/`MeterSpan`/`Sparkline`/`StackedBar` take a numeric cell count and a
- * number cannot `flexGrow` (bunjs:tui `react-patterns.md`). So a full-width
- * visual is a column budget, and a budget that lives at its call site drifts.
+ * Flexbox owns the BOXES; arithmetic owns the widths of the cells inside a row,
+ * because a row is one `<text>` of `<span>`s and a span cannot `flexGrow`. So a
+ * full-width row is a column budget, and a budget that lives at its call site
+ * drifts between the header and the rows it labels.
  *
- * THE CONTEXT METER IS THE ELASTIC CELL, and that is the whole design of
- * `deriveRowLayout`. Every other cell is fixed per tier; the meter takes the
- * surplus up to its tier maximum and hands any remainder to the model id. Two
- * consequences, both load-bearing:
+ * THE MODEL ID IS THE ELASTIC CELL, and every other cell is fixed at every width.
+ * That is the whole difference from the two-pane build this replaces, whose five
+ * responsive tiers existed to keep a gradient meter on every row down to 44
+ * columns. There is no meter now, so there is no ladder: the four fixed cells are
+ * the four facts a reader chooses on (which provider, how much context, what it
+ * costs, and whether the row is verified), and the name takes everything left.
+ * One layout at 80 columns and at 145.
  *
- *   1. A row is EXACTLY `rowCells` wide at every width — no unpainted tail, which
- *      is the gap a colour screenshot fails a panel for.
- *   2. A row NEVER carries fewer than `MIN_CTX_CELLS` meter cells, at any width,
- *      which is what keeps every visible model row a GRAPHICS row at 80 columns.
- *      The whole-frame density count depends on that and on nothing else.
- *
- * The ladder is a table of tiers rather than a formula because the cells it drops
- * are editorial, not arithmetic: the release date goes first (it is chrome), then
- * the price METER (the numeral stays — the number is the fact, the bar is the
- * comparison), then the capability column, then the id shrinks. Nothing here drops
- * the context meter.
+ * THE DIALOG IS CONTENT-SIZED, NOT SCREEN-SIZED. It renders INLINE
+ * (`screenMode: "main-screen"`), so its height is rows it actually occupies in the
+ * user's scrollback rather than a viewport it has taken over — which is why the
+ * row budget below caps at `MAX_DIALOG_ROWS` and does not grow with the terminal.
+ * A 45-row terminal gets the same 18-row dialog as a 24-row one, with the extra
+ * rows left to the shell. The unpainted-black-hole failure of the previous build
+ * cannot occur here: a short list makes a short box.
  */
 
-/**
- * The floor on the context meter, in cells.
- *
- * FOUR, not one: a one-cell meter is a coloured dot, and `rampFor` would blend a
- * whole gradient down to a single colour — the "single-colour bar" the aesthetic
- * contract names as a negative control. Four cells still read as a fill and still
- * carry four distinct ramp colours.
- */
-export const MIN_CTX_CELLS = 4;
-
-/** The smallest model-id column worth rendering. Below this a row is unreadable. */
-const MIN_ID_CELLS = 8;
+/** The widest routing shortcut in the roster (`mistral@`), so the column never elides. */
+const PROVIDER_CELLS = 8;
+/** `262K`, `1M`, `N/A`. */
+const CTX_CELLS = 6;
+/** `$30.00`, `FREE`, `SUB`, `local`, `N/A`. */
+const PRICE_CELLS = 9;
+/** ` catalog` — reserved ONLY on a fallback list, so a live list is not indented. */
+const MARK_CELLS = 8;
+/** `▶ ` / `  ` — the cursor gutter, which carries its own trailing space. */
+const CURSOR_CELLS = 2;
+/** Air between the name and the provider column, and between the numeric columns. */
+const GAP_AFTER_ID = 4;
+const GAP_AFTER_PROVIDER = 4;
+const GAP_AFTER_CTX = 5;
+/** Below this the name is no longer a name. */
+const MIN_ID_CELLS = 10;
 
 /**
  * One model row's cells, left to right. Every number is COLUMNS, and they sum to
- * exactly `rowCells` — asserted over the whole width range by `layout.test.ts`.
- *
- * A zero means the cell is DROPPED at this width (and its separator with it), not
- * that it renders empty: an empty cell would still eat its columns.
+ * exactly `inner` — asserted over the whole width range by `layout.test.ts`.
  */
 export interface RowLayout {
   /** Total columns the row must paint, exactly. */
-  rowCells: number;
-  /** `▶ ` / `  ` — the cursor gutter, which carries its own trailing space. */
+  inner: number;
   cursor: number;
-  /** Model id, padded/truncated. Absorbs the surplus the meter cannot use. */
+  /** Model id, padded/truncated. Absorbs every column the fixed cells do not use. */
   id: number;
-  /** The context-window gradient meter. The elastic cell; never below `MIN_CTX_CELLS`. */
+  /** The routing shortcut, right-aligned: `or@`, `kc@`. */
+  provider: number;
+  /** Context window numeral, right-aligned. */
   ctx: number;
-  /** `padStartTo`-ed context numeral (`256K`). */
-  ctxNum: number;
-  /** The price meter. 0 at narrow widths — the numeral survives instead. */
+  /** Price / `SUB` / `FREE` / `local`, right-aligned. */
   price: number;
-  /** `padStartTo`-ed price numeral, or the `SUB` chip's column. */
-  priceNum: number;
-  /** Capability column — `[TRV]`, five columns, identical at every width (`rows.tsx`). */
-  caps: number;
-  /**
-   * The provenance chip's column (` CAT `), reserved ONLY for a fallback list.
-   *
-   * INSIDE THE BUDGET, and that is a correction to a measured bug: the chip was first
-   * rendered after the last cell, outside the row's width, on the reasoning that a
-   * provenance mark should not re-size the cells and make a fallback list
-   * geometrically incomparable to a live one. The model panel is `overflow="hidden"`,
-   * so the chip was clipped away ENTIRELY — the single highest-value signal in the
-   * feature, invisible, in the exact state the feature exists for. Comparability lost
-   * to visibility; the two lists are never on screen at the same time anyway.
-   */
+  /** ` catalog` — 0 on a live list. */
   mark: number;
-  /** Release date, `padStartTo`-ed. 0 below the widest tier — it is chrome. */
-  date: number;
   /** Single-space separators the renderer emits. Part of the sum. */
   gaps: number;
 }
 
-/** A tier of the ladder: everything fixed, plus the elastic cell's bounds. */
-interface Tier {
-  cursor: number;
-  ctxNum: number;
-  price: number;
-  priceNum: number;
-  caps: number;
-  date: number;
-  gaps: number;
-  /** Nominal id width. The meter only grows past its minimum once this is satisfied. */
-  id: number;
-  ctxMin: number;
-  ctxMax: number;
-}
-
 /**
- * The ladder. `min` is inclusive and the rows are ordered widest-first, so the
- * first match wins.
- *
- * `gaps` is the number of single-space separators the row renderer emits between
- * the cells this tier keeps — one fewer than the number of cells, because the
- * cursor gutter carries its own space. It is counted here rather than derived so
- * that `fixedCells` (below) is the single number the elastic split works from; the
- * renderer and this table are kept in step by the exact-sum test, which would fail
- * the instant one emitted a separator the other had not budgeted.
- */
-const TIERS: ReadonlyArray<{ min: number; tier: Tier }> = [
-  {
-    // ≥ 96: everything — both meters, the capability column, the release date.
-    min: 96,
-    tier: {
-      cursor: 2,
-      ctxNum: 6,
-      price: 10,
-      priceNum: 9,
-      caps: 5,
-      date: 10,
-      gaps: 6,
-      id: 36,
-      ctxMin: 10,
-      ctxMax: 24,
-    },
-  },
-  {
-    // 70–95: the release date goes first — it is the one cell that is pure chrome.
-    min: 70,
-    tier: {
-      cursor: 2,
-      ctxNum: 6,
-      price: 8,
-      priceNum: 9,
-      caps: 5,
-      date: 0,
-      gaps: 5,
-      id: 32,
-      ctxMin: 8,
-      ctxMax: 16,
-    },
-  },
-  {
-    // 56–69 — the 80-column tier, and the one the density count turns on. The
-    // price METER goes; its numeral stays, because the number is the fact and the
-    // bar is only the comparison.
-    min: 56,
-    tier: {
-      cursor: 2,
-      ctxNum: 6,
-      // NINE, not eight: `$30.00/1M` is nine columns and an eight-column cell rendered
-      // it `$30.00/…`. A truncated PRICE is the one truncation this row cannot afford —
-      // it is the number the user is choosing on, and a clipped one reads as a
-      // different, smaller number.
-      price: 0,
-      priceNum: 9,
-      caps: 6,
-      date: 0,
-      gaps: 4,
-      id: 23,
-      ctxMin: 6,
-      ctxMax: 10,
-    },
-  },
-  {
-    // 44–55: the id gives way before the meter does.
-    min: 44,
-    tier: {
-      cursor: 2,
-      ctxNum: 6,
-      price: 0,
-      priceNum: 9,
-      caps: 6,
-      date: 0,
-      gaps: 4,
-      id: 17,
-      ctxMin: 5,
-      ctxMax: 10,
-    },
-  },
-  {
-    // < 44: id, meter, two numerals. `id: MIN_ID_CELLS` makes the meter pin to
-    // `ctxMax` and the id take every remaining column — "id: rest".
-    min: 0,
-    tier: {
-      cursor: 2,
-      ctxNum: 5,
-      price: 0,
-      priceNum: 7,
-      caps: 0,
-      date: 0,
-      gaps: 3,
-      id: MIN_ID_CELLS,
-      ctxMin: MIN_CTX_CELLS,
-      ctxMax: MIN_CTX_CELLS,
-    },
-  },
-];
-
-/** Everything in a tier except the id and the context meter. */
-function fixedCells(t: Tier): number {
-  return t.cursor + t.ctxNum + t.price + t.priceNum + t.caps + t.date + t.gaps;
-}
-
-/**
- * The cell widths for a model row `rowCells` columns wide.
+ * The cell widths for a row `inner` columns wide.
  *
  * Clamped, never trusted: a caller that hands this a negative, fractional or
- * non-finite width gets the narrowest tier rather than NaN columns, because a NaN
- * width reaches `Meter` as a zero-width widget — nothing painted, nothing thrown.
+ * non-finite width gets a floor rather than NaN columns, because a NaN width
+ * reaches `padTo` as a zero-width cell — nothing painted, nothing thrown.
  */
-export function deriveRowLayout(rowCells: number, opts: { mark?: boolean } = {}): RowLayout {
-  const cells = Number.isFinite(rowCells) ? Math.max(0, Math.floor(rowCells)) : 0;
-  const t = (TIERS.find((row) => cells >= row.min) ?? TIERS[TIERS.length - 1]!).tier;
-  // ` CAT ` plus its separator, and only when the list is a fallback. It comes out of
-  // the ID, which is the one cell with slack — never out of the context meter.
-  const mark = opts.mark === true && cells >= 44 ? MARK_CELLS + 1 : 0;
-  const fixed = fixedCells(t) + mark;
+export function deriveRowLayout(inner: number, opts: { mark?: boolean } = {}): RowLayout {
+  const cells = Number.isFinite(inner) ? Math.max(0, Math.floor(inner)) : 0;
+  const mark = opts.mark === true ? MARK_CELLS : 0;
+  const gaps = GAP_AFTER_ID + GAP_AFTER_PROVIDER + GAP_AFTER_CTX;
 
-  // `id + ctx` is whatever the fixed cells leave. Split it so the id gets its
-  // nominal width first, the meter takes the surplus up to its tier maximum, and
-  // any remainder goes back to the id — which is what makes a 145-column row sum
-  // exactly rather than leaving a dead tail where the meter stopped growing.
-  const budget = Math.max(0, cells - fixed);
-  let ctx = Math.min(Math.max(budget - t.id, MIN_CTX_CELLS), t.ctxMax);
-  let id = budget - ctx;
+  // Everything except the elastic id. The mark carries no separator of its own —
+  // the price column is right-aligned, so the gap is already inside it.
+  let provider = PROVIDER_CELLS;
+  let ctx = CTX_CELLS;
+  let price = PRICE_CELLS;
+  let id = cells - (CURSOR_CELLS + provider + ctx + price + mark + gaps);
 
   if (id < MIN_ID_CELLS) {
-    // Too narrow for both. The id keeps its floor and the meter gives way down to
-    // its own floor; below that the id pays, because a 3-cell meter is still a
-    // meter and a 2-column id is not a name.
-    id = Math.min(MIN_ID_CELLS, budget);
-    ctx = Math.max(0, budget - id);
-    if (ctx < MIN_CTX_CELLS) {
-      ctx = Math.min(MIN_CTX_CELLS, budget);
-      id = Math.max(0, budget - ctx);
-    }
+    // Absurdly narrow. The columns give way in the order they are least missed:
+    // the mark's padding first (it is a whole-list property the title also
+    // states), then the provider column, then the price. Nothing here drops the
+    // CONTEXT numeral or the name, because those two are the row.
+    const shortfall = MIN_ID_CELLS - id;
+    const takeFromProvider = Math.min(provider, shortfall);
+    provider -= takeFromProvider;
+    const stillShort = shortfall - takeFromProvider;
+    const takeFromPrice = Math.min(Math.max(0, price - 4), stillShort);
+    price -= takeFromPrice;
+    id = cells - (CURSOR_CELLS + provider + ctx + price + mark + gaps);
+  }
+  if (id < 0) {
+    // Narrower than the fixed cells themselves. Give the name what is left and
+    // let the row paint short rather than overflow, which Yoga would claw back
+    // from whichever cell it liked.
+    ctx = Math.max(0, ctx + id);
+    id = 0;
   }
 
-  return {
-    rowCells: cells,
-    cursor: t.cursor,
-    id,
-    ctx,
-    ctxNum: t.ctxNum,
-    price: t.price,
-    priceNum: t.priceNum,
-    caps: t.caps,
-    date: t.date,
-    gaps: t.gaps,
-    mark,
-  };
+  return { inner: cells, cursor: CURSOR_CELLS, id, provider, ctx, price, mark, gaps };
 }
 
-/** ` CAT ` — `BadgeSpan` pads one column each side of the label, outside the fill. */
-const MARK_CELLS = 5;
-
-/** Sum of every cell plus the separators — must equal `rowCells`. */
+/** Sum of every cell plus the separators — must equal `inner`. */
 export function rowLayoutTotal(l: RowLayout): number {
-  return (
-    l.cursor + l.id + l.ctx + l.ctxNum + l.price + l.priceNum + l.caps + l.date + l.gaps + l.mark
-  );
+  return l.cursor + l.id + l.provider + l.ctx + l.price + l.mark + l.gaps;
 }
 
-/**
- * The two columns of the picker, and what each leaves for its content.
- *
- * `railW` is 19 / 24 per the design; the rest follows from the two chrome costs
- * the skill MEASURED and this repo re-measured: a `Panel` spends 2 columns of
- * border when `flush` (4 when not), and a `<scrollbox>` inside it spends 1 more
- * for the thumb. The one-column `gap` between the panes is real — it is set on the
- * flex row, so it has to come out of the budget here too.
- */
-export interface PaneLayout {
-  /** Outer width of the provider rail, borders included. */
-  railW: number;
-  /** Usable columns inside the rail's flush panel. */
-  railInner: number;
-  /** Outer width of the model panel. */
-  panelOuter: number;
-  /** Usable columns for one model row, inside the panel and beside the thumb. */
-  rowCells: number;
-}
-
-export function derivePanes(width: number): PaneLayout {
-  const w = Number.isFinite(width) ? Math.max(20, Math.floor(width)) : 80;
-  const railW = w >= 100 ? 24 : 19;
-  const panelOuter = Math.max(8, w - railW - 1);
-  return {
-    railW,
-    // MINUS THREE, not two: the flush `Panel` spends 2 columns of border and the
-    // `<scrollbox>` inside it spends 1 more for the thumb — the second cost measured by
-    // the skill and re-measured here, where budgeting only the border clipped the
-    // billing tag on every rail row (`SUB` painted as `SU`).
-    railInner: Math.max(4, railW - 3),
-    panelOuter,
-    rowCells: Math.max(12, panelOuter - 3),
-  };
-}
-
-/** One provider rail row's cells. The LABEL is the elastic cell here. */
-export interface RailLayout {
-  railInner: number;
-  /** Readiness glyph — `●` / `○` / `◌`. */
-  glyph: number;
-  /** Provider name, truncated. */
-  label: number;
-  /** Right-aligned billing tag: `SUB` / `LOCAL` / `$`. */
-  tag: number;
-  /** Served-model count, or 0 when the rail is too narrow to carry one. */
-  count: number;
-  gaps: number;
-}
-
-/**
- * THE BILLING TAG IS PLAIN COLOURED TEXT, NOT A `BadgeSpan`, and that is a budget
- * decision taken against the skill's default ("discrete status → badge"). A chip
- * pays two columns of padding for its fill; the rail's whole inner width is 17 at
- * 80 columns, so those two columns come straight off the provider NAME — and a
- * rail whose names are all elided has lost more than a chip gains. The readiness
- * glyph and the tag's own colour carry the status, and the model panel spends its
- * chips where there is room for them. §5.3's own mock renders the bare form.
- */
-const TAG_CELLS = 5;
-
-export function deriveRailLayout(railInner: number): RailLayout {
-  const inner = Number.isFinite(railInner) ? Math.max(4, Math.floor(railInner)) : 17;
-  // The count needs a rail wide enough that the NAME does not pay for it.
-  const count = inner >= 20 ? 3 : 0;
-  let gaps = count > 0 ? 3 : 2;
-  let tag = TAG_CELLS;
-  let label = inner - 1 - tag - count - gaps;
-  if (label < 3) {
-    // Absurdly narrow: the tag goes before the name does. A rail of billing tags with
-    // no provider names in it is not a rail. `Math.max(1, …)` on the label instead
-    // would have kept the tag and OVERFLOWED the row — measured: 9 cells rendered into
-    // an 8-column rail, which Yoga then claws back from whichever cell it likes.
-    tag = 0;
-    gaps = 1;
-    label = inner - 1 - count - gaps;
-  }
-  if (label < 1) {
-    gaps = 0;
-    label = Math.max(0, inner - 1 - count);
-  }
-  return { railInner: inner, glyph: 1, label, tag, count, gaps };
-}
-
-/** Sum of a rail row's cells — must equal `railInner`. */
-export function railLayoutTotal(l: RailLayout): number {
-  return l.glyph + l.label + l.tag + l.count + l.gaps;
-}
-
-/**
- * Chrome that is HEIGHT-gated, not width-gated — the scarce axis at 80×24 is rows.
- *
- * Each threshold is named once here because every one of them is a row the model
- * list does not get, and §4.6's whole-frame density arithmetic is built on these
- * exact numbers.
- */
-export const CHROME = {
-  /** Two header rows (identity + context) above this height, one below. */
-  headerTwoRows: 30,
-  /** `StatsStrip` takes a bordered `Panel` with three rows at or above this. */
-  statsPanel: 34,
-  /** The discovery banner takes a full border (2 rows of chrome) at or above this. */
-  bannerBordered: 30,
-  /**
-   * The two pinned detail blocks appear at or above this height.
-   *
-   * Below it every row belongs to a list: a detail block would trade two model rows —
-   * two GRAPHICS rows — for two rows of prose, which is the wrong direction for the
-   * whole-frame density count on the terminal where that count is tightest.
-   */
-  detail: 26,
+/** The separators, named so the renderer and the budget cannot disagree. */
+export const GAPS = {
+  afterId: GAP_AFTER_ID,
+  afterProvider: GAP_AFTER_PROVIDER,
+  afterCtx: GAP_AFTER_CTX,
 } as const;
+
+/** The widest the dialog is ever drawn, however wide the terminal is. */
+export const MAX_DIALOG_WIDTH = 92;
+/** The tallest the dialog is ever drawn, however tall the terminal is. */
+export const MAX_DIALOG_ROWS = 18;
+/** The most model rows the list ever shows at once. Scroll, do not grow. */
+export const MAX_LIST_ROWS = 11;
+/** Fewer than this and the list stops being a list. */
+const MIN_LIST_ROWS = 3;
+/** Below this the dialog cannot carry its own chrome plus a usable list. */
+const MIN_DIALOG_ROWS = 11;
+
+/**
+ * Chrome rows the populated dialog ALWAYS spends: two border rows, the filter
+ * row, the column header, the status row, the rule, the selection detail line
+ * and the key hints.
+ *
+ * "ALWAYS" IS THE LOAD-BEARING WORD. The status row is rendered even when it is
+ * blank, so that a list which starts overflowing (or a credential sweep that
+ * finishes) does not shove every row below it by one. What is deliberately NOT
+ * fixed is the LIST's height: it is content-sized up to `listRows`, because the
+ * failure state's whole point is a four-row fallback list that reads as four rows
+ * rather than as four rows in a panel built for eleven — the unpainted hole the
+ * rejected build produced, which the reader read as "this provider has nothing".
+ *
+ * The banner's rows come OUT of the list's budget rather than being added to the
+ * box, so the dialog is bounded above in every state and only ever SHRINKS from
+ * its cap. Shape changes between phases are remounted with `key={…}`, which is
+ * the documented cure for inline reconciliation tearing.
+ */
+export const CHROME_ROWS = 8;
+
+export interface DialogLayout {
+  /** Outer width including the border columns. */
+  width: number;
+  /** Columns of terminal to the left of the border. */
+  marginLeft: number;
+  /** Usable content columns: `width` less two border columns and two of padding. */
+  inner: number;
+  /** How many model rows fit. The list scrolls within this. */
+  listRows: number;
+}
+
+/**
+ * Size the dialog for a terminal, and for however many rows a banner has taken.
+ *
+ * `extraRows` is the honest coupling between the failure banner and the list: a
+ * five-row 401 explanation and eleven model rows do not both fit, and the rows that
+ * must give way are the list's — the banner is the REASON the list is short, so
+ * hiding the banner to show more of an unverified list would invert the whole point
+ * of the state.
+ *
+ * MEASURED, AND IT BOUNDS WHAT "INLINE" BUYS AT THIS PIN. `screenMode: "main-screen"`
+ * still sizes the renderer to `stdout.rows` — `CliRendererConfig` at
+ * `@opentui/core@0.1.107` carries no `width`/`height` key at all, whatever the
+ * upstream option table says — so the picker owns the whole terminal while it is up,
+ * and the banner above scrolls with the rest of the scrollback. What inline still
+ * buys, and it is the reason for choosing it: nothing is SWAPPED, so the final frame
+ * survives `destroy()` and the shell prompt returns directly under the dialog rather
+ * than under a restored screen that never showed it. Capping the dialog at
+ * `MAX_DIALOG_ROWS` is what keeps that owned region small instead of filling 45 rows.
+ */
+export function deriveDialogLayout(
+  termWidth: number,
+  termHeight: number,
+  extraRows = 0
+): DialogLayout {
+  const w = Number.isFinite(termWidth) ? Math.max(24, Math.floor(termWidth)) : 80;
+  const h = Number.isFinite(termHeight) ? Math.floor(termHeight) : 24;
+  const width = Math.min(w - 4, MAX_DIALOG_WIDTH);
+  // Two columns of margin at 80, centred once the terminal is wider than the cap.
+  const marginLeft = Math.max(2, Math.floor((w - width) / 2));
+  // `- 6`: the shell prompt and the claudish banner keep their rows wherever the
+  // terminal is tall enough to spare them.
+  const budget = Math.min(MAX_DIALOG_ROWS, Math.max(MIN_DIALOG_ROWS, h - 6));
+  const listRows = Math.max(
+    MIN_LIST_ROWS,
+    Math.min(MAX_LIST_ROWS, budget - CHROME_ROWS - Math.max(0, Math.floor(extraRows)))
+  );
+  return { width, marginLeft, inner: Math.max(8, width - 4), listRows };
+}
+
+/**
+ * The scroll window for a cursor in a list — the offset that keeps the cursor
+ * visible while moving the viewport as little as possible.
+ *
+ * Pure, and computed rather than held in a ref, because there is no `<scrollbox>`
+ * here: eleven rows are sliced out of the array and rendered as plain `<text>`
+ * rows. That deletes two measured OpenTUI traps at once — a scrollbox's intrinsic
+ * height is its WHOLE content, which starves every sibling in the same column, and
+ * its reconciler desyncs when a content-derived key changes under it.
+ */
+export function scrollWindow(cursor: number, total: number, rows: number): number {
+  const size = Math.max(1, Math.floor(rows));
+  if (total <= size) return 0;
+  const c = Math.max(0, Math.min(total - 1, Math.floor(cursor)));
+  // Keep the cursor one row inside the window where there is room, so the next
+  // press reveals a row rather than only moving the highlight.
+  const top = Math.min(Math.max(0, c - Math.floor(size / 2)), total - size);
+  return Math.max(0, top);
+}

@@ -1,18 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 /**
- * The pure arithmetic behind a model row and a discovery notice — the tier that needs
- * no renderer, and the tier where the honesty rules are actually decidable.
+ * The pure semantics behind a row, a detail line and a discovery notice — the tier
+ * that needs no renderer, and the tier where the honesty rules are actually
+ * decidable.
  *
- * Two of these assertions exist because the alternative reading is silently plausible:
- * an absent context window must yield `NaN` (which paints `╌`) and NEVER 0 (which
- * paints the same full track a healthy tiny window paints), and no rendered notice may
- * contain the substring `undefined`.
+ * Three of these assertions exist because the alternative reading is silently
+ * plausible: a fallback list must say it MAY NOT WORK and not merely that it came
+ * from somewhere else; a capability the catalog is silent about must not be
+ * rendered as absent; and no rendered notice may contain the substring `undefined`.
  */
 import type { DiscoveryFailure } from "../providers/model-discovery.js";
-import { discoveryNoticeContent, mergeCredentialLines } from "./DiscoveryNotice.js";
-import { ctxMix, priceMix, resample } from "./StatsStrip.js";
-import { billingTag, contextMeterPct, parseDisplayPrice, priceMeterPct } from "./rows.js";
+import {
+  discoveryNoticeContent,
+  mergeCredentialLines,
+  noticeRows,
+  wrapWords,
+} from "./DiscoveryNotice.js";
+import { capabilityWords, detailText } from "./detail.js";
+import { billingLabel, priceFg, priceLabel, readinessGlyph } from "./rows.js";
 
 const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
   id: "m",
@@ -22,103 +28,93 @@ const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
   ...over,
 });
 
-describe("contextMeterPct", () => {
-  test("is monotonic and bounded 0..100", () => {
-    const pcts = [8_000, 32_000, 128_000, 512_000, 1_000_000].map((n) =>
-      contextMeterPct(n, 8_000, 1_000_000)
-    );
-    expect(pcts.every((p) => p >= 0 && p <= 100)).toBe(true);
-    expect([...pcts].sort((a, b) => a - b)).toEqual(pcts);
+describe("priceLabel", () => {
+  test("the `/1M` suffix goes — the column header says it once for the whole list", () => {
+    expect(priceLabel("$9.00/1M", "metered")).toBe("$9.00");
+    expect(priceLabel("$0.15/1M", "metered")).toBe("$0.15");
   });
 
-  test("an absent window is NaN, never 0", () => {
-    // 0 would paint a full `░` track — pixel-identical to a healthy 8 K model.
-    expect(Number.isNaN(contextMeterPct(undefined, 1000, 2000))).toBe(true);
-    expect(Number.isNaN(contextMeterPct(0, 1000, 2000))).toBe(true);
+  test("a flat-rate plan keeps its word instead of a number it does not have", () => {
+    expect(priceLabel("SUB", "sub")).toBe("SUB");
+    expect(priceLabel("FREE", "metered")).toBe("FREE");
+    // A local model costs nothing per token and says so in lower case: shouting is
+    // reserved for the two labels that are about money.
+    expect(priceLabel("$3.00/1M", "local")).toBe("local");
+    expect(priceLabel("LOCAL", "metered")).toBe("local");
   });
 
-  test("a homogeneous list does not collapse its smallest row to an empty bar", () => {
-    // MEASURED on the first capture: a 250K/1M roster scaled to its own bounds painted
-    // every 250K row at exactly 0%. The floor is anchored six doublings below the max.
-    expect(contextMeterPct(250_000, 250_000, 1_000_000)).toBeGreaterThan(50);
-    expect(contextMeterPct(1_000_000, 250_000, 1_000_000)).toBe(100);
-  });
-
-  test("a degenerate range answers 100 rather than dividing by zero", () => {
-    expect(contextMeterPct(1000, 1000, 1000)).toBe(100);
-    expect(contextMeterPct(1000, 0, 0)).toBe(100);
+  test("an absent price is `N/A`, and never an empty cell", () => {
+    // An empty price column would read as "free", which is a claim about money.
+    expect(priceLabel("N/A", "metered")).toBe("N/A");
+    expect(priceLabel("", "metered")).toBe("N/A");
   });
 });
 
-describe("priceMeterPct", () => {
-  test("CHEAPER IS A LONGER BAR — the ramp ends green, so the fill is cheapness", () => {
-    const cheap = priceMeterPct(0.1, 0.1, 15);
-    const dear = priceMeterPct(15, 0.1, 15);
-    expect(cheap).toBe(100);
-    expect(dear).toBe(0);
+describe("priceFg", () => {
+  test("the three labels that are ABOUT MONEY are three distinct colours", () => {
+    // `FREE` (costs nothing), `SUB` (a flat-rate plan, so no per-token number
+    // exists) and a rate are three different financial claims, and a reader
+    // scanning for a cheap model separates them by hue before reading the word.
+    expect(new Set(["FREE", "SUB", "$2.25"].map(priceFg)).size).toBe(3);
   });
 
-  test("free is a full bar; an absent rate is NaN", () => {
-    expect(priceMeterPct(0, 0.1, 15)).toBe(100);
-    expect(Number.isNaN(priceMeterPct(undefined, 0.1, 15))).toBe(true);
-  });
-});
-
-describe("parseDisplayPrice", () => {
-  test("reads the number out of a display string and nothing out of a word", () => {
-    expect(parseDisplayPrice("$9.00/1M")).toBe(9);
-    expect(parseDisplayPrice("$0.15/1M")).toBe(0.15);
-    expect(parseDisplayPrice("SUB")).toBeUndefined();
-    expect(parseDisplayPrice("N/A")).toBeUndefined();
+  test("the two labels that are NOT prices share the dim tier, deliberately", () => {
+    // `local` and `N/A` are both "there is no number here". Giving them separate
+    // hues would put two more meanings into a column that already carries three,
+    // and neither is a fact the reader acts on.
+    expect(priceFg("local")).toBe(priceFg("N/A"));
+    expect(priceFg("local")).not.toBe(priceFg("$2.25"));
   });
 });
 
-describe("billingTag", () => {
-  test("each mode has its own word and its own colour", () => {
-    const tags = (["sub", "local", "metered"] as const).map(billingTag);
-    expect(tags.map((t) => t.text)).toEqual(["SUB", "LOCAL", "$"]);
-    expect(new Set(tags.map((t) => t.fg)).size).toBe(3);
+describe("billingLabel / readinessGlyph", () => {
+  test("each billing mode has its own WORD, and only the flat-rate one is coloured", () => {
+    const tags = (["sub", "local", "metered"] as const).map(billingLabel);
+    expect(tags.map((t) => t.text)).toEqual(["SUB", "local", "$"]);
+    // `SUB` is the one that changes what a launch COSTS, so it is the one that
+    // gets a hue; the other two recede. Colour spent evenly is colour spent on
+    // nothing.
+    expect(tags[0]?.fg).not.toBe(tags[1]?.fg);
+    expect(tags[0]?.fg).not.toBe(tags[2]?.fg);
+  });
+
+  test("readiness has three states, not two — pending is not missing", () => {
+    const g = (["pending", "ready", "missing"] as const).map(readinessGlyph);
+    expect(new Set(g.map((x) => x.glyph)).size).toBe(3);
+    expect(new Set(g.map((x) => x.fg)).size).toBe(3);
   });
 });
 
-describe("ctxMix / priceMix", () => {
-  test("price bands are exclusive and count only rows with a per-token rate", () => {
-    // A subscription row has no number to band, and inventing one would put a flat-rate
-    // plan somewhere on a price axis it does not sit on.
-    const list = [
-      model({ pricing: { input: "", output: "", average: "FREE" } }),
-      model({ pricing: { input: "", output: "", average: "$0.15/1M" } }),
-      model({ pricing: { input: "", output: "", average: "$2.90/1M" } }),
-      model({ pricing: { input: "", output: "", average: "$30.00/1M" } }),
-      model({ pricing: { input: "", output: "", average: "SUB" } }),
-      model({}),
-    ];
-    expect(priceMix(list)).toEqual([1, 1, 1, 1]);
+describe("capabilityWords", () => {
+  test("a capability the catalog is SILENT about is not rendered as absent", () => {
+    // `undefined` is not `false`. The slim catalog carries `supportsTools` for most
+    // models and nothing for some, and printing an absence would be claiming a fact
+    // nobody has.
+    expect(capabilityWords(model({ supportsTools: true }))).toEqual(["tools"]);
+    expect(capabilityWords(model({}))).toEqual([]);
+    expect(capabilityWords(model({ supportsTools: false }))).toEqual([]);
   });
 
-  test("context buckets sum to the models that HAVE a window", () => {
-    const list = [
-      model({ contextLength: 8_000 }),
-      model({ contextLength: 131_072 }),
-      model({ contextLength: 1_000_000 }),
-      model({}),
-    ];
-    expect(ctxMix(list).reduce((a, b) => a + b, 0)).toBe(3);
+  test("all three are listed in a fixed order when all three are known", () => {
+    expect(
+      capabilityWords(model({ supportsTools: true, supportsReasoning: true, supportsVision: true }))
+    ).toEqual(["tools", "reasoning", "vision"]);
   });
 });
 
-describe("resample", () => {
-  test("always paints exactly the requested number of columns", () => {
-    for (const n of [0, 1, 5, 21, 342]) {
-      for (const w of [1, 8, 48]) {
-        expect(
-          resample(
-            Array.from({ length: n }, (_, i) => i),
-            w
-          ).length
-        ).toBe(n === 0 ? 0 : w);
-      }
-    }
+describe("detailText", () => {
+  test("the exact spec leads, so the picker never hides its own return value", () => {
+    const { text } = detailText("google@gemini-3.8-flash", model({ releaseDate: "2026-09-14" }));
+    expect(text.startsWith("google@gemini-3.8-flash")).toBe(true);
+    expect(text).toContain("2026-09");
+  });
+
+  test("`supportsTools: false` is DISQUALIFYING and says so in words", () => {
+    // A model that cannot take tool definitions cannot drive Claude Code at all,
+    // which is a different claim from "it is a bit less capable".
+    expect(detailText("x@y", model({ supportsTools: false })).warn).toContain("no tool support");
+    expect(detailText("x@y", model({ supportsTools: true })).warn).toBe("");
+    expect(detailText("x@y", model({})).warn).toBe("");
   });
 });
 
@@ -156,7 +152,7 @@ describe("discoveryNoticeContent", () => {
     ).toBeNull();
   });
 
-  test("`empty-roster` and `all-filtered` say DIFFERENT things — V7's automatable half", () => {
+  test("`empty-roster` and `all-filtered` say DIFFERENT things", () => {
     const empty = discoveryNoticeContent(
       { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [] },
       "Kimi"
@@ -176,17 +172,47 @@ describe("discoveryNoticeContent", () => {
     expect(empty?.lines[0]).not.toBe(filtered?.lines[0]);
   });
 
-  test("a fallback list gets the PROVENANCE sentence; no fallback gets a next step", () => {
-    const withRows = discoveryNoticeContent(
-      { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [model()] },
+  test("A FALLBACK LIST SAYS IT MAY NOT WORK, not merely where it came from", () => {
+    // The single most useful sentence in this state, and the one the shipped stderr
+    // wording never carried: discovery failed because the credential was rejected,
+    // so nothing has confirmed the account can call any of these models. A reader
+    // told only "catalog entries" concludes the list is differently-sourced, picks
+    // one, and finds out at launch.
+    const c = discoveryNoticeContent(
+      {
+        kind: "failed",
+        failure: failure({ status: 401 }),
+        notice: [
+          "\n⚠ Kimi could not list its models: the API key was rejected (HTTP 401)\n",
+          "  Showing Kimi's cloud-catalog entries below — not its live roster.\n\n",
+        ],
+        fallbackRows: [model(), model({ id: "b" }), model({ id: "c" }), model({ id: "d" })],
+      },
       "Kimi"
     );
+    const joined = c?.lines.join(" ") ?? "";
+    expect(joined).toContain("The 4 rows below");
+    expect(joined).toContain("not Kimi's live roster");
+    expect(joined).toContain("may still fail");
+    // The formatter's own shorter sentence is REPLACED, not printed beside it.
+    expect(joined).not.toContain("Showing Kimi's cloud-catalog entries");
+  });
+
+  test("no fallback list gets a next step instead of a provenance sentence", () => {
     const without = discoveryNoticeContent(
       { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [] },
       "Kimi"
     );
-    expect(withRows?.lines.join(" ")).toContain("not its live roster");
     expect(without?.lines.join(" ")).toContain("Press c");
+    expect(without?.lines.join(" ")).not.toContain("may still fail");
+  });
+
+  test("the dialog status for a failure says UNAVAILABLE, not broken", () => {
+    const c = discoveryNoticeContent(
+      { kind: "failed", failure: failure(), notice: ["⚠ x"], fallbackRows: [model()] },
+      "Kimi"
+    );
+    expect(c?.title).toBe("live roster unavailable");
   });
 
   test("the HTTP status becomes a badge and leaves the headline once", () => {
@@ -228,6 +254,53 @@ describe("discoveryNoticeContent", () => {
       const c = discoveryNoticeContent(v, "Kimi");
       expect([v.kind, c?.lines.join(" ").includes("undefined") ?? false]).toEqual([v.kind, false]);
     }
+  });
+});
+
+describe("wrapWords / noticeRows", () => {
+  test("a line that fits is returned untouched", () => {
+    expect(wrapWords("short enough", 40)).toEqual(["short enough"]);
+  });
+
+  test("no wrapped row exceeds the width", () => {
+    const long =
+      "The 4 rows below are catalog entries, not Kimi / Moonshot's live roster — they do not confirm access, so launching one may still fail.";
+    for (const w of [30, 48, 70]) {
+      for (const line of wrapWords(long, w)) expect(line.length).toBeLessThanOrEqual(w);
+    }
+  });
+
+  test("THE `may still fail` CLAUSE SURVIVES AT 80 COLUMNS", () => {
+    // It is the tail of the sentence, so a truncating banner would take it first —
+    // which is exactly the failure this whole state exists to prevent.
+    const content = discoveryNoticeContent(
+      {
+        kind: "failed",
+        failure: failure({ status: 401 }),
+        notice: [
+          "\n⚠ Kimi could not list its models: the API key was rejected (HTTP 401)\n",
+          "  Check MOONSHOT_API_KEY (a value in your shell overrides stored credentials).\n",
+          "  Get a key: https://platform.moonshot.cn/\n",
+        ],
+        fallbackRows: [model(), model({ id: "b" }), model({ id: "c" }), model({ id: "d" })],
+      },
+      "Kimi"
+    );
+    // 76-column dialog: 2 border, 2 padding, 2 for the banner's own rule + gutter.
+    const rows = noticeRows(content!, 70, 5);
+    expect(rows.lines.join(" ")).toContain("may still fail");
+    expect(rows.lines.length).toBeLessThanOrEqual(5);
+    expect(rows.badge).toBe("HTTP 401");
+  });
+
+  test("the row count is knowable BEFORE render — the inline row budget depends on it", () => {
+    const content = discoveryNoticeContent(
+      { kind: "failed", failure: failure(), notice: ["⚠ x"], fallbackRows: [] },
+      "Kimi"
+    );
+    const rows = noticeRows(content!, 70, 5);
+    expect(rows.lines.length).toBeGreaterThan(0);
+    expect(rows.lines.length).toBeLessThanOrEqual(5);
   });
 });
 
