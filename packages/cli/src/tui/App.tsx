@@ -104,13 +104,7 @@ import { VERSION as PKG_VERSION } from "../version.js";
 import { Footer } from "./components/Footer.js";
 import { OnepasswordContent, type OpExpansion } from "./components/OnepasswordContent.js";
 import { OnepasswordDetail } from "./components/OnepasswordDetail.js";
-import {
-  OnepasswordModal,
-  buildFieldOptions,
-  fuzzyFilterByTitle,
-  fuzzyMatch,
-  isOpModalMode,
-} from "./components/OnepasswordModal.js";
+import { OnepasswordModal } from "./components/OnepasswordModal.js";
 import { PrivacyContent } from "./components/PrivacyContent.js";
 import { PrivacyDetail } from "./components/PrivacyDetail.js";
 import { ProfileDetail } from "./components/ProfileDetail.js";
@@ -123,6 +117,12 @@ import { TabBar } from "./components/TabBar.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
+import {
+  buildFieldOptions,
+  fuzzyFilterByTitle,
+  fuzzyMatch,
+  isOpModalMode,
+} from "./onepassword-fields.js";
 import {
   ensureProbeProxy,
   invalidateProbeProxyHandlers,

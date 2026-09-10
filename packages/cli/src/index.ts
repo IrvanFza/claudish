@@ -14,6 +14,9 @@ import {
   suppressStartupTraceTerminalOutput,
   traceSpan,
 } from "./startup-trace.js";
+// A leaf that imports NOTHING — see its header. Static here on purpose: it must
+// not drag anything into this file's cold-start graph.
+import { canDrawTui } from "./tui/runtime/can-draw-tui.js";
 
 // ── Startup-timing analytics (startup-trace.ts) ─────────────────────────────
 // Every launch appends one JSON line to ~/.claudish/startup-metrics.jsonl; a
@@ -1039,8 +1042,7 @@ async function runCli() {
       //     report "no sessions" and `exit(0)` — turning a previously working flag into
       //     a silent no-op in every non-git directory. Sessions may well exist there;
       //     claudish just has no worktree structure to group them by.
-      const canDrawTui = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-      if (!canDrawTui || cliConfig._hasPrintFlag || !cliConfig.interactive) {
+      if (!canDrawTui() || cliConfig._hasPrintFlag || !cliConfig.interactive) {
         cliConfig.claudeArgs.push("--resume");
       } else {
         const { runResumePicker } = await import("./session/resume-picker-run.js");
