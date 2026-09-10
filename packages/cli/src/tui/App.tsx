@@ -19,6 +19,7 @@ import {
   recordKeychainHydratedVar,
 } from "../auth/credentials/keychain-source.js";
 import { invalidateOpResolutionCache } from "../auth/credentials/op-source.js";
+import { log } from "../logger.js";
 import {
   disableLocalProvider,
   enableLocalProvider,
@@ -1110,13 +1111,20 @@ export function App({ requestLogin }: AppProps = {}) {
           // The entry IS saved; the live resolve just couldn't run. Surface a
           // warning (and log the detail to stderr) without rolling back.
           const msg = testErr instanceof Error ? testErr.message : String(testErr);
-          console.error(`[claudish] 1Password add: saved but live resolve failed: ${msg}`);
+          // `log()`, NOT `console.error`: this runs while the config TUI's renderer owns
+          // the screen, and anything written there leaves cells OpenTUI cannot
+          // invalidate — ghost characters that survive every redraw, with no exception
+          // and nothing on stderr to explain them. The user already gets the message in
+          // the status strip below; the detail belongs in the debug log.
+          // (Found by `picker/no-terminal-writes.test.ts`, which exists for this class.)
+          log(`[claudish] 1Password add: saved but live resolve failed: ${msg}`);
           setStatusMsg(`1Password ${kindWord} saved (${scope}) — live resolve failed: ${msg}`);
         }
       } catch (err: unknown) {
         // A genuine PERSIST failure (config write) — the rare real error.
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[claudish] 1Password add failed to persist: ${msg}`);
+        // Same reason as above: the renderer owns the terminal until it is destroyed.
+        log(`[claudish] 1Password add failed to persist: ${msg}`);
         setStatusMsg(`1Password add failed: ${msg}`);
         setMode("browse");
         resetOpWizard();

@@ -17,6 +17,7 @@ import {
 // Two leaves that import NOTHING — see their headers. Static here on purpose: they
 // must not drag anything into this file's cold-start graph.
 import { canDrawTui } from "./tui/runtime/can-draw-tui.js";
+import { PickerCancelled } from "./tui/runtime/picker-cancelled.js";
 import {
   type ModelPickerGate,
   requiresExplicitModel,
@@ -275,7 +276,22 @@ await traceSpan("startup:op-import-flag", () => applyOpImport());
 const isMcpMode = process.argv.includes("--mcp");
 
 // Handle Ctrl+C gracefully during interactive prompts
+//
+// ONE CONDITION WIDER THAN IT WAS, and that is the only edit the new model picker
+// needs at a call site. `PickerCancelled` is what `selectModel` now throws when the
+// user declines to choose — it replaces a `process.exit(0)` that used to live INSIDE
+// the library (`model-selector.ts:822`). This handler is already attached at all three
+// entry points that can reach the picker (`:428`, `:432`, `:804`), so the blank line
+// and the exit 0 are byte-identical at every one of them and no caller changes.
+//
+// `NoTtyError` is deliberately NOT caught here. The user did not decline; the
+// environment could not ask. An exit 0 with no model chosen is indistinguishable from
+// success to a headless caller, so that one has to surface and exit non-zero.
 function handlePromptExit(err: unknown): void {
+  if (err instanceof PickerCancelled) {
+    console.log("");
+    process.exit(0);
+  }
   if (err && typeof err === "object" && "name" in err && err.name === "ExitPromptError") {
     console.log("");
     process.exit(0);

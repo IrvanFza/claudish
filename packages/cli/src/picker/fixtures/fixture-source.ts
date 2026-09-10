@@ -1,0 +1,167 @@
+/**
+ * picker/fixtures/fixture-source.ts — a scriptable `PickerDataSource`, for the states
+ * a live provider cannot be made to produce.
+ *
+ * DEV-ONLY. It is reached exclusively through a dynamic `await import()` behind the
+ * `CLAUDISH_PICKER_FIXTURE` check in `model-picker-run.tsx`, so `bun build --compile`
+ * never walks into this directory and the shipped binary carries no fixture data.
+ *
+ * IT WRAPS THE PRODUCTION SOURCE AND OVERRIDES ONLY THE SHAPE OF AN ANSWER — never
+ * the data. The roster is still derived from the provider definitions, every model row
+ * is still the real catalog's, every price and context window is still whatever the
+ * backend says. What a scenario forges is the OUTCOME VARIANT (an empty roster, a
+ * timeout, a roster where nothing is chat-capable), the readiness answers, and
+ * latency. That keeps the "never hardcode rosters, context windows or pricing" rule
+ * intact inside a capture harness, which matters because a screenshot of invented
+ * prices proves nothing about the layout of real ones.
+ *
+ * WHY A FAKE AT ALL — the four states below are the whole point of the feature and
+ * none of them is reachable from outside:
+ *
+ *   · `loading`  the warm path settles in under 100 ms, so the in-flight frames
+ *                (V2/V3/V4) cannot be photographed on a real run at all.
+ *   · `empty`    a provider that answers correctly with nothing chat-capable.
+ *   · `filtered` a provider that serves only embeddings or wildcard routes.
+ *   · `timeout`  an unreachable endpoint, on demand.
+ *
+ * V5 (unauthorized) is deliberately NOT the primary use: it is reproducible live with
+ * a bogus key against the real endpoint, which is how the "before" frame was measured,
+ * and a live capture beats a forged one every time. The scenario exists as a control.
+ */
+
+import type { ModelInfo, PickerDiscoveryOutcome } from "../../model-selector.js";
+import {
+  type CatalogLoad,
+  type PickerDataSource,
+  type RailChoice,
+  createPickerDataSource,
+} from "../PickerDataSource.js";
+
+export type FixtureName = "ready" | "loading" | "timeout" | "empty" | "filtered" | "unauthorized";
+
+const NEVER = new Promise<never>(() => {
+  /* deliberately never settles — a capture window is finite, this is not */
+});
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Scenarios that forge a discovery OUTCOME also claim discovery for every provider,
+ * so the state is on screen wherever the cursor happens to start. Without that, a
+ * capture would have to drive keystrokes to a particular provider and would break the
+ * moment the picker order changed.
+ */
+const FORCED_OUTCOME = new Set<FixtureName>(["timeout", "empty", "filtered", "unauthorized"]);
+
+export function createFixtureDataSource(name: string): PickerDataSource {
+  const scenario = (name as FixtureName) ?? "ready";
+  const real = createPickerDataSource();
+  const forced = FORCED_OUTCOME.has(scenario);
+  // `loading` claims discovery too — not to forge an outcome (it has none; it never
+  // settles) but so that whichever provider the cursor starts on exercises the ROSTER
+  // indicator. Without it the first provider is OpenRouter, which has no discovery, and
+  // the one affordance with a published deadline would never appear in a capture.
+  const claimsDiscovery = forced || scenario === "loading";
+
+  return {
+    providerRoster(): RailChoice[] {
+      return real
+        .providerRoster()
+        .map((r) =>
+          claimsDiscovery ? { ...r, hasDiscovery: true, discoveryShape: "deadline" } : r
+        );
+    },
+
+    notEnabledLocalProviders: () => real.notEnabledLocalProviders(),
+    displayName: (p) => real.displayName(p),
+
+    async *probeCredentials(names: string[]): AsyncIterable<[string, boolean]> {
+      // EVERY PROVIDER READY, and that is a forgery with a purpose: a capture runs with
+      // credential sources disabled so it cannot raise a 1Password or Keychain prompt on
+      // the user's desktop, which leaves the real rail three rows long and says nothing
+      // about how the rail looks for a configured user.
+      for (const n of names) {
+        if (scenario === "loading") await sleep(600);
+        yield [n, true];
+      }
+      if (scenario === "loading") await NEVER; // hold the `done/total` meter mid-sweep
+    },
+
+    loadCatalog(): Promise<CatalogLoad> {
+      return scenario === "loading" ? NEVER : real.loadCatalog();
+    },
+
+    async discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
+      if (scenario === "loading") return NEVER;
+      if (!forced) return real.discoverRoster(provider);
+
+      // The fallback list is the REAL vendor catalog for this provider, because the
+      // defect being rendered is precisely that an unmarked fallback list reads as a
+      // healthy short roster — and that only shows on real rows.
+      const fallbackRows = await real.catalogModels(provider).catch((): ModelInfo[] => []);
+      const displayName = real.displayName(provider);
+
+      if (scenario === "empty") {
+        return {
+          kind: "empty-roster",
+          failure: {
+            kind: "empty-roster",
+            provider,
+            endpoint: "https://api.example.test/v1/models",
+          },
+          fallbackRows,
+        };
+      }
+      if (scenario === "filtered") {
+        return {
+          kind: "all-filtered",
+          servedCount: 7,
+          sampleIds: ["text-embedding-3-large", "whisper-1", "tts-1-hd"],
+          fallbackRows,
+        };
+      }
+      if (scenario === "timeout") {
+        return {
+          kind: "failed",
+          failure: {
+            kind: "unreachable",
+            provider,
+            endpoint: "https://api.example.test/v1/models",
+            detail: "The operation was aborted due to timeout",
+          },
+          notice: [
+            `\n⚠ ${displayName} could not list its models: the model list was unreachable at https://api.example.test/v1/models — The operation was aborted due to timeout\n`,
+            fallbackRows.length > 0
+              ? `  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`
+              : "  Falling back to manual model entry.\n\n",
+          ],
+          fallbackRows,
+        };
+      }
+      return {
+        kind: "failed",
+        failure: {
+          kind: "unauthorized",
+          provider,
+          status: 401,
+          endpoint: "https://api.example.test/v1/models",
+          detail:
+            '{"error":{"message":"Invalid Authentication","type":"invalid_authentication_error"}}',
+        },
+        notice: [
+          `\n⚠ ${displayName} could not list its models: the API key was rejected (HTTP 401) at https://api.example.test/v1/models\n`,
+          "  Check EXAMPLE_API_KEY (a value in your shell overrides stored credentials).\n",
+          "  Get a key: https://platform.example.test/keys\n",
+          fallbackRows.length > 0
+            ? `  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`
+            : "  Falling back to manual model entry.\n\n",
+        ],
+        fallbackRows,
+      };
+    },
+
+    catalogModels(provider: string): Promise<ModelInfo[]> {
+      return scenario === "loading" ? NEVER : real.catalogModels(provider);
+    },
+  };
+}

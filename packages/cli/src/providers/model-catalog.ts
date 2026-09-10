@@ -235,6 +235,20 @@ function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
     contextWindow: entry.contextWindow,
     supportsVision: entry.supportsVision,
     releaseDate: entry.releaseDate,
+    // THE TWO CAPABILITY FLAGS THE SLIM CACHE ACTUALLY CARRIES, forwarded in the
+    // shape every renderer reads. They were dropped here: `supportsVision` above
+    // goes into a field only the probe path reads, and `reasoning` was not mapped
+    // at all — so every aggregator-served list (OpenRouter's 349 models, and it is
+    // the default provider) rendered its capability column entirely dead while the
+    // data sat in the cache. Visible the moment a row carries a capability column.
+    //
+    // `tools` is NOT here because the slim payload does not carry it: that is a
+    // models-index gap, not a CLI one, and inventing `true` would be worse than a
+    // dim glyph. Recorded rather than guessed.
+    capabilities: {
+      ...(entry.supportsVision === undefined ? {} : { vision: entry.supportsVision }),
+      ...(entry.reasoning === undefined ? {} : { thinking: true }),
+    },
   };
 }
 

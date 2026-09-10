@@ -51,6 +51,13 @@ import {
 } from "./providers/provider-definitions.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
 import { isChatCapable } from "./providers/transport/probe-discovery.js";
+// STATIC, and safe: both are true leaves with ZERO imports of their own
+// (`picker/import-direction.test.ts` asserts exactly that, by name). A static
+// import of the picker ITSELF would pull a renderer into this module's graph and
+// from there into the MCP stdio path — which is why `selectModelInteractive`
+// reaches it by `await import()` instead.
+import { canDrawTui } from "./tui/runtime/can-draw-tui.js";
+import { NoTtyError, PickerCancelled } from "./tui/runtime/picker-cancelled.js";
 
 /**
  * Model data structure
@@ -675,9 +682,98 @@ async function fetchPickerModels(
 }
 
 /**
- * Select a model interactively with fuzzy search
+ * The cross-vendor catalog load — the picker's A2, as one awaitable.
+ *
+ * Extracted from `selectModelClassic`'s body so the OpenTUI picker runs the SAME two
+ * fetches in the same way rather than a second approximation of them. `allSettled`,
+ * not `all`: a failed top-100 fetch degrades to the recommended list, and a failed
+ * recommended fetch degrades to nothing — neither is allowed to take the picker down,
+ * because the rail is derived from provider definitions and stays usable with no
+ * catalog at all.
+ */
+export async function loadPickerCatalog(
+  options: { recommended?: boolean; forceUpdate?: boolean } = {}
+): Promise<{ top: ModelInfo[]; recommended: ModelInfo[] }> {
+  const { recommended = true, forceUpdate = false } = options;
+  const [top100Result, recommendedResult] = await Promise.allSettled([
+    getTop100Models(),
+    recommended ? loadRecommendedModels(forceUpdate) : Promise.resolve([]),
+  ]);
+  return {
+    top:
+      top100Result.status === "fulfilled"
+        ? sortModelsNewestFirst(dedupeModels(top100Result.value.models.map(modelDocToModelInfo)))
+        : [],
+    recommended: recommendedResult.status === "fulfilled" ? recommendedResult.value : [],
+  };
+}
+
+/**
+ * The interactive model picker's public entry point — UNCHANGED SIGNATURE.
+ *
+ * Resolves to a model spec string exactly as it always has, through the same
+ * `buildExplicitModelSpec` / `pickerModelPrefix` / `resolveProviderExternalId`
+ * functions. What changed is the cancel path: declining to choose used to call
+ * `process.exit(0)` from inside this library, and now throws `PickerCancelled`, which
+ * the caller's already-attached `handlePromptExit` turns into the same blank line and
+ * the same exit 0. Because that handler is attached at all three entry points
+ * (`index.ts:428`, `:432`, `:804`), ZERO call sites change and the user-visible
+ * result is byte-identical.
  */
 export async function selectModel(options: ModelSelectorOptions = {}): Promise<string> {
+  const outcome = await selectModelInteractive(options);
+  if (outcome.model === null) throw new PickerCancelled();
+  return outcome.model;
+}
+
+/** What the picker resolves to. `null` ⟺ the user declined to choose. */
+export interface PickerOutcome {
+  model: string | null;
+}
+
+/**
+ * The picker, as a function that RETURNS the user's decision instead of exiting.
+ *
+ * Three gates, in this order, and the order is the design:
+ *
+ * 1. **No TTY → `NoTtyError`, never a fallback to inquirer.** Falling back would be
+ *    falling back to a hang: inquirer in a non-TTY draws into a stream nothing is
+ *    reading and then waits for a keypress that cannot arrive. `index.ts` cannot reach
+ *    this branch (its own gate closed it), but `profile-commands.ts:559` can, and
+ *    `grep isTTY profile-commands.ts` returns nothing. So `claudish profile edit` under
+ *    a pipe now fails fast with four actionable pointers instead of hanging forever.
+ *
+ * 2. **`CLAUDISH_PICKER=classic` → the inquirer implementation.** Rollback is an env
+ *    var rather than a revert, which matters because this screen is on every user's
+ *    startup path and NO test drives the flow being replaced. The removal trigger is
+ *    recorded in `ROADMAP.md`.
+ *
+ * 3. **`--free` keeps its current behaviour — the throw.** `getFreeModels()` is a
+ *    documented stub returning `[]`, so `--free` has been unreachable since the Zen
+ *    removal. Routing it to the classic path preserves the exact exception rather than
+ *    inventing a UI nobody specified for a flag nobody can use.
+ *
+ * The picker itself is reached by DYNAMIC import, which is what keeps OpenTUI off the
+ * cold-start path and out of the MCP stdio path (§9.2).
+ */
+export async function selectModelInteractive(
+  options: ModelSelectorOptions = {}
+): Promise<PickerOutcome> {
+  if (!canDrawTui()) throw new NoTtyError();
+  if (options.freeOnly || process.env.CLAUDISH_PICKER === "classic") {
+    return { model: await selectModelClassic(options) };
+  }
+  const { runModelPicker } = await import("./picker/model-picker-run.js");
+  return runModelPicker(options);
+}
+
+/**
+ * The inquirer implementation, verbatim — still the picker under
+ * `CLAUDISH_PICKER=classic`, and still the machine behind `selectModelsForProfile`,
+ * which is not being ported in this change and calls `selectModelFromProvider`
+ * directly. It is not dead code kept "just in case": it has a live caller.
+ */
+async function selectModelClassic(options: ModelSelectorOptions = {}): Promise<string> {
   const { freeOnly = false, recommended = true, message, forceUpdate = false } = options;
   const catalog = createCatalogClient();
 
@@ -699,18 +795,11 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
       throw new Error("No free models available");
     }
   } else {
-    const [top100Result, recommendedResult] = await Promise.allSettled([
-      getTop100Models(),
-      recommended ? loadRecommendedModels(forceUpdate) : Promise.resolve([]),
-    ]);
-
-    const topModels =
-      top100Result.status === "fulfilled"
-        ? sortModelsNewestFirst(dedupeModels(top100Result.value.models.map(modelDocToModelInfo)))
-        : [];
-    recommendedModels = recommendedResult.status === "fulfilled" ? recommendedResult.value : [];
-
-    models = topModels.length > 0 ? topModels : recommendedModels;
+    // Shared with the OpenTUI picker through `loadPickerCatalog`, so the two UIs
+    // cannot drift into fetching different things.
+    const loaded = await loadPickerCatalog({ recommended, forceUpdate });
+    recommendedModels = loaded.recommended;
+    models = loaded.top.length > 0 ? loaded.top : recommendedModels;
 
     interactiveProviderChoices = await getInteractiveProviderChoices();
     pickerProviders = toPickerProviders(interactiveProviderChoices);
@@ -853,7 +942,14 @@ export async function selectModel(options: ModelSelectorOptions = {}): Promise<s
   }
 }
 
-interface ProviderChoice {
+/**
+ * One row of the picker's provider list.
+ *
+ * EXPORTED because it is already the return type of the exported
+ * `buildProviderChoices`, so the name was public in everything but spelling — and
+ * the OpenTUI picker's data source needs to name it.
+ */
+export interface ProviderChoice {
   name: string;
   value: string;
   description: string;
@@ -1189,7 +1285,7 @@ function getPickerDisplayName(providerValue: string): string {
 /**
  * Load models for a specific picker provider value via the CatalogClient.
  */
-async function loadModelsForPickerProvider(
+export async function loadModelsForPickerProvider(
   providerValue: string,
   catalog: CatalogClient
 ): Promise<ModelInfo[]> {
@@ -1600,7 +1696,12 @@ function buildRowsFromDiscovered(
 
     // Order: what it is · how big · what it costs · whether it is on offer.
     const parts = [c.displayName];
-    if (contextLength) parts.push(`${Math.round(contextLength / 1024)}K context`);
+    // ONE FORMATTER, ONE NUMBER. This line used to divide by 1024 while `context`
+    // (three lines down, and what every list row prints) divides by 1000, so a single
+    // frame showed the same model as `250K` in its row and `244K context` in its
+    // description — measured in the picker's first capture, and reported before that
+    // from the old picker's detail line. Neither number was wrong; having two was.
+    if (contextLength) parts.push(`${formatContextLength(contextLength)} context`);
     // A relative multiplier is only meaningful on a plan that bills in credits;
     // for a per-token provider the real rate is already in `pricing`.
     if (subscription && c.costFactor !== undefined) parts.push(`×${c.costFactor}`);
@@ -1894,23 +1995,10 @@ export async function promptForProfileDescription(): Promise<string> {
   return description.trim();
 }
 
-/**
- * Select from existing profiles
- */
-export async function selectProfile(
-  profiles: { name: string; description?: string; isDefault?: boolean }[]
-): Promise<string> {
-  const selected = await select({
-    message: "Select a profile:",
-    choices: profiles.map((p) => ({
-      name: p.isDefault ? `${p.name} (default)` : p.name,
-      value: p.name,
-      description: p.description,
-    })),
-  });
-
-  return selected;
-}
+// `selectProfile` was DELETED here. It had zero importers anywhere in the repo,
+// tests included — the profile commands build their own `select` — so it was an
+// exported surface that nothing could regress and nothing could exercise. Removed
+// with the picker rewrite rather than left for the next reader to re-litigate.
 
 /**
  * Confirm action
