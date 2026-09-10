@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import type { Context } from "hono";
 import {
   createAdvisorPresenceMonitor,
@@ -116,6 +116,26 @@ describe("withAdvisorSwap", () => {
     const tools = inner.received[0].tools as Record<string, unknown>[];
     expect(tools.filter((tool) => tool.name === "advisor")).toHaveLength(1);
     expect(tools.filter((tool) => tool.type === "advisor_20260301")).toHaveLength(0);
+  });
+
+  it("observes advisor presence only once per request through nested wrappers", async () => {
+    const inner = createInner();
+    const warn = mock((_message: string) => {});
+    const presence = createAdvisorPresenceMonitor(warn);
+    const deps = { presence, resolveKeys: async () => ({}) };
+    const firstWrapper = withAdvisorSwap(inner, cfg, deps);
+    const forwardingHandler: ModelHandler = {
+      handle: (context, payload) => firstWrapper.handle(context, payload),
+      shutdown: () => firstWrapper.shutdown(),
+    };
+    const secondWrapper = withAdvisorSwap(forwardingHandler, cfg, deps);
+    const payload = { model: "test-model", tools: [{ name: "Read" }] };
+
+    await secondWrapper.handle(createContext(), payload);
+    await secondWrapper.handle(createContext(), payload);
+
+    // The shared monitor makes the already-handled guard testable: double observation would warn.
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
