@@ -12,6 +12,7 @@ lives in `ROADMAP.md`.
 - `routing.md` — `provider@model` syntax, every provider prefix, `DEFAULT_ROUTING_RULES`, `defaultProvider`, the derived picker roster, `SUBSCRIPTION_PROVIDERS`, local models
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
+- `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
 - `headless-vs-interactive.md` — `-p` is not interactive-minus-a-TTY; an UNKNOWN `--agent` name is
   silently unvalidated under `--input-format stream-json` (a VALID one is applied correctly); why magmux

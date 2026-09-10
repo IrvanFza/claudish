@@ -520,7 +520,12 @@ if (isMcpMode) {
  */
 async function runCli() {
   const endImports = beginSpan("startup:cli-imports");
-  const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
+  const {
+    checkClaudeInstalled,
+    runClaudeWithProxy,
+    isAdvisorNativeSession,
+    resolveAdvisorToolEnv,
+  } = await import("./claude-runner.js");
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
@@ -780,7 +785,17 @@ async function runCli() {
       cliConfig.modelSonnet ||
       cliConfig.modelHaiku ||
       cliConfig.modelSubagent;
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
+    // `--advisor` with no main model is a native session: Claude Code picks its own
+    // model, so there is nothing to select and nothing to demand. Both gates below
+    // were satisfied by --advisor implying --monitor; the predicate replaces that.
+    const advisorNativeSession = isAdvisorNativeSession(cliConfig);
+    if (
+      cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !advisorNativeSession &&
+      !cliConfig.model &&
+      !hasProfileTiers
+    ) {
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
@@ -791,7 +806,13 @@ async function runCli() {
     }
 
     // In non-interactive mode, model must be specified (via --model, env var, or profile)
-    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
+    if (
+      !cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !advisorNativeSession &&
+      !cliConfig.model &&
+      !hasProfileTiers
+    ) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag, set CLAUDISH_MODEL env var, or use --profile");
       console.error("Try: claudish --models");
@@ -894,16 +915,6 @@ async function runCli() {
       }
     }
 
-    // Read prompt from stdin if --stdin flag is set
-    if (cliConfig.stdin) {
-      // Blocks on the PIPE producer — slow here means the caller, not claudish.
-      const stdinInput = await traceSpan("startup:stdin-read", () => readStdin());
-      if (stdinInput.trim()) {
-        // Prepend stdin content to claudeArgs
-        cliConfig.claudeArgs = [stdinInput, ...cliConfig.claudeArgs];
-      }
-    }
-
     // Launcher catalog warm step. Runs BEFORE port resolution / proxy startup
     // so we can exit cleanly without a half-spawned server when the catalog
     // is missing AND the network is unreachable. See architecture.md §2.4.
@@ -913,11 +924,72 @@ async function runCli() {
     //   "warned"    — proceed with stale cache, warning already on stderr
     //   "skipped"   — local model or --models-skip-update
     //   "hard_fail" — missing cache + network failure → exit 1
+    //
+    // AHEAD OF THE --advisor CHECK, deliberately. That check decides whether
+    // each panel model is routable, and every one of its answers is read from
+    // the catalog (`advisorRouteFor` → `lookupOpenRouterId`). With a cold
+    // catalog nothing is known, so the router falls back to passthrough and an
+    // UNROUTABLE panel model cannot be refused — it fails on the first advisor
+    // call instead, which is exactly the refusal this ordering exists to make
+    // possible (`kimi-k3` is refused only because the catalog was warm).
     const warmOutcome = await traceSpan("startup:catalog-warm", () =>
       warmCatalogIfNeeded(cliConfig)
     );
     if (warmOutcome === "hard_fail") {
       process.exit(1);
+    }
+
+    // === --advisor: startup refusals and notice ===
+    // Anything decidable at launch is a refusal HERE — after the main model is
+    // known (picker, key validation) and before a port is bound or the child
+    // spawns — rather than a session that silently has no advisor (R5). The
+    // notice goes to STDERR unconditionally, `quiet` included: in -p mode stdout
+    // belongs to Claude Code alone, and the cost line (N2) is not optional.
+    // `cliConfig.advisor` is set only by the --advisor flag on this command line
+    // (N1); nothing stored can turn it on. Decision logic: advisor-startup.ts.
+    if (cliConfig.advisor) {
+      const { evaluateAdvisorStartup } = await import("./advisor-startup.js");
+      const decision = await traceSpan("startup:advisor-check", () =>
+        evaluateAdvisorStartup(cliConfig, resolveAdvisorToolEnv(cliConfig))
+      );
+      if (decision?.kind === "refuse") {
+        process.stderr.write(
+          `[claudish] Error: --advisor cannot work in this launch: ${decision.reason}\n`
+        );
+        process.exit(1);
+      }
+      if (decision?.kind === "proceed") {
+        // A DEFAULTED collector that cannot be called is dropped here, before
+        // createProxyServer reads advisorCollector, so no doomed call is made.
+        cliConfig.advisorCollector = decision.effectiveCollector;
+        // The warm step above ran first and hard-fails out, so the catalog is
+        // normally populated by now. It can still be COLD — `--models-skip-update`,
+        // a local main model (both "skipped"), or a cache claudish could not read.
+        // Then `advisorRouteFor` had no data to check any panel model against, so
+        // "routable" was not decided, it was assumed. Say which models that leaves
+        // unverified instead of proceeding as though they had passed.
+        const { getCatalogEntries } = await import("./providers/catalog-client.js");
+        if (getCatalogEntries() === null) {
+          const panel = cliConfig.advisorModels ?? [];
+          decision.notice.push(
+            `  WARNING: the model catalog is not loaded (catalog warm: ${warmOutcome}), so claudish ` +
+              `could not verify that ${panel.length === 1 ? "this panel model is" : "these panel models are"} ` +
+              `routable: ${panel.join(", ")}. An unroutable one fails on its first advisor call instead ` +
+              "of being refused here. Run `claudish --models-refresh` to check them at launch."
+          );
+        }
+        process.stderr.write(`${decision.notice.join("\n")}\n`);
+      }
+    }
+
+    // Read prompt from stdin if --stdin flag is set
+    if (cliConfig.stdin) {
+      // Blocks on the PIPE producer — slow here means the caller, not claudish.
+      const stdinInput = await traceSpan("startup:stdin-read", () => readStdin());
+      if (stdinInput.trim()) {
+        // Prepend stdin content to claudeArgs
+        cliConfig.claudeArgs = [stdinInput, ...cliConfig.claudeArgs];
+      }
     }
 
     // Find available port

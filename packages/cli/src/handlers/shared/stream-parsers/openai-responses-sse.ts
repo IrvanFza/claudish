@@ -19,6 +19,7 @@ import {
 import { getLogLevel, log } from "../../../logger.js";
 import { wrapAnthropicError } from "../anthropic-error.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { formatRawSseLogPayload } from "./openai-sse.js";
 
 export function createResponsesStreamHandler(
   c: Context,
@@ -265,7 +266,7 @@ export function createResponsesStreamHandler(
             // Raw capture, greppable into test fixtures — same contract as
             // [SSE:openai] / [SSE:anthropic] in the sibling parsers.
             if (getLogLevel() === "debug") {
-              log(`[SSE:responses] ${data.substring(0, 300)}`);
+              log(`[SSE:responses] ${formatRawSseLogPayload(data)}`);
             }
 
             try {
