@@ -938,6 +938,35 @@ export async function getModelsByProvider(provider: string, limit = 200): Promis
   return data.models ?? [];
 }
 
+/**
+ * Every active model the catalog knows, in ONE request.
+ *
+ * WHY A BULK PAGE RATHER THAN N QUERIES. The picker needs one editorial fact per
+ * model — the description — for every row it can draw. The slim catalog
+ * (`?catalog=slim`, the file behind `all-models.json`) deliberately carries none:
+ * `model-catalog.ts:servedByVendor` says so in its own doc comment, and a check
+ * of the on-disk cache confirms 0 of 704 entries have one. Asking per model, or
+ * per provider, is the fan-out this picker already measured at 10 018 ms.
+ *
+ * MEASURED 2026-09-10 against the live endpoint: `limit=1500` returns all 1016
+ * active models, 1.06 MB, in 2.8 s; `limit=1000` returns 1000 with
+ * `hasMore: true`, so the limit is honoured rather than capped. The caller caches
+ * the projection it needs on disk under the shared Firebase TTL, so this runs at
+ * most once a day and never blocks a first paint.
+ */
+export async function getAllModelDocs(limit = 1500): Promise<ModelDoc[]> {
+  const url = `${FIREBASE_BASE_URL}?status=active&limit=${limit}`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(SEARCH_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Firebase catalog query returned ${response.status} ${response.statusText}`);
+  }
+  const data = (await response.json()) as ModelDoc[] | { models?: ModelDoc[] };
+  if (Array.isArray(data)) return data;
+  return data.models ?? [];
+}
+
 // ─── Legacy loaders retained for cli.ts --model flag validation ──────────────
 
 /**

@@ -41,14 +41,17 @@ import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types
 import {
   type ModelInfo,
   type PickerDiscoveryOutcome,
+  type PreloadedRoster,
   buildDiscoveredModelOutcome,
   buildProviderChoices,
+  preloadProviderRoster,
   providerShortcut,
   servedModelsForProvider,
 } from "../model-selector.js";
 import { isLocalProviderEnabled } from "../profile-config.js";
 import { ensureCatalogReady } from "../providers/catalog-client.js";
 import { createCatalogClient } from "../providers/model-catalog.js";
+import { type DescriptionIndex, loadModelDescriptions } from "../providers/model-descriptions.js";
 import { getAllProviders, getProviderByName } from "../providers/provider-definitions.js";
 
 /** How a provider bills — the row's tag, and the reason a price may be absent. */
@@ -103,6 +106,18 @@ export interface PickerDataSource {
   servedModels(provider: string): ModelInfo[];
   /** One settled outcome per discovery provider, `fallbackRows` included. */
   discoverRoster(provider: string): Promise<PickerDiscoveryOutcome>;
+  /**
+   * This provider's LIVE roster, for merging into the flat cross-provider list.
+   *
+   * Distinct from `discoverRoster`: no catalog fallback leg, so no `?provider=`
+   * query — see `model-selector.ts:preloadProviderRoster`. Never rejects.
+   */
+  rosterRows(provider: string): Promise<PreloadedRoster>;
+  /**
+   * One editorial sentence per model, for the detail pane. Resolves late and is
+   * never awaited before a first paint; the slim catalog carries no description.
+   */
+  descriptions(): Promise<DescriptionIndex>;
 }
 
 /** How a provider bills, from the two oracles that already answer it. */
@@ -224,6 +239,14 @@ export function createPickerDataSource(): PickerDataSource {
 
     discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
       return buildDiscoveredModelOutcome(provider, names.get(provider) ?? provider, catalog);
+    },
+
+    rosterRows(provider: string): Promise<PreloadedRoster> {
+      return preloadProviderRoster(provider, names.get(provider) ?? provider, catalog);
+    },
+
+    descriptions(): Promise<DescriptionIndex> {
+      return loadModelDescriptions();
     },
   };
 }

@@ -17,7 +17,10 @@ import {
   noticeRows,
   wrapWords,
 } from "./DiscoveryNotice.js";
-import { capabilityWords, detailText } from "./detail.js";
+import { truncate } from "../tui/viz/text.js";
+import { capabilityWords, descriptionLines, detailText, providerFactsText } from "./detail.js";
+import { type PickerRow, dedupeByModelId, dedupeByProviderModel } from "./hooks/usePickerModels.js";
+import { providerColumn } from "./layout.js";
 import { billingLabel, priceFg, priceLabel, readinessGlyph } from "./rows.js";
 
 const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
@@ -115,6 +118,154 @@ describe("detailText", () => {
     expect(detailText("x@y", model({ supportsTools: false })).warn).toContain("no tool support");
     expect(detailText("x@y", model({ supportsTools: true })).warn).toBe("");
     expect(detailText("x@y", model({})).warn).toBe("");
+  });
+});
+
+describe("providerFactsText", () => {
+  test("billing is a SENTENCE, not a symbol — a flat rate says it costs nothing per token", () => {
+    const sub = providerFactsText({
+      label: "Kimi Coding",
+      shortcut: "kc@",
+      billing: "sub",
+      envVar: "KIMI_CODING_API_KEY",
+    });
+    expect(sub.billing).toContain("flat-rate");
+    expect(sub.billing).toContain("no per-token");
+    // The short form makes the SAME claim in fewer words, for a row that cannot
+    // afford the sentence — never a different claim, and never silence.
+    expect(sub.billingShort).toContain("flat-rate");
+    expect(sub.billingShort.length).toBeLessThan(sub.billing.length);
+    expect(
+      providerFactsText({ label: "", shortcut: "", billing: "metered", envVar: "" }).billing
+    ).toContain("per token");
+    expect(
+      providerFactsText({ label: "", shortcut: "", billing: "local", envVar: "" }).billing
+    ).toContain("this machine");
+  });
+
+  test("the credential is NAMED, and a sign-in provider says so instead of naming nothing", () => {
+    // A truncated or absent variable name sends the reader hunting for a variable
+    // that does not exist — a defect this dialog has already shipped once.
+    expect(
+      providerFactsText({
+        label: "OpenRouter",
+        shortcut: "or@",
+        billing: "metered",
+        envVar: "OPENROUTER_API_KEY",
+      }).auth
+    ).toBe("OPENROUTER_API_KEY");
+    expect(
+      providerFactsText({ label: "Devin", shortcut: "dv@", billing: "sub", envVar: "" }).auth
+    ).toContain("signs in");
+  });
+});
+
+describe("descriptionLines", () => {
+  test("a short sentence is one row and is not padded into two", () => {
+    expect(descriptionLines("A fast model.", 40, 2)).toEqual(["A fast model."]);
+  });
+
+  test("no row exceeds the width, and an over-long blurb ends in an ellipsis", () => {
+    const long =
+      "Kimi's most capable model to date, with 2.8 trillion parameters, native visual reasoning, " +
+      "and a context window measured in millions of tokens across every supported modality.";
+    const rows = descriptionLines(long, 40, 2);
+    expect(rows.length).toBe(2);
+    for (const r of rows) expect(r.length).toBeLessThanOrEqual(40);
+    expect(rows[1]?.endsWith("…")).toBe(true);
+  });
+
+  test("an absent description is NO rows — the block draws its own blanks", () => {
+    // Returning `[""]` would be indistinguishable from a one-row description at the
+    // call site, and the block's fixed height is what keeps the footer still.
+    expect(descriptionLines("   ", 40, 2)).toEqual([]);
+  });
+});
+
+describe("row identity depends on the VIEW", () => {
+  const row = (provider: string, id: string, spec: string): PickerRow =>
+    ({ provider, shortcut: "", spec, price: "", model: model({ id }) }) as PickerRow;
+
+  test("ALL MODELS: one model on N providers is N rows, with N distinct specs", () => {
+    // The owner's rule, verbatim: "if model has more than one provider that going
+    // to be two lines in 'all models' list". `gpt-6-astra` at $30.00 on OpenRouter
+    // beside the same model as SUB on Codex is the single most useful thing this
+    // list does, and keying on the model id alone would delete two of the three.
+    const kept = dedupeByProviderModel([
+      row("openrouter", "gpt-6-astra", "openrouter@openai/gpt-6-astra"),
+      row("openai", "gpt-6-astra", "oai@gpt-6-astra"),
+      row("openai-codex", "gpt-6-astra", "cx@gpt-6-astra"),
+    ]);
+    expect(kept.length).toBe(3);
+    expect(new Set(kept.map((r) => r.spec)).size).toBe(3);
+  });
+
+  test("ALL MODELS: the same model TWICE under ONE provider is still one row", () => {
+    // A provider's live roster and its catalog entries overlap, and that overlap
+    // is not two routes — it is one route described twice.
+    const kept = dedupeByProviderModel([
+      row("kimi", "kimi-k3", "kimi@kimi-k3"),
+      row("kimi", "kimi-k3", "kimi@kimi-k3"),
+      row("kimi", "kimi-k2.6", "kimi@kimi-k2.6"),
+    ]);
+    expect(kept.map((r) => r.model.id)).toEqual(["kimi-k3", "kimi-k2.6"]);
+  });
+
+  test("PROVIDER CATALOG: one row per model id, roster and catalog collapsed", () => {
+    // "and if we enter to provider catalog, not all models - then the model will
+    // be just one". One route is in scope, so a second row would mean nothing —
+    // even when the two sources spell the spec differently.
+    const kept = dedupeByModelId([
+      row("kimi", "kimi-k3", "kimi@kimi-k3"),
+      row("kimi", "kimi-k3", "kimi@moonshot/kimi-k3"),
+      row("kimi", "kimi-k2.6", "kimi@kimi-k2.6"),
+    ]);
+    expect(kept.length).toBe(2);
+    // The FIRST wins, and the caller puts the live roster first — what the
+    // endpoint answered for THESE credentials beats what the catalog says.
+    expect(kept[0]?.spec).toBe("kimi@kimi-k3");
+  });
+});
+
+describe("providerColumn", () => {
+  const entry = (value: string, label: string, shortcut: string) => ({ value, label, shortcut });
+
+  test("NO TWO PROVIDERS EVER RENDER THE SAME STRING — the rejected rail's defect", () => {
+    // `OpenCode Zen` and `OpenCode Zen Go` share a twelve-character prefix, which is
+    // exactly the collision that rendered two different providers as `opencod…`.
+    const { cells, text } = providerColumn(
+      [
+        entry("opencode-zen", "OpenCode Zen", "zen@"),
+        entry("opencode-zen-go", "OpenCode Zen Go", "zengo@"),
+        entry("sakana", "Sakana Fugu", "fugu@"),
+        entry("sakana-subscription", "Sakana Fugu Subscription", "sc@"),
+        entry("openrouter", "OpenRouter", "or@"),
+      ],
+      truncate
+    );
+    const drawn = [...text.values()];
+    expect(new Set(drawn).size).toBe(drawn.length);
+    for (const s of drawn) expect(s.length).toBeLessThanOrEqual(cells);
+  });
+
+  test("a name that FITS is printed whole — truncation is the exception, not the rule", () => {
+    const { text } = providerColumn(
+      [entry("openrouter", "OpenRouter", "or@"), entry("openai", "OpenAI", "oai@")],
+      truncate
+    );
+    expect(text.get("openrouter")).toBe("OpenRouter");
+    expect(text.get("openai")).toBe("OpenAI");
+  });
+
+  test("names that cannot be separated at ANY width fall back to the unique shortcut", () => {
+    // Two custom endpoints with the same long name is a real configuration; the
+    // shortcut is unique by construction because it is the shortest prefix that
+    // parses back to exactly one provider.
+    const same = "A Very Long Custom Endpoint Name";
+    const { text } = providerColumn([entry("a", same, "aa@"), entry("b", same, "bb@")], truncate);
+    const drawn = [...text.values()];
+    expect(new Set(drawn).size).toBe(2);
+    expect(drawn.some((s) => s.includes("bb@"))).toBe(true);
   });
 });
 

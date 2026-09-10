@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/react */
 /**
- * picker/detail.tsx — the one row under the list that says what Enter will do.
+ * picker/detail.tsx — the pane under the list that says what Enter will do, what
+ * the provider IS, and what the model IS.
  *
  * IT ANSWERS THE QUESTION A PICKER MUST NEVER LEAVE OPEN: what EXACTLY does Enter
  * return? It prints the spec verbatim — `google@gemini-3.8-flash`, the same string
@@ -8,12 +9,25 @@
  * have typed on argv — so the picker teaches its own CLI instead of hiding behind
  * a private label.
  *
- * ONE ROW, NOT THREE. The previous build pinned a description block under each of
- * its two lists. Descriptions are per-model editorial text that the slim catalog
- * mostly does not carry, and two rows of prose cost two rows of list on a dialog
- * whose whole list is eleven rows. What survives is the three facts that differ
- * between models a reader is choosing BETWEEN: the exact spec, the capabilities,
- * and how old it is.
+ * THEN TWO THINGS THE LIST CANNOT SAY, BOTH ADDED BECAUSE THE OWNER ASKED FOR THEM
+ * BY NAME:
+ *
+ *   · **What the provider is.** "we need add more details about provider — now it
+ *     has no sense, like what is 'or' means". A row now carries the readable name;
+ *     this line carries the rest of the answer — how it bills (a flat-rate plan
+ *     charges nothing per token, which is the single most decision-relevant fact
+ *     about a route) and which credential it authenticates with, named exactly, so
+ *     a reader can go and check the variable rather than guess at it. Every field
+ *     comes from `ProviderDefinition` through `PickerProviderChoice`; nothing here
+ *     is a table.
+ *   · **What the model is.** The old inquirer picker printed the catalog's prose
+ *     sentence under the highlighted row and the new dialog dropped it, leaving
+ *     `spec · capabilities · date` — four facts about a model's shape and none
+ *     about its purpose. It is back, wrapped to the dialog and capped at
+ *     `DESCRIPTION_ROWS`. The slim catalog carries no description (0 of 704
+ *     entries), so it arrives on its own clock from `providers/model-descriptions`
+ *     and the rows are rendered blank until it does — never collapsed, or every
+ *     row below would jump when it lands.
  *
  * CAPABILITIES ARE EXCEPTION-ONLY AND THEY LIVE HERE, NOT ON EVERY ROW. The
  * previous build printed `[TRV]` on all 21 rows of a roster where every model had
@@ -26,6 +40,9 @@ import type { ModelInfo } from "../model-selector.js";
 import { A } from "../tui/theme.js";
 import { truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
+import { wrapWords } from "./DiscoveryNotice.js";
+import type { BillingMode } from "./PickerDataSource.js";
+import { DESCRIPTION_ROWS } from "./layout.js";
 
 /**
  * `tools reasoning vision`, and ONLY the ones the catalog affirmatively says are
@@ -63,6 +80,44 @@ export function detailText(spec: string, model: ModelInfo): { text: string; warn
   };
 }
 
+/** What a provider IS, in one row: how it bills and what it authenticates with. */
+export interface ProviderFacts {
+  label: string;
+  shortcut: string;
+  billing: BillingMode;
+  /** The env var it reads. Empty for a provider that signs in instead. */
+  envVar: string;
+}
+
+/**
+ * The words for a provider, as one pure function.
+ *
+ * BILLING LEADS, because it is the fact that changes a decision: a flat-rate plan
+ * costs nothing at the point of use, which is why `SUB` rows are worth finding and
+ * why the row above prints `SUB` rather than a per-token number it does not have.
+ * The credential comes second, named exactly — "check your API key" gives no clue
+ * which of thirty variables to inspect, and a key shadowed by a stale value in the
+ * shell is the single most common cause of a rejected provider in this repo's
+ * issue history.
+ */
+export function providerFactsText(facts: ProviderFacts): {
+  billing: string;
+  /** The same claim in the fewest words, for a row that cannot afford the sentence. */
+  billingShort: string;
+  auth: string;
+} {
+  const billing =
+    facts.billing === "sub"
+      ? "flat-rate subscription — no per-token charge"
+      : facts.billing === "local"
+        ? "runs on this machine — no charge, no network"
+        : "metered — billed per token";
+  const billingShort =
+    facts.billing === "sub" ? "flat-rate plan" : facts.billing === "local" ? "local" : "metered";
+  const auth = facts.envVar === "" ? "signs in — no API key variable" : facts.envVar;
+  return { billing, billingShort, auth };
+}
+
 export function SelectionLine({
   model,
   spec,
@@ -97,6 +152,125 @@ export function SelectionLine({
           </>
         )}
       </text>
+    </box>
+  );
+}
+
+/**
+ * One row: which provider this is, how it bills, what key it wants.
+ *
+ * ALWAYS ONE ROW, blank when nothing is selected, because the list above is
+ * content-sized and a detail pane that collapsed would move every row on the
+ * screen each time the cursor left the last item.
+ */
+export function ProviderLine({
+  facts,
+  width,
+  /** Models this provider serves. `null` in the model list, a number in the `p` dialog. */
+  count = null,
+}: {
+  facts: ProviderFacts | null;
+  width: number;
+  count?: number | null;
+}): ReactNode {
+  const inner = Math.max(8, Math.floor(width));
+  if (facts === null) {
+    return (
+      <box height={1} flexShrink={0}>
+        <text>
+          <span fg={tokens.trace}> </span>
+        </text>
+      </box>
+    );
+  }
+  const { billing, billingShort, auth } = providerFactsText(facts);
+  const billingFg =
+    facts.billing === "sub"
+      ? tokens.warn
+      : facts.billing === "local"
+        ? tokens.trace
+        : tokens.subtle;
+  const tail = count === null ? "" : ` · ${count} model${count === 1 ? "" : "s"}`;
+  // THE VARIABLE NAME IS NEVER THE FIELD THAT GIVES WAY, and the BILLING CLAUSE
+  // is. A truncated env var (`OPENCODE_GO…`) sends the reader hunting for a
+  // variable that does not exist — this dialog shipped that defect once already —
+  // and a dangling ` · ` with nothing after it is the same lie with worse manners.
+  // MEASURED at 80 columns: the long sentence plus `OPENCODE_GO_API_KEY` is 71 of
+  // 72 usable cells, so the short form is not a fallback for freak widths, it is
+  // what 80 columns gets. Both forms make the same claim.
+  const name = truncate(facts.label, Math.max(4, inner - 12));
+  const fixed = name.length + facts.shortcut.length + 1 + 3 + 3 + auth.length + tail.length;
+  const clause = fixed + billing.length <= inner ? billing : billingShort;
+  const room = Math.max(0, inner - (fixed - auth.length) - clause.length);
+  const shown = truncate(auth, room);
+  return (
+    <box height={1} flexShrink={0}>
+      <text>
+        <span fg={tokens.text}>{name}</span>
+        <span fg={tokens.trace}>{` ${facts.shortcut}`}</span>
+        <span fg={tokens.subtle}>{" · "}</span>
+        <span fg={billingFg}>{clause}</span>
+        {shown === "" ? null : (
+          <>
+            <span fg={tokens.subtle}>{" · "}</span>
+            <span fg={tokens.subtle}>{shown}</span>
+          </>
+        )}
+        {tail === "" ? null : <span fg={tokens.trace}>{tail}</span>}
+      </text>
+    </box>
+  );
+}
+
+/**
+ * The catalog's prose sentence for the selected model, wrapped and capped.
+ *
+ * FIXED HEIGHT, ALWAYS RENDERED. The sentence arrives on its own clock — the slim
+ * catalog carries none, so it comes from a bulk fetch that resolves seconds after
+ * the list is already usable — and a block that grew from zero rows to two when it
+ * landed would shove the footer down under the reader's cursor.
+ *
+ * TRUNCATED WITH AN ELLIPSIS AT THE CAP rather than scrolled: a description is
+ * orientation, not documentation, and the models that carry a 1 183-character one
+ * are describing an API, not answering "is this the model I want".
+ */
+export function descriptionLines(text: string, width: number, rows = DESCRIPTION_ROWS): string[] {
+  const inner = Math.max(8, Math.floor(width));
+  const cap = Math.max(1, Math.floor(rows));
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean === "") return [];
+  const wrapped = wrapWords(clean, inner);
+  if (wrapped.length <= cap) return wrapped;
+  const kept = wrapped.slice(0, cap);
+  const last = kept[cap - 1] ?? "";
+  // `truncate` puts the ellipsis in the last column, so shave a column first —
+  // otherwise the row is one cell over budget and Yoga claws it back somewhere.
+  kept[cap - 1] = truncate(`${last} ${wrapped.slice(cap).join(" ")}`, inner);
+  return kept;
+}
+
+export function DescriptionBlock({
+  text,
+  width,
+  rows = DESCRIPTION_ROWS,
+}: {
+  /** Empty while the index is still loading, or when the catalog has no sentence. */
+  text: string;
+  width: number;
+  rows?: number;
+}): ReactNode {
+  const lines = descriptionLines(text, width, rows);
+  const cap = Math.max(1, Math.floor(rows));
+  return (
+    <box flexDirection="column" height={cap} flexShrink={0} overflow="hidden">
+      {Array.from({ length: cap }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: a wrapped row is position-addressed — its index IS its identity
+        <box key={i} height={1} flexShrink={0}>
+          <text>
+            <span fg={tokens.subtle}>{lines[i] ?? " "}</span>
+          </text>
+        </box>
+      ))}
     </box>
   );
 }

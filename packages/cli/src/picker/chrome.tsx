@@ -17,9 +17,10 @@
 
 import type { ReactNode } from "react";
 import { LoadingRow } from "../tui/components/LoadingRow.js";
-import { A, C } from "../tui/theme.js";
+import { C } from "../tui/theme.js";
 import { displayWidth, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
+import { BadgeSpan } from "../tui/viz/widgets.js";
 
 /**
  * The bordered box, with its title composed left-and-right on the border line.
@@ -155,22 +156,46 @@ export interface Hint {
 }
 
 /**
- * Keyboard hints as two-tone pairs — the `Footer.tsx:179-198` idiom, where the
- * colour slot is deliberately ignored and emphasis is BRIGHTNESS rather than hue.
- * Hue is spent on severity everywhere else in this program; spending it here too
- * would make the footer compete with the failure banner.
+ * Keyboard hints as KEYCAPS — a badge per key, then its label in dim text.
  *
- * Every action is one key and every key is listed. No deep menus, nothing
- * discoverable only by trying it.
+ * THE BADGE IS THE HOUSE PATTERN FOR A DISCRETE TOKEN: dark ink on a saturated
+ * fill, one space of padding each side (`aesthetics-and-color.md`). Bold white
+ * text on the panel background, which is what this row used to be, is the same
+ * treatment the model ids two rows above get — so `p` in `p providers` read as a
+ * word rather than as a key you press, which is exactly what the owner said when
+ * he asked for "better button highlighting".
+ *
+ * `BadgeSpan`, NOT `Badge`: one `<text>` per hint carries both the chip and its
+ * label, and a `<text>` cannot nest in a `<text>`.
+ *
+ * ONE FILL FOR EVERY KEYCAP, AND IT IS THE ONE THIS PROGRAM ALREADY USES.
+ * `C.chipKeyBg` is the config TUI's footer chip (`Footer.tsx:186-190` — neutral
+ * grey, `C.fg` ink, bold, one space each side), so the picker's footer is the same
+ * object as every other footer in claudish rather than a second invention. It is
+ * deliberately NOT a saturated hue: every hue in this dialog already means one
+ * thing — `FREE` success, `SUB` warn, `catalog` warn, errors red, focus accent —
+ * and borrowing one for the footer would put the quietest row on screen in
+ * competition with the failure banner. A keycap reads as a key because of its
+ * SHAPE, a filled chip with padding; the fill's job is to be neutral.
+ *
+ * `pickInk` chooses the ink from the fill rather than hardcoding white, which is
+ * what keeps the chip legible in the light palette, where `chipKeyBg` is `#d1d5db`
+ * and white ink would vanish.
+ *
+ * AN UNAVAILABLE ACTION LOSES THE CHIP RATHER THAN BEING HIDDEN — dim text, no
+ * fill, so "there is a key here but not now" is visibly different from both a live
+ * key and an absent one. Every action is one key and every key is here.
  */
 export function Hints({ hints }: { hints: Hint[] }): ReactNode {
   return (
-    <box flexDirection="row" height={1} gap={2} flexShrink={0} overflow="hidden">
+    <box flexDirection="row" height={1} gap={1} flexShrink={0} overflow="hidden">
       {hints.map((h) => (
-        <text key={h.key}>
-          <span fg={h.on === false ? tokens.trace : C.strong} attributes={A.boldIf(h.on !== false)}>
-            {h.key}
-          </span>
+        <text key={h.key} flexShrink={0}>
+          {h.on === false ? (
+            <span fg={tokens.trace}>{` ${h.key} `}</span>
+          ) : (
+            <BadgeSpan label={h.key} bg={C.chipKeyBg} />
+          )}
           <span fg={h.on === false ? tokens.trace : tokens.subtle}>{` ${h.label}`}</span>
         </text>
       ))}

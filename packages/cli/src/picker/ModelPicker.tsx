@@ -61,19 +61,34 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { ModelInfo } from "../model-selector.js";
 import { EmptyState } from "../tui/components/EmptyState.js";
 import { useAnimationFrame } from "../tui/hooks/useAnimationFrame.js";
+import { truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import { DiscoveryNotice, discoveryNoticeContent, noticeRows } from "./DiscoveryNotice.js";
 import {
   DISCOVERY_DEADLINE_MS,
   type DiscoveryShape,
   type PickerDataSource,
+  type PickerProviderChoice,
 } from "./PickerDataSource.js";
 import { Dialog, FilterRow, Hints, type LoadTask, LoadTasks, Rule } from "./chrome.js";
-import { SelectionLine } from "./detail.js";
-import { type PickerRow, toPickerRow, usePickerModels } from "./hooks/usePickerModels.js";
+import { DescriptionBlock, type ProviderFacts, ProviderLine, SelectionLine } from "./detail.js";
+import { useModelDescriptions } from "./hooks/useModelDescriptions.js";
+import {
+  type PickerRow,
+  dedupeByModelId,
+  toPickerRow,
+  usePickerModels,
+} from "./hooks/usePickerModels.js";
 import { usePickerProviders } from "./hooks/usePickerProviders.js";
+import { usePreloadedRosters } from "./hooks/usePreloadedRosters.js";
 import { useProviderDiscovery } from "./hooks/useProviderDiscovery.js";
-import { deriveDialogLayout, deriveRowLayout, scrollWindow } from "./layout.js";
+import {
+  deriveDialogLayout,
+  deriveRowLayout,
+  providerCellsFor,
+  providerColumn,
+  scrollWindow,
+} from "./layout.js";
 import { ColumnHeader, HintRow, ModelRow, ProviderRow } from "./rows.js";
 
 /**
@@ -94,6 +109,7 @@ import { ColumnHeader, HintRow, ModelRow, ProviderRow } from "./rows.js";
 export function buildLoadTasks(input: {
   creds: { done: number; total: number } | null;
   catalog: boolean;
+  rosters?: { done: number; total: number } | null;
   roster: { displayName: string; shape: DiscoveryShape; elapsed: number } | null;
 }): LoadTask[] {
   const tasks: LoadTask[] = [];
@@ -107,6 +123,18 @@ export function buildLoadTasks(input: {
     });
   }
   if (input.catalog) tasks.push({ id: "catalog", label: "cloud catalog", value: "fetching…" });
+  if (input.rosters) {
+    // A SECOND REAL DENOMINATOR. The providers that will be asked are known as
+    // soon as their credential probes settle, so `done/total` is work done over
+    // work total — the same thing that earns the credential sweep its meter.
+    const { done, total } = input.rosters;
+    tasks.push({
+      id: "rosters",
+      label: "live rosters",
+      pct: total > 0 ? (100 * done) / total : 0,
+      value: `${done}/${total} providers`,
+    });
+  }
   if (input.roster) {
     const { displayName, shape, elapsed } = input.roster;
     const secs = `${(elapsed / 1000).toFixed(1)}s`;
@@ -141,7 +169,21 @@ type View = "models" | "providers" | "custom";
 export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerProps): ReactNode {
   const { width, height } = useTerminalDimensions();
   const providers = usePickerProviders(source);
-  const catalog = usePickerModels(source, providers.roster, providers.readySet);
+  // EVERY ready provider's LIVE roster, concurrently, merged as each lands — the
+  // fix for "why i search gemini i see only open router models". See the hook.
+  const rosters = usePreloadedRosters(
+    source,
+    providers.roster,
+    providers.readySet,
+    onDiscoveryFailure
+  );
+  const catalog = usePickerModels(
+    source,
+    providers.roster,
+    providers.readySet,
+    rosters.rowsByProvider
+  );
+  const descriptions = useModelDescriptions(source);
 
   const [view, setView] = useState<View>("models");
   const [filter, setFilter] = useState("");
@@ -176,6 +218,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // mark means "the live roster was asked for and could not be had"; nothing asked
   // for a live roster here, so marking every row would spend the loudest signal in
   // the feature on the ordinary case and teach the reader to ignore it.
+  // ONE ROW PER MODEL INSIDE A PROVIDER, N ROWS ACROSS PROVIDERS. The owner stated
+  // the rule: *"if model has more than one provider that going to be two lines in
+  // 'all models' list. and if we enter to provider catalog, not all models — then
+  // the model will be just one"*. The flat list's identity is `(provider, modelId)`
+  // and `usePickerModels` applies it; every scoped branch below goes through
+  // `dedupeByModelId`, so a live roster overlapping the catalog for the SAME
+  // provider cannot show the same model twice.
   const list = useMemo((): { rows: RowView[]; fallback: boolean; loading: boolean } => {
     if (scope === null) {
       return { rows: catalog.rows, fallback: false, loading: catalog.phase !== "ready" };
@@ -185,8 +234,8 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     // string or a different spec spelling — instead of by the three deliberate
     // provenance encodings.
     const project = (rows: ModelInfo[]): RowView[] =>
-      scopedChoice === null ? [] : rows.map((m) => toPickerRow(scopedChoice, m));
-    const scoped = catalog.rows.filter((r) => r.provider === scope);
+      scopedChoice === null ? [] : dedupeByModelId(rows.map((m) => toPickerRow(scopedChoice, m)));
+    const scoped = dedupeByModelId(catalog.rows.filter((r) => r.provider === scope));
     if (!hasDiscovery) return { rows: scoped, fallback: false, loading: catalog.phase !== "ready" };
     const o = discovery.outcome;
     if (o === null) return { rows: [], fallback: false, loading: true };
@@ -195,23 +244,56 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     return { rows: project(o.fallbackRows), fallback: true, loading: false };
   }, [scope, scopedChoice, hasDiscovery, discovery.outcome, catalog.rows, catalog.phase]);
 
+  /**
+   * The provider cell for every provider on screen — collision-proof by
+   * construction, and computed from the ROSTER rather than from the rows so the
+   * column does not change width as rosters merge in behind the cursor.
+   */
+  // The column budget depends only on the TERMINAL, never on the banner — a
+  // banner takes rows, not columns — so it is derived from a base layout here and
+  // stays put while a notice appears and disappears above the list.
+  const providerCells = providerCellsFor(deriveDialogLayout(width, height).inner, list.fallback);
+  const column = useMemo(
+    () => providerColumn(providers.roster, truncate, providerCells),
+    [providers.roster, providerCells]
+  );
+  /** Provider → its WHOLE display name, for the filter and the detail line. */
+  const labels = useMemo(
+    () => new Map(providers.roster.map((r) => [r.value, r.label])),
+    [providers.roster]
+  );
+  /** Provider → what it IS: how it bills, and the credential it wants. */
+  const facts = useMemo(
+    () => new Map<string, ProviderFacts>(providers.roster.map((r) => [r.value, factsOf(r)])),
+    [providers.roster]
+  );
+
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return list.rows;
-    // The provider shortcut is matched too, which is how provider scoping survives
-    // the rail's deletion: typing `kc` narrows to Kimi Coding in three keystrokes.
+    // THREE THINGS MATCH, and the readable NAME is one of them — the column now
+    // prints `OpenRouter`, so typing `openr` must narrow to it or the filter
+    // contradicts the screen. The shortcut still matches (`kc` reaches Kimi
+    // Coding in three keystrokes, which is how provider scoping survived the
+    // rail's deletion) and so does the model id.
     return list.rows.filter(
       (r) =>
-        r.model.id.toLowerCase().includes(needle) || r.shortcut.toLowerCase().startsWith(needle)
+        r.model.id.toLowerCase().includes(needle) ||
+        r.shortcut.toLowerCase().startsWith(needle) ||
+        (labels.get(r.provider) ?? "").toLowerCase().includes(needle)
     );
-  }, [list.rows, filter]);
+  }, [list.rows, filter, labels]);
 
   // ── in-flight affordances ───────────────────────────────────────────────────
-  const busy = providers.probing || catalog.phase !== "ready" || discovery.busy;
+  const busy = providers.probing || catalog.phase !== "ready" || discovery.busy || rosters.busy;
   const frame = useAnimationFrame(busy);
   const tasks = buildLoadTasks({
     creds: providers.probing ? { done: providers.done, total: providers.total } : null,
     catalog: catalog.phase !== "ready",
+    // The live-roster sweep has a REAL denominator — the set of ready discovery
+    // providers is known the moment their probes settle — so it gets the same
+    // determinate meter the credential sweep does, and for the same reason.
+    rosters: rosters.busy ? { done: rosters.done, total: rosters.total } : null,
     roster:
       discovery.busy && scope !== null
         ? {
@@ -238,7 +320,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       ? 0
       : noticeRows(notice, Math.max(8, base.inner - 2), MAX_BANNER_ROWS).lines.length;
   const layout = deriveDialogLayout(width, height, bannerRows);
-  const rowLayout = deriveRowLayout(layout.inner, { mark: list.fallback });
+  // `column.cells`, not `providerCells`: a collision may have WIDENED the column
+  // past what the row budgeted, and the header and the rows must agree whichever
+  // number won.
+  const rowLayout = deriveRowLayout(layout.inner, {
+    mark: list.fallback,
+    providerCells: column.cells,
+  });
 
   // The cursor can outlive the list it indexed — a filter keystroke, or a scope
   // whose roster came back shorter than the last one's.
@@ -394,211 +482,331 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
 
   if (view === "custom") {
     return (
-      <Dialog
-        key="custom"
-        title="type a model spec"
-        status="provider@model"
-        width={layout.width}
-        marginLeft={layout.marginLeft}
-      >
-        <box height={1} flexShrink={0}>
-          <text>
-            <span fg={tokens.accent}>{"› "}</span>
-            <span fg={tokens.text}>{custom}</span>
-            <span fg={tokens.accent}>▍</span>
-          </text>
-        </box>
-        <box height={1} flexShrink={0}>
-          <text>
-            <span fg={tokens.subtle}>
-              {"e.g. or@openai/gpt-5, kc@kimi-k3, ollama@llama3.2 — anything argv accepts"}
-            </span>
-          </text>
-        </box>
-        <Rule />
-        <Hints
-          hints={[
-            { key: "⏎", label: "launch it", on: custom.trim() !== "" },
-            { key: "esc", label: "back" },
-          ]}
-        />
-      </Dialog>
+      <Centred width={width} height={height}>
+        <Dialog
+          key="custom"
+          title="type a model spec"
+          status="provider@model"
+          width={layout.width}
+          marginLeft={0}
+        >
+          <box height={1} flexShrink={0}>
+            <text>
+              <span fg={tokens.accent}>{"› "}</span>
+              <span fg={tokens.text}>{custom}</span>
+              <span fg={tokens.accent}>▍</span>
+            </text>
+          </box>
+          <box height={1} flexShrink={0}>
+            <text>
+              <span fg={tokens.subtle}>
+                {"e.g. or@openai/gpt-5, kc@kimi-k3, ollama@llama3.2 — anything argv accepts"}
+              </span>
+            </text>
+          </box>
+          <Rule />
+          <Hints
+            hints={[
+              { key: "⏎", label: "launch it", on: custom.trim() !== "" },
+              { key: "esc", label: "back" },
+            ]}
+          />
+        </Dialog>
+      </Centred>
     );
   }
 
   if (view === "providers") {
     const readyCount = providers.ready.length;
-    // Two rows taller than the model list: this dialog spends no column header
-    // and no selection line, so the rows it saves go back to the rows.
+    // One row taller than the model list: this dialog spends no column header and
+    // no description block, but it DOES carry the same provider detail line, which
+    // is the answer to "we need add more details about provider".
     const providerRows = layout.listRows + 2;
     const providerTop = scrollWindow(providerCursor, providers.rows.length, providerRows);
     const providerWindow = providers.rows.slice(providerTop, providerTop + providerRows);
+    const here = providers.rows[providerCursor] ?? null;
     return (
-      <Dialog
-        key="providers"
-        title="providers"
-        status={`${readyCount} of ${providers.total} have credentials`}
-        width={layout.width}
-        marginLeft={layout.marginLeft}
-      >
-        {providerWindow.map((r) => (
-          <ProviderRow
-            key={r.value}
-            label={r.label}
-            shortcut={r.shortcut}
-            readiness={r.readiness}
-            billing={r.billing}
-            count={catalog.counts.get(r.value) ?? null}
-            hasDiscovery={r.hasDiscovery}
-            note={r.envVar === "" ? "needs sign-in" : `needs ${r.envVar}`}
-            cursor={r.value === providers.rows[providerCursor]?.value}
-            inner={layout.inner}
-          />
-        ))}
-        {/* 31 providers do not fit in eleven rows, and a list that silently stops at
-            twelve is the same unexplained absence this feature exists to remove. */}
-        <HintRow
-          text={
-            providers.rows.length > providerWindow.length
-              ? `${providerCursor + 1} of ${providers.rows.length} — ↑↓ for more`
-              : ""
-          }
-          width={layout.inner}
-        />
-        {providers.notEnabledLocal.length > 0 ? (
+      <Centred width={width} height={height}>
+        <Dialog
+          key="providers"
+          title="providers"
+          status={`${readyCount} of ${providers.total} have credentials`}
+          width={layout.width}
+          marginLeft={0}
+        >
+          {providerWindow.map((r) => (
+            <ProviderRow
+              key={r.value}
+              label={r.label}
+              shortcut={r.shortcut}
+              readiness={r.readiness}
+              billing={r.billing}
+              count={catalog.counts.get(r.value) ?? null}
+              hasDiscovery={r.hasDiscovery}
+              note={r.envVar === "" ? "needs sign-in" : `needs ${r.envVar}`}
+              cursor={r.value === providers.rows[providerCursor]?.value}
+              inner={layout.inner}
+            />
+          ))}
+          {/* 31 providers do not fit in one screen, and a list that silently stops
+              is the same unexplained absence this feature exists to remove. */}
           <HintRow
-            text={`${providers.notEnabledLocal.join(", ")} — local, not enabled in your config`}
+            text={
+              providers.rows.length > providerWindow.length
+                ? `${providerCursor + 1} of ${providers.rows.length} — ↑↓ for more`
+                : ""
+            }
             width={layout.inner}
           />
-        ) : null}
-        <Rule />
-        <Hints
-          hints={[
-            { key: "↑↓", label: "move" },
-            { key: "⏎", label: "show only this provider" },
-            { key: "esc", label: "back to all models" },
-          ]}
-        />
-      </Dialog>
+          {providers.notEnabledLocal.length > 0 ? (
+            <HintRow
+              text={`${providers.notEnabledLocal.join(", ")} — local, not enabled in your config`}
+              width={layout.inner}
+            />
+          ) : null}
+          <Rule />
+          {/* The SAME line the model list carries, plus the count — so "what is
+              this provider" has one answer wherever it is asked. */}
+          <ProviderLine
+            facts={here === null ? null : factsOf(here)}
+            width={layout.inner}
+            count={here === null ? null : (catalog.counts.get(here.value) ?? null)}
+          />
+          <Hints
+            hints={[
+              { key: "↑↓", label: "move" },
+              { key: "⏎", label: "show only this provider" },
+              { key: "esc", label: "back to all models" },
+            ]}
+          />
+        </Dialog>
+      </Centred>
     );
   }
 
   if (phase === "loading") {
     return (
-      <Dialog
-        key="loading"
-        title={scope === null ? "choose a model" : scopedName}
-        status="finding models…"
-        width={layout.width}
-        marginLeft={layout.marginLeft}
-      >
-        <LoadTasks
-          tasks={tasks}
-          frame={frame}
-          labelWidth={14}
-          barWidth={Math.max(8, Math.min(22, layout.inner - 40))}
-        />
-        <box height={1} flexShrink={0}>
-          <text>
-            <span fg={tokens.trace}>models appear as soon as they are ready</span>
-          </text>
-        </box>
-        <Rule />
-        <Hints hints={[{ key: "esc", label: "cancel" }]} />
-      </Dialog>
+      <Centred width={width} height={height}>
+        <Dialog
+          key="loading"
+          title={scope === null ? "choose a model" : scopedName}
+          status="finding models…"
+          width={layout.width}
+          marginLeft={0}
+        >
+          <LoadTasks
+            tasks={tasks}
+            frame={frame}
+            labelWidth={14}
+            barWidth={Math.max(8, Math.min(22, layout.inner - 40))}
+          />
+          <box height={1} flexShrink={0}>
+            <text>
+              <span fg={tokens.trace}>models appear as soon as they are ready</span>
+            </text>
+          </box>
+          <Rule />
+          <Hints hints={[{ key: "esc", label: "cancel" }]} />
+        </Dialog>
+      </Centred>
     );
   }
 
+  // THE COUNT IS COMPUTED THE WAY IT IS LABELLED, and the two views count
+  // differently because their rows mean different things. The flat list holds one
+  // row per ROUTE — a model on three providers is three rows — so calling that
+  // number "models" would be a claim about the catalog that is off by the exact
+  // amount the list is useful. Both numbers are printed: the models are what the
+  // reader is choosing between, the routes are why the same name appears twice. A
+  // provider view has one route in scope, so its rows ARE models and it says so.
   const status =
     scope === null
-      ? `${list.rows.length} models · ${providers.ready.length}/${providers.total} providers`
+      ? `${countModels(list.rows)} models · ${list.rows.length} routes · ${providers.ready.length}/${providers.total} providers`
       : (notice?.title ?? `${list.rows.length} models`);
 
   return (
-    <Dialog
-      key="models"
-      title={scope === null ? "choose a model" : scopedName}
-      status={status}
-      width={layout.width}
-      marginLeft={layout.marginLeft}
-    >
-      {/* The banner sits ABOVE the rows it qualifies, never below them: the eye
-          goes to the list, and a warning under a healthy-looking list is a warning
-          nobody reads. That is the user's own report, verbatim. */}
-      {discovery.outcome === null ? null : (
-        <DiscoveryNotice
-          outcome={discovery.outcome}
-          displayName={scopedName}
-          width={Math.max(8, layout.inner - 2)}
-          maxRows={MAX_BANNER_ROWS}
-        />
-      )}
-
-      <FilterRow
-        value={filter}
-        matches={shown.length}
-        total={list.rows.length}
-        width={layout.inner}
-      />
-      <ColumnHeader layout={rowLayout} />
-
-      {/* CONTENT-SIZED, CAPPED — never `flexGrow`. A four-row Kimi fallback makes a
-          short dialog; it does not make a tall dialog with fifteen rows of unpainted
-          background in it, which is what the rejected full-screen build did and what
-          the reader read as "this provider has nothing". The cap is `listRows`, and
-          the banner's rows have already come out of it, so the box is bounded above
-          in every state. */}
-      <box
-        flexDirection="column"
-        height={Math.min(layout.listRows, Math.max(1, window.length))}
-        flexShrink={0}
-        overflow="hidden"
+    <Centred width={width} height={height}>
+      <Dialog
+        key="models"
+        title={scope === null ? "choose a model" : scopedName}
+        status={status}
+        width={layout.width}
+        marginLeft={0}
       >
-        {window.length === 0 ? (
-          <EmptyState
-            label={emptyLabel(list.loading, filter, list.rows.length, scopedName, providers)}
-            {...(filter === "" ? {} : { hint: "esc clears the filter" })}
+        {/* The banner sits ABOVE the rows it qualifies, never below them: the eye
+            goes to the list, and a warning under a healthy-looking list is a warning
+            nobody reads. That is the user's own report, verbatim. */}
+        {discovery.outcome === null ? null : (
+          <DiscoveryNotice
+            outcome={discovery.outcome}
+            displayName={scopedName}
+            width={Math.max(8, layout.inner - 2)}
+            maxRows={MAX_BANNER_ROWS}
           />
-        ) : (
-          window.map((r, i) => (
-            <ModelRow
-              key={r.spec}
-              model={r.model}
-              shortcut={r.shortcut}
-              price={r.price}
-              layout={rowLayout}
-              cursor={top + i === cursor}
-              origin={list.fallback ? "catalog" : "roster"}
-            />
-          ))
         )}
-      </box>
 
-      {/* ONE status row, ALWAYS rendered — see `CHROME_ROWS`. It carries the
-          scroll position when the list overflows, the pending sweep when work is
-          still in flight behind a usable list ("models appear as soon as they are
-          ready" is a promise the screen has to keep), and nothing otherwise. */}
-      <HintRow text={statusRow(cursor, shown.length, window.length, tasks)} width={layout.inner} />
+        <FilterRow
+          value={filter}
+          matches={shown.length}
+          total={list.rows.length}
+          width={layout.inner}
+        />
+        <ColumnHeader layout={rowLayout} />
 
-      <Rule />
-      <SelectionLine
-        model={selected?.model ?? null}
-        spec={selected?.spec ?? null}
-        width={layout.inner}
-      />
-      <Hints
-        hints={[
-          { key: "↑↓", label: "move" },
-          { key: "⏎", label: "select" },
-          { key: "/", label: "filter" },
-          ...(scope !== null && hasDiscovery ? [{ key: "r", label: "retry" }] : []),
-          { key: "p", label: "providers" },
-          { key: "c", label: "custom" },
-          { key: "esc", label: filter !== "" ? "clear" : scope !== null ? "all models" : "cancel" },
-        ]}
-      />
-    </Dialog>
+        {/* CONTENT-SIZED, CAPPED — never `flexGrow`. A four-row Kimi fallback makes a
+            short dialog; it does not make a tall dialog with fifteen rows of unpainted
+            background in it, which is what the rejected full-screen build did and what
+            the reader read as "this provider has nothing". The cap is `listRows`, and
+            the banner's rows have already come out of it, so the box is bounded above
+            in every state. */}
+        <box
+          flexDirection="column"
+          height={Math.min(layout.listRows, Math.max(1, window.length))}
+          flexShrink={0}
+          overflow="hidden"
+        >
+          {window.length === 0 ? (
+            <EmptyState
+              label={emptyLabel(list.loading, filter, list.rows.length, scopedName, providers)}
+              {...(filter === "" ? {} : { hint: "esc clears the filter" })}
+            />
+          ) : (
+            window.map((r, i) => (
+              <ModelRow
+                key={r.spec}
+                model={r.model}
+                providerLabel={column.text.get(r.provider) ?? r.shortcut}
+                price={r.price}
+                layout={rowLayout}
+                cursor={top + i === cursor}
+                origin={list.fallback ? "catalog" : "roster"}
+              />
+            ))
+          )}
+        </box>
+
+        {/* ONE status row, ALWAYS rendered — see `CHROME_ROWS`. It carries the
+            scroll position when the list overflows, then the AGGREGATE discovery
+            failure (a per-provider banner is the wrong shape once the list spans
+            every provider), then the pending sweep, then nothing. */}
+        <HintRow
+          text={statusRow(cursor, shown.length, window.length, tasks, rosters.failures.length)}
+          width={layout.inner}
+        />
+
+        <Rule />
+        <SelectionLine
+          model={selected?.model ?? null}
+          spec={selected?.spec ?? null}
+          width={layout.inner}
+        />
+        <ProviderLine
+          facts={selected === null ? null : (facts.get(selected.provider) ?? null)}
+          width={layout.inner}
+        />
+        <DescriptionBlock
+          text={
+            selected === null ? "" : descriptionOf(selected, descriptions.get.bind(descriptions))
+          }
+          width={layout.inner}
+        />
+        <Hints
+          hints={[
+            { key: "↑↓", label: "move" },
+            { key: "⏎", label: "select" },
+            { key: "/", label: "filter" },
+            ...(scope !== null && hasDiscovery ? [{ key: "r", label: "retry" }] : []),
+            { key: "p", label: "providers" },
+            { key: "c", label: "custom" },
+            {
+              key: "esc",
+              label: filter !== "" ? "clear" : scope !== null ? "all models" : "cancel",
+            },
+          ]}
+        />
+      </Dialog>
+    </Centred>
   );
+}
+
+/**
+ * The full-height flex root that puts the dialog in the MIDDLE of the terminal.
+ *
+ * "why we not showing provider first and let show it in a middle of the screen".
+ * The dialog used to be pinned to row one with the rest of a 45-row terminal
+ * painted black below it, which is what "inline" bought — and it bought nothing,
+ * because `CliRendererConfig` at `@opentui/core@0.1.107` has no `height` key, so
+ * the renderer is sized to `stdout.rows` in `main-screen` mode exactly as it is in
+ * the alternate screen. The region was always the whole terminal; only the dialog
+ * was at the top.
+ *
+ * FLEXBOX, NOT SPACER BOXES. `justifyContent="center"` on a column root centres it
+ * vertically and `alignItems="center"` horizontally, so neither axis needs the
+ * margin arithmetic the previous build did by hand — and both re-centre on a
+ * resize with no code at all. The dialog is a fixed-width, content-height flex
+ * item, which is what makes it centre rather than stretch.
+ */
+function Centred({
+  width,
+  height,
+  children,
+}: {
+  width: number;
+  height: number;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <box
+      flexDirection="column"
+      width={Math.max(1, Math.floor(width))}
+      height={Math.max(1, Math.floor(height))}
+      justifyContent="center"
+      alignItems="center"
+    >
+      {children}
+    </box>
+  );
+}
+
+/**
+ * The prose sentence for a row, or `""`.
+ *
+ * `catalogModelToModelInfo` substitutes `"<provider> model"` when the catalog has
+ * no description, which every slim-catalog row hits — so a raw `model.description`
+ * would print `unknown model` under half the list. The real index is tried first
+ * and the placeholder is filtered out, because a blank line is honest and
+ * `unknown model` is not.
+ */
+export function descriptionOf(
+  row: { model: ModelInfo },
+  lookup: (id: string) => string | undefined
+): string {
+  const found = lookup(row.model.id);
+  if (found !== undefined && found !== "") return found;
+  const own = (row.model.description ?? "").trim();
+  return own === "" || /^\S+ model$/i.test(own) ? "" : own;
+}
+
+/**
+ * How many DISTINCT models a list of rows covers.
+ *
+ * Exported so the title's arithmetic can be asserted: `N models · M routes` is
+ * only honest if the two numbers are computed differently, and a regression that
+ * made them equal would be invisible on a screenshot of a roster where no model
+ * happens to be served twice.
+ */
+export function countModels(rows: readonly { model: ModelInfo }[]): number {
+  return new Set(rows.map((r) => r.model.id)).size;
+}
+
+/** A roster entry as the facts the detail line prints. Derived, never a table. */
+function factsOf(choice: PickerProviderChoice): ProviderFacts {
+  return {
+    label: choice.label,
+    shortcut: choice.shortcut,
+    billing: choice.billing,
+    envVar: choice.envVar,
+  };
 }
 
 /** The banner's half of the inline row budget. */
@@ -606,19 +814,33 @@ const MAX_BANNER_ROWS = 5;
 
 /**
  * The one status row's text, in priority order: where the cursor is in a list
- * longer than the window, then what is still loading, then nothing.
+ * longer than the window, then what is still loading, then which providers could
+ * not be listed, then nothing.
  *
- * Pure so the priority can be asserted. The scroll position wins over the pending
- * sweep because it changes on every keypress and the sweep changes once.
+ * THE FAILURE LINE IS AGGREGATE, AND THAT IS THE POINT. The per-provider banner
+ * above the list is right when the user has SCOPED to one provider and asked it a
+ * question. It is the wrong shape once the flat list queries every ready provider
+ * at once: a banner per failure would push the list off the screen, and a banner
+ * for the first one would silently speak for the rest. So the count is stated in
+ * one dim row, `p` is named as the place the detail lives, and the full diagnostic
+ * for every failure still goes to the post-teardown stderr write, in order.
+ *
+ * Pure so the priority can be asserted. The scroll position wins over everything
+ * because it changes on every keypress; the failures win over the pending sweep
+ * because the sweep is about to end and the failures are not.
  */
 export function statusRow(
   cursor: number,
   shown: number,
   visible: number,
-  tasks: LoadTask[]
+  tasks: LoadTask[],
+  rosterFailures = 0
 ): string {
   if (shown > visible && visible > 0) return `${cursor + 1} of ${shown} — ↑↓ for more`;
   if (tasks.length > 0) return `still checking: ${tasks.map((t) => t.label).join(", ")}`;
+  if (rosterFailures > 0) {
+    return `${rosterFailures} provider${rosterFailures === 1 ? "" : "s"} could not be listed — press p to see which`;
+  }
   return "";
 }
 

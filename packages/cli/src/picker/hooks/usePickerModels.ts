@@ -94,7 +94,14 @@ export function usePickerModels(
   source: PickerDataSource,
   roster: PickerProviderChoice[],
   /** Providers whose credential probe came back true. */
-  ready: ReadonlySet<string>
+  ready: ReadonlySet<string>,
+  /**
+   * LIVE roster rows per provider, merged in as they land
+   * (`usePreloadedRosters`). Empty on the first frames, and that is the design:
+   * the catalog rows paint immediately and each roster joins them when it
+   * arrives, rather than the list waiting for the slowest provider.
+   */
+  liveRows: ReadonlyMap<string, ModelInfo[]> = EMPTY_LIVE
 ): PickerModelsState {
   const [phase, setPhase] = useState<LoadPhase>("loading");
   const cache = useRef(new Map<string, PickerRow[]>());
@@ -131,16 +138,76 @@ export function usePickerModels(
         cached = source.servedModels(choice.value).map((m) => toPickerRow(choice, m));
         cache.current.set(choice.value, cached);
       }
-      // The COUNT is what the catalog serves, credentials or not — the provider
+      // THE LIVE ROSTER WINS AND THE CATALOG ROWS STAY, deduped by
+      // `(provider, modelId)`.
+      //
+      // The same model id under two DIFFERENT providers is two rows on purpose —
+      // that is the whole value of a cross-provider list, and the reason
+      // `gpt-6-astra` is worth seeing at $30.00 on `or@` beside `SUB` on `cx@`.
+      // This loop is per provider, so the dedupe below can only ever collapse the
+      // OVERLAP between one provider's live roster and its catalog entries. The
+      // live entry wins because it is what this account can actually call: the
+      // endpoint answered for THESE credentials, where the catalog answers for
+      // everyone.
+      const live = liveRows.get(choice.value);
+      const merged =
+        live === undefined || live.length === 0
+          ? dedupeByProviderModel(cached)
+          : dedupeByProviderModel([...live.map((m) => toPickerRow(choice, m)), ...cached]);
+      // The COUNT is what this provider offers, credentials or not — the provider
       // dialog shows it beside `needs OPENAI_API_KEY`, and "0 models" there would
       // read as "this provider has nothing" rather than "you have no key".
-      counts.set(choice.value, cached.length);
-      if (ready.has(choice.value)) rows.push(...cached);
+      counts.set(choice.value, merged.length);
+      if (ready.has(choice.value)) rows.push(...merged);
     }
     // Newest first, across providers. The same comparator the classic picker
     // uses, so two lists of the same models cannot disagree about their order.
     rows.sort((a, b) => compareByReleaseDateDesc(a.model, b.model));
     return { rows, counts, phase };
     // biome-ignore lint/correctness/useExhaustiveDependencies: `signature` is the stable projection of `ready`; depending on the Set itself rebuilds every frame
-  }, [source, roster, phase, signature, ready]);
+  }, [source, roster, phase, signature, ready, liveRows]);
+}
+
+/** No live rosters yet — a shared empty map, so the memo's identity is stable. */
+const EMPTY_LIVE: ReadonlyMap<string, ModelInfo[]> = new Map();
+
+/**
+ * ROW IDENTITY DEPENDS ON THE VIEW, and the owner stated the rule directly: *"if
+ * model has more than one provider that going to be two lines in 'all models'
+ * list. and if we enter to provider catalog, not all models — then the model will
+ * be just one"*.
+ *
+ * · **The flat cross-provider list** keys on `(provider, modelId)`. A model on
+ *   three providers is three rows, because the route and the billing differ and
+ *   that difference IS the list's value — `gpt-6-astra` at `$30.00` on OpenRouter
+ *   beside the same model as `SUB` on Codex.
+ * · **A provider-scoped list** keys on `modelId` alone. One route is in scope, so
+ *   a second row of the same model would mean nothing.
+ *
+ * Both are spelled out rather than sharing one parameterised helper, because the
+ * two call sites are the two views and a reader should be able to see which rule
+ * each one applies without following a flag.
+ */
+export function dedupeByProviderModel(rows: PickerRow[]): PickerRow[] {
+  const seen = new Set<string>();
+  const out: PickerRow[] = [];
+  for (const row of rows) {
+    const key = `${row.provider} ${row.model.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+/** One row per model id — the rule INSIDE one provider's catalog. */
+export function dedupeByModelId(rows: PickerRow[]): PickerRow[] {
+  const seen = new Set<string>();
+  const out: PickerRow[] = [];
+  for (const row of rows) {
+    if (seen.has(row.model.id)) continue;
+    seen.add(row.model.id);
+    out.push(row);
+  }
+  return out;
 }

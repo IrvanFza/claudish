@@ -1739,6 +1739,97 @@ export async function buildDiscoveredModelRows(
 }
 
 /**
+ * One provider's LIVE roster, for MERGING into the cross-provider list — the
+ * outcome reduced to the three answers an aggregate view can act on.
+ *
+ * WHY IT IS NOT {@link buildDiscoveredModelOutcome}. The owner searched `gemini`
+ * in the flat list and got eleven rows, every one of them `or@`: the list was
+ * built from the cloud catalog alone, so every provider that serves its roster
+ * through live discovery — Antigravity, Devin, the coding plans, both local
+ * daemons — was invisible until you first selected it. That is the opposite of
+ * the feature: the flat list's whole value is seeing one model on several routes
+ * at different prices, and the routes it was hiding are the FLAT-RATE ones, which
+ * are exactly the rows worth finding.
+ *
+ * TWO DIFFERENCES FROM THE SCOPED PATH, AND BOTH ARE ABOUT COST:
+ *
+ * 1. **No `loadModelsForPickerProvider` leg.** That is the live `?provider=`
+ *    query measured at 10 018 ms for 22 concurrent callers. Prices come from
+ *    {@link servedModelsForProvider} instead — the same local served-by index the
+ *    rest of the flat list is built from, ~1 ms for the whole roster — so the
+ *    merge costs one roster request per provider and no catalog traffic at all.
+ * 2. **No fallback rows.** A provider whose discovery fails contributes nothing
+ *    NEW here; its catalog rows are already in the list, so repeating them under
+ *    a `catalog` mark would double the provider's rows. Hence `FallbackTaken`
+ *    is `"unknown"`: the notice states the cause and claims nothing about what
+ *    is shown instead, because at this call site nothing has been substituted.
+ *
+ * NEVER REJECTS, inheriting {@link discoverProviderRoster}'s contract and
+ * guarding it anyway — a rejection behind a live renderer leaves a progress
+ * indicator running against a promise that never settles.
+ */
+export type PreloadedRoster =
+  | { kind: "rows"; rows: ModelInfo[] }
+  /** Reachable, and it added nothing. Not a failure, and never reported as one. */
+  | { kind: "empty"; reason: "unsupported" | "empty-roster" | "all-filtered" }
+  | { kind: "failed"; failure: DiscoveryFailure; notice: string[] };
+
+export async function preloadProviderRoster(
+  provider: string,
+  displayName: string,
+  catalog: CatalogClient
+): Promise<PreloadedRoster> {
+  let roster: RosterOutcome;
+  try {
+    roster = await discoverProviderRoster(provider);
+  } catch (e: unknown) {
+    roster = {
+      kind: "failed",
+      failure: {
+        kind: "unreachable",
+        provider,
+        detail: oneLineDetail((e as Error)?.message ?? String(e)),
+      },
+    };
+  }
+
+  if (roster.kind === "unsupported") return { kind: "empty", reason: "unsupported" };
+  if (roster.kind === "failed") {
+    const { failure } = roster;
+    if (failure.kind === "empty-roster") return { kind: "empty", reason: "empty-roster" };
+    const def = getProviderByName(provider);
+    return {
+      kind: "failed",
+      failure,
+      notice: formatDiscoveryFailureNotice(
+        displayName,
+        failure,
+        def ?? { apiKeyEnvVar: "", apiKeyUrl: "" },
+        "unknown"
+      ),
+    };
+  }
+
+  const served = rankDiscoveredModels(roster.models);
+  const discovered = served.filter((m) => isChatCapable(m.id));
+  if (discovered.length === 0) return { kind: "empty", reason: "all-filtered" };
+  // The local served-by index is the price source: a metered discovery provider
+  // shows the real rate, and a flat-rate one ignores it (`buildRowsFromDiscovered`).
+  const rows = buildRowsFromDiscovered(
+    provider,
+    displayName,
+    discovered,
+    servedModelsForProvider(provider, catalog)
+  );
+  return rows.length > 0 ? { kind: "rows", rows } : { kind: "empty", reason: "all-filtered" };
+}
+
+/** A multi-line upstream detail as one line, so a notice stays one row. */
+function oneLineDetail(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
  * Chat-capable discovered models → picker rows. Pure; no I/O.
  *
  * `catalogRows` is the vendor catalog's list for this provider, already fetched

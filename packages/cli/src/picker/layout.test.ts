@@ -84,16 +84,32 @@ describe("deriveRowLayout", () => {
 });
 
 describe("deriveDialogLayout", () => {
-  test("the dialog fits 80x24 with room to spare, and does not grow at 145x45", () => {
+  test("the dialog FITS 80x24 and 145x45 — it is centred in the terminal, never clipped", () => {
     const small = deriveDialogLayout(80, 24);
     const large = deriveDialogLayout(145, 45);
     expect(small.width).toBe(76);
     expect(small.marginLeft).toBe(2);
-    // Capped, not stretched: a picker is a question, not a viewport.
+    // Capped in WIDTH, not stretched: a picker is a question, not a viewport.
     expect(large.width).toBe(MAX_DIALOG_WIDTH);
     expect(large.marginLeft).toBeGreaterThan(2);
-    expect(small.listRows).toBe(large.listRows);
-    expect(small.listRows + CHROME_ROWS).toBeLessThanOrEqual(MAX_DIALOG_ROWS);
+    // It DOES grow in height with the terminal, and that is the change: the old
+    // fixed 18 rows existed to keep an "inline" region small, and inline never
+    // held — the renderer is sized to `stdout.rows` at this pin whatever the
+    // screen mode. Growth is bounded by the cap and by the terminal itself.
+    expect(large.listRows).toBeGreaterThan(small.listRows);
+    expect(small.listRows + CHROME_ROWS).toBeLessThanOrEqual(24);
+    expect(large.listRows + CHROME_ROWS).toBeLessThanOrEqual(MAX_DIALOG_ROWS);
+    expect(large.listRows + CHROME_ROWS).toBeLessThanOrEqual(45);
+  });
+
+  test("a centred dialog leaves air above and below at every height it can be drawn", () => {
+    // What makes a centred box read as centred. A dialog exactly as tall as the
+    // terminal is not centred, it is full-screen — which is the build that was
+    // rejected — and one taller than the terminal is clipped at both ends.
+    for (const h of [20, 24, 30, 45, 60]) {
+      const l = deriveDialogLayout(120, h);
+      expect(l.listRows + CHROME_ROWS).toBeLessThanOrEqual(h - 2);
+    }
   });
 
   test("a banner takes its rows OUT of the list, so the dialog height never changes", () => {

@@ -17,6 +17,17 @@
  * place and it is not here — it is the loading dialog, where `done/total` is real
  * progress over countable work.
  *
+ * THE PROVIDER COLUMN IS FIRST, AND IT IS A NAME. It used to be last-but-three and
+ * printed the routing shortcut (`or@`, `oai@`, `cx@`); the owner's question on a
+ * live run was *"what is 'or' means"*. A shortcut only reads as information to
+ * someone who already knows it, so it teaches nothing about a screen whose whole
+ * job is to say what is on offer. The column now prints the provider's readable
+ * display name, sourced from the provider definitions through
+ * `PickerProviderChoice.label` — never a name table here — and it leads the row,
+ * because "which provider" is the question the user asked first. The shortcut is
+ * not lost: it sits beside the full name in the `p` dialog, and inside the exact
+ * `provider@model` spec on the detail line.
+ *
  * COLOUR ENCODES MEANING, ONE MEANING EACH, APP-WIDE:
  *
  *   `FREE`     success   costs nothing
@@ -111,10 +122,10 @@ export function ColumnHeader({ layout }: { layout: RowLayout }): ReactNode {
     <box height={1} flexShrink={0}>
       <text>
         <span fg={tokens.trace}>{"  "}</span>
+        <span fg={tokens.trace}>{padTo("provider", layout.provider)}</span>
+        <span>{gap(GAPS.afterProvider)}</span>
         <span fg={tokens.trace}>{padTo("model", layout.id)}</span>
         <span>{gap(GAPS.afterId)}</span>
-        <span fg={tokens.trace}>{padStartTo("provider", layout.provider)}</span>
-        <span>{gap(GAPS.afterProvider)}</span>
         <span fg={tokens.trace}>{padStartTo("ctx", layout.ctx)}</span>
         <span>{gap(GAPS.afterCtx)}</span>
         <span fg={tokens.trace}>{padStartTo("$/1M", layout.price)}</span>
@@ -126,8 +137,17 @@ export function ColumnHeader({ layout }: { layout: RowLayout }): ReactNode {
 
 export interface ModelRowProps {
   model: ModelInfo;
-  /** The routing shortcut of the provider that would serve it — `or@`, `kc@`. */
-  shortcut: string;
+  /**
+   * The provider's READABLE display name, already fitted to `layout.provider` and
+   * guaranteed distinct from every other provider on screen (`providerColumn`).
+   *
+   * It replaced the routing shortcut — `or@`, `oai@`, `cx@` — because the owner
+   * asked, verbatim, *"what is 'or' means"*. A shortcut is information only to
+   * someone who already knows it. The shortcut still exists where it explains
+   * itself: beside the full name in the `p` dialog, and inside the exact spec on
+   * the detail line under this list.
+   */
+  providerLabel: string;
   /** Whatever `resolveProviderDisplayPrice` said, already reshaped by `priceLabel`. */
   price: string;
   layout: RowLayout;
@@ -138,7 +158,7 @@ export interface ModelRowProps {
 
 export function ModelRow({
   model,
-  shortcut,
+  providerLabel,
   price,
   layout,
   cursor,
@@ -154,10 +174,12 @@ export function ModelRow({
     <box height={1} flexShrink={0} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text attributes={A.boldIf(cursor)}>
         <span fg={cursor ? tokens.accent : tokens.trace}>{cursor ? "▶ " : "  "}</span>
+        <span fg={cursor ? C.strong : tokens.subtle}>
+          {padTo(truncate(providerLabel, layout.provider), layout.provider)}
+        </span>
+        <span>{gap(GAPS.afterProvider)}</span>
         <span fg={idFg}>{padTo(model.id, layout.id)}</span>
         <span>{gap(GAPS.afterId)}</span>
-        <span fg={tokens.subtle}>{padStartTo(shortcut, layout.provider)}</span>
-        <span>{gap(GAPS.afterProvider)}</span>
         <span fg={tokens.subtle}>{padStartTo(model.context || "N/A", layout.ctx)}</span>
         <span>{gap(GAPS.afterCtx)}</span>
         <span fg={priceFg(price)}>{padStartTo(price, layout.price)}</span>

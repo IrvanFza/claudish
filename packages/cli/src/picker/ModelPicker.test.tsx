@@ -25,7 +25,8 @@ import { describe, expect, test } from "bun:test";
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { ReactNode } from "react";
-import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
+import type { ModelInfo, PickerDiscoveryOutcome, PreloadedRoster } from "../model-selector.js";
+import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { MAX_DIALOG_ROWS } from "./layout.js";
@@ -64,6 +65,10 @@ interface FakeOpts {
   /** Per-provider served lists; falls back to `served`. */
   byProvider?: Record<string, ModelInfo[]>;
   served?: ModelInfo[];
+  /** Per-provider LIVE roster outcomes, for the cross-provider merge. */
+  liveRosters?: Record<string, PreloadedRoster>;
+  /** `modelId` → prose sentence, as the description index answers. */
+  descriptions?: Record<string, string>;
   /** Never settles — the in-flight states. */
   hang?: boolean;
 }
@@ -71,6 +76,7 @@ interface FakeOpts {
 function fakeSource(opts: FakeOpts = {}): PickerDataSource {
   const roster = opts.roster ?? [provider()];
   const never = new Promise<never>(() => {});
+  const descriptions = opts.descriptions ?? {};
   return {
     providerRoster: () => roster,
     notEnabledLocalProviders: () => [],
@@ -87,6 +93,19 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource {
         : Promise.resolve(
             opts.outcome ?? { kind: "rows", rows: [model()], servedCount: 1, chatCount: 1 }
           ),
+    rosterRows: (p): Promise<PreloadedRoster> =>
+      opts.hang
+        ? never
+        : Promise.resolve(
+            opts.liveRosters?.[p] ?? { kind: "empty", reason: "unsupported" as const }
+          ),
+    descriptions: (): Promise<DescriptionIndex> =>
+      opts.hang
+        ? never
+        : Promise.resolve({
+            get: (id: string) => descriptions[id],
+            size: Object.keys(descriptions).length,
+          }),
   };
 }
 
@@ -245,7 +264,7 @@ describe("the flat cross-provider list", () => {
     provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
   ];
 
-  test("merges every credentialled provider and prints the routing shortcut per row", async () => {
+  test("merges every credentialled provider and NAMES the provider on each row", async () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
@@ -262,10 +281,11 @@ describe("the flat cross-provider list", () => {
       const all = joined(d.text);
       expect(all).toContain("glm-5.3-flash");
       expect(all).toContain("kimi-k3");
-      // The column teaches the `provider@model` syntax the CLI already takes on argv,
-      // and `or@` vs `kc@` cannot collide the way two `opencod…` rail rows did.
-      expect(all).toContain("or@");
-      expect(all).toContain("kc@");
+      // THE COLUMN IS A NAME, NOT A SHORTCUT. It printed `or@` / `kc@` and the
+      // owner's question on a live run was "what is 'or' means" — a routing
+      // shortcut only reads as information to someone who already knows it.
+      expect(all).toContain("OpenRouter");
+      expect(all).toContain("Kimi Coding");
     } finally {
       d.destroy();
     }
@@ -291,6 +311,121 @@ describe("the flat cross-provider list", () => {
       expect(all).not.toContain("kimi-k3");
       // The absence is EXPLAINED, in the title, rather than silent.
       expect(all).toContain("1/2 providers");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("A LIVE ROSTER IS MERGED INTO THE FLAT LIST — the `gemini` bug, as an assertion", async () => {
+    // The owner filtered `gemini` on a live run and got eleven rows, every one of
+    // them `or@`, while Antigravity was serving gemini models on a FLAT-RATE
+    // subscription — invisible, because the flat list was the cloud catalog alone
+    // and Antigravity has no catalog entries at all. The subscription route is the
+    // one most worth finding, so its absence was the worst possible absence.
+    const withDiscovery = [
+      provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+      provider({
+        value: "antigravity",
+        label: "Antigravity",
+        shortcut: "ag@",
+        billing: "sub",
+        envVar: "",
+        hasDiscovery: true,
+      }),
+    ];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: withDiscovery,
+          byProvider: {
+            openrouter: [model({ id: "gemini-3.8-flash" })],
+            // No catalog entries whatsoever — the real Antigravity's situation.
+            antigravity: [],
+          },
+          liveRosters: {
+            antigravity: {
+              kind: "rows",
+              rows: [model({ id: "gemini-3.8-flash-tiered", context: "1M" })],
+            },
+          },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      await d.press(["g", "e", "m", "i", "n", "i"]);
+      const all = joined(d.recapture().text);
+      // BOTH routes, from two different sources, in one filtered list.
+      expect(all).toContain("gemini-3.8-flash");
+      expect(all).toContain("gemini-3.8-flash-tiered");
+      expect(all).toContain("OpenRouter");
+      expect(all).toContain("Antigravity");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("one model on two providers is TWO rows, and the title counts both honestly", async () => {
+    // The owner's rule for the flat list, and the count that goes with it: the
+    // rows are ROUTES, so labelling their number "models" would be off by exactly
+    // the amount that makes the list useful.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster,
+          byProvider: {
+            openrouter: [model({ id: "gpt-6-astra" })],
+            "kimi-coding": [model({ id: "gpt-6-astra" })],
+          },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      const all = joined(d.text);
+      expect(all).toContain("1 models · 2 routes");
+      // Two rows, one per provider, each naming its own provider.
+      expect(all).toContain("OpenRouter");
+      expect(all).toContain("Kimi Coding");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a provider whose roster FAILS is counted, not silently absent", async () => {
+    // The aggregate shape: once the list queries every ready provider at once, a
+    // banner per failure would push the list off the screen and a banner for the
+    // first one would speak for the rest.
+    const withDiscovery = [
+      provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+      provider({ value: "devin", label: "Devin", shortcut: "dv@", hasDiscovery: true }),
+    ];
+    const failures: string[] = [];
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: withDiscovery,
+          byProvider: { openrouter: [model({ id: "glm-5.3-flash" })], devin: [] },
+          liveRosters: {
+            devin: {
+              kind: "failed",
+              failure: { kind: "unreachable", provider: "devin", detail: "timeout" },
+              notice: ["\n⚠ Devin could not list its models: timeout\n"],
+            },
+          },
+        })}
+        onDone={() => {}}
+        onDiscoveryFailure={(p) => failures.push(p)}
+      />
+    );
+    try {
+      expect(joined(d.recapture().text)).toContain("could not be listed");
+      // The full diagnostic still reaches the ONE post-teardown stderr write.
+      expect(failures).toEqual(["devin"]);
     } finally {
       d.destroy();
     }

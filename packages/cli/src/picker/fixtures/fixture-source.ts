@@ -29,7 +29,8 @@
  * and a live capture beats a forged one every time. The scenario exists as a control.
  */
 
-import type { ModelInfo, PickerDiscoveryOutcome } from "../../model-selector.js";
+import type { ModelInfo, PickerDiscoveryOutcome, PreloadedRoster } from "../../model-selector.js";
+import type { DescriptionIndex } from "../../providers/model-descriptions.js";
 import {
   type PickerDataSource,
   type PickerProviderChoice,
@@ -91,6 +92,32 @@ export function createFixtureDataSource(name: string): PickerDataSource {
 
     servedModels(provider: string): ModelInfo[] {
       return real.servedModels(provider);
+    },
+
+    /**
+     * The cross-provider roster merge, forged the same way `discoverRoster` is:
+     * the SHAPE of the answer and its latency, never the data.
+     *
+     * `loading` never settles, which is what holds the `done/total` roster meter
+     * mid-sweep for a capture. A forced-failure scenario fails EVERY provider, so
+     * the aggregate "N providers could not be listed" line is photographable at
+     * all — with the real source it needs several providers to be broken at once,
+     * which is not a state a capture run can arrange.
+     */
+    async rosterRows(provider: string): Promise<PreloadedRoster> {
+      if (scenario === "loading") return NEVER;
+      if (!forced) return real.rosterRows(provider);
+      const outcome = await this.discoverRoster(provider);
+      if (outcome.kind === "failed") {
+        return { kind: "failed", failure: outcome.failure, notice: outcome.notice };
+      }
+      return { kind: "empty", reason: "empty-roster" };
+    },
+
+    descriptions(): Promise<DescriptionIndex> {
+      // NOT forged: a description is editorial text from the real catalog, and a
+      // capture of an invented sentence proves nothing about how a real one wraps.
+      return scenario === "loading" ? NEVER : real.descriptions();
     },
 
     async discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
