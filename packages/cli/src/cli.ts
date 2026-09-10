@@ -368,7 +368,12 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       const parsed = parseAdvisorFlag(modelsArg);
       config.advisorModels = parsed.models;
       config.advisorCollector = parsed.collector;
-      config.monitor = true;
+      // NOT `config.monitor = true`. Monitor forces every request to
+      // NativeHandler (proxy-server.ts:564), which made `--advisor --model
+      // grok-4.6` serve grok from api.anthropic.com. The advisor is its own
+      // independent flag now; the launch bits a no-model advisor session still
+      // needs from monitor are handled by isAdvisorNativeSession().
+      config.advisor = true;
     } else if (arg === "--stdin") {
       config.stdin = true;
     } else if (arg === "--free") {
@@ -733,16 +738,23 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
     config.claudeArgs.push("--verbose");
   }
 
+  // Remove any placeholder API keys so Claude Code uses its stored credentials.
+  // A placeholder is claudish's OWN (a nested claudish session leaves one behind),
+  // never a credential: captured into config.anthropicApiKey below it would be
+  // handed to NativeHandler, which sends it to api.anthropic.com and gets a 401.
+  // --monitor has always scrubbed it; `--advisor` keeps doing so now that it no
+  // longer implies monitor.
+  if (
+    (config.monitor || config.advisor) &&
+    process.env.ANTHROPIC_API_KEY?.includes("placeholder")
+  ) {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+
   // Handle monitor mode setup
   if (config.monitor) {
     // Monitor mode: proxies to real Anthropic API for monitoring/debugging
     // Uses Claude Code's native authentication (from `claude auth login`)
-    //
-    // Remove any placeholder API keys so Claude Code uses its stored credentials
-    if (process.env.ANTHROPIC_API_KEY?.includes("placeholder")) {
-      delete process.env.ANTHROPIC_API_KEY;
-    }
-
     if (!config.quiet) {
       console.log("[claudish] Monitor mode enabled - proxying to real Anthropic API");
       console.log("[claudish] Using Claude Code's native authentication");
@@ -2186,7 +2198,7 @@ ${h("OPTIONS")}
   ${green("--stdin")}                  Read prompt from stdin (large prompts / piping)
   ${green("--free")}                   Show only FREE models in the interactive selector
   ${green("--monitor")}                Monitor mode - proxy to REAL Anthropic API and log traffic
-  ${green("--advisor")} ${yellow('"m1,m2[:collector]"')}  Multi-model advisor replacement (implies --monitor)
+  ${green("--advisor")} ${yellow('"m1,m2[:collector]"')}  Multi-model advisor replacement (works with any --model)
   ${green("--model-params")} ${yellow('"k=v,..."')}  Extra request params merged into the payload (e.g. reasoning.mode=pro)
   ${green("--effort-override")} ${yellow("<level>")}  Pin reasoning effort verbatim, skipping the per-model clamp
   ${green("--pro-on-ultracode")}       Apply the model's catalog preset while in ultracode (opt-in)

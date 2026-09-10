@@ -520,7 +520,9 @@ if (isMcpMode) {
  */
 async function runCli() {
   const endImports = beginSpan("startup:cli-imports");
-  const { checkClaudeInstalled, runClaudeWithProxy } = await import("./claude-runner.js");
+  const { checkClaudeInstalled, runClaudeWithProxy, isAdvisorNativeSession } = await import(
+    "./claude-runner.js"
+  );
   const { parseArgs, getVersion } = await import("./cli.js");
   const { DEFAULT_PORT_RANGE } = await import("./config.js");
   const { selectModel, promptForApiKey } = await import("./model-selector.js");
@@ -772,7 +774,17 @@ async function runCli() {
       cliConfig.modelSonnet ||
       cliConfig.modelHaiku ||
       cliConfig.modelSubagent;
-    if (cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
+    // `--advisor` with no main model is a native session: Claude Code picks its own
+    // model, so there is nothing to select and nothing to demand. Both gates below
+    // were satisfied by --advisor implying --monitor; the predicate replaces that.
+    const advisorNativeSession = isAdvisorNativeSession(cliConfig);
+    if (
+      cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !advisorNativeSession &&
+      !cliConfig.model &&
+      !hasProfileTiers
+    ) {
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
@@ -783,7 +795,13 @@ async function runCli() {
     }
 
     // In non-interactive mode, model must be specified (via --model, env var, or profile)
-    if (!cliConfig.interactive && !cliConfig.monitor && !cliConfig.model && !hasProfileTiers) {
+    if (
+      !cliConfig.interactive &&
+      !cliConfig.monitor &&
+      !advisorNativeSession &&
+      !cliConfig.model &&
+      !hasProfileTiers
+    ) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag, set CLAUDISH_MODEL env var, or use --profile");
       console.error("Try: claudish --models");

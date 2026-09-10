@@ -9,6 +9,7 @@ import {
   loadAdvisorSwapConfig,
   logAdvisorEvent,
   recordAdvisorEventsFromChunk,
+  recordAdvisorEventsFromResponseBody,
   rewriteAdvisorToolResults,
   stripAdvisorBeta,
   stubAdvisorAdvice,
@@ -323,11 +324,12 @@ export class NativeHandler implements ModelHandler {
       log(JSON.stringify(data, null, 2));
 
       // Advisor tap for the non-streaming branch (mostly for title-classifier
-      // calls on Haiku which return JSON). Picks up any advisor tool_use ids
-      // we might miss in SSE.
+      // calls on Haiku which return JSON). A non-stream body is NOT a
+      // content_block_start — its advisor tool_use blocks live in `content[]`
+      // — so it is read structurally rather than grepped as SSE bytes.
       if (advisorCfg.enabled) {
         try {
-          recordAdvisorEventsFromChunk(advisorCfg, JSON.stringify(data));
+          recordAdvisorEventsFromResponseBody(advisorCfg, data);
         } catch {
           // ignore scan failures — logging-only
         }

@@ -156,8 +156,10 @@ export function logAdvisorEvent(cfg: AdvisorSwapConfig, event: Record<string, un
 
 /**
  * Scans a chunk of raw SSE bytes for advisor-related activity and records
- * any hits to the log file. Call this once per streamed chunk. Stateless
- * on purpose: we just grep the chunk.
+ * any hits to the log file. Call this once per streamed chunk.
+ *
+ * NOT stateless: SSE frames are reassembled across chunk boundaries (see
+ * `SseFrameBuffer`) before they are parsed.
  *
  * Also extracts advisor `tool_use.id`s and stashes them in a module-level
  * Set so that subsequent inbound requests containing tool_result blocks
@@ -167,11 +169,37 @@ export function recordAdvisorEventsFromChunk(cfg: AdvisorSwapConfig, chunkText: 
   // Regardless of logPath, always try to extract advisor tool_use ids —
   // Stage 2 rewrite depends on them even when no log file is configured.
   extractAdvisorToolUseIds(chunkText);
+  logAdvisorMarkers(cfg, chunkText);
+}
 
+/**
+ * Advisor tap for a NON-STREAMING response: the parsed JSON body, whose
+ * `content[]` carries `{type:"tool_use", name:"advisor", id:...}` blocks.
+ * A non-stream response is NOT a `content_block_start`, so the SSE path
+ * above would never see it.
+ *
+ * Prefer this over `recordAdvisorEventsFromChunk(cfg, JSON.stringify(body))`:
+ * it reads the object structurally instead of re-serializing and grepping.
+ */
+export function recordAdvisorEventsFromResponseBody(cfg: AdvisorSwapConfig, body: unknown): void {
+  collectAdvisorIdsFromValue(body, 0);
   if (!cfg.logPath) return;
-  // Markers worth flagging. Stage 1 cares about whether Sonnet emits a
-  // regular tool_use for "advisor" (which proves the model still reaches
-  // for the advisor when the tool_type is regular).
+  try {
+    logAdvisorMarkers(cfg, JSON.stringify(body));
+  } catch {
+    // ignore — a body that will not serialize is a logging problem only
+  }
+}
+
+/**
+ * Byte-grep for markers worth flagging in the log. Stage 1 cares about
+ * whether the executor emits a regular tool_use for "advisor" (which proves
+ * the model still reaches for the advisor when the tool_type is regular).
+ *
+ * Logging only — id capture never depends on this.
+ */
+function logAdvisorMarkers(cfg: AdvisorSwapConfig, text: string): void {
+  if (!cfg.logPath) return;
   const markers: Array<[string, string]> = [
     ['"name":"advisor"', "tool_use_for_advisor"],
     ['"type":"tool_use"', "any_tool_use"],
@@ -183,9 +211,9 @@ export function recordAdvisorEventsFromChunk(cfg: AdvisorSwapConfig, chunkText: 
   for (const [needle, kind] of markers) {
     let i = 0;
     while (true) {
-      i = chunkText.indexOf(needle, i);
+      i = text.indexOf(needle, i);
       if (i < 0) break;
-      const ctx = chunkText.slice(Math.max(0, i - 40), i + 160);
+      const ctx = text.slice(Math.max(0, i - 40), i + 160);
       logAdvisorEvent(cfg, { kind, needle, ctx });
       i += needle.length;
     }
@@ -207,31 +235,188 @@ export function recordAdvisorEventsFromChunk(cfg: AdvisorSwapConfig, chunkText: 
 const advisorToolUseIds = new Set<string>();
 const MAX_TRACKED = 256;
 
+/** The tool name we track. Claudish keeps the client's own name on the swap. */
+const ADVISOR_TOOL_NAME = "advisor";
+
+/** Guard against a pathological (or hostile) nesting depth while walking JSON. */
+const MAX_WALK_DEPTH = 32;
+
 /**
- * Matches an advisor tool_use block inside an SSE chunk and records its id.
- *
- * The SSE stream from Anthropic splits content_block_start across potentially
- * multiple bytes boundaries. For robustness we scan for a combined pattern:
- *   "type":"tool_use","id":"toolu_...","name":"advisor"
- * which typically appears on a single SSE data line.
+ * Hard cap on the SSE reassembly buffer. A stream that never terminates an
+ * event (malformed, or simply not SSE at all) must not grow it without limit;
+ * past the cap we keep only the tail, which is where a frame boundary can
+ * still appear.
  */
-function extractAdvisorToolUseIds(chunkText: string): void {
-  // Primary pattern: tool_use declaration with name=advisor.
-  // Example event payload fragment:
-  //   "content_block":{"type":"tool_use","id":"toolu_01SJy...","name":"advisor","input":{}}
-  const re =
-    /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"\s*,\s*"name"\s*:\s*"advisor"/g;
-  let m: RegExpExecArray | null;
-  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
-  while ((m = re.exec(chunkText)) !== null) {
-    rememberAdvisorToolUseId(m[1]);
+const MAX_SSE_BUFFER_CHARS = 256 * 1024;
+
+/**
+ * Reassembles SSE events across chunk boundaries.
+ *
+ * Anthropic splits `content_block_start` across byte boundaries, so a
+ * per-chunk `JSON.parse` of `data:` lines misses exactly the frames we care
+ * about. Buffer until an event terminator (`\n\n`, or `\r\n\r\n`), then hand
+ * the complete event out.
+ */
+class SseFrameBuffer {
+  private buf = "";
+
+  /** Appends a chunk and returns every COMPLETE event now available. */
+  take(chunkText: string): string[] {
+    this.buf += chunkText;
+    const events: string[] = [];
+    while (true) {
+      const lf = this.buf.indexOf("\n\n");
+      const crlf = this.buf.indexOf("\r\n\r\n");
+      // Earliest terminator wins; -1 means "not present".
+      let idx = -1;
+      let width = 2;
+      if (crlf >= 0 && (lf < 0 || crlf < lf)) {
+        idx = crlf;
+        width = 4;
+      } else if (lf >= 0) {
+        idx = lf;
+      }
+      if (idx < 0) break;
+      events.push(this.buf.slice(0, idx));
+      this.buf = this.buf.slice(idx + width);
+    }
+    if (this.buf.length > MAX_SSE_BUFFER_CHARS) {
+      this.buf = this.buf.slice(-MAX_SSE_BUFFER_CHARS);
+    }
+    return events;
   }
 
-  // Alternate pattern where input may appear before id (defensive).
-  const re2 = /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"(toolu_[A-Za-z0-9_-]+)"/g;
-  // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
-  while ((m = re2.exec(chunkText)) !== null) {
-    rememberAdvisorToolUseId(m[1]);
+  reset(): void {
+    this.buf = "";
+  }
+}
+
+/**
+ * One module-level buffer, shared by every stream that reaches the legacy
+ * per-chunk entry point.
+ *
+ * Two concurrent streams can interleave here and produce a spliced "event".
+ * That degrades gracefully rather than losing the id: a spliced event fails
+ * `JSON.parse` and falls through to the regex fallback below, which is the
+ * same byte-grep this code used to be. P4's decorator should own a
+ * per-stream instance instead of sharing this one.
+ */
+const streamFrameBuffer = new SseFrameBuffer();
+
+/**
+ * Records the id of every advisor tool_use block visible in this chunk.
+ *
+ * Structural first, regex only as a fallback. The id is captured whatever it
+ * looks like: `toolu_*` is an ANTHROPIC spelling, and the advisor swap must
+ * work behind every parser. `openai-sse.ts` mints `call_*` from the upstream
+ * or synthesizes `tool_<ts>_<idx>`, and it is the DEFAULT stream format
+ * (`base-api-format.ts`), so a prefix test silently captures nothing for
+ * every foreign main model.
+ */
+function extractAdvisorToolUseIds(chunkText: string): void {
+  // Whole-body JSON (the non-streaming branch hands us one). If it parses we
+  // have read it structurally and there is nothing for the regex to add.
+  if (parseAdvisorIdsFromJsonText(chunkText)) return;
+
+  // SSE: parse each COMPLETE event; a frame that will not parse falls back to
+  // the regex so we never capture less than the byte-grep did.
+  let sawCompleteFrame = false;
+  for (const event of streamFrameBuffer.take(chunkText)) {
+    sawCompleteFrame = true;
+    if (!scanSseEventForAdvisorIds(event)) matchAdvisorIdsByRegex(event);
+  }
+
+  // No complete frame yet — either a fragment (the rest is still coming and
+  // will be parsed then) or text that is not SSE at all, e.g. a bare
+  // `"content_block":{...}` snippet. Grep it so neither case is dropped.
+  if (!sawCompleteFrame) matchAdvisorIdsByRegex(chunkText);
+}
+
+/**
+ * Reads one complete SSE event structurally: concatenates its `data:` lines
+ * per the SSE spec, parses the result and walks it for advisor tool_use
+ * blocks. Returns false when the payload did not parse, which is the
+ * caller's signal to fall back to the regex.
+ */
+function scanSseEventForAdvisorIds(rawEvent: string): boolean {
+  const dataLines: string[] = [];
+  for (const line of rawEvent.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    dataLines.push(line.slice(5).trimStart());
+  }
+  if (dataLines.length === 0) return false;
+  const payload = dataLines.join("\n").trim();
+  // A comment/heartbeat frame or the terminator carries nothing to capture,
+  // but it is not a parse FAILURE either — no regex fallback needed.
+  if (!payload || payload === "[DONE]") return true;
+  return parseAdvisorIdsFromJsonText(payload);
+}
+
+/** Parses `text` as JSON and walks it. Returns false when it is not JSON. */
+function parseAdvisorIdsFromJsonText(text: string): boolean {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return false;
+  }
+  collectAdvisorIdsFromValue(parsed, 0);
+  return true;
+}
+
+/**
+ * Walks any parsed JSON value and records the id of every object that IS an
+ * advisor tool_use block. Key order is irrelevant here, which is the point:
+ * the old regex required `type`,`id`,`name` adjacent and in that order.
+ *
+ * Covers both shapes with one walk: the streamed
+ * `content_block_start.content_block` and the non-streamed `content[]` entry.
+ */
+function collectAdvisorIdsFromValue(value: unknown, depth: number): void {
+  if (value === null || typeof value !== "object" || depth > MAX_WALK_DEPTH) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectAdvisorIdsFromValue(item, depth + 1);
+    return;
+  }
+  const obj = value as Record<string, unknown>;
+  if (
+    obj.type === "tool_use" &&
+    obj.name === ADVISOR_TOOL_NAME &&
+    typeof obj.id === "string" &&
+    obj.id.length > 0
+  ) {
+    rememberAdvisorToolUseId(obj.id);
+  }
+  for (const nested of Object.values(obj)) collectAdvisorIdsFromValue(nested, depth + 1);
+}
+
+/**
+ * Prefix-agnostic fallback for payloads that do not parse — a truncated
+ * frame, a spliced one, or a raw fragment. `[^}]*?` keeps every match inside
+ * a single JSON object, so an id belonging to an enclosing object (a
+ * `message.id`, say) can never be picked up for the advisor block nested
+ * inside it.
+ */
+const ADVISOR_ID_PATTERNS: RegExp[] = [
+  // type → id → name. The canonical fallback from the design doc.
+  /"type"\s*:\s*"tool_use"[^}]*?"id"\s*:\s*"([^"]+)"[^}]*?"name"\s*:\s*"advisor"/g,
+  // name → id, whatever sits between them (input may be serialized first).
+  /"name"\s*:\s*"advisor"[^}]*?"id"\s*:\s*"([^"]+)"/g,
+  // id → name with no `type` ahead of them. Adjacency is required precisely
+  // because `type` is not there to prove the id belongs to this block.
+  /"id"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"advisor"/g,
+];
+
+function matchAdvisorIdsByRegex(text: string): void {
+  for (const re of ADVISOR_ID_PATTERNS) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: canonical RegExp.exec() iteration idiom
+    while ((m = re.exec(text)) !== null) {
+      rememberAdvisorToolUseId(m[1]);
+    }
   }
 }
 
@@ -250,9 +435,10 @@ export function _debug_getTrackedAdvisorIds(): string[] {
   return [...advisorToolUseIds];
 }
 
-/** Reset the ID tracker. Intended for tests. */
+/** Reset the ID tracker AND the SSE reassembly buffer. Intended for tests. */
 export function _debug_resetTrackedAdvisorIds(): void {
   advisorToolUseIds.clear();
+  streamFrameBuffer.reset();
 }
 
 /**

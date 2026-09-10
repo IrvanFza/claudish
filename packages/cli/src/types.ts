@@ -108,6 +108,16 @@ export interface ClaudishConfig {
   inputFile?: string; // File path for prompt input (-f / --file)
 
   // Advisor mode
+  /**
+   * --advisor was given on THIS launch. Independent of `monitor`: the advisor no
+   * longer borrows monitor mode (which forces ALL traffic to NativeHandler and so
+   * served a foreign `--model` from api.anthropic.com).
+   *
+   * Deliberately LAUNCH-ONLY — it is absent from `ClaudishProfileConfig` on purpose,
+   * so the advisor can never be switched on by stored config. Nothing to add to
+   * loadConfig's allowlist because nothing is loaded.
+   */
+  advisor?: boolean;
   advisorModels?: string[]; // Advisor models from --advisor flag
   advisorCollector?: string | null; // Collector model (null = no synthesis)
 }

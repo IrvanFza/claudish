@@ -206,17 +206,36 @@ function shouldPreserveNativeAuth(config: ClaudishConfig): boolean {
 }
 
 /**
+ * `--advisor` with NO main model named: the session's main loop is still a plain
+ * native Claude session, and it must LAUNCH like one.
+ *
+ * `--advisor` used to set `config.monitor`, and four monitor-gated launch sites
+ * were the only reason such a session could start at all: the interactive picker,
+ * the "model required" abort, `ANTHROPIC_MODEL`, and native auth. Decoupling the
+ * advisor from monitor without this predicate would break exactly that
+ * configuration — `claudish --advisor "X" -p "task"` would exit(1) before
+ * starting. Everything else about monitor (notably forcing all traffic to
+ * NativeHandler, proxy-server.ts:564) is deliberately NOT inherited.
+ *
+ * A named `--model` or `--model "a,b"` chain means the main loop belongs to that
+ * provider, so none of the four bits apply.
+ */
+export function isAdvisorNativeSession(config: ClaudishConfig): boolean {
+  return Boolean(config.advisor) && !config.model && !config.modelChain;
+}
+
+/**
  * "Proxy mode" = claudish points Claude Code at its local proxy with a placeholder
  * API key (see the auth block in runClaudeWithProxy). In this mode the session
  * authenticates via ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN, so a user/project/local
  * setting of `forceLoginMethod: "claudeai"` would block it at startup.
  *
  * The inverse — native-Anthropic models, classifier passthrough (with resolvable
- * creds), or --monitor — uses the user's REAL claude.ai subscription credentials,
- * so we must NOT touch their login method there.
+ * creds), --monitor, or a no-model `--advisor` session — uses the user's REAL
+ * claude.ai subscription credentials, so we must NOT touch their login method there.
  */
 export function isProxyAuthMode(config: ClaudishConfig): boolean {
-  return !config.monitor && !shouldPreserveNativeAuth(config);
+  return !config.monitor && !isAdvisorNativeSession(config) && !shouldPreserveNativeAuth(config);
 }
 
 /**
@@ -1149,6 +1168,47 @@ export function resolveContextWindowEnv(
   };
 }
 
+/**
+ * Claude Code's gate for the experimental advisor tool. Kept local rather than in
+ * `ENV` because it is a CHILD-only var: claudish never reads it for itself, it
+ * only decides whether to hand one to the spawned session.
+ */
+export const ADVISOR_TOOL_ENV_VAR = "CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL";
+
+/** Where the child's advisor-tool env var came from. */
+export interface AdvisorToolEnv {
+  /** Variables to merge into the child environment. Empty unless claudish set one. */
+  vars: Record<string, string>;
+  /**
+   * `claudish` — we set it; `inherited` — the parent environment already had a
+   * value and it reaches the child untouched; `off` — `--advisor` was not given.
+   * The startup notice reports which (a later phase); nothing prints it here.
+   */
+  source: "claudish" | "inherited" | "off";
+}
+
+/**
+ * Decide the advisor-tool env var for the spawned Claude Code.
+ *
+ * The literal MUST be `"1"`. Claude Code parses this with a strict boolean reader
+ * that accepts only `1`/`true`/`yes`/`on` after trim+lowercase — `"2"` is FALSE —
+ * so a wrong value is a silent no-op, not an error.
+ *
+ * A value the user already exported is never clobbered: the child env spreads
+ * `process.env` unfiltered, so leaving it out of `vars` is what forwards theirs
+ * unchanged. "Already exported" means PRESENT, including an explicitly empty
+ * value — that is the user's business, and the notice will say "inherited" so it
+ * is discoverable rather than mysterious.
+ */
+export function resolveAdvisorToolEnv(
+  config: ClaudishConfig,
+  processEnv: NodeJS.ProcessEnv = process.env
+): AdvisorToolEnv {
+  if (!config.advisor) return { vars: {}, source: "off" };
+  if (processEnv[ADVISOR_TOOL_ENV_VAR] !== undefined) return { vars: {}, source: "inherited" };
+  return { vars: { [ADVISOR_TOOL_ENV_VAR]: "1" }, source: "claudish" };
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
@@ -1160,7 +1220,13 @@ export async function runClaudeWithProxy(
   // so the proxy can match tier names (opus/sonnet/haiku) and apply profile mappings
   const hasProfileMappings =
     config.modelOpus || config.modelSonnet || config.modelHaiku || config.modelSubagent;
-  const modelId = config.model || (hasProfileMappings || config.monitor ? undefined : "unknown");
+  // `--advisor` with no main model is a native session: Claude Code must pick its
+  // own model exactly as under --monitor. The "unknown" placeholder would become
+  // ANTHROPIC_MODEL=unknown and Anthropic 400s the very first request.
+  const advisorNativeSession = isAdvisorNativeSession(config);
+  const modelId =
+    config.model ||
+    (hasProfileMappings || config.monitor || advisorNativeSession ? undefined : "unknown");
 
   // Extract port from proxy URL for token file path
   const portMatch = proxyUrl.match(/:(\d+)/);
@@ -1174,7 +1240,10 @@ export async function runClaudeWithProxy(
   // If it forces claude.ai login while we're in proxy mode, Claude Code will refuse
   // to start with an API key — fail fast with a clear reason instead of a confusing
   // downstream error. (Native-Anthropic/--monitor sessions use the real subscription,
-  // so a claude.ai policy is fine there and we don't check.)
+  // so a claude.ai policy is fine there and we don't check. A no-model --advisor
+  // session is one of those — isProxyAuthMode excludes it — because it survives
+  // this policy today under monitor and must not start aborting on it. A FOREIGN
+  // main model with --advisor IS proxy auth, so it gains the clear abort.)
   if (proxyAuthMode && managedSettingsForcesClaudeAi()) {
     console.error(
       "[claudish] Error: your organization's managed Claude Code settings force the " +
@@ -1259,6 +1328,10 @@ export async function runClaudeWithProxy(
   // Environment variables for Claude Code
   // For display: show profile name before first request; token file model_name takes over after
   const modelDisplayName = modelId || config.profile || "default";
+  // Resolved BEFORE the env literal so the "set by claudish" / "inherited from
+  // your environment" distinction is recorded rather than lost in a spread. The
+  // startup notice that reports it lands in a later phase; nothing prints here.
+  const advisorToolEnv = resolveAdvisorToolEnv(config);
   const env: Record<string, string> = {
     ...process.env,
     // Point Claude Code to our local proxy
@@ -1272,6 +1345,11 @@ export async function runClaudeWithProxy(
     // of guessing a path, and can tell that the session is proxied (and therefore
     // that Anthropic plan/rate-limit numbers describe the wrong account).
     [ENV.CLAUDISH_TOKEN_FILE]: tokenFilePath,
+    // Turn on Claude Code's experimental advisor tool under --advisor. The value
+    // is `"1"` and nothing else (see resolveAdvisorToolEnv), and this spread is
+    // empty when the parent environment already carries one — the `...process.env`
+    // above then forwards the user's value untouched.
+    ...advisorToolEnv.vars,
   };
 
   // Provider display name, best-effort and FREE. Only an explicit `provider@model`
@@ -1289,6 +1367,12 @@ export async function runClaudeWithProxy(
     }
   }
 
+  if (advisorToolEnv.source !== "off") {
+    debugLog(
+      `[claude-runner] ${ADVISOR_TOOL_ENV_VAR}=${env[ADVISOR_TOOL_ENV_VAR]} (${advisorToolEnv.source})`
+    );
+  }
+
   // Set when a real ANTHROPIC_API_KEY was hidden so native Claude models bill the
   // claude.ai subscription instead of the API. Reported via log() further down —
   // the user MUST be able to discover why their key stopped taking effect.
@@ -1301,9 +1385,13 @@ export async function runClaudeWithProxy(
   delete env.CLAUDECODE;
 
   // Handle API key and model based on mode
-  if (config.monitor) {
-    // Monitor mode: Don't set ANTHROPIC_API_KEY at all
-    // This allows Claude Code to use its native authentication
+  if (config.monitor || advisorNativeSession) {
+    // Monitor mode, or `--advisor` with no main model: Don't set ANTHROPIC_API_KEY
+    // at all. This allows Claude Code to use its native authentication — the
+    // placeholder key the proxy branch below installs is what NativeHandler would
+    // forward to api.anthropic.com, which 401s. The no-model advisor session takes
+    // this branch (rather than the shouldPreserveNativeAuth one) so its env stays
+    // byte-identical to what --advisor produced while it implied --monitor.
     // Delete any placeholder keys from environment
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
