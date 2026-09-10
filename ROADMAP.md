@@ -453,6 +453,8 @@ routing function as the runtime.
 Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
 `ai-docs/sessions/dev-feature-advisor-any-model-20260909-0001/scope-decisions.md` (gitignored).
 
+---
+
 ## Regression test: a Responses stream that dies mid tool-call
 
 Status: DONE. Fix shipped, unit test written and mutation-proven, and the client-side
