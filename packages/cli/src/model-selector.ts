@@ -31,8 +31,10 @@ import {
 } from "./providers/model-catalog.js";
 import {
   type DiscoveredModel,
+  type DiscoveryFailure,
+  type RosterOutcome,
   describeDiscoveryFailure,
-  discoverProviderModels,
+  discoverProviderRoster,
   getDiscoveryFailure,
   rankDiscoveredModels,
   toRosterEntry,
@@ -437,6 +439,28 @@ function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
 }
 
 /**
+ * Catalog models → picker rows: drop what cannot serve a chat completion, then
+ * dedupe, then order newest-first.
+ *
+ * **A chokepoint, not a site fix.** Pressing Enter twice at launch selected
+ * `gpt-image-2.5-flare`, an image-generation model: `isChatCapable` was applied
+ * inside `buildDiscoveredModelOutcome` and nowhere else, so every catalog path —
+ * `searchModels`, `modelsByVendor`, the top-100 default list — applied no
+ * capability filter at all. The same class of leak has been patched
+ * twice before at the site where it was noticed (`probe-discovery.ts:498`, then
+ * `pplx-embed`, then `bge`), and recurred each time, because a list is made in
+ * more than one place. Every list either UI can render now returns through here.
+ *
+ * Honest limit: `isChatCapable` is name-based, so `gemini-3.5-transcribe` still
+ * gets through (`transcribe` is in none of its patterns). Adding a pattern has a
+ * real false-positive risk on model names, and the catalog's own modality field
+ * can answer it properly — that is a models-index issue, not a CLI regex.
+ */
+export function toPickerRows(models: ModelInfo[]): ModelInfo[] {
+  return sortModelsNewestFirst(dedupeModels(models.filter((m) => isChatCapable(m.id))));
+}
+
+/**
  * Get free models. Free model discovery used to come from OpenCode Zen
  * (via models.dev), which has been removed. Free models now live in the
  * Firebase recommended catalog; this stub returns [] so `selectModel` can
@@ -633,7 +657,7 @@ async function fetchPickerModels(
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
     const infos = dedupeByProviderSpec(
       providerSlug,
-      sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)))
+      toPickerRows(vendorModels.map(catalogModelToModelInfo))
     );
     if (!searchTerm) return infos;
     const needle = searchTerm.toLowerCase();
@@ -642,10 +666,12 @@ async function fetchPickerModels(
 
   if (searchTerm) {
     const found = await catalog.searchModels(searchTerm, 100);
-    return sortModelsNewestFirst(dedupeModels(found.map(catalogModelToModelInfo)));
+    return toPickerRows(found.map(catalogModelToModelInfo));
   }
 
-  return defaultModels;
+  // The default list too, and this is the branch F1 actually observed: two
+  // Enters at launch is "All providers" with no term, which lands here.
+  return toPickerRows(defaultModels);
 }
 
 /**
@@ -1173,7 +1199,7 @@ async function loadModelsForPickerProvider(
     const vendorModels = await catalog.modelsByVendor(firebaseSlug);
     return dedupeByProviderSpec(
       providerValue,
-      sortModelsNewestFirst(dedupeModels(vendorModels.map(catalogModelToModelInfo)))
+      toPickerRows(vendorModels.map(catalogModelToModelInfo))
     );
   } catch {
     return [];
@@ -1281,6 +1307,63 @@ function describeOffer(offer: ModelOffer | undefined): string | undefined {
 }
 
 /**
+ * Which list the user is about to be shown instead of the live roster.
+ *
+ * The caller that writes the notice is not always the caller that knows this.
+ * `warnDiscoveryFailure` runs at the point discovery fails, BEFORE the
+ * catalog/free-text decision is taken further down `selectModelFromProvider`,
+ * so it can only state the default. A renderer that resolves both legs before
+ * drawing anything knows the real answer and says it.
+ *
+ * `"unknown"` emits no provenance line at all, which is the honest output when
+ * nothing has decided yet — better than naming a fallback that may not happen.
+ */
+export type FallbackTaken = "manual-entry" | "catalog" | "unknown";
+
+/**
+ * A discovery failure as the lines a presenter should show, newest line last.
+ *
+ * Pure: no I/O, no read of the module-global failure map. Split out of
+ * `warnDiscoveryFailure` so the same words can go to stderr (the classic
+ * inquirer path) and into render state (the OpenTUI picker, which must not
+ * write to a terminal it is drawing on). The wording is deliberately unchanged —
+ * it was measured against a real 401 and found to be complete; what was wrong
+ * was its presentation, not its content.
+ *
+ * Each string carries its own newlines, so a presenter that writes them
+ * verbatim reproduces today's stderr byte for byte.
+ */
+export function formatDiscoveryFailureNotice(
+  displayName: string,
+  failure: DiscoveryFailure,
+  def: Pick<ProviderDefinition, "apiKeyEnvVar" | "apiKeyUrl">,
+  fallback: FallbackTaken = "manual-entry"
+): string[] {
+  const lines = [
+    `\n⚠ ${displayName} could not list its models: ${describeDiscoveryFailure(failure)}\n`,
+  ];
+
+  // A credential problem is the one case with a concrete next step, so name the
+  // exact env var and where a key comes from. Naming the variable matters more
+  // than it looks: a provider's key is frequently shadowed by a stale value in
+  // the shell, and "check your API key" gives no clue which name to inspect.
+  if (failure.kind === "unauthorized" || failure.kind === "no-credentials") {
+    if (def.apiKeyEnvVar) {
+      lines.push(
+        `  Check ${def.apiKeyEnvVar} (a value in your shell overrides stored credentials).\n`
+      );
+    }
+    if (def.apiKeyUrl) lines.push(`  Get a key: ${def.apiKeyUrl}\n`);
+  }
+
+  if (fallback === "manual-entry") lines.push("  Falling back to manual model entry.\n\n");
+  else if (fallback === "catalog") {
+    lines.push(`  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`);
+  }
+  return lines;
+}
+
+/**
  * Tell the user why a discovery provider offered no list, on stderr, before the
  * picker degrades to the catalog / free-text path.
  *
@@ -1291,6 +1374,12 @@ function describeOffer(offer: ModelOffer | undefined): string | undefined {
  * `empty-roster` is deliberately silent: an endpoint that answers correctly
  * with nothing chat-capable is not an error, and the free-text prompt that
  * follows is the right affordance for it. Only actionable failures are named.
+ * (That judgement is right for stderr, where a notice scrolls past; a rendered
+ * panel can afford to say it in one dim row, and the picker does.)
+ *
+ * Reads the module-global failure map rather than taking a failure, because its
+ * call site has already thrown the outcome away. New callers should prefer
+ * `buildDiscoveredModelOutcome`, which carries the failure with it.
  *
  * Exported for unit tests.
  */
@@ -1302,60 +1391,199 @@ export function warnDiscoveryFailure(
   const failure = getDiscoveryFailure(provider);
   if (!failure || failure.kind === "empty-roster") return;
 
-  process.stderr.write(
-    `\n⚠ ${displayName} could not list its models: ${describeDiscoveryFailure(failure)}\n`
-  );
-
-  // A credential problem is the one case with a concrete next step, so name the
-  // exact env var and where a key comes from. Naming the variable matters more
-  // than it looks: a provider's key is frequently shadowed by a stale value in
-  // the shell, and "check your API key" gives no clue which name to inspect.
-  if (failure.kind === "unauthorized" || failure.kind === "no-credentials") {
-    if (def.apiKeyEnvVar) {
-      process.stderr.write(
-        `  Check ${def.apiKeyEnvVar} (a value in your shell overrides stored credentials).\n`
-      );
-    }
-    if (def.apiKeyUrl) process.stderr.write(`  Get a key: ${def.apiKeyUrl}\n`);
+  // Default `fallback`, i.e. "Falling back to manual model entry." — which is
+  // not always what happens next (the catalog usually answers), but this call
+  // site runs before that is decided and cannot know. Correcting the string is
+  // a follow-up with a named trigger: when `selectModelClassic` is deleted,
+  // this function and the assertion on that sentence go with it.
+  for (const line of formatDiscoveryFailureNotice(displayName, failure, def)) {
+    process.stderr.write(line);
   }
-  process.stderr.write("  Falling back to manual model entry.\n\n");
 }
 
+/**
+ * Roster → picker rows, as an injectable step.
+ *
+ * A seam, not a design: `collapseRoster` folding a non-empty roster to `[]` is
+ * the one state behind `PickerDiscoveryOutcome.collapsed-empty`, and the single
+ * shipped resolver cannot produce it (every entry lands in a group and every
+ * group yields a choice), so the variant is otherwise untestable. The
+ * alternative, `mock.module()` on the resolver registry, bleeds into sibling Bun
+ * test files and is banned here. Replace the property in a test and restore it;
+ * the same shape the discovery tests already use on `credentials.getRequestAuth`.
+ */
+export const _rosterCollapse = { collapse: collapseRoster };
+
+/**
+ * What one discovery provider's model list actually is — all five states that
+ * used to be the same empty array, plus the one where nothing was attempted.
+ *
+ * `buildDiscoveredModelRows` returned `[]` for a rejected API key, an
+ * unreachable endpoint, a genuinely empty roster, a roster where nothing was
+ * chat-capable, and a roster that collapsed to nothing — and its caller fell
+ * through to the cloud catalog for all of them, silently. The user's report was
+ * *"it just shows fewer model names, like the provider does not have any
+ * models"*: information destroyed at a return statement, which no amount of UI
+ * can recover. Hence a discriminated union produced where the information still
+ * exists.
+ *
+ * - `rows` is **non-empty by construction** — the type says so, and the three
+ *   empty cases below exist precisely so it can.
+ * - `servedCount` / `chatCount` make a PARTIAL filter visible too: today the
+ *   difference between "served 40" and "40 of which 12 are chat models" is
+ *   discarded.
+ * - `fallbackRows` rides along on the four recoverable variants, resolved
+ *   CONCURRENTLY with discovery rather than after it (§3.6 of the design): a
+ *   serial second fetch would put the feature's worst latency on exactly the
+ *   path the complaint is about. Empty when the catalog has nothing either, in
+ *   which case the only remaining affordance is free-text entry.
+ * - `unsupported` is not a failure. ~25 pickable providers declare no
+ *   `modelDiscovery`; for them the catalog list is the normal, correct UI and a
+ *   notice would be noise on the majority case.
+ */
+export type PickerDiscoveryOutcome =
+  | { kind: "rows"; rows: [ModelInfo, ...ModelInfo[]]; servedCount: number; chatCount: number }
+  | { kind: "all-filtered"; servedCount: number; sampleIds: string[]; fallbackRows: ModelInfo[] }
+  | { kind: "collapsed-empty"; servedCount: number; chatCount: number; fallbackRows: ModelInfo[] }
+  | { kind: "empty-roster"; failure: DiscoveryFailure; fallbackRows: ModelInfo[] }
+  | { kind: "failed"; failure: DiscoveryFailure; notice: string[]; fallbackRows: ModelInfo[] }
+  | { kind: "unsupported"; reason: "no-descriptor" | "no-base-url" | "no-fetcher" };
+
+/**
+ * One discovery provider's list, with the reason when there isn't one.
+ *
+ * Starts both legs at once — the live roster and the cloud-catalog fallback —
+ * and returns one settled answer, so a view has one state and one affordance per
+ * provider instead of two spinners to reconcile. The catalog leg costs a lookup
+ * a healthy roster does not need; that is cheaper than doubling the wait on the
+ * failure path, and `catalog.modelsByVendor` caches.
+ */
+export async function buildDiscoveredModelOutcome(
+  provider: string,
+  displayName: string,
+  catalog: CatalogClient
+): Promise<PickerDiscoveryOutcome> {
+  const [rosterResult, fallbackResult] = await Promise.allSettled([
+    discoverProviderRoster(provider),
+    loadModelsForPickerProvider(provider, catalog),
+  ]);
+
+  const fallbackRows = fallbackResult.status === "fulfilled" ? fallbackResult.value : [];
+  // `discoverProviderRoster` never rejects by contract, but a contract is not a
+  // type: honour it rather than asserting it, so a future regression there shows
+  // up as a named failure instead of an unhandled rejection behind a renderer.
+  const roster: RosterOutcome =
+    rosterResult.status === "fulfilled"
+      ? rosterResult.value
+      : {
+          kind: "failed",
+          failure: {
+            kind: "unreachable",
+            provider,
+            detail: String((rosterResult.reason as Error)?.message ?? rosterResult.reason),
+          },
+        };
+
+  if (roster.kind === "unsupported") return { kind: "unsupported", reason: roster.reason };
+
+  if (roster.kind === "failed") {
+    const { failure } = roster;
+    // `empty-roster` is its own variant rather than a `failed` with a kind to
+    // switch on, because it is not an error: the endpoint answered. It renders
+    // in the NOTICE tier, visibly distinct from a rejected key.
+    if (failure.kind === "empty-roster") return { kind: "empty-roster", failure, fallbackRows };
+    const def = getProviderByName(provider);
+    const notice = formatDiscoveryFailureNotice(
+      displayName,
+      failure,
+      // A runtime custom endpoint may not be in the definition table at all;
+      // empty strings suppress the two guidance lines, which is right — there is
+      // no env var or key URL to name.
+      def ?? { apiKeyEnvVar: "", apiKeyUrl: "" },
+      fallbackRows.length > 0 ? "catalog" : "manual-entry"
+    );
+    return { kind: "failed", failure, notice, fallbackRows };
+  }
+
+  const served = rankDiscoveredModels(roster.models);
+  const servedCount = served.length;
+  const discovered = served.filter((m) => isChatCapable(m.id));
+  const chatCount = discovered.length;
+  if (chatCount === 0) {
+    // Served N, none of them chat-capable. Invisible today, and self-explaining
+    // only if the ids come with it — they are usually embeddings or wildcard
+    // routes, which a reader recognises at a glance.
+    return {
+      kind: "all-filtered",
+      servedCount,
+      sampleIds: served
+        .filter((m) => !isChatCapable(m.id))
+        .slice(0, 3)
+        .map((m) => m.id),
+      fallbackRows,
+    };
+  }
+
+  const [head, ...tail] = buildRowsFromDiscovered(provider, displayName, discovered, fallbackRows);
+  if (head === undefined) {
+    // Unreachable through the one shipped resolver, and deliberately still
+    // modelled: `{kind:"rows", rows: []}` would be an empty panel with no
+    // explanation, which is the exact defect class this type removes. Destructured
+    // rather than length-checked so the non-empty tuple needs no cast to assert.
+    return { kind: "collapsed-empty", servedCount, chatCount, fallbackRows };
+  }
+  return { kind: "rows", rows: [head, ...tail], servedCount, chatCount };
+}
+
+/**
+ * The picker rows for a provider's live roster, or `[]` for any of the six
+ * reasons there isn't one.
+ *
+ * A wrapper over {@link buildDiscoveredModelOutcome} since the outcome type
+ * landed. The classic inquirer path keeps using it and keeps asking
+ * `warnDiscoveryFailure` why the list was empty afterwards — which still works,
+ * because every failure is still recorded in `model-discovery.ts`'s map.
+ */
 export async function buildDiscoveredModelRows(
   provider: string,
   displayName: string,
   catalog: CatalogClient
 ): Promise<ModelInfo[]> {
-  const discovered = rankDiscoveredModels(await discoverProviderModels(provider)).filter((m) =>
-    isChatCapable(m.id)
-  );
-  if (discovered.length === 0) return [];
+  const outcome = await buildDiscoveredModelOutcome(provider, displayName, catalog);
+  return outcome.kind === "rows" ? outcome.rows : [];
+}
 
+/**
+ * Chat-capable discovered models → picker rows. Pure; no I/O.
+ *
+ * `catalogRows` is the vendor catalog's list for this provider, already fetched
+ * by the caller. A per-token discovery provider should show the real rate, and
+ * neither the live endpoint nor the slim catalog reports one — so the price
+ * comes from there. Flat-rate providers (every discovery provider today) ignore
+ * it entirely.
+ */
+function buildRowsFromDiscovered(
+  provider: string,
+  displayName: string,
+  discovered: DiscoveredModel[],
+  catalogRows: ModelInfo[]
+): ModelInfo[] {
   const subscription = isSubscriptionProvider(provider);
   const local = getProviderByName(provider)?.isLocal === true;
   // Neither a flat-rate plan nor a local daemon charges per token, and the
   // vendor catalog has nothing to say about either — Firebase does not list a
   // model someone pulled onto their own machine.
   const flatRate = subscription || local;
-  // A per-token discovery provider should show the real rate; the live endpoint
-  // doesn't report one and the slim catalog carries no prices, so ask the
-  // vendor catalog. Skipped for flat-rate providers, which is every discovery
-  // provider today, so nothing pays for this lookup.
   const pricingById = flatRate
     ? new Map<string, ModelInfo["pricing"]>()
-    : new Map(
-        (await loadModelsForPickerProvider(provider, catalog)).map((m) => [
-          m.id.toLowerCase(),
-          m.pricing,
-        ])
-      );
+    : new Map(catalogRows.map((m) => [m.id.toLowerCase(), m.pricing]));
 
   // Fold variant explosions into the rows a human actually picks. Identity for
   // every provider without a resolver, so this is a no-op except for Devin,
   // where 167 served uids are ~39 real choices multiplied out by reasoning tier
   // and speed premium. The chosen id is always a real wire id, so it still
   // round-trips through buildExplicitModelSpec and argv unchanged.
-  const choices = collapseRoster(provider, discovered.map(toRosterEntry));
+  const choices = _rosterCollapse.collapse(provider, discovered.map(toRosterEntry));
   const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
   // The live endpoint decides WHICH models appear (entitlement) and overrides
