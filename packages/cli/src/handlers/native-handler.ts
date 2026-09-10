@@ -1,16 +1,26 @@
 import type { Context } from "hono";
 import { credentials } from "../auth/credentials/authority.js";
-import { hasOpSources, resolveOpKeyForEnvVars } from "../auth/credentials/op-source.js";
+// The HARNESS extractSessionId: takes the whole request and reads
+// `metadata.user_id`'s JSON `session_id`. NOT the same-named function in
+// session-events/index.ts, which takes the metadata object instead.
+import { extractSessionId } from "../behavior/harness.js";
 import { log, maskCredential } from "../logger.js";
-import { getApiKey } from "../profile-config.js";
 import {
-  fetchMultiModelAdvice,
+  type AdvisorApiKeys,
+  type AdvisorRouteKind,
+  advisorCredentialsFor,
+  createAdvisorStreamScanner,
   findPendingAdvisorToolResults,
+  getAdvisorCall,
   loadAdvisorSwapConfig,
   logAdvisorEvent,
-  recordAdvisorEventsFromChunk,
+  markAdvisorCallConsumed,
+  missingAdvisorResult,
+  prepareLegacyStubResult,
   recordAdvisorEventsFromResponseBody,
+  reportUnrecordedAdvisorCalls,
   rewriteAdvisorToolResults,
+  runAdvisorCall,
   stripAdvisorBeta,
   stubAdvisorAdvice,
   swapAdvisorToolInBody,
@@ -20,21 +30,35 @@ import { stripUnsignedThinkingBlocks } from "./shared/thinking-signature.js";
 import type { ModelHandler } from "./types.js";
 
 /**
- * Resolve the advisor provider keys through the credential layer (env → config →
- * op://) rather than raw process.env reads, so the multi-model advisor path goes
- * through the single layer like every other signer.
- *
- * openrouter/openai resolve via the authority (their providers sign with a plain
- * API key). google is special: the "google" authority alias is the Gemini Code
- * Assist OAuth credential (an OAuth token, NOT the GEMINI_API_KEY the advisor's
- * direct Gemini call needs), so google resolves the raw GEMINI/GOOGLE_API_KEY
- * through env → config → op:// directly.
+ * True for the placeholder key claude-runner installs in proxy-auth mode
+ * (`sk-ant-api03-placeholder-not-used-…`). It is not a credential: sending it
+ * to api.anthropic.com is a guaranteed 401.
  */
-async function resolveAdvisorKeys(): Promise<{
-  openrouter?: string;
-  google?: string;
-  openai?: string;
-}> {
+function isPlaceholderAnthropicKey(key: string): boolean {
+  return /placeholder/i.test(key);
+}
+
+/**
+ * Resolve the advisor keys through the credential authority — env → aliases →
+ * config → keychain → op:// — the single layer every other signer uses. Only
+ * the credentials the configured routes need (`advisorCredentialsFor`) are
+ * resolved, so an unused provider never triggers a 1Password handshake.
+ *
+ * google: the authority's "google" provider is the DIRECT Gemini API
+ * (GEMINI_API_KEY); Antigravity and Code Assist are registered under their own
+ * names. GOOGLE_API_KEY, which that provider does not alias, stays as a
+ * last-resort env fallback because the advisor always accepted it.
+ *
+ * anthropic (collector only): the inbound `x-api-key` when it is a real key,
+ * else ANTHROPIC_API_KEY from the authority. The inbound `authorization`
+ * header is Claude Code's OAuth bearer and is NEVER sent to a collector; nor is
+ * ANTHROPIC_AUTH_TOKEN, which the native-anthropic provider would otherwise
+ * hand out as an `x-api-key`.
+ */
+async function resolveAdvisorKeys(
+  needed: ReadonlySet<AdvisorRouteKind>,
+  inboundApiKey: string | undefined
+): Promise<AdvisorApiKeys> {
   const keyFromAuthority = async (name: string): Promise<string | undefined> => {
     try {
       const auth = await credentials.getRequestAuth(name, { model: "" });
@@ -44,24 +68,28 @@ async function resolveAdvisorKeys(): Promise<{
       return undefined;
     }
   };
-  const geminiKey = async (): Promise<string | undefined> => {
-    const local =
-      process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || getApiKey("GEMINI_API_KEY");
-    if (local) return local;
-    if (hasOpSources()) {
-      const r = await resolveOpKeyForEnvVars(new Set(["GEMINI_API_KEY", "GOOGLE_API_KEY"]), {
-        onAuthFailure: "skip",
-      });
-      return r.GEMINI_API_KEY || r.GOOGLE_API_KEY || undefined;
+  const googleKey = async (): Promise<string | undefined> =>
+    (await keyFromAuthority("google")) || process.env.GOOGLE_API_KEY || undefined;
+  const anthropicKey = async (): Promise<string | undefined> => {
+    if (inboundApiKey && !isPlaceholderAnthropicKey(inboundApiKey)) return inboundApiKey;
+    try {
+      const auth = await credentials.getRequestAuth("native-anthropic", { model: "" });
+      const k = auth.headers["x-api-key"];
+      if (!k || k === process.env.ANTHROPIC_AUTH_TOKEN || isPlaceholderAnthropicKey(k)) {
+        return undefined;
+      }
+      return k;
+    } catch {
+      return undefined;
     }
-    return undefined;
   };
-  const [openrouter, google, openai] = await Promise.all([
-    keyFromAuthority("openrouter"),
-    geminiKey(),
-    keyFromAuthority("openai"),
+  const [openrouter, google, openai, anthropic] = await Promise.all([
+    needed.has("openrouter") ? keyFromAuthority("openrouter") : undefined,
+    needed.has("google") ? googleKey() : undefined,
+    needed.has("openai") ? keyFromAuthority("openai") : undefined,
+    needed.has("anthropic") ? anthropicKey() : undefined,
   ]);
-  return { openrouter, google, openai };
+  return { openrouter, google, openai, anthropic };
 }
 
 export class NativeHandler implements ModelHandler {
@@ -111,6 +139,10 @@ export class NativeHandler implements ModelHandler {
     //      get their error payload replaced with stubbed advisor advice.
     // -------------------------------------------------------------------
     const advisorCfg = loadAdvisorSwapConfig(this.advisorModels, this.advisorCollector);
+    // Pending advisor calls are keyed by Claude Code session: `serve` and the
+    // MCP path run several conversations through one proxy. Absent → the
+    // documented `__no_session__` bucket (see NO_SESSION_BUCKET).
+    const advisorSessionId = extractSessionId(payload);
     let advisorSwapped: ReturnType<typeof swapAdvisorToolInBody> = null;
     let advisorRewrittenIds: string[] = [];
     if (advisorCfg.enabled) {
@@ -130,31 +162,48 @@ export class NativeHandler implements ModelHandler {
       // so it sees the possibly-mutated payload. In practice the two are
       // orthogonal — rewrite looks at messages[].content tool_result blocks,
       // swap looks at tools[].
+      // A call's result is prepared once and RETAINED: Claude Code re-sends
+      // every earlier advisor tool_result on each turn, still carrying its own
+      // "No such tool" error, and each must get the same text back — replayed,
+      // never re-fetched. Entries are keyed by this request's session.
+      const cachedResult = (id: string) => getAdvisorCall(id, advisorSessionId)?.result;
+
       if (advisorCfg.models && advisorCfg.models.length > 0) {
-        // Multi-model advisor: async pre-fetch from external models
-        const pendingIds = findPendingAdvisorToolResults(payload);
+        // Multi-model advisor: async pre-fetch from external models.
+        //
+        // Pass 1 restores advice already delivered on earlier turns, so the
+        // panel below reads the conversation the model actually saw.
+        rewriteAdvisorToolResults(payload, cachedResult, advisorSessionId);
+
+        const pendingIds = findPendingAdvisorToolResults(payload, advisorSessionId);
         if (pendingIds.length > 0) {
-          const adviceMap = new Map<string, string>();
+          const freshIds: string[] = [];
           for (const id of pendingIds) {
+            if (cachedResult(id)) continue;
             // Resolve advisor provider keys through the credential authority
-            // (env → config → op://) — the single source of truth — instead of
-            // raw process.env reads. anthropic comes from the inbound request.
-            const advisorKeys = await resolveAdvisorKeys();
-            const advice = await fetchMultiModelAdvice(
-              id,
-              payload.messages as any[],
-              advisorCfg.models,
-              advisorCfg.collector ?? null,
-              {
-                ...advisorKeys,
-                anthropic: originalHeaders["x-api-key"],
-              }
+            // (env → config → keychain → op://) — the single source of truth.
+            const advisorKeys = await resolveAdvisorKeys(
+              advisorCredentialsFor(advisorCfg.models, advisorCfg.collector),
+              originalHeaders["x-api-key"]
             );
-            adviceMap.set(id, advice);
+            const outcome = await runAdvisorCall({
+              toolUseId: id,
+              sessionId: advisorSessionId,
+              messages: payload.messages as any[],
+              models: advisorCfg.models,
+              collector: advisorCfg.collector ?? null,
+              apiKeys: advisorKeys,
+              cfg: advisorCfg,
+            });
+            markAdvisorCallConsumed(id, outcome.result, advisorSessionId);
+            freshIds.push(id);
           }
+          // Pass 2: every tracked call now has a result. The S2 fallback is
+          // unreachable by construction and reports itself as an error if not.
           advisorRewrittenIds = rewriteAdvisorToolResults(
             payload,
-            (id) => adviceMap.get(id) ?? stubAdvisorAdvice(id)
+            (id) => cachedResult(id) ?? missingAdvisorResult(id),
+            advisorSessionId
           );
           if (advisorRewrittenIds.length > 0) {
             log(
@@ -163,6 +212,7 @@ export class NativeHandler implements ModelHandler {
             logAdvisorEvent(advisorCfg, {
               kind: "multi_model_rewrite",
               ids: advisorRewrittenIds,
+              freshIds,
               models: advisorCfg.models,
               collector: advisorCfg.collector,
               model: target,
@@ -170,8 +220,15 @@ export class NativeHandler implements ModelHandler {
           }
         }
       } else {
-        // Legacy: stub advice (env var mode)
-        advisorRewrittenIds = rewriteAdvisorToolResults(payload, stubAdvisorAdvice);
+        // Legacy: stub advice (env var mode), stub path S1.
+        for (const id of findPendingAdvisorToolResults(payload, advisorSessionId)) {
+          if (!cachedResult(id)) prepareLegacyStubResult(advisorCfg, id, advisorSessionId);
+        }
+        advisorRewrittenIds = rewriteAdvisorToolResults(
+          payload,
+          (id) => cachedResult(id) ?? stubAdvisorAdvice(id),
+          advisorSessionId
+        );
         if (advisorRewrittenIds.length > 0) {
           log(
             `[Native][advisor-swap] rewrote ${advisorRewrittenIds.length} error tool_result(s) with stub advice: ${advisorRewrittenIds.join(", ")}`
@@ -183,6 +240,11 @@ export class NativeHandler implements ModelHandler {
           });
         }
       }
+
+      // Stub path S10: an advisor tool_result still carrying Claude Code's own
+      // "No such tool" error for an id this session never recorded. Must run
+      // after the rewrite, which clears the error text from every known call.
+      reportUnrecordedAdvisorCalls(advisorCfg, payload, advisorSessionId);
 
       // Dump request body (trimmed) so we can inspect follow-ups that carry
       // tool_result blocks — critical evidence for Stage 2 debugging.
@@ -279,6 +341,9 @@ export class NativeHandler implements ModelHandler {
               if (!reader) throw new Error("No reader");
 
               const decoder = new TextDecoder();
+              // One advisor tap per stream: its own SSE reassembly buffer, and
+              // ids recorded into this request's session bucket.
+              const advisorScanner = createAdvisorStreamScanner(advisorCfg, advisorSessionId);
               let buffer = "";
               let eventLog = "";
 
@@ -294,7 +359,7 @@ export class NativeHandler implements ModelHandler {
                   buffer += chunkText;
                   // Advisor tap: extract any advisor tool_use ids and record
                   // stream events to the log (no-op when disabled).
-                  recordAdvisorEventsFromChunk(advisorCfg, chunkText);
+                  advisorScanner.push(chunkText);
                   const lines = buffer.split("\n");
                   buffer = lines.pop() || "";
                   for (const line of lines) if (line.trim()) eventLog += `${line}\n`;
@@ -329,7 +394,7 @@ export class NativeHandler implements ModelHandler {
       // — so it is read structurally rather than grepped as SSE bytes.
       if (advisorCfg.enabled) {
         try {
-          recordAdvisorEventsFromResponseBody(advisorCfg, data);
+          recordAdvisorEventsFromResponseBody(advisorCfg, data, advisorSessionId);
         } catch {
           // ignore scan failures — logging-only
         }
