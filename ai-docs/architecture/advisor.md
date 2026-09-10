@@ -485,6 +485,29 @@ What these runs prove, beyond unit tests:
   minted a fake advisor record and a false user-visible warning. Text the model
   wrote is untrusted input and can never be the sole signal.
 
+### After the panel-prompt and logger fixes
+
+Three further runs, from a build of the working tree:
+
+| Run | Config | Origins | Advice |
+|---|---|---|---|
+| C | `grok-4.6`, panel `deepseek-v4-pro` | 2 x `upstream` 200 | answers the questions asked |
+| B | `claude-sonnet-5`, native | 2 x `upstream` 200 | answers the questions asked (was off topic before) |
+| F | `grok-4.6`, two panel models, default collector | 4 x `upstream` 200 | collector correctly dropped, answers concatenated |
+
+`grep -c "No such tool"` returns 0 across every debug log, origin log and
+stdout in all three runs.
+
+Run F is the collector rule working end to end: the notice reads `collector:
+none — the default collector haiku needs ANTHROPIC_API_KEY, which was not
+found; panel answers will be concatenated`, and the log agrees.
+
+The logger fix is confirmed the same way: the extractor now exits 0 on a fresh
+log, every `data:` payload parses, and the longest lines are 571 to 578
+characters, past the old 300-character cut. Replacing the corrupt fixture with a
+clean capture turned the four failing capture tests green **without editing
+them**, which is the proof that the tests were right and the fixture was wrong.
+
 ### Evidence files
 
 Under the session directory (gitignored):
