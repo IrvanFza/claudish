@@ -207,6 +207,25 @@ This is the one place the 400-not-503 doctrine (`composed-handler.ts` ~line 461)
 
 `latency_ms` for a retried turn includes the backoff waits by design: the honest figure is time-to-usable-response.
 
+## A stream that dies mid tool-call (`openai-responses-sse.ts`)
+
+`content_block_start` for a tool goes out the moment `response.output_item.added` arrives — before a single argument byte exists. From that point the block is committed and claudish cannot un-send it. So when the socket dies while `function_call_arguments.delta` is still streaming, the only lever left is **how the message ends**.
+
+It used to end `end_turn`. That is the one ending which means "the turn finished, run the tool", so Claude Code ran it on truncated JSON:
+
+```
+InputValidationError: Write was called with input that could not be parsed as JSON.
+You sent (first 200 of 9437 bytes): {"file_path":".../catalog-generation.test.ts","content":"import { describe, expect, it } from \"bun:test\";\nimport typ
+```
+
+models-index subagent `acd91c47262e06a7a`, `gpt-5.6-sol` via `openai-codex`, 2026-09-09 15:48:27Z, followed by `[Stream error: TypeError: The socket connection was closed unexpectedly]`. It recurred at 15:56:32Z in the same run. Across the local Claude Code transcripts, 10 of 20 `__unparsedToolInput` failures are this path; the other 10 are the model emitting genuinely invalid JSON (`{"file_path": "...", "offset": 55, , "limit": 135}`), which is not claudish's to fix — the harness error prompts a retry that works.
+
+**The head sniffer cannot cover this.** `stream-head-sniffer.ts` decides while the status code is still ours, which is the first seconds of the stream. This failure landed 93 s in, deep in the body. Once content bytes are flowing there is no retry claudish can perform on the client's behalf.
+
+**`max_tokens` does not rescue it.** v7.12.7 reports `stop_reason: "max_tokens"` for a turn cut off by `response.incomplete`, on the stated contract that the client then discards the partial block. It does not. Claude Code **2.1.217** executed a `max_tokens`-terminated `Write` and returned the same `InputValidationError` (passflow session, 2026-07-22 13:27:31Z — six days after that fix shipped). The `max_output_tokens` path keeps the label anyway: it is the honest one, and that truncation is *deterministic*, so an `error` event there would only make the client retry a request that truncates again at the same place.
+
+**The fix:** when `openToolBlocks` is non-empty in the parser's catch block, end the turn with an SSE `error` event instead of `end_turn`. No completed `tool_use` reaches the client, and a dead socket is transient, so the client's own retry is the right remedy. `devin-connect.ts` ends a mid-stream fault the same way. With no tool call in flight the inline `[Stream error: ...]` text block is kept — partial prose is harmless and visible.
+
 ## The remap has a downstream reader: `upstream_status` (v7.62.0, #148)
 
 The 400-not-503 remap is right for the CLIENT and wrong for anything downstream that
