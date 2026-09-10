@@ -17,6 +17,10 @@
 
 import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
+import {
+  catalogIncompatibilityMessage,
+  readCatalogIncompatibility,
+} from "../providers/catalog-compatibility.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
 
@@ -273,6 +277,14 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
+  // The server answered in a contract this build cannot read. Checked FIRST, and
+  // the order is the argument: this variant carries no `reason`, and every branch
+  // below says some version of "using cached version" — the cached version is
+  // exactly what `readAllModelsCache` has just stopped handing out, so that line
+  // would be false at the moment it matters most.
+  if (outcome.kind === "incompatible") return reportIncompatibleCatalog(outcome);
+
+
   // `disabled` is not a failure and must never reach the branches below. Nobody
   // attempted a fetch, so the cache state is irrelevant: with no cache at all
   // the `missing` branch would print HARD_FAIL_MESSAGE — "cannot reach model
@@ -321,4 +333,28 @@ export async function warmCatalogIfNeeded(
   // state === "missing" + fetch failed → hard fail.
   process.stderr.write(HARD_FAIL_MESSAGE);
   return "hard_fail";
+}
+
+
+/**
+ * Announce a catalog this build cannot read, and let the launch proceed.
+ *
+ * "warned", not "hard_fail", and the distinction is the point: hard_fail exits
+ * the CLI, which would strand a user running an explicit `gk@grok-code-fast`.
+ * That spec names its own provider, so claudish infers no subscription and
+ * substitutes nothing — there is no mis-billing to protect them from. The
+ * launcher therefore says it once, plainly, and proceeds; the bare-name path
+ * fails loudly per request in `routeBare` with this same text.
+ *
+ * Printed regardless of `--quiet`, like every other warning in this file.
+ */
+function reportIncompatibleCatalog(
+  outcome: Extract<RefreshOutcome, { kind: "incompatible" }>
+): WarmOutcome {
+  const recorded = readCatalogIncompatibility() ?? {
+    detectedAt: new Date().toISOString(),
+    serverContractVersion: outcome.serverContractVersion,
+  };
+  process.stderr.write(`${catalogIncompatibilityMessage(recorded)}\n`);
+  return "warned";
 }
