@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { resetThemeModeForTests, setThemeMode } from "../theme/theme-mode.js";
-import { C, STAGE_BG, STAGE_FG, latencyBg, latencyFg } from "./theme.js";
+import { C, CONTRAST_REFERENCE, STAGE_BG, STAGE_FG, latencyBg, latencyFg } from "./theme.js";
 import type { TuiPalette } from "./theme.js";
 import { ramps, tokens } from "./viz/tokens.js";
 
@@ -115,11 +115,109 @@ describe("light TUI palette contrast", () => {
     expect(contrastRatio(C.chipKeyBg, C.bgAlt)).toBeGreaterThanOrEqual(1.7);
   });
 
+  it("keeps the detail pane's dim tiers legible on the PANEL — there is no band", () => {
+    // The detail rows sit on the dialog's own `bgAlt`, with no fill of their own: a
+    // pane separated by an absolute fill fights whichever theme we guessed, and the
+    // owner rejected exactly that ("all text in description has different background
+    // colours... please remove"). Receding is the TEXT's job, so the two tiers that
+    // do the receding still have to clear a text-grade ratio on the panel itself.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      expect({ mode, ratio: contrastRatio(C.fgMuted, C.bgAlt) >= 4.5 }).toEqual({
+        mode,
+        ratio: true,
+      });
+    }
+  });
+
   it("re-snapshots semantic tokens and ramps", () => {
     setThemeMode("light");
     expect(tokens.success).toBe(C.green);
     expect(tokens.bgPanel).toBe(C.bgAlt);
     expect(ramps.load[0]).toBe(C.green);
+  });
+});
+
+/**
+ * Every fill WE paint, measured against BOTH reference terminals — the rule claudeup
+ * enforces in `theme-adaptive-colors.test.ts` and the one this repo was breaking.
+ *
+ * A chip lands on a page we do not control. `theme-mode.ts` detects light vs dark and
+ * we tune two palettes, but detection can fail (an unknown answer resolves to DARK),
+ * tmux can lie about `COLORFGBG`, and a cream or solarized page is neither of our two
+ * references. So a fill has to separate from BOTH or it is invisible somewhere real:
+ * the rejected keycap grey measured 1.50:1 on the dark reference, which is a chip that
+ * is not a chip.
+ *
+ * 3:1, NOT 4.5:1, AND THAT IS NOT A RELAXATION. No single colour can clear 4.5:1
+ * against both a cream and a near-black page — the luminance bands do not overlap —
+ * and 3:1 is WCAG's own bar for a UI component, which is what a chip is. The ink ON
+ * the chip is held to 4.5:1 separately, and it is plain white, because we own both
+ * sides of a fill and its contrast should not be a function of the user's theme.
+ */
+describe("owned chip fills clear 3:1 on BOTH reference terminals", () => {
+  const chipFills = [
+    "pillKeyBg", // FREE / SUB / local — the positive family
+    "pillOauthBg", // oauth pills in the config TUI's AUTH column
+    "chipKeycapBg", // footer keycaps
+    "tabActiveBg", // the active tab pill
+    "red", // the `HTTP 401` chip and the discovery-failure rule
+  ] as const satisfies ReadonlyArray<keyof TuiPalette>;
+
+  for (const mode of ["light", "dark"] as const) {
+    for (const fill of chipFills) {
+      it(`separates ${fill} from both pages in the ${mode} palette`, () => {
+        setThemeMode(mode);
+        for (const page of Object.values(CONTRAST_REFERENCE)) {
+          expect({ fill, page, ok: contrastRatio(C[fill], page) >= 3 }).toEqual({
+            fill,
+            page,
+            ok: true,
+          });
+        }
+      });
+    }
+  }
+
+  it("keeps WHITE ink legible on every fill that carries a label", () => {
+    // `C.ink` is `#ffffff` in both palettes for exactly this reason: where we choose
+    // the fill we choose the ink, so the ratio is deterministic instead of a function
+    // of the user's page. TWO fills are excluded and each for its own reason: `C.red`
+    // is a NEON on dark (`#ff003c`), bright enough that `pickInk` correctly puts DARK
+    // ink on it, and `tabActiveBg` carries its own `tabActiveFg` rather than `C.ink`.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      for (const fill of ["pillKeyBg", "pillOauthBg", "chipKeycapBg"] as const) {
+        expect({ mode, fill, ok: contrastRatio(C.ink, C[fill]) >= 4.5 }).toEqual({
+          mode,
+          fill,
+          ok: true,
+        });
+      }
+    }
+  });
+
+  it("A KEYCAP IS NEVER THE NEUTRAL GREY AGAIN, in either palette", () => {
+    // The regression this exists for shipped twice, once per palette: a grey keycap
+    // reads as a faintly tinted word rather than as a key you press, and the owner
+    // reported it from a live light-theme run. `chipKeyBg` survives as the config
+    // TUI's two-tone footer segment, whose ink is theme-following `C.fg` and which is
+    // measured against `bgAlt` above — a different object with a different contract.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      expect({ mode, same: C.chipKeycapBg === C.chipKeyBg }).toEqual({ mode, same: false });
+    }
+  });
+
+  it("holds the POSITIVE family apart from the FAILURE hue", () => {
+    // `SUB` shipped in `tokens.warn`, the hue this app spends on failure, under a
+    // label that means the opposite of a failure. Three reviewers read it as correct,
+    // so the separation is asserted rather than described.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      expect(C.pillKeyBg).not.toBe(C.red);
+      expect(C.pillKeyBg).not.toBe(C.orange);
+    }
   });
 });
 

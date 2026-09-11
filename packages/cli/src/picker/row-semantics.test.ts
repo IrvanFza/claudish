@@ -11,17 +11,27 @@ import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
  * rendered as absent; and no rendered notice may contain the substring `undefined`.
  */
 import type { DiscoveryFailure } from "../providers/model-discovery.js";
+import { resetThemeModeForTests, setThemeMode } from "../theme/theme-mode.js";
+import { C } from "../tui/theme.js";
+import { truncate } from "../tui/viz/text.js";
+import { tokens } from "../tui/viz/tokens.js";
 import {
   discoveryNoticeContent,
   mergeCredentialLines,
   noticeRows,
   wrapWords,
 } from "./DiscoveryNotice.js";
-import { truncate } from "../tui/viz/text.js";
 import { capabilityWords, descriptionLines, detailText, providerFactsText } from "./detail.js";
 import { type PickerRow, dedupeByModelId, dedupeByProviderModel } from "./hooks/usePickerModels.js";
 import { providerColumn } from "./layout.js";
-import { billingLabel, priceFg, priceLabel, readinessGlyph } from "./rows.js";
+import {
+  billingLabel,
+  priceChipBg,
+  priceFg,
+  priceLabel,
+  priceVaries,
+  readinessGlyph,
+} from "./rows.js";
 
 const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
   id: "m",
@@ -53,20 +63,61 @@ describe("priceLabel", () => {
   });
 });
 
-describe("priceFg", () => {
-  test("the three labels that are ABOUT MONEY are three distinct colours", () => {
-    // `FREE` (costs nothing), `SUB` (a flat-rate plan, so no per-token number
-    // exists) and a rate are three different financial claims, and a reader
-    // scanning for a cheap model separates them by hue before reading the word.
-    expect(new Set(["FREE", "SUB", "$2.25"].map(priceFg)).size).toBe(3);
+describe("priceFg / priceChipBg", () => {
+  test("`SUB` IS NEVER THE FAILURE HUE — in either form, in either theme", () => {
+    // THE DEFECT THIS PINS SHIPPED. `SUB` was `tokens.warn`, which is `C.orange`:
+    // `#ff8800` on dark and a rust `#c2410c` on light. Red-orange is what this app
+    // spends on a failure, and `SUB` is the opposite of one — it is the route the
+    // user already pays for, free at the point of use. Three reviewers read the old
+    // colour as correct, so the rule is asserted rather than described.
+    for (const mode of ["dark", "light"] as const) {
+      setThemeMode(mode);
+      expect(priceFg("SUB")).not.toBe(tokens.warn);
+      expect(priceFg("SUB")).not.toBe(tokens.error);
+      expect(priceChipBg("SUB")).not.toBe(tokens.warn);
+      expect(priceChipBg("SUB")).not.toBe(tokens.error);
+    }
+    resetThemeModeForTests();
   });
 
-  test("the two labels that are NOT prices share the dim tier, deliberately", () => {
-    // `local` and `N/A` are both "there is no number here". Giving them separate
-    // hues would put two more meanings into a column that already carries three,
-    // and neither is a fact the reader acts on.
-    expect(priceFg("local")).toBe(priceFg("N/A"));
-    expect(priceFg("local")).not.toBe(priceFg("$2.25"));
+  test("`FREE`, `SUB` and `local` share ONE POSITIVE tier, because they make one claim", () => {
+    // All three say "running this costs you no per-token money"; the label says by
+    // which mechanism. Three hues for one claim is rule 1 read backwards, and the
+    // owner asked for them as one family in as many words.
+    expect(priceFg("SUB")).toBe(priceFg("FREE"));
+    expect(priceFg("SUB")).toBe(priceFg("local"));
+    expect(priceFg("SUB")).toBe(tokens.success);
+    expect(priceChipBg("SUB")).toBe(priceChipBg("FREE"));
+    expect(priceChipBg("SUB")).toBe(priceChipBg("local"));
+  });
+
+  test("a chip FILL is a muted pill, never the neon foreground", () => {
+    // `aesthetics-and-color.md`: a colour tuned to read as text is harsh as a solid
+    // block. `C.pillKeyBg` is already the `FREE` chip on the session summary card,
+    // so the picker borrows that object rather than inventing a second green.
+    expect(priceChipBg("FREE")).toBe(C.pillKeyBg);
+    expect(priceChipBg("FREE")).not.toBe(C.green);
+  });
+
+  test("A VALUE IS NOT A TOKEN, so a price numeral gets no chip at all", () => {
+    // A chip is for a fixed, small vocabulary. Chipping `$0.75` would put a fill
+    // behind every row of the column — the rectangle — and would claim the numeral
+    // is one of a handful of states rather than a measured amount.
+    expect(priceChipBg("$2.25")).toBeNull();
+    expect(priceChipBg("$30.00")).toBeNull();
+    // `N/A` is the ABSENCE of the fact, not a state of it.
+    expect(priceChipBg("N/A")).toBeNull();
+  });
+
+  test("`N/A` is the ABSENCE of the fact, so it stays in the dim tier alone", () => {
+    // `local` used to share this tier on the grounds that both mean "there is no
+    // number here". They do not mean the same thing: `local` is a positive claim the
+    // reader acts on — this route costs nothing and needs no network — while `N/A`
+    // is the catalog declining to answer. So `local` joined the positive family and
+    // `N/A` kept the dim tier, which is where an unanswered question belongs.
+    expect(priceFg("N/A")).toBe(tokens.dead);
+    expect(priceFg("N/A")).not.toBe(priceFg("local"));
+    expect(priceFg("N/A")).not.toBe(priceFg("$2.25"));
   });
 
   test("AN EXPENSIVE PRICE IS NOT PAINTED AS AN ALARM — one colour, one meaning", () => {
@@ -80,21 +131,69 @@ describe("priceFg", () => {
   });
 });
 
+describe("priceVaries — which view earns chips", () => {
+  test("a flat-rate or local provider FIXES the column, so it gets no chips", () => {
+    // `resolveProviderDisplayPrice` answers `SUB` for every row of a subscription
+    // roster. 49 identical fills stacked with no gap between rows is the failure the
+    // skill MEASURED — chips fusing into one solid rectangle with the labels
+    // floating in it — and no amount of correct padding prevents it, because the
+    // padding is not what makes them identical.
+    expect(priceVaries("sub")).toBe(false);
+    expect(priceVaries("local")).toBe(false);
+  });
+
+  test("the cross-provider list and a METERED provider vary, so they do", () => {
+    expect(priceVaries(null)).toBe(true);
+    expect(priceVaries("metered")).toBe(true);
+  });
+});
+
 describe("billingLabel / readinessGlyph", () => {
-  test("each billing mode has its own WORD, and only the flat-rate one is coloured", () => {
+  test("each billing mode has its own WORD; only the two positive ones have a FILL", () => {
     const tags = (["sub", "local", "metered"] as const).map(billingLabel);
     expect(tags.map((t) => t.text)).toEqual(["SUB", "local", "$"]);
-    // `SUB` is the one that changes what a launch COSTS, so it is the one that
-    // gets a hue; the other two recede. Colour spent evenly is colour spent on
-    // nothing.
-    expect(tags[0]?.fg).not.toBe(tags[1]?.fg);
-    expect(tags[0]?.fg).not.toBe(tags[2]?.fg);
+    // THE `null` IS THE WHOLE FIX. Filling `$` too would put a fill on every row of
+    // the column — metered and flat-rate partition the roster — and 17 adjacent
+    // fills fuse into one vertical band, which is what the owner rejected.
+    expect(tags.map((t) => t.bg)).toEqual([C.pillKeyBg, C.pillKeyBg, null]);
+  });
+
+  test("METERED IS NEUTRAL and SUB IS POSITIVE — neither is a warning", () => {
+    // `$` states that the route bills per token. That is information about the
+    // route, not a caution about it: the number that matters is on the model row.
+    expect(billingLabel("metered").fg).toBe(tokens.subtle);
+    for (const mode of ["sub", "local", "metered"] as const) {
+      const tag = billingLabel(mode);
+      for (const colour of [tag.bg, tag.fg]) {
+        expect(colour).not.toBe(tokens.error);
+        expect(colour).not.toBe(tokens.warn);
+      }
+    }
+  });
+
+  test("A FILLED CHIP CARRIES WHITE INK, in both palettes", () => {
+    // We choose the fill, so we own the ink: `pickInk` would answer white on the
+    // dark palette and BLACK on the light one for the same `#15803d` chip — one chip
+    // with two inks, and the worse ratio (4.02 vs 5.02) on the lighter page.
+    for (const mode of ["dark", "light"] as const) {
+      setThemeMode(mode);
+      expect(billingLabel("sub").fg).toBe(C.ink);
+      expect(C.ink).toBe("#ffffff");
+    }
+    resetThemeModeForTests();
   });
 
   test("readiness has three states, not two — pending is not missing", () => {
     const g = (["pending", "ready", "missing"] as const).map(readinessGlyph);
     expect(new Set(g.map((x) => x.glyph)).size).toBe(3);
     expect(new Set(g.map((x) => x.fg)).size).toBe(3);
+  });
+
+  test("A PROBE IN FLIGHT IS NOT A WARNING — `◌` is `running`, not `warn`", () => {
+    // The same call `chrome.tsx` already made for the catalog shimmer. Spending the
+    // failure hue on "still checking" teaches the reader to discount it everywhere.
+    expect(readinessGlyph("pending").fg).toBe(tokens.running);
+    expect(readinessGlyph("pending").fg).not.toBe(tokens.warn);
   });
 });
 

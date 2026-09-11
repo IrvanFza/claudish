@@ -104,15 +104,20 @@ export interface RowLayout {
  */
 export function deriveRowLayout(
   inner: number,
-  opts: { mark?: boolean; providerCells?: number } = {}
+  opts: { mark?: boolean; providerCells?: number; provider?: boolean } = {}
 ): RowLayout {
   const cells = Number.isFinite(inner) ? Math.max(0, Math.floor(inner)) : 0;
   const mark = opts.mark === true ? MARK_CELLS : 0;
-  const gaps = GAP_AFTER_PROVIDER + GAP_AFTER_ID + GAP_AFTER_CTX;
+  // A DROPPED COLUMN TAKES ITS SEPARATOR WITH IT. `provider: false` that left
+  // `GAP_AFTER_PROVIDER` in the sum would indent every model id by two columns
+  // for a cell that is no longer drawn — the row would still total `inner`, so
+  // the sum test would pass over it and only a screenshot would show the gutter.
+  const showProvider = opts.provider !== false;
+  const gaps = (showProvider ? GAP_AFTER_PROVIDER : 0) + GAP_AFTER_ID + GAP_AFTER_CTX;
 
   // Everything except the elastic id. The mark carries no separator of its own —
   // the price column is right-aligned, so the gap is already inside it.
-  let provider = clampProviderCells(opts.providerCells ?? MIN_PROVIDER_CELLS);
+  let provider = showProvider ? clampProviderCells(opts.providerCells ?? MIN_PROVIDER_CELLS) : 0;
   let ctx = CTX_CELLS;
   let price = PRICE_CELLS;
   let id = cells - (CURSOR_CELLS + provider + ctx + price + mark + gaps);
@@ -124,7 +129,8 @@ export function deriveRowLayout(
     // two are the row — and the provider never goes below the floor, because a
     // provider that cannot be told apart from another one is worse than absent.
     const shortfall = MIN_ID_CELLS - id;
-    const takeFromProvider = Math.min(Math.max(0, provider - MIN_PROVIDER_CELLS), shortfall);
+    const floor = showProvider ? MIN_PROVIDER_CELLS : 0;
+    const takeFromProvider = Math.min(Math.max(0, provider - floor), shortfall);
     provider -= takeFromProvider;
     const stillShort = shortfall - takeFromProvider;
     const takeFromPrice = Math.min(Math.max(0, price - 4), stillShort);
@@ -247,7 +253,8 @@ export function providerColumn(
  * MOONSHOT_API_KEY`, 22 cells), and a truncated variable name is worse than
  * useless — `needs MOON…` sends the reader looking for a variable that does not
  * exist. Keyless providers are hidden by default now, but `k` reveals them in
- * this same list, so the cell is still theirs to fit.
+ * this same list, so the cell is still theirs to fit. It fits the NAMED case and
+ * not the longest one: see `PROVIDER_TAIL_CELLS`.
  */
 export interface ProviderRowLayout {
   inner: number;
@@ -268,9 +275,39 @@ export interface ProviderRowLayout {
 }
 
 const PROVIDER_GLYPH_CELLS = 2;
+/**
+ * `zengo@` AS A WORD, so 8 + 1 separator.
+ *
+ * Longest shortcut in the roster is `mistral@` at 8 — `native-anthropic@` is longer
+ * and is not on this list, having no credential store. It was briefly 10, sized for
+ * a CHIP's `displayWidth(label) + 2` fill, and the chip is gone: 17 filled prefixes
+ * in a column fused into one grey band (`rows.tsx` header). Text needs only its own
+ * width plus the separator.
+ */
 const PROVIDER_SHORTCUT_CELLS = 9;
-const PROVIDER_BILLING_CELLS = 6;
-const PROVIDER_TAIL_CELLS = 26;
+/**
+ * `local` is the longest billing word: 5 + 2 for the fill it may carry.
+ *
+ * SIZED FOR THE CHIP EVEN THOUGH ONLY TWO OF THE THREE STATES TAKE ONE. A cell that
+ * fitted the word and not the fill would clip `local`'s chip by exactly two cells,
+ * and Yoga claws those out of a NEIGHBOURING cell rather than reporting anything —
+ * `widgets.tsx` measured the result as a 1-column stub of background under the next
+ * column's first letter, which `captureCharFrame` cannot see. The metered `$` is
+ * drawn as text in the same cell and simply leaves it mostly empty. No separator
+ * column: the chip carries one padded space of its own on each side, and the text
+ * form indents by one to line up with it.
+ */
+const PROVIDER_BILLING_CELLS = 7;
+/**
+ * 25, DOWN FROM 26 — and the header's claim above needs the correction it implies.
+ *
+ * "Sized for the env var" was already aspirational: MEASURED over the roster, the
+ * longest is `needs SAKANA_SUBSCRIPTION_API_KEY` at 33 cells, so 26 truncated it too.
+ * What 25 buys is the one cell the billing chip's fill needs without touching the
+ * NAME, which at 80 columns sits exactly on its 26-cell cap — and `needs
+ * MOONSHOT_API_KEY`, the case the header names, is 22 and still fits whole.
+ */
+const PROVIDER_TAIL_CELLS = 25;
 const PROVIDER_GAP_AFTER_NAME = 1;
 /** Below this a provider name is no longer a name. */
 const MIN_PROVIDER_NAME_CELLS = 6;

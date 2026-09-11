@@ -18,6 +18,7 @@ import { describe, expect, test } from "bun:test";
  */
 import {
   CHROME_ROWS,
+  GAPS,
   MAX_DIALOG_ROWS,
   MAX_DIALOG_WIDTH,
   MAX_LIST_ROWS,
@@ -74,6 +75,41 @@ describe("deriveRowLayout", () => {
     expect(fallback.ctx).toBe(live.ctx);
     expect(fallback.price).toBe(live.price);
     expect(fallback.id).toBeLessThan(live.id);
+  });
+
+  test("`provider: false` sums EXACTLY too — the dropped cell takes its GAP with it", () => {
+    // THE FAILURE THIS EXISTS FOR IS INVISIBLE TO A SUM THAT STOPS AT THE CELLS.
+    // Dropping the provider column while leaving `GAP_AFTER_PROVIDER` in the budget
+    // still totals `inner`, so a cell-only assertion passes — and every model id in
+    // every provider-scoped list is indented two columns for a column that is not
+    // drawn. The gap is part of `rowLayoutTotal`, so this catches it.
+    const wrong = WIDTHS.map((w) => ({
+      w,
+      sum: rowLayoutTotal(deriveRowLayout(w, { provider: false })),
+    })).filter(({ w, sum }) => sum !== w);
+    expect(wrong).toEqual([]);
+    expect(deriveRowLayout(80, { provider: false }).provider).toBe(0);
+    expect(deriveRowLayout(80, { provider: false }).gaps).toBe(
+      deriveRowLayout(80).gaps - GAPS.afterProvider
+    );
+  });
+
+  test("EVERY column the provider cell gave up goes to the model id", () => {
+    // The owner's complaint was that `OpenAI Codex` printed 49 times under a dialog
+    // titled `OpenAI Codex` was eating the id column. If the cells went anywhere
+    // else — a wider price, a wider ctx — the change would have bought nothing.
+    const withCol = deriveRowLayout(96, { providerCells: 18 });
+    const without = deriveRowLayout(96, { provider: false });
+    expect(without.id - withCol.id).toBe(withCol.provider + GAPS.afterProvider);
+    expect(without.ctx).toBe(withCol.ctx);
+    expect(without.price).toBe(withCol.price);
+  });
+
+  test("`provider: false` stays non-negative at absurd widths", () => {
+    const bad = WIDTHS.concat([0, 10, 20]).flatMap((w) =>
+      Object.entries(deriveRowLayout(w, { provider: false })).filter(([, v]) => (v as number) < 0)
+    );
+    expect(bad).toEqual([]);
   });
 
   test("a non-finite or negative width yields finite columns, never NaN", () => {

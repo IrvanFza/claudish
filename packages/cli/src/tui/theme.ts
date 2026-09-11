@@ -57,9 +57,27 @@ export interface TuiPalette {
   tabInactiveFg: string;
   pillKeyBg: string;
   pillOauthBg: string;
+  /** Footer KEYCAP fill. Vivid, white ink, the same hex in both palettes. */
+  chipKeycapBg: string;
   chipKeyBg: string;
   chipLabelBg: string;
 }
+
+/**
+ * The two backgrounds every OWNED FILL is measured against — `theme-contrast.test.ts`.
+ *
+ * A chip we paint lands on a terminal whose page we do not control, so a fill that
+ * only separates from one of them is invisible on the other. A single colour CANNOT
+ * reach 4.5:1 against both: clearing it on cream needs relative luminance <= ~0.17,
+ * clearing it on near-black needs >= ~0.22, and those do not overlap. So the bar for
+ * a fill is 3:1 — WCAG's threshold for UI components — which admits exactly the band
+ * of mid-dark saturated colours the chips below live in. Borrowed, with the hexes,
+ * from claudeup's `src/ui/theme.ts`, whose own test enforces the same rule.
+ */
+export const CONTRAST_REFERENCE = {
+  light: "#FAFAD2",
+  dark: "#1C1C1E",
+} as const;
 
 const DARK: TuiPalette = {
   bg: "#000000",
@@ -94,11 +112,26 @@ const DARK: TuiPalette = {
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#0088ff",
 
-  // Muted pill backgrounds for AUTH column tags. The standard `green` / `cyan`
-  // are neon-bright and cause eye strain when used as a solid fill. These
-  // are lower-saturation forest/teal versions, contrast-tuned for white text.
-  pillKeyBg: "#2d6e3e", // forest green; white text reads cleanly
-  pillOauthBg: "#1f6d75", // muted teal; white text reads cleanly
+  // Muted pill backgrounds for AUTH column tags and the picker's state chips. The
+  // standard `green` / `cyan` are neon-bright and cause eye strain as a solid fill,
+  // so these are lower-saturation forest/teal versions carrying white ink.
+  //
+  // RAISED FROM `#2d6e3e` / `#1f6d75` TO THE MEASURED PAIR. The old forest green
+  // cleared 5.77:1 on a cream page and only 2.76:1 on a near-black one — under the
+  // 3:1 a UI component needs — so a `SUB` chip on a dark terminal was a fill that
+  // barely separated from the page it sat on. These two clear 3:1 against BOTH
+  // reference backgrounds (4.70/3.39 and 5.02/3.18) and keep white ink at 5.0+.
+  // Same hexes as claudeup's `success` / `info`, and shared verbatim by both
+  // palettes: a fill measured against both pages needs no per-theme variant.
+  pillKeyBg: "#15803d", // forest green; white ink reads cleanly on both pages
+  pillOauthBg: "#0e7490", // muted teal; white ink reads cleanly on both pages
+  // A KEYCAP IS A VIVID BLOCK WITH WHITE INK, in both palettes and at the same hex.
+  // Neutral grey was measured and rejected twice: `#3a3a3a` is 1.50:1 on a dark page
+  // and `#9ca3af` 2.38:1 on a light one, so whichever way it is tuned the chip melts
+  // into one of the two terminals. Purple clears 5.04/3.16 and is spent on nothing
+  // else in this program — the accent is blue, so a keycap cannot be mistaken for a
+  // focus ring, a status or a failure.
+  chipKeycapBg: "#9333ea",
 
   // Monochrome two-tone footer chip. The key sits on the LIGHTER segment and
   // the label on the DARKER segment; the two abut into one connected pill.
@@ -144,18 +177,19 @@ const LIGHT: TuiPalette = {
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#374151",
 
-  // The forest/teal pills are mid-lightness fills with white ink — they clear
-  // contrast on BOTH pages, so they are shared verbatim with DARK.
-  pillKeyBg: "#2d6e3e",
-  pillOauthBg: "#1f6d75",
+  // The forest/teal pills and the keycap are mid-lightness fills with white ink —
+  // they clear 3:1 on BOTH reference pages, so they are shared verbatim with DARK.
+  pillKeyBg: "#15803d",
+  pillOauthBg: "#0e7490",
+  chipKeycapBg: "#9333ea",
 
-  // A KEYCAP HAS TO READ AS A KEY, which means it has to be visibly RAISED off
-  // the panel it sits on — and `#d1d5db` was not. MEASURED against the panel
-  // band it is drawn on (`bgAlt`, `#f3f4f6`): 1.32:1, below the 1.7:1 this file
-  // already requires of every stage block, so the picker's footer chips read as
-  // faintly tinted words rather than as keys. The owner said so from a live run.
-  // `#9ca3af` keeps 5.4:1 under `C.fg` — still past the 4.5:1 the footer's own
-  // contrast test demands — while sitting 2.3:1 off the band.
+  // The config TUI's TWO-TONE footer chip (`Footer.tsx`), and no longer the
+  // picker's keycap — that one is `chipKeycapBg`, because a neutral grey cannot
+  // clear 3:1 on both pages at once. This pair keeps the two-tone contract it was
+  // tuned for: theme-following `C.fg` ink on the key segment, `C.fgMuted` on the
+  // label, measured against the `bgAlt` band both are drawn on rather than against
+  // the two reference terminals. `#d1d5db` came before it and was 1.32:1 off that
+  // band; `#9ca3af` keeps 5.4:1 under `C.fg` while sitting 2.3:1 off it.
   chipKeyBg: "#9ca3af", // key segment — theme text (`C.fg`) rides on top
   chipLabelBg: "#e5e7eb", // label segment
 };

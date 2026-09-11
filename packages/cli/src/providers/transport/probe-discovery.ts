@@ -55,6 +55,11 @@ const SMALL_MODEL_PATTERNS = [
  * here without a vendor-family blacklist, which is the workaround this file has
  * already paid for three times (`:498`, then `pplx-embed`, then `bge`).
  *
+ * THE SAME BOUNDARY HELD FOR THE REALTIME FAMILY. `gpt-live-1` and the four
+ * `gpt-realtime-*` entries say what they are in their names, so they are excluded
+ * here; an id that carries no modality signal at all is still LOGGED by name
+ * (`toPickerRows`) for the models-index bug report rather than guessed at.
+ *
  * The complete fix is a modality field on the catalog document — `ModelDoc`
  * already carries `capabilities.imageGeneration` / `audioInput` / `audioOutput`
  * / `embedding`, but the SLIM payload every aggregator list is built from
@@ -91,7 +96,23 @@ const NON_CHAT_PATTERNS = [
   // listing a generator as a coding target — fails at launch instead of in the
   // list.
   /\bvideo\b/i,
-  /-(image|tts|audio|embedding|vision-only|transcribe|voice|video|speech)(-|$)/i,
+  // REALTIME / LIVE / TRANSLATE — observed leaking into the OpenAI Codex roster as
+  // `gpt-live-1`, `gpt-realtime-2`, `gpt-realtime-2.1`, `gpt-realtime-2.1-mini` and
+  // `gpt-realtime-translate`, all five offered as launchable coding models. The
+  // selected row's own catalog sentence disqualified it: "a distilled reasoning
+  // model for faster, lower-cost realtime VOICE interactions... audio and text
+  // inputs over WebRTC, WebSocket, or SIP". None of them speaks
+  // `/v1/chat/completions` the way an agent needs.
+  /\brealtime\b/i,
+  // `\b` IS THE WHOLE POINT ON THIS ONE. `-` is a non-word character, so `\blive\b`
+  // matches `gpt-live-1` and `x-live-2` and does NOT match `delivery`, `olive`,
+  // `livecodebench` or `liveness` — every one of which is a plausible model id and
+  // none of which is a realtime endpoint. A bare substring `/live/` would eat all
+  // four.
+  /\blive\b/i,
+  /\btranslate\b/i,
+  /\btranslation\b/i,
+  /-(image|tts|audio|embedding|vision-only|transcribe|voice|video|speech|realtime|live|translate)(-|$)/i,
 ];
 
 function isSmallName(name: string): boolean {

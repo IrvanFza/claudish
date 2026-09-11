@@ -168,19 +168,25 @@ export interface Hint {
  * `BadgeSpan`, NOT `Badge`: one `<text>` per hint carries both the chip and its
  * label, and a `<text>` cannot nest in a `<text>`.
  *
- * ONE FILL FOR EVERY KEYCAP, AND IT IS THE ONE THIS PROGRAM ALREADY USES.
- * `C.chipKeyBg` is the config TUI's footer chip (`Footer.tsx:186-190` — neutral
- * grey, `C.fg` ink, bold, one space each side), so the picker's footer is the same
- * object as every other footer in claudish rather than a second invention. It is
- * deliberately NOT a saturated hue: every hue in this dialog already means one
- * thing — `FREE` success, `SUB` warn, `catalog` warn, errors red, focus accent —
- * and borrowing one for the footer would put the quietest row on screen in
- * competition with the failure banner. A keycap reads as a key because of its
- * SHAPE, a filled chip with padding; the fill's job is to be neutral.
+ * ONE FILL FOR EVERY KEYCAP, AND IT IS VIVID — NEUTRAL GREY WAS MEASURED AND
+ * REJECTED, TWICE, ONCE PER PALETTE. The argument for grey was that every hue in
+ * this dialog already means something, so the quietest row should borrow none of
+ * them. What that produced is a chip that is not a chip: `C.chipKeyBg` measures
+ * 1.50:1 against a dark page and 2.38:1 against a light one, so on whichever
+ * terminal it was not tuned for it melts into the background and the key reads as a
+ * faintly tinted word. The owner reported exactly that from a live light-theme run,
+ * and claudeup records the same measurement and the same conclusion — "the previous
+ * neutral-grey chip melted into a light page", with dark slates rejected for
+ * dropping to ~2.2 on a dark terminal.
  *
- * `pickInk` chooses the ink from the fill rather than hardcoding white, which is
- * what keeps the chip legible in the light palette, where `chipKeyBg` is `#d1d5db`
- * and white ink would vanish.
+ * `C.chipKeycapBg` is purple, and purple is spent on nothing else in this program:
+ * the accent is blue, failure is red, the positive family is green. So a keycap
+ * cannot be mistaken for a focus ring, a status or an error, and it clears 3:1
+ * against BOTH reference pages (`theme-contrast.test.ts`).
+ *
+ * `fg={C.ink}` — WHITE, explicitly, rather than `pickInk`'s answer. We choose this
+ * fill, so we own its ink too, and a chip whose ink flips with the user's palette is
+ * a chip with two different contrast ratios.
  *
  * AN UNAVAILABLE ACTION LOSES THE CHIP RATHER THAN BEING HIDDEN — dim text, no
  * fill, so "there is a key here but not now" is visibly different from both a live
@@ -194,7 +200,7 @@ export function Hints({ hints }: { hints: Hint[] }): ReactNode {
           {h.on === false ? (
             <span fg={tokens.trace}>{` ${h.key} `}</span>
           ) : (
-            <BadgeSpan label={h.key} bg={C.chipKeyBg} />
+            <BadgeSpan label={h.key} bg={C.chipKeycapBg} fg={C.ink} />
           )}
           <span fg={h.on === false ? tokens.trace : tokens.subtle}>{` ${h.label}`}</span>
         </text>

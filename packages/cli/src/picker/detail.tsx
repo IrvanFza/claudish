@@ -29,6 +29,29 @@
  *     and the rows are rendered blank until it does — never collapsed, or every
  *     row below would jump when it lands.
  *
+ * THE WHOLE PANE IS CHROME, AND IT RECEDES BY ITS INK — NEVER BY A FILL. Rule 6 of
+ * `aesthetics-and-color.md` is "dim the chrome, saturate the signal": the list rows
+ * are the signal — they are what the cursor moves through and what Enter returns —
+ * and this pane is the footnote under them. It used to open with a BOLD ACCENT-BLUE
+ * spec line, the loudest text on the screen, under a list drawn in body ink, and the
+ * owner asked for the detail to be less prominent.
+ *
+ * A PASS THAT ANSWERED THAT WITH A BACKGROUND FILL WAS REJECTED, and the rule it
+ * broke is the first one claudeup's theme states: panels sit on the terminal's own
+ * background and are separated by their border, never by an absolute fill that
+ * fights the user's theme. Here the separator already exists — `Rule` draws it one
+ * row above — so a fill was a second separator that also painted three rows in a
+ * colour the terminal never asked for. The owner's words: "all text in description
+ * has different background colours. please bring it back... please remove that
+ * different background colours."
+ *
+ * So the recession is entirely in the INK, three weights, brightest first: the spec
+ * and the provider name in `debug` (`C.fgMuted` — a full tier under the body ink the
+ * rows above use), everything qualifying them in `subtle`, and the catalog sentence
+ * in `subtle` too, which is the dimmest tier there is, because it is the only part a
+ * reader can skip without losing a fact. The footer keycaps below stay bright: they
+ * are affordances, not prose.
+ *
  * CAPABILITIES ARE EXCEPTION-ONLY AND THEY LIVE HERE, NOT ON EVERY ROW. The
  * previous build printed `[TRV]` on all 21 rows of a roster where every model had
  * all three — a column with no variance, in the place a reader is scanning names.
@@ -37,7 +60,6 @@
 
 import type { ReactNode } from "react";
 import type { ModelInfo } from "../model-selector.js";
-import { A } from "../tui/theme.js";
 import { truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import { wrapWords } from "./DiscoveryNotice.js";
@@ -142,9 +164,10 @@ export function SelectionLine({
   return (
     <box height={1} flexShrink={0}>
       <text>
-        <span fg={tokens.accent} attributes={A.bold}>
-          {truncate(text, room)}
-        </span>
+        {/* `debug`, NOT bold accent. This line is a restatement of the row the
+            cursor is already on; it earns its place by being EXACT, not by being
+            loud, and the accent hue belongs to focus and titles. */}
+        <span fg={tokens.debug}>{truncate(text, room)}</span>
         {warn === "" ? null : (
           <>
             <span fg={tokens.subtle}>{" · "}</span>
@@ -184,9 +207,13 @@ export function ProviderLine({
     );
   }
   const { billing, billingShort, auth } = providerFactsText(facts);
+  // `flat-rate subscription — no per-token charge` WAS PAINTED IN THE FAILURE HUE.
+  // It is the most positive fact on the screen — the user pays nothing to run this
+  // route — and `tokens.warn` is `C.orange`, a rust red on the light palette. Same
+  // inversion as the `SUB` chip, same fix: the positive tier. Red is for failure.
   const billingFg =
     facts.billing === "sub"
-      ? tokens.warn
+      ? tokens.success
       : facts.billing === "local"
         ? tokens.trace
         : tokens.subtle;
@@ -206,7 +233,7 @@ export function ProviderLine({
   return (
     <box height={1} flexShrink={0}>
       <text>
-        <span fg={tokens.text}>{name}</span>
+        <span fg={tokens.debug}>{name}</span>
         <span fg={tokens.trace}>{` ${facts.shortcut}`}</span>
         <span fg={tokens.subtle}>{" · "}</span>
         <span fg={billingFg}>{clause}</span>

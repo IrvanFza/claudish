@@ -14,6 +14,7 @@ import {
   discoverViaOllama,
   discoverViaOpenAIModels,
   invalidateProbeDiscovery,
+  isChatCapable,
   rankProbeCandidates,
 } from "./probe-discovery.js";
 
@@ -62,6 +63,49 @@ describe("rankProbeCandidates", () => {
     ]);
     // Only chat models survive. Order: small-name first, then alphabetical.
     expect(ranked).toEqual(["claude-haiku-4", "gpt-4o-mini"]);
+  });
+
+  test("drops the REALTIME/VOICE family — observed leaking into the Codex roster", () => {
+    // All five were on screen in a live provider-scoped list, offered as launchable
+    // coding models. The selected row's own catalog sentence disqualified it: "a
+    // distilled reasoning model for faster, lower-cost realtime VOICE interactions...
+    // audio and text inputs over WebRTC, WebSocket, or SIP".
+    for (const id of [
+      "gpt-live-1",
+      "gpt-realtime-2",
+      "gpt-realtime-2.1",
+      "gpt-realtime-2.1-mini",
+      "gpt-realtime-translate",
+    ]) {
+      expect({ id, chat: isChatCapable(id) }).toEqual({ id, chat: false });
+    }
+  });
+
+  test("`live` IS A BOUNDED TOKEN — a substring would eat four plausible ids", () => {
+    // `-` is a non-word character, so `\blive\b` matches `gpt-live-1` and does NOT
+    // match any of these. A bare `/live/` would drop all four, and each of them is a
+    // shape a real roster produces: a benchmark-tuned fine-tune, a deployment slug,
+    // a vendor codename, a probe endpoint.
+    for (const id of [
+      "livecodebench-qwen-32b",
+      "mistral-delivery-agent",
+      "olive-7b",
+      "liveness-probe-1",
+    ]) {
+      expect({ id, chat: isChatCapable(id) }).toEqual({ id, chat: true });
+    }
+  });
+
+  test("`realtime` and `translate` are bounded too, and keep their near-misses", () => {
+    expect(isChatCapable("gemini-live-2.5-flash")).toBe(false);
+    expect(isChatCapable("seed-translate-1")).toBe(false);
+    // Pins that the patterns are not `/real/` and `/trans/`, which would have been
+    // the obvious sloppy spelling and would have dropped both of these.
+    expect(isChatCapable("unreal-coder-7b")).toBe(true);
+    expect(isChatCapable("trans-coder-7b")).toBe(true);
+    // And the ids the whole list exists to keep.
+    expect(isChatCapable("gpt-5-codex")).toBe(true);
+    expect(isChatCapable("kimi-k2.7-code-highspeed")).toBe(true);
   });
 
   test("returns empty when all candidates are non-chat", () => {

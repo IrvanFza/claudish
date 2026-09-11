@@ -194,6 +194,14 @@ const rgb = (hex: string): string =>
  * keystroke just left, so a predicate on it is satisfied before anything has
  * happened and waits for nothing.
  */
+/** Every span in the frame, flattened — chips are spans, not rows. */
+const spansOf = (f: CapturedFrame): CapturedFrame["lines"][number]["spans"] =>
+  f.lines.flatMap((l) => l.spans);
+/** The spans whose LABEL is `label`, whatever fill they carry. */
+const labelled = (f: CapturedFrame, label: string): CapturedFrame["lines"][number]["spans"] =>
+  spansOf(f).filter((sp) => sp.text.trim() === label);
+const bgOf = (sp: CapturedFrame["lines"][number]["spans"][number]): string =>
+  sp.bg.toInts().slice(0, 3).join();
 const listPainted = (t: string[]): boolean => t.join("").includes("newest first");
 const providerListPainted = (t: string[]): boolean => t.join("").includes("choose a provider");
 /** Rows that carry painted content — the dialog's actual footprint. */
@@ -318,6 +326,189 @@ describe("the dialog", () => {
       for (const hint of ["move", "select", "filter", "custom", "providers"]) {
         expect(footer()).toContain(hint);
       }
+    } finally {
+      d.destroy();
+    }
+  });
+});
+
+// ── the chips: a fill is invisible to a character frame ──────────────────────────
+
+describe("the billing and prefix CHIPS", () => {
+  const roster = [
+    provider({ value: "cx", label: "OpenAI Codex", shortcut: "cx@", billing: "sub" }),
+    provider({ value: "or", label: "OpenRouter", shortcut: "or@", billing: "metered" }),
+  ];
+
+  test("NO COLUMN IS A BAND: the prefix and `$` carry no fill at all", async () => {
+    // THE REJECTED PASS CHIPPED BOTH, and `captureCharFrame` was blind to the
+    // result: every one of the 17 provider rows had a fill in the prefix cell and a
+    // fill in the billing cell, with no blank row between them, so the two columns
+    // fused into a solid grey vertical band and a solid green one with the labels
+    // floating inside. The owner's verdict was "that is super ugly". A fill marks
+    // the NOTABLE member of a column; a column where every row qualifies has none.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      const f = d.recapture().frame;
+      for (const token of ["cx@", "or@", "$"]) {
+        // `includes`, not an exact match: unfilled cells that share a foreground
+        // MERGE into one span, and `or@` sharing the muted hue with the `$` beside
+        // it is itself evidence that neither of them is carrying a fill.
+        const spans = spansOf(f).filter((sp) => sp.text.includes(token));
+        expect({ token, found: spans.length > 0 }).toEqual({ token, found: true });
+        for (const sp of spans) {
+          // The row's own background — the panel, or the selection wash on the row
+          // under the cursor — and never a fill of the cell's own.
+          expect({ token, bg: bgOf(sp) }).toEqual({
+            token,
+            bg: bgOf(sp) === rgb(C.bgHighlight) ? rgb(C.bgHighlight) : rgb(C.bgAlt),
+          });
+        }
+      }
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`SUB` IS PAINTED ON THE POSITIVE FILL, AND NEVER ON THE FAILURE ONE", async () => {
+    // THE DEFECT THIS PINS SHIPPED, AND `captureCharFrame` IS BLIND TO IT. The frame
+    // reads `SUB` either way; only the FILL says whether the user is being told
+    // "you already pay for this" or "something went wrong". It was `tokens.warn` —
+    // `C.orange`, the hue this dialog spends on a failure — under a label that means
+    // the opposite of a failure.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      const chips = labelled(d.recapture().frame, "SUB");
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) {
+        expect(bgOf(chip)).toBe(rgb(C.pillKeyBg));
+        expect(bgOf(chip)).not.toBe(rgb(C.red));
+        expect(bgOf(chip)).not.toBe(rgb(C.orange));
+      }
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a chip's FILL is exactly `label + 2` cells — the padding is OUTSIDE it", async () => {
+    // THE MEASURED FAILURE THIS GUARDS: `label={padTo("SUB", 6)}` looks identical and
+    // is not — the padding lands inside `bg`, and 24 chips padded that way fused into
+    // one solid rectangle running down the panel with the labels floating in it. An
+    // earlier pass in this very project reverted chips to coloured text three times
+    // over it. The column is aligned by a plain filler span AFTER the chip, so the
+    // fill stays a chip however wide the cell is.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      const f = d.recapture().frame;
+      const filled = spansOf(f).filter(
+        (sp) => bgOf(sp) === rgb(C.pillKeyBg) || bgOf(sp) === rgb(C.chipKeycapBg)
+      );
+      expect(filled.length).toBeGreaterThan(0);
+      for (const sp of filled) {
+        expect({ text: sp.text, cells: sp.text.length }).toEqual({
+          text: ` ${sp.text.trim()} `,
+          cells: sp.text.trim().length + 2,
+        });
+      }
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("A FOOTER KEYCAP IS A VIVID BLOCK WITH WHITE INK, never a grey word", async () => {
+    // Grey was measured and rejected once per palette — 1.50:1 on a dark page,
+    // 2.38:1 on a light one — so on whichever terminal it was not tuned for the key
+    // melted into the background. `captureCharFrame` reads ` k ` either way; only
+    // the fill says whether it reads as a key you press.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      const caps = labelled(d.recapture().frame, "esc");
+      expect(caps.length).toBeGreaterThan(0);
+      for (const cap of caps) {
+        expect(bgOf(cap)).toBe(rgb(C.chipKeycapBg));
+        expect(bgOf(cap)).not.toBe(rgb(C.chipKeyBg));
+        expect(cap.fg.toInts().slice(0, 3).join()).toBe(rgb(C.ink));
+      }
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("NO CHIP COLUMN FUSES: a flat-rate roster prints words, not a green slab", async () => {
+    // A scoped subscription provider answers `SUB` for EVERY row, so a chipped price
+    // column there is the rectangle by construction — and no amount of correct
+    // padding prevents it, because the padding is not what makes the fills identical.
+    // `kimi-coding` is a real `SUBSCRIPTION_PROVIDERS` uid, so the price resolver
+    // answers `SUB` here exactly as it does on the live screen the owner was reading.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: [
+            provider({
+              value: "kimi-coding",
+              label: "Kimi Coding",
+              shortcut: "kc@",
+              billing: "sub",
+              hasDiscovery: false,
+            }),
+          ],
+          served: Array.from({ length: 8 }, (_, i) => model({ id: `m-${i}` })),
+          byProvider: {
+            "kimi-coding": Array.from({ length: 8 }, (_, i) => model({ id: `m-${i}` })),
+          },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      const shot = d.recapture();
+      // Every row says SUB in words…
+      expect(shot.text.filter((l) => /\bm-\d\b/.test(l) && l.includes("SUB")).length).toBe(8);
+      // …and not one of them carries a FILL, so there is no column to fuse.
+      expect(spansOf(shot.frame).filter((sp) => bgOf(sp) === rgb(C.pillKeyBg))).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("INSIDE A PROVIDER THE PROVIDER COLUMN IS GONE, and the id takes its cells", async () => {
+    // `OpenAI Codex` printed 49 times under a dialog titled `OpenAI Codex`. The header
+    // must lose the label with the cells, or it points at a column that is not there.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          byProvider: { openrouter: [model({ id: "gpt-6-astra" })] },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      const scoped = d.recapture().text;
+      const header = scoped.find((l) => l.includes("ctx") && l.includes("$/1M")) ?? "";
+      expect(header).not.toContain("provider");
+      expect(scoped.filter((l) => /gpt-6-astra\s{2,}/.test(l) && l.includes("OpenRouter"))).toEqual(
+        []
+      );
+      // It is still the whole point of the CROSS-PROVIDER list, so it stays there.
+      await d.press(["ESCAPE"]);
+      await d.until(providerListPainted);
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const flat = d.recapture().text;
+      expect(flat.find((l) => l.includes("ctx") && l.includes("$/1M")) ?? "").toContain("provider");
     } finally {
       d.destroy();
     }
@@ -485,9 +676,13 @@ describe("entering a provider loads THAT provider, on demand", () => {
     try {
       await d.press(["RETURN"]);
       await d.until(listPainted);
-      const rows = d.recapture().text.filter((l) => l.includes("gpt-6-astra"));
-      // One list row, plus the detail line under the list that prints the spec.
-      expect(rows.filter((l) => l.includes("OpenRouter")).length).toBe(1);
+      // ONE LIST ROW. The provider column is no longer drawn inside a provider — it
+      // said `OpenRouter` 49 times under a dialog titled `OpenRouter` — so the row is
+      // identified by its padded id cell instead: the id followed by the gap before
+      // `ctx`. The detail line below prints `openrouter@gpt-6-astra · tools`, one
+      // space and a `·`, and is not counted by that shape.
+      const rows = d.recapture().text.filter((l) => /gpt-6-astra\s{2,}/.test(l));
+      expect(rows.length).toBe(1);
     } finally {
       d.destroy();
     }

@@ -101,7 +101,7 @@ import {
   providerColumn,
   scrollWindow,
 } from "./layout.js";
-import { ColumnHeader, HintRow, ModelRow, ProviderRow } from "./rows.js";
+import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./rows.js";
 
 /**
  * WHICH AFFORDANCE EACH IN-FLIGHT TASK EARNS — the honesty contract, as one pure
@@ -391,12 +391,29 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       ? 0
       : noticeRows(notice, Math.max(8, base.inner - 2), MAX_BANNER_ROWS).lines.length;
   const layout = deriveDialogLayout(width, height, bannerRows);
+  /**
+   * IS THE PROVIDER COLUMN WORTH ITS CELLS HERE?
+   *
+   * In the cross-provider list it is the whole point — the same model id appears on
+   * three providers and the column is what tells them apart. Inside a provider it
+   * prints one repeated name under a dialog titled with that same name: 49 rows of
+   * `OpenAI Codex` under `OpenAI Codex`, eating the columns the model id wants. The
+   * owner said so from a live run. One flag through `deriveRowLayout`, so the header
+   * and the rows cannot disagree about whether the cell exists.
+   */
+  const showProviderColumn = scope === null;
+  /**
+   * DOES THE PRICE COLUMN EARN CHIPS? Only where it VARIES — see `rows.tsx`. A
+   * flat-rate or local provider answers the same word for every row, and a column of
+   * identical fills is the solid rectangle the skill measured.
+   */
+  const chipPrices = priceVaries(scope === null ? null : (scopedChoice?.billing ?? null));
   // `column.cells`, not `providerCells`: a collision may have WIDENED the column
   // past what the row budgeted, and the header and the rows must agree whichever
   // number won.
   const rowLayout = deriveRowLayout(layout.inner, {
     mark: list.fallback,
-    providerCells: column.cells,
+    ...(showProviderColumn ? { providerCells: column.cells } : { provider: false }),
   });
 
   // The cursor can outlive the list it indexed — a filter keystroke, or a scope
@@ -741,7 +758,11 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
               { key: "↑↓", label: "move" },
               { key: "⏎", label: "open", on: here !== null },
               { key: "a", label: "all models" },
-              { key: "k", label: revealKeyless ? "hide" : "keyless", on: keyless.length > 0 },
+              // `keyless` SAID THE OPPOSITE OF WHAT IT MEANT. These providers need a
+              // key — that is precisely why they are hidden — and "keyless" reads as
+              // "no key required". The hint row above already says `need a key`, so
+              // the footer now says it too, in 9 of the 76 columns 80 gives us.
+              { key: "k", label: revealKeyless ? "hide" : "needs key", on: keyless.length > 0 },
               { key: "c", label: "custom" },
               { key: "esc", label: "quit" },
             ]}
@@ -854,6 +875,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
                 layout={rowLayout}
                 cursor={top + i === cursor}
                 origin={list.fallback ? "catalog" : "roster"}
+                chip={chipPrices}
               />
             ))
           )}
@@ -870,6 +892,9 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         />
 
         <Rule />
+        {/* THREE ROWS ON THE PANEL'S OWN BACKGROUND. They recede by their INK — a
+            fill here was rejected on sight, and `Rule` above is already the
+            separator a fill would have been a second copy of (`detail.tsx`). */}
         <SelectionLine
           model={selected?.model ?? null}
           spec={selected?.spec ?? null}
