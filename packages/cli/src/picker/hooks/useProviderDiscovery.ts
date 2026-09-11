@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PickerDiscoveryOutcome } from "../../model-selector.js";
+import type { ModelInfo, PickerDiscoveryOutcome } from "../../model-selector.js";
 import type { PickerDataSource } from "../PickerDataSource.js";
 
 export interface DiscoveryState {
@@ -131,4 +131,30 @@ export function useProviderDiscovery(
     startedAt: busy && provider !== null ? (started[provider] ?? null) : null,
     seen: outcomes,
   };
+}
+
+/**
+ * The rosters ALREADY IN HAND, as the cross-provider list wants them.
+ *
+ * THIS IS WHAT REPLACED THE STARTUP FAN-OUT. An earlier build fired one roster
+ * request per credentialled provider the moment the picker opened — thirteen
+ * requests, a `live rosters 0/11 providers` meter, and the owner's verdict was
+ * *"why we prefetching? we should not, as we show on demand"*. Every one of those
+ * requests is now made for a provider the user actually opened, by the hook above.
+ * This function spends no network at all: it re-reads the outcomes that are
+ * already settled, so a provider he visited enriches the all-models view for free
+ * and a provider he did not visit is simply not represented there.
+ *
+ * ONLY `rows`. A failure's `fallbackRows` are the catalog's, which the flat list
+ * already holds under the same provider — merging them would double that
+ * provider's rows and launder a fallback into a live roster at the same time.
+ */
+export function rowsFromOutcomes(
+  seen: ReadonlyMap<string, PickerDiscoveryOutcome>
+): Map<string, ModelInfo[]> {
+  const out = new Map<string, ModelInfo[]>();
+  for (const [provider, outcome] of seen) {
+    if (outcome.kind === "rows") out.set(provider, outcome.rows);
+  }
+  return out;
 }

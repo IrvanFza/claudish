@@ -232,6 +232,104 @@ export function providerColumn(
   return { cells, text };
 }
 
+/**
+ * ONE PROVIDER ROW'S CELLS — the provider list's budget, in the same file as the
+ * model row's and for the same reason.
+ *
+ * It used to live inside `ProviderRow` as four `const`s and an `inner - 2 - 2 -
+ * … - 3` expression, which is exactly the drift this file's header warns about:
+ * the numbers summed to two columns SHORT of the row, so every provider row
+ * painted two unused cells on its right edge and nothing said so. A budget with
+ * a test that pins the sum cannot do that.
+ *
+ * THE TAIL IS SIZED FOR THE ENV VAR, NOT FOR THE COUNT. It carries either a model
+ * count (`263 models`) or the credential a keyless provider wants (`needs
+ * MOONSHOT_API_KEY`, 22 cells), and a truncated variable name is worse than
+ * useless — `needs MOON…` sends the reader looking for a variable that does not
+ * exist. Keyless providers are hidden by default now, but `k` reveals them in
+ * this same list, so the cell is still theirs to fit.
+ */
+export interface ProviderRowLayout {
+  inner: number;
+  /** `▶ ` / `  `, carrying its own trailing space. */
+  cursor: number;
+  /** `● ` — the readiness glyph and one space. */
+  glyph: number;
+  /** The readable display name. The elastic cell. */
+  name: number;
+  /** `zengo@` — the routing shortcut. */
+  shortcut: number;
+  /** `SUB` / `local` / `$`. */
+  billing: number;
+  /** Right-aligned: the count, or what a keyless provider needs. */
+  tail: number;
+  /** One space after the name. Part of the sum. */
+  gaps: number;
+}
+
+const PROVIDER_GLYPH_CELLS = 2;
+const PROVIDER_SHORTCUT_CELLS = 9;
+const PROVIDER_BILLING_CELLS = 6;
+const PROVIDER_TAIL_CELLS = 26;
+const PROVIDER_GAP_AFTER_NAME = 1;
+/** Below this a provider name is no longer a name. */
+const MIN_PROVIDER_NAME_CELLS = 6;
+/**
+ * The widest a provider NAME column is ever drawn, whatever the terminal gives it.
+ *
+ * MEASURED over the whole roster: `Grok Build (subscription)` is 25 cells and
+ * nothing is longer, so 26 fits every name whole. Past that the cell is dead air,
+ * and at 92 columns it was 46 — twenty blank cells between `OpenRouter` and the
+ * `or@` that qualifies it, which reads as two unrelated columns rather than one
+ * fact. The surplus goes to the TAIL, which is right-aligned: the count then sits
+ * on the dialog's right edge where a number belongs, and the row still sums to
+ * `inner` exactly.
+ */
+const MAX_PROVIDER_NAME_CELLS = 26;
+
+export function deriveProviderRowLayout(inner: number): ProviderRowLayout {
+  const cells = Number.isFinite(inner) ? Math.max(0, Math.floor(inner)) : 0;
+  let shortcut = PROVIDER_SHORTCUT_CELLS;
+  let billing = PROVIDER_BILLING_CELLS;
+  let tail = PROVIDER_TAIL_CELLS;
+  const fixed = (): number =>
+    CURSOR_CELLS + PROVIDER_GLYPH_CELLS + shortcut + billing + tail + PROVIDER_GAP_AFTER_NAME;
+  let name = cells - fixed();
+  if (name < MIN_PROVIDER_NAME_CELLS) {
+    // The tail gives way first — a count is re-stated in full on the detail line
+    // below, so it is the one cell here that is a duplicate rather than a fact.
+    tail = Math.max(0, tail - (MIN_PROVIDER_NAME_CELLS - name));
+    name = cells - fixed();
+  }
+  if (name < MIN_PROVIDER_NAME_CELLS) {
+    shortcut = Math.max(0, shortcut - (MIN_PROVIDER_NAME_CELLS - name));
+    name = cells - fixed();
+  }
+  if (name < 0) {
+    billing = Math.max(0, billing + name);
+    name = Math.max(0, cells - fixed());
+  }
+  if (name > MAX_PROVIDER_NAME_CELLS) {
+    tail += name - MAX_PROVIDER_NAME_CELLS;
+    name = MAX_PROVIDER_NAME_CELLS;
+  }
+  return {
+    inner: cells,
+    cursor: CURSOR_CELLS,
+    glyph: PROVIDER_GLYPH_CELLS,
+    name,
+    shortcut,
+    billing,
+    tail,
+    gaps: PROVIDER_GAP_AFTER_NAME,
+  };
+}
+
+/** Sum of every provider cell plus its separator — must equal `inner`. */
+export function providerRowTotal(l: ProviderRowLayout): number {
+  return l.cursor + l.glyph + l.name + l.shortcut + l.billing + l.tail + l.gaps;
+}
+
 /** The widest the dialog is ever drawn, however wide the terminal is. */
 export const MAX_DIALOG_WIDTH = 96;
 /** The tallest the dialog is ever drawn, however tall the terminal is. */

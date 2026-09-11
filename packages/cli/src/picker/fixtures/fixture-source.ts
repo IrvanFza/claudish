@@ -18,8 +18,11 @@
  * WHY A FAKE AT ALL — the four states below are the whole point of the feature and
  * none of them is reachable from outside:
  *
- *   · `loading`  the warm path settles in under 100 ms, so the in-flight frames
- *                cannot be photographed on a real run at all.
+ *   · `loading`  the credential sweep held mid-`done/total` — the landing screen's
+ *                only in-flight state, and on a real machine it is over in a second.
+ *   · `discovering` credentials settle normally and the ROSTER never comes back.
+ *                This is the per-provider wait, which exists only because a roster
+ *                is now fetched when the user OPENS that provider.
  *   · `empty`    a provider that answers correctly with nothing chat-capable.
  *   · `filtered` a provider that serves only embeddings or wildcard routes.
  *   · `timeout`  an unreachable endpoint, on demand.
@@ -29,7 +32,7 @@
  * and a live capture beats a forged one every time. The scenario exists as a control.
  */
 
-import type { ModelInfo, PickerDiscoveryOutcome, PreloadedRoster } from "../../model-selector.js";
+import type { ModelInfo, PickerDiscoveryOutcome } from "../../model-selector.js";
 import type { DescriptionIndex } from "../../providers/model-descriptions.js";
 import {
   type PickerDataSource,
@@ -37,7 +40,14 @@ import {
   createPickerDataSource,
 } from "../PickerDataSource.js";
 
-export type FixtureName = "ready" | "loading" | "timeout" | "empty" | "filtered" | "unauthorized";
+export type FixtureName =
+  | "ready"
+  | "loading"
+  | "discovering"
+  | "timeout"
+  | "empty"
+  | "filtered"
+  | "unauthorized";
 
 const NEVER = new Promise<never>(() => {
   /* deliberately never settles — a capture window is finite, this is not */
@@ -60,7 +70,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
   // `loading` claims discovery too — not to forge an outcome (it has none; it never
   // settles) but so that a scoped provider exercises the ROSTER indicator, whose
   // deadline shape is otherwise unreachable in a capture.
-  const claimsDiscovery = forced || scenario === "loading";
+  const claimsDiscovery = forced || scenario === "loading" || scenario === "discovering";
 
   return {
     providerRoster(): PickerProviderChoice[] {
@@ -94,26 +104,6 @@ export function createFixtureDataSource(name: string): PickerDataSource {
       return real.servedModels(provider);
     },
 
-    /**
-     * The cross-provider roster merge, forged the same way `discoverRoster` is:
-     * the SHAPE of the answer and its latency, never the data.
-     *
-     * `loading` never settles, which is what holds the `done/total` roster meter
-     * mid-sweep for a capture. A forced-failure scenario fails EVERY provider, so
-     * the aggregate "N providers could not be listed" line is photographable at
-     * all — with the real source it needs several providers to be broken at once,
-     * which is not a state a capture run can arrange.
-     */
-    async rosterRows(provider: string): Promise<PreloadedRoster> {
-      if (scenario === "loading") return NEVER;
-      if (!forced) return real.rosterRows(provider);
-      const outcome = await this.discoverRoster(provider);
-      if (outcome.kind === "failed") {
-        return { kind: "failed", failure: outcome.failure, notice: outcome.notice };
-      }
-      return { kind: "empty", reason: "empty-roster" };
-    },
-
     descriptions(): Promise<DescriptionIndex> {
       // NOT forged: a description is editorial text from the real catalog, and a
       // capture of an invented sentence proves nothing about how a real one wraps.
@@ -121,7 +111,11 @@ export function createFixtureDataSource(name: string): PickerDataSource {
     },
 
     async discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
-      if (scenario === "loading") return NEVER;
+      // `discovering` is the whole point of that scenario: the credential sweep
+      // finishes, the provider list is on screen and usable, and the roster the
+      // user just asked for never lands. It is the only way to photograph the
+      // per-provider wait, which against a real provider is over in a second.
+      if (scenario === "loading" || scenario === "discovering") return NEVER;
       if (!forced) return real.discoverRoster(provider);
 
       // The fallback list is the REAL vendor catalog for this provider, because the

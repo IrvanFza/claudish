@@ -14,17 +14,31 @@
  * footer down under the reader's cursor, seconds after they started reading.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type DescriptionIndex,
   emptyDescriptionIndex,
 } from "../../providers/model-descriptions.js";
 import type { PickerDataSource } from "../PickerDataSource.js";
 
-export function useModelDescriptions(source: PickerDataSource): DescriptionIndex {
+export function useModelDescriptions(
+  source: PickerDataSource,
+  /**
+   * FALSE UNTIL A MODEL LIST IS ON SCREEN. A description describes a MODEL, and
+   * the picker now opens on the provider list, where not one of them can be
+   * shown — so fetching the index at startup would be a megabyte spent on a
+   * screen that has nowhere to put it. Same rule as the catalog warm beside it:
+   * on demand, once, when the view that uses it is asked for.
+   */
+  enabled = true
+): DescriptionIndex {
   const [index, setIndex] = useState<DescriptionIndex>(emptyDescriptionIndex);
+  /** Asked for ONCE per picker open, however often `enabled` flips. */
+  const asked = useRef(false);
 
   useEffect(() => {
+    if (!enabled || asked.current) return;
+    asked.current = true;
     let live = true;
     void source.descriptions().then(
       (loaded) => {
@@ -38,7 +52,7 @@ export function useModelDescriptions(source: PickerDataSource): DescriptionIndex
     return () => {
       live = false;
     };
-  }, [source]);
+  }, [source, enabled]);
 
   return index;
 }

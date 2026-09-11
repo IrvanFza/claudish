@@ -41,10 +41,8 @@ import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types
 import {
   type ModelInfo,
   type PickerDiscoveryOutcome,
-  type PreloadedRoster,
   buildDiscoveredModelOutcome,
   buildProviderChoices,
-  preloadProviderRoster,
   providerShortcut,
   servedModelsForProvider,
 } from "../model-selector.js";
@@ -106,13 +104,6 @@ export interface PickerDataSource {
   servedModels(provider: string): ModelInfo[];
   /** One settled outcome per discovery provider, `fallbackRows` included. */
   discoverRoster(provider: string): Promise<PickerDiscoveryOutcome>;
-  /**
-   * This provider's LIVE roster, for merging into the flat cross-provider list.
-   *
-   * Distinct from `discoverRoster`: no catalog fallback leg, so no `?provider=`
-   * query — see `model-selector.ts:preloadProviderRoster`. Never rejects.
-   */
-  rosterRows(provider: string): Promise<PreloadedRoster>;
   /**
    * One editorial sentence per model, for the detail pane. Resolves late and is
    * never awaited before a first paint; the slim catalog carries no description.
@@ -239,10 +230,6 @@ export function createPickerDataSource(): PickerDataSource {
 
     discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
       return buildDiscoveredModelOutcome(provider, names.get(provider) ?? provider, catalog);
-    },
-
-    rosterRows(provider: string): Promise<PreloadedRoster> {
-      return preloadProviderRoster(provider, names.get(provider) ?? provider, catalog);
     },
 
     descriptions(): Promise<DescriptionIndex> {

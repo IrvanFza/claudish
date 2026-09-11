@@ -68,6 +68,16 @@ describe("priceFg", () => {
     expect(priceFg("local")).toBe(priceFg("N/A"));
     expect(priceFg("local")).not.toBe(priceFg("$2.25"));
   });
+
+  test("AN EXPENSIVE PRICE IS NOT PAINTED AS AN ALARM — one colour, one meaning", () => {
+    // A prototype of this dialog bucketed metered prices and drew anything over
+    // $10/1M in orange; the owner and the reviewer both read `$30.00` as an error,
+    // because red-orange is what this app spends on a failure and on `SUB`. A
+    // number is a number: the numeral is body ink at every magnitude, and the
+    // comparison the reader is making is between the DIGITS.
+    const prices = ["$0.15", "$2.25", "$12.50", "$15.00", "$30.00"].map(priceFg);
+    expect(new Set(prices).size).toBe(1);
+  });
 });
 
 describe("billingLabel / readinessGlyph", () => {

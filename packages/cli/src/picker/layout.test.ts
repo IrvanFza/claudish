@@ -22,7 +22,9 @@ import {
   MAX_DIALOG_WIDTH,
   MAX_LIST_ROWS,
   deriveDialogLayout,
+  deriveProviderRowLayout,
   deriveRowLayout,
+  providerRowTotal,
   rowLayoutTotal,
   scrollWindow,
 } from "./layout.js";
@@ -80,6 +82,43 @@ describe("deriveRowLayout", () => {
       expect(Object.values(l).every((v) => Number.isFinite(v))).toBe(true);
       expect(l.id).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("deriveProviderRowLayout", () => {
+  test("cells sum EXACTLY to the row width at every width in [40, 200]", () => {
+    // THE DEFECT THIS WOULD HAVE CAUGHT IS THE ONE THAT WAS THERE. The provider
+    // row's four widths used to be `const`s inside the component with an
+    // `inner - 2 - 2 - … - 3` for the name, and they summed two columns SHORT —
+    // every provider row painted a two-cell dead tail and nothing said so.
+    const wrong = WIDTHS.map((w) => ({
+      w,
+      sum: providerRowTotal(deriveProviderRowLayout(w)),
+    })).filter(({ w, sum }) => sum !== w);
+    expect(wrong).toEqual([]);
+  });
+
+  test("no cell is ever negative, at any width including absurd ones", () => {
+    for (const w of [...WIDTHS, 0, 1, 8, 20, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const l = deriveProviderRowLayout(w);
+      for (const [cell, n] of Object.entries(l)) {
+        expect({ w, cell, ok: Number.isFinite(n) && n >= 0 }).toEqual({ w, cell, ok: true });
+      }
+    }
+  });
+
+  test("the name is CAPPED at the longest name there is — the surplus goes right", () => {
+    // `Grok Build (subscription)` is 25 cells, the longest in the roster, so a name
+    // column wider than 26 is dead air between a provider and the shortcut that
+    // qualifies it. Past the cap the extra columns go to the right-aligned tail,
+    // which is where a count belongs.
+    const narrow = deriveProviderRowLayout(72);
+    const wide = deriveProviderRowLayout(140);
+    expect(narrow.name).toBe(26);
+    expect(wide.name).toBe(26);
+    expect(wide.tail - narrow.tail).toBe(140 - 72);
+    expect(wide.shortcut).toBe(narrow.shortcut);
+    expect(wide.billing).toBe(narrow.billing);
   });
 });
 

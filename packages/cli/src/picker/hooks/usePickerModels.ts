@@ -96,18 +96,34 @@ export function usePickerModels(
   /** Providers whose credential probe came back true. */
   ready: ReadonlySet<string>,
   /**
-   * LIVE roster rows per provider, merged in as they land
-   * (`usePreloadedRosters`). Empty on the first frames, and that is the design:
-   * the catalog rows paint immediately and each roster joins them when it
-   * arrives, rather than the list waiting for the slowest provider.
+   * LIVE roster rows for the providers the user has already OPENED this session
+   * (`rowsFromOutcomes`). Empty until he opens one, and that is the design: a
+   * roster is fetched because he asked for that provider, and once it is in hand
+   * it costs nothing to let it improve the cross-provider list too.
    */
-  liveRows: ReadonlyMap<string, ModelInfo[]> = EMPTY_LIVE
+  liveRows: ReadonlyMap<string, ModelInfo[]> = EMPTY_LIVE,
+  /**
+   * FALSE UNTIL A MODEL LIST IS ACTUALLY ON SCREEN — the whole point of this
+   * parameter.
+   *
+   * The picker opens on the provider list, which needs no catalog at all, and
+   * the owner's instruction was blunt: *"why we prefetching? we should not, as
+   * we show on demand"*. So the cross-vendor warm does not run at startup; it
+   * runs the first time a list of MODELS is asked for, which is one cached fetch
+   * for the view that needs it rather than eleven that nobody asked for.
+   */
+  enabled = true
 ): PickerModelsState {
-  const [phase, setPhase] = useState<LoadPhase>("loading");
+  const [phase, setPhase] = useState<LoadPhase>("idle");
   const cache = useRef(new Map<string, PickerRow[]>());
+  /** The warm is asked for ONCE per picker open, however often `enabled` flips. */
+  const warmed = useRef(false);
 
   useEffect(() => {
+    if (!enabled || warmed.current) return;
+    warmed.current = true;
     let live = true;
+    setPhase("loading");
     void (async () => {
       // Bounded, and documented never to throw. A cold cache is the only case
       // this actually waits for; a warm one returns on the first line.
@@ -121,7 +137,7 @@ export function usePickerModels(
     return () => {
       live = false;
     };
-  }, [source]);
+  }, [source, enabled]);
 
   // The ready set is re-derived per render by `usePickerProviders`, so it cannot
   // be a memo dependency directly — a new Set every frame would rebuild the whole

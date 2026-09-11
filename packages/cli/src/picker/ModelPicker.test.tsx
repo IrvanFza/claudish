@@ -19,13 +19,19 @@ import { describe, expect, test } from "bun:test";
  * any list row. Both are decidable from a frame, and both would have failed the
  * build that shipped.
  *
+ * AND THE ONES ABOUT THE ROUND-TWO CORRECTION, which are about what the picker does
+ * NOT do. `calls` counts every loader the fake is asked for, so "nothing is fetched
+ * before the user asks for it" is an assertion rather than a claim in a comment —
+ * and it is the one that would have caught the build the owner rejected, which
+ * looked correct and simply did too much.
+ *
  * THE DATA SOURCE IS A PARAMETER, NEVER `mock.module()`: mocking shared
  * infrastructure bleeds across Bun's module registry and breaks sibling e2e files.
  */
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { ReactNode } from "react";
-import type { ModelInfo, PickerDiscoveryOutcome, PreloadedRoster } from "../model-selector.js";
+import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -62,22 +68,31 @@ interface FakeOpts {
   roster?: PickerProviderChoice[];
   ready?: Record<string, boolean>;
   outcome?: PickerDiscoveryOutcome;
+  /** Per-provider discovery outcomes. Falls back to `outcome`. */
+  outcomes?: Record<string, PickerDiscoveryOutcome>;
   /** Per-provider served lists; falls back to `served`. */
   byProvider?: Record<string, ModelInfo[]>;
   served?: ModelInfo[];
-  /** Per-provider LIVE roster outcomes, for the cross-provider merge. */
-  liveRosters?: Record<string, PreloadedRoster>;
   /** `modelId` → prose sentence, as the description index answers. */
   descriptions?: Record<string, string>;
   /** Never settles — the in-flight states. */
   hang?: boolean;
 }
 
-function fakeSource(opts: FakeOpts = {}): PickerDataSource {
+/** Every loader the picker may reach for, counted. See the file header. */
+interface Calls {
+  catalog: number;
+  descriptions: number;
+  discover: string[];
+}
+
+function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
   const roster = opts.roster ?? [provider()];
   const never = new Promise<never>(() => {});
   const descriptions = opts.descriptions ?? {};
+  const calls: Calls = { catalog: 0, descriptions: 0, discover: [] };
   return {
+    calls,
     providerRoster: () => roster,
     notEnabledLocalProviders: () => [],
     displayName: (p) => roster.find((r) => r.value === p)?.label ?? p,
@@ -85,27 +100,29 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource {
       if (opts.hang) await never;
       for (const n of names) yield [n, opts.ready?.[n] ?? true] as [string, boolean];
     },
-    ensureCatalog: (): Promise<void> => (opts.hang ? never : Promise.resolve()),
+    ensureCatalog: (): Promise<void> => {
+      calls.catalog++;
+      return opts.hang ? never : Promise.resolve();
+    },
     servedModels: (p) => opts.byProvider?.[p] ?? opts.served ?? [model()],
-    discoverRoster: (): Promise<PickerDiscoveryOutcome> =>
-      opts.hang
+    discoverRoster: (p): Promise<PickerDiscoveryOutcome> => {
+      calls.discover.push(p);
+      return opts.hang
         ? never
         : Promise.resolve(
-            opts.outcome ?? { kind: "rows", rows: [model()], servedCount: 1, chatCount: 1 }
-          ),
-    rosterRows: (p): Promise<PreloadedRoster> =>
-      opts.hang
-        ? never
-        : Promise.resolve(
-            opts.liveRosters?.[p] ?? { kind: "empty", reason: "unsupported" as const }
-          ),
-    descriptions: (): Promise<DescriptionIndex> =>
-      opts.hang
+            opts.outcomes?.[p] ??
+              opts.outcome ?? { kind: "rows", rows: [model()], servedCount: 1, chatCount: 1 }
+          );
+    },
+    descriptions: (): Promise<DescriptionIndex> => {
+      calls.descriptions++;
+      return opts.hang
         ? never
         : Promise.resolve({
             get: (id: string) => descriptions[id],
             size: Object.keys(descriptions).length,
-          }),
+          });
+    },
   };
 }
 
@@ -113,6 +130,8 @@ interface Drawn {
   text: string[];
   frame: CapturedFrame;
   press: (keys: string[]) => Promise<void>;
+  /** Re-render until the frame satisfies `pred`, or give up and let the assert speak. */
+  until: (pred: (text: string[]) => boolean) => Promise<void>;
   recapture: () => { text: string[]; frame: CapturedFrame };
   destroy: () => void;
 }
@@ -139,6 +158,22 @@ async function draw(node: ReactNode, width = 80, height = 24, settleMs = 30): Pr
       await new Promise((r) => setTimeout(r, 20));
       await renderOnce();
     },
+    /**
+     * A FIXED SLEEP AFTER A KEYSTROKE IS A FLAKE, and this suite proved it: the
+     * keystroke that opens a list starts an effect, and on a loaded machine the
+     * 20 ms after it is not always enough for the effect, the state update and the
+     * next paint. Under `bun test` with 212 files in flight it failed once and
+     * passed alone, which is the worst signal there is. Polling for the CONDITION
+     * the test is about takes the load out of the assertion; the deadline is short
+     * enough that a genuine regression still fails in well under a second.
+     */
+    until: async (pred) => {
+      for (let i = 0; i < 40; i++) {
+        if (pred(captureCharFrame().split("\n"))) return;
+        await new Promise((r) => setTimeout(r, 25));
+        await renderOnce();
+      }
+    },
     recapture,
     destroy: () => renderer.destroy(),
   };
@@ -149,6 +184,18 @@ const bgs = (f: CapturedFrame): Set<string> =>
   new Set(f.lines.flatMap((l) => l.spans.map((s) => s.bg.toInts().slice(0, 3).join())));
 const rgb = (hex: string): string =>
   [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)).join();
+/**
+ * HAS A MODEL LIST FINISHED PAINTING? The filter row's `newest first` is drawn by
+ * the list phase and by nothing else — not by the loading dialog, not by the
+ * provider list — so it is the one string that separates "the view flipped" from
+ * "the view flipped and the rows are there".
+ *
+ * `▶` would not do: every list in this picker draws a cursor, including the one the
+ * keystroke just left, so a predicate on it is satisfied before anything has
+ * happened and waits for nothing.
+ */
+const listPainted = (t: string[]): boolean => t.join("").includes("newest first");
+const providerListPainted = (t: string[]): boolean => t.join("").includes("choose a provider");
 /** Rows that carry painted content — the dialog's actual footprint. */
 const painted = (text: string[]): string[] => text.filter((l) => l.trim() !== "");
 /**
@@ -183,21 +230,21 @@ describe("the dialog", () => {
 
   test("has EXACTLY ONE cursor — the direct answer to “unclear what is happening”", async () => {
     // Two panes each held a cursor and only a border colour said which one the arrow
-    // keys drove. One list, one `▶`.
+    // keys drove. One list, one `▶` — on the landing screen and inside a list alike.
     const roster = ["openrouter", "kimi", "google"].map((v) =>
       provider({ value: v, label: v, shortcut: `${v}@`, hasDiscovery: false })
     );
     const d = await draw(
       <ModelPicker
-        source={fakeSource({
-          roster,
-          served: [model({ id: "a" }), model({ id: "b" })],
-        })}
+        source={fakeSource({ roster, served: [model({ id: "a" }), model({ id: "b" })] })}
         onDone={() => {}}
       />
     );
     try {
       expect(joined(d.text).split("▶").length - 1).toBe(1);
+      await d.press(["a"]);
+      await d.until(listPainted);
+      expect(joined(d.recapture().text).split("▶").length - 1).toBe(1);
     } finally {
       d.destroy();
     }
@@ -210,6 +257,7 @@ describe("the dialog", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
+          roster: [provider({ hasDiscovery: false })],
           served: [
             model({ id: "a", contextLength: 1_000_000, context: "1M" }),
             model({ id: "b", contextLength: 8_000, context: "8K" }),
@@ -219,7 +267,9 @@ describe("the dialog", () => {
       />
     );
     try {
-      const rows = d.text.filter((l) => /\ba\b|\bb\b/.test(l));
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const rows = d.recapture().text.filter((l) => /\ba\b|\bb\b/.test(l));
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) expect(row).not.toMatch(/[█▓▒░╌]/);
     } finally {
@@ -234,21 +284,39 @@ describe("the dialog", () => {
     ] as const) {
       const d = await draw(<ModelPicker source={fakeSource()} onDone={() => {}} />, width, height);
       try {
-        const over = d.text.filter((l) => l.length > width);
-        expect({ width, over }).toEqual({ width, over: [] });
+        expect({ width, over: d.text.filter((l) => l.length > width) }).toEqual({
+          width,
+          over: [],
+        });
+        await d.press(["a"]);
+        await d.until(listPainted);
+        expect({
+          width,
+          over: d.recapture().text.filter((l) => l.length > width),
+        }).toEqual({ width, over: [] });
       } finally {
         d.destroy();
       }
     }
   });
 
-  test("the key hints are present and unclipped at 80×24", async () => {
-    const d = await draw(<ModelPicker source={fakeSource()} onDone={() => {}} />);
+  test("the key hints are present and unclipped at 80×24, in BOTH lists", async () => {
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster: [provider({ hasDiscovery: false })] })}
+        onDone={() => {}}
+      />
+    );
     try {
       // The hints row is the last PAINTED row above the bottom border.
-      const footer = painted(d.text).at(-2) ?? "";
-      for (const hint of ["move", "select", "providers", "custom", "cancel"]) {
-        expect(footer).toContain(hint);
+      const footer = (): string => painted(d.recapture().text).at(-2) ?? "";
+      for (const hint of ["move", "open", "all models", "custom", "quit"]) {
+        expect(footer()).toContain(hint);
+      }
+      await d.press(["a"]);
+      await d.until(listPainted);
+      for (const hint of ["move", "select", "filter", "custom", "providers"]) {
+        expect(footer()).toContain(hint);
       }
     } finally {
       d.destroy();
@@ -256,34 +324,348 @@ describe("the dialog", () => {
   });
 });
 
-// ── one flat list, provider as a COLUMN ──────────────────────────────────────────
+// ── the landing screen, and everything it does NOT do ────────────────────────────
 
-describe("the flat cross-provider list", () => {
+describe("the picker opens on the PROVIDER list", () => {
   const roster = [
-    provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
-    provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
+    provider({
+      value: "openrouter",
+      label: "OpenRouter",
+      shortcut: "or@",
+      envVar: "OPENROUTER_API_KEY",
+      hasDiscovery: false,
+    }),
+    provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: true }),
   ];
 
-  test("merges every credentialled provider and NAMES the provider on each row", async () => {
+  test("lands on providers — not on a 574-row list of every model", async () => {
+    // The owner, verbatim: "we should not show the full list of models, we should
+    // show a list of providers by default and only when we go inside we load and
+    // resolve all models".
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster, byProvider: { openrouter: [model({ id: "glm-5.3" })] } })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      const all = joined(d.text);
+      expect(all).toContain("choose a provider");
+      expect(all).toContain("OpenRouter");
+      // Not one model id, because nothing has been asked for one.
+      expect(all).not.toContain("glm-5.3");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("FETCHES NOTHING before the user asks — no catalog, no roster, no descriptions", async () => {
+    // "why we prefetching? we should not, as we show on demand". The build this
+    // replaces warmed the cloud catalog AND fanned out one roster request per
+    // credentialled provider, on a screen that could show neither.
+    const source = fakeSource({ roster });
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      expect(source.calls).toEqual({ catalog: 0, descriptions: 0, discover: [] });
+      // …and the screen does not claim to be doing any of it.
+      expect(joined(d.text)).not.toContain("cloud catalog");
+      expect(joined(d.text)).not.toContain("live rosters");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a provider with NO credential is not on the list, and the omission is counted", async () => {
+    // "we should not show unsetted providers, just active". Not deleted — counted,
+    // with the key that brings them back, because an unexplained absence is the
+    // defect class this feature exists to remove.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster, ready: { openrouter: true, "kimi-coding": false } })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      const before = joined(d.text);
+      expect(before).toContain("OpenRouter");
+      expect(before).not.toContain("Kimi Coding");
+      expect(before).not.toContain("MOONSHOT_API_KEY");
+      expect(before).toContain("+1 more need a key");
+
+      await d.press(["k"]);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("Kimi Coding");
+      // Revealed WITH the exact variable to inspect, which is the whole value of
+      // showing them at all.
+      expect(after).toContain("MOONSHOT_API_KEY");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("NO model count is printed for a provider nothing has counted yet", async () => {
+    // "we could not show number of models for some of them". A `0`, a `—` or a guess
+    // in that column is a claim; silence is not.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      const row = d.text.find((l) => l.includes("OpenRouter")) ?? "";
+      expect(row).toContain("OpenRouter");
+      expect(row).not.toMatch(/\bmodels?\b/);
+      expect(row).not.toContain("—");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("Escape on the landing screen CANCELS by returning null — never `process.exit`", async () => {
+    let got: string | null | undefined;
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster })}
+        onDone={(spec) => {
+          got = spec;
+        }}
+      />
+    );
+    try {
+      await d.press(["ESCAPE"]);
+      expect(got).toBeNull();
+    } finally {
+      d.destroy();
+    }
+  });
+});
+
+// ── entering a provider is what fetches it ───────────────────────────────────────
+
+describe("entering a provider loads THAT provider, on demand", () => {
+  const roster = [
+    provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+    provider({ value: "devin", label: "Devin", shortcut: "dv@", hasDiscovery: true }),
+  ];
+
+  test("`⏎` asks the provider under the cursor, and ONLY that one", async () => {
+    const source = fakeSource({
+      roster,
+      byProvider: { openrouter: [model({ id: "glm-5.3" })], devin: [] },
+      outcomes: {
+        devin: { kind: "rows", rows: [model({ id: "devin-1" })], servedCount: 1, chatCount: 1 },
+      },
+    });
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["ARROW_DOWN"]);
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      expect(source.calls.discover).toEqual(["devin"]);
+      const all = joined(d.recapture().text);
+      expect(all).toContain("Devin");
+      expect(all).toContain("devin-1");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("inside one provider a model appears exactly ONCE", async () => {
+    // The owner's rule: "if we enter to provider catalog, not all models — then the
+    // model will be just one".
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
           byProvider: {
-            openrouter: [model({ id: "glm-5.3-flash" })],
-            "kimi-coding": [model({ id: "kimi-k3" })],
+            openrouter: [model({ id: "gpt-6-astra" }), model({ id: "gpt-6-astra" })],
+          },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      const rows = d.recapture().text.filter((l) => l.includes("gpt-6-astra"));
+      // One list row, plus the detail line under the list that prints the spec.
+      expect(rows.filter((l) => l.includes("OpenRouter")).length).toBe(1);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`esc` comes back to the provider list rather than quitting", async () => {
+    let got: string | null | undefined = undefined;
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster })}
+        onDone={(spec) => {
+          got = spec;
+        }}
+      />
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      await d.press(["ESCAPE"]);
+      // A LONE `\x1B` IS AMBIGUOUS UNTIL THE NEXT BYTE OR A TIMEOUT: the parser has
+      // to wait to see whether it is the head of `\x1B[B`. One more render pass
+      // after that timeout is what makes a bare Escape observable in a test — a
+      // real keyboard gets the same delay and nobody notices.
+      await d.press([]);
+      await d.until(providerListPainted);
+      expect(joined(d.recapture().text)).toContain("choose a provider");
+      expect(got).toBeUndefined();
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("Enter returns the provider-scoped spec, never a bare model id", async () => {
+    // A bare Claude-shaped name reaching `route()` degrades to OpenRouter, so the
+    // picker must never emit one.
+    let got: string | null | undefined;
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          byProvider: { openrouter: [model({ id: "gpt-6" })] },
+        })}
+        onDone={(spec) => {
+          got = spec;
+        }}
+      />
+    );
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      await d.press(["RETURN"]);
+      // `openrouter@`, not the column's `or@`: `buildExplicitModelSpec` applies the
+      // readability OVERRIDES because this is the string the user copies off their
+      // screen, while a fixed-width column wants the short form. Both parse back to
+      // the same provider — `providerShortcut` records why they differ.
+      expect(got).toBe("openrouter@gpt-6");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("typing filters immediately — there is no search mode to enter", async () => {
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          byProvider: {
+            openrouter: [model({ id: "glm-5.3-flash" }), model({ id: "kimi-k3" })],
           },
         })}
         onDone={() => {}}
       />
     );
     try {
-      const all = joined(d.text);
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      await d.press(["g", "l", "m"]);
+      const all = joined(d.recapture().text);
+      expect(all).toContain("glm-5.3-flash");
+      expect(all).not.toContain("kimi-k3");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`/` makes the letter commands typeable — `codex` is a real model name", async () => {
+    // The one collision filter-first creates: `c` opens the custom-spec dialog, so
+    // the first keystroke of `codex` would navigate instead of filter. `/` is the
+    // escape hatch, and without a test it is the kind of thing that quietly stops
+    // working.
+    const source = (): PickerDataSource =>
+      fakeSource({
+        roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+        byProvider: { openrouter: [model({ id: "codex-2" }), model({ id: "kimi-k3" })] },
+      });
+    const d = await draw(<ModelPicker source={source()} onDone={() => {}} />);
+    try {
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      // Bare `c` NAVIGATES — that is the collision, asserted so the escape hatch has
+      // something to be an escape from.
+      await d.press(["c"]);
+      expect(joined(d.recapture().text)).toContain("type a model spec");
+      d.destroy();
+    } finally {
+      /* destroyed above; the second half needs a fresh tree */
+    }
+    const e = await draw(<ModelPicker source={source()} onDone={() => {}} />);
+    try {
+      await e.press(["RETURN"]);
+      await e.until(listPainted);
+      await e.press(["/"]);
+      await e.press(["c"]);
+      await e.press(["o"]);
+      const all = joined(e.recapture().text);
+      expect(all).toContain("codex-2");
+      expect(all).not.toContain("kimi-k3");
+    } finally {
+      e.destroy();
+    }
+  });
+});
+
+// ── the cross-provider list, which is no longer the default ──────────────────────
+
+describe("`a` opens the cross-provider list", () => {
+  const roster = [
+    provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+    provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
+  ];
+
+  test("it is ONE cached catalog fetch, not a fan-out across providers", async () => {
+    const source = fakeSource({
+      roster,
+      byProvider: {
+        openrouter: [model({ id: "glm-5.3-flash" })],
+        "kimi-coding": [model({ id: "kimi-k3" })],
+      },
+    });
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const all = joined(d.recapture().text);
+      expect(all).toContain("all models");
       expect(all).toContain("glm-5.3-flash");
       expect(all).toContain("kimi-k3");
-      // THE COLUMN IS A NAME, NOT A SHORTCUT. It printed `or@` / `kc@` and the
-      // owner's question on a live run was "what is 'or' means" — a routing
-      // shortcut only reads as information to someone who already knows it.
+      // ONE warm. And not a single roster request: no provider was opened.
+      expect(source.calls.catalog).toBe(1);
+      expect(source.calls.discover).toEqual([]);
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("one model on two providers is TWO rows, and the title counts both honestly", async () => {
+    // The owner's rule for this list, and the count that goes with it: the rows are
+    // ROUTES, so labelling their number "models" would be off by exactly the amount
+    // that makes the list useful.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster,
+          byProvider: {
+            openrouter: [model({ id: "gpt-6-astra" })],
+            "kimi-coding": [model({ id: "gpt-6-astra" })],
+          },
+        })}
+        onDone={() => {}}
+      />,
+      145,
+      45
+    );
+    try {
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const all = joined(d.recapture().text);
+      expect(all).toContain("1 models · 2 routes");
       expect(all).toContain("OpenRouter");
       expect(all).toContain("Kimi Coding");
     } finally {
@@ -306,7 +688,9 @@ describe("the flat cross-provider list", () => {
       />
     );
     try {
-      const all = joined(d.text);
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const all = joined(d.recapture().text);
       expect(all).toContain("glm-5.3-flash");
       expect(all).not.toContain("kimi-k3");
       // The absence is EXPLAINED, in the title, rather than silent.
@@ -316,12 +700,13 @@ describe("the flat cross-provider list", () => {
     }
   });
 
-  test("A LIVE ROSTER IS MERGED INTO THE FLAT LIST — the `gemini` bug, as an assertion", async () => {
-    // The owner filtered `gemini` on a live run and got eleven rows, every one of
-    // them `or@`, while Antigravity was serving gemini models on a FLAT-RATE
-    // subscription — invisible, because the flat list was the cloud catalog alone
-    // and Antigravity has no catalog entries at all. The subscription route is the
-    // one most worth finding, so its absence was the worst possible absence.
+  test("A ROSTER ALREADY OPENED IS MERGED IN — and one not opened costs no request", async () => {
+    // The `gemini` report — "why i search gemini i see only open router models, no
+    // models from antigravity and devin and subscriptions" — was first answered by
+    // fetching every roster at startup, which the owner then rejected as
+    // prefetching. This is the answer that survives both: a roster fetched because
+    // he OPENED that provider improves this list for free, and a provider he never
+    // opened is simply not represented here.
     const withDiscovery = [
       provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
       provider({
@@ -333,28 +718,35 @@ describe("the flat cross-provider list", () => {
         hasDiscovery: true,
       }),
     ];
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster: withDiscovery,
-          byProvider: {
-            openrouter: [model({ id: "gemini-3.8-flash" })],
-            // No catalog entries whatsoever — the real Antigravity's situation.
-            antigravity: [],
-          },
-          liveRosters: {
-            antigravity: {
-              kind: "rows",
-              rows: [model({ id: "gemini-3.8-flash-tiered", context: "1M" })],
-            },
-          },
-        })}
-        onDone={() => {}}
-      />,
-      145,
-      45
-    );
+    const source = fakeSource({
+      roster: withDiscovery,
+      byProvider: {
+        openrouter: [model({ id: "gemini-3.8-flash" })],
+        // No catalog entries whatsoever — the real Antigravity's situation.
+        antigravity: [],
+      },
+      outcomes: {
+        antigravity: {
+          kind: "rows",
+          rows: [model({ id: "gemini-3.8-flash-tiered", context: "1M" })],
+          servedCount: 1,
+          chatCount: 1,
+        },
+      },
+    });
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />, 145, 45);
     try {
+      // Open Antigravity, look at it, come back out, then ask for all models.
+      await d.press(["ARROW_DOWN"]);
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      await d.press(["ESCAPE"]);
+      // The bare-Escape flush — see the `esc comes back` test. Without it the
+      // NEXT key is read as `\x1B` + `a`, which is alt-a and not two keystrokes.
+      await d.press([]);
+      await d.until(providerListPainted);
+      await d.press(["a"]);
+      await d.until(listPainted);
       await d.press(["g", "e", "m", "i", "n", "i"]);
       const all = joined(d.recapture().text);
       // BOTH routes, from two different sources, in one filtered list.
@@ -362,184 +754,8 @@ describe("the flat cross-provider list", () => {
       expect(all).toContain("gemini-3.8-flash-tiered");
       expect(all).toContain("OpenRouter");
       expect(all).toContain("Antigravity");
-    } finally {
-      d.destroy();
-    }
-  });
-
-  test("one model on two providers is TWO rows, and the title counts both honestly", async () => {
-    // The owner's rule for the flat list, and the count that goes with it: the
-    // rows are ROUTES, so labelling their number "models" would be off by exactly
-    // the amount that makes the list useful.
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster,
-          byProvider: {
-            openrouter: [model({ id: "gpt-6-astra" })],
-            "kimi-coding": [model({ id: "gpt-6-astra" })],
-          },
-        })}
-        onDone={() => {}}
-      />,
-      145,
-      45
-    );
-    try {
-      const all = joined(d.text);
-      expect(all).toContain("1 models · 2 routes");
-      // Two rows, one per provider, each naming its own provider.
-      expect(all).toContain("OpenRouter");
-      expect(all).toContain("Kimi Coding");
-    } finally {
-      d.destroy();
-    }
-  });
-
-  test("a provider whose roster FAILS is counted, not silently absent", async () => {
-    // The aggregate shape: once the list queries every ready provider at once, a
-    // banner per failure would push the list off the screen and a banner for the
-    // first one would speak for the rest.
-    const withDiscovery = [
-      provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
-      provider({ value: "devin", label: "Devin", shortcut: "dv@", hasDiscovery: true }),
-    ];
-    const failures: string[] = [];
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster: withDiscovery,
-          byProvider: { openrouter: [model({ id: "glm-5.3-flash" })], devin: [] },
-          liveRosters: {
-            devin: {
-              kind: "failed",
-              failure: { kind: "unreachable", provider: "devin", detail: "timeout" },
-              notice: ["\n⚠ Devin could not list its models: timeout\n"],
-            },
-          },
-        })}
-        onDone={() => {}}
-        onDiscoveryFailure={(p) => failures.push(p)}
-      />
-    );
-    try {
-      expect(joined(d.recapture().text)).toContain("could not be listed");
-      // The full diagnostic still reaches the ONE post-teardown stderr write.
-      expect(failures).toEqual(["devin"]);
-    } finally {
-      d.destroy();
-    }
-  });
-
-  test("typing filters immediately — there is no search mode to enter", async () => {
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster,
-          byProvider: {
-            openrouter: [model({ id: "glm-5.3-flash" })],
-            "kimi-coding": [model({ id: "kimi-k3" })],
-          },
-        })}
-        onDone={() => {}}
-      />
-    );
-    try {
-      await d.press(["g", "l", "m"]);
-      const all = joined(d.recapture().text);
-      expect(all).toContain("glm-5.3-flash");
-      expect(all).not.toContain("kimi-k3");
-    } finally {
-      d.destroy();
-    }
-  });
-
-  test("`/` makes the three letter commands typeable — `phi3` is a real model", async () => {
-    // The one collision filter-first creates: `p` opens the provider dialog, so the
-    // first keystroke of `phi3` would navigate instead of filter. `/` is the escape
-    // hatch, and without a test it is the kind of thing that quietly stops working.
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster,
-          byProvider: {
-            openrouter: [model({ id: "phi3" }), model({ id: "kimi-k3" })],
-            "kimi-coding": [],
-          },
-        })}
-        onDone={() => {}}
-      />
-    );
-    try {
-      // Bare `p` NAVIGATES — that is the collision, asserted so the escape hatch has
-      // something to be an escape from.
-      await d.press(["p"]);
-      expect(joined(d.recapture().text)).toContain("have credentials");
-      d.destroy();
-    } finally {
-      /* destroyed above; the second half needs a fresh tree */
-    }
-    const e = await draw(
-      <ModelPicker
-        source={fakeSource({
-          roster,
-          byProvider: {
-            openrouter: [model({ id: "phi3" }), model({ id: "kimi-k3" })],
-            "kimi-coding": [],
-          },
-        })}
-        onDone={() => {}}
-      />
-    );
-    try {
-      await e.press(["/"]);
-      await e.press(["p"]);
-      await e.press(["h"]);
-      const all = joined(e.recapture().text);
-      expect(all).toContain("phi3");
-      expect(all).not.toContain("kimi-k3");
-    } finally {
-      e.destroy();
-    }
-  });
-
-  test("Enter returns the provider-scoped spec, never a bare model id", async () => {
-    // A bare Claude-shaped name reaching `route()` degrades to OpenRouter, so the
-    // picker must never emit one.
-    let got: string | null | undefined;
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({ roster, byProvider: { openrouter: [model({ id: "gpt-6" })] } })}
-        onDone={(spec) => {
-          got = spec;
-        }}
-      />
-    );
-    try {
-      await d.press(["RETURN"]);
-      // `openrouter@`, not the column's `or@`: `buildExplicitModelSpec` applies the
-      // readability OVERRIDES because this is the string the user copies off their
-      // screen, while a fixed-width column wants the short form. Both parse back to
-      // the same provider — `providerShortcut` records why they differ.
-      expect(got).toBe("openrouter@gpt-6");
-    } finally {
-      d.destroy();
-    }
-  });
-
-  test("Escape with an empty filter CANCELS by returning null — never `process.exit`", async () => {
-    let got: string | null | undefined;
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({ roster })}
-        onDone={(spec) => {
-          got = spec;
-        }}
-      />
-    );
-    try {
-      await d.press(["ESCAPE"]);
-      expect(got).toBeNull();
+      // Exactly one roster request, and it was the one he opened.
+      expect(source.calls.discover).toEqual(["antigravity"]);
     } finally {
       d.destroy();
     }
@@ -566,20 +782,22 @@ describe("a fallback list says it is a fallback — and that it may not work", (
     fallbackRows: [model(), model({ id: "kimi-k2.6" })],
   };
 
-  /** Reach the scoped view: `p` opens the provider dialog, Enter scopes to row one. */
+  /**
+   * Reach the scoped view: Enter on the first provider.
+   *
+   * ONE PRESS, and the failure it renders is now a failure the user ASKED for —
+   * which is the round-two improvement that came free with on-demand loading. The
+   * red panel, the `catalog` rows and `r retry` are unchanged; only the moment
+   * they appear is.
+   */
   async function scoped(outcome: PickerDiscoveryOutcome, width = 80, height = 24): Promise<Drawn> {
     const d = await draw(
       <ModelPicker source={fakeSource({ outcome })} onDone={() => {}} />,
       width,
       height
     );
-    // TWO presses, not one batch: `useKeyboard` reads `view` from the render that
-    // subscribed, so a batched `p`+Enter is handled entirely by the MODEL view's
-    // closure and the provider dialog never sees the Enter. A real keyboard cannot
-    // do that; `pressKeys` with no delay can.
-    await d.press(["p"]);
     await d.press(["RETURN"]);
-    await new Promise((r) => setTimeout(r, 40));
+    await d.until(listPainted);
     return { ...d, ...d.recapture() };
   }
 
@@ -680,50 +898,13 @@ describe("a fallback list says it is a fallback — and that it may not work", (
   });
 });
 
-// ── the provider dialog, which replaced the rail ─────────────────────────────────
+// ── what the screen says while it is waiting ─────────────────────────────────────
 
-describe("the provider dialog", () => {
-  test("`p` lists every provider at FULL WIDTH, credentials and counts included", async () => {
-    // The rail truncated two different providers to the same `opencod…`. A dialog at
-    // 76 columns cannot.
-    const roster = [
-      provider({
-        value: "opencode-zen",
-        label: "OpenCode Zen",
-        shortcut: "zen@",
-        hasDiscovery: false,
-      }),
-      provider({
-        value: "opencode-zen-go",
-        label: "OpenCode Zen Go",
-        shortcut: "zengo@",
-        hasDiscovery: false,
-      }),
-    ];
-    const d = await draw(
-      <ModelPicker
-        source={fakeSource({ roster, ready: { "opencode-zen-go": false } })}
-        onDone={() => {}}
-      />
-    );
-    try {
-      await d.press(["p"]);
-      const all = joined(d.recapture().text);
-      expect(all).toContain("OpenCode Zen");
-      expect(all).toContain("OpenCode Zen Go");
-      // The absence is explained with the exact variable to inspect.
-      expect(all).toContain("MOONSHOT_API_KEY");
-      expect(all).toContain("1 of 2 have credentials");
-    } finally {
-      d.destroy();
-    }
-  });
-});
-
-// ── the loading dialog ───────────────────────────────────────────────────────────
-
-describe("the loading dialog", () => {
-  test("names what it is waiting for rather than spinning", async () => {
+describe("the loading states", () => {
+  test("startup names the ONE thing it is doing, and claims no other", async () => {
+    // The screen the owner rejected said `cloud catalog fetching…` and `live rosters
+    // 0/11 providers` before he had asked for either. Startup now probes credentials
+    // and nothing else, and the screen says so.
     const d = await draw(
       <ModelPicker source={fakeSource({ hang: true })} onDone={() => {}} />,
       80,
@@ -733,8 +914,31 @@ describe("the loading dialog", () => {
     try {
       const all = joined(d.text);
       expect(all).toContain("credentials");
-      expect(all).toContain("cloud catalog");
-      expect(all).toContain("models appear as soon as they are ready");
+      expect(all).toContain("checking");
+      expect(all).not.toContain("cloud catalog");
+      expect(all).not.toContain("live rosters");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a provider still being listed says which provider, and for how long", async () => {
+    // The per-provider in-flight state, which is now reachable because the fetch
+    // happens in response to a keystroke.
+    const d = await draw(
+      <ModelPicker
+        source={{
+          ...fakeSource({ roster: [provider({ label: "Kimi / Moonshot" })] }),
+          discoverRoster: () => new Promise<never>(() => {}),
+        }}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.press(["RETURN"]);
+      const all = joined(d.recapture().text);
+      expect(all).toContain("Kimi / Moonshot");
+      expect(all).toContain("deadline");
     } finally {
       d.destroy();
     }

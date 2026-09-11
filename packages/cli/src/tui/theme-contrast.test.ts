@@ -105,6 +105,16 @@ describe("light TUI palette contrast", () => {
     expect(contrastRatio(C.fgMuted, C.chipLabelBg)).toBeGreaterThanOrEqual(4.5);
   });
 
+  it("RAISES the keycap chip off the panel it is drawn on", () => {
+    // Legible ink is only half of a keycap: the chip also has to be visibly
+    // raised off the band beneath it or it reads as a tinted word rather than as
+    // a key you press. The owner reported exactly that from a live light-theme
+    // run, and the old `#d1d5db` measured 1.32:1 against `bgAlt` — under the
+    // 1.7:1 this file already requires of every stage block.
+    setThemeMode("light");
+    expect(contrastRatio(C.chipKeyBg, C.bgAlt)).toBeGreaterThanOrEqual(1.7);
+  });
+
   it("re-snapshots semantic tokens and ramps", () => {
     setThemeMode("light");
     expect(tokens.success).toBe(C.green);

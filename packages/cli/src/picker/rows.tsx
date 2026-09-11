@@ -59,7 +59,7 @@ import { A, C } from "../tui/theme.js";
 import { padStartTo, padTo, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import type { BillingMode } from "./PickerDataSource.js";
-import { GAPS, type RowLayout } from "./layout.js";
+import { GAPS, type RowLayout, deriveProviderRowLayout } from "./layout.js";
 
 /** Readiness, in `ProvidersContent.tsx:225`'s exact vocabulary. */
 export type Readiness = "pending" | "ready" | "missing";
@@ -198,9 +198,18 @@ export interface ProviderRowProps {
   shortcut: string;
   readiness: Readiness;
   billing: BillingMode;
-  /** Models this provider serves, or `null` before the catalog has answered. */
+  /**
+   * How many models this provider offers, or `null` for "not known yet".
+   *
+   * `null` PRINTS NOTHING — not `0`, not `—`, not a guess. The owner's rule,
+   * verbatim: *"we could not show number of models for some of them"*. This
+   * column is now only filled for a provider whose roster the user has already
+   * opened, or whose count is already in hand from a catalog the user asked for;
+   * everything else is silent, because a wrong count is worse than no count and
+   * an em dash still occupies the place where a number goes.
+   */
   count: number | null;
-  /** Does this provider list its own roster? Decides what `0` in the catalog means. */
+  /** Does this provider list its own roster? Decides what a known `0` means. */
   hasDiscovery: boolean;
   /** Why it is not selectable — an env var name, or empty. */
   note: string;
@@ -210,14 +219,21 @@ export interface ProviderRowProps {
 }
 
 /**
- * One provider, in the `p` dialog.
+ * One provider, in the list the picker now OPENS ON.
  *
- * IT IS A DIALOG, NOT A RAIL, and that is the fix for the complaint. The rejected
- * build put a 19-column provider rail permanently beside the model list, which
- * gave the screen two cursors with only a border colour to say which one the arrow
- * keys drove — "super unclear what is happening", precisely described. It also
- * truncated two different providers to the same `opencod…`. At full dialog width
- * the names are whole, and only one list is ever on screen.
+ * IT IS THE DEFAULT SCREEN, NOT A DETOUR. The build this replaces landed on a flat
+ * 574-row cross-provider list and reached the providers through `p`; the owner's
+ * verdict was *"we should not show the full list of models, we should show a list
+ * of providers by default and only when we go inside we load and resolve all
+ * models"*. So this row is the first thing the picker draws, and entering one is
+ * what makes that provider's roster be fetched at all.
+ *
+ * IT IS A DIALOG, NOT A RAIL. The rejected build put a 19-column provider rail
+ * permanently beside the model list, which gave the screen two cursors with only a
+ * border colour to say which one the arrow keys drove — "super unclear what is
+ * happening", precisely described. It also truncated two different providers to
+ * the same `opencod…`. At full dialog width the names are whole, and only one list
+ * is ever on screen.
  */
 export function ProviderRow({
   label,
@@ -232,15 +248,7 @@ export function ProviderRow({
 }: ProviderRowProps): ReactNode {
   const { glyph, fg } = readinessGlyph(readiness);
   const bill = billingLabel(billing);
-  // The right-hand cell carries EITHER a count OR the env var a missing provider
-  // wants, and the env var is the longer of the two by a wide margin
-  // (`MOONSHOT_API_KEY` is 16, `needs ` makes 22). It is sized for the env var,
-  // because a truncated variable name is worse than useless — `needs MOON…` sends
-  // the reader looking for a variable that does not exist.
-  const countCell = 26;
-  const shortcutCell = 9;
-  const billCell = 6;
-  const nameCell = Math.max(6, inner - 2 - 2 - shortcutCell - billCell - countCell - 3);
+  const L = deriveProviderRowLayout(inner);
   // `0 models` IS A DIFFERENT CLAIM FOR A DISCOVERY PROVIDER, and printing it there
   // would be the original defect in miniature: Devin and Antigravity carry no catalog
   // entries by design and ask their own endpoint for a roster the moment you scope to
@@ -248,22 +256,22 @@ export function ProviderRow({
   // has not been asked yet.
   const countText =
     count === null
-      ? "—"
+      ? ""
       : count === 0 && hasDiscovery
         ? "asks its own roster"
         : `${count} model${count === 1 ? "" : "s"}`;
+  const tail = readiness === "missing" && note !== "" ? note : countText;
   return (
     <box height={1} flexShrink={0} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text attributes={A.boldIf(cursor)}>
         <span fg={cursor ? tokens.accent : tokens.trace}>{cursor ? "▶ " : "  "}</span>
-        <span fg={fg}>{glyph}</span>
-        <span> </span>
-        <span fg={cursor ? C.strong : tokens.text}>{padTo(label, nameCell)}</span>
-        <span> </span>
-        <span fg={tokens.subtle}>{padTo(shortcut, shortcutCell)}</span>
-        <span fg={bill.fg}>{padTo(bill.text, billCell)}</span>
+        <span fg={fg}>{padTo(glyph, L.glyph)}</span>
+        <span fg={cursor ? C.strong : tokens.text}>{padTo(truncate(label, L.name), L.name)}</span>
+        <span>{gap(L.gaps)}</span>
+        <span fg={tokens.subtle}>{padTo(truncate(shortcut, L.shortcut), L.shortcut)}</span>
+        <span fg={bill.fg}>{padTo(bill.text, L.billing)}</span>
         <span fg={readiness === "missing" ? tokens.dead : tokens.subtle}>
-          {padStartTo(readiness === "missing" && note !== "" ? note : countText, countCell)}
+          {padStartTo(truncate(tail, L.tail), L.tail)}
         </span>
       </text>
     </box>

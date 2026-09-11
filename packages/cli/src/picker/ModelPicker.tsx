@@ -26,17 +26,30 @@
  *    banner stay on screen above the dialog. It reads as a program ASKING
  *    something rather than as a program that has taken the terminal, and the
  *    guidance's own `screenMode` table assigns inline to a one-shot command.
- * 2. **One flat cross-provider list.** Two panes meant two cursors with only a
- *    border colour to say which one the arrow keys drove — the literal cause of
- *    "unclear what is happening". The provider becomes a COLUMN, printed as the
- *    routing shortcut the user could have typed (`or@`, `kc@`, `gk@`), which also
- *    kills the truncation collision that rendered two different providers as
- *    `opencod…`. Filtering on `kc` scopes to Kimi Coding faster than a rail ever
- *    did.
+ * 2. **One list at a time, one cursor in it.** Two panes meant two cursors with
+ *    only a border colour to say which one the arrow keys drove — the literal
+ *    cause of "unclear what is happening".
  * 3. **No per-row graphics.** Plain aligned columns; colour reserved for meaning,
  *    one meaning each (`rows.tsx` lists them). The one meter left in the picker is
  *    the credential sweep's `done/total`, which is real progress over countable
  *    work.
+ *
+ * THE DEFAULT SCREEN IS THE PROVIDER LIST, AND NOTHING IS FETCHED BEFORE IT. An
+ * intermediate build landed on a flat 574-row cross-provider list and warmed the
+ * cloud catalog AND every credentialled provider's live roster to fill it — a
+ * `cloud catalog fetching… / live rosters 0/11 providers` screen the user had to
+ * watch before he could do anything. The owner's three corrections, verbatim:
+ * *"why we prefetching? we should not, as we show on demand"*, *"we should not
+ * show the full list of models, we should show a list of providers by default and
+ * only when we go inside we load and resolve all models"*, and *"we should not
+ * show unsetted providers, just active"*. So:
+ *
+ *   · Startup does ONE thing: probe credentials, streaming each answer into the
+ *     provider list as it settles. No catalog, no roster, no description index.
+ *   · `⏎` on a provider fetches THAT provider's roster and shows it. The failure
+ *     UX improves for free — a red panel now answers a request the user made.
+ *   · `a` opens the cross-provider list, built from the ONE cached catalog fetch,
+ *     enriched by whatever rosters he has already opened and by nothing else.
  *
  * NO AWAIT IS EVER SILENT, STRUCTURALLY RATHER THAN BY DILIGENCE. The roster is
  * derived synchronously, so the first frame is complete before any effect runs;
@@ -79,9 +92,8 @@ import {
   toPickerRow,
   usePickerModels,
 } from "./hooks/usePickerModels.js";
-import { usePickerProviders } from "./hooks/usePickerProviders.js";
-import { usePreloadedRosters } from "./hooks/usePreloadedRosters.js";
-import { useProviderDiscovery } from "./hooks/useProviderDiscovery.js";
+import { type ProviderState, usePickerProviders } from "./hooks/usePickerProviders.js";
+import { rowsFromOutcomes, useProviderDiscovery } from "./hooks/useProviderDiscovery.js";
 import {
   deriveDialogLayout,
   deriveRowLayout,
@@ -105,11 +117,15 @@ import { ColumnHeader, HintRow, ModelRow, ProviderRow } from "./rows.js";
  * from the same local index the rows came from, so there is no second phase — and
  * drawing a label for a phase that never runs is the same lie as an invented
  * denominator.
+ *
+ * AND THERE IS NO `live rosters` TASK ANY MORE. It had the most defensible meter in
+ * the file — a real `done/total` over the providers about to be asked — and it was
+ * still wrong, because the work it measured was work nobody had asked for. A
+ * truthful bar for an unwanted fan-out is a truthful answer to the wrong question.
  */
 export function buildLoadTasks(input: {
   creds: { done: number; total: number } | null;
   catalog: boolean;
-  rosters?: { done: number; total: number } | null;
   roster: { displayName: string; shape: DiscoveryShape; elapsed: number } | null;
 }): LoadTask[] {
   const tasks: LoadTask[] = [];
@@ -123,18 +139,6 @@ export function buildLoadTasks(input: {
     });
   }
   if (input.catalog) tasks.push({ id: "catalog", label: "cloud catalog", value: "fetching…" });
-  if (input.rosters) {
-    // A SECOND REAL DENOMINATOR. The providers that will be asked are known as
-    // soon as their credential probes settle, so `done/total` is work done over
-    // work total — the same thing that earns the credential sweep its meter.
-    const { done, total } = input.rosters;
-    tasks.push({
-      id: "rosters",
-      label: "live rosters",
-      pct: total > 0 ? (100 * done) / total : 0,
-      value: `${done}/${total} providers`,
-    });
-  }
   if (input.roster) {
     const { displayName, shape, elapsed } = input.roster;
     const secs = `${(elapsed / 1000).toFixed(1)}s`;
@@ -163,50 +167,116 @@ export interface ModelPickerProps {
 /**
  * Which dialog is on screen. ONE at a time, and one keyboard owner each — there is
  * never a second cursor to disambiguate.
+ *
+ * `providers` IS THE LANDING VIEW. `models` is reached by entering a provider
+ * (`scope` set) or by asking for the cross-provider list (`scope` null); `esc`
+ * from either comes back here, and `esc` HERE is what cancels the picker.
  */
 type View = "models" | "providers" | "custom";
 
 export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerProps): ReactNode {
   const { width, height } = useTerminalDimensions();
+  // THE ONLY WORK STARTUP DOES. Every other loader below is gated on a view the
+  // user has actually opened.
   const providers = usePickerProviders(source);
-  // EVERY ready provider's LIVE roster, concurrently, merged as each lands — the
-  // fix for "why i search gemini i see only open router models". See the hook.
-  const rosters = usePreloadedRosters(
-    source,
-    providers.roster,
-    providers.readySet,
-    onDiscoveryFailure
-  );
-  const catalog = usePickerModels(
-    source,
-    providers.roster,
-    providers.readySet,
-    rosters.rowsByProvider
-  );
-  const descriptions = useModelDescriptions(source);
 
-  const [view, setView] = useState<View>("models");
+  const [view, setView] = useState<View>("providers");
   const [filter, setFilter] = useState("");
   /**
-   * `/` was pressed: every printable key types, INCLUDING `p`, `c` and `r`.
+   * `/` was pressed: every printable key types, INCLUDING `c` and `r`.
    *
-   * It exists for exactly one case, and that case is real: `phi3` is an Ollama
-   * model, and with the three letter commands live on an empty filter its first
-   * keystroke would open the provider dialog instead. `/` is the escape hatch the
-   * design names, and it costs nothing when it is not needed — a filter with
-   * anything in it already types every key.
+   * It exists for exactly one case, and that case is real: a model id beginning
+   * with one of the two letter commands — `codex`, `r1` — would navigate on its
+   * first keystroke instead of filtering. `/` is the escape hatch the design
+   * names, and it costs nothing when it is not needed: a filter with anything in
+   * it already types every key.
    */
   const [typing, setTyping] = useState(false);
   const [custom, setCustom] = useState("");
   const [cursor, setCursor] = useState(0);
   const [providerCursor, setProviderCursor] = useState(0);
-  /** `null` = the flat cross-provider list; a name = scoped to that provider. */
+  /**
+   * Are the providers with NO credential on screen?
+   *
+   * Off by default, on the owner's instruction: *"we should not show unsetted
+   * providers, just active"*. They are not deleted — one summary row says how many
+   * were left out and which key brings them back — because an unexplained absence
+   * is the defect class this whole feature is about. A fact behind one keystroke is
+   * reachable; fourteen `○ needs SOMETHING_API_KEY` rows in front of the four the
+   * user can actually use are not.
+   */
+  const [revealKeyless, setRevealKeyless] = useState(false);
+  /** `null` = the cross-provider list; a name = scoped to that provider. */
   const [scope, setScope] = useState<string | null>(null);
 
   const scopedChoice = providers.roster.find((r) => r.value === scope) ?? null;
   const scopedName = scope === null ? "" : source.displayName(scope);
   const hasDiscovery = scopedChoice?.hasDiscovery === true;
-  const discovery = useProviderDiscovery(source, scope, hasDiscovery, onDiscoveryFailure);
+  /**
+   * DISCOVERY RUNS ONLY WHILE A PROVIDER'S OWN LIST IS OPEN — the `null` when the
+   * view is not `models` is the on-demand rule, in one argument. Outcomes already
+   * settled stay in `seen`, so coming back to a provider costs nothing and the
+   * all-models view can reuse what has been fetched.
+   */
+  const discovery = useProviderDiscovery(
+    source,
+    view === "models" ? scope : null,
+    hasDiscovery,
+    onDiscoveryFailure
+  );
+  /** Rosters the user has already opened. No fetch — see `rowsFromOutcomes`. */
+  const liveRows = useMemo(() => rowsFromOutcomes(discovery.seen), [discovery.seen]);
+
+  /**
+   * THE CATALOG IS FETCHED FOR THE VIEWS THAT READ IT, AND FOR NO OTHER.
+   *
+   * The cross-provider list is built from it, and so is a provider that does not
+   * list its own roster. A discovery provider needs nothing from it — its rows come
+   * from its own endpoint — unless discovery comes back `unsupported`, at which
+   * point the catalog IS the list and the warm starts then.
+   */
+  const wantCatalog =
+    view === "models" &&
+    (scope === null || !hasDiscovery || discovery.outcome?.kind === "unsupported");
+  const catalog = usePickerModels(
+    source,
+    providers.roster,
+    providers.readySet,
+    liveRows,
+    wantCatalog
+  );
+  const descriptions = useModelDescriptions(source, view === "models");
+
+  /**
+   * WHICH PROVIDERS ARE ON SCREEN, and the one number that explains the rest.
+   *
+   * Active first and always; the keyless ones are appended only when `k` has asked
+   * for them, so the cursor's index into this array stays valid across the toggle
+   * for every row that was already visible.
+   */
+  const keyless = providers.missing;
+  const providerRows: ProviderState[] = revealKeyless
+    ? [...providers.ready, ...keyless]
+    : providers.ready;
+
+  /**
+   * A MODEL COUNT ONLY WHERE ONE IS ACTUALLY KNOWN — the owner's rule: *"we could
+   * not show number of models for some of them"*.
+   *
+   * Two sources, both already in hand and neither of them a fetch this map causes.
+   * A roster the user opened is the truest answer for that provider, so it wins;
+   * the catalog answers for the rest, but ONLY once the user has asked for a view
+   * that warmed it. A provider in neither set gets `null`, which `ProviderRow`
+   * prints as nothing at all.
+   */
+  const counts = useMemo((): ReadonlyMap<string, number> => {
+    const known = new Map<string, number>();
+    for (const [name, rows] of liveRows) known.set(name, new Set(rows.map((m) => m.id)).size);
+    if (catalog.phase === "ready") {
+      for (const [name, n] of catalog.counts) if (!known.has(name)) known.set(name, n);
+    }
+    return known;
+  }, [liveRows, catalog.counts, catalog.phase]);
 
   // ── which list is on screen, and where it came from ──────────────────────────
   //
@@ -285,15 +355,16 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   }, [list.rows, filter, labels]);
 
   // ── in-flight affordances ───────────────────────────────────────────────────
-  const busy = providers.probing || catalog.phase !== "ready" || discovery.busy || rosters.busy;
+  //
+  // `catalog.phase === "loading"`, NEVER `!== "ready"`. The third state is `idle`,
+  // which is what the catalog is on the provider list — not fetching, not fetched,
+  // and not wanted. Drawing a `cloud catalog fetching…` row for it would put the
+  // owner's own complaint back on the landing screen with no request behind it.
+  const busy = providers.probing || catalog.phase === "loading" || discovery.busy;
   const frame = useAnimationFrame(busy);
   const tasks = buildLoadTasks({
     creds: providers.probing ? { done: providers.done, total: providers.total } : null,
-    catalog: catalog.phase !== "ready",
-    // The live-roster sweep has a REAL denominator — the set of ready discovery
-    // providers is known the moment their probes settle — so it gets the same
-    // determinate meter the credential sweep does, and for the same reason.
-    rosters: rosters.busy ? { done: rosters.done, total: rosters.total } : null,
+    catalog: catalog.phase === "loading",
     roster:
       discovery.busy && scope !== null
         ? {
@@ -333,6 +404,11 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   useEffect(() => {
     setCursor((c) => Math.max(0, Math.min(c, Math.max(0, shown.length - 1))));
   }, [shown.length]);
+  // The SAME hazard on the provider list, from two directions: `k` folds fourteen
+  // rows away under the cursor, and the list GROWS as probes settle under it.
+  useEffect(() => {
+    setProviderCursor((c) => Math.max(0, Math.min(c, Math.max(0, providerRows.length - 1))));
+  }, [providerRows.length]);
 
   const top = scrollWindow(cursor, shown.length, layout.listRows);
   const window = shown.slice(top, top + layout.listRows);
@@ -348,10 +424,14 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // that is not a bound command types into the filter immediately — there is no
   // search MODE to enter, which is one fewer thing the reader has to know before
   // the screen does anything. The commands that survive are the ones a filter
-  // cannot express (`esc`, `enter`, the arrows) plus three letters, and those three
-  // are live ONLY while the filter is empty and `/` has not been pressed: once
-  // anything is typed they are letters again, because a user typing `phi` must get
-  // `phi` and not the provider dialog.
+  // cannot express (`esc`, `enter`, the arrows) plus TWO letters, and those two are
+  // live ONLY while the filter is empty and `/` has not been pressed: once anything
+  // is typed they are letters again, because a user typing `codex` must get `codex`
+  // and not the custom-spec dialog.
+  //
+  // THE PROVIDER LIST TAKES NO FILTER AND SO NEEDS NO ESCAPE HATCH: its letters
+  // (`a`, `k`, `c`) are always commands, which is affordable because that list is
+  // short and named, never hundreds of rows a user needs to narrow.
   useKeyboard((key) => {
     const name = key.name;
     if (key.ctrl && name === "c") {
@@ -378,24 +458,56 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     }
 
     if (view === "providers") {
-      if (name === "escape" || key.raw === "p") {
-        setView("models");
+      // THE LANDING VIEW OWNS CANCEL. `esc` goes one step back everywhere else in
+      // this picker; here there is no step back, so it is what returns `null`.
+      if (name === "escape") {
+        onDone(null);
         return;
       }
       if (name === "up" || name === "down") {
         const d = name === "up" ? -1 : 1;
-        setProviderCursor((c) => Math.max(0, Math.min(providers.rows.length - 1, c + d)));
+        setProviderCursor((c) => Math.max(0, Math.min(providerRows.length - 1, c + d)));
+        return;
+      }
+      if (name === "pageup" || name === "pagedown") {
+        const d = (name === "pageup" ? -1 : 1) * layout.listRows;
+        setProviderCursor((c) => Math.max(0, Math.min(providerRows.length - 1, c + d)));
+        return;
+      }
+      if (name === "home") {
+        setProviderCursor(0);
+        return;
+      }
+      if (name === "end") {
+        setProviderCursor(Math.max(0, providerRows.length - 1));
         return;
       }
       if (name === "return" || name === "enter") {
-        const chosen = providers.rows[providerCursor];
+        // ENTERING A PROVIDER IS WHAT FETCHES ITS ROSTER. Nothing before this
+        // keystroke asked that endpoint anything.
+        const chosen = providerRows[providerCursor];
         if (chosen) {
           setScope(chosen.value);
           setFilter("");
+          setTyping(false);
           setCursor(0);
+          setView("models");
         }
-        setView("models");
+        return;
       }
+      if (key.raw === "a") {
+        setScope(null);
+        setFilter("");
+        setTyping(false);
+        setCursor(0);
+        setView("models");
+        return;
+      }
+      if (key.raw === "k") {
+        setRevealKeyless((v) => !v);
+        return;
+      }
+      if (key.raw === "c") setView("custom");
       return;
     }
 
@@ -406,12 +518,11 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         setCursor(0);
         return;
       }
-      if (scope !== null) {
-        setScope(null);
-        setCursor(0);
-        return;
-      }
-      onDone(null);
+      // ONE WAY BACK, AND IT IS THE SAME ONE FROM BOTH MODEL LISTS. A scoped list
+      // and the cross-provider list are both something the user OPENED from the
+      // provider list, so `esc` returns him to it rather than quitting — quitting
+      // is `esc` there, or Ctrl+C anywhere.
+      setView("providers");
       return;
     }
     if (name === "up" || name === "down") {
@@ -442,16 +553,6 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       return;
     }
     const commandsLive = filter === "" && !typing;
-    if (commandsLive && key.raw === "p") {
-      setProviderCursor(
-        Math.max(
-          0,
-          providers.rows.findIndex((r) => r.value === scope)
-        )
-      );
-      setView("providers");
-      return;
-    }
     if (commandsLive && key.raw === "c") {
       setView("custom");
       return;
@@ -462,7 +563,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     }
     if (key.raw === "/") {
       // Not inserted: `/` FOCUSES the filter, which here means "stop treating
-      // p / c / r as commands". See `typing`.
+      // c / r as commands". See `typing`.
       setTyping(true);
       return;
     }
@@ -517,66 +618,132 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   }
 
   if (view === "providers") {
-    const readyCount = providers.ready.length;
-    // One row taller than the model list: this dialog spends no column header and
-    // no description block, but it DOES carry the same provider detail line, which
-    // is the answer to "we need add more details about provider".
-    const providerRows = layout.listRows + 2;
-    const providerTop = scrollWindow(providerCursor, providers.rows.length, providerRows);
-    const providerWindow = providers.rows.slice(providerTop, providerTop + providerRows);
-    const here = providers.rows[providerCursor] ?? null;
+    const settled = !providers.probing;
+    // One row taller than the model list's list: this dialog spends no column
+    // header and no description block, and two of the three rows it spends
+    // instead — the omitted-provider summary and the credential sweep — are
+    // rendered blank rather than dropped, so the list does not shift under the
+    // cursor when a sweep finishes or `k` is pressed.
+    const windowRows = layout.listRows;
+    const providerTop = scrollWindow(providerCursor, providerRows.length, windowRows);
+    const providerWindow = providerRows.slice(providerTop, providerTop + windowRows);
+    const here = providerRows[providerCursor] ?? null;
     return (
       <Centred width={width} height={height}>
         <Dialog
-          key="providers"
-          title="providers"
-          status={`${readyCount} of ${providers.total} have credentials`}
+          key={`providers-${providerRows.length === 0 ? "empty" : "list"}`}
+          title="choose a provider"
+          status={
+            settled
+              ? `${providers.ready.length} of ${providers.total} have credentials`
+              : `${providers.ready.length} ready · ${providers.done}/${providers.total} checked`
+          }
           width={layout.width}
           marginLeft={0}
         >
-          {providerWindow.map((r) => (
-            <ProviderRow
-              key={r.value}
-              label={r.label}
-              shortcut={r.shortcut}
-              readiness={r.readiness}
-              billing={r.billing}
-              count={catalog.counts.get(r.value) ?? null}
-              hasDiscovery={r.hasDiscovery}
-              note={r.envVar === "" ? "needs sign-in" : `needs ${r.envVar}`}
-              cursor={r.value === providers.rows[providerCursor]?.value}
-              inner={layout.inner}
-            />
-          ))}
-          {/* 31 providers do not fit in one screen, and a list that silently stops
-              is the same unexplained absence this feature exists to remove. */}
+          {/* TWO ROWS WHEN IT IS EMPTY, because `EmptyState` with a hint IS two
+              rows and a one-row box would overprint the second onto the row
+              below it. */}
+          <box
+            flexDirection="column"
+            height={Math.min(
+              windowRows,
+              Math.max(providerWindow.length === 0 ? 2 : 1, providerWindow.length)
+            )}
+            flexShrink={0}
+            overflow="hidden"
+          >
+            {providerWindow.length === 0 ? (
+              <EmptyState
+                label={
+                  settled
+                    ? `no credential for any of the ${providers.total} providers`
+                    : "checking which providers you have credentials for…"
+                }
+                {...(settled ? { hint: "k shows what each one needs" } : {})}
+              />
+            ) : (
+              providerWindow.map((r) => (
+                <ProviderRow
+                  key={r.value}
+                  label={r.label}
+                  shortcut={r.shortcut}
+                  readiness={r.readiness}
+                  billing={r.billing}
+                  count={counts.get(r.value) ?? null}
+                  hasDiscovery={r.hasDiscovery}
+                  note={r.envVar === "" ? "needs sign-in" : `needs ${r.envVar}`}
+                  cursor={r.value === here?.value}
+                  inner={layout.inner}
+                />
+              ))
+            )}
+          </box>
+          {/* A list that silently stops is the same unexplained absence this
+              feature exists to remove. */}
           <HintRow
             text={
-              providers.rows.length > providerWindow.length
-                ? `${providerCursor + 1} of ${providers.rows.length} — ↑↓ for more`
+              providerRows.length > providerWindow.length
+                ? `${providerCursor + 1} of ${providerRows.length} — ↑↓ for more`
                 : ""
             }
             width={layout.inner}
           />
-          {providers.notEnabledLocal.length > 0 ? (
-            <HintRow
-              text={`${providers.notEnabledLocal.join(", ")} — local, not enabled in your config`}
-              width={layout.inner}
+          {/* THE OMITTED PROVIDERS, COUNTED. They are off the list because the user
+              cannot launch any of them, and stated here because "where did the other
+              fourteen go" must have an answer on the screen that dropped them. */}
+          <HintRow
+            text={
+              keyless.length === 0
+                ? ""
+                : revealKeyless
+                  ? `showing ${keyless.length} with no credential · k hides them again`
+                  : `+${keyless.length} more need a key · k`
+            }
+            width={layout.inner}
+          />
+          {/* A DIFFERENT REASON, ON ITS OWN LINE. These are not missing a key: they
+              are opt-in in your config (`config.localProviders`) and were never
+              probed for liveness. */}
+          <HintRow
+            text={
+              providers.notEnabledLocal.length > 0
+                ? `${providers.notEnabledLocal.join(", ")} — local, not enabled in your config`
+                : ""
+            }
+            width={layout.inner}
+          />
+          {/* THE ONE METER IN THE PICKER, on the one screen that waits for anything.
+              It is `done/total` over a roster derived synchronously — real progress
+              over countable work — and it disappears, leaving its row, when the last
+              probe settles. */}
+          {settled ? (
+            <HintRow text="" width={layout.inner} />
+          ) : (
+            <LoadTasks
+              tasks={tasks}
+              frame={frame}
+              labelWidth={12}
+              barWidth={Math.max(8, Math.min(22, layout.inner - 40))}
             />
-          ) : null}
+          )}
           <Rule />
-          {/* The SAME line the model list carries, plus the count — so "what is
-              this provider" has one answer wherever it is asked. */}
+          {/* The SAME line the model list carries, plus the count when one is
+              known — so "what is this provider" has one answer wherever it is
+              asked. */}
           <ProviderLine
             facts={here === null ? null : factsOf(here)}
             width={layout.inner}
-            count={here === null ? null : (catalog.counts.get(here.value) ?? null)}
+            count={here === null ? null : (counts.get(here.value) ?? null)}
           />
           <Hints
             hints={[
               { key: "↑↓", label: "move" },
-              { key: "⏎", label: "show only this provider" },
-              { key: "esc", label: "back to all models" },
+              { key: "⏎", label: "open", on: here !== null },
+              { key: "a", label: "all models" },
+              { key: "k", label: revealKeyless ? "hide" : "keyless", on: keyless.length > 0 },
+              { key: "c", label: "custom" },
+              { key: "esc", label: "quit" },
             ]}
           />
         </Dialog>
@@ -589,7 +756,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       <Centred width={width} height={height}>
         <Dialog
           key="loading"
-          title={scope === null ? "choose a model" : scopedName}
+          title={scope === null ? "all models" : scopedName}
           status="finding models…"
           width={layout.width}
           marginLeft={0}
@@ -606,7 +773,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             </text>
           </box>
           <Rule />
-          <Hints hints={[{ key: "esc", label: "cancel" }]} />
+          <Hints hints={[{ key: "esc", label: "providers" }]} />
         </Dialog>
       </Centred>
     );
@@ -624,11 +791,15 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
       ? `${countModels(list.rows)} models · ${list.rows.length} routes · ${providers.ready.length}/${providers.total} providers`
       : (notice?.title ?? `${list.rows.length} models`);
 
+  // THE CROSS-PROVIDER LIST IS LABELLED AS WHAT IT IS. It used to be the screen the
+  // picker opened on, so `choose a model` was the whole dialog's purpose; it is now
+  // one of the two things a provider list can open, and the other one is titled with
+  // its provider's name. `all models` says which of the two you are looking at.
   return (
     <Centred width={width} height={height}>
       <Dialog
         key="models"
-        title={scope === null ? "choose a model" : scopedName}
+        title={scope === null ? "all models" : scopedName}
         status={status}
         width={layout.width}
         marginLeft={0}
@@ -661,7 +832,10 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             in every state. */}
         <box
           flexDirection="column"
-          height={Math.min(layout.listRows, Math.max(1, window.length))}
+          height={Math.min(
+            layout.listRows,
+            Math.max(window.length === 0 && filter !== "" ? 2 : 1, window.length)
+          )}
           flexShrink={0}
           overflow="hidden"
         >
@@ -686,11 +860,12 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         </box>
 
         {/* ONE status row, ALWAYS rendered — see `CHROME_ROWS`. It carries the
-            scroll position when the list overflows, then the AGGREGATE discovery
-            failure (a per-provider banner is the wrong shape once the list spans
-            every provider), then the pending sweep, then nothing. */}
+            scroll position when the list overflows, then whatever is still in
+            flight, then nothing. There is no aggregate failure line any more:
+            with the fan-out gone, the only roster that can fail is one the user
+            opened, and that one gets the banner above this list. */}
         <HintRow
-          text={statusRow(cursor, shown.length, window.length, tasks, rosters.failures.length)}
+          text={statusRow(cursor, shown.length, window.length, tasks)}
           width={layout.inner}
         />
 
@@ -710,18 +885,18 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           }
           width={layout.inner}
         />
+        {/* ONE KEY PER ACTION, AND EVERY ACTION IN THE ROW. `p` is gone: `esc` is
+            the way back to the provider list from both model lists, and a second
+            key for the one destination bought nothing while costing the row the
+            columns `r retry` needs at 80. */}
         <Hints
           hints={[
             { key: "↑↓", label: "move" },
-            { key: "⏎", label: "select" },
+            { key: "⏎", label: "select", on: selected !== null },
             { key: "/", label: "filter" },
             ...(scope !== null && hasDiscovery ? [{ key: "r", label: "retry" }] : []),
-            { key: "p", label: "providers" },
             { key: "c", label: "custom" },
-            {
-              key: "esc",
-              label: filter !== "" ? "clear" : scope !== null ? "all models" : "cancel",
-            },
+            { key: "esc", label: filter !== "" ? "clear" : "providers" },
           ]}
         />
       </Dialog>
@@ -814,33 +989,26 @@ const MAX_BANNER_ROWS = 5;
 
 /**
  * The one status row's text, in priority order: where the cursor is in a list
- * longer than the window, then what is still loading, then which providers could
- * not be listed, then nothing.
+ * longer than the window, then what is still loading, then nothing.
  *
- * THE FAILURE LINE IS AGGREGATE, AND THAT IS THE POINT. The per-provider banner
- * above the list is right when the user has SCOPED to one provider and asked it a
- * question. It is the wrong shape once the flat list queries every ready provider
- * at once: a banner per failure would push the list off the screen, and a banner
- * for the first one would silently speak for the rest. So the count is stated in
- * one dim row, `p` is named as the place the detail lives, and the full diagnostic
- * for every failure still goes to the post-teardown stderr write, in order.
+ * IT NO LONGER CARRIES AN AGGREGATE FAILURE COUNT, because there is no longer an
+ * aggregate. That line existed for the startup fan-out — thirteen rosters in
+ * flight at once, where a banner per failure would have pushed the list off the
+ * screen and a banner for the first would have spoken for the rest. With rosters
+ * fetched one at a time, on request, the only roster that can fail is the one the
+ * user just opened, and it gets the full banner above its own list.
  *
- * Pure so the priority can be asserted. The scroll position wins over everything
- * because it changes on every keypress; the failures win over the pending sweep
- * because the sweep is about to end and the failures are not.
+ * Pure so the priority can be asserted. The scroll position wins over the pending
+ * work because it changes on every keypress.
  */
 export function statusRow(
   cursor: number,
   shown: number,
   visible: number,
-  tasks: LoadTask[],
-  rosterFailures = 0
+  tasks: LoadTask[]
 ): string {
   if (shown > visible && visible > 0) return `${cursor + 1} of ${shown} — ↑↓ for more`;
   if (tasks.length > 0) return `still checking: ${tasks.map((t) => t.label).join(", ")}`;
-  if (rosterFailures > 0) {
-    return `${rosterFailures} provider${rosterFailures === 1 ? "" : "s"} could not be listed — press p to see which`;
-  }
   return "";
 }
 
@@ -869,7 +1037,7 @@ function emptyLabel(
   if (loading) return `loading ${scopedName || "models"}…`;
   if (filter !== "") return `no model matches “${filter}”`;
   if (providers.ready.length === 0 && !providers.probing) {
-    return `no credential for any of the ${providers.total} providers — press p to see what each one needs`;
+    return `no credential for any of the ${providers.total} providers — esc, then k, shows what each one needs`;
   }
   if (total === 0) return `no catalog entries for ${scopedName || "these providers"}`;
   return "nothing to show";

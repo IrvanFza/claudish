@@ -149,7 +149,14 @@ const LIGHT: TuiPalette = {
   pillKeyBg: "#2d6e3e",
   pillOauthBg: "#1f6d75",
 
-  chipKeyBg: "#d1d5db", // key segment — theme text (`C.fg`) rides on top
+  // A KEYCAP HAS TO READ AS A KEY, which means it has to be visibly RAISED off
+  // the panel it sits on — and `#d1d5db` was not. MEASURED against the panel
+  // band it is drawn on (`bgAlt`, `#f3f4f6`): 1.32:1, below the 1.7:1 this file
+  // already requires of every stage block, so the picker's footer chips read as
+  // faintly tinted words rather than as keys. The owner said so from a live run.
+  // `#9ca3af` keeps 5.4:1 under `C.fg` — still past the 4.5:1 the footer's own
+  // contrast test demands — while sitting 2.3:1 off the band.
+  chipKeyBg: "#9ca3af", // key segment — theme text (`C.fg`) rides on top
   chipLabelBg: "#e5e7eb", // label segment
 };
 
