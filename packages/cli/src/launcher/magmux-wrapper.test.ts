@@ -10,13 +10,14 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   STRIPPED_CHILD_VARS,
   buildLauncherScript,
   envDeltas,
+  magmuxPaneCapability,
   planMagmuxWrap,
 } from "./magmux-wrapper.js";
 
@@ -195,7 +196,7 @@ describe("planMagmuxWrap", () => {
     expect(script).not.toContain("sk-inherited-secret");
     expect(script).not.toContain("PATH=");
     expect(statSync(plan?.scriptPath as string).mode & 0o777).toBe(0o600);
-    expect(statSync(join(root, "claudish-launch-4242")).mode & 0o777).toBe(0o700);
+    expect(statSync(dirname(plan?.scriptPath as string)).mode & 0o777).toBe(0o700);
   });
 
   test("MAGMUX_SCROLLBACK defaults to 10000 but never overrides the user's own", () => {
@@ -236,5 +237,143 @@ describe("planMagmuxWrap", () => {
     // pane, so the exit code has to come off the control socket's `exit` event.
     const plan = planMagmuxWrap({ ...BASE, childEnv: {}, tmpRoot: scratch() });
     expect(plan?.paneExitCode()).toBeNull();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The launcher script is a SECRET on disk
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("the script's directory is unguessable and cannot be pre-created", () => {
+  /**
+   * The file this guards is sourced by the LOGIN SHELL immediately before
+   * `exec`, and it carries claudish's env deltas — including, on the proxy
+   * path, the `ANTHROPIC_API_KEY` Claude Code authenticates to us with.
+   *
+   * It used to live at `<tmp>/claudish-launch-<pid>`, created with
+   * `mkdirSync(..., { recursive: true })`. `recursive: true` neither throws on
+   * `EEXIST` nor applies `mode` to a directory that already exists, and the
+   * name contains only the pid, which is enumerable — so on a multi-user host
+   * another uid could pre-create (or symlink) that path and have it adopted
+   * without a word, then read the session's secrets or swap the script between
+   * the write and the `exec`. CWE-377 / CWE-59.
+   *
+   * The rest of this change already knew the rule: `socket-server.ts` uses
+   * `randomBytes(12)` for its directory and `O_EXCL` for the pane lock.
+   */
+  test("the path does not contain the pid, and two plans never collide", () => {
+    const root = scratch();
+    const a = planMagmuxWrap({ ...BASE, childEnv: {}, tmpRoot: root });
+    const b = planMagmuxWrap({ ...BASE, childEnv: {}, tmpRoot: root });
+
+    // Same pid, same tmpRoot, different directory: the name is random, so it
+    // cannot be pre-created by someone who knows the pid.
+    expect(dirname(a?.scriptPath as string)).not.toBe(dirname(b?.scriptPath as string));
+    expect(a?.scriptPath).not.toContain(String(BASE.pid));
+    expect(statSync(dirname(a?.scriptPath as string)).mode & 0o777).toBe(0o700);
+    expect(statSync(a?.scriptPath as string).mode & 0o777).toBe(0o600);
+  });
+
+  test("a directory planted at the OLD predictable path is never adopted", () => {
+    // The attack, verbatim: another uid creates the path first — world-writable
+    // or a symlink into its own tree — and waits for claudish to write the
+    // session's environment into it. `recursive: true` adopted it silently and
+    // left its mode alone, and `writeFileSync` follows whatever is already
+    // there. `mkdtempSync` + `wx` makes both impossible.
+    const root = scratch();
+    const planted = join(root, `claudish-launch-${BASE.pid}`);
+    mkdirSync(planted, { recursive: true, mode: 0o777 });
+    const decoy = join(planted, "claude-launch.sh");
+    writeFileSync(decoy, "# planted");
+
+    const plan = planMagmuxWrap({
+      ...BASE,
+      childEnv: { ANTHROPIC_API_KEY: "sk-session-secret" },
+      tmpRoot: root,
+    });
+
+    expect(dirname(plan?.scriptPath as string)).not.toBe(planted);
+    // The secret did not land anywhere the planter can read.
+    expect(readFileSync(decoy, "utf-8")).toBe("# planted");
+    expect(readFileSync(plan?.scriptPath as string, "utf-8")).toContain("sk-session-secret");
+    expect(statSync(dirname(plan?.scriptPath as string)).mode & 0o777).toBe(0o700);
+  });
+
+  test("a plan that is never watched still takes its secret off disk at exit", () => {
+    // `watch()` cleans up on the CHILD's exit, which covers the ordinary path
+    // only. A SIGTERM to claudish, or a launch that never spawns, would
+    // otherwise leave the key in /tmp.
+    const plan = planMagmuxWrap({ ...BASE, childEnv: {}, tmpRoot: scratch() });
+    expect(process.listeners("exit").length).toBeGreaterThan(0);
+    plan?.cleanup();
+    expect(() => statSync(plan?.scriptPath as string)).toThrow();
+    // Idempotent, and it unhooks itself: a long-lived host must not accumulate
+    // one exit listener per launch.
+    plan?.cleanup();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Eligibility, asked separately because the watchdog has to ask it EARLY
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("magmuxPaneCapability", () => {
+  test("wrap when interactive, on a TTY, with a binary and no ambient socket", () => {
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: true,
+        magmuxBinary: "/opt/homebrew/bin/magmux",
+        parentEnv: {},
+      })
+    ).toEqual({ kind: "wrap", magmux: "/opt/homebrew/bin/magmux" });
+  });
+
+  test("ambient inside someone else's magmux — a pane is reachable without wrapping", () => {
+    // `team --grid --mode interactive`, or a user who launched claudish in a
+    // pane by hand. Nothing to wrap, but there IS a multiplexer to ask.
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: true,
+        magmuxBinary: "/opt/homebrew/bin/magmux",
+        parentEnv: { MAGMUX_SOCK: "/tmp/magmux-someone-else.sock" },
+      })
+    ).toEqual({ kind: "ambient", sock: "/tmp/magmux-someone-else.sock" });
+  });
+
+  test("none for `-p`, for a pipe, and for a machine without magmux", () => {
+    const env = {};
+    expect(
+      magmuxPaneCapability({ interactive: false, stdoutIsTty: true, parentEnv: env }).kind
+    ).toBe("none");
+    expect(
+      magmuxPaneCapability({ interactive: true, stdoutIsTty: false, parentEnv: env }).kind
+    ).toBe("none");
+    expect(
+      magmuxPaneCapability({
+        interactive: true,
+        stdoutIsTty: true,
+        magmuxBinary: null,
+        parentEnv: env,
+      }).kind
+    ).toBe("none");
+  });
+
+  test("it is the SAME predicate planMagmuxWrap uses — they cannot drift", () => {
+    // The watchdog is decided from `magmuxPaneCapability` before the child
+    // environment is finalised; the wrap is decided from `planMagmuxWrap`
+    // afterwards. Two independent gates would mean a launch that exports the
+    // ~300-attempt retry budget and then turns out to have no surface for it.
+    for (const input of [
+      { interactive: false, stdoutIsTty: true },
+      { interactive: true, stdoutIsTty: false },
+      { interactive: true, stdoutIsTty: true, magmuxBinary: null },
+      { interactive: true, stdoutIsTty: true },
+    ] as const) {
+      const shape = { ...BASE, ...input, childEnv: {}, tmpRoot: scratch(), parentEnv: {} };
+      const wrapped = planMagmuxWrap(shape) !== null;
+      expect(wrapped).toBe(magmuxPaneCapability(shape).kind === "wrap");
+    }
   });
 });

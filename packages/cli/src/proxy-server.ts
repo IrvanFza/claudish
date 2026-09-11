@@ -54,6 +54,7 @@ import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
 import type { ProviderTransport } from "./providers/transport/types.js";
+import { closeAllEpisodes } from "./recovery/coordinator.js";
 import { warmPricingCache } from "./services/pricing-cache.js";
 import type { ProxyServer } from "./types.js";
 
@@ -1218,6 +1219,14 @@ export async function createProxyServer(
       // `true` = close active connections too, so a streamed request in flight
       // can't keep the port alive after shutdown resolves.
       await server.stop(true);
+      // "No episode may outlive the process that owns its timers" —
+      // `closeAllEpisodes`'s own doc, which until now nothing but tests
+      // invoked. `server.stop(true)` aborts the client signals, so waiters
+      // unwind and most episodes self-close; the residual that matters is
+      // `serve`, which is long-lived and can be shut down and REBUILT
+      // in-process, and would otherwise carry a stale episode — and its stale
+      // banner — across the rebuild.
+      closeAllEpisodes();
     },
     invalidateHandlerCache: (providerSlug?: string) => {
       if (!providerSlug) {

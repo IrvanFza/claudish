@@ -568,3 +568,76 @@ describe("mergeSignalIntoInit composes rather than replaces", () => {
     expect(mergeSignalIntoInit(bare, undefined)).toBe(bare as unknown as RequestInit);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// The clamp binds operations that cannot take a signal
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("the per-attempt clamp bounds an op that IGNORES its signal", () => {
+  /**
+   * The fetch path threads the signal into `fetch`. THE AUTH PATH CANNOT:
+   * `refreshAuth()` and `getHeaders()` take no arguments, so the handler's
+   * `() => this.provider.refreshAuth!()` discards the signal, and Grok's token
+   * exchange then performs an unbounded `fetch(auth.x.ai/oauth2/token)`. A
+   * swallowed connection there outlived the 45-second cap AND the client's own
+   * disconnect, while this function sat awaiting a promise nothing could
+   * settle — the unbounded hold this whole feature exists to remove, reached
+   * from inside the machinery that removes it.
+   *
+   * A deadline one path can ignore is not a deadline, so it is enforced at the
+   * one place that owns it.
+   */
+  test("an attempt that never settles ends at the cap and the ladder goes on", async () => {
+    useFakeClock();
+    const started: number[] = [];
+    let settled = 0;
+    // Signal ignored entirely, exactly like `() => provider.refreshAuth!()`.
+    const deafOp = async () => {
+      started.push(clock.now());
+      if (started.length === 1) {
+        await new Promise(() => {}); // never settles, never observes the signal
+      }
+      settled++;
+      throw CONNECT_FAILURE;
+    };
+
+    const result = await advanceUntilSettled(
+      clock,
+      withConnectionRetry(deafOp, CONNECT_FAILURE, ctx({ deadlineAt: 200_000 })),
+      400_000
+    );
+
+    // Attempt 1 was abandoned at the cap rather than awaited forever, so the
+    // ladder reached its later rungs and the request answered inside its
+    // budget. Without the enforcement this promise never resolves at all.
+    expect(started.length).toBeGreaterThan(1);
+    // Attempt 1 ended AT THE CAP — not at the deadline, and not never — and the
+    // next rung's own gap follows it.
+    expect((started[1] as number) - (started[0] as number)).toBe(
+      PER_ATTEMPT_CONNECT_CAP_MS + connectionRetryDelayMs(1)
+    );
+    expect(result.kind).toBe("exhausted");
+    expect(settled).toBeGreaterThan(0);
+  }, 15_000);
+
+  test("a client disconnect releases such an op too, not only a fetch", async () => {
+    useFakeClock();
+    const ac = new AbortController();
+    const deafOp = async () => {
+      ac.abort(new DOMException("client gone", "AbortError"));
+      await new Promise(() => {});
+      return "never" as unknown;
+    };
+
+    const result = await advanceUntilSettled(
+      clock,
+      withConnectionRetry(deafOp, CONNECT_FAILURE, ctx({ signal: ac.signal })),
+      400_000
+    );
+
+    // NFR-2 for the auth path: the socket is already gone, so the waiter must
+    // unwind now rather than when an unbounded auth fetch eventually gives up.
+    expect(result.kind).toBe("client_gone");
+    expect(episodeCount()).toBe(0);
+  }, 15_000);
+});

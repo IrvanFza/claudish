@@ -45,7 +45,7 @@ import {
   noteTargetReachable,
   uiLeaseValid,
 } from "../recovery/coordinator.js";
-import { resolveRecoveryEnabled } from "../recovery/settings.js";
+import { recoveryGiveUpActive, resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -624,8 +624,9 @@ export class ComposedHandler implements ModelHandler {
    * Should the retry ladder be skipped entirely, answering today's immediate
    * 400? Returns the REASON, or null to proceed.
    *
-   * THREE GATES, AND DELIBERATELY NO FOURTH. Each is a fact available at this
-   * instant — a request header, configuration, and the clock.
+   * FOUR GATES, AND DELIBERATELY NO FIFTH. Each is a fact available at this
+   * instant — a request header, configuration, the user's explicit give-up,
+   * and the clock.
    *
    * There is NO special case for a refused loopback address, and that absence
    * is a decision rather than an omission. An earlier design skipped the ladder
@@ -649,6 +650,12 @@ export class ComposedHandler implements ModelHandler {
     // The CI / scripted-`-p` master switch. Off restores today's behaviour
     // everywhere, byte for byte.
     if (!resolveRecoveryEnabled()) return "recovery-disabled";
+    // The user pressed `[q] give up`. It has to be read HERE and not only in
+    // the UI manager: suppressing the banner alone left the NEXT request —
+    // and during an outage Claude Code always has one — holding its socket for
+    // the full deadline with the reason legible nowhere. The key says stop, so
+    // the hold stops too, for the same window the surface does.
+    if (recoveryGiveUpActive()) return "gave-up";
     // Attempt 1 already spent the budget. A guard, not a hope.
     if (recoveryClock().now() + MIN_ATTEMPT_SLOT_MS > deadlineAt) return "no-budget";
     return null;
@@ -1290,6 +1297,20 @@ export class ComposedHandler implements ModelHandler {
       // that finally CONNECTS behave differently from the one that failed —
       // and at the moment a network returns, N woken waiters would stampede
       // unqueued into a provider that has just come back.
+      //
+      // `getRequestInit()` IS CALLED AGAIN, PER ATTEMPT, and that is not a
+      // tidiness preference. A transport may return a ONE-SHOT signal from it —
+      // `vertex-oauth.ts` returns `AbortSignal.timeout(30000)`, `local.ts` a
+      // ten-minute one — and `mergeSignalIntoInit` composes it with the clamp
+      // via `AbortSignal.any`. Re-using the hoisted object meant that from 30 s
+      // after the FIRST call, every ladder attempt was handed an
+      // already-aborted signal and rejected instantly without touching the
+      // network: tier 1 silently dead past t+30 s, the request held for the
+      // full ~270 s deadline making ZERO real connect attempts, while the
+      // `[Recovery]` log and the pane both reported attempts that never left
+      // the process. A transport ceiling that must survive across attempts has
+      // to be RE-MINTED, never re-used. `doParamRetry` and `doAuthRetry` below
+      // already call it freshly per attempt; this is the same rule.
       const doFetchWith = (sig: AbortSignal) =>
         fetch(
           endpoint,
@@ -1298,7 +1319,7 @@ export class ComposedHandler implements ModelHandler {
               method: "POST",
               headers,
               body: serialized?.body ?? JSON.stringify(requestPayload),
-              ...requestInit,
+              ...(this.provider.getRequestInit?.() || {}),
             },
             sig
           )

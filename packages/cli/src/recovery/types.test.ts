@@ -62,6 +62,32 @@ describe("recovery wire contract", () => {
     expect(parseFrame(JSON.stringify({ v: 1, type: "episode" }))).toBeNull(); // no episodeId
   });
 
+  test("the SKEW NOTICE parses at the wrong version — it is the one frame that must", () => {
+    // The mirror image of `hello` below, and for the same reason. The proxy
+    // answers a mismatched pane with a `closed` / `protocol_mismatch` frame
+    // carrying the PROXY'S version, so a blanket version gate dropped the very
+    // message addressed to the build that cannot read the others:
+    // `PaneViewState.protocolMismatch` was unreachable in a real skew and the
+    // pane printed "the claudish proxy closed this connection" instead — a safe
+    // failure with the wrong diagnosis, on the one day it mattered.
+    const notice = JSON.stringify({
+      v: 99,
+      type: "closed",
+      episodeId: "",
+      outcome: "protocol_mismatch",
+    });
+    const parsed = parseFrame(notice);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.type).toBe("closed");
+    expect((parsed as { outcome?: string }).outcome).toBe("protocol_mismatch");
+
+    // And ONLY that outcome. A skewed `closed` frame of any other kind is still
+    // refused — the exemption is for the notice, not for the type.
+    expect(
+      parseFrame(JSON.stringify({ v: 99, type: "closed", episodeId: "e", outcome: "recovered" }))
+    ).toBeNull();
+  });
+
   test("`hello` parses even at the WRONG version — the mismatch must be answerable", () => {
     // The server cannot tell a skewed client it is skewed if the one message it
     // needs to answer is the one it drops.

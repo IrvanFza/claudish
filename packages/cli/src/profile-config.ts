@@ -264,10 +264,22 @@ export interface ClaudishProfileConfig {
    * Whether claudish may own a terminal surface on which a recovery episode's
    * reason is legible. Default ON.
    *
-   * In this phase it decides one thing only: a REFUSED connection to a
-   * loopback endpoint (a stopped Ollama) skips the ladder entirely when the
-   * user has turned this off, because nothing could ever display why the
-   * request is being held and they have said they do not want it to be.
+   * What it actually decides, and the blast radius is larger than "a banner":
+   *
+   *   - whether the interactive session is WRAPPED in a magmux pane at launch
+   *     (`claude-runner.ts` → `planMagmuxWrap`);
+   *   - whether `CLAUDE_CODE_RETRY_WATCHDOG=1` is exported to Claude Code,
+   *     which moves its retry budget from ~11 attempts to ~300 for every 503
+   *     the session sees (it is one of three gates — see `retryWatchdogEnv`);
+   *   - and through those, whether an exhausted hold can ever answer a
+   *     retryable 503 rather than an inline 400, since the 503 requires a live
+   *     pane lease.
+   *
+   * It never decides whether a RETRY happens. There is no loopback carve-out
+   * and its absence is deliberate (`composed-handler.ts`'s `shouldSkipTier1`);
+   * an earlier draft of this comment described one, and it had already been
+   * deleted.
+   *
    * Precedence: --recovery-ui/--no-recovery-ui flag > CLAUDISH_RECOVERY_UI env
    * > project `.claudish.json` > this field > true. The scoped read is
    * `readRecoveryUi()`, NOT this allowlist — see its doc comment.

@@ -430,9 +430,18 @@ async function performRefresh(cred: GrokCredential): Promise<string> {
     // FIRST network touch of a `gk@` request (ComposedHandler calls getHeaders()
     // before the upstream fetch), so an unclassifiable failure here escapes into
     // the fallback chain with `status: 0`.
-    throw new Error(
-      `Could not reach ${tokenEndpoint} to refresh the Grok token: ${(error as Error).message}`,
-      { cause: error }
+    //
+    // `claudishEndpoint` names the host that ACTUALLY failed. Without it the
+    // handler falls back to the model endpoint, so an `auth.x.ai` outage was
+    // reported — in the banner, in the log, and in the episode key — as
+    // `api.x.ai`: the wrong host, and the wrong advice for a user trying to fix
+    // it. `local.ts` attaches the same property for the same reason.
+    throw Object.assign(
+      new Error(
+        `Could not reach ${tokenEndpoint} to refresh the Grok token: ${(error as Error).message}`,
+        { cause: error }
+      ),
+      { claudishEndpoint: tokenEndpoint }
     );
   }
 

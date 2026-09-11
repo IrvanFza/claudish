@@ -13,6 +13,7 @@
 import { ENV } from "../config.js";
 import { log } from "../logger.js";
 import { readRecoveryEnabled, readRecoveryUi } from "../profile-config.js";
+import { recoveryClock } from "./clock.js";
 
 /** Flag layer. Set once by `cli.ts`'s arg loop; undefined means "not given". */
 interface RecoveryFlagOverrides {
@@ -85,6 +86,52 @@ export function resolveRecoveryUi(): boolean {
   const scoped = readRecoveryUi();
   if (scoped !== undefined) return scoped;
   return true;
+}
+
+// ─── "The user said stop" ────────────────────────────────────────────────────
+
+/**
+ * PROCESS ms until which `[q] give up` suppresses recovery. 0 = not suppressed.
+ *
+ * ── WHY THIS IS A PROCESS FACT AND NOT THE PANE'S OWN STATE ─────────────────
+ *
+ * `[q]` used to do two things, both inside the UI manager: suppress re-opening
+ * the pane for a minute, and `giveUpAll()` — which iterates the episodes alive
+ * AT THAT INSTANT. Nothing recorded that the user had asked recovery to stop,
+ * so the next request against the same dead target opened a NEW episode, found
+ * the pane suppressed, got no pane and no lease, and then held its socket for
+ * the full derived deadline (~4.5 minutes at the default) before answering 400
+ * — with the reason legible NOWHERE, which is the state this design calls
+ * "strictly worse than the bug this feature exists to remove", reached from the
+ * one affordance whose entire purpose is to end it. Before recovery existed
+ * those requests failed in milliseconds.
+ *
+ * It is not an edge case: Claude Code issues concurrent requests during an
+ * outage (main loop, title model, subagents), so a new request inside the
+ * suppression window is the EXPECTED case. A control that appears to stop
+ * something and does not is worse than no control.
+ *
+ * So the give-up suppresses the HOLD and the SURFACE together, for the same
+ * window, from ONE fact — read by `shouldSkipTier1` (the hold) and by
+ * `ensureRecoveryUi` (the surface). Two facts would be two things to keep in
+ * step, and the asymmetry between them is exactly what created the forbidden
+ * state.
+ */
+let giveUpUntilPerf = 0;
+
+/** `[q] give up`: suppress recovery until `untilPerf` (PROCESS ms). */
+export function noteRecoveryGaveUp(untilPerf: number): void {
+  giveUpUntilPerf = Math.max(giveUpUntilPerf, untilPerf);
+}
+
+/** Is the user's give-up still in force? Reads the clock LIVE — never cached. */
+export function recoveryGiveUpActive(): boolean {
+  return giveUpUntilPerf > 0 && recoveryClock().now() < giveUpUntilPerf;
+}
+
+/** Pane teardown, `serve` rebuilds, and tests. */
+export function resetRecoveryGiveUp(): void {
+  giveUpUntilPerf = 0;
 }
 
 // ─── The deadline ────────────────────────────────────────────────────────────
@@ -232,14 +279,32 @@ export function resetDeadlineNotice(): void {
  * one process-wide switch, and there is no narrower lever: the variable is
  * fixed at spawn and cannot key on whether a banner exists.
  *
- * ── WHY IT IS GATED ON THE UI SWITCH ────────────────────────────────────────
+ * ── THE THREE GATES, AND WHY IT IS NOT JUST THE UI SWITCH ───────────────────
  *
- * `resolveRecoveryUi()` is the user's configuration — flag > env > project >
- * global > true. Off means no pane, therefore no lease, therefore an inline
- * 400 at exhaustion, therefore nothing handed back for the client to re-ask —
- * so extending its budget would buy only the side effect above. Surface and
- * reach move together or not at all.
+ * All three must hold, because the cost above is only worth paying by a launch
+ * that gets the benefit:
+ *
+ *   1. `resolveRecoveryEnabled()` — the ladder itself. `--no-recovery` /
+ *      `CLAUDISH_RECOVERY=0` restores pre-recovery behaviour "byte for byte"
+ *      (RISK-7), and an exhaustion that answers today's immediate 400 hands
+ *      nothing back for the client to re-ask. A CI run that explicitly opted
+ *      out must not be left looping ~300 times on an unrelated 503.
+ *   2. `resolveRecoveryUi()` — the user's configuration, flag > env > project >
+ *      global > true. Off means no pane, therefore no lease, therefore an
+ *      inline 400 at exhaustion. Surface and reach move together or not at all.
+ *   3. `paneEligible` — whether THIS LAUNCH can obtain a surface at all, from
+ *      `magmuxPaneCapability()`. It is a launch-order fact, not a preference:
+ *      false in `-p`, in `--stdin`, with no TTY, and on a machine without
+ *      magmux. None of those can ever hold the lease a recovery 503 requires,
+ *      so for them the watchdog is the RISK-6 exposure with none of the
+ *      recovery benefit, applied to every unrelated 503 the session sees.
+ *
+ * Gate 3 is why the caller must ask about eligibility BEFORE finalising the
+ * child environment — see `magmuxPaneCapability`, which is side-effect free for
+ * exactly that reason.
  */
-export function retryWatchdogEnv(): Record<string, string> {
+export function retryWatchdogEnv(opts: { paneEligible: boolean }): Record<string, string> {
+  if (!opts.paneEligible) return {};
+  if (!resolveRecoveryEnabled()) return {};
   return resolveRecoveryUi() ? { CLAUDE_CODE_RETRY_WATCHDOG: "1" } : {};
 }

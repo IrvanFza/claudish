@@ -458,16 +458,38 @@ describe("noteTargetReachable — the handoff that ends without a rejoin", () =>
     expect(episodeCount()).toBe(0);
   });
 
-  test("a DIFFERENT host does not close it — the key is provider|host", async () => {
+  test("ANOTHER HOST of the same provider closes it — an auth episode is still this outage", async () => {
+    // The episode key is `provider|host` and the AUTH sites seed the host from
+    // the error, so a `gk@` outage during a token refresh opens an episode on
+    // `auth.x.ai` while `noteTargetReachable` is called with the MODEL endpoint.
+    // A strict key lookup missed it, and the pane went on painting "waiting for
+    // Claude Code to retry" over a working session for the full 120-second
+    // grace — the fix that shipped for the fetch path, absent for the five auth
+    // sites.
+    //
+    // Closing by provider is sound rather than convenient: a request that
+    // reached the model endpoint had to authenticate first, so it has just
+    // proved every host it touched is answering.
     useFakeClock();
-    const s = seed({ providerName: "reach-2" });
-    const h = joinEpisode(s);
+    const auth = joinEpisode(
+      seed({ providerName: "reach-2", endpoint: "https://auth.example.com/oauth2/token" })
+    );
+    auth.recordAttemptResult("ConnectionRefused", false);
+    auth.handoff();
+    auth.leave();
+    expect(describeEpisode(auth.episodeId)?.state).toBe("handoff");
+
+    noteTargetReachable("reach-2", "https://api.example.com/v1/chat/completions");
+    expect(describeEpisode(auth.episodeId)).toBeNull();
+  });
+
+  test("a DIFFERENT PROVIDER never closes it — one provider's success says nothing", async () => {
+    useFakeClock();
+    const h = joinEpisode(seed({ providerName: "reach-2b" }));
     h.recordAttemptResult("ConnectionRefused", false);
     h.handoff();
     h.leave();
 
-    noteTargetReachable("reach-2", "http://127.0.0.1:10/v1/chat/completions");
-    expect(describeEpisode(h.episodeId)?.state).toBe("handoff");
     noteTargetReachable("other-provider", "http://127.0.0.1:9/v1/chat/completions");
     expect(describeEpisode(h.episodeId)?.state).toBe("handoff");
   });

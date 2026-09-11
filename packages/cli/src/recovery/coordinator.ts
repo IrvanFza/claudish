@@ -79,8 +79,6 @@ export interface EpisodeSeed {
 
 interface Waiter {
   deadlineAt: number;
-  tier: 1 | 2;
-  leftByDeadline: boolean;
   /** Non-null exactly while this waiter is parked. */
   wake: ((outcome: WaitOutcome) => void) | null;
   fail: ((err: unknown) => void) | null;
@@ -158,6 +156,7 @@ export function describeEpisode(episodeId: string): Readonly<Record<string, unkn
     maxTier: ep.maxTier,
     lastOutcome: ep.lastOutcome,
     nextAttemptAtPerf: ep.nextAttemptAtPerf,
+    paneRequestedAtPerf: ep.paneRequestedAtPerf,
   };
 }
 
@@ -346,7 +345,6 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
   const key = `${seed.providerName}|${host}`;
 
   let ep = episodes.get(key);
-  let tier: 1 | 2 = 1;
 
   if (ep && (ep.state === "recovered" || ep.state === "abandoned")) {
     episodes.delete(key);
@@ -366,7 +364,6 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
       ep.clientRetries++;
       ep.state = "attempting";
       ep.maxTier = 2;
-      tier = 2;
       log(
         `[Recovery] ${ep.providerDisplayName} rejoined episode ${ep.episodeId} ` +
           `(client retry ${ep.clientRetries}, ladder ${ep.ladderIndex}, attempts ${ep.attempts})`
@@ -434,8 +431,6 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
   const episode = ep;
   const waiter: Waiter = {
     deadlineAt: seed.deadlineAt,
-    tier,
-    leftByDeadline: false,
     wake: null,
     fail: null,
     detach: null,
@@ -520,7 +515,9 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
     },
 
     handoff(): void {
-      waiter.leftByDeadline = true;
+      // EPISODE-level only. A per-waiter copy of this was write-only, and the
+      // decision it feeds — what the LAST waiter out closes the episode as —
+      // is an episode-level question by construction.
       episode.anyLeftByDeadline = true;
     },
 
@@ -658,15 +655,35 @@ function closeEpisode(episode: Episode, outcome: RecoveryOutcome): void {
  * closing it underneath them would strand or gave-up requests that another
  * request's success says nothing about. A `handoff` episode has no waiters by
  * construction — that is what `handoff` means.
+ *
+ * ── WHY IT CLOSES BY PROVIDER AND NOT BY HOST ───────────────────────────────
+ *
+ * The key is `provider|host`, and the AUTH sites seed the host from the error —
+ * so a `gk@` outage during a token refresh can open an episode keyed on
+ * `auth.x.ai` while this function is called with the MODEL endpoint. Keyed
+ * lookup missed it by host, and the fix that shipped for the fetch path was
+ * absent for the five auth sites `network-recovery.md` §5 enumerates: the pane
+ * went on painting "waiting for Claude Code to retry" over a working session
+ * for the full 120-second grace.
+ *
+ * Closing every `handoff` episode for the provider is sound rather than merely
+ * convenient: a request that reached the model endpoint HAD to authenticate
+ * first, so it has just proved every host it touched is answering. And a
+ * `handoff` episode holds no waiters, so nothing is closed out from under
+ * anyone either way.
  */
 export function noteTargetReachable(providerName: string, endpoint: string): void {
-  const ep = episodes.get(`${providerName}|${hostOf(endpoint)}`);
-  if (!ep || ep.state !== "handoff") return;
-  log(
-    `[Recovery] ${ep.providerDisplayName} answered on the client's own retry — ` +
-      `closing episode ${ep.episodeId} instead of waiting out its grace`
-  );
-  closeEpisode(ep, "recovered");
+  const exact = `${providerName}|${hostOf(endpoint)}`;
+  const prefix = `${providerName}|`;
+  for (const [key, ep] of [...episodes]) {
+    if (key !== exact && !key.startsWith(prefix)) continue;
+    if (ep.state !== "handoff") continue;
+    log(
+      `[Recovery] ${ep.providerDisplayName} answered on the client's own retry — ` +
+        `closing episode ${ep.episodeId} instead of waiting out its grace`
+    );
+    closeEpisode(ep, "recovered");
+  }
 }
 
 /**

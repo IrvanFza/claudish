@@ -40,7 +40,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { resetRecoveryClock, setRecoveryClock } from "../../recovery/clock.js";
 import { closeAllEpisodes } from "../../recovery/coordinator.js";
 import { FakeClock, advanceUntilSettled, drain } from "../../recovery/test-helpers/fake-clock.js";
-import { classifyConnectionError } from "./connection-error.js";
+import { classifyConnectionError, markOwnTimeout } from "./connection-error.js";
 import {
   PER_ATTEMPT_CONNECT_CAP_MS,
   mergeSignalIntoInit,
@@ -167,9 +167,12 @@ describe("F-SLOW — a host that swallows the connection", () => {
     // Why the ladder can treat its own timeout as a retryable network fault:
     // `AbortSignal.timeout` rejects with a DOMException whose `name` is
     // `TimeoutError` and whose `code` is the NUMBER 23, so a classifier keyed
-    // only on a string `code` returned null and a hung upstream fell through
-    // into a bare 500.
-    const clampAbort = new DOMException("attempt cap", "TimeoutError");
+    // only on a string `code` returned null and a hung probe fell through into
+    // a bare 500.
+    //
+    // `markOwnTimeout` is what the clamp adds — see the sibling test below for
+    // why the NAME alone must not be enough.
+    const clampAbort = markOwnTimeout(new DOMException("attempt cap", "TimeoutError"));
     const conn = classifyConnectionError(clampAbort);
     expect(conn).not.toBeNull();
     expect(conn?.kind).toBe("unreachable");

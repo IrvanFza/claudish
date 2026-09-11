@@ -33,6 +33,7 @@ import {
   type ConnectionErrorKind,
   buildConnectionErrorMessage,
   classifyConnectionError,
+  markOwnTimeout,
 } from "./connection-error.js";
 
 export { EPISODE_GRACE_MS } from "../../recovery/coordinator.js";
@@ -142,6 +143,19 @@ export interface ConnectionErrorInfo {
  * overwriting is a ten-minute `AbortSignal.timeout`. Compose rather than
  * replace: the per-attempt clamp then bounds the attempt while the transport's
  * own ceiling still applies, which is what both of them were for.
+ *
+ * ── AN ALREADY-FIRED `own` IS DROPPED, NOT COMPOSED ─────────────────────────
+ *
+ * `AbortSignal.any([fired, live])` returns a signal that is ALREADY ABORTED, so
+ * the fetch rejects before it opens a socket — measured on this machine's Bun.
+ * A transport's `getRequestInit()` signal is one-shot, so a caller that hoists
+ * the init out of its retry loop poisons every later attempt with a ceiling
+ * that expired during attempt 1: real connect attempts stop happening while the
+ * ladder, the log and the pane all go on reporting them.
+ *
+ * Callers must re-mint the init per attempt (`composed-handler.ts` does), and
+ * this is the belt behind that brace: an expired ceiling has already had its
+ * say, and carrying it forward can only convert a live attempt into a no-op.
  */
 export function mergeSignalIntoInit(
   init: Record<string, unknown>,
@@ -149,7 +163,8 @@ export function mergeSignalIntoInit(
 ): RequestInit {
   if (!signal) return init as RequestInit;
   const own = init.signal as AbortSignal | undefined;
-  return { ...init, signal: own ? AbortSignal.any([own, signal]) : signal } as RequestInit;
+  if (!own || own.aborted) return { ...init, signal } as RequestInit;
+  return { ...init, signal: AbortSignal.any([own, signal]) } as RequestInit;
 }
 
 export interface ConnectionRetryContext {
@@ -235,12 +250,62 @@ function isClientAbort(signal: AbortSignal, err: unknown): boolean {
 }
 
 /**
+ * Await `p`, but stop waiting when `signal` fires.
+ *
+ * ── WHY THE CLAMP CANNOT JUST BE HANDED OVER AND TRUSTED ────────────────────
+ *
+ * `op` takes the signal, and the fetch path threads it all the way to `fetch`.
+ * THE AUTH PATH CANNOT: `refreshAuth()` and `getHeaders()` take no arguments on
+ * the transport interface, so `() => this.provider.refreshAuth!()` closes over
+ * nothing and discards the signal entirely. Grok's token exchange then performs
+ * an UNBOUNDED `fetch(auth.x.ai/oauth2/token)` — so a swallowed connection
+ * outlived both the 45-second attempt cap and the client's own disconnect,
+ * while `withConnectionRetry` sat awaiting a promise nothing could settle. A
+ * deadline that one path can ignore is not a deadline.
+ *
+ * So the clamp is enforced HERE, at the one place that owns it, rather than in
+ * N transports that would each have to remember. The operation is abandoned,
+ * not cancelled — it may still be running — but the waiter unwinds, the ladder
+ * advances, and the request answers inside its budget, which is what the budget
+ * was for. Threading a real signal into every auth call is the deeper fix and
+ * is worth doing; this is what makes the ceiling true in the meantime.
+ */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    // Nothing else will ever observe `p`, so claim its rejection here or Bun
+    // reports an unhandled one.
+    void p.catch(() => {});
+    return Promise.reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Registered unconditionally, so a late settle of an abandoned operation is
+    // always handled — `resolve`/`reject` after settlement are no-ops.
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      }
+    );
+  });
+}
+
+/**
  * Re-issue `op` on a classified connection error, on the shared episode clock.
  *
  * `op` TAKES the signal rather than closing over one. That is what lets a
  * single contract cover both the fetch path and the auth path: the per-attempt
  * clamp is built here, merged with the client signal here, and handed in, so
  * the clamp bounds the OPERATION rather than only the `fetch` buried inside it.
+ * `untilAborted` then makes that binding rather than advisory, for the auth
+ * closures that structurally cannot accept a signal at all.
  *
  * Classification runs on EVERY attempt, not just the first. A retry that throws
  * an auth failure, a transport bug or a programming error must not be
@@ -348,15 +413,19 @@ export async function withConnectionRetry<T>(
         MIN_ATTEMPT_SLOT_MS,
         Math.min(PER_ATTEMPT_CONNECT_CAP_MS, remaining)
       );
+      // `markOwnTimeout` is what makes this abort re-classifiable at all.
+      // `classifyConnectionError` keys `TimeoutError` on the SIGNAL'S ORIGIN
+      // rather than on the name, precisely so a transport's own inference
+      // ceiling stays out of the ladder — so the clamp has to say it is ours.
       const clampTimer = clock.setTimeout(
-        () => attemptAc.abort(new DOMException("attempt cap", "TimeoutError")),
+        () => attemptAc.abort(markOwnTimeout(new DOMException("attempt cap", "TimeoutError"))),
         clampMs
       );
       const merged = AbortSignal.any([ctx.signal, attemptAc.signal]);
 
       try {
         requestRetries++;
-        const value = await op(merged);
+        const value = await untilAborted(op(merged), merged);
         handle.recordAttemptResult("ok", true);
         log(
           `[Recovery] ${ctx.providerDisplayName} recovered after ${handle.attempts()} attempts ` +

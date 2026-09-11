@@ -17,7 +17,7 @@ import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
-import { planMagmuxWrap } from "./launcher/magmux-wrapper.js";
+import { magmuxPaneCapability, planMagmuxWrap } from "./launcher/magmux-wrapper.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
@@ -1634,12 +1634,22 @@ export async function runClaudeWithProxy(
     ...advisorToolEnv.vars,
   };
 
+  // Can this launch put a recovery banner on screen at all? Asked HERE, before
+  // the child environment is finalised, because the answer gates the watchdog
+  // below — and asked through a side-effect-free function so asking is free and
+  // repeatable. `planMagmuxWrap` further down consumes the same predicate, so
+  // "may we wrap" and "may we amplify the client's retries" cannot drift.
+  const paneCapability = magmuxPaneCapability({
+    interactive: Boolean(config.interactive),
+    stdoutIsTty: Boolean(process.stdout.isTTY),
+  });
+
   // The client half of "retry forever". Tier 1 holds one request for the
   // derived deadline and then hands the retry back as a 503; how far recovery
   // actually reaches is decided by Claude Code's willingness to re-ask, which
-  // this sets. The arithmetic, the accepted cost and the side effect on
-  // claudish's OTHER 503s are all stated at `retryWatchdogEnv()`.
-  Object.assign(env, retryWatchdogEnv());
+  // this sets. The arithmetic, the accepted cost, the side effect on claudish's
+  // OTHER 503s and all three gates are stated at `retryWatchdogEnv()`.
+  Object.assign(env, retryWatchdogEnv({ paneEligible: paneCapability.kind !== "none" }));
 
   // Provider display name, best-effort and FREE. Only an explicit `provider@model`
   // spec names its provider without routing, and route() would touch credentials /
@@ -1958,16 +1968,22 @@ export async function runClaudeWithProxy(
   // decides whether a retry happens. Off means no pane, therefore no lease,
   // therefore an inline error at exhaustion — which is the 503-vs-400 decision
   // made structurally rather than by a second predicate somewhere else.
-  const wrap = resolveRecoveryUi()
-    ? planMagmuxWrap({
-        claudeBinary,
-        claudeArgs,
-        childEnv: env,
-        cwd: process.cwd(),
-        interactive: Boolean(config.interactive),
-        stdoutIsTty: Boolean(process.stdout.isTTY),
-      })
-    : null;
+  //
+  // `paneCapability` was resolved before the environment was finalised, and is
+  // re-used rather than re-derived: the watchdog above is exported on exactly
+  // the launches that reach `planMagmuxWrap` or the ambient branch below.
+  const wrap =
+    resolveRecoveryUi() && paneCapability.kind === "wrap"
+      ? planMagmuxWrap({
+          claudeBinary,
+          claudeArgs,
+          childEnv: env,
+          cwd: process.cwd(),
+          interactive: Boolean(config.interactive),
+          stdoutIsTty: Boolean(process.stdout.isTTY),
+          magmuxBinary: paneCapability.magmux,
+        })
+      : null;
 
   const proc = wrap
     ? spawn(wrap.command, wrap.args, { env: wrap.env, stdio, shell: false })

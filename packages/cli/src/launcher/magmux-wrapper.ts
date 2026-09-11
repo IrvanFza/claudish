@@ -35,7 +35,16 @@
  */
 
 import type { ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
 import { join } from "node:path";
 import { findMagmuxBinaryOrNull } from "./magmux-binary.js";
@@ -140,14 +149,34 @@ export function buildLauncherScript(
 }
 
 /**
- * Build the plan, or null when this launch must not be wrapped.
+ * Can this launch obtain a recovery pane at all, and how?
  *
- * Returns null — never throws — for every "not applicable" case, because a
- * missing multiplexer means the session should launch exactly as it did before
- * this feature existed.
+ * SIDE-EFFECT FREE — it writes nothing, spawns nothing, and may therefore be
+ * asked BEFORE the child environment is finalised. That ordering is the whole
+ * reason it exists as its own function: `CLAUDE_CODE_RETRY_WATCHDOG` expands
+ * Claude Code's retry budget from ~11 attempts to ~300 for EVERY 503 the
+ * session sees, so it may only be exported by a launch that can actually put
+ * the reason on a surface. Exporting it from the UI preference alone applied
+ * the accepted duplicate-request exposure (RISK-6) in `-p`, under
+ * `--no-recovery`, and on machines without magmux — the configurations that
+ * opted out — where it buys nothing at all.
+ *
+ * `wrap`    — we will start magmux ourselves and own the control socket.
+ * `ambient` — already inside someone else's magmux (`team --grid`, or a user
+ *             who launched claudish in a pane): nothing to wrap, but there IS a
+ *             multiplexer to ask for a pane.
+ * `none`    — no surface is reachable from this launch.
  */
-export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
-  if (!input.interactive || !input.stdoutIsTty) return null;
+export type MagmuxPaneCapability =
+  | { kind: "wrap"; magmux: string }
+  | { kind: "ambient"; sock: string }
+  | { kind: "none"; reason: "not-interactive" | "no-tty" | "no-magmux" };
+
+export function magmuxPaneCapability(
+  input: Pick<MagmuxWrapInput, "interactive" | "stdoutIsTty" | "parentEnv" | "magmuxBinary">
+): MagmuxPaneCapability {
+  const parentEnv = input.parentEnv ?? process.env;
+  if (!input.interactive) return { kind: "none", reason: "not-interactive" };
   // ALREADY INSIDE A MULTIPLEXER — do not nest one.
   //
   // `team --grid --mode interactive` launches one `claudish --model X -i` per
@@ -160,32 +189,72 @@ export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
   // installed against that AMBIENT socket instead, and the cross-process
   // `O_EXCL` lock in `magmux-ui.ts` is what keeps the grid to ONE banner rather
   // than N.
-  if ((input.parentEnv ?? process.env).MAGMUX_SOCK) return null;
+  //
+  // Checked BEFORE the TTY gate on purpose, to match `claude-runner.ts`'s
+  // ambient branch, which asks only for `interactive && MAGMUX_SOCK`.
+  const ambient = parentEnv.MAGMUX_SOCK;
+  if (ambient) return { kind: "ambient", sock: ambient };
+  if (!input.stdoutIsTty) return { kind: "none", reason: "no-tty" };
   const magmux = input.magmuxBinary === undefined ? findMagmuxBinaryOrNull() : input.magmuxBinary;
-  if (!magmux) return null;
+  if (!magmux) return { kind: "none", reason: "no-magmux" };
+  return { kind: "wrap", magmux };
+}
+
+/**
+ * Build the plan, or null when this launch must not be wrapped.
+ *
+ * Returns null — never throws — for every "not applicable" case, because a
+ * missing multiplexer means the session should launch exactly as it did before
+ * this feature existed. The "not applicable" set is `magmuxPaneCapability`'s,
+ * so the gate that decides the watchdog and the gate that decides the wrap
+ * cannot drift apart.
+ */
+export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
+  const capability = magmuxPaneCapability(input);
+  if (capability.kind !== "wrap") return null;
+  const magmux = capability.magmux;
 
   const pid = input.pid ?? process.pid;
   const id = `claudish-${pid}`;
   const controlSocket = `/tmp/magmux-${id}.sock`;
 
-  // 0700 directory, 0600 file. The script carries claudish's deltas, which on
-  // the proxy path include the key Claude Code authenticates to us with.
+  // ── 0700 UNGUESSABLE directory, 0600 O_EXCL file ──────────────────────────
+  //
+  // The file below is SOURCED by the login shell immediately before `exec`, and
+  // it carries claudish's env deltas — on the proxy path that includes the
+  // `ANTHROPIC_API_KEY` Claude Code authenticates to us with. So both halves of
+  // this matter, and the previous shape got both wrong:
+  //
+  //   - the name was `claudish-launch-<pid>`, which is ENUMERABLE, and
+  //     `mkdirSync(..., { recursive: true })` neither throws on `EEXIST` nor
+  //     applies `mode` to a directory that already exists — so a directory
+  //     another uid had pre-created (or symlinked elsewhere) was adopted
+  //     silently, and `writeFileSync` follows an existing path. That is
+  //     CWE-377/CWE-59: read the session's secrets, or swap the script between
+  //     the write and the `exec`, and get code execution as the claudish user.
+  //   - `writeFileSync`'s `mode` is a CREATION mode; on an existing file it is
+  //     ignored, so the `chmod` was load-bearing and silent when it failed.
+  //
+  // `mkdtempSync` gives an unguessable name AND fails rather than adopting, and
+  // `wx` is `O_CREAT | O_EXCL`, so the file cannot pre-exist as a symlink to
+  // somewhere else. The same rule the rest of this change already follows:
+  // `socket-server.ts` uses `randomBytes(12)` for its directory and `O_EXCL`
+  // for the pane lock.
   const tmpRoot = input.tmpRoot ?? "/tmp";
-  const scriptDir = join(tmpRoot, `claudish-launch-${pid}`);
-  mkdirSync(scriptDir, { mode: 0o700, recursive: true });
+  mkdirSync(tmpRoot, { recursive: true });
+  const scriptDir = mkdtempSync(join(tmpRoot, "claudish-launch-"));
+  chmodSync(scriptDir, 0o700);
   // Named for Claude Code on purpose: magmux attaches its controller by
   // spotting `claude`/`claudish` in the pane's command.
   const scriptPath = join(scriptDir, "claude-launch.sh");
 
   const parentEnv = input.parentEnv ?? process.env;
   const deltas = envDeltas(parentEnv, input.childEnv);
-  writeFileSync(scriptPath, buildLauncherScript(input.claudeBinary, input.claudeArgs, deltas), {
-    mode: 0o600,
-  });
+  const fd = openSync(scriptPath, "wx", 0o600);
   try {
-    chmodSync(scriptPath, 0o600);
-  } catch {
-    /* the 0700 directory is the real gate */
+    writeFileSync(fd, buildLauncherScript(input.claudeBinary, input.claudeArgs, deltas));
+  } finally {
+    closeSync(fd);
   }
 
   const env: Record<string, string> = { ...input.childEnv };
@@ -214,8 +283,12 @@ export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
   let paneExit: number | null = null;
   const exitListeners: Array<(code: number | null) => void> = [];
   let control: Socket | null = null;
+  let cleaned = false;
 
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    process.removeListener("exit", cleanup);
     try {
       control?.destroy();
     } catch {
@@ -235,6 +308,13 @@ export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
       /* already gone */
     }
   };
+
+  // A file holding the session's `ANTHROPIC_API_KEY` must not outlive the
+  // process on a SIGTERM or a crash-out — `watch()`'s `proc.exit` hook only
+  // covers the ordinary path, and claudish is not always the one that dies
+  // last. Same discipline as `socket-server.ts`'s socket unlink; the listener
+  // removes itself in `cleanup` so a long-lived host cannot accumulate them.
+  process.on("exit", cleanup);
 
   return {
     command: magmux,

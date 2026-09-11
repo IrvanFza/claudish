@@ -59,8 +59,10 @@ The second tier hands the retry back to the client. What the client will then sp
 
 - **~11 attempts** on its default budget, spanning **~174 s** for a 503 chain (backoff caps at
   38.4 s per gap, and `retry-after` is honoured verbatim);
-- **~300 attempts** with `CLAUDE_CODE_RETRY_WATCHDOG=1`, which claudish sets when the recovery UI is
-  enabled — reaching **~a day** of unattended recovery on a hung connection.
+- **~300 attempts** with `CLAUDE_CODE_RETRY_WATCHDOG=1`, which claudish sets only when recovery is
+  enabled, the UI is allowed, AND this launch can actually obtain a pane — reaching **~a day** of
+  unattended recovery on a hung connection. All three gates, because the watchdog amplifies EVERY
+  503 the session sees and is worth its cost only where a surface can exist (§7).
 
 It is a count, not a clock. That is why `EPISODE_GRACE_MS` is 120 s: the client's worst gap is
 38.4 s, so 120 s is 3.1× inside it and a returning client always finds its episode still open.
@@ -79,7 +81,8 @@ POST /v1/messages ──► ComposedHandler.handle()   startTime = performance.n
                       classifyConnectionError()  ── null ──► rethrow, unchanged
                           │ non-null
                           ▼
-                      shouldSkipTier1()?  probe header · recovery disabled · no budget left
+                      shouldSkipTier1()?  probe header · recovery disabled ·
+                                          user pressed [q] · no budget left
                           │ no
       ┌───────────────────▼──────────────────────────────────────────┐
       │ TIER 1 — in-request, PRE-FLUSH, deadline derived from §1      │
@@ -165,8 +168,27 @@ is the only honest discriminator, and it reads the address, not the error.
 | exhausted, **a lease is valid** | **503** `overloaded_error` | `x-should-retry: true`, `x-claudish-recovery: 1` | the reason is legible on the pane, so the retry may be handed back |
 | exhausted, **no lease** | **400** `connection_error` | — | nothing can display the reason, so it must ride the status |
 | `[q] give up` | **400** `connection_error` | — | guarded on `result.kind`, never on the lease — see below |
+| **a request arriving within 60 s of `[q]`** | **400** `connection_error` | — | the ladder is SKIPPED outright: the user said stop |
 | client disconnected | 499 (unread) | — | the socket is already gone |
 | unclassifiable throw on any attempt | rethrown unchanged | — | recovery must not widen what "transient" means |
+
+### `[q] give up` suppresses the HOLD, not only the banner
+
+`bye` originally did two things, both inside the UI manager: it suppressed re-opening the pane for
+60 s, and it called `giveUpAll()` — which iterates the episodes alive *at that instant*. Nothing
+recorded that the user had asked recovery to stop, and `shouldSkipTier1` had no gate that could
+notice. So the next request against the same dead target opened a NEW episode, found the pane
+suppressed, got no pane and no lease, and then held its socket for the full ~4.5-minute deadline
+before answering 400 — **a long hold with no surface, which is the state this design calls "strictly
+worse than the bug this feature exists to remove", reached from the one affordance whose entire
+purpose is to end it.** Before recovery existed those requests failed in milliseconds.
+
+It is not an edge case. Claude Code issues concurrent requests during an outage (main loop, title
+model, subagents), so a request arriving inside the suppression window is the EXPECTED one.
+
+The fact is therefore process-level — `recovery/settings.ts`'s `recoveryGiveUpActive()` — and is read
+by **both** `shouldSkipTier1` (the hold) and `ensureRecoveryUi` (the surface). One number, one
+window, two readers. A control that appears to stop something and does not is worse than no control.
 
 ### 429 would have been a live billing bug
 
@@ -320,6 +342,28 @@ common local failure — never reached tier 1 at all. Same class of fix in `vert
 `healthChecked` latches on **success only**, so a retried `refreshAuth()` re-probes instead of
 returning a false success to attempt two.
 
+### Three things the auth path needs that the fetch path gets for free
+
+- **The clamp has to be ENFORCED, not handed over.** `op` takes the per-attempt signal, and the fetch
+  path threads it into `fetch`. `refreshAuth()` and `getHeaders()` take no arguments, so
+  `() => this.provider.refreshAuth!()` discards it — and Grok's token exchange then performs an
+  unbounded `fetch(auth.x.ai/oauth2/token)`. A swallowed connection there outlived both the 45 s cap
+  and the client's own disconnect while `withConnectionRetry` awaited a promise nothing could settle:
+  the unbounded hold this feature exists to remove, reached from inside the machinery that removes
+  it. `untilAborted` now enforces the ceiling at the one place that owns it. The operation is
+  *abandoned*, not cancelled — threading a real signal through every transport's auth call is the
+  deeper fix and is still worth doing.
+- **The error must name the host that actually failed.** `connectionEndpointFor` falls back to the
+  MODEL endpoint when the error carries no `claudishEndpoint`, so an `auth.x.ai` outage was reported
+  — in the banner, in the log and in the episode key — as `api.x.ai`. Grok's refresh wrapper now
+  attaches it, as `local.ts` already did.
+- **`noteTargetReachable` closes by PROVIDER, not by host.** Because an auth episode can be keyed on
+  a different host than the one a later success reaches, a strict key lookup missed it and the pane
+  painted "waiting for Claude Code to retry" over a working session for the full 120 s grace. A
+  request that reached the model endpoint had to authenticate first, so it has proved every host it
+  touched is answering — and a `handoff` episode holds no waiters, so nothing is closed from under
+  anyone.
+
 ---
 
 ## 6. Stats — and the one step whose omission is silent
@@ -397,6 +441,38 @@ ladder, and then accepted it again, with the arithmetic in front of them, at the
 
 `recovery_episode_id` is what makes the exposure *attributable* — without it, attribution breaks
 exactly across a tier-2 handoff, which is the highest-exposure path.
+
+**What RISK-6 does NOT extend to, and the two ways it leaked past its own boundary.** Both were
+found in review and closed; both are the same mistake — applying the accepted arithmetic to a case
+the user was never shown.
+
+1. **A LATENCY event is not a network fault.** `classifyConnectionError` mapped the NAME
+   `TimeoutError` to `unreachable`. That name is also what `AbortSignal.timeout` on a transport's own
+   *inference* request rejects with — `vertex-oauth.ts` puts a 30 s ceiling on the model call itself.
+   A `vx@` turn whose time-to-first-byte exceeded 30 s (ordinary for a thinking model) was therefore
+   classified as "the host is unreachable", entered the ladder, took the tier-2 handoff, and was
+   re-POSTed ~300 times — **each one running one more real billed inference against a host that had
+   answered the TCP connect and was already generating.** The discriminator is now the SIGNAL'S
+   ORIGIN, not the name: our per-attempt clamp and our reachability probes carry a `markOwnTimeout`
+   own-property and classify; everything else keeps its pre-recovery route out, unclassified and
+   rethrown. The user-facing sentence was wrong too — it told the user to check VPN and DNS for a
+   host that was mid-generation.
+2. **The watchdog needs three gates, not one.** `CLAUDE_CODE_RETRY_WATCHDOG=1` was exported from the
+   UI preference alone, so `-p`, `--no-recovery`, a pipe and a machine without magmux all expanded
+   every UNRELATED 503 to ~300 client attempts while being structurally incapable of holding the
+   lease a recovery 503 requires. It now requires `resolveRecoveryEnabled()` **and**
+   `resolveRecoveryUi()` **and** `magmuxPaneCapability() !== none` — the last asked BEFORE the child
+   environment is finalised, which is why that predicate is side-effect free and is the same one
+   `planMagmuxWrap` consumes.
+
+**The transport's `getRequestInit()` is re-minted per attempt.** It was hoisted once, before the
+primary fetch, and spread into every re-issue. A transport that returns a one-shot
+`AbortSignal.timeout` therefore poisoned the whole ladder the moment it fired:
+`AbortSignal.any([fired, live])` is ALREADY ABORTED, so every later attempt rejected without opening
+a socket. For `vx@` that made tier 1 silently dead past t+30 s — the request held the full deadline
+making **zero** real connect attempts while the log and the pane counted attempts that never left the
+process. `mergeSignalIntoInit` now also drops an `own` that is already aborted, as the belt behind
+that brace.
 
 **RISK-7 — a CI run holding a dead endpoint for the full deadline.** `--no-recovery` /
 `CLAUDISH_RECOVERY=0` restores today's immediate 400 everywhere, byte for byte. `--no-recovery-ui` /

@@ -13,6 +13,7 @@
 
 import { Agent } from "undici";
 import { credentials } from "../../auth/credentials/authority.js";
+import { markOwnTimeout } from "../../handlers/shared/connection-error.js";
 import { LocalModelQueue } from "../../handlers/shared/local-queue.js";
 import { log } from "../../logger.js";
 import type { LocalProvider as LocalProviderConfig } from "../../providers/provider-registry.js";
@@ -243,7 +244,13 @@ export class LocalTransport implements ProviderTransport {
     } catch (e: any) {
       // KEEP the error, do not merely log it. See `lastProbeError`'s docs: this
       // catch is where the connect evidence used to die.
-      this.lastProbeError = e;
+      //
+      // `markOwnTimeout` because the probe's 5 s ceiling is OURS: we asked "is
+      // anything there" and got no answer inside a window we chose, which is a
+      // reachability fact. Untagged, a `TimeoutError` is now deliberately
+      // unclassified — see `connection-error.ts`'s `NAME_KIND` header for the
+      // billing reason a transport's own inference ceiling must not be one.
+      this.lastProbeError = markOwnTimeout(e);
       this.lastProbeUrl = healthUrl;
       log(`[${this.displayName}] /api/tags failed: ${e?.message || e}, trying /v1/models`);
     }
@@ -264,7 +271,8 @@ export class LocalTransport implements ProviderTransport {
       }
       log(`[${this.displayName}] /v1/models returned ${response.status}`);
     } catch (e: any) {
-      this.lastProbeError = e;
+      // Tagged for the same reason as the /api/tags probe above.
+      this.lastProbeError = markOwnTimeout(e);
       this.lastProbeUrl = modelsUrl;
       log(`[${this.displayName}] /v1/models failed: ${e?.message || e}`);
     }

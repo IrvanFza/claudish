@@ -49,20 +49,43 @@ const BUN_CONNECT_MESSAGE = /unable to connect\. is the computer able to access 
 
 /**
  * Error NAMES that mean the same thing as a connect code, matched separately
- * because they do not arrive as one.
+ * because they do not arrive as one — AND ONLY WHEN THE SIGNAL WAS OURS.
  *
  * `AbortSignal.timeout(...)` rejects with a `DOMException` whose `name` is
  * `TimeoutError` and whose `code` is the NUMBER 23 — so `findConnectionCode`'s
  * `typeof e.code === "string"` test skipped it, its message ("The operation
  * timed out.") matched no fallback, and classification returned **null**. A
- * provider that accepts the TCP connection and then never answers therefore
- * fell straight through into a bare 500, with none of the actionable wording
- * every other unreachable-host failure gets.
+ * REACHABILITY PROBE that hung therefore fell straight through into a bare
+ * 500, with none of the actionable wording every other unreachable-host
+ * failure gets.
  *
- * "Refused is covered, hung is not" was the whole of the gap. It bites hardest
- * on local providers, whose health probes carry an `AbortSignal.timeout` and
- * whose inference requests carry a ten-minute one — a wedged Ollama is exactly
- * the fault a retry ladder is for.
+ * ── WHY THE NAME ALONE IS NOT THE DISCRIMINATOR ─────────────────────────────
+ *
+ * `TimeoutError` is also what a TRANSPORT'S OWN request ceiling rejects with.
+ * `vertex-oauth.ts` puts `AbortSignal.timeout(30000)` on the *inference* call
+ * and `local.ts` a ten-minute one. Classifying by name alone turned "the model
+ * took longer than its transport's ceiling" — a LATENCY event, ordinary for a
+ * thinking model on a streaming endpoint — into `unreachable`: it entered the
+ * retry ladder, took the tier-2 handoff, and with `CLAUDE_CODE_RETRY_WATCHDOG`
+ * on it was re-POSTed ~300 times, each one running ONE MORE REAL BILLED
+ * INFERENCE against a host that had answered the TCP connect and was already
+ * generating. RISK-6 (`network-recovery.md` §7) was accepted for
+ * `ECONNRESET`/`EPIPE` on a genuine network fault. It was never accepted for a
+ * latency event, which is neither a network fault nor transient — and
+ * `buildConnectionErrorMessage` then told the user to check their VPN and DNS
+ * for a host that was mid-generation.
+ *
+ * So the discriminator is the SIGNAL'S ORIGIN, carried on the error as an own
+ * property, not the name:
+ *
+ *   - the ladder's per-attempt clamp (`transient-retry.ts`) — WE gave up on
+ *     this attempt, and re-issuing is the entire point;
+ *   - a reachability PROBE we issued with our own short timeout (`local.ts`'s
+ *     5 s `/api/tags`) — WE asked "is anything there" and got no answer.
+ *
+ * Both mean "we could not get a response out of this host inside a window WE
+ * chose". A transport's inference ceiling means something else, so it keeps
+ * its pre-recovery route out of here: unclassified, rethrown, untouched.
  *
  * ONLY `TimeoutError`. `AbortError` is deliberately absent and must stay
  * absent: it is how a client says it has gone away and how our own per-attempt
@@ -72,6 +95,43 @@ const BUN_CONNECT_MESSAGE = /unable to connect\. is the computer able to access 
 const NAME_KIND: Record<string, ConnectionErrorKind> = {
   TimeoutError: "unreachable",
 };
+
+/**
+ * The own-property that says "this timeout is CLAUDISH'S OWN".
+ *
+ * Non-enumerable on purpose: it must not change how an error serialises into a
+ * log, a stats record or an upstream error body.
+ */
+const OWN_TIMEOUT_FLAG = "claudishOwnTimeout";
+
+/**
+ * Tag an error as raised by a timeout CLAUDISH set on a reachability question
+ * of its own — the retry ladder's per-attempt clamp, or a health probe.
+ *
+ * Returns the same object, so it composes inside an `abort(...)` call or an
+ * assignment. Defensive about frozen errors: a failure to tag degrades to
+ * "unclassified", which is the safe direction (no ladder, no re-issue).
+ */
+export function markOwnTimeout<T>(error: T): T {
+  if (error && typeof error === "object") {
+    try {
+      Object.defineProperty(error, OWN_TIMEOUT_FLAG, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    } catch {
+      /* frozen — falls through to unclassified, which is the safe direction */
+    }
+  }
+  return error;
+}
+
+/** Was this error raised by one of OUR timeouts? See `markOwnTimeout`. */
+function isOwnTimeout(error: unknown): boolean {
+  return Boolean((error as Record<string, unknown> | null | undefined)?.[OWN_TIMEOUT_FLAG]);
+}
 
 /**
  * Walk an error and its `cause` chain (undici's `TypeError: fetch failed` wraps
@@ -89,7 +149,11 @@ function findConnectionCode(error: unknown): string | null {
     // on it. Walked at the same depth as `.code`, because a transport that
     // rethrows with `{ cause }` buries a hung-probe timeout just as deeply as
     // it buries a refusal.
-    if (typeof e.name === "string" && e.name in NAME_KIND) return e.name;
+    //
+    // `isOwnTimeout(e)` is the load-bearing half: a `TimeoutError` raised by a
+    // transport's own INFERENCE ceiling is not a reachability fact and must not
+    // enter the ladder. See `NAME_KIND`'s header for what that cost.
+    if (typeof e.name === "string" && e.name in NAME_KIND && isOwnTimeout(e)) return e.name;
     e = e.cause;
   }
   const msg = String((error as any)?.message ?? error ?? "");

@@ -22,15 +22,24 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Context } from "hono";
 import { probeLink } from "../providers/probe-live.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
-import { resetRecoveryClock } from "../recovery/clock.js";
+import { resetRecoveryClock, setRecoveryClock } from "../recovery/clock.js";
 import { closeAllEpisodes, episodeCount } from "../recovery/coordinator.js";
-import { resetRecoveryFlagOverrides, setRecoveryFlagOverrides } from "../recovery/settings.js";
+import { UI_SUPPRESS_AFTER_BYE_MS, __handleCommandForTests } from "../recovery/magmux-ui.js";
+import {
+  recoveryGiveUpActive,
+  resetRecoveryFlagOverrides,
+  resetRecoveryGiveUp,
+  setRecoveryFlagOverrides,
+} from "../recovery/settings.js";
 import {
   capturedRecoveryLines,
   startLogCapture,
   stopLogCapture,
 } from "../recovery/test-helpers/capture-log.js";
+import { FakeClock } from "../recovery/test-helpers/fake-clock.js";
+import { RECOVERY_PROTOCOL_VERSION } from "../recovery/types.js";
 import { ComposedHandler } from "./composed-handler.js";
+import { classifyConnectionError, markOwnTimeout } from "./shared/connection-error.js";
 
 /** A port nothing is listening on, taken and released so it is VERIFIED free. */
 function freePort(): number {
@@ -52,6 +61,9 @@ afterEach(() => {
   closeAllEpisodes();
   resetRecoveryClock();
   resetRecoveryFlagOverrides();
+  // PROCESS state, shared with every sibling test file in this Bun process. A
+  // give-up left set would skip the ladder in tests that never pressed a key.
+  resetRecoveryGiveUp();
 });
 
 let seq = 0;
@@ -300,5 +312,248 @@ describe("shouldSkipTier1 — three gates, and no loopback carve-out", () => {
 
     ac.abort(new DOMException("done", "AbortError"));
     await p;
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The transport's own signal, per attempt
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("every ladder attempt gets a FRESH transport init", () => {
+  /**
+   * The defect this pins, in one sentence: `getRequestInit()` was called once,
+   * before the primary fetch, and the same object was spread into every
+   * re-issue — so a transport that returns a ONE-SHOT `AbortSignal.timeout`
+   * (`vertex-oauth.ts` returns a 30-second one) poisoned the whole ladder the
+   * moment that signal fired. `AbortSignal.any([fired, live])` is ALREADY
+   * ABORTED, so the attempt rejected before it opened a socket.
+   *
+   * The visible cost was not a slow retry but a FAKE one: tier 1 held the
+   * request for the full ~270 s deadline making ZERO real connect attempts,
+   * while the `[Recovery]` log and the pane both counted attempts that never
+   * left the process.
+   *
+   * So the assertion is about what the NETWORK saw, and it needs the real
+   * runtime: a real `AbortSignal.timeout`, real `fetch`, and a real refused
+   * port. A stubbed `globalThis.fetch` cannot fail this test, because the
+   * rejection being tested happens inside fetch itself.
+   */
+  test("a retry after the transport's own signal has fired still reaches the socket", async () => {
+    const clock = new FakeClock(0);
+    setRecoveryClock(clock);
+
+    // Shorter than the gap the test then waits, so by attempt 2 the FIRST
+    // signal minted here is certainly dead.
+    const CEILING_MS = 40;
+    let initCalls = 0;
+    const transport = {
+      ...(deadTransport(deadPort) as object),
+      getRequestInit: () => {
+        initCalls++;
+        return { signal: AbortSignal.timeout(CEILING_MS) };
+      },
+    } as unknown as ProviderTransport;
+
+    const handler = new ComposedHandler(transport, "dead-model", "dead-model", 8080, {});
+    const ac = new AbortController();
+    const req = new Request("http://127.0.0.1:8080/v1/messages", {
+      method: "POST",
+      signal: ac.signal,
+    });
+    const { c } = contextFor(req);
+    const p = handler.handle(c, PAYLOAD);
+
+    // Attempt 1 fails on a refused socket and the ladder parks on its 5 s rung.
+    // The wait is REAL time and is what kills the first signal.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(episodeCount()).toBe(1);
+    expect(initCalls).toBe(1);
+
+    // Fire the rung. Attempt 2 runs here.
+    await clock.advance(5_000);
+    await new Promise((r) => setTimeout(r, 150));
+
+    const lines = await capturedRecoveryLines();
+    const attempt2 = lines.find((l) => /attempt 2 failed/.test(l)) ?? "";
+
+    // THE ASSERTION. `ConnectionRefused` is the runtime saying it reached the
+    // network and the port said no. `TimeoutError` here would mean the attempt
+    // was refused by an expired signal without a socket ever being opened —
+    // and with a signal whose origin is not ours it is not even classifiable,
+    // so the ladder would break out entirely.
+    expect(attempt2).toContain("ConnectionRefused");
+    expect(attempt2).not.toContain("TimeoutError");
+    // Re-minted, not re-used: once for the primary fetch, once per re-issue.
+    expect(initCalls).toBeGreaterThanOrEqual(2);
+
+    ac.abort(new DOMException("done", "AbortError"));
+    await p.catch(() => {});
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Whose timeout was it?
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("a transport's own request timeout is NOT a connection failure", () => {
+  /**
+   * `TimeoutError` used to mean `unreachable` whatever raised it, and
+   * `AbortSignal.timeout` on a transport's INFERENCE request raises exactly
+   * that name. So a turn whose time-to-first-byte exceeded the transport's own
+   * ceiling — ordinary for a thinking model on a streaming endpoint — was
+   * classified as "the host is unreachable", entered the ladder, took the
+   * tier-2 handoff, and with the retry watchdog on was re-POSTed ~300 times.
+   * Each of those re-POSTs runs ONE MORE REAL BILLED INFERENCE against a host
+   * that answered the TCP connect and was already generating.
+   *
+   * RISK-6 was accepted for `ECONNRESET`/`EPIPE` on a genuine network fault.
+   * A latency event is neither a network fault nor transient, and was not
+   * priced. The discriminator is therefore the SIGNAL'S ORIGIN, not the name.
+   */
+  test("a hung upstream that trips the TRANSPORT's ceiling never opens an episode", async () => {
+    // A server that accepts the connection and then never answers: the exact
+    // shape a slow model presents, and the one a network classifier must not
+    // confuse with an unreachable host.
+    const hung = Bun.serve({
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    try {
+      const transport = {
+        name: `hung-${Date.now()}`,
+        displayName: "Slow Model",
+        streamFormat: "openai-sse",
+        getEndpoint: () => `http://127.0.0.1:${hung.port}/v1/chat/completions`,
+        getHeaders: async () => ({}),
+        getRequestInit: () => ({ signal: AbortSignal.timeout(60) }),
+      } as unknown as ProviderTransport;
+
+      const handler = new ComposedHandler(transport, "slow-model", "slow-model", 8080, {});
+      const ac = new AbortController();
+      const req = new Request("http://127.0.0.1:8080/v1/messages", {
+        method: "POST",
+        signal: ac.signal,
+      });
+      const { c } = contextFor(req);
+
+      // Raced explicitly rather than simply awaited, because the defect's
+      // signature is a HOLD: misclassified, this request parks on the ladder
+      // for the full derived deadline (~270 s), which a bare `await` would
+      // report as a hung test run rather than as a failure.
+      const p = handler.handle(c, PAYLOAD);
+      const outcome = await Promise.race([
+        p.then(
+          () => "resolved" as const,
+          (e: unknown) => e
+        ),
+        new Promise<"still-holding">((r) => setTimeout(() => r("still-holding"), 2_000)),
+      ]);
+
+      // Unclassified means rethrown unchanged — the pre-recovery route, which
+      // is the whole point. No ladder, no hold, no 300 re-POSTs.
+      expect(outcome).not.toBe("still-holding");
+      expect(outcome).not.toBe("resolved");
+      expect((outcome as Error).name).toBe("TimeoutError");
+      expect(episodeCount()).toBe(0);
+      expect((await capturedRecoveryLines()).some((l) => l.includes("opened for"))).toBe(false);
+
+      ac.abort(new DOMException("done", "AbortError"));
+      await p.catch(() => {});
+    } finally {
+      hung.stop(true);
+    }
+  }, 15_000);
+
+  test("but OUR OWN clamp still is one — the ladder can retry what it gave up on", async () => {
+    // The other half, and the reason the discriminator cannot simply be "drop
+    // TimeoutError": the per-attempt clamp aborts with that same name, and an
+    // attempt WE cut short is a failed attempt to be retried, not an error
+    // that escapes the ladder. It carries `markOwnTimeout`, so it classifies.
+    const clampAbort = markOwnTimeout(new DOMException("attempt cap", "TimeoutError"));
+    expect(classifyConnectionError(clampAbort)).toEqual({
+      kind: "unreachable",
+      code: "TimeoutError",
+    });
+    // Provoked, not hand-written: this is what a real `AbortSignal.timeout`
+    // rejection looks like, and it must NOT classify.
+    const hung = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+    try {
+      let raised: unknown;
+      try {
+        await fetch(`http://127.0.0.1:${hung.port}/`, { signal: AbortSignal.timeout(40) });
+      } catch (e) {
+        raised = e;
+      }
+      expect((raised as Error).name).toBe("TimeoutError");
+      expect(classifyConnectionError(raised)).toBeNull();
+    } finally {
+      hung.stop(true);
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// `[q] give up`
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("[q] give up stops the HOLD, not only the banner", () => {
+  /**
+   * `bye` suppressed the pane for 60 s and gave up on the episodes alive at
+   * that instant — and nothing else. The next request against the same dead
+   * target opened a NEW episode, found the pane suppressed, got no pane and no
+   * lease, and then held its socket for the full ~4.5-minute deadline with the
+   * reason legible NOWHERE before answering 400.
+   *
+   * Claude Code issues concurrent requests during an outage — the main loop,
+   * the title model, subagents — so a request arriving inside the suppression
+   * window is the EXPECTED case. Before this feature existed those requests
+   * failed in milliseconds.
+   */
+  test("a request arriving after the key does not hang — it fails fast, as it used to", async () => {
+    // The real command, through the real handler the socket server calls.
+    __handleCommandForTests({
+      v: RECOVERY_PROTOCOL_VERSION,
+      type: "bye",
+      reason: "user_quit",
+    });
+
+    const handler = new ComposedHandler(
+      deadTransport(deadPort),
+      "dead-model",
+      "dead-model",
+      8080,
+      {}
+    );
+    const req = new Request("http://127.0.0.1:8080/v1/messages", { method: "POST" });
+    const { c, captured } = contextFor(req);
+
+    const started = performance.now();
+    await handler.handle(c, PAYLOAD);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(1_000);
+    expect(captured.status).toBe(400);
+    expect(captured.body?.error?.type).toBe("connection_error");
+    // No episode: the hold is what the user asked to stop.
+    expect(episodeCount()).toBe(0);
+    expect((await capturedRecoveryLines()).some((l) => l.includes("skipped (gave-up)"))).toBe(true);
+  });
+
+  test("and the suppression expires with the banner's, not before or after it", async () => {
+    const clock = new FakeClock(0);
+    setRecoveryClock(clock);
+    __handleCommandForTests({
+      v: RECOVERY_PROTOCOL_VERSION,
+      type: "bye",
+      reason: "user_quit",
+    });
+    expect(recoveryGiveUpActive()).toBe(true);
+
+    // One number, read by the hold and by the surface. A minute later the
+    // ladder is available again — the key is a pause, not an off switch.
+    await clock.advance(UI_SUPPRESS_AFTER_BYE_MS - 1);
+    expect(recoveryGiveUpActive()).toBe(true);
+    await clock.advance(2);
+    expect(recoveryGiveUpActive()).toBe(false);
   });
 });

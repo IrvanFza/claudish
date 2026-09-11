@@ -256,10 +256,21 @@ export function renderPane(state: PaneViewState, width: number): string {
   // and a user with a narrow window gets a narrow pane. Below 64 columns the
   // full sentence wraps or is cut, so the hint sheds the part a user can work
   // out — where to click — and keeps the part they cannot: which keys exist.
+  //
+  // `[r]` IS HIDDEN IN `handoff`, because in that state it does nothing:
+  // `tryNow` returns early when no attempt timer is armed, and a handed-off
+  // episode has no waiters and therefore no timer. Advertising a key that
+  // prints "retrying now…" over an episode nobody is retrying is the same
+  // class of defect as a give-up that does not give up — a control that
+  // appears to act and does not.
+  const keys =
+    ep.state === "handoff"
+      ? `${C.BOLD}[q]${C.RESET} give up`
+      : `${C.BOLD}[r]${C.RESET} try now${C.GRAY} · ${C.RESET}${C.BOLD}[q]${C.RESET} give up`;
   lines.push(
     w < 64
-      ? `${C.GRAY}  ${C.RESET}${C.BOLD}[r]${C.RESET} try now${C.GRAY} · ${C.RESET}${C.BOLD}[q]${C.RESET} give up`
-      : `${C.GRAY}  click here or Ctrl-G Tab, then ${C.RESET}${C.BOLD}[r]${C.RESET} try now${C.GRAY} · ${C.RESET}${C.BOLD}[q]${C.RESET} give up`
+      ? `${C.GRAY}  ${C.RESET}${keys}`
+      : `${C.GRAY}  click here or Ctrl-G Tab, then ${C.RESET}${keys}`
   );
 
   if (state.notice) lines.push(`${C.GREEN}  ${state.notice}${C.RESET}`);
@@ -439,7 +450,10 @@ export async function runRecoveryPane(opts: RecoveryPaneOptions): Promise<number
         return;
       }
       if (ch === "r" || ch === "R" || ch === "\r" || ch === "\n") {
-        if (state.frame && client?.connected) {
+        // Not in `handoff`: there is no armed timer to collapse there, so the
+        // key would only print a reassurance that is not true. The banner hides
+        // it in that state too — one rule, both places.
+        if (state.frame && state.frame.state !== "handoff" && client?.connected) {
           client.send({
             v: RECOVERY_PROTOCOL_VERSION,
             type: "retry_now",
@@ -483,6 +497,24 @@ export async function recoveryPaneCommand(argv: string[]): Promise<void> {
   if (!socketPath) {
     console.error("Usage: claudish recovery-pane --socket <path>");
     process.exit(2);
+  }
+  // The pane is its own PROCESS, reached from `index.ts` before `runCli()`, so
+  // nothing has published a theme mode for it. `cliAnsi()` is read at paint
+  // time — which is right, and which the module-load snapshot trap makes
+  // necessary — but it cannot use a mode that was never detected, so the pane
+  // stayed on the unknown/classic palette even where OSC 11, `COLORFGBG` or an
+  // explicit `CLAUDISH_THEME=light` would have chosen the light one.
+  //
+  // It runs HERE rather than inside `runRecoveryPane` for the same reason the
+  // TUI runs it before `createCliRenderer`: the OSC query puts stdin in raw
+  // mode and reads it, so it must finish before the pane's own key handler
+  // owns the stream. Bounded at 150 ms, a no-op without a TTY on both ends, and
+  // never fatal — a banner with the wrong palette still beats no banner.
+  try {
+    const { detectAndSetThemeMode } = await import("../theme/theme-mode.js");
+    await detectAndSetThemeMode();
+  } catch {
+    /* the classic palette is a working fallback */
   }
   const code = await runRecoveryPane({ socketPath });
   process.exit(code);

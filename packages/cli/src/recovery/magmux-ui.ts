@@ -1,7 +1,14 @@
 /**
  * The recovery UI manager — the single owner of the socket, the pane, the
- * `paneOpen` fact, the post-`bye` suppression window, the cross-process lock
- * and the lease.
+ * `paneOpen` fact, the cross-process lock and the lease.
+ *
+ * THE POST-`bye` SUPPRESSION IS NOT OWNED HERE, and that is a correction. It
+ * used to be `state.suppressUntilPerf`, read only by `ensureRecoveryUi`, so
+ * `[q] give up` stopped the BANNER while the next request against the same
+ * dead target still held its socket for the full derived deadline with the
+ * reason legible nowhere. The fact now lives in `recovery/settings.ts` where
+ * `shouldSkipTier1` can read it too: one number, suppressing the hold and the
+ * surface together.
  *
  * OWNERSHIP IS PROCESS-SCOPED; ONLY EPISODES ARE EPISODE-SCOPED. There is ONE
  * pane and it multiplexes every episode, so "a pane exists" is a property of
@@ -55,6 +62,7 @@ import {
   renderableEpisodeFrame,
   tryNow,
 } from "./coordinator.js";
+import { noteRecoveryGaveUp, recoveryGiveUpActive, resetRecoveryGiveUp } from "./settings.js";
 import {
   type RecoverySocketServer,
   cleanupRecoverySocket,
@@ -121,8 +129,6 @@ interface ManagerState {
   paneIndex: number | null;
   /** episodeId → PROCESS ms of the last heartbeat naming it. */
   leases: Map<string, number>;
-  /** PROCESS ms before which no pane may be opened (post-`bye`). */
-  suppressUntilPerf: number;
   /** Guards the async open against re-entry. */
   opening: boolean;
   lockPath: string | null;
@@ -137,7 +143,6 @@ const state: ManagerState = {
   paneOpen: false,
   paneIndex: null,
   leases: new Map(),
-  suppressUntilPerf: 0,
   opening: false,
   lockPath: null,
   lingerTimer: null,
@@ -339,7 +344,14 @@ function onCommand(cmd: RecoveryCommand): void {
       break;
     case "bye":
       log(`[Recovery] pane said bye (${cmd.reason}) — giving up on every live episode`);
-      state.suppressUntilPerf = recoveryClock().now() + UI_SUPPRESS_AFTER_BYE_MS;
+      // ONE fact, two readers. `giveUpAll()` ends the episodes alive at this
+      // instant; this ends the ones that do not exist yet. Without it the next
+      // request against the same dead target opened a new episode, found the
+      // pane suppressed, and held its socket for the full deadline with the
+      // reason legible nowhere — the forbidden state, reached from the key
+      // whose whole purpose is to avoid it. The hold and the surface are
+      // suppressed together, for the same window, from the same number.
+      noteRecoveryGaveUp(recoveryClock().now() + UI_SUPPRESS_AFTER_BYE_MS);
       giveUpAll();
       // The pane the user just closed must not reappear two seconds later, and
       // closing it is ALSO what revokes every lease: `teardown()` drops
@@ -459,7 +471,7 @@ export function ensureRecoveryUi(episodeId: string): void {
     state.lingerTimer = null;
   }
   if (state.paneOpen || state.opening) return;
-  if (recoveryClock().now() < state.suppressUntilPerf) {
+  if (recoveryGiveUpActive()) {
     log("[Recovery] pane suppressed — the user pressed [q] less than a minute ago");
     return;
   }
@@ -534,7 +546,7 @@ export async function shutdownRecoveryUi(): Promise<void> {
   await closePane();
   registerRecoveryUi(null);
   installed = false;
-  state.suppressUntilPerf = 0;
+  resetRecoveryGiveUp();
   explicitControlSock = null;
 }
 
@@ -554,7 +566,7 @@ export function __resetUiStateForTests(): void {
   state.leases.clear();
   state.paneOpen = false;
   state.paneIndex = null;
-  state.suppressUntilPerf = 0;
+  resetRecoveryGiveUp();
   state.opening = false;
   state.socketPath = null;
   state.server = null;

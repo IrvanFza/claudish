@@ -647,31 +647,60 @@ describe("the client's re-POST rejoins the SAME episode", () => {
 // The client's retry budget
 // ───────────────────────────────────────────────────────────────────────────
 
-describe("CLAUDE_CODE_RETRY_WATCHDOG follows the recovery UI switch", () => {
-  const KEY = "CLAUDISH_RECOVERY_UI";
-  let saved: string | undefined;
+describe("CLAUDE_CODE_RETRY_WATCHDOG needs all three gates", () => {
+  const UI = "CLAUDISH_RECOVERY_UI";
+  const ON = "CLAUDISH_RECOVERY";
+  let savedUi: string | undefined;
+  let savedOn: string | undefined;
 
   beforeEach(() => {
-    saved = process.env[KEY];
+    savedUi = process.env[UI];
+    savedOn = process.env[ON];
   });
 
   afterEach(() => {
-    if (saved === undefined) delete process.env[KEY];
-    else process.env[KEY] = saved;
+    if (savedUi === undefined) delete process.env[UI];
+    else process.env[UI] = savedUi;
+    if (savedOn === undefined) delete process.env[ON];
+    else process.env[ON] = savedOn;
   });
 
-  test("set when the UI is enabled — this is what makes the reach ~a day", () => {
-    delete process.env[KEY];
-    expect(retryWatchdogEnv()).toEqual({ CLAUDE_CODE_RETRY_WATCHDOG: "1" });
+  test("set when the UI is enabled and a pane is reachable — the reach is ~a day", () => {
+    delete process.env[UI];
+    delete process.env[ON];
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({ CLAUDE_CODE_RETRY_WATCHDOG: "1" });
   });
 
   test("absent when the user turned the UI off", () => {
     // No pane means no lease means an inline 400 at exhaustion means nothing to
     // hand back — so extending the client's budget would buy only the side
     // effect on claudish's other 503s.
-    process.env[KEY] = "0";
-    expect(retryWatchdogEnv()).toEqual({});
-    expect("CLAUDE_CODE_RETRY_WATCHDOG" in retryWatchdogEnv()).toBe(false);
+    delete process.env[ON];
+    process.env[UI] = "0";
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({});
+    expect("CLAUDE_CODE_RETRY_WATCHDOG" in retryWatchdogEnv({ paneEligible: true })).toBe(false);
+  });
+
+  test("absent when THIS LAUNCH can never obtain a pane — `-p`, no TTY, no magmux", () => {
+    // The gate that was missing. Those launches cannot hold the lease a
+    // recovery 503 requires, so the watchdog would apply the accepted
+    // duplicate-request exposure to every UNRELATED 503 the session sees and
+    // return nothing for it: ~300 attempts on an upstream overload, for hours,
+    // in exactly the configurations that opted out.
+    delete process.env[UI];
+    delete process.env[ON];
+    expect(retryWatchdogEnv({ paneEligible: false })).toEqual({});
+  });
+
+  test("absent under --no-recovery, however the UI is configured", () => {
+    // RISK-7's promise is that `--no-recovery` restores pre-recovery behaviour
+    // byte for byte. A ladder that never runs hands nothing back, so a client
+    // looping 300 times is pure cost — and CI is where this switch lives.
+    process.env[ON] = "0";
+    delete process.env[UI];
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({});
+    process.env[UI] = "1";
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({});
   });
 });
 

@@ -147,6 +147,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Null for malformed JSON, for an unknown `type`, and for a `v` this build does
  * not speak — a reader that guesses at an unknown shape is how a version skew
  * becomes a rendering bug instead of a one-line notice.
+ *
+ * ── THE ONE EXEMPTION, AND WHY IT IS NOT AN INCONSISTENCY ───────────────────
+ *
+ * The skew NOTICE itself is exempt, exactly as `parseCommand` exempts `hello`
+ * for the mirror-image reason. The proxy answers a mismatched pane with a
+ * `closed` / `protocol_mismatch` frame carrying the PROXY'S version — so a
+ * blanket version gate dropped the very message addressed to the build that
+ * cannot read the others, `PaneViewState.protocolMismatch` was unreachable in
+ * any real skew, and the pane printed "the claudish proxy closed this
+ * connection" instead. Mixed-build grids and sessions started during an update
+ * failed safely with the WRONG diagnosis: the skew notice did not appear on the
+ * one day it was needed.
+ *
+ * Exempting it is sound where exempting a data frame would not be. It carries
+ * no payload to misread — a type, an empty `episodeId` and a terminal outcome —
+ * and it is the LAST thing on the connection, so nothing can follow it that a
+ * mis-parse could corrupt.
  */
 export function parseFrame(line: string): RecoveryFrame | null {
   let parsed: unknown;
@@ -156,6 +173,14 @@ export function parseFrame(line: string): RecoveryFrame | null {
     return null;
   }
   if (!isRecord(parsed)) return null;
+  if (parsed.type === "closed" && parsed.outcome === "protocol_mismatch") {
+    return {
+      v: RECOVERY_PROTOCOL_VERSION,
+      type: "closed",
+      episodeId: typeof parsed.episodeId === "string" ? parsed.episodeId : "",
+      outcome: "protocol_mismatch",
+    } as unknown as RecoveryClosedFrame;
+  }
   if (parsed.v !== RECOVERY_PROTOCOL_VERSION) return null;
   if (parsed.type === "episode" && typeof parsed.episodeId === "string") {
     return parsed as unknown as RecoveryEpisodeFrame;
