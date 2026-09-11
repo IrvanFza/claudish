@@ -47,7 +47,32 @@ The other two ceilings the derivation clears:
 | ceiling | value | where |
 |---|---|---|
 | Bun's per-request idle timeout | 255 s | `proxy-server.ts`'s `idleTimeout` |
-| the unclamped attempt 1 | up to 45 s | reserved out of the budget, never clamped (NFR-1) |
+| attempt 1 | the remaining budget | `deadlineClamp`, armed before the primary fetch |
+
+### The deadline is only a deadline if attempt 1 is inside it — and twice it was not
+
+Both halves of this were found by a black-box contract test, and neither is visible to a suite built
+on refused loopback ports, because a 1 ms attempt cannot cross a deadline in the middle of itself.
+
+**The zero point was set by the first READER, not by the request.** `inboundStartedAtPerf` memoises
+on `c.req.raw`, and on the fetch path the first caller was `tier1DeadlineAt(c)` *inside the catch* —
+after attempt 1 had already failed. Measured against the unrouted `192.0.2.1` with
+`API_TIMEOUT_MS=60000` (a 30 s budget): attempt 1 spent macOS's 75 s connect timeout, the budget then
+started counting from t+75 s, and **the client was answered at 108 s**. The budget had not been
+exceeded — it had never been applied. `handle()` now stamps the zero point on entry.
+
+**Attempt 1 had no ceiling at all.** `DEADLINE_MARGIN_MS`'s 30 s was supposed to reserve room for its
+tail; the OS's connect timeout is 75 s, so the reserve is wrong by 45 s for a slow connect and wrong
+by more than the whole budget whenever `API_TIMEOUT_MS ≤ 105 s`. It is now bounded by `deadlineAt` —
+and by `deadlineAt` specifically, **not** by `PER_ATTEMPT_CONNECT_CAP_MS`:
+
+- 45 s is a plausible time-to-first-byte for a thinking model behind a long prompt, and this ceiling
+  sits on a possibly-HEALTHY call. Clamping it at 45 s would re-open RISK-6's first leak — a latency
+  event reclassified as "the host is unreachable". At the default settings the ceiling is 270 s,
+  which no provider's first byte approaches, and it shortens only as the user's own knob does;
+- firing AT the deadline is what makes it safe: there is by construction no budget left when the
+  abort is classified, so `shouldSkipTier1`'s `no-budget` gate fires and the request answers. **This
+  ceiling can never cause a re-issue.** An earlier firing time would not have that property.
 
 Bun's 255 s stops binding because `c.env.timeout(c.req.raw, 0)` **works** — measured, a request
 given `0` survived **6×** its `idleTimeout` where the un-disarmed control died at 1.6×. That call is
@@ -146,6 +171,47 @@ a duration quoted verbatim in a user-facing message to this one.
 On a tier-2 rejoin the ladder does **not** reset. The target has been down for the whole of it, and
 restarting at 5 s would hammer a dead host harder the longer the outage lasted.
 
+### …but a carried rung may be TRUNCATED once, or the re-ask retries nothing
+
+The ladder index belongs to the **episode**; the deadline belongs to the **socket**, and a re-ask
+gets a fresh — possibly much shorter — one. Once the carried rung outgrew that deadline, the
+no-budget gate fired on the first iteration and the request answered **in 8 ms having re-issued
+nothing**. Measured at the upstream socket with `API_TIMEOUT_MS=60000`:
+
+| `API_TIMEOUT_MS` | deadline | request 1 | request 2 (before) | request 2 (now) |
+|---|---|---|---|---|
+| 120 000 | 90 s | 0/5/15/45 s | 0/60 s | unchanged |
+| 60 000 | 30 s | 0/5/15 s | **one attempt, 8 ms** | 0/27 s |
+| 40 000 | 10 s | 0/5 s | 0/10 s | unchanged |
+
+And it was permanent: with no banner the answer is a 400, which Claude Code does not re-ask, so
+recovery was over for that endpoint for the rest of the outage. Invisible at the 270 s default, where
+the terminal 60 s rung always fits — it bites every `API_TIMEOUT_MS ≤ 90 s`, a value
+`docs/advanced/environment.md` invites.
+
+So a waiter that has **not yet re-issued anything** shortens the wait to the budget it actually has
+(floor `MIN_ATTEMPT_SLOT_MS`), makes its one attempt, and only then hands off. The condition is
+`requestRetries === 0`, which is why request 1's shape above is untouched: by the time ITS rung stops
+fitting it has re-issued two or three times already. It is not a hammer — at most one truncated rung
+per request, and the gap between two client re-asks is the client's own backoff (up to 38.4 s), not
+ours.
+
+### Four places watch the client's abort, and a mutation that survived does not make them redundant
+
+Disabling all three abort paths in `transient-retry.ts` — the loop-top check, `untilAborted`, and
+`mergeSignalIntoInit`'s threading — left client-disconnect handling working. The surviving path is
+`coordinator.ts`'s `waitForNextAttempt`, which registers its own listener on the same signal; against
+a refused loopback port the ladder spends ~100% of its wall clock parked in that wait, so the wait
+answered. Each covers a window no other one does, and a slow connect inverts the arithmetic (45 s of
+attempt to 5 s of wait):
+
+| # | site | the window only it covers |
+|---|---|---|
+| 1 | the loop's `if (ctx.signal.aborted)` | between an attempt settling and the next wait starting; and the first iteration, before any wait exists |
+| 2 | `coordinator.waitForNextAttempt` | during the wait — and it is the only one that can DETACH the waiter from the shared episode timer |
+| 3 | `untilAborted` | during an attempt whose operation cannot take a signal at all: `refreshAuth()`/`getHeaders()` accept no arguments, so on the auth path this is the only unwind there is |
+| 4 | `mergeSignalIntoInit` | inside `fetch`, so the SOCKET closes. The other three unwind the waiter and leave the connect running |
+
 ### `PER_ATTEMPT_CONNECT_CAP_MS` is 45 s because 75 s collides with the OS
 
 macOS gives up on its own TCP connect at **75.004 s** (measured against the unrouted `192.0.2.1`; a
@@ -228,6 +294,30 @@ A 503 stopping the chain is not enough, twice over:
 So the marker is a **header**, `x-claudish-recovery: 1`, checked in two independent places:
 `handle()` returns a marked response VERBATIM before reading the body (defeating the combining), and
 `isRetryableError` returns `false` on it **above** the quota match (defeating the wording).
+
+### One marker was not enough: it was minted on the 503 arm ONLY
+
+Which made chain-safety a property of **which arm answered**. Exhaustion answers 400 whenever no
+banner is attached — `-p`, `--no-recovery`, CI, any machine without magmux, i.e. *every headless
+run* — and that 400 carried no marker at all, so the wording check decided again. A black-box test
+reproduced it from outside: candidate 1 unreachable at a host named `quota-exceeded-…`, and
+**candidate 2's own socket served the client**. `insufficient-credits` and `rate-limit` in the same
+position did not reproduce it, so the variable really was the word — and the error text quotes the
+endpoint host and full URL, so the word is user-influenced.
+
+The 400 arm now carries its own marker, `x-claudish-connection-error: 1`, and `isRetryableError`
+asks one predicate — `isClaudishConnectionVerdict` — that is true of either. The invariant is
+stated in terms of the request rather than of the response:
+
+> **A connection-failure response from this feature never advances the fallback chain — regardless
+> of its status, its message, or whether a banner was attached.**
+
+It is deliberately a SECOND header rather than the same one on both arms, because the two facts
+differ and one is load-bearing elsewhere: `x-claudish-recovery` means "the retry was handed back",
+and `FallbackHandler` returns anything wearing it **verbatim** so `formatCombinedError` cannot demote
+its 503. A 400 has nothing handed back and must stay foldable into the combined chain error, which is
+where the user reads what every candidate did. Round 1's quota mutation tested the 503 path and
+passed; nobody tested the 400 path.
 
 > **Moving the marker check below the quota match — present, but LATE — is a live billing bug.**
 > It is mutation-covered as one, and the mutation that kills it is the quota-wording variant
@@ -399,6 +489,24 @@ would be a phantom distorting request counts, success rate and latency percentil
 stream that is supposed to answer the question. Episode lifecycle is a `[Recovery]` structural log
 line instead.
 
+### `[Recovery]` is OUTPUT, not a debug aid — and for a while it was neither
+
+The lifecycle lines were on `log()`, which writes to two FILES: the `--debug` log and the always-on
+structural log under `~/.claudish/logs/`. That satisfies "it is written down" and fails the thing it
+was written down for. A hold runs for up to the derived deadline (~4.5 minutes at the default) and in
+a run with no pane — which is *every headless run* — the user saw nothing at all while it did. A
+silent multi-minute hold with the reason legible nowhere is the state §3 calls "strictly worse than
+the bug this feature exists to remove"; a file the user does not know to open is not a surface.
+
+They now go through `logRecovery()` → `logStderr`, which is why the noise objection does not bite:
+in an interactive session `logStderr` routes to `DiagOutput` (a file) rather than to the client's
+TUI, and in quiet mode it is suppressed — so the lines land on a terminal exactly where a terminal is
+the only surface there is. Both log files still receive them.
+
+The line is drawn at the **episode's lifecycle** — opened, rejoined, each attempt, each wait, handed
+off, closed, recovered, exhausted: the six-to-ten lines from which a reader can reconstruct the
+ladder. Pane connect/disconnect, socket paths, a skipped ladder and `client_gone` stay on `log()`.
+
 ### The trap: `eventToLogRecord` is a hand-written allowlist
 
 A field added to the `StatsEvent` interface and populated by `stats.ts` but **not pushed in
@@ -503,10 +611,23 @@ MCP server process dying outright.
 
 ## 8. What a healthy request pays
 
-Nothing, and the guarantee is **placement**, not a flag: the entire retry apparatus is constructed
-inside the `catch`, after classification has already returned non-null. The primary fetch expression
-— including its `enqueueRequest` ternary — is byte-identical to what it was before recovery existed.
-That is verifiable by reading the diff rather than by trusting a predicate.
+**Three statements, and the guarantee around them is still placement rather than a flag**: the entire
+retry apparatus — episode, ladder, waiters, pane — is constructed inside the `catch`, after
+classification has already returned non-null. The `enqueueRequest` ternary that issues attempt 1 is
+byte-identical to what it was before recovery existed. What a healthy request now pays, outside that
+catch, is exactly:
+
+| | cost | why it cannot be moved into the catch |
+|---|---|---|
+| `inboundStartedAtPerf(c)` at `handle()` entry | one clock read, one `WeakMap.set` | the deadline's zero point must be the request's start; asking for it later is what produced the 108 s answer in §1 |
+| `tier1DeadlineAt(c)` before the fetch | arithmetic over one env read | the ceiling has to exist before the call it bounds |
+| `deadlineClamp(deadlineAt)` | one `AbortController`, one timer, one `AbortSignal.any` | same |
+
+The timer is disarmed in a `finally` the instant the call settles — before a byte of the body is
+read — so it can only ever bound connect-and-headers, never cut a response already arriving. This
+replaces an earlier, stronger claim ("nothing, and the primary fetch expression is byte-identical"):
+that claim was true and the feature was not, because a budget nothing enforces on attempt 1 is not a
+budget.
 
 The re-issue goes through that **same ternary**. Six transports implement `enqueueRequest`, and what
 they implement is not decoration: a bounded 429 loop with `Retry-After`, a served-set model-fallback

@@ -320,6 +320,36 @@ export function logStderr(message: string): void {
 }
 
 /**
+ * A network-recovery episode's own account of itself: opened, each attempt,
+ * each wait, the outcome.
+ *
+ * ── WHY THIS IS STRUCTURAL OUTPUT AND NOT A DEBUG AID ───────────────────────
+ *
+ * These lines were on `log()`, which writes to two FILES — the `--debug` log
+ * and the always-on structural log under `~/.claudish/logs/`. That satisfies
+ * "it is written down" and fails the thing it was written down for. Recovery
+ * holds an inbound request for up to the derived deadline (~4.5 minutes at the
+ * default), and in a run with no pane — `-p`, CI, a pipe, any machine without
+ * magmux, which is EVERY headless run — nothing at all reaches the user while
+ * it does. A silent multi-minute hold with the reason legible nowhere is the
+ * state this feature's own design calls "strictly worse than the bug it exists
+ * to remove"; a file the user does not know to open is not a surface.
+ *
+ * The noise objection is real and is already answered by the channel: in an
+ * interactive session `logStderr` routes to `DiagOutput` (a file) rather than
+ * to the client's TUI, and in quiet mode it is suppressed. So the lines land on
+ * a terminal exactly where a terminal is the only surface there is, which is
+ * the case that needed them.
+ *
+ * Fine-grained plumbing — pane connect/disconnect, socket paths, a skipped
+ * ladder — stays on `log()`. This is for the episode's LIFECYCLE only: the six
+ * or so lines from which a reader can reconstruct the ladder.
+ */
+export function logRecovery(message: string): void {
+  logStderr(message);
+}
+
+/**
  * Set the DiagOutput instance. When set, logStderr() routes to it
  * instead of stderr. This replaces the stderrQuiet mechanism for
  * interactive sessions.

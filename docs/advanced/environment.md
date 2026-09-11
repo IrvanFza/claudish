@@ -153,7 +153,11 @@ The deadline is **derived from `API_TIMEOUT_MS`**, not fixed:
 min(API_TIMEOUT_MS, 300s) − 30s        # ~270s at the 360s default
 ```
 
-Claude Code aborts its own request at `API_TIMEOUT_MS` (360 000 ms by default), so a hold longer than that would be cut off by the client mid-wait. If you have shortened `API_TIMEOUT_MS`, claudish shortens the hold to match and logs a `[Recovery]` line saying so.
+Claude Code aborts its own request at `API_TIMEOUT_MS` (360 000 ms by default), so a hold longer than that would be cut off by the client mid-wait. If you have shortened `API_TIMEOUT_MS`, claudish shortens the hold to match and says so with a `[Recovery]` line.
+
+The deadline is the ceiling on the **whole** attempt, including the first one: a connect that never completes is abandoned when the budget runs out rather than waiting out the operating system's own connect timeout (75 s on macOS), which on a shortened `API_TIMEOUT_MS` would answer you after the client had already given up.
+
+**Where the `[Recovery]` lines go.** A recovery episode reports itself on **stderr** — opened, each attempt, each wait and how it ended — with no `--debug` anywhere, because a request can be held for minutes and a hold nobody can see is worse than a fast failure. In an interactive session they are routed to the session log instead of the terminal, so they cannot corrupt Claude Code's display; `~/.claudish/logs/` keeps them either way.
 
 ### `CLAUDISH_RECOVERY_UI`
 

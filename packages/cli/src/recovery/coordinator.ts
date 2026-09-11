@@ -29,7 +29,7 @@
 
 import { randomUUID } from "node:crypto";
 import { type ConnectionErrorKind, isLoopback } from "../handlers/shared/connection-error.js";
-import { log } from "../logger.js";
+import { log, logRecovery } from "../logger.js";
 import { recoveryClock } from "./clock.js";
 import {
   RECOVERY_PROTOCOL_VERSION,
@@ -364,7 +364,7 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
       ep.clientRetries++;
       ep.state = "attempting";
       ep.maxTier = 2;
-      log(
+      logRecovery(
         `[Recovery] ${ep.providerDisplayName} rejoined episode ${ep.episodeId} ` +
           `(client retry ${ep.clientRetries}, ladder ${ep.ladderIndex}, attempts ${ep.attempts})`
       );
@@ -410,7 +410,7 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
     };
     episodes.set(key, ep);
     byId.set(ep.episodeId, ep);
-    log(
+    logRecovery(
       `[Recovery] episode ${ep.episodeId} opened for ${ep.providerDisplayName} at ${ep.endpoint} ` +
         `(${ep.kind}/${ep.code ?? "?"})`
     );
@@ -508,7 +508,7 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
         episode.advancedForRound = episode.round;
         episode.ladderIndex++;
       }
-      log(
+      logRecovery(
         `[Recovery] ${episode.providerDisplayName} attempt ${episode.attempts} failed: ${outcome} ` +
           `(episode ${episode.episodeId}, ladder ${episode.ladderIndex})`
       );
@@ -554,7 +554,7 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
         }, EPISODE_GRACE_MS);
         c.unref?.(timer);
         episode.graceTimer = timer;
-        log(
+        logRecovery(
           `[Recovery] episode ${episode.episodeId} handed off after ${Math.round(
             c.now() - episode.startedAtPerf
           )}ms, ${episode.attempts} attempts — holding ${EPISODE_GRACE_MS / 1000}s for a client retry`
@@ -580,7 +580,7 @@ function armAttemptTimer(episode: Episode, delay: number): void {
     episode.round++;
     for (const w of [...episode.waiters]) w.wake?.({ kind: "attempt" });
   }, delay);
-  log(
+  logRecovery(
     `[Recovery] ${episode.providerDisplayName} waiting ${delay / 1000}s before attempt ` +
       `${episode.attempts + 1} (episode ${episode.episodeId}, ${episode.waiters.size} waiting)`
   );
@@ -610,7 +610,7 @@ function closeEpisode(episode: Episode, outcome: RecoveryOutcome): void {
   if (episode.state === "abandoned") {
     for (const w of [...episode.waiters]) w.wake?.({ kind: "gave_up" });
   }
-  log(
+  logRecovery(
     `[Recovery] episode ${episode.episodeId} closed: ${outcome} after ` +
       `${Math.round(clock.now() - episode.startedAtPerf)}ms and ${episode.attempts} attempts`
   );
@@ -678,7 +678,7 @@ export function noteTargetReachable(providerName: string, endpoint: string): voi
   for (const [key, ep] of [...episodes]) {
     if (key !== exact && !key.startsWith(prefix)) continue;
     if (ep.state !== "handoff") continue;
-    log(
+    logRecovery(
       `[Recovery] ${ep.providerDisplayName} answered on the client's own retry — ` +
         `closing episode ${ep.episodeId} instead of waiting out its grace`
     );

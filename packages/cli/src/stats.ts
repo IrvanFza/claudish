@@ -128,6 +128,28 @@ export function initStats(_config: ClaudishConfig): void {
 }
 
 /**
+ * Tests only: drop the one-shot init latch.
+ *
+ * `initStats` is idempotent by design — it must be, since several entry points
+ * call it — and the latch is PROCESS state that a test file shares with every
+ * sibling. Bun runs a suite's files in one process, so whichever file
+ * initialised stats first decided `statsEnabled` for all of them: a later file
+ * that enables stats and asserts on recorded events silently asserts nothing,
+ * because `recordStats`'s first line returns on the stale `initialized` flag.
+ * A no-op assertion is the one test failure mode that never turns red.
+ *
+ * Same convention as `__resetEndpointDiagnosticsForTests` and
+ * `__resetPredefinedStateForTests`: exported, `__`-prefixed, never called by
+ * production code.
+ */
+export function __resetStatsForTests(): void {
+  initialized = false;
+  statsEnabled = false;
+  claudishVersion = "";
+  installMethod = "unknown";
+}
+
+/**
  * Record a stats event. Fast exit if disabled.
  * Buffers to memory via appendEvent() — non-blocking.
  * Triggers background flush if 24h have elapsed since last send.

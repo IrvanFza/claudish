@@ -33,7 +33,14 @@ import { resolveQuotaAdapter } from "../auth/quota/registry.js";
 import { PLAN_POLL_INTERVAL_MS } from "../auth/quota/types.js";
 import type { BehaviorEngine, BehaviorSession } from "../behavior/index.js";
 import { getBehaviorEngine } from "../behavior/index.js";
-import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
+import {
+  getLogLevel,
+  log,
+  logRecovery,
+  logStderr,
+  logStructured,
+  truncateContent,
+} from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { deepMergeParams } from "../model-params.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
@@ -75,7 +82,7 @@ import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
-import { recoveryHoldHeaders } from "./shared/recovery-marker.js";
+import { connectionFaultHeaders, recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -92,6 +99,8 @@ import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import {
   type ConnectionErrorInfo,
   MIN_ATTEMPT_SLOT_MS,
+  deadlineClamp,
+  inboundStartedAtPerf,
   mergeSignalIntoInit,
   refreshDeadlineAt,
   tier1DeadlineAt,
@@ -512,7 +521,25 @@ export class ComposedHandler implements ModelHandler {
     } catch {
       // Stats must never crash claudish
     }
-    return c.json(wrapAnthropicError(400, msg, "connection_error"), 400 as any);
+    // The chain-safety marker, on THIS arm as well as on the 503.
+    //
+    // It is the third argument rather than a `c.header()` call, because `c` is
+    // SHARED across every candidate in a fallback chain and a sticky header set
+    // here would ride out on `formatCombinedError`'s response — the same
+    // invariant `respondRecoveryHold` obeys by building a standalone Response.
+    // Hono's `newResponse` applies this bag to the returned Response only; it
+    // never touches the context's own header store.
+    //
+    // Without it, chain-safety existed exactly where a banner did. A headless
+    // exhaustion answered an unmarked 400, `isRetryableError` fell through to
+    // its status-agnostic quota-wording match, and a host whose NAME contained
+    // "quota" advanced the chain onto a metered provider mid-outage. See
+    // `recovery-marker.ts`.
+    return c.json(
+      wrapAnthropicError(400, msg, "connection_error"),
+      400 as any,
+      connectionFaultHeaders()
+    );
   }
 
   /**
@@ -783,7 +810,7 @@ export class ComposedHandler implements ModelHandler {
         ctx.recovery.outcome = result.kind === "exhausted" ? "handoff" : "gave_up";
 
         if (result.kind === "exhausted" && leased) {
-          log(
+          logRecovery(
             `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
               `in ${result.recoveryMs}ms (episode ${result.episodeId}, ui_lease=true) — ` +
               "handing the retry back to the client (503, tier 2)"
@@ -800,7 +827,7 @@ export class ComposedHandler implements ModelHandler {
           };
         }
 
-        log(
+        logRecovery(
           `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
             `in ${result.recoveryMs}ms (episode ${result.episodeId}, outcome ${result.kind}, ` +
             `ui_lease=${leased}) — answering connection_error`
@@ -851,6 +878,23 @@ export class ComposedHandler implements ModelHandler {
 
   async handle(c: Context, payload: any): Promise<Response> {
     const startTime = performance.now();
+    // Stamp the recovery deadline's ZERO POINT here, and not wherever something
+    // first asks for it.
+    //
+    // `inboundStartedAtPerf` memoises on `c.req.raw`, so before this line the
+    // zero point was set by the FIRST caller — which on the fetch path is
+    // `tier1DeadlineAt(c)` inside the `catch`, i.e. AFTER attempt 1 has already
+    // failed. MEASURED against an unrouted address: attempt 1 burned macOS's
+    // 75 s connect timeout, the deadline's clock then started from there, and a
+    // request with a 30 s budget answered at 108 s — the budget was not
+    // exceeded, it was never applied. A ladder cannot bound a request whose
+    // clock starts after the overrun it was supposed to bound.
+    //
+    // One `performance.now()` and one `WeakMap.set` per request; nothing else
+    // on the healthy path reads it. A later candidate in a fallback chain finds
+    // the value already there and inherits it, which is the documented intent —
+    // the deadline belongs to the inbound request, not to a candidate.
+    inboundStartedAtPerf(c);
     // latency_ms = time-to-first-byte (from request send to successful response).
     // Captured here so it is available to the post-stream stats callback below.
     let latencyMs = 0;
@@ -1261,19 +1305,42 @@ export class ComposedHandler implements ModelHandler {
 
     // Merge provider-specific fetch options (e.g., undici dispatcher, abort signal)
     const requestInit = this.provider.getRequestInit?.() || {};
+
+    // THE REQUEST'S OWN CEILING — the one thing outside the `catch` that this
+    // feature adds to a healthy request, and the reason it is here rather than
+    // in the ladder: an unclamped attempt 1 could outlive the whole derived
+    // deadline (measured: 75 s of macOS connect against a 30 s budget, answered
+    // at 108 s), which makes the budget a suggestion. It is absolute, it fires
+    // at `deadlineAt` and never earlier, and it is disarmed the instant the
+    // call settles — see `deadlineClamp` for why both of those are what keep it
+    // from turning a slow answer into a re-issued one.
+    const deadlineAt = tier1DeadlineAt(c);
+    const clamp = deadlineClamp(deadlineAt);
     const doFetch = () =>
-      fetch(endpoint, {
-        method: "POST",
-        headers,
-        body: serialized?.body ?? JSON.stringify(requestPayload),
-        ...requestInit,
-      });
+      fetch(
+        endpoint,
+        mergeSignalIntoInit(
+          {
+            method: "POST",
+            headers,
+            body: serialized?.body ?? JSON.stringify(requestPayload),
+            ...requestInit,
+          },
+          clamp.signal
+        )
+      );
 
     let response: Response;
     try {
-      response = this.provider.enqueueRequest
-        ? await this.provider.enqueueRequest(doFetch)
-        : await doFetch();
+      try {
+        response = this.provider.enqueueRequest
+          ? await this.provider.enqueueRequest(doFetch)
+          : await doFetch();
+      } finally {
+        // Before a byte of the body is read, so the ceiling can only ever bound
+        // connect-and-headers — never cut a response already arriving.
+        clamp.disarm();
+      }
     } catch (error: any) {
       // A failure to even REACH the provider (DNS can't resolve, connection
       // refused, host unreachable) is a LOCAL network problem, not an upstream
@@ -1333,7 +1400,8 @@ export class ComposedHandler implements ModelHandler {
 
       const outcome = await this.recoverConnection<Response>(c, error, conn, endpoint, reissue, {
         startTime,
-        deadlineAt: tier1DeadlineAt(c),
+        // The SAME value the primary attempt was bounded by, not a fresh read.
+        deadlineAt,
         fallbackMeta,
         site: "fetch",
         recovery: recoveryTally,

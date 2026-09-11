@@ -14,7 +14,7 @@ import { logStderr } from "../logger.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { extractUpstreamStatus } from "./shared/anthropic-error.js";
 import { hasQuotaExhaustionWording } from "./shared/quota-exhaustion.js";
-import { hasRecoveryMarker, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
+import { isClaudishConnectionVerdict, isRecoveryHoldResponse } from "./shared/recovery-marker.js";
 import type { ModelHandler } from "./types.js";
 
 export interface FallbackCandidate {
@@ -213,23 +213,25 @@ export function isRetryableError(
   provider?: string,
   headers?: Headers
 ): boolean {
-  // ── CLAUDISH'S OWN RECOVERY 503 IS NEVER A REASON TO ADVANCE ───────────────
+  // ── CLAUDISH'S OWN "CANNOT REACH THE HOST" IS NEVER A REASON TO ADVANCE ────
   //
   // FIRST, above the quota wording check, and the ORDER is the whole point.
   // The next statement is `hasQuotaExhaustionWording(errorBody)`, which is
   // deliberately status-agnostic and whose phrase list contains the bare
-  // substring "quota" — so a recovery 503 that merely mentioned one would be
-  // read as a spent subscription and walk the user onto metered billing in the
-  // middle of a network outage.
+  // substring "quota" — so one of our own connection verdicts that merely
+  // mentioned one would be read as a spent subscription and walk the user onto
+  // metered billing in the middle of a network outage. The error text quotes
+  // the endpoint HOST and URL, so "merely mentioned" is not hypothetical: a
+  // host named `quota-…` reproduced it, and only that word did.
   //
-  // `handle()` already returns a marked response verbatim before this function
-  // is consulted, so in the shipped call graph this branch is unreachable.
-  // It is kept anyway, and it is not belt-and-braces decoration: it makes the
-  // guarantee a property of the DECISION rather than of one call site, so a
-  // future refactor that moves, inlines or reorders the check in `handle()`
-  // cannot silently re-open the billing hole. Two independent mechanisms, one
-  // marker.
-  if (hasRecoveryMarker(headers)) return false;
+  // BOTH arms, via one predicate. The 503 handoff carries `x-claudish-recovery`
+  // and is already returned verbatim by `handle()` above, so for that arm this
+  // branch is a second independent mechanism. The 400 arm — every headless run,
+  // where no banner can exist — carries `x-claudish-connection-error`, and for
+  // IT this branch is the only mechanism there is. Asking the combined
+  // predicate rather than either half is what stops chain-safety from being a
+  // property of which arm happened to answer.
+  if (isClaudishConnectionVerdict(headers)) return false;
 
   // A spent subscription allowance is retryable AT THE CHAIN LEVEL: this
   // provider cannot serve, but the next one can.

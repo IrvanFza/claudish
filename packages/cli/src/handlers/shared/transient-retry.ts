@@ -25,7 +25,7 @@
  */
 
 import type { Context } from "hono";
-import { log } from "../../logger.js";
+import { log, logRecovery } from "../../logger.js";
 import { recoveryClock } from "../../recovery/clock.js";
 import { type EpisodeHandle, joinEpisode } from "../../recovery/coordinator.js";
 import { logDeadlineIfShortened, resolveTier1DeadlineMs } from "../../recovery/settings.js";
@@ -108,6 +108,17 @@ export function refreshDeadlineAt(deadlineAt: number): number {
  * The residual is real and wanted: a candidate that recovers late and then
  * returns a retryable status leaves candidate 2 with only the remaining budget
  * rather than a fresh one. That is the point.
+ *
+ * ── THE ZERO POINT IS STAMPED BY `handle()`, NOT BY THE FIRST READER ────────
+ *
+ * Memoisation makes this function's value "whenever somebody first asked", and
+ * on the fetch path the first asker used to be `tier1DeadlineAt(c)` inside the
+ * `catch` — after attempt 1 had already failed. MEASURED against an unrouted
+ * address: attempt 1 spent macOS's 75 s connect timeout, the 30 s budget then
+ * started counting from t+75 s, and the client was answered at 108 s. The
+ * budget had not been exceeded; it had never been applied. `handle()` now
+ * stamps it on entry, which is why a caller must never assume this is cheap to
+ * call late — it is only correct to call it EARLY.
  */
 const INBOUND_START = new WeakMap<Request, number>();
 
@@ -121,11 +132,91 @@ export function inboundStartedAtPerf(c: Context): number {
   return t;
 }
 
-/** The absolute tier-1 deadline for this inbound request, PROCESS ms. */
+/**
+ * The absolute tier-1 deadline for this inbound request, PROCESS ms.
+ *
+ * PURE, and it has to stay pure: it is now read BEFORE the primary fetch (to
+ * arm the request ceiling below), so anything it announced would be announced
+ * on healthy requests too. The shortened-hold notice moved to
+ * `noteDeadlineForEpisode`, which runs only once an episode really opens.
+ */
 export function tier1DeadlineAt(c: Context): number {
-  const budget = resolveTier1DeadlineMs();
-  logDeadlineIfShortened(budget);
-  return inboundStartedAtPerf(c) + budget;
+  return inboundStartedAtPerf(c) + resolveTier1DeadlineMs();
+}
+
+/**
+ * Announce a hold the environment shortened — from the ladder, once per
+ * process.
+ *
+ * Separated from `tier1DeadlineAt` because that function is now on the healthy
+ * path. A user who has set `API_TIMEOUT_MS=60000` and never has an outage must
+ * not be told about a hold that never happened.
+ */
+export function noteDeadlineForEpisode(): void {
+  logDeadlineIfShortened(resolveTier1DeadlineMs());
+}
+
+/** An armed ceiling on ONE outbound call. `signal` is absent when there is none. */
+export interface DeadlineClamp {
+  /** Compose into the fetch init with `mergeSignalIntoInit`. */
+  signal?: AbortSignal;
+  /** Call the INSTANT the call settles. A live body must never be cut. */
+  disarm(): void;
+}
+
+/**
+ * Bound one outbound call by an ABSOLUTE deadline — the ceiling that makes the
+ * derived budget authoritative for the FIRST attempt as well as for the ladder.
+ *
+ * ── WHY ATTEMPT 1 NEEDED A CEILING AT ALL ───────────────────────────────────
+ *
+ * The ladder's attempts were already clamped (`PER_ATTEMPT_CONNECT_CAP_MS`),
+ * but attempt 1 — the byte-identical primary fetch — was not, on the reasoning
+ * that `DEADLINE_MARGIN_MS` (30 s) reserves room for its tail. macOS's own TCP
+ * connect timeout is **75 s**, so the reserve is wrong by 45 s the moment the
+ * fault is a SLOW connect rather than a refusal, and it is wrong by more than
+ * the entire budget whenever `API_TIMEOUT_MS ≤ 105 s`. A single connect then
+ * outlived the whole request deadline and the client (which gives up at
+ * `API_TIMEOUT_MS`) was gone before we answered. Every refusal-based test is
+ * blind to this: a 1 ms attempt cannot cross a deadline in the middle of
+ * itself.
+ *
+ * ── WHY THE DEADLINE AND NOT `PER_ATTEMPT_CONNECT_CAP_MS` ───────────────────
+ *
+ * This ceiling is on a possibly-HEALTHY call, and 45 s is a plausible
+ * time-to-first-byte for a thinking model behind a long prompt. Clamping the
+ * primary fetch at 45 s would convert an ordinary LATENCY event into "the host
+ * is unreachable" — the exact leak past RISK-6's boundary that this design
+ * already found and closed once. At the default settings this ceiling is 270 s,
+ * which no provider's first byte approaches, and it shortens only as the user's
+ * own `API_TIMEOUT_MS` does.
+ *
+ * ── AND WHY FIRING AT THE DEADLINE IS WHAT MAKES IT SAFE ────────────────────
+ *
+ * Because the abort lands AT `deadlineAt`, there is by construction no budget
+ * left when it is classified: `shouldSkipTier1`'s `no-budget` gate fires and
+ * the request answers. So this ceiling can never cause a RE-ISSUE, and cannot
+ * put a slow-but-alive inference on the ladder to be billed twice. An earlier
+ * firing time would not have that property — keep it absolute.
+ */
+export function deadlineClamp(deadlineAt: number): DeadlineClamp {
+  const clock = recoveryClock();
+  const remaining = deadlineAt - clock.now();
+  // NaN-safe: an unparseable budget leaves the call unbounded, which is
+  // pre-recovery behaviour rather than an instant abort.
+  if (!(remaining > 0)) return { disarm: () => {} };
+  const ac = new AbortController();
+  const timer = clock.setTimeout(
+    // `markOwnTimeout` is what lets this be classified at all — the discriminator
+    // is the signal's ORIGIN, never the name, so a transport's own inference
+    // ceiling keeps its pre-recovery route out.
+    () => ac.abort(markOwnTimeout(new DOMException("request deadline", "TimeoutError"))),
+    remaining
+  );
+  return {
+    signal: ac.signal,
+    disarm: () => clock.clearTimeout(timer),
+  };
 }
 
 export interface ConnectionErrorInfo {
@@ -348,6 +439,10 @@ export async function withConnectionRetry<T>(
   let error: unknown = first;
   let endpoint = ctx.resolveEndpoint(first);
 
+  // A shortened hold is announced HERE — once a hold is really happening —
+  // rather than by `tier1DeadlineAt`, which the healthy path now calls.
+  noteDeadlineForEpisode();
+
   const handle: EpisodeHandle = joinEpisode({
     providerName: ctx.providerName,
     providerDisplayName: ctx.providerDisplayName,
@@ -377,17 +472,75 @@ export async function withConnectionRetry<T>(
     handle.recordAttemptResult(conn.code, false);
 
     for (;;) {
+      // ── FOUR ABORT PATHS, AND WHY NONE OF THEM IS REDUNDANT ───────────────
+      //
+      // A black-box mutation (M6) disabled the three in THIS file — this check,
+      // `untilAborted`, and `mergeSignalIntoInit`'s threading — and the client
+      // disconnect was still handled. It was not proof of redundancy: the
+      // surviving path is `coordinator.ts`'s `waitForNextAttempt`, which
+      // registers its own `abort` listener on the same signal, and a ladder
+      // against a REFUSED loopback port spends ~100% of its wall clock parked
+      // in that wait. The mutation test aborted during a wait, so the wait's
+      // own listener answered it.
+      //
+      // Each covers a window no other one does:
+      //
+      //   1. HERE — an abort that landed while an attempt was settling, or
+      //      before any wait has happened at all (first iteration). Nothing
+      //      else is listening in that gap.
+      //   2. `coordinator.waitForNextAttempt` — during the wait. Also the only
+      //      one that can DETACH the waiter from the shared episode timer.
+      //   3. `untilAborted` — during an attempt whose operation structurally
+      //      cannot take a signal: `refreshAuth()`/`getHeaders()` accept no
+      //      arguments, so for the auth path this is the ONLY unwind there is.
+      //   4. `mergeSignalIntoInit` — inside `fetch`, so the SOCKET closes
+      //      rather than being abandoned. The other three unwind the waiter and
+      //      leave the connect running.
+      //
+      // A slow connect inverts the mutation's arithmetic: 45 s of attempt to
+      // 5 s of wait means (3) and (4) do nearly all the work and (2) almost
+      // none. Deleting any of them leaves a window that only shows up under the
+      // fault class the loopback suite cannot produce.
       if (ctx.signal.aborted) {
         return { kind: "client_gone", ...tally() };
       }
 
-      const delay = connectionRetryDelayMs(handle.ladderIndex());
-      const now = clock.now();
-      // The check bounds the ATTEMPT THAT FOLLOWS the sleep, not just the
-      // sleep. Bounding only the sleep is how a budget stops being a ceiling.
-      if (now + delay + MIN_ATTEMPT_SLOT_MS > ctx.deadlineAt) {
-        handle.handoff();
-        return { kind: "exhausted", conn, error, endpoint, ...tally() };
+      // The budget this waiter has left for a WAIT: its own deadline, less the
+      // slot the attempt after the wait needs. The check bounds the ATTEMPT
+      // THAT FOLLOWS the sleep, not just the sleep — bounding only the sleep is
+      // how a budget stops being a ceiling.
+      const waitBudget = ctx.deadlineAt - clock.now() - MIN_ATTEMPT_SLOT_MS;
+      let delay = connectionRetryDelayMs(handle.ladderIndex());
+
+      if (delay > waitBudget) {
+        // ── A CARRIED RUNG MAY BE TRUNCATED, ONCE, BY A REQUEST THAT HAS NOT
+        //    RE-ISSUED ANYTHING YET ──────────────────────────────────────────
+        //
+        // The ladder index belongs to the EPISODE and deliberately does not
+        // reset when the client re-asks (§2: restarting at 5 s would hammer a
+        // dead host harder the longer the outage lasted). But the deadline
+        // belongs to the SOCKET, and a re-ask gets a fresh, possibly SHORTER
+        // one. Once the carried rung outgrew that deadline — 60 s carried into
+        // a 30 s budget — this gate fired on the very first iteration and the
+        // request answered in 8 ms having re-issued NOTHING. Measured at the
+        // upstream socket: with `API_TIMEOUT_MS=60000`, request 2 of an outage
+        // made one connect and was done, permanently, because the 400 it
+        // answered is not a status Claude Code re-asks. Invisible at the 270 s
+        // default, where the terminal 60 s rung always fits; it bites every
+        // `API_TIMEOUT_MS ≤ 90 s`, a value the docs invite.
+        //
+        // So a request that has not yet re-issued once spends what it has
+        // instead of handing back an empty turn: the wait shrinks to the
+        // budget, one attempt is made, and only then does it hand off. It is
+        // not a hammer — the floor is `MIN_ATTEMPT_SLOT_MS`, it happens at most
+        // once per request, and the gap between two client re-asks is the
+        // client's own backoff (up to 38.4 s), not ours.
+        const mayTruncate = requestRetries === 0 && waitBudget >= MIN_ATTEMPT_SLOT_MS;
+        if (!mayTruncate) {
+          handle.handoff();
+          return { kind: "exhausted", conn, error, endpoint, ...tally() };
+        }
+        delay = waitBudget;
       }
 
       let waited: { kind: "attempt" } | { kind: "gave_up" };
@@ -427,7 +580,7 @@ export async function withConnectionRetry<T>(
         requestRetries++;
         const value = await untilAborted(op(merged), merged);
         handle.recordAttemptResult("ok", true);
-        log(
+        logRecovery(
           `[Recovery] ${ctx.providerDisplayName} recovered after ${handle.attempts()} attempts ` +
             `in ${handle.recoveryMs()}ms (episode ${handle.episodeId})`
         );
