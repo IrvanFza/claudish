@@ -13,7 +13,7 @@ import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import type { DiscoveryFailure } from "../providers/model-discovery.js";
 import { resetThemeModeForTests, setThemeMode } from "../theme/theme-mode.js";
 import { C } from "../tui/theme.js";
-import { truncate } from "../tui/viz/text.js";
+import { displayWidth, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
 import {
   discoveryNoticeContent,
@@ -23,8 +23,10 @@ import {
 } from "./DiscoveryNotice.js";
 import { capabilityWords, descriptionLines, detailText, providerFactsText } from "./detail.js";
 import { type PickerRow, dedupeByModelId, dedupeByProviderModel } from "./hooks/usePickerModels.js";
-import { providerColumn } from "./layout.js";
+import { deriveProviderRowLayout, deriveRowLayout, providerColumn } from "./layout.js";
 import {
+  CHIP_COLUMN_LABELS,
+  CHIP_FILL_CELLS,
   billingLabel,
   priceChipBg,
   priceFg,
@@ -131,6 +133,49 @@ describe("priceFg / priceChipBg", () => {
   });
 });
 
+describe("CHIP_FILL_CELLS — one fill width for the whole status column", () => {
+  test("it fits the LONGEST label the column can print, and is never typed out", () => {
+    // The owner asked for one width across the column and the obvious number is 5 —
+    // `SUB` plus a space each side — which clips `FREE` by one cell and `local` by
+    // two. Yoga does not report a clipped cell; it takes the columns out of a
+    // NEIGHBOURING one and leaves a stub of background under its first letter, which
+    // a character frame cannot see. So the width is derived, and a fifth state added
+    // to the vocabulary widens the column instead of overflowing it.
+    expect(CHIP_FILL_CELLS).toBe(7);
+    for (const label of CHIP_COLUMN_LABELS) {
+      expect({ label, fits: displayWidth(label) + 2 <= CHIP_FILL_CELLS }).toEqual({
+        label,
+        fits: true,
+      });
+    }
+  });
+
+  test("the VOCABULARY is exactly what the two chipped columns answer", () => {
+    // A label outside this list would be sized by a constant that never saw it.
+    const words = new Set<string>(CHIP_COLUMN_LABELS);
+    for (const mode of ["sub", "local", "metered"] as const) {
+      expect(words.has(billingLabel(mode).text)).toBe(true);
+    }
+    for (const price of ["FREE", "SUB", "local"]) {
+      expect(priceChipBg(price)).not.toBeNull();
+      expect(words.has(price)).toBe(true);
+    }
+  });
+
+  test("BOTH columns that print a chip are at least that wide, at 80 and at 145", () => {
+    // The fill is the one cell count a chip owns; the CELL it sits in is a budget in
+    // `layout.ts`, and the two numbers drifting apart is how a chip comes to overflow
+    // its column. 76 and 141 are the dialog's inner widths at 80x24 and 145x45.
+    for (const inner of [76, 141]) {
+      expect({
+        inner,
+        billing: deriveProviderRowLayout(inner).billing >= CHIP_FILL_CELLS,
+        price: deriveRowLayout(inner).price >= CHIP_FILL_CELLS,
+      }).toEqual({ inner, billing: true, price: true });
+    }
+  });
+});
+
 describe("priceVaries — which view earns chips", () => {
   test("a flat-rate or local provider FIXES the column, so it gets no chips", () => {
     // `resolveProviderDisplayPrice` answers `SUB` for every row of a subscription
@@ -149,19 +194,25 @@ describe("priceVaries — which view earns chips", () => {
 });
 
 describe("billingLabel / readinessGlyph", () => {
-  test("each billing mode has its own WORD; only the two positive ones have a FILL", () => {
+  test("each billing mode has its own WORD, and ALL THREE carry a fill", () => {
     const tags = (["sub", "local", "metered"] as const).map(billingLabel);
     expect(tags.map((t) => t.text)).toEqual(["SUB", "local", "$"]);
-    // THE `null` IS THE WHOLE FIX. Filling `$` too would put a fill on every row of
-    // the column — metered and flat-rate partition the roster — and 17 adjacent
-    // fills fuse into one vertical band, which is what the owner rejected.
-    expect(tags.map((t) => t.bg)).toEqual([C.pillKeyBg, C.pillKeyBg, null]);
+    // `$` USED TO BE `bg: null` — drawn as text, on the grounds that a fill on every
+    // row of the column is the banding defect. The owner read the shipped screen and
+    // asked for the opposite: "make $$$ the same width and badge as well", because a
+    // filled `SUB` beside a bare `$` is a column with no edges. What stops the column
+    // banding is now the DISTANCE between the two fills (ΔE76 36.5, pinned in
+    // `theme-contrast.test.ts`) rather than the absence of one of them.
+    expect(tags.map((t) => t.bg)).toEqual([C.pillKeyBg, C.pillKeyBg, C.pillMutedBg]);
+    expect(C.pillMutedBg).not.toBe(C.pillKeyBg);
   });
 
   test("METERED IS NEUTRAL and SUB IS POSITIVE — neither is a warning", () => {
     // `$` states that the route bills per token. That is information about the
     // route, not a caution about it: the number that matters is on the model row.
-    expect(billingLabel("metered").fg).toBe(tokens.subtle);
+    // Neutral is now carried by the FILL (a near-grey) rather than by the ink, which
+    // is white on every chip we paint.
+    expect(billingLabel("metered").fg).toBe(C.ink);
     for (const mode of ["sub", "local", "metered"] as const) {
       const tag = billingLabel(mode);
       for (const colour of [tag.bg, tag.fg]) {
@@ -173,11 +224,13 @@ describe("billingLabel / readinessGlyph", () => {
 
   test("A FILLED CHIP CARRIES WHITE INK, in both palettes", () => {
     // We choose the fill, so we own the ink: `pickInk` would answer white on the
-    // dark palette and BLACK on the light one for the same `#15803d` chip — one chip
-    // with two inks, and the worse ratio (4.02 vs 5.02) on the lighter page.
+    // dark palette and BLACK on the light one for the same chip — one chip with two
+    // inks, and the worse ratio (4.02 vs 5.02) on the lighter page.
     for (const mode of ["dark", "light"] as const) {
       setThemeMode(mode);
-      expect(billingLabel("sub").fg).toBe(C.ink);
+      for (const billing of ["sub", "local", "metered"] as const) {
+        expect(billingLabel(billing).fg).toBe(C.ink);
+      }
       expect(C.ink).toBe("#ffffff");
     }
     resetThemeModeForTests();

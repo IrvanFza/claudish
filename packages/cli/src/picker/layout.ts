@@ -286,16 +286,17 @@ const PROVIDER_GLYPH_CELLS = 2;
  */
 const PROVIDER_SHORTCUT_CELLS = 9;
 /**
- * `local` is the longest billing word: 5 + 2 for the fill it may carry.
+ * `local` is the longest billing word: 5 + 2 for the fill every state now carries.
  *
- * SIZED FOR THE CHIP EVEN THOUGH ONLY TWO OF THE THREE STATES TAKE ONE. A cell that
- * fitted the word and not the fill would clip `local`'s chip by exactly two cells,
- * and Yoga claws those out of a NEIGHBOURING cell rather than reporting anything —
- * `widgets.tsx` measured the result as a 1-column stub of background under the next
- * column's first letter, which `captureCharFrame` cannot see. The metered `$` is
- * drawn as text in the same cell and simply leaves it mostly empty. No separator
- * column: the chip carries one padded space of its own on each side, and the text
- * form indents by one to line up with it.
+ * SIZED FOR THE CHIP, AND ALL THREE STATES TAKE ONE. A cell that fitted the word and
+ * not the fill would clip `local`'s chip by exactly two cells, and Yoga claws those
+ * out of a NEIGHBOURING cell rather than reporting anything — `widgets.tsx` measured
+ * the result as a 1-column stub of background under the next column's first letter,
+ * which `captureCharFrame` cannot see. `$` is the same chip with its label centred in
+ * the same fill, which is what makes the column's edges straight (`rows.tsx`'s
+ * `CHIP_FILL_CELLS`, derived from this same longest word — `row-semantics.test.ts`
+ * pins that this cell never sits under it). No separator column: the chip carries one
+ * padded space of its own on each side.
  */
 const PROVIDER_BILLING_CELLS = 7;
 /**

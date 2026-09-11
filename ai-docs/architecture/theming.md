@@ -142,3 +142,30 @@ Two related decisions in the same card, both about meaning rather than colour:
 Prices are printed in body ink. Green is this palette's "ok", the figures are
 facts rather than verdicts, and the FREE badge two rows above already says free
 in colour.
+
+## The band an OWNED FILL may occupy is 1.26:1 wide, so the second axis is chroma
+
+Every chip claudish paints is measured against BOTH `CONTRAST_REFERENCE` pages
+(`#FAFAD2`, `#1C1C1E`) at 3:1, and carries white `C.ink` at 4.5:1. Those three
+constraints pin the fill's relative luminance into `L ∈ [0.1351, 0.1833]` — the
+floor is 3:1 on near-black, the ceiling is white ink at 4.5:1 — which is a total
+range of 1.26:1. Two consequences, both of which have now cost a round each:
+
+- **A fill cannot be made "softer" by darkening it.** `C.pillKeyBg` was `#15803d`
+  and the owner's verdict as an AREA was "not as bright… softer". Anything
+  visibly darker drops under 3:1 on a dark terminal, which is the same defect the
+  hex before it (`#2d6e3e`, 2.76:1) shipped. What IS free is saturation:
+  `#3f7752` is the same lightness class at CIELAB C* 31.2 instead of 52.5, and
+  its page ratios move 4.70/3.39 → 4.95/3.22. Softness is chroma here.
+- **Two fills cannot be told apart by contrast ratio.** The picker's billing
+  column now fills every row — `SUB`/`local` positive, `$` neutral — so the
+  design depends on the two reading as different. Inside that band they can
+  differ in WCAG terms by almost nothing (`#3f7752` vs `#6b7280` is 1.09:1), so
+  the assertion is perceptual: ΔE76 ≥ 20 and the neutral at under half the
+  positive's chroma, in `theme-contrast.test.ts` alongside a CIELAB helper
+  written out independently for the same reason the luminance formula is.
+
+A column of identical fills still fuses — that rule is unchanged, and is why a
+scoped flat-rate roster draws its repeated `SUB` as text (`priceVaries`). What
+changed is the finding that ALTERNATING fills do not, provided the alternation is
+measured rather than assumed.

@@ -40,19 +40,42 @@
  * block, the inactive one is plain muted text with no background at all.
  *
  *   `or@` / `zengo@`  subtle TEXT             a routing IDENTIFIER, never a status
- *   `$`               subtle TEXT             metered — information, not a warning
+ *   `$`               chip on `C.pillMutedBg` metered — the unremarkable default
  *   `FREE` / `SUB`    chip on `C.pillKeyBg`   no per-token charge — the SAME claim
  *   `local`           chip on `C.pillKeyBg`   no charge either, by another mechanism
  *   `catalog`         warn text               NOT the live roster — `DiscoveryNotice`
  *   `N/A`             dead text               the catalog does not say
  *   selection         accent + `C.bgHighlight`, and a `▶` so it survives greyscale
  *
- * THE PREFIX AND `$` ARE THE TWO THAT LOST THEIR FILL, and the reason is the same
- * for both: a column whose EVERY row carries the token cannot use a fill to mark it.
- * Every provider has a prefix, and `$` plus `SUB`/`local` partition the roster, so a
- * fill on the metered half plus a fill on the flat-rate half is a fill on all of it.
- * Leaving `$` as muted text makes `SUB` alternate down the column, which is what
- * stops it banding and is also the honest reading: metered is the default state.
+ * THE PREFIX KEEPS NO FILL AND `$` GOT ONE BACK — and the two are not the same
+ * question. A routing prefix is an IDENTIFIER: every row has one, they have no
+ * states, and a column with no notable member has nothing for a fill to mark. The
+ * billing cell is a STATUS with a closed vocabulary, and the owner's instruction
+ * after reading the shipped screen was *"make $$$ the same width and badge as
+ * well"*: `SUB` filled beside a bare `$` left the column ragged, one chip floating
+ * over a word with a different left edge. So the cell is now ALWAYS a chip, in one
+ * of two fills.
+ *
+ * WHICH MEANS THE BANDING RISK IS REAL AND IS ANSWERED BY THE PAIR, NOT BY A GAP.
+ * `$` and `SUB`/`local` partition the roster, so this is a fill on all 17 rows —
+ * exactly the shape that fused into one grey band when the PREFIX was chipped. What
+ * failed there was that all 17 fills were the SAME colour; here they alternate, and
+ * the two fills are held apart by measurement rather than by hope: `C.pillKeyBg`
+ * `#3f7752` is a green at CIELAB C* 31.2, `C.pillMutedBg` `#6b7280` a near-grey at
+ * C* 8.6, ΔE76 36.5 — thirty-odd times the just-noticeable difference, and pinned by
+ * `theme-contrast.test.ts` so a future tweak that collapses them fails a test rather
+ * than a screenshot. Verified on `dialog6-*` at 80x24 and 145x45, dark and light.
+ *
+ * ONE FILL WIDTH FOR THE WHOLE COLUMN, WHICH IS THE ONE PLACE PADDING GOES INSIDE A
+ * FILL. `aesthetics-and-color.md` forbids padding inside the label because 24 `UP`
+ * chips in a ROW fused into a rectangle; that rule is about a row of identical
+ * chips, and this is a single column whose whole point is a straight left and right
+ * edge. So `CHIP_FILL_CELLS` is derived from the LONGEST label the column can ever
+ * print (`local`, 5, + 2) and every chip paints exactly that, label centred inside —
+ * a hardcoded 5 would have clipped `local` and `FREE` by the two cells Yoga then
+ * steals from a neighbouring cell. Both columns that print these tokens use the same
+ * number, so `$`, `SUB`, `FREE` and `local` line up in the provider list and in the
+ * model list alike.
  *
  * `SUB` WAS `tokens.warn` UNTIL THIS PASS, AND THAT WAS A ONE-COLOUR-ONE-MEANING
  * VIOLATION IN THE SHIPPED BUILD, not in a prototype. `warn` is `C.orange` —
@@ -102,6 +125,28 @@ import { GAPS, type RowLayout, deriveProviderRowLayout } from "./layout.js";
 /** Readiness, in `ProvidersContent.tsx:225`'s exact vocabulary. */
 export type Readiness = "pending" | "ready" | "missing";
 
+/**
+ * EVERY LABEL A CHIPPED STATUS CELL CAN EVER PRINT, in either of the two columns
+ * that print them — the provider list's billing cell and the model list's price
+ * cell. The list is the vocabulary, not a sample of it: `billingLabel` and
+ * `priceChipBg` between them answer exactly these four words and nothing else.
+ */
+export const CHIP_COLUMN_LABELS = ["$", "SUB", "FREE", "local"] as const;
+
+/**
+ * The fill EVERY chip in a status column paints, in cells.
+ *
+ * DERIVED, NEVER TYPED OUT. The owner asked for one width across the column, and the
+ * natural-looking number is 5 — `SUB` plus a space each side — which would clip
+ * `FREE` and `local` by one and two cells. Yoga does not report a clipped cell: it
+ * claws the columns out of a NEIGHBOURING cell and paints a stub of background under
+ * its first letter, which `captureCharFrame` cannot see (`widgets.tsx` measured it).
+ * So the width comes from the longest label the column can print, and a fifth state
+ * added to `CHIP_COLUMN_LABELS` widens the column instead of overflowing it.
+ */
+export const CHIP_FILL_CELLS =
+  Math.max(...CHIP_COLUMN_LABELS.map((label) => displayWidth(label))) + 2;
+
 /** Where a list came from — the one value that drives every provenance encoding. */
 export type ListOrigin = "roster" | "catalog";
 
@@ -130,7 +175,7 @@ export function priceLabel(display: string, billing: BillingMode): string {
  *
  * A NEON FOREGROUND IS NOT A FILL. `tokens.success` is `C.green`, `#39ff14`, and
  * the skill is explicit that a colour tuned to read as text is harsh as a solid
- * block. `C.pillKeyBg` (`#15803d`) is this repo's already contrast-tuned muted
+ * block. `C.pillKeyBg` (`#3f7752`) is this repo's already contrast-tuned muted
  * green, shared verbatim by both palettes and measured against BOTH reference pages
  * (`theme-contrast.test.ts`) — and it is ALREADY the `FREE` chip on the session
  * summary card (`session-summary.ts:176`), so this is the same object, not a second
@@ -178,37 +223,44 @@ export function readinessGlyph(r: Readiness): { glyph: string; fg: string } {
 /**
  * The provider view's billing token — the vocabulary a model row prices with.
  *
- * `bg === null` MEANS "DRAW ME AS TEXT", and only `$` takes it. Metered is the
- * DEFAULT state of a route: `$` says the route bills per token, which is a fact
- * about it rather than a caution about it, and the number that matters is on the
- * model row. Filling it too would put a fill on every row of the column and fuse
- * the two halves into one band — the defect the file header describes.
+ * ALL THREE ARE CHIPS, AT ONE WIDTH, AND THE FILL IS THE ONLY THING THAT DIFFERS.
+ * `$` used to be drawn as muted text on the grounds that a fill on every row of the
+ * column is the banding defect; what the owner saw on the shipped screen was the
+ * other half of that trade — a 5-cell green chip beside a 1-cell word, so the column
+ * had no edges. Two fills that are 36.5 ΔE apart alternate visibly, which a single
+ * fill on every row could not. `C.pillMutedBg` is the quiet one deliberately:
+ * metered is what a route IS by default, not a caution about it, and the number that
+ * matters is on the model row.
+ *
+ * The ink is `C.ink` on both — we chose both fills, so we own both inks, and neither
+ * should change with the user's palette.
  */
-export function billingLabel(mode: BillingMode): { text: string; fg: string; bg: string | null } {
+export function billingLabel(mode: BillingMode): { text: string; fg: string; bg: string } {
   if (mode === "sub") return { text: "SUB", fg: C.ink, bg: C.pillKeyBg };
   if (mode === "local") return { text: "local", fg: C.ink, bg: C.pillKeyBg };
-  return { text: "$", fg: tokens.subtle, bg: null };
+  return { text: "$", fg: C.ink, bg: C.pillMutedBg };
 }
 
 const SPACES = "                                        ";
 const gap = (n: number): string => SPACES.slice(0, Math.max(0, n));
 
 /**
- * A chip that has to sit inside a fixed COLUMN, with the padding OUTSIDE the fill.
+ * A chip that has to sit inside a fixed COLUMN, at the column's ONE fill width.
  *
- * `BadgeSpan` already pads outside (`badgePad`), which is the rule the skill states
- * verbatim and the reason an earlier pass in this file kept reverting chips to
- * coloured text. This adds only what a CELL needs and a chip does not:
+ * Two kinds of padding meet here and only one of them is inside the fill:
  *
- *  · it fits the LABEL to the column before the fill is drawn — `width - 2`,
- *    because the fill is `displayWidth(label) + 2` and a column sized to the label
- *    overflows by exactly those two cells, which Yoga then claws out of a
- *    neighbouring cell (`widgets.tsx` measured a 1-column stub of background under
- *    the next column’s first letter, invisible to `captureCharFrame`);
- *  · it right-aligns by emitting the filler BEFORE the chip, since `badgePad` can
- *    only pad after it;
- *  · and it declines to draw below three columns, where a chip could only ever be
- *    part of a fill.
+ *  · the CELL's surplus — whatever the column has beyond `CHIP_FILL_CELLS` — is
+ *    plain, unfilled space, emitted before the chip when the cell right-aligns
+ *    (`badgePad` can only pad after it) and by `badgePad` when it left-aligns.
+ *    This is the skill's rule and it is kept.
+ *  · the LABEL's surplus — `local` is 5 cells and `$` is 1 — is centred INSIDE the
+ *    fill, which is the sanctioned exception (file header). It is what makes one
+ *    straight-edged column out of four labels of different lengths, and a column is
+ *    not the row of 24 identical chips the rule was measured on.
+ *
+ * Below `CHIP_FILL_CELLS` the fill shrinks to the cell rather than overflow it, and
+ * below three columns it declines to draw at all — there a chip could only ever be
+ * part of a fill.
  */
 function ChipCell({
   label,
@@ -223,38 +275,28 @@ function ChipCell({
 }): ReactNode {
   const cells = Math.max(0, Math.floor(width));
   if (cells < 3 || label === "") return cells > 0 ? <span>{gap(cells)}</span> : null;
-  const fitted = truncate(label, cells - 2);
-  const lead = align === "right" ? Math.max(0, cells - displayWidth(fitted) - 2) : 0;
+  const fill = Math.min(cells, CHIP_FILL_CELLS);
+  const fitted = truncate(label, fill - 2);
+  const slack = Math.max(0, fill - 2 - displayWidth(fitted));
+  const left = Math.floor(slack / 2);
+  const centred = `${gap(left)}${fitted}${gap(slack - left)}`;
+  const lead = align === "right" ? Math.max(0, cells - fill) : 0;
   return (
     <>
       {lead > 0 ? <span>{gap(lead)}</span> : null}
       {/* `fg={C.ink}` — WHITE, not `pickInk`'s answer. We chose this fill, so we own
           both sides of it and its ink should not change with the user's palette:
-          MEASURED on `#15803d`, `pickInk` returns white on the dark palette and
-          BLACK on the light one, which is the same chip wearing two inks and the
-          worse ratio (4.02 vs 5.02) on the page more likely to be squinted at. */}
+          MEASURED on the old `#15803d`, `pickInk` returned white on the dark palette
+          and BLACK on the light one — the same chip wearing two inks, and the worse
+          ratio (4.02 vs 5.02) on the page more likely to be squinted at. */}
       <BadgeSpan
-        label={fitted}
+        label={centred}
         bg={bg}
         fg={C.ink}
         {...(align === "right" ? {} : { width: cells })}
       />
     </>
   );
-}
-
-/**
- * The same CELL, drawn as plain coloured text — the form a column uses when every
- * row would otherwise carry a fill.
- *
- * The label is indented by one so it lands under a chip's first letter rather than
- * under the chip's own padding, which is what keeps `$` aligned with `SUB` in the
- * column above and below it.
- */
-function TextCell({ label, fg, width }: { label: string; fg: string; width: number }): ReactNode {
-  const cells = Math.max(0, Math.floor(width));
-  if (cells === 0) return null;
-  return <span fg={fg}>{padTo(truncate(` ${label}`, cells), cells)}</span>;
 }
 
 /**
@@ -450,11 +492,11 @@ export function ProviderRow({
             word was "super ugly". A fill marks the notable member of a column; here
             there is no notable member, only a name. */}
         <span fg={tokens.subtle}>{padTo(truncate(shortcut, L.shortcut), L.shortcut)}</span>
-        {bill.bg === null ? (
-          <TextCell label={bill.text} fg={bill.fg} width={L.billing} />
-        ) : (
-          <ChipCell label={bill.text} bg={bill.bg} width={L.billing} />
-        )}
+        {/* BOTH STATES ARE CHIPS AND BOTH ARE `CHIP_FILL_CELLS` WIDE — the owner's
+            "make $$$ the same width and badge as well". What keeps the column from
+            reading as one band is the distance between the two fills, not a gap:
+            `theme-contrast.test.ts` pins it. */}
+        <ChipCell label={bill.text} bg={bill.bg} width={L.billing} />
         <span fg={readiness === "missing" ? tokens.dead : tokens.subtle}>
           {padStartTo(truncate(tail, L.tail), L.tail)}
         </span>

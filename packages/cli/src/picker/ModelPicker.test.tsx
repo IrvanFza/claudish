@@ -36,6 +36,7 @@ import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { MAX_DIALOG_ROWS } from "./layout.js";
+import { CHIP_FILL_CELLS } from "./rows.js";
 import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
 
 // ── a scriptable source ──────────────────────────────────────────────────────────
@@ -340,21 +341,19 @@ describe("the billing and prefix CHIPS", () => {
     provider({ value: "or", label: "OpenRouter", shortcut: "or@", billing: "metered" }),
   ];
 
-  test("NO COLUMN IS A BAND: the prefix and `$` carry no fill at all", async () => {
-    // THE REJECTED PASS CHIPPED BOTH, and `captureCharFrame` was blind to the
-    // result: every one of the 17 provider rows had a fill in the prefix cell and a
-    // fill in the billing cell, with no blank row between them, so the two columns
-    // fused into a solid grey vertical band and a solid green one with the labels
-    // floating inside. The owner's verdict was "that is super ugly". A fill marks
-    // the NOTABLE member of a column; a column where every row qualifies has none.
+  test("THE PREFIX COLUMN IS NOT A BAND: a routing identifier carries no fill", async () => {
+    // THE REJECTED PASS CHIPPED IT, and `captureCharFrame` was blind to the result:
+    // every one of the 17 provider rows had a fill in the prefix cell, with no blank
+    // row between them, so the column fused into a solid grey vertical band with the
+    // labels floating inside. The owner's verdict was "that is super ugly". A fill
+    // marks a STATE; a prefix is an identifier with no states, so there is nothing
+    // in that column for a fill to mark. (The billing cell beside it is the opposite
+    // case and is chipped — see the two tests below.)
     const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
-      for (const token of ["cx@", "or@", "$"]) {
-        // `includes`, not an exact match: unfilled cells that share a foreground
-        // MERGE into one span, and `or@` sharing the muted hue with the `$` beside
-        // it is itself evidence that neither of them is carrying a fill.
+      for (const token of ["cx@", "or@"]) {
         const spans = spansOf(f).filter((sp) => sp.text.includes(token));
         expect({ token, found: spans.length > 0 }).toEqual({ token, found: true });
         for (const sp of spans) {
@@ -366,6 +365,32 @@ describe("the billing and prefix CHIPS", () => {
           });
         }
       }
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`$` IS A CHIP TOO, ON ITS OWN QUIETER FILL — and the two are not one band", async () => {
+    // The owner's instruction, verbatim: "make sub badge not as bright, make it
+    // softer and make $$$ the same width and badge as well". So the billing column
+    // carries a fill on every row, which is only legible as a two-tone column if the
+    // two fills are different — and `captureCharFrame` reads `$` and `SUB` the same
+    // whatever colour they are, so the assertion has to be on the spans.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      const f = d.recapture().frame;
+      const dollars = labelled(f, "$");
+      expect(dollars.length).toBeGreaterThan(0);
+      for (const chip of dollars) {
+        expect(bgOf(chip)).toBe(rgb(C.pillMutedBg));
+        // Never the positive family's fill, and never a row background: a `$` that
+        // picked up `pillKeyBg` would claim the route costs nothing.
+        expect(bgOf(chip)).not.toBe(rgb(C.pillKeyBg));
+        expect(bgOf(chip)).not.toBe(rgb(C.bgAlt));
+        expect(chip.fg.toInts().slice(0, 3).join()).toBe(rgb(C.ink));
+      }
+      expect(rgb(C.pillMutedBg)).not.toBe(rgb(C.pillKeyBg));
     } finally {
       d.destroy();
     }
@@ -392,26 +417,43 @@ describe("the billing and prefix CHIPS", () => {
     }
   });
 
-  test("a chip's FILL is exactly `label + 2` cells — the padding is OUTSIDE it", async () => {
-    // THE MEASURED FAILURE THIS GUARDS: `label={padTo("SUB", 6)}` looks identical and
-    // is not — the padding lands inside `bg`, and 24 chips padded that way fused into
-    // one solid rectangle running down the panel with the labels floating in it. An
-    // earlier pass in this very project reverted chips to coloured text three times
-    // over it. The column is aligned by a plain filler span AFTER the chip, so the
-    // fill stays a chip however wide the cell is.
+  test("EVERY STATUS CHIP IS THE SAME WIDTH, and the cell's surplus stays unfilled", async () => {
+    // ONE COLUMN, ONE FILL WIDTH — the owner asked for `$` and `SUB` at the same
+    // width, and a 1-cell fill beside a 5-cell one is what he was looking at. The
+    // label is centred INSIDE the fill, which is the one sanctioned place for that
+    // (`rows.tsx` header): a column wants straight edges, and the rule it bends was
+    // measured on a ROW of 24 identical chips.
+    //
+    // WHAT IS STILL FORBIDDEN, AND WHAT THIS STILL GUARDS: padding the fill out to
+    // the CELL. `label={padTo("SUB", 9)}` looks like the same thing and is not — the
+    // price cell is 9 columns and the billing cell 7, so a fill sized to the cell
+    // would paint two different widths and, in a column of one repeated word, one
+    // unbroken rectangle. The surplus is a plain filler span outside `bg`.
     const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
-      const filled = spansOf(f).filter(
-        (sp) => bgOf(sp) === rgb(C.pillKeyBg) || bgOf(sp) === rgb(C.chipKeycapBg)
+      const status = spansOf(f).filter(
+        (sp) => bgOf(sp) === rgb(C.pillKeyBg) || bgOf(sp) === rgb(C.pillMutedBg)
       );
-      expect(filled.length).toBeGreaterThan(0);
-      for (const sp of filled) {
-        expect({ text: sp.text, cells: sp.text.length }).toEqual({
-          text: ` ${sp.text.trim()} `,
-          cells: sp.text.trim().length + 2,
+      expect(status.length).toBeGreaterThan(0);
+      // Every fill in the column is CHIP_FILL_CELLS wide, whatever its label…
+      expect([...new Set(status.map((sp) => sp.text.length))]).toEqual([CHIP_FILL_CELLS]);
+      // …and the label is centred in it rather than padded to one side.
+      for (const sp of status) {
+        const label = sp.text.trim();
+        const slack = CHIP_FILL_CELLS - 2 - label.length;
+        const left = Math.floor(slack / 2);
+        expect({ text: sp.text }).toEqual({
+          text: `${" ".repeat(left + 1)}${label}${" ".repeat(slack - left + 1)}`,
         });
+      }
+      // A footer keycap is a DIFFERENT object with the original contract: its fill is
+      // exactly `label + 2`, because a row of keys is not a column of states.
+      const caps = spansOf(f).filter((sp) => bgOf(sp) === rgb(C.chipKeycapBg));
+      expect(caps.length).toBeGreaterThan(0);
+      for (const sp of caps) {
+        expect({ text: sp.text }).toEqual({ text: ` ${sp.text.trim()} ` });
       }
     } finally {
       d.destroy();

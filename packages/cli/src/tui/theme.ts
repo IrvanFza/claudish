@@ -57,6 +57,17 @@ export interface TuiPalette {
   tabInactiveFg: string;
   pillKeyBg: string;
   pillOauthBg: string;
+  /**
+   * The QUIET half of a two-tone chip column — the picker's metered `$`.
+   *
+   * A second fill exists because a status column with one fill and one bare word is
+   * a ragged column, and the owner asked for both states chipped at one width. The
+   * two then have to be told apart by the fill alone, and the only axis left inside
+   * the 3:1 band is CHROMA: `pillKeyBg` is a green at C* 31.2, this is a near-grey
+   * at C* 8.6, ΔE76 36.5 apart. Grey is also the honest reading — metered is the
+   * unremarkable default, not a claim.
+   */
+  pillMutedBg: string;
   /** Footer KEYCAP fill. Vivid, white ink, the same hex in both palettes. */
   chipKeycapBg: string;
   chipKeyBg: string;
@@ -116,15 +127,29 @@ const DARK: TuiPalette = {
   // standard `green` / `cyan` are neon-bright and cause eye strain as a solid fill,
   // so these are lower-saturation forest/teal versions carrying white ink.
   //
-  // RAISED FROM `#2d6e3e` / `#1f6d75` TO THE MEASURED PAIR. The old forest green
+  // RAISED FROM `#2d6e3e` / `#1f6d75` TO A MEASURED SET. The old forest green
   // cleared 5.77:1 on a cream page and only 2.76:1 on a near-black one — under the
   // 3:1 a UI component needs — so a `SUB` chip on a dark terminal was a fill that
-  // barely separated from the page it sat on. These two clear 3:1 against BOTH
-  // reference backgrounds (4.70/3.39 and 5.02/3.18) and keep white ink at 5.0+.
-  // Same hexes as claudeup's `success` / `info`, and shared verbatim by both
-  // palettes: a fill measured against both pages needs no per-theme variant.
-  pillKeyBg: "#15803d", // forest green; white ink reads cleanly on both pages
+  // barely separated from the page it sat on. All three clear 3:1 against BOTH
+  // reference backgrounds and keep white ink at 4.8+, and all three are shared
+  // verbatim by both palettes: a fill measured against both pages needs no
+  // per-theme variant.
+  //
+  // `pillKeyBg` WAS `#15803d` (claudeup's `success`) AND WAS TOO BRIGHT AS A FILL —
+  // the owner's words, "make sub badge not as bright, make it softer". Softness here
+  // is CHROMA, not luminance: the band a fill may occupy is L 0.1351…0.1833 (3:1 on
+  // near-black sets the floor, white ink at 4.5:1 sets the ceiling), which is only
+  // 1.26:1 wide, so a fill cannot be meaningfully darkened without failing one side.
+  // MEASURED with `validation/chip-fill-shortlist.ts`: `#15803d` is C* 52.5 at
+  // L* 46.9 and `#3f7752` is C* 31.2 at L* 45.4 — 41% less chroma and slightly
+  // darker — while the page ratios IMPROVE on cream and hold on near-black
+  // (4.70/3.39 → 4.95/3.22). Contrast was not traded for softness.
+  pillKeyBg: "#3f7752", // softened forest green; white ink 5.29:1
   pillOauthBg: "#0e7490", // muted teal; white ink reads cleanly on both pages
+  // Tailwind's `gray-500`, chosen for what it is NOT: it carries almost no hue
+  // (C* 8.6), so beside `pillKeyBg` it reads as the absence of a claim rather than
+  // as a second claim. 4.53/3.52 on the two pages, white ink 4.83:1.
+  pillMutedBg: "#6b7280",
   // A KEYCAP IS A VIVID BLOCK WITH WHITE INK, in both palettes and at the same hex.
   // Neutral grey was measured and rejected twice: `#3a3a3a` is 1.50:1 on a dark page
   // and `#9ca3af` 2.38:1 on a light one, so whichever way it is tuned the chip melts
@@ -177,10 +202,17 @@ const LIGHT: TuiPalette = {
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#374151",
 
-  // The forest/teal pills and the keycap are mid-lightness fills with white ink —
+  // The green/teal/grey pills and the keycap are mid-lightness fills with white ink —
   // they clear 3:1 on BOTH reference pages, so they are shared verbatim with DARK.
-  pillKeyBg: "#15803d",
+  // `pillKeyBg` is deliberately NO LONGER the same hex as `green`: `green` is a page
+  // TEXT accent held to 4.5:1 on white, and this is an area fill held to 3:1 on two
+  // pages with white ink on top. One number cannot serve both tests.
+  pillKeyBg: "#3f7752",
   pillOauthBg: "#0e7490",
+  // Same hex as this palette's `dim`, and that is a coincidence rather than a shared
+  // meaning: `dim` is page text on white, this is an area fill carrying white ink.
+  // They are measured against different references and may diverge.
+  pillMutedBg: "#6b7280",
   chipKeycapBg: "#9333ea",
 
   // The config TUI's TWO-TONE footer chip (`Footer.tsx`), and no longer the
