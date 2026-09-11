@@ -8,7 +8,10 @@ caught, and which failures are silent.
 
 Baseline for the work: claudish 9.0.6 (`1eed9e5`), Claude Code 2.1.263. Sources: the session
 `ai-docs/sessions/dev-feature-advisor-any-model-20260909-0001/` (gitignored, so it will not
-survive; everything load-bearing from it is copied here).
+survive; everything load-bearing from it is copied here). Three of its records are archived
+verbatim in `ai-docs/reports/`: the build report (`advisor-build-report-20260911.md`), the
+mutation proofs behind each guard (`advisor-mutation-proofs-20260911.md`), and the scope
+decisions (`advisor-scope-decisions-20260910.md`).
 
 ```
 claudish --advisor "gpt-5.6-sol" -p "task"                          # A: no main model, Claude Code's own

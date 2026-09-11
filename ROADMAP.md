@@ -451,7 +451,99 @@ routing function as the runtime.
 **Effort**: medium to large.
 
 Reference: `ai-docs/architecture/advisor.md` ("Panel routing and billing");
-`ai-docs/sessions/dev-feature-advisor-any-model-20260909-0001/scope-decisions.md` (gitignored).
+`ai-docs/reports/advisor-scope-decisions-20260910.md`.
+
+---
+
+## `--advisor`: a reasoning-only panel reply is recorded as a stub
+
+Status: not started. Recorded as a known limitation of the any-model advisor work.
+
+`extractChatCompletionText` (`packages/cli/src/handlers/native-handler-advisor.ts:2179-2187`)
+reads only `choices[0].message.content`, as a string or as an array of text parts. If a
+reasoning model answers HTTP 200 with its text in a reasoning field and `content` null or empty,
+the check at `:2152` records `origin: "stub"` with "HTTP 200 but the response carried no advice
+text". The main model then receives a failure, not advice, for a call that was billed.
+
+This is visible, not silent: the failure text names the model, the call raises one warning, and
+the `advisor_call` record says `stub`.
+
+**Why parked.** Two questions come first. The field that carries reasoning differs between
+providers, so the shape must come from a real captured response, never a guessed one (fixtures
+come from real debug logs). And reasoning without a final answer is the model's working, not its
+conclusion; whether it counts as advice is a product decision.
+
+**Trigger condition**: a real run shows a panel model returning reasoning with empty content, or
+a user reports stub advice from a reasoning model.
+
+**Must still hold after the change:** a reply with no text at all stays `stub`; if reasoning is
+accepted as advice, the `advisor_call` record says so, so a reader can tell it apart from an
+answer.
+
+**Effort**: small.
+
+Reference: `ai-docs/reports/advisor-build-report-20260911.md` ("Known limitations").
+
+---
+
+## `openai-sse` parser: one `catch` drops every per-chunk error without a log line
+
+Status: not started. Found during the any-model advisor work; not specific to the advisor.
+
+In `packages/cli/src/handlers/shared/stream-parsers/openai-sse.ts`, the `try` at `:534` opens
+with `JSON.parse(dataStr)` and closes at `:896` with `} catch (e) {}`. It covers the parse and
+all chunk handling after it: usage, text deltas, reasoning, and tool calls. Any exception in
+those 360 lines is dropped, and the loop moves to the next line. A malformed chunk, or a bug in
+tool-call handling, can drop a tool call while the turn still ends with `end_turn`.
+
+The raw chunk is logged verbatim at `:528` under `--debug`, so the input survives. The fact that
+it was dropped does not. `openai-sse` is the default stream format for every adapter that does
+not override it (`packages/cli/src/adapters/base-api-format.ts:605`), so the effect reaches most
+foreign providers. During the advisor work this cost a full investigation of the SSE log
+truncation defect.
+
+The catches at `:267` and `:270` are different: they guard `enqueue` and `close` on a stream
+that can already be closed, and are correct.
+
+**Why parked.** Out of scope for the advisor work, and the file is shared by every OpenAI-shaped
+provider, so a change needs its own test run across the stream-format fixtures.
+
+**Trigger condition**: the next edit to `openai-sse.ts`, or any report of a tool call that
+vanished or a turn that ended early on an OpenAI-shaped provider.
+
+**Must still hold after the change:** one bad chunk still does not end the stream; the error is
+logged with enough context to find the chunk in a debug log; the replayed fixtures in
+`format-translation.test.ts` stay green.
+
+**Effort**: small for a log line; medium if the `try` is narrowed to the parse.
+
+---
+
+## Local `bun run test` skips the macOS bridge suite
+
+Status: not started. Local only; CI is not affected.
+
+`package.json:23` runs `bun run --cwd packages/cli test && bun run --cwd packages/macos-bridge
+test`. On `bun` 1.4.0 the two `displayWidth` Unicode-oracle tests in
+`packages/cli/src/tui/viz/color.test.ts` fail, the CLI suite exits non-zero, and `&&` stops
+before the bridge suite starts. A local `bun run test` therefore reports nothing about the
+bridge.
+
+CI pins `bun` 1.3.10 (`.github/workflows/test.yml:58`), where the CLI suite is green and the
+bridge suite runs: run `34544453952` on the `v9.3.0` merge printed `Ran 3257 tests across 211
+files`, then `Ran 20 tests across 1 file`.
+
+**Why parked.** Nothing is unguarded in CI today. The risk arrives when the CI pin moves to a
+`bun` version where the two tests fail: CI then goes red and, the same way, stops running the
+bridge suite.
+
+**Trigger condition**: the CI `bun` pin is raised, or someone relies on a local run to check a
+bridge change.
+
+**Must still hold after the change:** the root `test` script still fails when either suite
+fails; both suites report even when the first one fails.
+
+**Effort**: small.
 
 ---
 
