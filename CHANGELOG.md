@@ -2,6 +2,35 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.3.0] - 2026-09-10
+
+### Bug Fixes
+
+- stop truncating SSE payloads, and refuse corrupt fixtures *(debug)* ([`333026b`](https://github.com/MadAppGang/claudish/commit/333026bcf9385645aac07a201e4cc07f73d104a5))
+- ask the panel the question, warm the catalog, resolve the collector *(advisor)* ([`5836843`](https://github.com/MadAppGang/claudish/commit/583684355d79949be29ee4ad9f7f6bec62be3e36))
+- send the token parameter and model id each endpoint accepts *(advisor)* ([`6edb729`](https://github.com/MadAppGang/claudish/commit/6edb729d4f63c50f639f026f6ee198f7f56ad7ac))
+- sanitise failure text, resolve prefixed panel specs, stop false S10 *(advisor)* ([`58b44b1`](https://github.com/MadAppGang/claudish/commit/58b44b1b95275c64a12af884cad9709906a56b27))
+- give Claude Code an advisor model, or it offers no tool *(advisor)* ([`6216b79`](https://github.com/MadAppGang/claudish/commit/6216b7938a12ba30f5462deb4cb28da9308f3e68))
+- address the four-model code review *(advisor)* ([`961b858`](https://github.com/MadAppGang/claudish/commit/961b858628a626146d3bfb6658ebfb99e8d7892c))
+- never forward an inherited claudish placeholder to Anthropic *(runner)* ([`4206dea`](https://github.com/MadAppGang/claudish/commit/4206dea5b87d8eaeca580d421cdde0b0a0d380ab))
+- publish live answer bytes so `outputSize: 0` stops reading as "produced nothing" *(team)* ([`6122d48`](https://github.com/MadAppGang/claudish/commit/6122d48a6abbf118a97939627021c7b600f5c0d4))
+
+### Documentation
+
+- restore the section rule the merge resolution dropped *(roadmap)* ([`9a3d9dc`](https://github.com/MadAppGang/claudish/commit/9a3d9dc6ae723eba76c52dc27e13505af2746519))
+- add a release playbook, and rescue the advisor verification evidence([`aa3a51e`](https://github.com/MadAppGang/claudish/commit/aa3a51e613f40b3cde2d7c532b18d1751bce6909))
+- update CHANGELOG.md for v9.2.1([`7f81a14`](https://github.com/MadAppGang/claudish/commit/7f81a1412ba37e99a25c51c6737688dcd6329da3))
+- record the runs that verified the last three fixes *(advisor)* ([`c5cd0cf`](https://github.com/MadAppGang/claudish/commit/c5cd0cfe5ba1aab962972f542ee90a2914d790c7))
+- record what the real runs proved, and what they found *(advisor)* ([`4d46a27`](https://github.com/MadAppGang/claudish/commit/4d46a275556bc10bf9ff2c29485f1d911d789a0f))
+- record why the advisor works the way it does *(advisor)* ([`a09c310`](https://github.com/MadAppGang/claudish/commit/a09c31090c652b762fa2283d783be940d6b243c5))
+- correct the release instructions that would break a release([`ad326c3`](https://github.com/MadAppGang/claudish/commit/ad326c33ed93888541133e0df38bdda1e8a55b79))
+- park the stale bundled claudish-usage copies, note the third team transport *(roadmap)* ([`1a79727`](https://github.com/MadAppGang/claudish/commit/1a7972746402ce9a6e8b25fba8f99833cd5fa675))
+
+### Other Changes
+
+- release v9.3.0([`aa34017`](https://github.com/MadAppGang/claudish/commit/aa34017c207e2b4cbef6fdc0e03996e39ceb0071))
+- release v9.2.0([`9b2cc83`](https://github.com/MadAppGang/claudish/commit/9b2cc83aa7b2cc0b54789f8e0c0f92119f9a696e))
+
 ## [9.2.1] - 2026-09-10
 
 ### Bug Fixes
