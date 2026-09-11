@@ -39,7 +39,7 @@ import { deepMergeParams } from "../model-params.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import { recoveryClock } from "../recovery/clock.js";
-import { uiLeaseValid } from "../recovery/coordinator.js";
+import { episodeCount, noteTargetReachable, uiLeaseValid } from "../recovery/coordinator.js";
 import { resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
@@ -60,11 +60,16 @@ import {
 } from "./shared/anthropic-error.js";
 import { sseResponseToJson } from "./shared/collect-sse-message.js";
 import type { ConnectionErrorKind } from "./shared/connection-error.js";
-import { buildConnectionErrorMessage, classifyConnectionError } from "./shared/connection-error.js";
+import {
+  buildConnectionErrorMessage,
+  buildRecoveryHoldMessage,
+  classifyConnectionError,
+} from "./shared/connection-error.js";
 import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
+import { recoveryHoldHeaders } from "./shared/recovery-marker.js";
 import {
   CONTEXT_OVERFLOW_PHRASE,
   isContextOverflowError,
@@ -422,6 +427,85 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * The OTHER response shape: "claudish could not reach the host YET, and a
+   * surface is painting that fact, so the retry is handed back to the client."
+   *
+   * This is tier 2. The episode stays open for its grace window, Claude Code's
+   * own backoff elapses, it re-POSTs, and `joinEpisode` finds the open episode —
+   * same `episodeId`, same ladder position, `clientRetries` incremented. One
+   * banner, one attempt counter, one episode across both tiers.
+   *
+   * ── WHY `new Response` AND NEVER `c.header()` + `c.json()` ──────────────────
+   *
+   * `fallback-handler.ts` carries an explicit invariant: each candidate handler
+   * must NOT mutate the Hono `Context` (e.g. `c.header()`) before returning a
+   * non-ok Response. `c` is SHARED across every candidate in a chain, so a
+   * sticky `x-should-retry` set here would ride out on
+   * `formatCombinedError`'s `c.json(..., exhaustedChainStatus(errors))` — a
+   * terminal 400 telling Claude Code to retry it, which reintroduces exactly
+   * the buried-reason failure the whole 400-not-503 doctrine exists to prevent.
+   * A standalone `Response` cannot do that. The file's one `c.header()` call
+   * (`X-Dropped-Params`) is safe only because it sits after the `!response.ok`
+   * early returns; this arm has no such luck and must not acquire any.
+   *
+   * ── WHY 503 AND NOT 529 ─────────────────────────────────────────────────────
+   *
+   * `exhaustedChainStatus`'s transient set already contains 503 and does not
+   * contain 529, and `isRetryableError`'s remap-recovery check already scopes
+   * to 429/503. 529 would add a status this codebase has never carried and
+   * re-open every `status ===` under `handlers/`. 503 is the status the house
+   * already owns for "transient after our own retries, do not switch the user's
+   * provider".
+   *
+   * No `reportError` and no `logStderr("Error: …")` on this arm, deliberately.
+   * This is a handoff, not a verdict: with the retry watchdog enabled the
+   * client may re-ask hundreds of times during one outage, and a terminal-shaped
+   * error line per handoff would drown the pane's own account of the same
+   * fault. The 400 arm — lease gone, or the user pressed give-up — is where the
+   * failure is finally reported, once.
+   */
+  private respondRecoveryHold(
+    error: unknown,
+    conn: { kind: ConnectionErrorKind; code: string },
+    endpoint: string,
+    ctx: {
+      startTime: number;
+      attempts: number;
+      recoveryMs: number;
+      fallbackMeta?: { chain: string[]; attempts: number };
+    }
+  ): Response {
+    const reason = buildConnectionErrorMessage(conn.kind, this.provider.displayName, endpoint);
+    const msg = buildRecoveryHoldMessage(reason, ctx.attempts, ctx.recoveryMs);
+    try {
+      const { error_class, error_code } = classifyError(error, undefined);
+      recordStats({
+        model_id: this.targetModel,
+        provider_name: this.provider.name,
+        stream_format: this.provider.streamFormat,
+        latency_ms: Math.round(performance.now() - ctx.startTime),
+        success: false,
+        http_status: 503,
+        error_class,
+        error_code,
+        token_strategy: this.options.tokenStrategy ?? "standard",
+        adapter_name: this.getActiveAdapterName(),
+        middleware_names: this.middlewareManager.getActiveNames(this.bareModelName),
+        fallback_used: ctx.fallbackMeta !== undefined,
+        fallback_chain: ctx.fallbackMeta?.chain,
+        fallback_attempts: ctx.fallbackMeta?.attempts,
+        invocation_mode: this.options.invocationMode ?? "auto-route",
+      });
+    } catch {
+      // Stats must never crash claudish
+    }
+    return new Response(JSON.stringify(wrapAnthropicError(503, msg, "overloaded_error")), {
+      status: 503,
+      headers: recoveryHoldHeaders(),
+    });
+  }
+
+  /**
    * The inbound client's abort signal, or one that never fires.
    *
    * It fires sub-millisecond when Claude Code goes away — measured at
@@ -551,15 +635,41 @@ export class ComposedHandler implements ModelHandler {
       default: {
         // THE LEASE IS READ HERE AND NOWHERE ELSE, at the instant the status is
         // chosen — never cached off the result object, which would be stale by
-        // the time it was destructured.
+        // the time it was destructured. That staleness is exactly how the
+        // superseded `uiAttached` latch could report a banner that had been
+        // killed, closed or frozen minutes earlier, and then answer a retryable
+        // status with the reason visible nowhere: the one outcome strictly
+        // worse than the terminal 400 this feature exists to remove.
         //
-        // In THIS phase it only goes into the log. That is deliberate: shipping
-        // the 503 flip before the banner exists recreates the buried-reason bug
-        // this whole feature exists to kill. What the log buys now is the
-        // ability to prove, one phase early, that the lease is still valid at
-        // exhaustion after a 45-second attempt — the defect that made every
-        // loopback-only test pass while the feature did not work.
+        // THE RULE THE TWO ARMS ENCODE. A retryable status is permissible
+        // exactly when claudish still has a surface on which the reason is
+        // legible. Absent such a surface, the reason must ride the status,
+        // which means 400.
         const leased = uiLeaseValid(result.episodeId);
+
+        // `gave_up` is NOT eligible, and the guard is `result.kind` rather than
+        // the lease. `[q] give up` is the user saying stop; a lease may well
+        // still be valid at that instant (the pane that took the keystroke is
+        // by definition alive), so a lease-only test would answer a retryable
+        // 503 and Claude Code would immediately re-ask — turning the give-up
+        // key into a no-op with a banner still on screen.
+        if (result.kind === "exhausted" && leased) {
+          log(
+            `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
+              `in ${result.recoveryMs}ms (episode ${result.episodeId}, ui_lease=true) — ` +
+              "handing the retry back to the client (503, tier 2)"
+          );
+          return {
+            kind: "respond",
+            response: this.respondRecoveryHold(result.error, result.conn, result.endpoint, {
+              startTime: ctx.startTime,
+              attempts: result.attempts,
+              recoveryMs: result.recoveryMs,
+              fallbackMeta: ctx.fallbackMeta,
+            }),
+          };
+        }
+
         log(
           `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
             `in ${result.recoveryMs}ms (episode ${result.episodeId}, outcome ${result.kind}, ` +
@@ -1080,6 +1190,22 @@ export class ComposedHandler implements ModelHandler {
       if (outcome.kind === "respond") return outcome.response;
       response = outcome.value;
     }
+
+    // We reached the host. ANY status proves that — a 401 is a conversation, a
+    // refused socket is not — so this is the moment an episode parked in
+    // `handoff` for this target learns that its outage is over.
+    //
+    // It has to be said here rather than left to the grace timer because tier
+    // 2's rejoin is not what happens when the network comes back. Claude Code's
+    // re-POST enters the byte-identical primary fetch ABOVE, which succeeds
+    // outright: no catch, no `joinEpisode`, no rejoin — and the pane would go
+    // on painting "waiting for Claude Code to retry" over a working session for
+    // the rest of the 120-second grace.
+    //
+    // `episodeCount()` is a `Map.size` read and is 0 on every machine that has
+    // never had an outage, so the healthy path pays one integer comparison for
+    // a banner that stops lying.
+    if (episodeCount() > 0) noteTargetReachable(this.provider.name, endpoint);
 
     // Check if the transport fell back to a different model (e.g., capacity exhaustion)
     if (this.provider.getActiveModelName?.()) {

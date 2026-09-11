@@ -27,7 +27,7 @@ import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
-import { resolveRecoveryUi } from "./recovery/settings.js";
+import { resolveRecoveryUi, retryWatchdogEnv } from "./recovery/settings.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -1633,6 +1633,13 @@ export async function runClaudeWithProxy(
     // above then forwards the user's value untouched.
     ...advisorToolEnv.vars,
   };
+
+  // The client half of "retry forever". Tier 1 holds one request for the
+  // derived deadline and then hands the retry back as a 503; how far recovery
+  // actually reaches is decided by Claude Code's willingness to re-ask, which
+  // this sets. The arithmetic, the accepted cost and the side effect on
+  // claudish's OTHER 503s are all stated at `retryWatchdogEnv()`.
+  Object.assign(env, retryWatchdogEnv());
 
   // Provider display name, best-effort and FREE. Only an explicit `provider@model`
   // spec names its provider without routing, and route() would touch credentials /

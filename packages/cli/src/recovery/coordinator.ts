@@ -618,6 +618,49 @@ function closeEpisode(episode: Episode, outcome: RecoveryOutcome): void {
 }
 
 /**
+ * A request reached this target WITHOUT the ladder's help. Close any episode
+ * parked in `handoff` for it.
+ *
+ * ── THE CASE THIS EXISTS FOR, WHICH THE DESIGN DID NOT ANTICIPATE ───────────
+ *
+ * Tier 2 hands the retry back as a 503 and leaves the episode `handoff` for its
+ * grace window. Claude Code's backoff elapses and it re-POSTs — and the
+ * re-POST's FIRST attempt is the handler's byte-identical primary fetch, which
+ * runs BEFORE the coordinator ever sees the request. When the network has come
+ * back in the meantime, that attempt simply SUCCEEDS: no `catch`, no
+ * `joinEpisode`, no rejoin. The turn completes, and the episode sits in
+ * `handoff` until its 120-second grace expires.
+ *
+ * That leaves the pane painting *"waiting for Claude Code to retry"* over a
+ * session that is already working — for up to two minutes, on the one surface
+ * whose legibility is what earns the 503 its retryable status in the first
+ * place. A banner that lies is worse than no banner, because the next real
+ * outage is read as more of the same.
+ *
+ * ── WHY THE HEALTHY PATH CAN AFFORD TO ASK ──────────────────────────────────
+ *
+ * The caller guards this with `episodeCount() > 0`, which is one `Map.size`
+ * read. On a machine that has never had an outage the map is empty and nothing
+ * below runs — no URL parse, no string build. That is the whole cost NFR-1
+ * pays for the banner telling the truth.
+ *
+ * ONLY `handoff` is closed, and the restriction is load-bearing: an episode in
+ * `attempting`/`waiting` still has parked waiters whose ladder this is, and
+ * closing it underneath them would strand or gave-up requests that another
+ * request's success says nothing about. A `handoff` episode has no waiters by
+ * construction — that is what `handoff` means.
+ */
+export function noteTargetReachable(providerName: string, endpoint: string): void {
+  const ep = episodes.get(`${providerName}|${hostOf(endpoint)}`);
+  if (!ep || ep.state !== "handoff") return;
+  log(
+    `[Recovery] ${ep.providerDisplayName} answered on the client's own retry — ` +
+      `closing episode ${ep.episodeId} instead of waiting out its grace`
+  );
+  closeEpisode(ep, "recovered");
+}
+
+/**
  * Collapse the wait for an episode and attempt now. The pane's `[r] try now`
  * key routes here in a later phase; nothing calls it in this one, and it is
  * exported now so the ladder never grows a second wake path later.

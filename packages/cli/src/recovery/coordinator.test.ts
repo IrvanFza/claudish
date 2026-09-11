@@ -32,6 +32,7 @@ import {
   episodeCount,
   giveUp,
   joinEpisode,
+  noteTargetReachable,
   tryNow,
   uiLeaseValid,
 } from "./coordinator.js";
@@ -428,6 +429,72 @@ describe("an episode rejoined within EPISODE_GRACE_MS continues", () => {
     // Claude Code's own post-503 backoff was measured to cap at ~38.4 s, so
     // this is 3.1x the worst observed rejoin gap.
     expect(EPISODE_GRACE_MS).toBe(120_000);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// 4b. The OTHER way a handoff ends: the client's own retry simply succeeds
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("noteTargetReachable — the handoff that ends without a rejoin", () => {
+  test("a reachable target closes the parked episode as recovered", async () => {
+    useFakeClock();
+    const s = seed({ providerName: "reach-1" });
+    const h = joinEpisode(s);
+    const id = h.episodeId;
+    h.recordAttemptResult("ConnectionRefused", false);
+    h.handoff();
+    h.leave();
+    expect(describeEpisode(id)?.state).toBe("handoff");
+
+    // Tier 2's rejoin is NOT what happens when the network comes back. The
+    // client's re-POST enters the handler's byte-identical primary fetch, which
+    // succeeds outright — no catch, no `joinEpisode`. Without this call the
+    // episode would sit here for the rest of its 120-second grace with the pane
+    // painting "waiting for Claude Code to retry" over a working session.
+    noteTargetReachable("reach-1", "http://127.0.0.1:9/v1/chat/completions");
+
+    expect(describeEpisode(id)).toBeNull();
+    expect(episodeCount()).toBe(0);
+  });
+
+  test("a DIFFERENT host does not close it — the key is provider|host", async () => {
+    useFakeClock();
+    const s = seed({ providerName: "reach-2" });
+    const h = joinEpisode(s);
+    h.recordAttemptResult("ConnectionRefused", false);
+    h.handoff();
+    h.leave();
+
+    noteTargetReachable("reach-2", "http://127.0.0.1:10/v1/chat/completions");
+    expect(describeEpisode(h.episodeId)?.state).toBe("handoff");
+    noteTargetReachable("other-provider", "http://127.0.0.1:9/v1/chat/completions");
+    expect(describeEpisode(h.episodeId)?.state).toBe("handoff");
+  });
+
+  test("a LIVE episode with parked waiters is never closed underneath them", async () => {
+    useFakeClock();
+    const s = seed({ providerName: "reach-3" });
+    const h = joinEpisode(s);
+    h.recordAttemptResult("ConnectionRefused", false);
+    const woken: WaitOutcome[] = [];
+    const parked = h.waitForNextAttempt(never(), 30_000).then((o) => {
+      woken.push(o);
+    });
+    await drain();
+
+    // One request's success says nothing about another's. Closing here would
+    // wake this waiter with `gave_up` and answer an inline error for an outage
+    // that its own ladder was still working on.
+    noteTargetReachable("reach-3", "http://127.0.0.1:9/v1/chat/completions");
+
+    expect(describeEpisode(h.episodeId)?.state).toBe("waiting");
+    expect(woken).toHaveLength(0);
+
+    await clock.advance(30_000);
+    await parked;
+    expect(woken).toEqual([{ kind: "attempt" }]);
+    h.leave();
   });
 });
 

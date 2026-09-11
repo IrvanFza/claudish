@@ -161,3 +161,54 @@ export function buildConnectionErrorMessage(
       return `Cannot reach ${displayName} at ${endpoint}. Check your network connection.`;
   }
 }
+
+/**
+ * `3m 45s`, `45s`, `0s`. Never negative, never fractional.
+ *
+ * Deliberately a separate implementation from the pane's formatter of the same
+ * shape: the pane runs in ANOTHER PROCESS and shares no module with this one,
+ * and importing across that boundary is what the recovery wire protocol exists
+ * to avoid.
+ */
+export function formatHoldDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+/**
+ * The sentence an EXHAUSTED tier-1 hold carries on its retryable 503.
+ *
+ * It is `buildConnectionErrorMessage`'s own sentence plus a recovery clause,
+ * and it has to stay built that way: the inline 400 and the handed-back 503
+ * describe ONE fault, and two sentences that drift tell the user two different
+ * stories about it.
+ *
+ * ── WHAT THIS SENTENCE MUST NEVER SAY ───────────────────────────────────────
+ *
+ * `fallback-handler.ts`'s `hasQuotaExhaustionWording` is the FIRST statement in
+ * `isRetryableError`'s body and is status-agnostic on purpose. Its phrase list
+ * contains the bare substring `"quota"`, plus `"usage limit"`, `"plan limit"`,
+ * `"daily limit"`, `"billing cycle"`, `"credit balance"`, `"out of credits"`
+ * and `"exceeded your current"`. A 503 whose MESSAGE trips that list advances
+ * the fallback chain and moves a subscription user onto metered billing during
+ * an outage.
+ *
+ * The structural defence is the `x-claudish-recovery` marker
+ * (`recovery-marker.ts`), which takes the message out of that decision
+ * entirely. This wording rule is the belt behind that brace, and it is asserted
+ * directly on the composed sentence in `recovery-status.test.ts` — so a future
+ * edit that reaches for "retry quota" or "attempt limit" fails a test rather
+ * than a user's invoice.
+ */
+export function buildRecoveryHoldMessage(
+  reason: string,
+  attempts: number,
+  elapsedMs: number
+): string {
+  return (
+    `${reason} claudish retried ${attempts}× over ${formatHoldDuration(elapsedMs)} ` +
+    "without reaching it — still trying, watch the recovery pane."
+  );
+}

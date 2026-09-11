@@ -186,3 +186,58 @@ export function logDeadlineIfShortened(deadlineMs: number): void {
 export function resetDeadlineNotice(): void {
   deadlineNoticeLogged = false;
 }
+
+// ─── The client's retry budget ───────────────────────────────────────────────
+
+/**
+ * The environment that decides how far recovery REACHES, handed to the Claude
+ * Code child.
+ *
+ * Tier 1 holds one inbound request for the derived deadline (~270 s at the
+ * default) and then answers a retryable 503, which the client re-POSTs into the
+ * SAME episode. So the outer bound on recovery is not ours at all — it is
+ * Claude Code's willingness to keep asking, and `CLAUDE_CODE_RETRY_WATCHDOG`
+ * is the variable that sets it.
+ *
+ * ── WHAT IT COSTS, STATED PLAINLY ───────────────────────────────────────────
+ *
+ * |                            | unset    | set (what ships) |
+ * |----------------------------|----------|------------------|
+ * | client retry budget        | ~11      | **~300**         |
+ * | unattended reach           | ~66 min  | **~a day**       |
+ * | worst-case attempts / turn | ~46      | **~2,100**       |
+ * | duplicate-charge exposure  | accepted | **~30× that**    |
+ *
+ * The duplicate-charge exposure is real and is the reason this is worth a
+ * paragraph rather than a line: a request the provider ACCEPTED and began
+ * billing can still fail on `ECONNRESET`/`EPIPE`, and every re-ask pays for it
+ * again — including on paths where inference had already started. That
+ * arithmetic was put to the user with these numbers in front of them and the
+ * larger magnitude was chosen deliberately. It is an informed acceptance, not
+ * an oversight; do not quietly re-litigate it here.
+ *
+ * ── THE SIDE EFFECT, WHICH IS NOT OPTIONAL ──────────────────────────────────
+ *
+ * The watchdog is GLOBAL to the child, so it amplifies every 503 claudish can
+ * emit and not only the recovery one: the stream-head sniffer's exhaustion and
+ * `exhaustedChainStatus`'s all-transient chain also become ~300-attempt
+ * retries. Neither of those opens an episode or a pane, so while the client
+ * loops on them the reason is legible NOWHERE — they degrade to "API error ·
+ * Retrying" for far longer than before. More retry is the intended remedy for
+ * both (an upstream overload is genuinely transient, which is why they are
+ * 503s at all), but the visibility argument that earns the recovery 503 its
+ * retryable status does not extend to them. That gap is the honest price of
+ * one process-wide switch, and there is no narrower lever: the variable is
+ * fixed at spawn and cannot key on whether a banner exists.
+ *
+ * ── WHY IT IS GATED ON THE UI SWITCH ────────────────────────────────────────
+ *
+ * `resolveRecoveryUi()` is the user's configuration — flag > env > project >
+ * global > true. Off means no pane, therefore no lease, therefore an inline
+ * 400 at exhaustion, therefore nothing handed back for the client to re-ask —
+ * so extending its budget would buy only the side effect above. Surface and
+ * reach move together or not at all.
+ */
+export function retryWatchdogEnv(): Record<string, string> {
+  return resolveRecoveryUi() ? { CLAUDE_CODE_RETRY_WATCHDOG: "1" } : {};
+}

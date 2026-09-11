@@ -360,6 +360,45 @@ The general lesson: **any code that branches on an HTTP status downstream of the
 remap is suspect.** Grep for `status ===` under `handlers/` before assuming a new
 one is safe.
 
+### The status is not always enough: `x-claudish-recovery` (network recovery, Tier 2)
+
+There is now one response `FallbackHandler` must treat specially **before it looks
+at a status or a body at all**: the 503 an exhausted tier-1 connection hold hands
+back so Claude Code will re-POST (`handlers/shared/recovery-marker.ts`).
+
+A 503 already stops the chain — `isRetryableError` has no 503 branch. That is not
+enough, twice:
+
+- **`isRetryableError`'s FIRST statement is `hasQuotaExhaustionWording(errorBody)`**,
+  status-agnostic on purpose (it exists *because* of the remap above), and its list
+  carries the bare substring `"quota"`. A 503 whose MESSAGE happened to contain that
+  word advanced the chain — and per CLAUDE.md's standing invariant, advancing off a
+  `SUBSCRIPTION_PROVIDERS` candidate onto a metered one quotes real money, during an
+  outage, for a fault no provider caused.
+- **`exhaustedChainStatus` could demote it.** With an earlier candidate already
+  failed, a non-retryable response goes to `formatCombinedError`, whose status is 503
+  only if EVERY accumulated error is transient. One earlier auth/404 turns our 503
+  into a terminal 400 and the client never re-POSTs.
+
+So the marker is a **header**, checked in two independent places: `handle()` returns
+a marked response VERBATIM before reading the body (which is what defeats the
+combining), and `isRetryableError` returns `false` on it ABOVE the quota match
+(which is what defeats the wording). The second is unreachable in the shipped call
+graph and is kept anyway, so the guarantee belongs to the decision rather than to one
+call site.
+
+**Order is the property, not presence.** Moving the marker check below the quota
+match — present, but late — is a live billing bug, and is mutation-covered as one.
+
+It cannot be forged: every non-ok exit from `ComposedHandler` is `c.json(...)`, which
+builds headers from nothing, and the only path that copies upstream headers verbatim
+(`stream-head-sniffer.ts`'s `replayResponse()`) runs after `!response.ok` has already
+returned, i.e. on a 200. **If a future edit ever returns an upstream `Response` object
+on a non-ok path, the marker must be stripped there.**
+
+Evidence, including the live chain runs and the mutation set:
+`ai-docs/reports/network-recovery-phase4-status-flip-20260911.md`.
+
 ## The catalog's endpoint contract has two halves (v9.0.7)
 
 `gpt-6-astra` was in the catalog and could not run. The child exited 1 on
