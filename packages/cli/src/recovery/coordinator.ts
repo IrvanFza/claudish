@@ -19,17 +19,23 @@
  *     A waiter past its own deadline answers for itself and leaves.
  *   - the LADDER belongs to the episode. It ends when the last waiter leaves
  *     or an attempt succeeds — never because one waiter ran out of time.
- *   - the PANE LEASE belongs to a renderer painting this episode. Nothing in
- *     this file grants one yet; see `uiLeaseValid`.
+ *   - the PANE LEASE belongs to a renderer painting this episode. It is granted
+ *     and revoked in `magmux-ui.ts`, which registers itself here; this file
+ *     only ever ASKS, via `uiLeaseValid`, and never caches the answer.
  *
  * Letting one field mean all three is what made a four-waiter episode show
  * `waiters: 4` while exactly one of them was still being retried.
  */
 
 import { randomUUID } from "node:crypto";
-import type { ConnectionErrorKind } from "../handlers/shared/connection-error.js";
+import { type ConnectionErrorKind, isLoopback } from "../handlers/shared/connection-error.js";
 import { log } from "../logger.js";
 import { recoveryClock } from "./clock.js";
+import {
+  RECOVERY_PROTOCOL_VERSION,
+  type RecoveryEpisodeFrame,
+  type RecoveryFrameState,
+} from "./types.js";
 
 export type RecoveryState = "attempting" | "waiting" | "recovered" | "handoff" | "abandoned";
 
@@ -95,7 +101,11 @@ interface Episode {
   state: RecoveryState;
   startedAtPerf: number;
   startedAtMs: number;
-  /** Set when a pane is first ASKED for. Null for the whole of this phase. */
+  /**
+   * Set when a pane is first ASKED for — including when the answer is an
+   * immediate no, because asking and being told no is still asking. Null on
+   * every surface that cannot open one at all.
+   */
   paneRequestedAtPerf: number | null;
   ladderIndex: number;
   attempts: number;
@@ -152,17 +162,133 @@ export function describeEpisode(episodeId: string): Readonly<Record<string, unkn
 }
 
 /**
+ * What the UI manager (`magmux-ui.ts`) plugs into the coordinator.
+ *
+ * A REGISTRATION SEAM RATHER THAN AN IMPORT, and not for testability. The UI
+ * manager reads episode state (to build a frame) and drives the ladder (`[r]`,
+ * `[q]`), so it must import this module; a direct import back the other way is
+ * a cycle. More importantly it keeps the dependency HONEST in the other
+ * direction: nothing is installed in `-p`, in `serve`, in the MCP server or in
+ * the test suite, so those paths cannot open a pane, cannot hold a lease, and
+ * behave exactly as they did before this phase — by construction rather than by
+ * a flag someone has to remember to check.
+ */
+export interface RecoveryUiHooks {
+  /** A new episode exists. The manager decides whether to ask for a pane. */
+  onEpisodeOpened(episodeId: string): void;
+  /** An episode reached a terminal state. */
+  onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void;
+  /** Is a renderer painting this episode RIGHT NOW? */
+  leaseValid(episodeId: string): boolean;
+}
+
+let uiHooks: RecoveryUiHooks | null = null;
+
+/** Install (or, with null, remove) the recovery UI. Process-scoped. */
+export function registerRecoveryUi(hooks: RecoveryUiHooks | null): void {
+  uiHooks = hooks;
+}
+
+/**
  * Is a renderer currently painting this episode?
  *
- * SEAM, deliberately inert in this phase. There is no socket, no pane and no
- * heartbeat yet, so the honest answer is false and the exhaustion arm keeps
- * answering today's 400. It is a function rather than a field because the
- * answer is LIVE — a lease read once and cached into a boolean is stale by the
- * time the status is chosen, which is the whole reason the previous design's
- * `uiAttached` latch was wrong.
+ * A FUNCTION AND NOT A FIELD, because the answer is LIVE. A lease read once and
+ * cached into a boolean is already stale by the time a status is chosen from
+ * it — which is precisely how the superseded `uiAttached` latch could report a
+ * banner that had been killed, closed or frozen minutes earlier.
+ *
+ * FALSE whenever no UI is installed, which is every non-interactive surface.
  */
-export function uiLeaseValid(_episodeId: string): boolean {
-  return false;
+export function uiLeaseValid(episodeId: string): boolean {
+  if (!uiHooks) return false;
+  try {
+    return uiHooks.leaseValid(episodeId);
+  } catch {
+    // A throwing lease probe must read as "no surface", never as "yes". The
+    // asymmetry is the point: false costs a legible inline error, true costs
+    // the turn.
+    return false;
+  }
+}
+
+/** Record that a pane was ASKED for. Asking and being told no is still asking. */
+export function markPaneRequested(episodeId: string): void {
+  const ep = byId.get(episodeId);
+  if (!ep || ep.paneRequestedAtPerf !== null) return;
+  ep.paneRequestedAtPerf = recoveryClock().now();
+}
+
+/** Live episodes, most waiters first, tie-broken by earliest start. */
+function liveEpisodes(): Episode[] {
+  const live = [...episodes.values()].filter(
+    (e) => e.state === "attempting" || e.state === "waiting" || e.state === "handoff"
+  );
+  live.sort((a, b) => b.waiters.size - a.waiters.size || a.startedAtMs - b.startedAtMs);
+  return live;
+}
+
+/**
+ * The episode a renderer should paint, as a wire frame — or null.
+ *
+ * Concurrent episodes are ORDINARY: the main loop's provider and the small
+ * title model's provider can be unreachable at the same moment. Which one wins
+ * is not load-bearing, because the lease is per-episode — a non-rendered
+ * episode simply holds no lease, and at exhaustion answers the inline error,
+ * which is exactly what "a retryable status is permissible only while the
+ * reason is legible" demands.
+ *
+ * THE UNIT CONVERSION HAPPENS HERE AND NOWHERE ELSE. Intervals inside this
+ * module are process ms; everything on the wire is epoch ms, because the pane
+ * is a different process with a different `performance.now()` origin and would
+ * render a process-ms instant as an arbitrary number with no error anywhere.
+ */
+export function renderableEpisodeFrame(): RecoveryEpisodeFrame | null {
+  const live = liveEpisodes();
+  const ep = live[0];
+  if (!ep) return null;
+  const clock = recoveryClock();
+  const perfNow = clock.now();
+  const epochNow = Date.now();
+  const nextAttemptAtMs =
+    ep.nextAttemptAtPerf === null ? null : epochNow + (ep.nextAttemptAtPerf - perfNow);
+  return {
+    v: RECOVERY_PROTOCOL_VERSION,
+    type: "episode",
+    episodeId: ep.episodeId,
+    state: ep.state as RecoveryFrameState,
+    tier: ep.maxTier,
+    providerDisplayName: ep.providerDisplayName,
+    host: ep.host,
+    endpoint: ep.endpoint,
+    kind: ep.kind,
+    code: ep.code,
+    loopback: ep.loopback,
+    reason: ep.reason,
+    attempts: ep.attempts,
+    clientRetries: ep.clientRetries,
+    startedAtMs: ep.startedAtMs,
+    nextAttemptAtMs,
+    lastOutcome: ep.lastOutcome,
+    waiters: ep.waiters.size,
+    otherEpisodes: live.length - 1,
+  };
+}
+
+/** How many attempts this episode has made. For the manual-retry log line. */
+export function attemptsSoFar(episodeId: string): number {
+  return byId.get(episodeId)?.attempts ?? 0;
+}
+
+/** Is this episode still live? Used by the UI manager's lease check. */
+export function episodeIsLive(episodeId: string): boolean {
+  const ep = byId.get(episodeId);
+  if (!ep) return false;
+  return ep.state === "attempting" || ep.state === "waiting" || ep.state === "handoff";
+}
+
+/** `[q] give up` — the user said stop, so every live episode stops. */
+export function giveUpAll(): void {
+  for (const ep of liveEpisodes()) giveUp(ep.episodeId);
 }
 
 export interface EpisodeHandle {
@@ -247,7 +373,11 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
       endpoint: seed.endpoint,
       host,
       kind: seed.kind,
-      loopback: false,
+      // Decided ONCE, at creation, from the endpoint — never from the error
+      // code. On macOS an unrouted REMOTE address reports `ECONNREFUSED` after
+      // 75 s, the same code a loopback port refuses in 5 ms, so the code cannot
+      // tell them apart and only the address can.
+      loopback: isLoopback(seed.endpoint),
       code: seed.code,
       reason: seed.reason,
       state: "attempting",
@@ -279,6 +409,18 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
       `[Recovery] episode ${ep.episodeId} opened for ${ep.providerDisplayName} at ${ep.endpoint} ` +
         `(${ep.kind}/${ep.code ?? "?"})`
     );
+    // Ask for a surface. Nothing is installed unless this process was launched
+    // through the magmux wrapper, so on every other surface this is a no-op —
+    // which is why `-p`, `serve` and the suite are untouched.
+    if (uiHooks) {
+      try {
+        uiHooks.onEpisodeOpened(ep.episodeId);
+      } catch (err) {
+        // A UI failure must never break recovery. The banner is what EARNS the
+        // wait; it is not what performs it.
+        log(`[Recovery] UI could not open for episode ${ep.episodeId}: ${String(err)}`);
+      }
+    }
   }
 
   const episode = ep;
@@ -466,6 +608,13 @@ function closeEpisode(episode: Episode, outcome: RecoveryOutcome): void {
     `[Recovery] episode ${episode.episodeId} closed: ${outcome} after ` +
       `${Math.round(clock.now() - episode.startedAtPerf)}ms and ${episode.attempts} attempts`
   );
+  if (uiHooks) {
+    try {
+      uiHooks.onEpisodeClosed(episode.episodeId, outcome);
+    } catch {
+      /* see onEpisodeOpened — the UI never breaks recovery */
+    }
+  }
 }
 
 /**
@@ -482,12 +631,22 @@ export function tryNow(episodeId: string): void {
   for (const w of [...ep.waiters]) w.wake?.({ kind: "attempt" });
 }
 
-/** Wake every waiter of every episode with `gave_up`. The `[q]` key, later. */
+/**
+ * `[q] give up` for ONE episode: every waiter answers today's inline error and
+ * the episode is over.
+ *
+ * `gaveUp` latches before the close so a waiter that has not parked yet — one
+ * between attempts at the instant the key was pressed — still reads the answer
+ * rather than parking on a timer that no longer exists. The user said stop, so
+ * stop, and say why inline: this is the missing half of an affordance the
+ * superseded design labelled "give up" and gave no effect at all.
+ */
 export function giveUp(episodeId: string): void {
   const ep = byId.get(episodeId);
   if (!ep) return;
   ep.gaveUp = true;
   clearAttemptTimer(ep);
+  closeEpisode(ep, "gave_up");
   for (const w of [...ep.waiters]) w.wake?.({ kind: "gave_up" });
 }
 

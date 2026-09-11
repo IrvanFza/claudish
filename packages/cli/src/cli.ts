@@ -69,6 +69,7 @@ import {
   loadRoutingRules,
   matchRoutingRule,
 } from "./providers/routing-rules.js";
+import { setRecoveryFlagOverrides } from "./recovery/settings.js";
 import { cliAnsi } from "./theme/ansi.js";
 import type { ClaudishConfig } from "./types.js";
 import { VERSION } from "./version.js";
@@ -338,6 +339,19 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       if (config.logLevel === "info") {
         config.logLevel = "debug";
       }
+    } else if (arg === "--recovery-ui" || arg === "--no-recovery-ui") {
+      // Whether claudish may own a surface — a magmux pane — on which a network
+      // outage's reason is legible. The flag layer of the precedence chain
+      // `flag > env > project > global > true` that `recovery/settings.ts`
+      // implements; the same shape `--debug-claudish` uses two branches up.
+      setRecoveryFlagOverrides({ recoveryUi: arg === "--recovery-ui" });
+    } else if (arg === "--recovery" || arg === "--no-recovery") {
+      // The master switch for the retry ladder ITSELF, independent of the UI.
+      // Off restores the pre-recovery behaviour everywhere, byte for byte, which
+      // is what makes it the documented CI switch: a scripted `-p` against a
+      // dead endpoint goes back to failing in milliseconds instead of holding
+      // the request for the whole tier-1 deadline.
+      setRecoveryFlagOverrides({ recovery: arg === "--recovery" });
     } else if (arg === "--no-debug-claudish") {
       // Escape hatch when debug is globally enabled (config.json / CLAUDISH_DEBUG):
       // turn the debug file log off for this single run.

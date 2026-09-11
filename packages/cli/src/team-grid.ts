@@ -1,10 +1,9 @@
 import { spawn } from "node:child_process";
-import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { findMagmuxBinary } from "./launcher/magmux-binary.js";
 import { loadConfig, loadLocalConfig } from "./profile-config.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import {
@@ -173,53 +172,6 @@ function buildPaneHeader(model: string, prompt: string, bg: string): string {
   lines.push(`printf '\\033[2m  %s\\033[0m\\n\\n' '────────────────────────────────────────';`);
 
   return lines.join(" ");
-}
-
-// ─── Multiplexer Binary Detection ────────────────────────────────────────────
-
-/**
- * Find the magmux binary. Priority:
- * 1. Bundled magmux (native/magmux-<platform>-<arch>)
- * 2. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
- * 3. magmux in PATH (e.g. via Homebrew)
- */
-function findMagmuxBinary(): string {
-  const thisFile = fileURLToPath(import.meta.url);
-  const thisDir = dirname(thisFile);
-  const pkgRoot = join(thisDir, "..");
-  const platform = process.platform;
-  const arch = process.arch;
-
-  // 1. Bundled magmux (native/magmux-<platform>-<arch>)
-  const bundledMagmux = join(pkgRoot, "native", `magmux-${platform}-${arch}`);
-  if (existsSync(bundledMagmux)) return bundledMagmux;
-
-  // 2. Platform-specific npm package (@claudish/magmux-<platform>-<arch>)
-  //    npm installs only the matching platform's optional dep
-  try {
-    const pkgName = `@claudish/magmux-${platform}-${arch}`;
-    // Walk up from this file to find node_modules
-    let searchDir = pkgRoot;
-    for (let i = 0; i < 5; i++) {
-      const candidate = join(searchDir, "node_modules", pkgName, "bin", "magmux");
-      if (existsSync(candidate)) return candidate;
-      const parent = dirname(searchDir);
-      if (parent === searchDir) break;
-      searchDir = parent;
-    }
-  } catch {
-    /* not installed */
-  }
-
-  // 3. magmux in PATH
-  try {
-    const result = execSync("which magmux", { encoding: "utf-8" }).trim();
-    if (result) return result;
-  } catch {
-    /* not in PATH */
-  }
-
-  throw new Error("magmux not found. Install it:\n  brew install MadAppGang/tap/magmux");
 }
 
 // ─── Magmux Event Protocol ───────────────────────────────────────────────────

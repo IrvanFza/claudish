@@ -39,6 +39,7 @@ import { deepMergeParams } from "../model-params.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import { recoveryClock } from "../recovery/clock.js";
+import { uiLeaseValid } from "../recovery/coordinator.js";
 import { resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
@@ -548,10 +549,21 @@ export class ComposedHandler implements ModelHandler {
         // socket that is already gone.
         return { kind: "respond", response: new Response(null, { status: 499 }) };
       default: {
+        // THE LEASE IS READ HERE AND NOWHERE ELSE, at the instant the status is
+        // chosen — never cached off the result object, which would be stale by
+        // the time it was destructured.
+        //
+        // In THIS phase it only goes into the log. That is deliberate: shipping
+        // the 503 flip before the banner exists recreates the buried-reason bug
+        // this whole feature exists to kill. What the log buys now is the
+        // ability to prove, one phase early, that the lease is still valid at
+        // exhaustion after a 45-second attempt — the defect that made every
+        // loopback-only test pass while the feature did not work.
+        const leased = uiLeaseValid(result.episodeId);
         log(
           `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
-            `in ${result.recoveryMs}ms (episode ${result.episodeId}, outcome ${result.kind}) — ` +
-            "answering connection_error"
+            `in ${result.recoveryMs}ms (episode ${result.episodeId}, outcome ${result.kind}, ` +
+            `ui_lease=${leased}) — answering connection_error`
         );
         return {
           kind: "respond",

@@ -17,6 +17,7 @@ import { isatty } from "node:tty";
 import { lookupModelForProvider } from "./adapters/model-catalog.js";
 import { classifierPassthroughEnabled } from "./classifier-passthrough.js";
 import { ENV } from "./config.js";
+import { planMagmuxWrap } from "./launcher/magmux-wrapper.js";
 // Aliased: runClaudeWithProxy declares its own local `log` (a quiet-aware
 // console printer), and an unaliased import would be shadowed inside it.
 import { log as debugLog, logStderr } from "./logger.js";
@@ -25,6 +26,8 @@ import { discoverContextWindow } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
+import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
+import { resolveRecoveryUi } from "./recovery/settings.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -1932,11 +1935,66 @@ export async function runClaudeWithProxy(
         ? ["inherit", "inherit", "pipe"]
         : "inherit";
 
-  const proc = spawn(spawnCommand, claudeArgs, {
-    env,
-    stdio,
-    shell: needsShell,
-  });
+  // Wrap the spawn in a magmux pane when — and ONLY when — the session is
+  // interactive, stdout is a real TTY, and the binary resolves. That is the
+  // whole gate: `-p`, `--stdin`, `serve`, the MCP server and the `team --grid`
+  // panes take the untouched path below, and a machine without magmux launches
+  // exactly as it did before this feature existed.
+  //
+  // The pane is what earns claudish the right to WAIT on a network fault
+  // instead of killing the turn: it is the only surface claudish owns during
+  // an interactive session, and a retryable status is only honest while the
+  // reason is legible somewhere.
+  //
+  // `resolveRecoveryUi()` is the user's half of the gate — flag > env > project
+  // > global > true. It decides whether claudish may own a SURFACE; it never
+  // decides whether a retry happens. Off means no pane, therefore no lease,
+  // therefore an inline error at exhaustion — which is the 503-vs-400 decision
+  // made structurally rather than by a second predicate somewhere else.
+  const wrap = resolveRecoveryUi()
+    ? planMagmuxWrap({
+        claudeBinary,
+        claudeArgs,
+        childEnv: env,
+        cwd: process.cwd(),
+        interactive: Boolean(config.interactive),
+        stdoutIsTty: Boolean(process.stdout.isTTY),
+      })
+    : null;
+
+  const proc = wrap
+    ? spawn(wrap.command, wrap.args, { env: wrap.env, stdio, shell: false })
+    : spawn(spawnCommand, claudeArgs, {
+        env,
+        stdio,
+        shell: needsShell,
+      });
+
+  if (wrap) {
+    wrap.watch(proc);
+    // Hand the control socket to the proxy as an EXPLICIT input. It cannot be
+    // discovered: claudish is magmux's parent and `MAGMUX_SOCK` is exported
+    // downward only, so the `--id` path — fixed before magmux starts — is the
+    // only way the parent can ever know where to send `open_pane`.
+    installRecoveryUi(wrap.controlSocket);
+    wrap.onClaudeExit(() => {
+      // Claude Code is gone, so nothing can consume a recovery any more. Take
+      // the pane down at once rather than after its linger: `-w` waits for
+      // EVERY pane, so a lingering banner would hold the whole session open
+      // after the user had already quit.
+      void shutdownRecoveryUi();
+    });
+  } else if (resolveRecoveryUi() && config.interactive && process.env.MAGMUX_SOCK) {
+    // Already inside someone else's magmux — `team --grid --mode interactive`,
+    // or a user who launched claudish in a pane by hand. There is nothing to
+    // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI
+    // installs against the ambient control socket. In a grid this runs in N
+    // processes at once; the cross-process `O_EXCL` lock decides which one
+    // serves the banner, and the losers still retry and still recover — they
+    // simply hold no lease and answer inline at exhaustion, which is exactly
+    // what "a retryable status only while the reason is legible" requires.
+    installRecoveryUi(null);
+  }
 
   if (filterChildStderr && proc.stderr) {
     relayChildStderr(proc.stderr);
@@ -1988,12 +2046,25 @@ export async function runClaudeWithProxy(
   }>((resolve) => {
     proc.on("exit", (code, signal) => {
       setClaudeCodeRunning(false);
+      // Under the wrapper the process that just exited is MAGMUX, and magmux's
+      // status does not carry the pane's — measured: pane 0 exited 42 while
+      // magmux stayed alive waiting for a second pane. The pane's own exit is
+      // announced on the control socket, and that announcement is the
+      // authority for Claude Code's exit code. Falling back to magmux's is
+      // right for the case where magmux itself died first.
+      const paneExit = wrap?.paneExitCode() ?? null;
       resolve({
-        exitCode: signal ? 128 + (SIGNAL_EXIT_NUMBERS[signal] ?? 0) : (code ?? 1),
+        exitCode:
+          paneExit !== null
+            ? paneExit
+            : signal
+              ? 128 + (SIGNAL_EXIT_NUMBERS[signal] ?? 0)
+              : (code ?? 1),
         exitSignal: signal,
       });
     });
   });
+  wrap?.cleanup();
 
   // The only durable record of WHY the run ended. The always-on session log
   // carries proxy traffic, so a session that died before its first request left
