@@ -39,7 +39,12 @@ import { deepMergeParams } from "../model-params.js";
 import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import { recoveryClock } from "../recovery/clock.js";
-import { episodeCount, noteTargetReachable, uiLeaseValid } from "../recovery/coordinator.js";
+import {
+  type RecoveryOutcome,
+  episodeCount,
+  noteTargetReachable,
+  uiLeaseValid,
+} from "../recovery/coordinator.js";
 import { resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
@@ -48,6 +53,7 @@ import {
 } from "../services/vision-proxy.js";
 import { type SessionEventRegistry, extractSessionId } from "../session-events/index.js";
 import { applyProInjection } from "../session-events/pro-injection.js";
+import type { StatsEvent } from "../stats-otlp.js";
 import { recordStats } from "../stats.js";
 import { classifyError, reportError } from "../telemetry.js";
 import { transformOpenAIToClaude } from "../transform.js";
@@ -99,6 +105,28 @@ import { captureUpstreamError } from "./shared/upstream-error-capture.js";
  * lasted minutes, so the useful attempts are the late ones.
  */
 const STREAM_RETRY_DELAYS_MS = [3_000, 15_000, 30_000];
+
+/**
+ * One request's running account of what network recovery cost it. Mutable, and
+ * mutated only by `recoverConnection`.
+ *
+ * Every field is REQUEST-scoped even though the episode behind them is not.
+ * See `ComposedHandler.newRecoveryTally` for why that distinction is the whole
+ * point, and `transient-retry.ts`'s `ConnectionRetryTally` for where the
+ * request-scoped figures come from.
+ */
+interface RecoveryTally {
+  /** Re-issues this request made. Not counting the failure that started it. */
+  retries: number;
+  /** Ms of this request's own latency spent inside the ladder. */
+  recoveryMs: number;
+  /** Set once an episode exists. Its presence is what makes the rest real. */
+  episodeId?: string;
+  /** Which tier-2 re-entry this request is. 0 = the original. */
+  clientRetry: number;
+  /** How the episode ended for this request, once it has. */
+  outcome?: RecoveryOutcome;
+}
 
 function extractAuthHeaders(c: Context): VisionProxyAuthHeaders {
   const headers = c.req.header();
@@ -349,6 +377,50 @@ export class ComposedHandler implements ModelHandler {
   }
 
   /**
+   * What one REQUEST did inside the retry ladder, accumulated across every site
+   * in that request that could enter it.
+   *
+   * One per `handle()` call, never on `this` — a `ComposedHandler` instance is
+   * reused for the life of the process and serves concurrent requests, so an
+   * instance field here would report one request's outage on another request's
+   * record. The cost of getting that wrong is not a wrong number in a log: it
+   * is a wrong number in the only stream that can answer "how often does this
+   * happen", which is what the feature was measured by.
+   *
+   * ACCUMULATION IS PER-REQUEST AND LAST-EPISODE-WINS. A request can hit an
+   * auth-path episode and then a fetch-path episode. Attempts and waits ADD
+   * (they are both this request's own time, and there is exactly one record per
+   * request), while `episodeId` and `clientRetry` are overwritten — so the id
+   * that survives is the one belonging to the episode that DECIDED THE STATUS,
+   * which is the only reading under which a scalar correlation id is
+   * well-defined.
+   */
+  private static newRecoveryTally(): RecoveryTally {
+    return { retries: 0, recoveryMs: 0, clientRetry: 0 };
+  }
+
+  /**
+   * The recovery half of a stats event — spread into every `recordStats` on a
+   * path a recovery could precede.
+   *
+   * Empty unless an episode actually happened, which is what keeps a healthy
+   * request's record byte-identical to what it was before this feature existed.
+   * `retry_attempts: 0` IS emitted when an episode existed and this request
+   * added no re-issue to it; that is a different fact from "no recovery", and
+   * only the presence of `recovery_episode_id` distinguishes them.
+   */
+  private recoveryStats(tally: RecoveryTally | undefined): Partial<StatsEvent> {
+    if (!tally?.episodeId) return {};
+    return {
+      retry_attempts: tally.retries,
+      recovery_ms: tally.recoveryMs,
+      recovery_episode_id: tally.episodeId,
+      recovery_client_retry: tally.clientRetry,
+      ...(tally.outcome ? { recovery_outcome: tally.outcome } : {}),
+    };
+  }
+
+  /**
    * The ONE response shape for "claudish could not reach the host".
    *
    * Every outbound call in this handler that can throw without a Response must
@@ -378,7 +450,18 @@ export class ComposedHandler implements ModelHandler {
     ctx: {
       startTime: number;
       fallbackMeta?: { chain: string[]; attempts: number };
-      retryAttempted?: boolean;
+      /**
+       * This request's ladder account, if it ran one. Absent means the ladder
+       * was skipped, which is today's immediate-400 behaviour.
+       */
+      recovery?: RecoveryTally;
+      /**
+       * A retry this request made BEFORE the ladder — the parameter-recovery
+       * re-fetch and the forced-auth re-fetch both are one. OR'd with the
+       * ladder's own count rather than replaced by it, because both are true
+       * answers to "did claudish retry before reporting this".
+       */
+      retriedBeforeLadder?: boolean;
       authType?: "api-key" | "oauth" | "none";
       /** Where the failure happened, for the debug log only. */
       site?: string;
@@ -397,7 +480,12 @@ export class ComposedHandler implements ModelHandler {
       modelId: this.targetModel,
       httpStatus: undefined,
       isStreaming: false,
-      retryAttempted: ctx.retryAttempted ?? false,
+      // DERIVED, never hand-set. This field had been a literal `false` on this
+      // path since before the ladder existed, so every recovered-then-failed
+      // outage was reported as a first-and-only attempt. It is true exactly
+      // when this request re-issued the operation at least once, from either
+      // source.
+      retryAttempted: (ctx.retriedBeforeLadder ?? false) || (ctx.recovery?.retries ?? 0) > 0,
       isInteractive: this.isInteractive,
       ...(ctx.authType ? { authType: ctx.authType } : {}),
     });
@@ -419,6 +507,7 @@ export class ComposedHandler implements ModelHandler {
         fallback_chain: ctx.fallbackMeta?.chain,
         fallback_attempts: ctx.fallbackMeta?.attempts,
         invocation_mode: this.options.invocationMode ?? "auto-route",
+        ...this.recoveryStats(ctx.recovery),
       });
     } catch {
       // Stats must never crash claudish
@@ -469,10 +558,15 @@ export class ComposedHandler implements ModelHandler {
     conn: { kind: ConnectionErrorKind; code: string },
     endpoint: string,
     ctx: {
+      /** EPISODE-scoped, and deliberately so: these two are what the SENTENCE
+       *  quotes, and the sentence is about the outage rather than about this
+       *  socket. The request-scoped figures the stats record are in
+       *  `recovery`. */
       startTime: number;
       attempts: number;
       recoveryMs: number;
       fallbackMeta?: { chain: string[]; attempts: number };
+      recovery?: RecoveryTally;
     }
   ): Response {
     const reason = buildConnectionErrorMessage(conn.kind, this.provider.displayName, endpoint);
@@ -495,6 +589,7 @@ export class ComposedHandler implements ModelHandler {
         fallback_chain: ctx.fallbackMeta?.chain,
         fallback_attempts: ctx.fallbackMeta?.attempts,
         invocation_mode: this.options.invocationMode ?? "auto-route",
+        ...this.recoveryStats(ctx.recovery),
       });
     } catch {
       // Stats must never crash claudish
@@ -579,9 +674,16 @@ export class ComposedHandler implements ModelHandler {
       startTime: number;
       deadlineAt: number;
       fallbackMeta?: { chain: string[]; attempts: number };
-      retryAttempted?: boolean;
       authType?: "api-key" | "oauth" | "none";
       site: string;
+      /** True at the two sites that are THEMSELVES a retry. See the field of
+       *  the same name on `respondConnectionError`. */
+      retriedBeforeLadder?: boolean;
+      /**
+       * THIS REQUEST'S tally, created once per `handle()` and threaded through
+       * every site that can enter the ladder. Mutated here and nowhere else.
+       */
+      recovery: RecoveryTally;
     }
   ): Promise<{ kind: "value"; value: T } | { kind: "respond"; response: Response }> {
     const skip = this.shouldSkipTier1(c, ctx.deadlineAt);
@@ -620,15 +722,33 @@ export class ComposedHandler implements ModelHandler {
       signal: this.clientSignal(c),
     });
 
+    // Fold this ladder run into the request's account BEFORE any arm below can
+    // return. A request that recovers at the auth site and then exhausts at the
+    // fetch site must report BOTH sets of attempts and BOTH waits — they were
+    // all its own latency — under the id of the episode that decided its
+    // status, which is the later one. Both halves of that are this statement.
+    ctx.recovery.retries += result.requestRetries;
+    ctx.recovery.recoveryMs += result.requestRecoveryMs;
+    ctx.recovery.episodeId = result.episodeId;
+    ctx.recovery.clientRetry = result.clientRetry;
+
     switch (result.kind) {
       case "ok":
+        ctx.recovery.outcome = "recovered";
         return { kind: "value", value: result.value };
       case "threw":
         // Classification runs on every attempt. Something that is not a
         // connection failure must keep its own route out of here.
         throw result.error;
       case "client_gone":
-        this.recordClientGone(ctx.startTime, ctx.fallbackMeta, result.episodeId, result.attempts);
+        ctx.recovery.outcome = "client_gone";
+        this.recordClientGone(
+          ctx.startTime,
+          ctx.fallbackMeta,
+          result.episodeId,
+          result.attempts,
+          ctx.recovery
+        );
         // Nobody reads this. It exists so Hono has an object to return for a
         // socket that is already gone.
         return { kind: "respond", response: new Response(null, { status: 499 }) };
@@ -653,6 +773,8 @@ export class ComposedHandler implements ModelHandler {
         // by definition alive), so a lease-only test would answer a retryable
         // 503 and Claude Code would immediately re-ask — turning the give-up
         // key into a no-op with a banner still on screen.
+        ctx.recovery.outcome = result.kind === "exhausted" ? "handoff" : "gave_up";
+
         if (result.kind === "exhausted" && leased) {
           log(
             `[Recovery] ${this.provider.displayName} exhausted after ${result.attempts} attempts ` +
@@ -666,6 +788,7 @@ export class ComposedHandler implements ModelHandler {
               attempts: result.attempts,
               recoveryMs: result.recoveryMs,
               fallbackMeta: ctx.fallbackMeta,
+              recovery: ctx.recovery,
             }),
           };
         }
@@ -677,10 +800,7 @@ export class ComposedHandler implements ModelHandler {
         );
         return {
           kind: "respond",
-          response: this.respondConnectionError(c, result.error, result.conn, result.endpoint, {
-            ...ctx,
-            retryAttempted: true,
-          }),
+          response: this.respondConnectionError(c, result.error, result.conn, result.endpoint, ctx),
         };
       }
     }
@@ -691,7 +811,8 @@ export class ComposedHandler implements ModelHandler {
     startTime: number,
     fallbackMeta: { chain: string[]; attempts: number } | undefined,
     episodeId: string,
-    attempts: number
+    attempts: number,
+    recovery?: RecoveryTally
   ): void {
     log(
       `[Recovery] client disconnected after ${attempts} attempts (episode ${episodeId}) — ` +
@@ -714,6 +835,7 @@ export class ComposedHandler implements ModelHandler {
         fallback_chain: fallbackMeta?.chain,
         fallback_attempts: fallbackMeta?.attempts,
         invocation_mode: this.options.invocationMode ?? "auto-route",
+        ...this.recoveryStats(recovery),
       });
     } catch {
       // Stats must never crash claudish
@@ -729,6 +851,11 @@ export class ComposedHandler implements ModelHandler {
     // Used in all stats recording paths so a single event carries complete info.
     const fallbackMeta = this.pendingFallbackMeta;
     this.pendingFallbackMeta = undefined;
+    // This request's network-recovery account. A local, like `fallbackMeta` and
+    // for the same reason: the handler instance outlives the request and serves
+    // several at once. It stays all-zero and contributes NOTHING to any stats
+    // record unless a classified connection failure actually occurs.
+    const recoveryTally = ComposedHandler.newRecoveryTally();
     // 1. Transform incoming Claude-format request
     const { claudeRequest, droppedParams } = transformOpenAIToClaude(payload);
 
@@ -997,6 +1124,7 @@ export class ComposedHandler implements ModelHandler {
               fallbackMeta,
               authType: "oauth",
               site: "refreshAuth",
+              recovery: recoveryTally,
             }
           );
           if (outcome.kind === "respond") return outcome.response;
@@ -1106,6 +1234,7 @@ export class ComposedHandler implements ModelHandler {
           fallbackMeta,
           authType: "oauth",
           site: "getHeaders",
+          recovery: recoveryTally,
         }
       );
       if (outcome.kind === "respond") return outcome.response;
@@ -1186,6 +1315,7 @@ export class ComposedHandler implements ModelHandler {
         deadlineAt: tier1DeadlineAt(c),
         fallbackMeta,
         site: "fetch",
+        recovery: recoveryTally,
       });
       if (outcome.kind === "respond") return outcome.response;
       response = outcome.value;
@@ -1319,8 +1449,9 @@ export class ComposedHandler implements ModelHandler {
                 // there is no unclamped attempt left ahead of it to reserve for.
                 deadlineAt: tier1DeadlineAt(c),
                 fallbackMeta,
-                retryAttempted: true,
+                retriedBeforeLadder: true,
                 site: "parameter-recovery",
+                recovery: recoveryTally,
               }
             );
             if (outcome.kind === "respond") return outcome.response;
@@ -1414,6 +1545,7 @@ export class ComposedHandler implements ModelHandler {
                 fallback_chain: fallbackMeta?.chain,
                 fallback_attempts: fallbackMeta?.attempts,
                 invocation_mode: this.options.invocationMode ?? "auto-route",
+                ...this.recoveryStats(recoveryTally),
               });
             } catch {
               // Stats must never crash claudish
@@ -1447,9 +1579,10 @@ export class ComposedHandler implements ModelHandler {
                 startTime,
                 deadlineAt: tier1DeadlineAt(c),
                 fallbackMeta,
-                retryAttempted: true,
+                retriedBeforeLadder: true,
                 authType: "oauth",
                 site: "forceRefreshAuth",
+                recovery: recoveryTally,
               }
             );
             if (outcome.kind === "respond") return outcome.response;
@@ -1492,6 +1625,7 @@ export class ComposedHandler implements ModelHandler {
                 fallback_chain: fallbackMeta?.chain,
                 fallback_attempts: fallbackMeta?.attempts,
                 invocation_mode: this.options.invocationMode ?? "auto-route",
+                ...this.recoveryStats(recoveryTally),
               });
             } catch {
               // Stats must never crash claudish
@@ -1594,6 +1728,7 @@ export class ComposedHandler implements ModelHandler {
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
             invocation_mode: this.options.invocationMode ?? "auto-route",
+            ...this.recoveryStats(recoveryTally),
           });
         } catch {
           // Stats must never crash claudish
@@ -1681,6 +1816,7 @@ export class ComposedHandler implements ModelHandler {
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
             invocation_mode: this.options.invocationMode ?? "auto-route",
+            ...this.recoveryStats(recoveryTally),
           });
         } catch {
           // Stats must never crash claudish
@@ -1739,6 +1875,7 @@ export class ComposedHandler implements ModelHandler {
             fallback_chain: fallbackMeta?.chain,
             fallback_attempts: fallbackMeta?.attempts,
             invocation_mode: this.options.invocationMode ?? "auto-route",
+            ...this.recoveryStats(recoveryTally),
           });
         } catch {
           // Stats must never crash claudish
@@ -1793,6 +1930,7 @@ export class ComposedHandler implements ModelHandler {
           fallback_chain: fallbackMeta?.chain,
           fallback_attempts: fallbackMeta?.attempts,
           invocation_mode: this.options.invocationMode ?? "auto-route",
+          ...this.recoveryStats(recoveryTally),
         });
       } catch {
         // Stats must never crash claudish

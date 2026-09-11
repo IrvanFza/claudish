@@ -251,7 +251,11 @@ Every retry hook in claudish keys off the HTTP **status** (`anthropic-compat.ts`
 - **Terminal** in-stream errors (`context_length_exceeded`, `invalid_request_error`) are NOT retried — they keep the existing inline-text treatment, which is the actionable path for them.
 - **Anything else** (any content event) → `clean`, and the consumed bytes are **replayed byte-identically** so the real parser sees an unchanged stream.
 
-This is the one place the 400-not-503 doctrine (`composed-handler.ts` ~line 461) is deliberately inverted. That rule exists because a 503 makes Claude Code show "API error · Retrying · attempt N/10" with the real reason buried — correct for **terminal** faults, where retrying is theatre. An upstream overload is the opposite: genuinely transient, and the retry banner is the appropriate behaviour because retrying is the actual remedy. Terminal → 400 inline; transient-after-our-own-retries → 503.
+This is **one of two** places the 400-not-503 doctrine (`composed-handler.ts`'s `respondConnectionError`) is deliberately inverted. That rule exists because a 503 makes Claude Code show "API error · Retrying · attempt N/10" with the real reason buried — correct for **terminal** faults, where retrying is theatre. An upstream overload is the opposite: genuinely transient, and the retry banner is the appropriate behaviour because retrying is the actual remedy. Terminal → 400 inline; transient-after-our-own-retries → 503.
+
+The second inversion is network recovery's tier-2 handoff, which earns the same 503 by a different argument — not "the banner is the remedy" but "a pane is painting the reason, so the status no longer has to carry it". See [`network-recovery.md`](network-recovery.md).
+
+> This reference was `~line 461` until v9.2.x, then really `:665-675`, and is now inside a named method. **Cite the symbol, not the line.** Three separate readers have been sent to the wrong part of this 2,000-line file by a number that was correct when it was written.
 
 **Trade-off to know:** sniffing withholds response headers until the first decisive event, capped by `DEFAULT_SNIFF_BUDGET_MS` (12s, chosen above the 0.85s–7.7s error latencies observed in the real log). On a healthy xhigh-reasoning turn that delays `message_start` by however long the model thinks before its first output item. No content is lost or reordered — the client shows a spinner either way — but time-to-first-byte is genuinely later than before. Past the budget claudish flushes and degrades gracefully to the inline-text path.
 

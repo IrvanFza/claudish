@@ -60,16 +60,18 @@ export function resolveRecoveryEnabled(): boolean {
  * May claudish own a surface on which a recovery episode's reason is legible?
  * Default true.
  *
- * NOTHING READS THIS YET, and that is expected. It exists now for two reasons.
- * The first is that the status decision it will gate — whether an exhausted
- * episode may answer a RETRYABLE status instead of an inline error — is a later
- * phase, and landing the switch early means that phase changes one branch
- * rather than four files. The second is the CLAUDE.md invariant it trips: a new
- * `ClaudishProfileConfig` field that is not in `loadConfig`'s allowlist AND
- * does not have a scoped reader survives on disk until the first global save
- * and is then dropped, silently. That trap has caught this codebase twice, so
- * the field is landed with its round-trip test the moment it is defined rather
- * than the moment it is first consumed.
+ * READ BY `claude-runner.ts`, which decides whether to wrap the session in a
+ * magmux pane. It is the USER'S half of the gate; the other half is
+ * `uiLeaseValid()`, which asks whether a renderer is painting THIS episode right
+ * now. Both must hold before an exhausted episode may answer a retryable 503 —
+ * the user has to have allowed a surface, and a surface has to actually exist.
+ *
+ * It was landed one phase before its first reader, deliberately, because of the
+ * CLAUDE.md invariant it trips: a new `ClaudishProfileConfig` field that is not
+ * in `loadConfig`'s allowlist AND has no scoped reader survives on disk until
+ * the first global save and is then dropped, silently. That trap has caught this
+ * codebase twice, so the field got its round-trip test the moment it was
+ * defined rather than the moment it was first consumed.
  *
  * It is a question about the USER'S CONFIGURATION and about nothing else. It
  * must never be conflated with "can this process open a pane right now", which

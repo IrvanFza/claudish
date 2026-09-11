@@ -169,35 +169,64 @@ export interface ConnectionRetryContext {
   signal: AbortSignal;
 }
 
+/**
+ * The counters every outcome carries, in TWO scopes, because the two answer
+ * different questions and conflating them mis-reports both.
+ *
+ * EPISODE scope (`attempts`, `recoveryMs`) is what the human reads: one banner
+ * saying "attempt 9 · 4m 12s in recovery" across every waiter and both tiers,
+ * which is the honest account of the OUTAGE.
+ *
+ * REQUEST scope (`requestRetries`, `requestRecoveryMs`) is what stats record,
+ * because a stats event is one-per-request by definition. The episode figures
+ * cannot stand in for these: N concurrent requests share one episode, so each
+ * would report the sum of all of them, and a tier-2 re-entry inherits counters
+ * from a request that already recorded its own — so summing `retry_attempts`
+ * over an outage would multiply it by the number of waiters and again by the
+ * number of re-entries.
+ */
+interface ConnectionRetryTally {
+  /** Episode-scoped: every attempt by every waiter, across both tiers. */
+  attempts: number;
+  /** Episode-scoped: ms since the episode opened. */
+  recoveryMs: number;
+  /**
+   * THIS request's RE-ISSUES — the operation run again, not counting the
+   * failure that brought us here. 0 is meaningful and reachable: an episode
+   * existed and this request added nothing to it because its own budget was
+   * already spent. That is what `retry_attempts` records.
+   */
+  requestRetries: number;
+  /** THIS request's own ms inside the ladder — `recovery_ms`. */
+  requestRecoveryMs: number;
+  /** Which tier-2 re-entry this is. 0 = the request that opened the episode. */
+  clientRetry: number;
+  episodeId: string;
+}
+
 export type ConnectionRetryResult<T> =
-  | { kind: "ok"; value: T; attempts: number; recoveryMs: number; episodeId: string }
+  | ({ kind: "ok"; value: T } & ConnectionRetryTally)
   /**
    * NOTE the absence of a `uiLeased` field. Whether a surface is painting this
    * episode is LIVE and must be read at the moment the status is chosen; a
    * boolean on this result IS a cache of it, and by the time a caller
    * destructures the result it can already be stale.
    */
-  | {
+  | ({
       kind: "exhausted";
       conn: ConnectionErrorInfo;
       error: unknown;
       endpoint: string;
-      attempts: number;
-      recoveryMs: number;
-      episodeId: string;
-    }
-  | {
+    } & ConnectionRetryTally)
+  | ({
       kind: "gave_up";
       conn: ConnectionErrorInfo;
       error: unknown;
       endpoint: string;
-      attempts: number;
-      recoveryMs: number;
-      episodeId: string;
-    }
-  | { kind: "client_gone"; attempts: number; recoveryMs: number; episodeId: string }
+    } & ConnectionRetryTally)
+  | ({ kind: "client_gone" } & ConnectionRetryTally)
   /** A later attempt threw something that is NOT a connection error. Not ours. */
-  | { kind: "threw"; error: unknown; attempts: number; recoveryMs: number; episodeId: string };
+  | ({ kind: "threw"; error: unknown } & ConnectionRetryTally);
 
 /** True when the rejection is the inbound client going away, not our own clamp. */
 function isClientAbort(signal: AbortSignal, err: unknown): boolean {
@@ -225,12 +254,29 @@ export async function withConnectionRetry<T>(
   ctx: ConnectionRetryContext
 ): Promise<ConnectionRetryResult<T>> {
   const clock = recoveryClock();
+  // PROCESS ms at which THIS request entered the ladder. `recovery_ms` is
+  // measured from here rather than from the episode, because an episode can be
+  // older than the request that joined it — a tier-2 re-entry inherits one —
+  // and a `recovery_ms` larger than the same record's `latency_ms` is a figure
+  // no reader can make sense of.
+  const enteredAtPerf = clock.now();
+  let requestRetries = 0;
+
   const firstConn = classifyConnectionError(first);
   if (!firstConn) {
     // The caller is contractually required to classify before calling. Being
     // defensive here costs nothing and keeps a future caller's mistake from
     // silently widening what "transient" means.
-    return { kind: "threw", error: first, attempts: 0, recoveryMs: 0, episodeId: "" };
+    return {
+      kind: "threw",
+      error: first,
+      attempts: 0,
+      recoveryMs: 0,
+      requestRetries: 0,
+      requestRecoveryMs: 0,
+      clientRetry: 0,
+      episodeId: "",
+    };
   }
 
   let conn: ConnectionErrorInfo = firstConn;
@@ -247,19 +293,27 @@ export async function withConnectionRetry<T>(
     deadlineAt: ctx.deadlineAt,
   });
 
-  const finish = <R extends ConnectionRetryResult<T>>(r: R): R => r;
+  /**
+   * The counters, snapshotted at the instant an outcome is returned. Every
+   * `return` in this function goes through it, so a new counter is added in one
+   * place and cannot be forgotten on one arm — which is how five hand-written
+   * copies of the same four fields drift.
+   */
+  const tally = () => ({
+    attempts: handle.attempts(),
+    recoveryMs: handle.recoveryMs(),
+    requestRetries,
+    requestRecoveryMs: Math.round(clock.now() - enteredAtPerf),
+    clientRetry: handle.clientRetries(),
+    episodeId: handle.episodeId,
+  });
 
   try {
     handle.recordAttemptResult(conn.code, false);
 
     for (;;) {
       if (ctx.signal.aborted) {
-        return finish({
-          kind: "client_gone",
-          attempts: handle.attempts(),
-          recoveryMs: handle.recoveryMs(),
-          episodeId: handle.episodeId,
-        });
+        return { kind: "client_gone", ...tally() };
       }
 
       const delay = connectionRetryDelayMs(handle.ladderIndex());
@@ -268,15 +322,7 @@ export async function withConnectionRetry<T>(
       // sleep. Bounding only the sleep is how a budget stops being a ceiling.
       if (now + delay + MIN_ATTEMPT_SLOT_MS > ctx.deadlineAt) {
         handle.handoff();
-        return finish({
-          kind: "exhausted",
-          conn,
-          error,
-          endpoint,
-          attempts: handle.attempts(),
-          recoveryMs: handle.recoveryMs(),
-          episodeId: handle.episodeId,
-        });
+        return { kind: "exhausted", conn, error, endpoint, ...tally() };
       }
 
       let waited: { kind: "attempt" } | { kind: "gave_up" };
@@ -285,26 +331,13 @@ export async function withConnectionRetry<T>(
       } catch (err) {
         if (isClientAbort(ctx.signal, err)) {
           log(`[Recovery] client gone during wait (episode ${handle.episodeId})`);
-          return finish({
-            kind: "client_gone",
-            attempts: handle.attempts(),
-            recoveryMs: handle.recoveryMs(),
-            episodeId: handle.episodeId,
-          });
+          return { kind: "client_gone", ...tally() };
         }
         throw err;
       }
 
       if (waited.kind === "gave_up") {
-        return finish({
-          kind: "gave_up",
-          conn,
-          error,
-          endpoint,
-          attempts: handle.attempts(),
-          recoveryMs: handle.recoveryMs(),
-          episodeId: handle.episodeId,
-        });
+        return { kind: "gave_up", conn, error, endpoint, ...tally() };
       }
 
       // Per-attempt clamp. Cleared the moment the operation settles, so it can
@@ -322,28 +355,18 @@ export async function withConnectionRetry<T>(
       const merged = AbortSignal.any([ctx.signal, attemptAc.signal]);
 
       try {
+        requestRetries++;
         const value = await op(merged);
         handle.recordAttemptResult("ok", true);
         log(
           `[Recovery] ${ctx.providerDisplayName} recovered after ${handle.attempts()} attempts ` +
             `in ${handle.recoveryMs()}ms (episode ${handle.episodeId})`
         );
-        return finish({
-          kind: "ok",
-          value,
-          attempts: handle.attempts(),
-          recoveryMs: handle.recoveryMs(),
-          episodeId: handle.episodeId,
-        });
+        return { kind: "ok", value, ...tally() };
       } catch (err) {
         if (isClientAbort(ctx.signal, err)) {
           log(`[Recovery] client gone during attempt (episode ${handle.episodeId})`);
-          return finish({
-            kind: "client_gone",
-            attempts: handle.attempts(),
-            recoveryMs: handle.recoveryMs(),
-            episodeId: handle.episodeId,
-          });
+          return { kind: "client_gone", ...tally() };
         }
         // Re-classify EVERY attempt. Our own clamp lands here as a
         // `TimeoutError`, which classification now recognises for the same
@@ -351,13 +374,7 @@ export async function withConnectionRetry<T>(
         // out of a host we could not reach in time.
         const next = classifyConnectionError(err);
         if (!next) {
-          return finish({
-            kind: "threw",
-            error: err,
-            attempts: handle.attempts(),
-            recoveryMs: handle.recoveryMs(),
-            episodeId: handle.episodeId,
-          });
+          return { kind: "threw", error: err, ...tally() };
         }
         conn = next;
         error = err;

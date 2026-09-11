@@ -398,10 +398,23 @@ function extractErrorType(body: string): string | undefined {
 export function classifyHttpError(status: number, body: string, latencyMs: number): ProbeResult {
   const lowered = body.toLowerCase();
   // A proxy-side connection failure (DNS unresolved, connection refused, host
-  // unreachable) is tagged by composed-handler as a 503 connection_error. That's
-  // a LOCAL network problem, not an upstream server error — classify it as
-  // network-error so the row reads "network error" with the proxy's actionable
-  // message ("check your network/DNS") instead of a generic "server error · 503".
+  // unreachable) is tagged by composed-handler as a **400** connection_error —
+  // NOT a 503, whatever this comment said until v9.2.x. That matters twice
+  // over. The status is 400 because a 503 makes Claude Code retry with the
+  // reason buried behind its own banner, and because `isRetryableError` would
+  // otherwise walk the fallback chain. So the test below keys off the `type`,
+  // which is status-agnostic and therefore survives both that choice and the
+  // terminal-error remap that shares the same 400.
+  //
+  // Probes never reach the retry ladder at all: `probeLink` sends
+  // `x-claudish-no-recovery: 1` and `shouldSkipTier1` honours it, so an
+  // unreachable provider still answers here in milliseconds instead of holding
+  // for the full recovery deadline and misreporting as a timeout.
+  //
+  // It is a LOCAL network problem, not an upstream server error — classify it
+  // as network-error so the row reads "network error" with the proxy's
+  // actionable message ("check your network/DNS") instead of a generic
+  // "server error".
   if (extractErrorType(body) === "connection_error") {
     return {
       state: "network-error",

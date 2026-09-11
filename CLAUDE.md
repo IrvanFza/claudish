@@ -11,6 +11,9 @@ lives in `ROADMAP.md`.
 
 - `routing.md` — `provider@model` syntax, every provider prefix, catalog-gathered route candidates and their tier order, `defaultProvider` as the fallback position, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
+- `network-recovery.md` — the two-tier connection hold: the DERIVED deadline (`API_TIMEOUT_MS`, not a
+  watchdog), why tier 2 answers 503 and never 429, why the pane lease is heartbeat-driven, the
+  five auth sites
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
 - `providers/devin.md`, `providers/grok-subscription.md`, `providers/antigravity.md`, `providers/qwen-alibaba.md` — one per reverse-engineered provider
@@ -113,6 +116,8 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `gk@` is the Grok SUBSCRIPTION; `grok@`/`xai@` is the metered `x-ai`. `moonshot-cn@` is a different service from `moonshot@`.
 - A bare Claude name (`claude-opus-5`, `opus`, `internal`) must never reach `route()`: `native-anthropic` has no credential store, so the credential filter drops it and the chain degrades to OpenRouter. Check `nativeRouteFor()` (`providers/native-route.ts`) FIRST, as the proxy does — `preflight` and the TUI probe once didn't and told agents to drop their own subscription's models. Native routes also cannot be probed from outside a session (the handler forwards the inbound Claude Code header); report them as a third outcome, never as success or failure.
 - A new `ClaudishProfileConfig` field MUST be added to `loadConfig`'s allowlist in `profile-config.ts`; otherwise it survives on disk until the first global save and is then dropped. Bit `onepasswordEnvironments`, then `keychain`.
+- A new `StatsEvent` field MUST also be pushed in `eventToLogRecord` — `stats-otlp.ts` is a HAND-WRITTEN attribute allowlist, so a field wired only into the interface and `stats.ts` is typed, buffered to `~/.claudish/stats-buffer.json`, and never sent. Nothing errors; the number is just missing from every dashboard, a quarter later. `stats-otlp.test.ts`'s table is `satisfies Record<OptionalStatsKey, …>`, so adding the field breaks compilation until it is listed there too — keep that.
+- A connection failure can arrive wearing an AUTH status code, at FIVE sites in `composed-handler.ts` (`refreshAuth`, `forceRefreshAuth`, the parameter-recovery re-fetch, `getHeaders`, the primary fetch). 401 is retryable to `FallbackHandler`, so answering it for a network fault walks a subscription user onto metered billing mid-outage; an unclassified THROW is the same bug one layer out (`{status: 0}` + an unconditional advance, with no cost warning). Classify first or rethrow unchanged — never invent a status. `getHeaders()` is the non-obvious one: for `gk@` it is the request's first network touch, and refresh-conditional, so it is rare rather than safe.
 
 ## Commands
 

@@ -298,6 +298,14 @@ export interface EpisodeHandle {
   attempts(): number;
   /** Ms since the episode opened — not since this request started. */
   recoveryMs(): number;
+  /**
+   * How many times a client has re-entered this episode after a tier-2
+   * handoff. 0 for the request that opened it.
+   *
+   * Read for stats, so that a record can say WHICH re-entry it was rather than
+   * leaving five records of one outage indistinguishable from five outages.
+   */
+  clientRetries(): number;
   ladderIndex(): number;
   /** LIVE. Never cache the result. */
   uiLeaseValid(): boolean;
@@ -441,6 +449,7 @@ export function joinEpisode(seed: EpisodeSeed): EpisodeHandle {
     key: episode.key,
     attempts: () => episode.attempts,
     recoveryMs: () => Math.round(recoveryClock().now() - episode.startedAtPerf),
+    clientRetries: () => episode.clientRetries,
     ladderIndex: () => episode.ladderIndex,
     uiLeaseValid: () => uiLeaseValid(episode.episodeId),
 

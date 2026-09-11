@@ -181,6 +181,19 @@ export function recordStats(partial: Partial<StatsEvent>): void {
     if (partial.fallback_chain !== undefined) event.fallback_chain = partial.fallback_chain;
     if (partial.fallback_attempts !== undefined)
       event.fallback_attempts = partial.fallback_attempts;
+    // Network recovery. Absent on every healthy request, and absent means
+    // absent — a `?? 0` here would put `retry_attempts: 0` on every record
+    // ever sent and make "did this turn retry" unanswerable without a join.
+    // Copying them here is only half the job: `eventToLogRecord` in
+    // stats-otlp.ts is a hand-written allowlist, and a field that reaches this
+    // block but not that one is buffered to disk and never sent.
+    if (partial.retry_attempts !== undefined) event.retry_attempts = partial.retry_attempts;
+    if (partial.recovery_ms !== undefined) event.recovery_ms = partial.recovery_ms;
+    if (partial.recovery_episode_id !== undefined)
+      event.recovery_episode_id = partial.recovery_episode_id;
+    if (partial.recovery_client_retry !== undefined)
+      event.recovery_client_retry = partial.recovery_client_retry;
+    if (partial.recovery_outcome !== undefined) event.recovery_outcome = partial.recovery_outcome;
 
     appendEvent(event);
 

@@ -65,9 +65,11 @@ What happens:
 1. Claudish creates a session directory with anonymized model IDs
 2. Generates a gridfile (one command per pane)
 3. Launches magmux with the grid layout
-4. Polls for completion and updates the status bar every 500ms
+4. Connects to magmux's IPC socket as a client and collects its lifecycle events
 
-The status bar shows live progress:
+Claudish does **not** poll. Magmux owns the entire pane lifecycle — idle detection, the `DONE`/`FAIL` overlays, the green/red tints, the status bar, and auto-exit — and pushes `snapshot`, `exit`, `results` and `shutdown` events over that socket. Claudish reads them and treats the final `results` event as the authoritative per-pane state.
+
+The status bar shows live progress, redrawn by magmux's own render loop:
 
 ```
  claudish team   3 done   32s   complete   ctrl-g q to quit
@@ -251,7 +253,7 @@ The C MTM binary still ships in the repo (`packages/cli/native/mtm/`) as a fallb
 
 ### Status bar shows stale data in grid mode
 
-**Cause**: The claudish poller writes the status bar file every 500ms. Brief delays between model completion and status bar update are normal.
+**Cause**: Magmux redraws the status bar from its own render loop, counting done and running panes. A model that has finished producing output but whose process has not yet exited still counts as running, so a brief lag between the last line of output and the counter moving is normal.
 
 **Fix**: Wait a moment. The final status always reflects the true state after all models finish.
 
