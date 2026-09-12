@@ -589,7 +589,9 @@ export class ComposedHandler implements ModelHandler {
     // note there for why it cannot run at this point.)
 
     const endpoint = this.provider.getEndpoint(this.targetModel);
-    const headers = await this.provider.getHeaders();
+    // The ORIGINAL inbound body, not the normalized `claudeRequest` clone: a
+    // header carrying conversation identity must see what Claude Code sent.
+    const headers = await this.provider.getHeaders(payload);
 
     // 6a. The body is NOT necessarily JSON. A transport may serialize the
     // payload itself (Devin encodes Connect-protobuf, credential and all).
@@ -722,7 +724,7 @@ export class ComposedHandler implements ModelHandler {
           // Re-serialize: a transport that owns its own encoding (Devin) must
           // re-encode the changed payload rather than resend the stale bytes.
           const retrySerialized = this.provider.serializeBody?.(requestPayload);
-          const retryHeaders = await this.provider.getHeaders();
+          const retryHeaders = await this.provider.getHeaders(payload);
           retryHeaders["Content-Type"] = retrySerialized?.contentType ?? "application/json";
           const retryResp = await fetch(endpoint, {
             method: "POST",
@@ -751,7 +753,7 @@ export class ComposedHandler implements ModelHandler {
         log(`[${this.provider.displayName}] Got 401, forcing auth refresh and retrying`);
         try {
           await this.provider.forceRefreshAuth();
-          const retryHeaders = await this.provider.getHeaders();
+          const retryHeaders = await this.provider.getHeaders(payload);
           // Same serialization as the primary request — this is a separate call
           // site and the easy one to forget, which is why both are pinned by
           // the same assertion.

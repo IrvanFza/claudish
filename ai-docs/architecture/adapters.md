@@ -24,6 +24,37 @@ Handles auth, endpoints, headers, rate limiting. Optionally overrides stream for
 - **Interface**: `providers/transport/types.ts`
 - **Stream format override**: LiteLLM and OpenRouter implement `overrideStreamFormat()` → `"openai-sse"`
 
+### A header that names the conversation is derived per call, never stored
+
+`getHeaders(claudeRequest?)` receives the ORIGINAL inbound body Claude Code sent
+(`handle()`'s `payload`, not the normalized `claudeRequest` clone, which adds
+`tools: []`). ComposedHandler passes it at all three call sites: the main request,
+the parameter-rejection retry and the 401 refresh retry. A header computed only on
+the main path goes missing on the retry.
+
+The value must be derived from the argument on every call. Handlers, and so
+transports, are cached one per model, and `claudish serve` hosts several
+conversations in one process. A value stored on the transport in
+`transformPayload` and read back in `getHeaders` would let a retry, which runs
+after an awaited fetch, carry another conversation's id.
+
+The one derivation is `conversationKey()` (`providers/transport/conversation-key.ts`):
+`claudish_` + sha256 of Claude Code's `session_id` from `metadata.user_id`, 32 hex.
+Codex sends it as `prompt_cache_key`; OpenCode Zen sends it as `x-opencode-session`.
+
+OpenCode Zen Go began answering every request without that header with
+`400 {"type":"MissingSessionID"}` (measured 2026-09-12; claudish's routing chain
+then stepped silently to the next provider). `OpenCodeZenTransport` adds it on
+both Zen tiers. The metered `opencode-zen` tier sends it too, on OpenCode's docs
+sentence alone: it is NOT verified live, because no `OPENCODE_API_KEY` was
+available.
+
+The fallback key costs Zen more than it costs Codex. With no session id, the key is
+one random value per process. For Codex that shares a cache hint; for Zen it is the
+upstream's routing identity, so under `serve` every sessionless conversation shares
+one `x-opencode-session`. OpenCode's error text calls a missing header a routing
+inefficiency, so a shared value is not expected to fail, but it is less precise.
+
 ## Composition in ComposedHandler
 ```
 ComposedHandler = FormatConverter (explicit adapter) + ModelTranslator (auto-selected) + ProviderTransport

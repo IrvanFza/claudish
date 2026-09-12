@@ -61,6 +61,16 @@ Frames keep arriving during a long tool call — Claude Code emits `tool_progres
 heartbeats every 30 s — which is exactly why this signal stays honest where the
 token-flow timestamp did not.
 
+**The liveness maps describe RUNNING slots only.** `idle_seconds_by_slot`,
+`activity_by_slot` and `live_output_bytes_by_slot` skip any slot whose `state` is
+not `RUNNING`; an exited slot's outcome is its `state`. The run stays registered
+until its LAST slot settles, so before 2026-09-12 an exited slot kept answering:
+activity frozen at `waiting_for_input`, idle counting up from its exit. Measured in
+a real status payload: `completedAt + idle_seconds` landed on the poll time for
+both finished slots (idle 57 s and 571 s), while the third slot was still working.
+A caller read `waiting_for_input` as a slot that needed an answer, which `team`
+has no way to send.
+
 **The caller decides, and `cancel` is how it acts.** `cancelTeamRun` is the only
 thing that kills a slot. It kills the process GROUP: `claudish` is a launcher
 that runs the real CLI under Bun, which runs `claude`, so signalling the direct
@@ -184,6 +194,20 @@ it"), so dropping *valid* JSON was the stricter rule, not the looser one.
 This was caught by the `--print-argv` test, whose fake child prints a JSON array
 to stdout: under the reducer's default the argv never reached the response file
 and the slot was classified EMPTY.
+
+### Team must settle the reducer itself
+
+A `result` frame moves the reducer to `waiting_for_input`, on the premise that
+stdin is still open and the supervisor decides what happens next. The channel's
+`SessionManager` is that supervisor and calls `settle()`. `team` closes stdin at
+spawn, so the premise never holds, and until 2026-09-12 nothing settled the
+reducer: it stayed in `waiting_for_input` after the child had exited.
+
+`finish()` now settles it to the outcome it just recorded (COMPLETED → `completed`,
+EMPTY or FAILED → `failed`, a cancelled slot → `cancelled`, TIMEOUT → `timeout`)
+and only then disposes it. The dispose moved out of `finalizeCapture` because a
+disposed reducer ignores `settle()`, and `finish()` runs later, off the output
+stream's "close".
 
 ## Spawn plumbing: what was shared, and what was deliberately not
 

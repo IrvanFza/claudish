@@ -242,6 +242,12 @@ interface LiveTeamRun {
   idleMsFor: (slotId: string) => number | null;
   activityFor: (slotId: string) => string | null;
   liveBytesFor: (slotId: string) => number | null;
+  /**
+   * Whether the slot is still RUNNING. The run stays registered until its LAST
+   * slot settles, so without this an exited slot kept reporting its frozen
+   * activity and an idle clock that grew for as long as its siblings worked.
+   */
+  isRunning: (slotId: string) => boolean;
   /** Marked before the signal, so the exit handler can tell stopped from crashed. */
   cancelledSlots: Set<string>;
 }
@@ -273,6 +279,7 @@ export function teamSlotIdleSeconds(teamSessionId: string): Record<string, numbe
   if (!run) return null;
   const out: Record<string, number> = {};
   for (const slotId of run.processes.keys()) {
+    if (!run.isRunning(slotId)) continue;
     const idle = run.idleMsFor(slotId);
     if (idle !== null) out[slotId] = Math.round(idle / 1000);
   }
@@ -281,9 +288,9 @@ export function teamSlotIdleSeconds(teamSessionId: string): Record<string, numbe
 
 /**
  * What each still-running slot is doing, from the stream-json reducer:
- * `running`, `tool_executing`, `waiting_for_input`, or a terminal state. Null
- * for a run that is not live; a slot is absent under `"print"` capture, which
- * emits no frames to read.
+ * `running`, `tool_executing` or `waiting_for_input`. Null for a run that is not
+ * live; a slot is absent once it has exited (its outcome is `state` in
+ * `status.json`), and under `"print"` capture, which emits no frames to read.
  *
  * The companion to `teamSlotIdleSeconds`, and the reason that number is safe to
  * publish without a verdict attached. Ninety seconds of silence in
@@ -296,6 +303,7 @@ export function teamSlotActivity(teamSessionId: string): Record<string, string> 
   if (!run) return null;
   const out: Record<string, string> = {};
   for (const slotId of run.processes.keys()) {
+    if (!run.isRunning(slotId)) continue;
     const activity = run.activityFor(slotId);
     if (activity !== null) out[slotId] = activity;
   }
@@ -324,6 +332,7 @@ export function teamSlotLiveBytes(teamSessionId: string): Record<string, number>
   if (!run) return null;
   const out: Record<string, number> = {};
   for (const slotId of run.processes.keys()) {
+    if (!run.isRunning(slotId)) continue;
     const bytes = run.liveBytesFor(slotId);
     if (bytes !== null) out[slotId] = bytes;
   }
@@ -1221,9 +1230,9 @@ export async function startModels(
         if (captureFinalized) return;
         captureFinalized = true;
         absorb(slotReducer.end());
-        // Releases the reducer's internal state. Nothing else disposes it, and
-        // a team run holds one per slot for the life of the run.
-        slotReducer.dispose();
+        // NOT disposed here: `finish()` decides the slot's outcome later, off
+        // outputStream "close", and a disposed reducer ignores `settle()`. It
+        // settles and disposes the reducer there, once.
         outputStream.end();
       };
       proc.stdout?.on("end", finalizeCapture);
@@ -1269,6 +1278,31 @@ export async function startModels(
       let exitCode: number | null = null;
       let resolved = false;
 
+      /**
+       * Settle the reducer to the outcome just recorded, then release it.
+       *
+       * Without the settle the reducer stays wherever the stream left it — a
+       * `result` frame parks it in `waiting_for_input` — so an exited slot read
+       * as idle rather than done. Runs only once `state` is final, which is why
+       * the dispose lives here and not in `finalizeCapture`. No-op under
+       * `"print"`, which has no reducer.
+       */
+      const settleReducer = (): void => {
+        if (!reducer) return;
+        const state = statusCache.models[anonId]?.state;
+        const failed = state === "FAILED" || state === "EMPTY";
+        reducer.settle(
+          failed && cancelledSlots.has(anonId)
+            ? "cancelled"
+            : state === "COMPLETED"
+              ? "completed"
+              : state === "TIMEOUT"
+                ? "timeout"
+                : "failed"
+        );
+        reducer.dispose();
+      };
+
       const finish = () => {
         if (resolved) return;
         // The timeout handler may have fired between proc "exit" and
@@ -1284,6 +1318,8 @@ export async function startModels(
         if (statusCache.models[anonId].state === "TIMEOUT") {
           resolved = true;
           reconcileTimedOutOutput(anonId, byteCount, stdoutTail, stderr);
+          // After the reconcile, which can upgrade TIMEOUT to COMPLETED.
+          settleReducer();
           resolve();
           return;
         }
@@ -1369,6 +1405,9 @@ export async function startModels(
           });
         }
 
+        // Before the caller's callback, so a throwing consumer cannot skip the
+        // dispose and leak the reducer's tool-batch timer.
+        settleReducer();
         opts.onStatusChange?.(anonId, statusCache.models[anonId]);
         resolve();
       };
@@ -1493,6 +1532,7 @@ export async function startModels(
     idleMsFor: (slotId) => runtimes.get(slotId)?.getIdleMs() ?? null,
     activityFor: (slotId) => runtimes.get(slotId)?.getActivity() ?? null,
     liveBytesFor: (slotId) => runtimes.get(slotId)?.getByteCount() ?? null,
+    isRunning: (slotId) => statusCache.models[slotId]?.state === "RUNNING",
     cancelledSlots,
   });
 
