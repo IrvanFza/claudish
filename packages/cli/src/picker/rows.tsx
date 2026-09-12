@@ -40,9 +40,9 @@
  * block, the inactive one is plain muted text with no background at all.
  *
  *   `or@` / `zengo@`  subtle TEXT             a routing IDENTIFIER, never a status
- *   `$`               chip on `C.pillMutedBg` metered — the unremarkable default
- *   `FREE` / `SUB`    chip on `C.pillKeyBg`   no per-token charge — the SAME claim
- *   `local`           chip on `C.pillKeyBg`   no charge either, by another mechanism
+ *   `$`               QUIET chip, near-bg     metered — the unremarkable default
+ *   `FREE` / `SUB`    SIGNAL chip, green      no per-token charge — the SAME claim
+ *   `local`           SIGNAL chip, green      no charge either, by another mechanism
  *   `catalog`         warn text               NOT the live roster — `DiscoveryNotice`
  *   `N/A`             dead text               the catalog does not say
  *   selection         accent + `C.bgHighlight`, and a `▶` so it survives greyscale
@@ -60,11 +60,24 @@
  * `$` and `SUB`/`local` partition the roster, so this is a fill on all 17 rows —
  * exactly the shape that fused into one grey band when the PREFIX was chipped. What
  * failed there was that all 17 fills were the SAME colour; here they alternate, and
- * the two fills are held apart by measurement rather than by hope: `C.pillKeyBg`
- * `#3f7752` is a green at CIELAB C* 31.2, `C.pillMutedBg` `#6b7280` a near-grey at
- * C* 8.6, ΔE76 36.5 — thirty-odd times the just-noticeable difference, and pinned by
+ * the two fills are held apart by measurement rather than by hope: ΔE76 22.7 on the
+ * light palette (`#BCE5CD` vs `#E2E6F0`) and 54.6 on the dark one (`#2f8250` vs
+ * `#2E323D`), where ~2.3 is a just-noticeable difference. Pinned by
  * `theme-contrast.test.ts` so a future tweak that collapses them fails a test rather
- * than a screenshot. Verified on `dialog6-*` at 80x24 and 145x45, dark and light.
+ * than a screenshot. Verified on `dialog7-*` at 80x24 and 145x45, dark and light.
+ *
+ * THE LIGHT PAIR IS THE TIGHT ONE, AND DELIBERATELY SO. Both light chips are TINTS
+ * (see `theme.ts`), so they sit within 0.1 of each other in luminance and the whole
+ * distinction is HUE — 22.7 ΔE, ten just-noticeable differences, but a tenth of the
+ * headroom the dark pair has. That is why the banding gate matters MORE under this
+ * construction than under the saturated one it replaces, not less.
+ *
+ * AND THE QUIET HALF IS QUIET BY MEASUREMENT TOO. ΔE alone would accept two equally
+ * loud fills of different hue, which is what shipped: a mid-grey `#6b7280` slab at
+ * 4.53:1 on a light page beside a green at 4.70:1 — the same weight, so the column
+ * read as two competing claims. The gate now also pins that `$` carries less than
+ * half the CHROMA of `SUB` in whichever palette is loaded — the axis that survives
+ * both constructions, since on a light page the two tints barely differ in weight.
  *
  * ONE FILL WIDTH FOR THE WHOLE COLUMN, WHICH IS THE ONE PLACE PADDING GOES INSIDE A
  * FILL. `aesthetics-and-color.md` forbids padding inside the label because 24 `UP`
@@ -175,11 +188,11 @@ export function priceLabel(display: string, billing: BillingMode): string {
  *
  * A NEON FOREGROUND IS NOT A FILL. `tokens.success` is `C.green`, `#39ff14`, and
  * the skill is explicit that a colour tuned to read as text is harsh as a solid
- * block. `C.pillKeyBg` (`#3f7752`) is this repo's already contrast-tuned muted
- * green, shared verbatim by both palettes and measured against BOTH reference pages
- * (`theme-contrast.test.ts`) — and it is ALREADY the `FREE` chip on the session
- * summary card (`session-summary.ts:176`), so this is the same object, not a second
- * invention.
+ * block. `C.pillKeyBg` is this repo's contrast-tuned SIGNAL green — `#2f8250` on the
+ * dark palette and the deeper `#166534` on the light one, each measured against its
+ * own page (`theme-contrast.test.ts`) — and it is ALREADY the `FREE` chip on the
+ * session summary card (`session-summary.ts:176`), so this is the same object, not a
+ * second invention. Read at RENDER time, which is why this is a function.
  */
 export function priceChipBg(label: string): string | null {
   if (label === "FREE" || label === "SUB" || label === "local") return C.pillKeyBg;
@@ -227,18 +240,23 @@ export function readinessGlyph(r: Readiness): { glyph: string; fg: string } {
  * `$` used to be drawn as muted text on the grounds that a fill on every row of the
  * column is the banding defect; what the owner saw on the shipped screen was the
  * other half of that trade — a 5-cell green chip beside a 1-cell word, so the column
- * had no edges. Two fills that are 36.5 ΔE apart alternate visibly, which a single
- * fill on every row could not. `C.pillMutedBg` is the quiet one deliberately:
- * metered is what a route IS by default, not a caution about it, and the number that
- * matters is on the model row.
+ * had no edges. Two fills 55–67 ΔE apart alternate visibly, which a single fill on
+ * every row could not.
  *
- * The ink is `C.ink` on both — we chose both fills, so we own both inks, and neither
- * should change with the user's palette.
+ * THE TWO FILLS ARE NOT TWO SHADES OF ONE IDEA. `SUB`/`local` is a SIGNAL — it
+ * separates hard from the page. `$` is a NEAR-BACKGROUND fill, a measured shade off
+ * the page carrying body ink, because metered is what a route IS by default rather
+ * than a caution about it and the number that matters is on the model row. That is
+ * why each fill states its own ink: `C.pillKeyFg` on the signal, `C.pillMutedFg` on
+ * the quiet one. On DARK that is white on a saturated green; on LIGHT it is deep
+ * green on a pale green TINT, which is the inverted construction a white page needs.
+ * All four are read at RENDER time — a module-level `const` now ships not just the
+ * wrong hex but the wrong recipe to the other theme.
  */
 export function billingLabel(mode: BillingMode): { text: string; fg: string; bg: string } {
-  if (mode === "sub") return { text: "SUB", fg: C.ink, bg: C.pillKeyBg };
-  if (mode === "local") return { text: "local", fg: C.ink, bg: C.pillKeyBg };
-  return { text: "$", fg: C.ink, bg: C.pillMutedBg };
+  if (mode === "sub") return { text: "SUB", fg: C.pillKeyFg, bg: C.pillKeyBg };
+  if (mode === "local") return { text: "local", fg: C.pillKeyFg, bg: C.pillKeyBg };
+  return { text: "$", fg: C.pillMutedFg, bg: C.pillMutedBg };
 }
 
 const SPACES = "                                        ";
@@ -265,11 +283,14 @@ const gap = (n: number): string => SPACES.slice(0, Math.max(0, n));
 function ChipCell({
   label,
   bg,
+  fg,
   width,
   align = "left",
 }: {
   label: string;
   bg: string;
+  /** The ink THIS fill carries. Required: the column's two fills take different ink. */
+  fg: string;
   width: number;
   align?: "left" | "right";
 }): ReactNode {
@@ -284,17 +305,13 @@ function ChipCell({
   return (
     <>
       {lead > 0 ? <span>{gap(lead)}</span> : null}
-      {/* `fg={C.ink}` — WHITE, not `pickInk`'s answer. We chose this fill, so we own
-          both sides of it and its ink should not change with the user's palette:
-          MEASURED on the old `#15803d`, `pickInk` returned white on the dark palette
-          and BLACK on the light one — the same chip wearing two inks, and the worse
-          ratio (4.02 vs 5.02) on the page more likely to be squinted at. */}
-      <BadgeSpan
-        label={centred}
-        bg={bg}
-        fg={C.ink}
-        {...(align === "right" ? {} : { width: cells })}
-      />
+      {/* THE INK IS PASSED, never left to `pickInk`. `pickInk` picks from LUMINANCE
+          alone, and a near-background fill straddles its threshold: measured on the
+          old `#15803d` it answered white on the dark palette and BLACK on the light
+          one for the SAME hex — one chip wearing two inks, at the worse ratio (4.02
+          vs 5.02) on the page more likely to be squinted at. We chose the fill, so we
+          choose its ink, and each palette states both together. */}
+      <BadgeSpan label={centred} bg={bg} fg={fg} {...(align === "right" ? {} : { width: cells })} />
     </>
   );
 }
@@ -399,7 +416,9 @@ export function ModelRow({
         {chipBg === null ? (
           <span fg={priceFg(price)}>{padStartTo(price, layout.price)}</span>
         ) : (
-          <ChipCell label={price} bg={chipBg} width={layout.price} align="right" />
+          // `C.pillKeyFg` because `priceChipBg` only ever answers the SIGNAL fill — a
+          // price numeral is never chipped, so this column has no quiet half.
+          <ChipCell label={price} bg={chipBg} fg={C.pillKeyFg} width={layout.price} align="right" />
         )}
         {layout.mark > 0 ? (
           <span fg={tokens.warn}>
@@ -494,9 +513,10 @@ export function ProviderRow({
         <span fg={tokens.subtle}>{padTo(truncate(shortcut, L.shortcut), L.shortcut)}</span>
         {/* BOTH STATES ARE CHIPS AND BOTH ARE `CHIP_FILL_CELLS` WIDE — the owner's
             "make $$$ the same width and badge as well". What keeps the column from
-            reading as one band is the distance between the two fills, not a gap:
-            `theme-contrast.test.ts` pins it. */}
-        <ChipCell label={bill.text} bg={bill.bg} width={L.billing} />
+            reading as one band is the distance between the two fills, not a gap, and
+            what keeps `$` from competing with `SUB` is that only one of them is a
+            signal: `theme-contrast.test.ts` pins both. */}
+        <ChipCell label={bill.text} bg={bill.bg} fg={bill.fg} width={L.billing} />
         <span fg={readiness === "missing" ? tokens.dead : tokens.subtle}>
           {padStartTo(truncate(tail, L.tail), L.tail)}
         </span>

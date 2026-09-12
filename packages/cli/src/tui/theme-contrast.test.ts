@@ -99,19 +99,23 @@ describe("light TUI palette contrast", () => {
     });
   }
 
-  const ownedFills = [
-    "pillKeyBg",
-    "pillMutedBg",
-    "pillOauthBg",
-    "tabActiveBg",
-  ] as const satisfies ReadonlyArray<keyof TuiPalette>;
+  // The SATURATED fills — the ones that still carry `C.ink` (white) on this page.
+  // The picker's status chips are NOT here any more: on a light page they are tints
+  // with deep ink, and each states its own ink. They are measured as pairs in
+  // `every chip is a fill AND its ink` below.
+  const whiteInkFills = ["pillOauthBg"] as const satisfies ReadonlyArray<keyof TuiPalette>;
 
-  for (const fill of ownedFills) {
+  for (const fill of whiteInkFills) {
     it(`keeps ink legible on ${fill}`, () => {
       setThemeMode("light");
       expect(contrastRatio(C.ink, C[fill])).toBeGreaterThanOrEqual(4.5);
     });
   }
+
+  it("keeps the active tab's own ink legible on its fill", () => {
+    setThemeMode("light");
+    expect(contrastRatio(C.tabActiveFg, C.tabActiveBg)).toBeGreaterThanOrEqual(4.5);
+  });
 
   for (const latency of [100, 700, 2000, 4000, 10000]) {
     it(`keeps latency ink legible at ${latency}ms`, () => {
@@ -179,62 +183,165 @@ describe("light TUI palette contrast", () => {
 });
 
 /**
- * Every fill WE paint, measured against BOTH reference terminals — the rule claudeup
- * enforces in `theme-adaptive-colors.test.ts` and the one this repo was breaking.
+ * THE CHIP GATES — one reference page per palette, and one bar per ROLE.
  *
- * A chip lands on a page we do not control. `theme-mode.ts` detects light vs dark and
- * we tune two palettes, but detection can fail (an unknown answer resolves to DARK),
- * tmux can lie about `COLORFGBG`, and a cream or solarized page is neither of our two
- * references. So a fill has to separate from BOTH or it is invisible somewhere real:
- * the rejected keycap grey measured 1.50:1 on the dark reference, which is a chip that
- * is not a chip.
+ * WHAT THIS REPLACED, AND WHY IT HAD TO. Until this pass every fill we paint had to
+ * clear 3:1 against BOTH `#FAFAD2` and `#1C1C1E`, on the grounds that detection can
+ * fail. Add white ink at 4.5:1 and that pins a fill's relative luminance to
+ * L ∈ [0.1351, 0.1833] — a band 1.26:1 wide — so EVERY chip, whatever it meant, was
+ * forced to be a mid-dark saturated block. The consequences were not theoretical:
+ * the `SUB` green could only be softened on the chroma axis, and the quiet `$` had to
+ * be a `#6b7280` slab at 4.53:1 on a light page, as heavy as the chip it was supposed
+ * to recede behind. The owner's verdict on that screen: *"this one is ugly for light
+ * theme"*, then *"sub has a super green for light theme background"*.
  *
- * 3:1, NOT 4.5:1, AND THAT IS NOT A RELAXATION. No single colour can clear 4.5:1
- * against both a cream and a near-black page — the luminance bands do not overlap —
- * and 3:1 is WCAG's own bar for a UI component, which is what a chip is. The ink ON
- * the chip is held to 4.5:1 separately, and it is plain white, because we own both
- * sides of a fill and its contrast should not be a function of the user's theme.
+ * The premise was also false. `applyTuiTheme` resolves an UNKNOWN answer to DARK,
+ * never to LIGHT, so a light fill is only ever painted on a page we measured and
+ * found light. Each palette is now measured against its own reference — still the
+ * hostile end of its class (cream, not white; near-black, not black), so a fill that
+ * passes survives a terminal that is not our hardcoded `C.bg`.
+ *
+ * AND THE BAR DEPENDS ON WHAT THE CHIP IS FOR, because 3:1 for everything is what
+ * produced the glare. A SIGNAL marks the notable member of a column and separates
+ * hard. A QUIET chip — the metered `$`, both keycap segments — is a near-background
+ * fill whose job is to be perceptible and no more; holding it to 3:1 would demand the
+ * very block the owner rejected. So a quiet fill gets a FLOOR and a CEILING, and what
+ * has to be text-grade is the INK ON the chip, in every case.
  */
-describe("owned chip fills clear 3:1 on BOTH reference terminals", () => {
-  const chipFills = [
-    "pillKeyBg", // FREE / SUB / local — the positive family
-    "pillMutedBg", // the picker's metered `$` — the quiet half of the same column
-    "pillOauthBg", // oauth pills in the config TUI's AUTH column
-    "chipKeycapBg", // footer keycaps
-    "tabActiveBg", // the active tab pill
-    "red", // the `HTTP 401` chip and the discovery-failure rule
-  ] as const satisfies ReadonlyArray<keyof TuiPalette>;
+describe("chip gates: fill, ink, role and construction", () => {
+  /** The page a palette is measured against. See this describe's header. */
+  const REFERENCE_FOR_MODE = {
+    light: CONTRAST_REFERENCE.light,
+    dark: CONTRAST_REFERENCE.dark,
+  } as const;
 
-  for (const mode of ["light", "dark"] as const) {
-    for (const fill of chipFills) {
-      it(`separates ${fill} from both pages in the ${mode} palette`, () => {
-        setThemeMode(mode);
-        for (const page of Object.values(CONTRAST_REFERENCE)) {
-          expect({ fill, page, ok: contrastRatio(C[fill], page) >= 3 }).toEqual({
-            fill,
-            page,
-            ok: true,
-          });
-        }
-      });
-    }
-  }
+  /**
+   * EVERY CHIP THIS PROGRAM PAINTS, AS A FILL-AND-INK PAIR.
+   *
+   * A fill on its own is not a chip and cannot be judged: the light palette's `SUB`
+   * is a pale tint that would look broken under white ink and reads perfectly under
+   * its own deep green. Listing pairs is what lets one gate cover both constructions.
+   */
+  const CHIPS = [
+    { what: "status SUB/FREE/local", bg: "pillKeyBg", fg: "pillKeyFg", role: "signal" },
+    { what: "status $", bg: "pillMutedBg", fg: "pillMutedFg", role: "quiet" },
+    { what: "keycap KEY segment", bg: "keycapKeyBg", fg: "keycapKeyFg", role: "quiet" },
+    { what: "keycap LABEL segment", bg: "keycapLabelBg", fg: "keycapLabelFg", role: "quiet" },
+  ] as const satisfies ReadonlyArray<{
+    what: string;
+    bg: keyof TuiPalette;
+    fg: keyof TuiPalette;
+    role: "signal" | "quiet";
+  }>;
 
-  it("keeps WHITE ink legible on every fill that carries a label", () => {
-    // `C.ink` is `#ffffff` in both palettes for exactly this reason: where we choose
-    // the fill we choose the ink, so the ratio is deterministic instead of a function
-    // of the user's page. TWO fills are excluded and each for its own reason: `C.red`
-    // is a NEON on dark (`#ff003c`), bright enough that `pickInk` correctly puts DARK
-    // ink on it, and `tabActiveBg` carries its own `tabActiveFg` rather than `C.ink`.
+  /**
+   * A quiet fill must be PERCEPTIBLE (you can see the chip's edge) and no louder.
+   *
+   * 1.10 is a floor on the edge, not on readability — readability is the ink gate,
+   * and under the tinted construction the ink clears 5:1 while the field itself is
+   * barely off the page. That is the point of a tint and it is why demanding 3:1 here
+   * would reject a correct design.
+   */
+  const QUIET_EDGE_FLOOR = 1.1;
+  /**
+   * And the CEILING is the gate nobody had. `#9333ea` measured 5.04:1 on the cream
+   * reference and 3.16:1 on the near-black one and passed every test in this file,
+   * because "loud" was not a failure anyone had written down. It is now.
+   */
+  const QUIET_CEILING = 3;
+
+  it("every chip is a FILL AND ITS INK, and the ink is text-grade on it", () => {
+    // 4.5:1, in BOTH palettes and under BOTH constructions. This is the one bar that
+    // does not move: whatever the fill does, the label on it has to be readable.
     for (const mode of ["light", "dark"] as const) {
       setThemeMode(mode);
-      for (const fill of ["pillKeyBg", "pillMutedBg", "pillOauthBg", "chipKeycapBg"] as const) {
-        expect({ mode, fill, ok: contrastRatio(C.ink, C[fill]) >= 4.5 }).toEqual({
+      for (const chip of CHIPS) {
+        expect({
+          mode,
+          what: chip.what,
+          ok: contrastRatio(C[chip.fg], C[chip.bg]) >= 4.5,
+        }).toEqual({ mode, what: chip.what, ok: true });
+      }
+    }
+  });
+
+  it("every QUIET fill is perceptible off its own page, and never a beacon", () => {
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      const page = REFERENCE_FOR_MODE[mode];
+      for (const chip of CHIPS.filter((c) => c.role === "quiet")) {
+        const off = contrastRatio(C[chip.bg], page);
+        expect({
+          mode,
+          what: chip.what,
+          visible: off >= QUIET_EDGE_FLOOR,
+          quiet: off <= QUIET_CEILING,
+          // And off the PANEL it is actually drawn on, which is a shade nearer than
+          // the page — the surface a chip can vanish into first.
+          offPanel: contrastRatio(C[chip.bg], C.bgAlt) >= QUIET_EDGE_FLOOR,
+        }).toEqual({ mode, what: chip.what, visible: true, quiet: true, offPanel: true });
+      }
+    }
+  });
+
+  it("THE SIGNAL CHIP IS BUILT DIFFERENTLY PER PALETTE — saturated on dark, a TINT on light", () => {
+    // The construction, asserted rather than described. This is the thing that keeps
+    // regressing: the previous pass correctly dropped each hue to its deep sibling
+    // and then kept the DARK palette's saturated-fill-with-white-ink shape on a white
+    // page, which is what the owner rejected as "super green". A hex check would not
+    // have caught it — the hex was right for a badge on black.
+    setThemeMode("dark");
+    expect({
+      mode: "dark",
+      separatesHard: contrastRatio(C.pillKeyBg, CONTRAST_REFERENCE.dark) >= 3,
+      lightInk: relativeLuminance(C.pillKeyFg) > relativeLuminance(C.pillKeyBg),
+    }).toEqual({ mode: "dark", separatesHard: true, lightInk: true });
+
+    setThemeMode("light");
+    expect({
+      mode: "light",
+      // A TINT: pale enough that it is NOT a block on the page. The bound is the
+      // assertion — anything above it is the saturated construction in disguise.
+      isTint: contrastRatio(C.pillKeyBg, CONTRAST_REFERENCE.light) <= 2,
+      darkInk: relativeLuminance(C.pillKeyFg) < relativeLuminance(C.pillKeyBg),
+      // …and the ink is the fill's OWN hue, not a neutral: a pale green field with
+      // grey text is two colours, not one chip.
+      inkCarriesTheHue: chroma(C.pillKeyFg) > 20,
+    }).toEqual({ mode: "light", isTint: true, darkInk: true, inkCarriesTheHue: true });
+  });
+
+  it("keeps the SATURATED signal fills at 3:1 on their own page", () => {
+    // These did not change construction and are still blocks with white ink: the
+    // config TUI's oauth pill, the active tab, and the failure hue.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      const page = REFERENCE_FOR_MODE[mode];
+      for (const fill of ["pillOauthBg", "tabActiveBg", "red"] as const) {
+        expect({ mode, fill, ok: contrastRatio(C[fill], page) >= 3 }).toEqual({
           mode,
           fill,
           ok: true,
         });
       }
+    }
+  });
+
+  it("THE KEYCAP IS ONE PILL OF TWO SEGMENTS — the seam reads, and the key leads", () => {
+    // The owner asked for a chip, not a coloured word: *"the key itself brighter
+    // colour and label has backdrop but not as bright"*. Two things can go wrong and
+    // neither shows up in a character frame — the segments can collapse into one flat
+    // block, or they can invert so the label out-shouts the key.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      const page = REFERENCE_FOR_MODE[mode];
+      expect({
+        mode,
+        seamReads: contrastRatio(C.keycapKeyBg, C.keycapLabelBg) >= 1.25,
+        keyLeads: contrastRatio(C.keycapKeyBg, page) > contrastRatio(C.keycapLabelBg, page),
+        // The key half is the pressable one, so it gets a higher floor than the
+        // label: the grey claudeup measured as invisible was 1.50:1 on this page.
+        keyIsPressable: contrastRatio(C.keycapKeyBg, page) >= 1.5,
+      }).toEqual({ mode, seamReads: true, keyLeads: true, keyIsPressable: true });
     }
   });
 
@@ -246,32 +353,32 @@ describe("owned chip fills clear 3:1 on BOTH reference terminals", () => {
     // measured against `bgAlt` above — a different object with a different contract.
     for (const mode of ["light", "dark"] as const) {
       setThemeMode(mode);
-      expect({ mode, same: C.chipKeycapBg === C.chipKeyBg }).toEqual({ mode, same: false });
+      expect({ mode, same: C.keycapKeyBg === C.chipKeyBg }).toEqual({ mode, same: false });
     }
   });
 
   it("HOLDS THE TWO HALVES OF THE STATUS COLUMN APART — the banding gate", () => {
-    // The picker's billing column now carries a fill on EVERY row: `SUB`/`local` on
+    // The picker's billing column carries a fill on EVERY row: `SUB`/`local` on
     // `pillKeyBg`, `$` on `pillMutedBg`. That is the shape that fused into one solid
     // vertical band when the prefix column was chipped — and what failed there was
     // that all 17 fills were the SAME colour. Here they alternate, so the whole
     // design rests on these two being visibly different fills.
     //
-    // THE AXIS IS CHROMA, NOT LUMINANCE, AND THAT IS FORCED. Every owned fill must
-    // sit in L 0.1351…0.1833 (3:1 on near-black below, white ink at 4.5:1 above), a
-    // band only 1.26:1 wide — so two fills can differ in brightness by almost
-    // nothing. MEASURED: `#3f7752` is C* 31.2 and `#6b7280` is C* 8.6, ΔE76 36.5
-    // apart, where ~2.3 is a just-noticeable difference. The floor below is 20, well
-    // under the measured value and far above a tweak that would collapse them.
+    // THIS GATE MATTERS MORE UNDER THE TINTED CONSTRUCTION, NOT LESS. Two saturated
+    // fills were 54.6 ΔE apart on the dark palette; two TINTS sit within 0.1 of each
+    // other in luminance and are 22.7 apart, all of it hue. Ten just-noticeable
+    // differences is plenty to read, and a tenth of the headroom — so the floor stays
+    // at 20 and it is now a floor the light palette is genuinely near.
     for (const mode of ["light", "dark"] as const) {
       setThemeMode(mode);
       expect({
         mode,
         distinct: C.pillKeyBg !== C.pillMutedBg,
         deltaE: deltaE76(C.pillKeyBg, C.pillMutedBg) >= 20,
-        // And the METERED one is the QUIET one: a near-grey beside a green. If this
-        // inverts, the column is telling the reader that the default state is the
-        // notable one.
+        // And the METERED one is the QUIET one: a near-neutral beside a green. CHROMA
+        // is the axis that survives BOTH constructions — on a light page the two
+        // tints barely differ in weight, so a luminance test would say nothing. If
+        // this inverts, the column says the default state is the notable one.
         quieter: chroma(C.pillMutedBg) < chroma(C.pillKeyBg) / 2,
       }).toEqual({ mode, distinct: true, deltaE: true, quieter: true });
     }
@@ -280,10 +387,10 @@ describe("owned chip fills clear 3:1 on BOTH reference terminals", () => {
   it("KEEPS THE POSITIVE FILL SOFTER THAN THE TEXT-GRADE GREEN IT CAME FROM", () => {
     // `pillKeyBg` was `#15803d` — claudeup's `success`, and also this palette's light
     // `green`, which is a TEXT accent held to 4.5:1 on white. The owner's verdict on
-    // it as an AREA was "make sub badge not as bright, make it softer". Softness is
-    // chroma: C* 52.5 → 31.2, with the page ratios held (4.70/3.39 → 4.95/3.22). The
-    // pin is the comparison, not the hex — a future green may be softer still, but it
-    // may not climb back to a foreground's saturation.
+    // it as an AREA was "make sub badge not as bright, make it softer", twice, once
+    // per construction. Softness is chroma, and the pin is the COMPARISON rather than
+    // a hex: a future green may be softer still, but it may not climb back to a
+    // foreground's saturation.
     for (const mode of ["light", "dark"] as const) {
       setThemeMode(mode);
       expect({ mode, softer: chroma(C.pillKeyBg) < chroma("#15803d") }).toEqual({

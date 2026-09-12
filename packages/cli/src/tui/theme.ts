@@ -17,8 +17,12 @@ import { getTerminalBackground, onThemeModeChange } from "../theme/theme-mode.js
  * white ink on a wash would vanish.
  *
  * Token semantics that make both palettes work:
- *  - `C.ink`    — ink on fills WE paint that stay mid/dark in both themes
- *                 (pills, latency chips, active tab). Always white.
+ *  - `C.ink`    — ink on fills WE paint that stay mid/dark in BOTH themes
+ *                 (latency chips, the oauth pill). Always white. It is NOT the
+ *                 answer for the picker's chips any more: those are built
+ *                 differently per palette and each declares its own `*Fg`, because
+ *                 a light-page chip is a pale tint wearing deep ink. Reaching for
+ *                 `C.ink` on one of those paints white on near-white.
  *  - `C.strong` — emphasized text on the PAGE or on wash fills. White on dark,
  *                 near-black on light. Never use `C.white` for page text.
  *
@@ -55,35 +59,74 @@ export interface TuiPalette {
   tabInactiveBg: string;
   tabActiveFg: string;
   tabInactiveFg: string;
+  /**
+   * The SIGNAL half of the picker's status column — `SUB` / `FREE` / `local`.
+   *
+   * ITS CONSTRUCTION DIFFERS BY PALETTE, WHICH IS THE WHOLE POINT OF THE PAIR. On
+   * DARK it is a saturated fill with light ink; on LIGHT it is a pale TINT of the
+   * same hue with deep ink of that hue. See the CONSTRUCTION note above `DARK`.
+   */
   pillKeyBg: string;
+  /** Ink on `pillKeyBg` — white on dark, the deep sibling of the fill's hue on light. */
+  pillKeyFg: string;
   pillOauthBg: string;
   /**
-   * The QUIET half of a two-tone chip column — the picker's metered `$`.
+   * The QUIET half of the same column — the picker's metered `$`.
    *
    * A second fill exists because a status column with one fill and one bare word is
-   * a ragged column, and the owner asked for both states chipped at one width. The
-   * two then have to be told apart by the fill alone, and the only axis left inside
-   * the 3:1 band is CHROMA: `pillKeyBg` is a green at C* 31.2, this is a near-grey
-   * at C* 8.6, ΔE76 36.5 apart. Grey is also the honest reading — metered is the
-   * unremarkable default, not a claim.
+   * a ragged column, and the owner asked for both states chipped at one width. `$`
+   * is the UNREMARKABLE state, so its chip is a NEAR-BACKGROUND fill — a measured
+   * shade off the page carrying body ink — and it holds almost no hue, which is what
+   * makes the green beside it read as the claim.
    */
   pillMutedBg: string;
-  /** Footer KEYCAP fill. Vivid, white ink, the same hex in both palettes. */
-  chipKeycapBg: string;
+  /** Ink on `pillMutedBg`. Dark on the light page, light on the dark one. */
+  pillMutedFg: string;
+  /**
+   * The picker footer's KEYCAP PILL — two abutting segments, not one block.
+   *
+   * `keycapKey*` is the segment carrying the glyph you press and is the BRIGHTER of
+   * the two; `keycapLabel*` is the segment carrying what it does and is quieter. The
+   * owner's words: *"the key itself brighter colour and label has backdrop but not as
+   * bright, create chips"*. madbench's `paramKeyBg`/`paramValBg` is the same idiom.
+   *
+   * They must ABUT. A gap between the two fills splits the pill into two objects, so
+   * the space belongs BETWEEN pills (`Hints`' `gap={1}`) and never inside one.
+   */
+  keycapKeyBg: string;
+  keycapKeyFg: string;
+  keycapLabelBg: string;
+  keycapLabelFg: string;
   chipKeyBg: string;
   chipLabelBg: string;
 }
 
 /**
- * The two backgrounds every OWNED FILL is measured against — `theme-contrast.test.ts`.
+ * The reference page EACH PALETTE is measured against — `theme-contrast.test.ts`.
  *
- * A chip we paint lands on a terminal whose page we do not control, so a fill that
- * only separates from one of them is invisible on the other. A single colour CANNOT
- * reach 4.5:1 against both: clearing it on cream needs relative luminance <= ~0.17,
- * clearing it on near-black needs >= ~0.22, and those do not overlap. So the bar for
- * a fill is 3:1 — WCAG's threshold for UI components — which admits exactly the band
- * of mid-dark saturated colours the chips below live in. Borrowed, with the hexes,
- * from claudeup's `src/ui/theme.ts`, whose own test enforces the same rule.
+ * ONE REFERENCE PER PALETTE, NOT BOTH FOR BOTH. This used to require every owned
+ * fill to clear 3:1 against BOTH a cream page and a near-black one, on the grounds
+ * that detection can fail. What that actually bought was a self-inflicted trap: the
+ * two bars plus white ink at 4.5:1 pin a fill's relative luminance to
+ * L ∈ [0.1351, 0.1833] — a band 1.26:1 wide — so EVERY chip, whatever it meant, had
+ * to be a mid-dark saturated block. The green could then only be softened on the
+ * chroma axis, and the quiet `$` had to be a heavy mid-grey slab that competed with
+ * `SUB` on a light page. The owner's verdict on the shipped result: *"this one is
+ * ugly for light theme"*.
+ *
+ * The premise was also wrong. A failed detection resolves to DARK, never to LIGHT
+ * (`applyTuiTheme`), so a LIGHT fill is only ever painted on a page we measured and
+ * found light. Holding it to a near-black reference protects nothing and costs the
+ * whole design. madbench's `internal/tui/theme.go` states the rule this file now
+ * follows: *"lightPalette is NOT the dark palette inverted … each hue drops to its
+ * deep (roughly 600-level) sibling, where it stays distinguishable from its
+ * neighbors AND carries white text when it becomes a badge fill."*
+ *
+ * The bar per palette is still 3:1 — WCAG's threshold for a UI component — and it is
+ * now a bar a colour can be CHOSEN for rather than compromised into. The references
+ * stay the hostile end of each class (a cream page, not white; a near-black page, not
+ * black) so a fill measured here survives a terminal that is not our hardcoded
+ * `C.bg`. Borrowed, with the hexes, from claudeup's `src/ui/theme.ts`.
  */
 export const CONTRAST_REFERENCE = {
   light: "#FAFAD2",
@@ -123,40 +166,58 @@ const DARK: TuiPalette = {
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#0088ff",
 
-  // Muted pill backgrounds for AUTH column tags and the picker's state chips. The
-  // standard `green` / `cyan` are neon-bright and cause eye strain as a solid fill,
-  // so these are lower-saturation forest/teal versions carrying white ink.
+  // ── CHIP CONSTRUCTION: THE PAGE PICKS THE RECIPE, NOT JUST THE HEX ─────────
   //
-  // RAISED FROM `#2d6e3e` / `#1f6d75` TO A MEASURED SET. The old forest green
-  // cleared 5.77:1 on a cream page and only 2.76:1 on a near-black one — under the
-  // 3:1 a UI component needs — so a `SUB` chip on a dark terminal was a fill that
-  // barely separated from the page it sat on. All three clear 3:1 against BOTH
-  // reference backgrounds and keep white ink at 4.8+, and all three are shared
-  // verbatim by both palettes: a fill measured against both pages needs no
-  // per-theme variant.
+  // A chip is a fill plus its ink, and the two palettes build that pair DIFFERENTLY
+  // rather than swapping one hex:
   //
-  // `pillKeyBg` WAS `#15803d` (claudeup's `success`) AND WAS TOO BRIGHT AS A FILL —
-  // the owner's words, "make sub badge not as bright, make it softer". Softness here
-  // is CHROMA, not luminance: the band a fill may occupy is L 0.1351…0.1833 (3:1 on
-  // near-black sets the floor, white ink at 4.5:1 sets the ceiling), which is only
-  // 1.26:1 wide, so a fill cannot be meaningfully darkened without failing one side.
-  // MEASURED with `validation/chip-fill-shortlist.ts`: `#15803d` is C* 52.5 at
-  // L* 46.9 and `#3f7752` is C* 31.2 at L* 45.4 — 41% less chroma and slightly
-  // darker — while the page ratios IMPROVE on cream and hold on near-black
-  // (4.70/3.39 → 4.95/3.22). Contrast was not traded for softness.
-  pillKeyBg: "#3f7752", // softened forest green; white ink 5.29:1
-  pillOauthBg: "#0e7490", // muted teal; white ink reads cleanly on both pages
-  // Tailwind's `gray-500`, chosen for what it is NOT: it carries almost no hue
-  // (C* 8.6), so beside `pillKeyBg` it reads as the absence of a claim rather than
-  // as a second claim. 4.53/3.52 on the two pages, white ink 4.83:1.
-  pillMutedBg: "#6b7280",
-  // A KEYCAP IS A VIVID BLOCK WITH WHITE INK, in both palettes and at the same hex.
-  // Neutral grey was measured and rejected twice: `#3a3a3a` is 1.50:1 on a dark page
-  // and `#9ca3af` 2.38:1 on a light one, so whichever way it is tuned the chip melts
-  // into one of the two terminals. Purple clears 5.04/3.16 and is spent on nothing
-  // else in this program — the accent is blue, so a keycap cannot be mistaken for a
-  // focus ring, a status or a failure.
-  chipKeycapBg: "#9333ea",
+  //   DARK  — SATURATED fill, LIGHT ink. Against near-black a colour has to bring its
+  //           own light, so the fill carries the hue and white sits on it.
+  //   LIGHT — PALE TINT of the hue, DEEP ink of the SAME hue. Against white a
+  //           saturated fill is a glaring block. The owner saw the saturated version
+  //           on a light terminal: *"sub has a super green for light theme
+  //           background, that should be not as bright"*.
+  //
+  // That is madbench's rule one level up from colour (`internal/tui/theme.go`): the
+  // light palette is not the dark one inverted, because "neon reads as brightness
+  // against black and as glare against white".
+  //
+  // Within a palette there are then two ROLES. SIGNAL (`pillKeyBg`, `pillOauthBg`,
+  // `tabActiveBg`) marks the notable member of a column. QUIET (`pillMutedBg`, both
+  // keycap segments) is the unremarkable state and the keyboard affordance: a
+  // NEAR-BACKGROUND fill, a measured shade off the page, carrying body ink — which
+  // is why `retintSurfaces` treats those as surfaces rather than as accents. Which
+  // way "off the page" points is itself per-palette: up on black, down on white.
+  //
+  // `pillKeyBg` — the BRIGHTER sibling, now that it no longer has to survive a cream
+  // page as well. `#3f7752` was the both-pages compromise: 3.22:1 on near-black,
+  // C* 31.2. Measured with `validation/chip-fill-two-palettes.ts`, `#2f8250` is
+  // 3.59:1 on near-black and 4.43:1 on true black at C* 42.1, and still carries white
+  // ink at 4.74:1. It stays well under the neon `green` (`#39ff14`) and under the
+  // `#15803d` the owner called too bright (C* 52.5) — softer than a foreground,
+  // brighter than a compromise.
+  pillKeyBg: "#2f8250", // forest green, dark-page sibling
+  pillKeyFg: "#ffffff", // 4.74:1 on the fill
+  pillOauthBg: "#0e7490", // muted teal; white ink 5.02:1
+  // NEAR-BG DARK (madbench `paramValBg`). 1.64:1 off true black and 1.47:1 off the
+  // `bgAlt` panel — present as a block, absent as a claim. Its ink is a DIM one, not
+  // white: `$` is what a route is by default and the number that matters is on the
+  // model row. ΔE76 54.6 from `pillKeyBg`, so the alternating column cannot band.
+  pillMutedBg: "#2E323D",
+  pillMutedFg: "#A8B0C4", // 5.90:1 on the fill — legible, not loud
+  // THE KEYCAP PILL — two abutting near-bg segments, key brighter than label.
+  // It replaces a single saturated purple block (`#9333ea`, 3.90:1 off this page and
+  // 5.38:1 off the light one), which made the quietest row on the screen the loudest.
+  // A pale fill CANNOT be borrowed from the light palette here: `#B8C2D8` measures
+  // 1.06:1 on true black, worse than the neutral grey claudeup already rejected as
+  // invisible (`#3a3a3a`, 1.50:1 against the near-black reference). So the dark page
+  // gets its own pair: the key segment at 2.57:1 off the page and 2.08:1 off the
+  // near-black reference, the label at 1.52:1, and 1.69:1 between the two — enough
+  // for the seam to read as one pill with two halves.
+  keycapKeyBg: "#474F63",
+  keycapKeyFg: "#ffffff", // 8.18:1 on the fill
+  keycapLabelBg: "#292D36",
+  keycapLabelFg: "#A8B0C4", // 6.35:1 on the fill
 
   // Monochrome two-tone footer chip. The key sits on the LIGHTER segment and
   // the label on the DARKER segment; the two abut into one connected pill.
@@ -202,18 +263,45 @@ const LIGHT: TuiPalette = {
   tabActiveFg: "#ffffff",
   tabInactiveFg: "#374151",
 
-  // The green/teal/grey pills and the keycap are mid-lightness fills with white ink —
-  // they clear 3:1 on BOTH reference pages, so they are shared verbatim with DARK.
-  // `pillKeyBg` is deliberately NO LONGER the same hex as `green`: `green` is a page
-  // TEXT accent held to 4.5:1 on white, and this is an area fill held to 3:1 on two
-  // pages with white ink on top. One number cannot serve both tests.
-  pillKeyBg: "#3f7752",
-  pillOauthBg: "#0e7490",
-  // Same hex as this palette's `dim`, and that is a coincidence rather than a shared
-  // meaning: `dim` is page text on white, this is an area fill carrying white ink.
-  // They are measured against different references and may diverge.
-  pillMutedBg: "#6b7280",
-  chipKeycapBg: "#9333ea",
+  // ── CHIPS, RE-VOICED FOR A WHITE PAGE — AND RE-BUILT, NOT RECOLOURED ──────
+  //
+  // EVERY CHIP HERE IS A TINT WITH DEEP INK. That is the inversion of the dark
+  // palette's recipe and it is deliberate; see the CONSTRUCTION note in `DARK`. The
+  // build before this one dropped each hue to its deep sibling but kept the dark
+  // palette's saturated-fill-with-white-ink shape, and a deep green block with white
+  // text is exactly what the owner rejected on a light terminal.
+  //
+  // A TINT IS NOT A WEAKER CHIP. What carries the meaning moves from the fill to the
+  // INK: `SUB` is a pale green field with `#166534` printed on it at 5.17:1, which is
+  // text-grade, while the field itself only has to be perceptible (1.38:1 off white).
+  // The old construction had that backwards — it spent all the contrast on the block
+  // and then had to print white on it.
+  //
+  // SIGNAL — madbench's `diffAddBg` family. Its literal `#CDEEDA` was measured and is
+  // ONE STEP TOO PALE: ΔE76 18.85 from the `$` tint, under the 20 the banding gate
+  // requires, and only 1.13:1 off the `bgAlt` panel. `#BCE5CD` is ΔE76 22.68 and
+  // 1.25:1 off the panel, with the deep ink still at 5.17:1.
+  pillKeyBg: "#BCE5CD",
+  pillKeyFg: "#166534", // madbench `lime` — the matching deep sibling of the tint
+  // `pillOauthBg` KEEPS the saturated construction: it is the config TUI's AUTH
+  // column, not this dialog, and it has not been through the owner's review. Noted so
+  // the inconsistency is a decision rather than an oversight.
+  pillOauthBg: "#0e7490", // deep teal, 5.13:1 on the cream reference
+  // QUIET — madbench's `paramKeyBg`, "near-bg light — still distinct on a cream or
+  // grey page", with `slate` ink at 6.12:1. It carries almost no hue (C* 5.4 against
+  // the green tint's 19.4), which is what makes `$` read as the absence of a claim.
+  // This REPLACES `#6b7280`, a mid-grey slab at 4.53:1 on a light page — as heavy as
+  // the `SUB` chip it was supposed to recede behind.
+  pillMutedBg: "#E2E6F0",
+  pillMutedFg: "#4E5364", // madbench `slate`; 6.12:1 on the fill
+  // THE KEYCAP PILL — two abutting near-bg segments, key brighter than label.
+  // 1.79:1 and 1.25:1 off the page with 1.46:1 between them, against the single
+  // purple block's 5.38:1. The floor is the `#d1d5db` this file already measured as
+  // melting into the band at 1.32:1.
+  keycapKeyBg: "#B8C2D8",
+  keycapKeyFg: "#111827", // 9.92:1 on the fill
+  keycapLabelBg: "#E4E8F2",
+  keycapLabelFg: "#4E5364", // 6.24:1 on the fill
 
   // The config TUI's TWO-TONE footer chip (`Footer.tsx`), and no longer the
   // picker's keycap — that one is `chipKeycapBg`, because a neutral grey cannot
@@ -430,11 +518,29 @@ export function registerPaletteRefresher(fn: () => void): void {
  * from the page. When the page moves, these must move with it or the seam the
  * page adoption removed simply reappears one box further in.
  *
+ * THE QUIET CHIP FILLS BELONG HERE, and that follows from what they now are. A
+ * near-background fill IS a surface — its whole content is "a measured shade off the
+ * page" — so on a cream terminal `pillMutedBg` and both keycap segments must become
+ * deeper cream, exactly as `bgAlt` does, or a blue-grey `$` chip floats on cream and
+ * the seam this function exists to remove reappears inside the status column. They
+ * only joined the list when they stopped being saturated blocks.
+ *
  * Deliberately excluded: `bgHighlight` (blue selection wash) and `bgError` (red
- * failure wash) carry their meaning in their HUE, and `tabActiveBg` / the pill
- * fills are accents. Re-tinting those would erase the signal they exist to send.
+ * failure wash) carry their meaning in their HUE, and so do `tabActiveBg` and the
+ * SIGNAL pills (`pillKeyBg`, `pillOauthBg`) — including the light palette's pale
+ * GREEN TINT, which is a tint OF a hue and not a neutral. Re-tinting those would
+ * erase the signal they exist to send.
  */
-const SURFACE_TOKENS = ["bgAlt", "border", "tabInactiveBg", "chipKeyBg", "chipLabelBg"] as const;
+const SURFACE_TOKENS = [
+  "bgAlt",
+  "border",
+  "tabInactiveBg",
+  "chipKeyBg",
+  "chipLabelBg",
+  "pillMutedBg",
+  "keycapKeyBg",
+  "keycapLabelBg",
+] as const;
 
 /** `#rrggbb` → `[r, g, b]`, or null for anything that isn't one. */
 function hexChannels(hex: string): [number, number, number] | null {

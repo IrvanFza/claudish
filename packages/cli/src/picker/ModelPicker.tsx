@@ -758,11 +758,19 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
               { key: "↑↓", label: "move" },
               { key: "⏎", label: "open", on: here !== null },
               { key: "a", label: "all models" },
-              // `keyless` SAID THE OPPOSITE OF WHAT IT MEANT. These providers need a
-              // key — that is precisely why they are hidden — and "keyless" reads as
-              // "no key required". The hint row above already says `need a key`, so
-              // the footer now says it too, in 9 of the 76 columns 80 gives us.
-              { key: "k", label: revealKeyless ? "hide" : "needs key", on: keyless.length > 0 },
+              // `show` / `hide`, NOT `needs key` — AND THE SHORTENING IS WHAT PAID FOR
+              // THE PILLS. A keycap is two filled segments now (`chrome.tsx`), which
+              // costs one cell per hint, and MEASURED at 80 columns the row ran three
+              // cells past the 72 the dialog has: `esc quit` rendered as `esc qu`.
+              //
+              // This is the label that could shrink without losing anything, because
+              // `needs key` DUPLICATED the row directly above it — `+14 more need a
+              // key · k` says the same thing one line up and says it in full. So the
+              // reason lives where there is room for it and the footer says only what
+              // the key does. (`keyless` was the label before that and said the
+              // OPPOSITE of what it meant: these providers need a key, which is
+              // precisely why they are hidden.)
+              { key: "k", label: revealKeyless ? "hide" : "show", on: keyless.length > 0 },
               { key: "c", label: "custom" },
               { key: "esc", label: "quit" },
             ]}
@@ -782,19 +790,23 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           width={layout.width}
           marginLeft={0}
         >
+          {/* NO SECOND LINE. It said `models appear as soon as they are ready`, which
+              is a sentence about time passing: it names no operation, gives the reader
+              nothing to act on, and would be equally true of any loading screen ever
+              drawn. The owner's verdict was *"that text is silly"*.
+              The information it was standing in for is already on the frame, said
+              precisely and said live — the dialog title names the provider, `status`
+              names the operation (`finding models…`), and each `LoadTasks` row names
+              the request and its elapsed time or deadline. A line under that could
+              only repeat one of them. */}
           <LoadTasks
             tasks={tasks}
             frame={frame}
             labelWidth={14}
             barWidth={Math.max(8, Math.min(22, layout.inner - 40))}
           />
-          <box height={1} flexShrink={0}>
-            <text>
-              <span fg={tokens.trace}>models appear as soon as they are ready</span>
-            </text>
-          </box>
           <Rule />
-          <Hints hints={[{ key: "esc", label: "providers" }]} />
+          <Hints hints={[{ key: "esc", label: "back" }]} />
         </Dialog>
       </Centred>
     );
@@ -913,7 +925,15 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         {/* ONE KEY PER ACTION, AND EVERY ACTION IN THE ROW. `p` is gone: `esc` is
             the way back to the provider list from both model lists, and a second
             key for the one destination bought nothing while costing the row the
-            columns `r retry` needs at 80. */}
+            columns `r retry` needs at 80.
+
+            `back`, NOT `providers`, AND THE SIX-HINT ROW IS WHY. A keycap is a pill
+            of two fills now (`chrome.tsx`) and costs one cell more per hint, so with
+            `r retry` present this row MEASURED 74 cells against the 72 the dialog has
+            at 80 columns and clipped to `esc provider` — caught in
+            `dialog7-failure-dark-80x24.png`, not by a test. `back` is already this
+            file's word for the same move (the custom dialog's `esc`), so the row now
+            uses one vocabulary and fits with three cells to spare. */}
         <Hints
           hints={[
             { key: "↑↓", label: "move" },
@@ -921,7 +941,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             { key: "/", label: "filter" },
             ...(scope !== null && hasDiscovery ? [{ key: "r", label: "retry" }] : []),
             { key: "c", label: "custom" },
-            { key: "esc", label: filter !== "" ? "clear" : "providers" },
+            { key: "esc", label: filter !== "" ? "clear" : "back" },
           ]}
         />
       </Dialog>

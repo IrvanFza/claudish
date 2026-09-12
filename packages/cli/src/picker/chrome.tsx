@@ -17,10 +17,9 @@
 
 import type { ReactNode } from "react";
 import { LoadingRow } from "../tui/components/LoadingRow.js";
-import { C } from "../tui/theme.js";
+import { A, C } from "../tui/theme.js";
 import { displayWidth, truncate } from "../tui/viz/text.js";
 import { tokens } from "../tui/viz/tokens.js";
-import { BadgeSpan } from "../tui/viz/widgets.js";
 
 /**
  * The bordered box, with its title composed left-and-right on the border line.
@@ -156,55 +155,94 @@ export interface Hint {
 }
 
 /**
- * Keyboard hints as KEYCAPS — a badge per key, then its label in dim text.
+ * What a hint row COSTS, in cells — the arithmetic, without a renderer.
  *
- * THE BADGE IS THE HOUSE PATTERN FOR A DISCRETE TOKEN: dark ink on a saturated
- * fill, one space of padding each side (`aesthetics-and-color.md`). Bold white
- * text on the panel background, which is what this row used to be, is the same
- * treatment the model ids two rows above get — so `p` in `p providers` read as a
- * word rather than as a key you press, which is exactly what the owner said when
- * he asked for "better button highlighting".
+ * IT EXISTS BECAUSE THE ROW CLIPS SILENTLY. `Hints` sets `overflow="hidden"`, so a
+ * row one cell too wide loses its last characters and nothing errors: the pill
+ * construction added one cell per hint and the six-hint failure footer rendered
+ * `esc provider` at 80 columns. That was caught in a screenshot, which is the wrong
+ * place to catch arithmetic — so the widest hint set any screen can build is now
+ * pinned against the dialog's inner width in `ModelPicker.test.tsx`.
  *
- * `BadgeSpan`, NOT `Badge`: one `<text>` per hint carries both the chip and its
- * label, and a `<text>` cannot nest in a `<text>`.
+ * Each pill is ` key ` + ` label ` with NO cell between the two fills, and the parent
+ * box contributes one column of gap between pills.
+ */
+export function hintsWidth(hints: Hint[]): number {
+  if (hints.length === 0) return 0;
+  const pills = hints.reduce((sum, h) => sum + displayWidth(h.key) + displayWidth(h.label) + 4, 0);
+  return pills + (hints.length - 1);
+}
+
+/**
+ * Keyboard hints as KEYCAP PILLS — two abutting segments per hint: the key you
+ * press, then what it does.
  *
- * ONE FILL FOR EVERY KEYCAP, AND IT IS VIVID — NEUTRAL GREY WAS MEASURED AND
- * REJECTED, TWICE, ONCE PER PALETTE. The argument for grey was that every hue in
- * this dialog already means something, so the quietest row should borrow none of
- * them. What that produced is a chip that is not a chip: `C.chipKeyBg` measures
- * 1.50:1 against a dark page and 2.38:1 against a light one, so on whichever
- * terminal it was not tuned for it melts into the background and the key reads as a
- * faintly tinted word. The owner reported exactly that from a live light-theme run,
- * and claudeup records the same measurement and the same conclusion — "the previous
- * neutral-grey chip melted into a light page", with dark slates rejected for
- * dropping to ~2.2 on a dark terminal.
+ * A CHIP HERE IS TWO SEGMENTS, NOT ONE BLOCK BESIDE BARE TEXT. The owner, on the
+ * shipped build: *"key suggestion, they should be like chips... the key itself
+ * brighter colour and label has backdrop but not as bright, create chips"*. So both
+ * halves are filled and the KEY half is the brighter one — it is the thing you press
+ * — with the label riding a quieter backdrop beside it:
  *
- * `C.chipKeycapBg` is purple, and purple is spent on nothing else in this program:
- * the accent is blue, failure is red, the positive family is green. So a keycap
- * cannot be mistaken for a focus ring, a status or an error, and it clears 3:1
- * against BOTH reference pages (`theme-contrast.test.ts`).
+ *     [ esc ][ quit ]      [ ↑↓ ][ move ]      [ a ][ all models ]
+ *       ^brighter                 ^quieter
  *
- * `fg={C.ink}` — WHITE, explicitly, rather than `pickInk`'s answer. We choose this
- * fill, so we own its ink too, and a chip whose ink flips with the user's palette is
- * a chip with two different contrast ratios.
+ * THE TWO SEGMENTS MUST ABUT. One space of padding sits INSIDE each fill and there is
+ * none BETWEEN them, so the pair reads as one object with two halves; the gap that
+ * separates hints from each other is the parent box's `gap={1}`, outside both fills.
+ * A space between the backgrounds splits the pill in half and the affordance is gone.
+ * This is a sanctioned case of padding inside a fill, for the same reason `ChipCell`
+ * centres inside one: the fill IS the object here, not a highlight on a word.
  *
- * AN UNAVAILABLE ACTION LOSES THE CHIP RATHER THAN BEING HIDDEN — dim text, no
- * fill, so "there is a key here but not now" is visibly different from both a live
- * key and an absent one. Every action is one key and every key is here.
+ * ONE `<text>` PER HINT carries both spans — a `<text>` cannot nest in a `<text>`,
+ * and a `<span>` outside a `<text>` renders an error page while the process exits 0.
+ * This replaced `BadgeSpan`, whose `label + width` contract describes one fill.
+ *
+ * THE PILL IS QUIET, AND THE TWO EARLIER ANSWERS WERE THE SAME MISTAKE FROM OPPOSITE
+ * ENDS. First it was one neutral grey for both themes, which is a chip that is not a
+ * chip: `C.chipKeyBg` measures 1.50:1 against a dark page and 2.38:1 against a light
+ * one, so on whichever terminal it was not tuned for it melts and the key reads as a
+ * faintly tinted word — the owner reported exactly that from a live light-theme run.
+ * The fix was one VIVID purple (`#9333ea`) for both themes, which over-corrected:
+ * 5.38:1 on a light page made the footer the loudest thing on a screen whose content
+ * is a list.
+ *
+ * BOTH failures were caused by one hex serving two pages. A keycap is an AFFORDANCE —
+ * it says a key exists, not that anything is notable — so it takes madbench's
+ * near-background idiom (`paramKeyBg` / `paramValBg`: "near-bg", body ink) and it
+ * takes it TWICE, once per palette, because "a shade off the page" points up on black
+ * and down on white. MEASURED, because a pale fill does NOT survive a dark terminal:
+ * `#B8C2D8` is 1.06:1 on true black, worse than the grey already rejected. Dark gets
+ * `#474F63` / `#292D36` (2.57:1 and 1.52:1 off the page, 1.69:1 between them); light
+ * gets `#B8C2D8` / `#E4E8F2` (1.79:1 and 1.23:1, 1.46:1 between). Every one of those
+ * numbers is pinned by `theme-contrast.test.ts`, including a CEILING — the gate that
+ * would have caught the purple.
+ *
+ * THE INKS ARE STATED, never left to `pickInk`, which reads LUMINANCE alone and would
+ * flip on a near-background fill. Each palette declares fill and ink together. All
+ * four are read at RENDER time — a module-level `const` here ships one palette's
+ * whole construction to the other theme.
+ *
+ * AN UNAVAILABLE ACTION LOSES THE PILL RATHER THAN BEING HIDDEN — dim text, no fill,
+ * so "there is a key here but not now" is visibly different from both a live key and
+ * an absent one. Every action is one key and every key is here.
  */
 export function Hints({ hints }: { hints: Hint[] }): ReactNode {
   return (
     <box flexDirection="row" height={1} gap={1} flexShrink={0} overflow="hidden">
-      {hints.map((h) => (
-        <text key={h.key} flexShrink={0}>
-          {h.on === false ? (
-            <span fg={tokens.trace}>{` ${h.key} `}</span>
-          ) : (
-            <BadgeSpan label={h.key} bg={C.chipKeycapBg} fg={C.ink} />
-          )}
-          <span fg={h.on === false ? tokens.trace : tokens.subtle}>{` ${h.label}`}</span>
-        </text>
-      ))}
+      {hints.map((h) =>
+        h.on === false ? (
+          <text key={h.key} flexShrink={0}>
+            {/* Same cell count as the pill it replaces, so a hint turning on and off
+                does not shuffle the row. */}
+            <span fg={tokens.trace}>{` ${h.key}  ${h.label} `}</span>
+          </text>
+        ) : (
+          <text key={h.key} flexShrink={0}>
+            <span fg={C.keycapKeyFg} bg={C.keycapKeyBg} attributes={A.bold}>{` ${h.key} `}</span>
+            <span fg={C.keycapLabelFg} bg={C.keycapLabelBg}>{` ${h.label} `}</span>
+          </text>
+        )
+      )}
     </box>
   );
 }

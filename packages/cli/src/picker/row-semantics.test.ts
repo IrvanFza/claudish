@@ -210,9 +210,9 @@ describe("billingLabel / readinessGlyph", () => {
   test("METERED IS NEUTRAL and SUB IS POSITIVE — neither is a warning", () => {
     // `$` states that the route bills per token. That is information about the
     // route, not a caution about it: the number that matters is on the model row.
-    // Neutral is now carried by the FILL (a near-grey) rather than by the ink, which
-    // is white on every chip we paint.
-    expect(billingLabel("metered").fg).toBe(C.ink);
+    // Neutral is carried by the FILL — a near-background one, whose ink is the quiet
+    // tier rather than the signal's.
+    expect(billingLabel("metered").fg).toBe(C.pillMutedFg);
     for (const mode of ["sub", "local", "metered"] as const) {
       const tag = billingLabel(mode);
       for (const colour of [tag.bg, tag.fg]) {
@@ -222,17 +222,35 @@ describe("billingLabel / readinessGlyph", () => {
     }
   });
 
-  test("A FILLED CHIP CARRIES WHITE INK, in both palettes", () => {
-    // We choose the fill, so we own the ink: `pickInk` would answer white on the
-    // dark palette and BLACK on the light one for the same chip — one chip with two
-    // inks, and the worse ratio (4.02 vs 5.02) on the lighter page.
+  test("EVERY CHIP STATES ITS OWN INK, and the ink follows the palette", () => {
+    // We choose the fill, so we own the ink: `pickInk` would answer white on the dark
+    // palette and BLACK on the light one for the same chip — one chip with two inks,
+    // and the worse ratio (4.02 vs 5.02) on the lighter page.
+    //
+    // AND THE INK IS NOT ONE COLOUR ANY MORE. The dark palette builds a chip as a
+    // saturated fill with light ink; the light palette builds it as a pale TINT with
+    // deep ink of the same hue, because a saturated block glares on a white page
+    // (`theme.ts`). So "white on everything" is exactly the rule that had to go, and
+    // what replaces it is: the ink is the fill's OWN declared partner, and the pair
+    // moves together when the theme flips.
     for (const mode of ["dark", "light"] as const) {
       setThemeMode(mode);
-      for (const billing of ["sub", "local", "metered"] as const) {
-        expect(billingLabel(billing).fg).toBe(C.ink);
-      }
-      expect(C.ink).toBe("#ffffff");
+      expect({
+        mode,
+        sub: billingLabel("sub").fg,
+        local: billingLabel("local").fg,
+        metered: billingLabel("metered").fg,
+      }).toEqual({ mode, sub: C.pillKeyFg, local: C.pillKeyFg, metered: C.pillMutedFg });
+      // The two tiers are never the same ink — that would erase the distinction the
+      // quiet chip exists to make.
+      expect(C.pillKeyFg).not.toBe(C.pillMutedFg);
     }
+    // And the flip actually MOVED them: a light-palette `SUB` painted in the dark
+    // palette's white ink is the module-level-const bug this repo has found six times.
+    setThemeMode("dark");
+    const darkInk = billingLabel("sub").fg;
+    setThemeMode("light");
+    expect(billingLabel("sub").fg).not.toBe(darkInk);
     resetThemeModeForTests();
   });
 

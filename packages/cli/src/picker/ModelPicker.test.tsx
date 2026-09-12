@@ -35,7 +35,8 @@ import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
-import { MAX_DIALOG_ROWS } from "./layout.js";
+import { type Hint, hintsWidth } from "./chrome.js";
+import { MAX_DIALOG_ROWS, deriveDialogLayout } from "./layout.js";
 import { CHIP_FILL_CELLS } from "./rows.js";
 import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
 
@@ -324,12 +325,81 @@ describe("the dialog", () => {
       }
       await d.press(["a"]);
       await d.until(listPainted);
-      for (const hint of ["move", "select", "filter", "custom", "providers"]) {
+      for (const hint of ["move", "select", "filter", "custom", "back"]) {
         expect(footer()).toContain(hint);
       }
     } finally {
       d.destroy();
     }
+  });
+
+  test("THE SIX-PILL FOOTER — the widest row any screen builds — is unclipped at 80", async () => {
+    // THE TEST ABOVE CANNOT CATCH THIS. It renders `hasDiscovery: false`, so `r
+    // retry` is absent and the row is FIVE pills. The row that actually overflowed is
+    // the six-pill one a DISCOVERY provider draws: it rendered `esc provider` at 80
+    // columns and nothing reported it, because `Hints` sets `overflow="hidden"` and a
+    // dropped cell is not an error. A screenshot found it, which is the wrong place
+    // to find arithmetic.
+    //
+    // The pill construction is what made the row expensive — each hint went from
+    // `key + label + 3` cells to `key + label + 4`, six of them — and the next hint
+    // anyone adds will cost the same.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster: [provider({ hasDiscovery: true })], served: [model()] })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      const footer = painted(d.recapture().text).at(-2) ?? "";
+      // `r retry` proves this really is the six-pill row and not the five-pill one.
+      for (const hint of ["move", "select", "filter", "retry", "custom", "back"]) {
+        expect({ hint, footer, present: footer.includes(hint) }).toEqual({
+          hint,
+          footer,
+          present: true,
+        });
+      }
+    } finally {
+      d.destroy();
+    }
+
+    // AND THE BUDGET IS GENUINELY TIGHT — the half that stops the fit above from
+    // being a coincidence. These are the two labels the rows gave up to pay for the
+    // pills; each one, put back, overflows the dialog's inner width on its own.
+    const inner = deriveDialogLayout(80, 24).inner;
+    const withLabel = (hints: Hint[], key: string, label: string): Hint[] =>
+      hints.map((h) => (h.key === key ? { ...h, label } : h));
+    const providerList: Hint[] = [
+      { key: "↑↓", label: "move" },
+      { key: "⏎", label: "open" },
+      { key: "a", label: "all models" },
+      { key: "k", label: "show" },
+      { key: "c", label: "custom" },
+      { key: "esc", label: "quit" },
+    ];
+    const scopedList: Hint[] = [
+      { key: "↑↓", label: "move" },
+      { key: "⏎", label: "select" },
+      { key: "/", label: "filter" },
+      { key: "r", label: "retry" },
+      { key: "c", label: "custom" },
+      { key: "esc", label: "back" },
+    ];
+    expect({
+      providerRowFits: hintsWidth(providerList) <= inner,
+      scopedRowFits: hintsWidth(scopedList) <= inner,
+      needsKeyWouldNotFit: hintsWidth(withLabel(providerList, "k", "needs key")) > inner,
+      providersWouldNotFit: hintsWidth(withLabel(scopedList, "esc", "providers")) > inner,
+    }).toEqual({
+      providerRowFits: true,
+      scopedRowFits: true,
+      needsKeyWouldNotFit: true,
+      providersWouldNotFit: true,
+    });
   });
 });
 
@@ -388,7 +458,7 @@ describe("the billing and prefix CHIPS", () => {
         // picked up `pillKeyBg` would claim the route costs nothing.
         expect(bgOf(chip)).not.toBe(rgb(C.pillKeyBg));
         expect(bgOf(chip)).not.toBe(rgb(C.bgAlt));
-        expect(chip.fg.toInts().slice(0, 3).join()).toBe(rgb(C.ink));
+        expect(chip.fg.toInts().slice(0, 3).join()).toBe(rgb(C.pillMutedFg));
       }
       expect(rgb(C.pillMutedBg)).not.toBe(rgb(C.pillKeyBg));
     } finally {
@@ -448,9 +518,12 @@ describe("the billing and prefix CHIPS", () => {
           text: `${" ".repeat(left + 1)}${label}${" ".repeat(slack - left + 1)}`,
         });
       }
-      // A footer keycap is a DIFFERENT object with the original contract: its fill is
-      // exactly `label + 2`, because a row of keys is not a column of states.
-      const caps = spansOf(f).filter((sp) => bgOf(sp) === rgb(C.chipKeycapBg));
+      // A footer keycap is a DIFFERENT object with the original contract: each of the
+      // pill's two segments is exactly `text + 2`, because a row of keys is not a
+      // column of states — nothing there has to line up with anything below it.
+      const caps = spansOf(f).filter(
+        (sp) => bgOf(sp) === rgb(C.keycapKeyBg) || bgOf(sp) === rgb(C.keycapLabelBg)
+      );
       expect(caps.length).toBeGreaterThan(0);
       for (const sp of caps) {
         expect({ text: sp.text }).toEqual({ text: ` ${sp.text.trim()} ` });
@@ -460,21 +533,38 @@ describe("the billing and prefix CHIPS", () => {
     }
   });
 
-  test("A FOOTER KEYCAP IS A VIVID BLOCK WITH WHITE INK, never a grey word", async () => {
-    // Grey was measured and rejected once per palette — 1.50:1 on a dark page,
-    // 2.38:1 on a light one — so on whichever terminal it was not tuned for the key
-    // melted into the background. `captureCharFrame` reads ` k ` either way; only
-    // the fill says whether it reads as a key you press.
+  test("A FOOTER KEYCAP IS A TWO-SEGMENT PILL — key filled, label filled, no gap", async () => {
+    // The owner asked for chips, twice. First the key was a grey word (1.50:1 on a
+    // dark page, 2.38:1 on a light one — invisible on whichever terminal it was not
+    // tuned for), then a lone purple block beside bare text. What he asked for is one
+    // pill of two halves: *"the key itself brighter colour and label has backdrop but
+    // not as bright"*.
+    //
+    // `captureCharFrame` reads ` esc  quit ` under every one of those builds. Only
+    // the FILLS say whether it is a pill, and only their ADJACENCY says whether it is
+    // one object or two — which is why this asserts the two segments touch.
     const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
-      const caps = labelled(d.recapture().frame, "esc");
+      const f = d.recapture().frame;
+      const caps = labelled(f, "esc");
       expect(caps.length).toBeGreaterThan(0);
       for (const cap of caps) {
-        expect(bgOf(cap)).toBe(rgb(C.chipKeycapBg));
+        expect(bgOf(cap)).toBe(rgb(C.keycapKeyBg));
         expect(bgOf(cap)).not.toBe(rgb(C.chipKeyBg));
-        expect(cap.fg.toInts().slice(0, 3).join()).toBe(rgb(C.ink));
+        expect(cap.fg.toInts().slice(0, 3).join()).toBe(rgb(C.keycapKeyFg));
       }
+      // THE SEAM. The label segment is the NEXT span after the key segment, with no
+      // unfilled span between them — a single space on the panel background there is
+      // what splits the pill into two objects, and it is invisible in a char frame.
+      const line = f.lines.find((l) => l.spans.some((sp) => sp.text.trim() === "esc"));
+      expect(line).toBeDefined();
+      const at = line!.spans.findIndex((sp) => sp.text.trim() === "esc");
+      const next = line!.spans[at + 1];
+      expect({ text: next?.text, bg: next === undefined ? null : bgOf(next) }).toEqual({
+        text: " quit ",
+        bg: rgb(C.keycapLabelBg),
+      });
     } finally {
       d.destroy();
     }

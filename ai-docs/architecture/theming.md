@@ -54,12 +54,17 @@ add-wizard is an absolute overlay that relies on it to occlude the list beneath.
 Matching the terminal exactly is how the page becomes invisible while remaining
 opaque.
 
-ONLY `bg` is adopted. `bgAlt` / `bgHighlight` / `bgError` stay from the palette:
-they are panel and selection washes that must remain *distinguishable from* the
-page, and deriving them from an arbitrary terminal colour is a separate problem
-with its own contrast risk. Safe by construction: the mode was classified from
-THIS colour's luminance, so the palette's foregrounds were already chosen
-against it.
+`bg` is adopted, and the NEUTRAL SURFACES move with it — `retintSurfaces`
+transplants each one's per-channel offset from the palette's own page onto the
+real one, so `bgAlt` on a cream terminal becomes a deeper cream rather than a
+grey slab floating on it. `SURFACE_TOKENS` is that list, and it now includes the
+quiet chip fills, which are near-background by construction (see the chip
+section below).
+
+`bgHighlight` / `bgError` and the SIGNAL fills stay from the palette: they carry
+their meaning in their HUE, and re-tinting them would erase the signal they exist
+to send. Safe by construction: the mode was classified from THIS colour's
+luminance, so the palette's foregrounds were already chosen against it.
 
 (`claudeup` in magus-src solves the same problem by painting no page at all —
 "accents are chosen to clear 3:1 against both backgrounds, and body text uses
@@ -143,29 +148,88 @@ Prices are printed in body ink. Green is this palette's "ok", the figures are
 facts rather than verdicts, and the FREE badge two rows above already says free
 in colour.
 
-## The band an OWNED FILL may occupy is 1.26:1 wide, so the second axis is chroma
+## A chip is a CONSTRUCTION, and the page picks which one — superseded, 2026-09-12
 
-Every chip claudish paints is measured against BOTH `CONTRAST_REFERENCE` pages
-(`#FAFAD2`, `#1C1C1E`) at 3:1, and carries white `C.ink` at 4.5:1. Those three
-constraints pin the fill's relative luminance into `L ∈ [0.1351, 0.1833]` — the
-floor is 3:1 on near-black, the ceiling is white ink at 4.5:1 — which is a total
-range of 1.26:1. Two consequences, both of which have now cost a round each:
+**This section replaces the one that preceded it, which is kept below the rule as
+the measurement that forced the change.** The old rule was: one hex per chip,
+measured against BOTH `CONTRAST_REFERENCE` pages at 3:1, carrying white `C.ink`.
+It is gone. What replaces it is two palettes that build a chip *differently*, and
+a gate that measures each against its own page.
 
-- **A fill cannot be made "softer" by darkening it.** `C.pillKeyBg` was `#15803d`
-  and the owner's verdict as an AREA was "not as bright… softer". Anything
-  visibly darker drops under 3:1 on a dark terminal, which is the same defect the
-  hex before it (`#2d6e3e`, 2.76:1) shipped. What IS free is saturation:
-  `#3f7752` is the same lightness class at CIELAB C* 31.2 instead of 52.5, and
-  its page ratios move 4.70/3.39 → 4.95/3.22. Softness is chroma here.
-- **Two fills cannot be told apart by contrast ratio.** The picker's billing
-  column now fills every row — `SUB`/`local` positive, `$` neutral — so the
-  design depends on the two reading as different. Inside that band they can
-  differ in WCAG terms by almost nothing (`#3f7752` vs `#6b7280` is 1.09:1), so
-  the assertion is perceptual: ΔE76 ≥ 20 and the neutral at under half the
-  positive's chroma, in `theme-contrast.test.ts` alongside a CIELAB helper
-  written out independently for the same reason the luminance formula is.
+### The old rule's arithmetic was correct and its premise was not
 
-A column of identical fills still fuses — that rule is unchanged, and is why a
-scoped flat-rate roster draws its repeated `SUB` as text (`priceVaries`). What
-changed is the finding that ALTERNATING fills do not, provided the alternation is
-measured rather than assumed.
+3:1 on both pages plus white ink at 4.5:1 pins a fill's relative luminance into
+`L ∈ [0.1351, 0.1833]` — a range of **1.26:1**. So every chip, whatever it meant,
+was forced to be a mid-dark saturated block. The premise justifying that was
+"detection can fail, so a light fill may land on a dark terminal". It cannot:
+`applyTuiTheme` resolves an unknown OSC answer to DARK and never to LIGHT, so a
+light-palette fill is only ever painted on a page we measured and found light.
+The cost was real and the protection was not.
+
+Two rounds were spent inside that band before the constraint itself was
+questioned — a cheap lesson to re-learn, so it is written down here rather than
+in the file.
+
+### What the two palettes now do
+
+| | fill | ink | why |
+|---|---|---|---|
+| **dark** | SATURATED (`pillKeyBg` `#2f8250`) | light (`#ffffff`) | against near-black a colour must bring its own light |
+| **light** | pale TINT of the hue (`#BCE5CD`) | DEEP ink of the SAME hue (`#166534`) | against white a saturated fill is a glaring block |
+
+The owner's two verdicts, in order, are the whole derivation: *"this one is ugly
+for light theme"*, then — after the first fix dropped each hue to its deep
+sibling but kept the dark palette's saturated SHAPE — *"sub has a super green for
+light theme background, that should be not as bright"*. Dropping the hue was not
+enough, because the defect was never the hue. madbench's `internal/tui/theme.go`
+states the same rule one level up: neon reads as brightness against black and as
+glare against white.
+
+**A tint is not a weaker chip; it moves the contrast from the fill to the ink.**
+`SUB` on a light page prints `#166534` at 5.17:1 — text-grade — on a field that
+is only 1.38:1 off white. The old construction had it backwards: it spent all the
+contrast on the block and then had to print white on it.
+
+### Roles, because one bar for everything is what produced the glare
+
+- **SIGNAL** (`pillKeyBg`, `pillOauthBg`, `tabActiveBg`, `red`) — 3:1 against its
+  own palette's reference page.
+- **QUIET** (`pillMutedBg`, both keycap segments) — a near-background fill, and
+  the bar is a FLOOR *and a CEILING*: perceptible (≥ 1.10:1 off the page and off
+  the `bgAlt` panel) and never louder than 3:1. The ceiling is the gate nobody
+  had — a purple keycap at 5.04:1 on cream passed every earlier test, because
+  "too loud" had not been written down as a failure.
+- **Ink** is text-grade (4.5:1) on every chip, under both constructions. That is
+  the one bar that did not move.
+
+Quiet fills are also in `SURFACE_TOKENS`: a near-background fill IS a surface, so
+it must be re-tinted onto a cream terminal exactly as `bgAlt` is. They joined that
+list only when they stopped being saturated blocks.
+
+### Two fills still cannot be told apart by contrast ratio
+
+The picker's billing column fills every row — `SUB`/`local` signal, `$` quiet —
+so the design depends on the two reading as different, and under the tinted
+construction they sit within 0.1 of each other in luminance. The assertion is
+therefore perceptual and it matters MORE than before, not less: ΔE76 ≥ 20 (light
+measures 22.7, dark 54.6) and the quiet fill at under half the signal's chroma,
+in `theme-contrast.test.ts` alongside a CIELAB helper written out independently
+for the same reason the luminance formula is.
+
+A column of identical fills still fuses — unchanged, and why a scoped flat-rate
+roster draws its repeated `SUB` as text (`priceVaries`). ALTERNATING fills do
+not, provided the alternation is measured rather than assumed.
+
+### A keycap is a PILL of two segments
+
+`[ esc ][ quit ]` — the key segment brighter, the label segment quieter, the two
+abutting with no cell between the fills. A single filled block beside bare text
+is not a chip, and the two earlier answers were the same mistake from opposite
+ends: one neutral grey for both themes (1.50:1 on dark, invisible) and then one
+vivid purple for both (5.38:1 on light, the loudest thing on the screen). Both
+failed because one hex served two pages.
+
+The pill costs one cell more per hint than the block did, which is not free:
+`Hints` sets `overflow="hidden"`, so at 80 columns the six-hint footer silently
+clipped to `esc provider`. `hintsWidth` exists so that budget is arithmetic with
+a test rather than a screenshot, and two labels were shortened to pay for it.
