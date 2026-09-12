@@ -16,9 +16,9 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { readRecoveryEnabled, readRecoveryUi } from "../profile-config.js";
 import {
   CLIENT_CEILING_CLAMP_MS,
@@ -27,11 +27,13 @@ import {
   DEFAULT_TIER1_DEADLINE_MS,
   TIER1_DEADLINE_FLOOR_MS,
   logDeadlineIfShortened,
+  recoverySurfaceAllowed,
   resetDeadlineNotice,
   resetRecoveryFlagOverrides,
   resolveRecoveryEnabled,
   resolveRecoveryUi,
   resolveTier1DeadlineMs,
+  retryWatchdogEnv,
   setRecoveryFlagOverrides,
 } from "./settings.js";
 import {
@@ -266,5 +268,94 @@ describe("the scoped layers: project .claudish.json > global config.json", () =>
 
   test("a missing file is skipped rather than fatal", () => {
     expect(readRecoveryUi(paths())).toBeUndefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// `recoverySurfaceAllowed` — the gate that decides whether a launch PAYS for
+// the recovery surface. It shipped as `resolveRecoveryUi()` alone at both
+// `claude-runner.ts` call sites, so `--no-recovery` still wrapped the session
+// in magmux. Observed on a real launch at HEAD 60cdb37, from the OS's own
+// process table: `magmux --id claudish-84222` running under `--no-recovery`.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("recoverySurfaceAllowed — BOTH switches, because a wrap nothing can use is pure cost", () => {
+  test("both on (the default) ⇒ the launch may own a surface", () => {
+    expect(recoverySurfaceAllowed()).toBe(true);
+  });
+
+  test("--no-recovery withdraws the surface even with the UI switch left ON", () => {
+    // THE REGRESSION. With the ladder disabled `shouldSkipTier1` answers
+    // `recovery-disabled` on the first classified failure, so no episode is
+    // ever opened and `ensureRecoveryUi` is never called: the pane CANNOT
+    // appear. Wrapping anyway charges the emulator's native scrollback
+    // (RISK-4), +89 ms of launch and a generated launcher script for a surface
+    // that is structurally unreachable — and makes RISK-7's "restores today's
+    // behaviour everywhere, byte for byte" false about the launch.
+    setRecoveryFlagOverrides({ recovery: false });
+    expect(resolveRecoveryUi()).toBe(true); // the UI switch is untouched…
+    expect(recoverySurfaceAllowed()).toBe(false); // …and the surface is still withdrawn
+  });
+
+  test("every layer of the master switch withdraws it, not just the flag", () => {
+    process.env.CLAUDISH_RECOVERY = "0";
+    expect(recoverySurfaceAllowed()).toBe(false);
+    // …and the flag can put it back, since the flag beats the environment.
+    setRecoveryFlagOverrides({ recovery: true });
+    expect(recoverySurfaceAllowed()).toBe(true);
+  });
+
+  test("--no-recovery-ui withdraws it with the ladder left ON", () => {
+    // The half that already worked: retries still run, they simply answer
+    // inline at exhaustion because no lease can exist.
+    setRecoveryFlagOverrides({ recoveryUi: false });
+    expect(resolveRecoveryEnabled()).toBe(true);
+    expect(recoverySurfaceAllowed()).toBe(false);
+  });
+
+  test("the watchdog moves with it — surface and reach are one decision", () => {
+    setRecoveryFlagOverrides({ recovery: false });
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({});
+    resetRecoveryFlagOverrides();
+    expect(retryWatchdogEnv({ paneEligible: true })).toEqual({ CLAUDE_CODE_RETRY_WATCHDOG: "1" });
+  });
+});
+
+describe("claude-runner asks that gate, and not the UI switch alone", () => {
+  // A SOURCE GUARD, and it is the only thing that can fail on the defect that
+  // actually shipped. The predicate above was always correct as an expression;
+  // what was wrong was the CALL SITE — `resolveRecoveryUi() &&
+  // paneCapability.kind === "wrap"` — and `launchClaudeCode` cannot be unit
+  // tested for it: reaching that line means spawning Claude Code inside a real
+  // magmux on a real TTY. That is C-8's live matrix, not a unit test. This is
+  // the cheap half, and it fails the moment either call site is reverted.
+  const source = readFileSync(resolve(import.meta.dir, "../claude-runner.ts"), "utf8");
+  // The comments there name `resolveRecoveryUi()` while explaining why it is
+  // not enough, so a guard that did not strip them would pass on reverted code.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  test("the magmux wrap ternary consults recoverySurfaceAllowed()", () => {
+    const gate = /const wrap =\s*([\s\S]{0,160}?)\?\s*\n?\s*planMagmuxWrap/.exec(code)?.[1];
+    expect(gate, "could not find the wrap ternary in claude-runner.ts").toBeTruthy();
+    expect(gate).toContain("recoverySurfaceAllowed()");
+    expect(gate).toContain('paneCapability.kind === "wrap"');
+    // The reverted form, named explicitly so the failure says what went wrong
+    // rather than which substring is missing.
+    expect(
+      /\bresolveRecoveryUi\(\)/.test(gate as string)
+        ? "the wrap gate asks resolveRecoveryUi() — --no-recovery will still wrap the session in magmux"
+        : null
+    ).toBeNull();
+  });
+
+  test("the ambient-magmux branch consults it too", () => {
+    const branch = code.split("\n").find((l) => l.includes("MAGMUX_SOCK") && l.includes("else if"));
+    expect(branch, "could not find the ambient branch in claude-runner.ts").toBeTruthy();
+    expect(branch).toContain("recoverySurfaceAllowed()");
+    expect(
+      /\bresolveRecoveryUi\(\)/.test(branch as string)
+        ? "the ambient branch asks resolveRecoveryUi() — --no-recovery still installs the recovery UI in a grid pane"
+        : null
+    ).toBeNull();
   });
 });

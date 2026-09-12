@@ -88,6 +88,42 @@ export function resolveRecoveryUi(): boolean {
   return true;
 }
 
+/**
+ * May this launch pay for a recovery surface — the magmux wrap, the UI
+ * installation, and the client's amplified retry budget?
+ *
+ * BOTH switches, and `resolveRecoveryUi()` alone is NOT the answer. That is not
+ * a style preference; it shipped as `resolveRecoveryUi()` alone at
+ * `claude-runner.ts`'s wrap ternary and at its ambient branch, and the
+ * consequence was measured on a real launch: `--no-recovery` left the session
+ * wrapped in `magmux --id claudish-<pid>`.
+ *
+ * What that cost a user who had explicitly switched the feature OFF:
+ *
+ *   - magmux's scrollback ring REPLACES the emulator's own, which
+ *     `network-recovery.md` calls the single most user-visible cost of
+ *     wrapping by default (RISK-4);
+ *   - +89 ms median at launch (11 paired samples, identical child both arms);
+ *   - a generated launcher script on disk, and a login shell between claudish
+ *     and Claude Code (RISK-5's whole surface).
+ *
+ * And it bought NOTHING, by construction rather than by luck: with the ladder
+ * disabled `shouldSkipTier1` returns `recovery-disabled` on the first
+ * classified failure, so no episode is ever opened, so `ensureRecoveryUi` is
+ * never called and the pane can never appear. A wrap whose only consumer can
+ * never run is pure cost.
+ *
+ * It also made RISK-7's mitigation false in the permissive direction —
+ * `--no-recovery` is documented as restoring pre-recovery behaviour "byte for
+ * byte", which was true of the RESPONSE and false of the LAUNCH.
+ *
+ * `retryWatchdogEnv` asked both switches from the start; these two sites did
+ * not. One predicate now, read by all three, so they cannot drift again.
+ */
+export function recoverySurfaceAllowed(): boolean {
+  return resolveRecoveryEnabled() && resolveRecoveryUi();
+}
+
 // ─── "The user said stop" ────────────────────────────────────────────────────
 
 /**
@@ -305,6 +341,9 @@ export function resetDeadlineNotice(): void {
  */
 export function retryWatchdogEnv(opts: { paneEligible: boolean }): Record<string, string> {
   if (!opts.paneEligible) return {};
-  if (!resolveRecoveryEnabled()) return {};
-  return resolveRecoveryUi() ? { CLAUDE_CODE_RETRY_WATCHDOG: "1" } : {};
+  // Gates 1 and 2, as one predicate — the same one `claude-runner.ts` asks
+  // before wrapping the launch, so "may we wrap" and "may we amplify the
+  // client's retries" are answered by one expression rather than by two that
+  // have already drifted once.
+  return recoverySurfaceAllowed() ? { CLAUDE_CODE_RETRY_WATCHDOG: "1" } : {};
 }

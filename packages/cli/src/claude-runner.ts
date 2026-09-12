@@ -27,7 +27,7 @@ import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
-import { resolveRecoveryUi, retryWatchdogEnv } from "./recovery/settings.js";
+import { recoverySurfaceAllowed, retryWatchdogEnv } from "./recovery/settings.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -1963,17 +1963,24 @@ export async function runClaudeWithProxy(
   // an interactive session, and a retryable status is only honest while the
   // reason is legible somewhere.
   //
-  // `resolveRecoveryUi()` is the user's half of the gate — flag > env > project
-  // > global > true. It decides whether claudish may own a SURFACE; it never
-  // decides whether a retry happens. Off means no pane, therefore no lease,
-  // therefore an inline error at exhaustion — which is the 503-vs-400 decision
-  // made structurally rather than by a second predicate somewhere else.
+  // `recoverySurfaceAllowed()` is the user's half of the gate — BOTH switches,
+  // each flag > env > project > global > true. It decides whether claudish may
+  // own a SURFACE; it never decides whether a retry happens. Off means no pane,
+  // therefore no lease, therefore an inline error at exhaustion — which is the
+  // 503-vs-400 decision made structurally rather than by a second predicate
+  // somewhere else.
+  //
+  // It must ask `resolveRecoveryEnabled()` too, and asking only the UI switch
+  // here was a shipped defect: `--no-recovery` left the session wrapped in
+  // magmux — paying the scrollback, the +89 ms and the launcher script — for a
+  // pane that `shouldSkipTier1`'s `recovery-disabled` gate guarantees can never
+  // open. The reasoning is at `recoverySurfaceAllowed()`.
   //
   // `paneCapability` was resolved before the environment was finalised, and is
   // re-used rather than re-derived: the watchdog above is exported on exactly
   // the launches that reach `planMagmuxWrap` or the ambient branch below.
   const wrap =
-    resolveRecoveryUi() && paneCapability.kind === "wrap"
+    recoverySurfaceAllowed() && paneCapability.kind === "wrap"
       ? planMagmuxWrap({
           claudeBinary,
           claudeArgs,
@@ -2007,7 +2014,7 @@ export async function runClaudeWithProxy(
       // after the user had already quit.
       void shutdownRecoveryUi();
     });
-  } else if (resolveRecoveryUi() && config.interactive && process.env.MAGMUX_SOCK) {
+  } else if (recoverySurfaceAllowed() && config.interactive && process.env.MAGMUX_SOCK) {
     // Already inside someone else's magmux — `team --grid --mode interactive`,
     // or a user who launched claudish in a pane by hand. There is nothing to
     // wrap, but there IS a multiplexer to ask for a pane, so the recovery UI

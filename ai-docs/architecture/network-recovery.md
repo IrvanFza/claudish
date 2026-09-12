@@ -378,6 +378,15 @@ the ladder is all `waiting` and frames never stop. The regression is only visibl
 connect, which is why the unit test fakes a 45-second attempt (4.5 lease windows, **not one frame
 emitted**) and the integration test runs a real pane against a 20-second lease clock.
 
+**The residual forbidden window is exactly `UI_LEASE_MS` wide, and that is a property of a lease
+rather than a gap in it.** A renderer killed 8.7 s before exhaustion still reads
+`lastAckAgoMs: 9124, valid: true`, so that exhaustion answers 503 with nothing on screen — measured
+in validation, and correct: self-clearing on crash with no cleanup path to forget is the whole reason
+the gate is a lease. The cost is bounded and self-repairing (the client re-asks, finds no pane, and
+that request answers 400), which is why 10 s is affordable. Anyone tightening the window should move
+`UI_LEASE_MS`, not add a second liveness test beside it — and must keep `UI_HEARTBEAT_MS` well under
+whatever they choose.
+
 No transition in the episode's table touches the lease, and the lease never causes a transition. The
 retry loop is not the pane's business, and the pane's liveness is not the deadline's business.
 
@@ -443,6 +452,17 @@ returning a false success to attempt two.
   it. `untilAborted` now enforces the ceiling at the one place that owns it. The operation is
   *abandoned*, not cancelled — threading a real signal through every transport's auth call is the
   deeper fix and is still worth doing.
+
+  **The reserve that buys this costs the auth path its whole budget below `API_TIMEOUT_MS = 75 s`,
+  silently.** The auth catches use `refreshDeadlineAt(tier1DeadlineAt(c))` = deadline − 45 s, and the
+  deadline is `max(15 s, min(API_TIMEOUT_MS, 300 s) − 30 s)` — so at 60 000 the auth deadline is
+  −15 s, `shouldSkipTier1` answers `no-budget` before attempt 1, and a stopped local server or a
+  failed token exchange gets today's immediate 400 while the FETCH path on the same machine still
+  recovers. Measured on a real run: `[Recovery] skipped (no-budget) … site=refreshAuth` at t+0 with
+  `API_TIMEOUT_MS=60000`. It is inside the design, not a bug, but it is a whole fault class losing
+  recovery on a user-settable knob with nothing printed — the shape RISK-7 and the truncated rung
+  both have. A floor, or a `[Recovery]` line when the reserve eats the budget, is the fix; and any
+  harness that shortens a local-provider run this way is testing a path that is switched off.
 - **The error must name the host that actually failed.** `connectionEndpointFor` falls back to the
   MODEL endpoint when the error carries no `claudishEndpoint`, so an `auth.x.ai` outage was reported
   — in the banner, in the log and in the episode key — as `api.x.ai`. Grok's refresh wrapper now
@@ -568,10 +588,17 @@ the user was never shown.
 2. **The watchdog needs three gates, not one.** `CLAUDE_CODE_RETRY_WATCHDOG=1` was exported from the
    UI preference alone, so `-p`, `--no-recovery`, a pipe and a machine without magmux all expanded
    every UNRELATED 503 to ~300 client attempts while being structurally incapable of holding the
-   lease a recovery 503 requires. It now requires `resolveRecoveryEnabled()` **and**
-   `resolveRecoveryUi()` **and** `magmuxPaneCapability() !== none` — the last asked BEFORE the child
-   environment is finalised, which is why that predicate is side-effect free and is the same one
-   `planMagmuxWrap` consumes.
+   lease a recovery 503 requires. It now requires `recoverySurfaceAllowed()` — which is
+   `resolveRecoveryEnabled() && resolveRecoveryUi()` — **and** `magmuxPaneCapability() !== none`,
+   the last asked BEFORE the child environment is finalised, which is why that predicate is
+   side-effect free and is the same one `planMagmuxWrap` consumes.
+
+   **The first two gates were a function for the watchdog and a hand-written expression at the two
+   places that decide the WRAP, and the expression was missing a term** — which is how
+   `--no-recovery` shipped suppressing the watchdog correctly while still wrapping the session.
+   Two statements of one rule is one too many: `recoverySurfaceAllowed()` is now the single
+   predicate, read by `retryWatchdogEnv()`, by the wrap ternary and by the ambient-socket branch.
+   Anything else that decides whether a launch may PAY for a surface reads it too.
 
 **The transport's `getRequestInit()` is re-minted per attempt.** It was hoisted once, before the
 primary fetch, and spread into every re-issue. A transport that returns a one-shot
@@ -583,9 +610,47 @@ process. `mergeSignalIntoInit` now also drops an `own` that is already aborted, 
 that brace.
 
 **RISK-7 — a CI run holding a dead endpoint for the full deadline.** `--no-recovery` /
-`CLAUDISH_RECOVERY=0` restores today's immediate 400 everywhere, byte for byte. `--no-recovery-ui` /
-`CLAUDISH_RECOVERY_UI=0` keeps the retries and drops only the pane (and with it the 503 arm, since
-the lease can never be valid).
+`CLAUDISH_RECOVERY=0` withdraws the hold AND the launch: `shouldSkipTier1` answers
+`recovery-disabled` on the first classified failure, and `recoverySurfaceAllowed()` — which is
+`resolveRecoveryEnabled() && resolveRecoveryUi()` — drops the magmux wrap, the recovery-UI install
+and `CLAUDE_CODE_RETRY_WATCHDOG` together. `--no-recovery-ui` / `CLAUDISH_RECOVERY_UI=0` keeps the
+retries and drops only the pane (and with it the 503 arm, since the lease can never be valid).
+
+**This paragraph used to claim "byte for byte", and that claim was wrong twice.** It is recorded
+here rather than quietly corrected, because both halves were read as true by reviewers:
+
+1. **It was false about the LAUNCH, which is the half a user sees.** The wrap was gated on
+   `resolveRecoveryUi()` alone, so `--no-recovery` still started `magmux --id claudish-<pid>` —
+   observed in the OS process table on a real launch. The switch that turns the feature off left
+   behind its most user-visible cost (magmux's ring replaces the emulator's native scrollback,
+   RISK-4) plus ~89 ms of launch and a generated launcher script, for a pane that
+   `recovery-disabled` guarantees can never open. Fixed; the four-arm live matrix is
+   `validation/c8/c8-no-recovery-wrap-live-fixed.txt`, and a source guard in
+   `recovery/settings.test.ts` fails if either call site is reverted.
+2. **It is still not literally byte-for-byte about the RESPONSE**, and the two differences are
+   deliberate. Measured against a detached worktree at `3c1fa26` — the commit before this feature —
+   with the same request through the same handler shape:
+
+   | | branch, `CLAUDISH_RECOVERY=0` | baseline `3c1fa26` |
+   |---|---|---|
+   | refused port: status / body | **400**, 174 bytes, identical text | **400**, 174 bytes |
+   | refused port: elapsed | 12 ms | 7 ms |
+   | refused port: headers | **+ `x-claudish-connection-error: 1`** | — |
+   | hung upstream, `API_TIMEOUT_MS=45000` | **400 at 15.0 s** (the derived floor) | **no answer; the client gave up at 60.0 s** |
+
+   The extra header stays on purpose: `isRetryableError` reads it *above* the quota-wording match,
+   and that hazard — a connection error whose message happens to contain "quota" advancing the
+   fallback chain onto metered billing — does not go away because the user disabled the ladder.
+   Removing it under the switch would hand the opt-out user the billing bug back. The clamp stays
+   for the reason §1 gives: a budget nothing enforces on attempt 1 is not a budget, and the
+   pre-recovery build's alternative is visible in that last row — it held a hung socket until the
+   client's own timeout and answered nothing at all.
+
+   So the honest statement is: **the opt-out restores the pre-recovery OUTCOME (an immediate 400
+   `connection_error`, the same status and the same bytes of message) and the pre-recovery LAUNCH
+   (no wrap, no pane, no watchdog); it does not restore the missing marker header, and it does not
+   restore an unbounded first attempt.** Both exceptions make the opt-out path strictly better
+   than what it replaced.
 
 **There is NO loopback carve-out, and its absence is a decision.** An earlier design skipped the
 ladder for a refused loopback address on the reasoning that a stopped local server will not start
@@ -650,6 +715,7 @@ design set for itself. Default-on survives on that evidence.
 | [`network-recovery-phase2-verification-20260911.md`](../reports/network-recovery-phase2-verification-20260911.md) | the measured 5/10/30/60/60/60 ladder with 18 ms drift over 225 s; the four modules that shipped with no tests |
 | [`network-recovery-phase3-pane-20260911.md`](../reports/network-recovery-phase3-pane-20260911.md) | the lease, the frame-driven-heartbeat CRITICAL, and the two tests that can fail on it |
 | [`network-recovery-phase4-status-flip-20260911.md`](../reports/network-recovery-phase4-status-flip-20260911.md) | the 503 flip through a real interactive session; the chain-safety mutations, including the quota-wording one |
+| [`network-recovery-phase7-validation-20260912.md`](../reports/network-recovery-phase7-validation-20260912.md) | all nineteen acceptance criteria against HEAD: C-17 through a real stopped `ollama serve` with the probes COUNTED per attempt; the `--no-recovery` wrap regression and its four-arm live matrix; the §7 "byte for byte" comparison against a `3c1fa26` control; and three findings — **`API_TIMEOUT_MS ≤ 75 000` disables the auth-path ladder outright**, the 503-without-banner window is `UI_LEASE_MS` wide, and Bun's `os.homedir()` ignores `$HOME` |
 
 Auth-path detail — the five-site inventory with per-site line references and the reproduced
 `[Fallback]` advance — is in the Phase-1 half of the same body of work, summarised in §5 above.
