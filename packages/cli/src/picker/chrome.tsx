@@ -98,19 +98,31 @@ export function composeTitle(title: string, status: string, width: number): stri
  *
  * The right-hand group answers "why is this row at the top" while nothing is
  * typed, and "how much did I just cut" once something is.
+ *
+ * `idle` IS THE FIRST HALF OF THAT AND IT IS NOT ALWAYS WORTH SAYING. `newest first`
+ * explains an ordering the user did not choose and would otherwise wonder about —
+ * why `gpt-5.2` sits above `gpt-5`. The PROVIDER list has no such puzzle: its order
+ * is the curated `PICKER_ORDER`, which reads as "the obvious ones first" and needs no
+ * caption, so it passes `""` and the row is just the prompt until something is typed.
+ * Inventing a phrase there would spend a row's right edge on nothing — and it would
+ * put a SORT claim on a screen that does not sort, which the reader has no reason to
+ * disbelieve.
  */
 export function FilterRow({
   value,
   matches,
   total,
   width,
+  idle = "newest first",
 }: {
   value: string;
   matches: number;
   total: number;
   width: number;
+  /** What the right edge says while nothing is typed. `""` says nothing. */
+  idle?: string;
 }): ReactNode {
-  const right = value === "" ? "newest first" : `${matches} of ${total}`;
+  const right = value === "" ? idle : `${matches} of ${total}`;
   const room = Math.max(1, width - displayWidth(right) - 4);
   return (
     <box flexDirection="row" justifyContent="space-between" height={1} flexShrink={0}>

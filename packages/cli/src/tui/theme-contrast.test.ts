@@ -224,7 +224,10 @@ describe("chip gates: fill, ink, role and construction", () => {
    */
   const CHIPS = [
     { what: "status SUB/FREE/local", bg: "pillKeyBg", fg: "pillKeyFg", role: "signal" },
-    { what: "status $", bg: "pillMutedBg", fg: "pillMutedFg", role: "quiet" },
+    // `$$$` is a SIGNAL in meaning and a QUIET fill in register, and it is listed as
+    // quiet on purpose: the ceiling is the half of its contract that matters, because
+    // the hue it carries is the one failure already owns.
+    { what: "status $$$", bg: "pillCostBg", fg: "pillCostFg", role: "quiet" },
     { what: "keycap KEY segment", bg: "keycapKeyBg", fg: "keycapKeyFg", role: "quiet" },
     { what: "keycap LABEL segment", bg: "keycapLabelBg", fg: "keycapLabelFg", role: "quiet" },
   ] as const satisfies ReadonlyArray<{
@@ -357,30 +360,79 @@ describe("chip gates: fill, ink, role and construction", () => {
     }
   });
 
-  it("HOLDS THE TWO HALVES OF THE STATUS COLUMN APART — the banding gate", () => {
-    // The picker's billing column carries a fill on EVERY row: `SUB`/`local` on
-    // `pillKeyBg`, `$` on `pillMutedBg`. That is the shape that fused into one solid
+  it("HOLDS EVERY PAIR OF STATUS-COLUMN FILLS APART — the banding gate", () => {
+    // The picker's billing column carries a fill on EVERY row: `SUB`/`FREE`/`local` on
+    // `pillKeyBg`, `$$$` on `pillCostBg`. That is the shape that fused into one solid
     // vertical band when the prefix column was chipped — and what failed there was
     // that all 17 fills were the SAME colour. Here they alternate, so the whole
-    // design rests on these two being visibly different fills.
+    // design rests on the fills being visibly different.
     //
-    // THIS GATE MATTERS MORE UNDER THE TINTED CONSTRUCTION, NOT LESS. Two saturated
-    // fills were 54.6 ΔE apart on the dark palette; two TINTS sit within 0.1 of each
-    // other in luminance and are 22.7 apart, all of it hue. Ten just-noticeable
-    // differences is plenty to read, and a tenth of the headroom — so the floor stays
-    // at 20 and it is now a floor the light palette is genuinely near.
+    // THE COLUMN HAS FOUR LABELS AND TWO FILLS, SO EVERY PAIR IS MEASURED HERE IN
+    // TWO HALVES. `$$$` / `SUB` / `FREE` / `local` is the closed vocabulary
+    // (`CHIP_COLUMN_LABELS`); WHICH fill each word takes is pinned in
+    // `row-semantics.test.ts`, where the functions that decide it live —
+    // `FREE`, `SUB` and `local` share `pillKeyBg` because all three make the same
+    // claim, and only `$$$` takes `pillCostBg`. That leaves exactly one pair of
+    // DISTINCT fills, and this is it. A third fill appearing in that column without
+    // arriving here is the regression the two tests jointly catch: the mapping test
+    // would fail on the label, this one on the distance.
+    const COLUMN_FILLS = ["pillKeyBg", "pillCostBg"] as const;
     for (const mode of ["light", "dark"] as const) {
       setThemeMode(mode);
+      for (let i = 0; i < COLUMN_FILLS.length; i++) {
+        for (let j = i + 1; j < COLUMN_FILLS.length; j++) {
+          const pair = `${COLUMN_FILLS[i]} vs ${COLUMN_FILLS[j]}`;
+          const [a, b] = [C[COLUMN_FILLS[i]!], C[COLUMN_FILLS[j]!]];
+          expect({ mode, pair, distinct: a !== b, apart: deltaE76(a, b) >= 20 }).toEqual({
+            mode,
+            pair,
+            distinct: true,
+            apart: true,
+          });
+        }
+      }
+    }
+  });
+
+  it("KEEPS THE COST CHIP OUT OF THE FAILURE REGISTER — the cost-vs-error gate", () => {
+    // THE CONSTRAINT THIS FEATURE WAS ALLOWED UNDER. Red was reserved for FAILURE
+    // here — the `HTTP 401` badge fill, the discovery banner's border and its wash —
+    // and `$$$` introduces a second reddish meaning. That is admissible only while the
+    // two cannot be mistaken for each other, because if they can, the error panel
+    // stops reading as an error, which is a worse defect than the one being fixed.
+    //
+    // IT IS RESOLVED BY REGISTER AND MEASURED IN FOUR WAYS. Distance (ΔE76, the same
+    // instrument and the same floor as the banding gate above, against BOTH failure
+    // fills); loudness (the cost fill carries under half the chroma of the alarm hue);
+    // and separation (failure separates HARDER from the page than cost does, which is
+    // what "saturated versus tint" means in a number).
+    //
+    // IF A FUTURE PASS BRINGS THESE TOGETHER, THE COST TINT IS THE ONE THAT MOVES.
+    // The error colour is load-bearing for a state the user cannot afford to misread.
+    for (const mode of ["light", "dark"] as const) {
+      setThemeMode(mode);
+      const page = REFERENCE_FOR_MODE[mode];
+      for (const [what, failure] of [
+        ["badge fill / banner border", C.red],
+        ["banner wash", C.bgError],
+      ] as const) {
+        expect({
+          mode,
+          what,
+          apart: deltaE76(C.pillCostBg, failure) >= 20,
+        }).toEqual({ mode, what, apart: true });
+      }
       expect({
         mode,
-        distinct: C.pillKeyBg !== C.pillMutedBg,
-        deltaE: deltaE76(C.pillKeyBg, C.pillMutedBg) >= 20,
-        // And the METERED one is the QUIET one: a near-neutral beside a green. CHROMA
-        // is the axis that survives BOTH constructions — on a light page the two
-        // tints barely differ in weight, so a luminance test would say nothing. If
-        // this inverts, the column says the default state is the notable one.
-        quieter: chroma(C.pillMutedBg) < chroma(C.pillKeyBg) / 2,
-      }).toEqual({ mode, distinct: true, deltaE: true, quieter: true });
+        // A TINT, not the alarm hue at a different lightness.
+        quieterHue: chroma(C.pillCostBg) < chroma(C.red) / 2,
+        // The failure fill is the one that separates hard. `C.red` clears 3:1 on its
+        // own page (pinned above); the cost fill is under the quiet CEILING. Stating
+        // the comparison directly is what survives a future re-tune of either.
+        failureSeparatesHarder:
+          contrastRatio(C.red, page) > contrastRatio(C.pillCostBg, page) &&
+          contrastRatio(C.pillCostBg, page) <= QUIET_CEILING,
+      }).toEqual({ mode, quieterHue: true, failureSeparatesHarder: true });
     }
   });
 

@@ -60,7 +60,7 @@ export interface TuiPalette {
   tabActiveFg: string;
   tabInactiveFg: string;
   /**
-   * The SIGNAL half of the picker's status column — `SUB` / `FREE` / `local`.
+   * The FREE half of the picker's status column — `SUB` / `FREE` / `local`.
    *
    * ITS CONSTRUCTION DIFFERS BY PALETTE, WHICH IS THE WHOLE POINT OF THE PAIR. On
    * DARK it is a saturated fill with light ink; on LIGHT it is a pale TINT of the
@@ -71,17 +71,33 @@ export interface TuiPalette {
   pillKeyFg: string;
   pillOauthBg: string;
   /**
-   * The QUIET half of the same column — the picker's metered `$`.
+   * The COST half of the same column — the picker's metered `$$$`.
    *
-   * A second fill exists because a status column with one fill and one bare word is
-   * a ragged column, and the owner asked for both states chipped at one width. `$`
-   * is the UNREMARKABLE state, so its chip is a NEAR-BACKGROUND fill — a measured
-   * shade off the page carrying body ink — and it holds almost no hue, which is what
-   * makes the green beside it read as the claim.
+   * IT IS A SEMANTIC PAIR WITH `pillKey*`, NOT A LOUD ONE AND A QUIET ONE. It was
+   * a near-neutral slate while its label was a bare `$`; the owner's instruction —
+   * *"instead of $ it should be '$$$' with light reddish colour"* — makes the two
+   * halves of the column read as one opposition: GREEN is free at the point of use,
+   * REDDISH costs you per token. A near-neutral cannot carry half of that.
+   *
+   * AND REDDISH IS THE HUE FAILURE ALREADY OWNS, WHICH IS THE CONSTRAINT THIS TOKEN
+   * IS DEFINED AGAINST. `C.red` is the `HTTP 401` badge fill and the discovery
+   * banner's border; `C.bgError` is that banner's wash. A second red MEANING is
+   * admissible only if the two cannot be mistaken for each other, so the two are
+   * separated by REGISTER and the register is measured: this is a QUIET TINT (a
+   * ceiling, not just a floor, on how far it may sit off its own page) carrying deep
+   * ink, and failure stays a SATURATED fill carrying light ink. `theme-contrast.test.ts`
+   * pins ΔE76 ≥ 20 from BOTH failure fills, per palette — the same instrument and the
+   * same number as the banding gate between this and `pillKeyBg`.
+   *
+   * The hue is warm rose in both palettes (CIELAB hue 11°/13°), which is where the
+   * error's own red is NOT: `C.bgError` is a pale warm red on light and a dark warm
+   * red on dark, so the cost tint buys its distance in LIGHTNESS while staying red
+   * rather than sliding into magenta — the first sweep's answer, and a pink chip is
+   * not what was asked for.
    */
-  pillMutedBg: string;
-  /** Ink on `pillMutedBg`. Dark on the light page, light on the dark one. */
-  pillMutedFg: string;
+  pillCostBg: string;
+  /** Ink on `pillCostBg`. Deep rose on the light page, pale rose on the dark one. */
+  pillCostFg: string;
   /**
    * The picker footer's KEYCAP PILL — two abutting segments, not one block.
    *
@@ -183,11 +199,17 @@ const DARK: TuiPalette = {
   // against black and as glare against white".
   //
   // Within a palette there are then two ROLES. SIGNAL (`pillKeyBg`, `pillOauthBg`,
-  // `tabActiveBg`) marks the notable member of a column. QUIET (`pillMutedBg`, both
-  // keycap segments) is the unremarkable state and the keyboard affordance: a
-  // NEAR-BACKGROUND fill, a measured shade off the page, carrying body ink — which
-  // is why `retintSurfaces` treats those as surfaces rather than as accents. Which
-  // way "off the page" points is itself per-palette: up on black, down on white.
+  // `tabActiveBg`) marks the notable member of a column. QUIET (both keycap segments)
+  // is the keyboard affordance: a NEAR-BACKGROUND fill, a measured shade off the page,
+  // carrying body ink — which is why `retintSurfaces` treats those as surfaces rather
+  // than as accents. Which way "off the page" points is itself per-palette: up on
+  // black, down on white.
+  //
+  // `pillCostBg` IS THE ONE FILL THAT SITS IN BOTH ROLES AND IS GATED AS SUCH. It is a
+  // SIGNAL in meaning — half of the free/costs-money opposition, so it carries a hue
+  // and is not re-tinted with the surfaces — and QUIET in register, held under the
+  // 3:1 ceiling, because the hue it carries is the one failure already owns and the
+  // saturated end of it is spoken for.
   //
   // `pillKeyBg` — the BRIGHTER sibling, now that it no longer has to survive a cream
   // page as well. `#3f7752` was the both-pages compromise: 3.22:1 on near-black,
@@ -199,12 +221,22 @@ const DARK: TuiPalette = {
   pillKeyBg: "#2f8250", // forest green, dark-page sibling
   pillKeyFg: "#ffffff", // 4.74:1 on the fill
   pillOauthBg: "#0e7490", // muted teal; white ink 5.02:1
-  // NEAR-BG DARK (madbench `paramValBg`). 1.64:1 off true black and 1.47:1 off the
-  // `bgAlt` panel — present as a block, absent as a claim. Its ink is a DIM one, not
-  // white: `$` is what a route is by default and the number that matters is on the
-  // model row. ΔE76 54.6 from `pillKeyBg`, so the alternating column cannot band.
-  pillMutedBg: "#2E323D",
-  pillMutedFg: "#A8B0C4", // 5.90:1 on the fill — legible, not loud
+  // THE COST CHIP — a muted brick rose, the dark-page sibling of the light palette's
+  // dusty one. It replaces the near-neutral `#2E323D`/`#A8B0C4` slate this token held
+  // while its label was a bare `$`.
+  //
+  // Every number measured with `validation/cost-chip-finalists.ts`: 1.89:1 off this
+  // page and 2.09:1 off the `bgAlt` panel — under the 3:1 QUIET CEILING, so it is a
+  // tint and not an alarm — C* 22.6 at CIELAB hue 13°, ΔE76 63.4 from `pillKeyBg`
+  // (the column cannot band), 73.7 from `C.red` and 20.8 from `C.bgError` (it cannot
+  // be read as the failure panel). Its ink is the pale rose that pairs with it, at
+  // 5.07:1 on the fill.
+  //
+  // madbench's literal `diffDelBg` (`#2E1216`) was measured FIRST and rejected: at
+  // ΔE76 9.7 from `C.bgError` it is very nearly the failure wash, which is exactly the
+  // collision this token exists to avoid.
+  pillCostBg: "#6B3B42",
+  pillCostFg: "#F0B2BC", // 5.07:1 on the fill
   // THE KEYCAP PILL — two abutting near-bg segments, key brighter than label.
   // It replaces a single saturated purple block (`#9333ea`, 3.90:1 off this page and
   // 5.38:1 off the light one), which made the quietest row on the screen the loudest.
@@ -287,13 +319,19 @@ const LIGHT: TuiPalette = {
   // column, not this dialog, and it has not been through the owner's review. Noted so
   // the inconsistency is a decision rather than an oversight.
   pillOauthBg: "#0e7490", // deep teal, 5.13:1 on the cream reference
-  // QUIET — madbench's `paramKeyBg`, "near-bg light — still distinct on a cream or
-  // grey page", with `slate` ink at 6.12:1. It carries almost no hue (C* 5.4 against
-  // the green tint's 19.4), which is what makes `$` read as the absence of a claim.
-  // This REPLACES `#6b7280`, a mid-grey slab at 4.53:1 on a light page — as heavy as
-  // the `SUB` chip it was supposed to recede behind.
-  pillMutedBg: "#E2E6F0",
-  pillMutedFg: "#4E5364", // madbench `slate`; 6.12:1 on the fill
+  // COST — a dusty rose tint with Tailwind rose-900 ink, built to the same recipe as
+  // the green above it: the field only has to be perceptible, the INK is what is held
+  // to text grade. 1.77:1 off the cream reference and 1.72:1 off the `bgAlt` panel,
+  // under the 3:1 QUIET CEILING; C* 25.9 at CIELAB hue 11°; ink 5.05:1 on the fill.
+  //
+  // IT IS 22.4 ΔE76 FROM `bgError` AND 65.4 FROM `red`, AND THAT IS WHAT CHOSE IT.
+  // madbench's `diffDelBg` (`#F8D2D5`) is the natural literal — it sits opposite the
+  // `diffAddBg` family the green came from — and it measured 6.3 ΔE76 from the failure
+  // banner's `#fee2e2` wash: the same colour, to a reader. Two steps deeper in
+  // LIGHTNESS clears 20 without leaving the red arc, which is what keeps this a dusty
+  // ROSE rather than the bubblegum pink the first (hue-free) sweep answered with.
+  pillCostBg: "#EDABB4",
+  pillCostFg: "#881337", // Tailwind rose-900 — the deep sibling of the tint's own hue
   // THE KEYCAP PILL — two abutting near-bg segments, key brighter than label.
   // 1.79:1 and 1.25:1 off the page with 1.46:1 between them, against the single
   // purple block's 5.38:1. The floor is the `#d1d5db` this file already measured as
@@ -518,18 +556,24 @@ export function registerPaletteRefresher(fn: () => void): void {
  * from the page. When the page moves, these must move with it or the seam the
  * page adoption removed simply reappears one box further in.
  *
- * THE QUIET CHIP FILLS BELONG HERE, and that follows from what they now are. A
+ * THE KEYCAP SEGMENTS BELONG HERE, and that follows from what they are. A
  * near-background fill IS a surface — its whole content is "a measured shade off the
- * page" — so on a cream terminal `pillMutedBg` and both keycap segments must become
- * deeper cream, exactly as `bgAlt` does, or a blue-grey `$` chip floats on cream and
- * the seam this function exists to remove reappears inside the status column. They
- * only joined the list when they stopped being saturated blocks.
+ * page" — so on a cream terminal both keycap segments must become deeper cream,
+ * exactly as `bgAlt` does, or a blue-grey keycap floats on cream and the seam this
+ * function exists to remove reappears inside the footer. They only joined the list
+ * when they stopped being saturated blocks.
+ *
+ * `pillCostBg` LEFT THIS LIST WHEN ITS LABEL BECAME `$$$`. It was a near-neutral
+ * slate and so was a surface; it is now a rose TINT whose whole content is its hue —
+ * the half of the column that says "this costs money" — and re-tinting it toward a
+ * cream page would drain exactly the signal it was just given. It moves for the same
+ * reason `pillKeyBg` never joined.
  *
  * Deliberately excluded: `bgHighlight` (blue selection wash) and `bgError` (red
- * failure wash) carry their meaning in their HUE, and so do `tabActiveBg` and the
- * SIGNAL pills (`pillKeyBg`, `pillOauthBg`) — including the light palette's pale
- * GREEN TINT, which is a tint OF a hue and not a neutral. Re-tinting those would
- * erase the signal they exist to send.
+ * failure wash) carry their meaning in their HUE, and so do `tabActiveBg` and both
+ * status pills (`pillKeyBg`, `pillCostBg`, `pillOauthBg`) — including the light
+ * palette's pale GREEN and ROSE TINTS, which are tints OF a hue and not neutrals.
+ * Re-tinting those would erase the signal they exist to send.
  */
 const SURFACE_TOKENS = [
   "bgAlt",
@@ -537,7 +581,6 @@ const SURFACE_TOKENS = [
   "tabInactiveBg",
   "chipKeyBg",
   "chipLabelBg",
-  "pillMutedBg",
   "keycapKeyBg",
   "keycapLabelBg",
 ] as const;

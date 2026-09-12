@@ -32,6 +32,7 @@ import {
   priceFg,
   priceLabel,
   priceVaries,
+  providerCountText,
   readinessGlyph,
 } from "./rows.js";
 
@@ -176,6 +177,70 @@ describe("CHIP_FILL_CELLS — one fill width for the whole status column", () =>
   });
 });
 
+describe("providerCountText — the tail says what you GET, never how it is fetched", () => {
+  test("a known count is a count, and one model is not `1 models`", () => {
+    expect(providerCountText({ count: 42, hasDiscovery: true, billing: "metered" })).toBe(
+      "42 models"
+    );
+    expect(providerCountText({ count: 1, hasDiscovery: false, billing: "sub" })).toBe("1 model");
+    // `null` is "nobody has counted this yet" and prints NOTHING — not `0`, not a dash.
+    expect(providerCountText({ count: null, hasDiscovery: true, billing: "sub" })).toBe("");
+  });
+
+  test("`asks its own roster` is gone — a subscription provider says `subscription models`", () => {
+    // The owner read the shipped row on a live run: `asks its own roster` describes
+    // claudish's fetch, not the user's plan. His replacement, verbatim: *"subscription
+    // models"*. This is the case he was looking at — Grok Build, Devin, Antigravity,
+    // OpenCode Zen Go: flat-rate, no catalog entries, a roster of their own.
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "sub" })).toBe(
+      "subscription models"
+    );
+    for (const billing of ["sub", "metered", "local"] as const) {
+      expect(providerCountText({ count: 0, hasDiscovery: true, billing })).not.toContain("roster");
+    }
+  });
+
+  test("and a NON-subscription provider gets its own words, because the other would be false", () => {
+    // `hasDiscovery` is a property of the provider DEFINITION, not of its billing, so
+    // this branch is reachable by a metered or local provider with no catalog entries
+    // — a self-hosted vLLM, an Ollama daemon. "Subscription models" there would be the
+    // screen stating a plan the user does not have.
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "metered" })).toBe(
+      "lists its own models"
+    );
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "local" })).toBe(
+      "lists its own models"
+    );
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "metered" })).not.toContain(
+      "subscription"
+    );
+  });
+
+  test("a REAL zero from a provider that does not discover is still a zero", () => {
+    // Without `hasDiscovery` there is nothing else to ask: the catalog is the answer
+    // and the answer is none. Saying "lists its own models" there would be the
+    // opposite lie to the one above.
+    expect(providerCountText({ count: 0, hasDiscovery: false, billing: "metered" })).toBe(
+      "0 models"
+    );
+  });
+
+  test("every phrasing fits the tail cell at 80 columns, where it is narrowest", () => {
+    // `deriveProviderRowLayout` gives the tail 25 cells at the narrowest supported
+    // width and grows it from there. A phrase longer than that would be truncated with
+    // an ellipsis and nothing would report it.
+    const tail = deriveProviderRowLayout(76).tail;
+    for (const billing of ["sub", "metered", "local"] as const) {
+      const text = providerCountText({ count: 0, hasDiscovery: true, billing });
+      expect({ billing, text, fits: displayWidth(text) <= tail }).toEqual({
+        billing,
+        text,
+        fits: true,
+      });
+    }
+  });
+});
+
 describe("priceVaries — which view earns chips", () => {
   test("a flat-rate or local provider FIXES the column, so it gets no chips", () => {
     // `resolveProviderDisplayPrice` answers `SUB` for every row of a subscription
@@ -196,28 +261,39 @@ describe("priceVaries — which view earns chips", () => {
 describe("billingLabel / readinessGlyph", () => {
   test("each billing mode has its own WORD, and ALL THREE carry a fill", () => {
     const tags = (["sub", "local", "metered"] as const).map(billingLabel);
-    expect(tags.map((t) => t.text)).toEqual(["SUB", "local", "$"]);
+    expect(tags.map((t) => t.text)).toEqual(["SUB", "local", "$$$"]);
     // `$` USED TO BE `bg: null` — drawn as text, on the grounds that a fill on every
     // row of the column is the banding defect. The owner read the shipped screen and
     // asked for the opposite: "make $$$ the same width and badge as well", because a
     // filled `SUB` beside a bare `$` is a column with no edges. What stops the column
-    // banding is now the DISTANCE between the two fills (ΔE76 36.5, pinned in
-    // `theme-contrast.test.ts`) rather than the absence of one of them.
-    expect(tags.map((t) => t.bg)).toEqual([C.pillKeyBg, C.pillKeyBg, C.pillMutedBg]);
-    expect(C.pillMutedBg).not.toBe(C.pillKeyBg);
+    // banding is now the DISTANCE between the two fills (ΔE76 44.9 light / 63.4 dark,
+    // pinned in `theme-contrast.test.ts`) rather than the absence of one of them.
+    //
+    // THE LABEL IS `$$$`, WHICH IS THE OWNER'S NEXT INSTRUCTION AND NOT A TYPO FOR
+    // THE PRICE. Real prices are numerals (`$2.25`) built by `priceLabel`, and this
+    // chip is the provider's BILLING MODE. Three characters, the same as `SUB` — a
+    // coincidence the column is glad of and does not depend on, because
+    // `CHIP_FILL_CELLS` still derives from `local`.
+    expect(tags.map((t) => t.bg)).toEqual([C.pillKeyBg, C.pillKeyBg, C.pillCostBg]);
+    expect(C.pillCostBg).not.toBe(C.pillKeyBg);
   });
 
-  test("METERED IS NEUTRAL and SUB IS POSITIVE — neither is a warning", () => {
-    // `$` states that the route bills per token. That is information about the
-    // route, not a caution about it: the number that matters is on the model row.
-    // Neutral is carried by the FILL — a near-background one, whose ink is the quiet
-    // tier rather than the signal's.
-    expect(billingLabel("metered").fg).toBe(C.pillMutedFg);
+  test("METERED COSTS MONEY and SUB DOES NOT — but neither is a FAILURE", () => {
+    // `$$$` states that the route bills per token, in the hue that says so. What it
+    // must never become is the hue that says something BROKE: `tokens.error` is the
+    // `HTTP 401` badge and the discovery banner, and a chip wearing it would put a
+    // failure on 13 of 17 healthy rows. The register that keeps the two apart is
+    // measured in `theme-contrast.test.ts`; that they are not the literal same token
+    // is cheap to state here, and it is the check that fails first and reads clearest.
+    expect(billingLabel("metered").fg).toBe(C.pillCostFg);
+    expect(billingLabel("metered").bg).toBe(C.pillCostBg);
     for (const mode of ["sub", "local", "metered"] as const) {
       const tag = billingLabel(mode);
       for (const colour of [tag.bg, tag.fg]) {
         expect(colour).not.toBe(tokens.error);
         expect(colour).not.toBe(tokens.warn);
+        expect(colour).not.toBe(C.red);
+        expect(colour).not.toBe(C.bgError);
       }
     }
   });
@@ -240,10 +316,10 @@ describe("billingLabel / readinessGlyph", () => {
         sub: billingLabel("sub").fg,
         local: billingLabel("local").fg,
         metered: billingLabel("metered").fg,
-      }).toEqual({ mode, sub: C.pillKeyFg, local: C.pillKeyFg, metered: C.pillMutedFg });
-      // The two tiers are never the same ink — that would erase the distinction the
-      // quiet chip exists to make.
-      expect(C.pillKeyFg).not.toBe(C.pillMutedFg);
+      }).toEqual({ mode, sub: C.pillKeyFg, local: C.pillKeyFg, metered: C.pillCostFg });
+      // The two halves never share an ink — that would erase the distinction the
+      // column exists to make.
+      expect(C.pillKeyFg).not.toBe(C.pillCostFg);
     }
     // And the flip actually MOVED them: a light-palette `SUB` painted in the dark
     // palette's white ink is the module-level-const bug this repo has found six times.

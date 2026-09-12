@@ -255,9 +255,30 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
    * for every row that was already visible.
    */
   const keyless = providers.missing;
-  const providerRows: ProviderState[] = revealKeyless
+  /** Which local providers are opt-in-and-not-opted-into — `unavailableNote`'s oracle. */
+  const notEnabledLocal = useMemo(
+    () => new Set(providers.notEnabledLocal),
+    [providers.notEnabledLocal]
+  );
+  const providerPool: ProviderState[] = revealKeyless
     ? [...providers.ready, ...keyless]
     : providers.ready;
+  /**
+   * The provider list's own filter — SAME IDIOM AS THE MODEL LIST, same state.
+   *
+   * It used to have none, on the grounds that 17 named rows do not need narrowing.
+   * The owner asked for it anyway — *"we need inline search in list of providers as
+   * well"* — and the reason it is the same `filter`/`typing` pair rather than a second
+   * one is that a picker with two search boxes has two sets of rules to learn. The
+   * state cannot leak between the views: every transition INTO a model list clears it
+   * explicitly, and `esc` out of a model list clears it before it goes back.
+   *
+   * IT MATCHES ON THE NAME AND THE SHORTCUT, which are the two things on the row that
+   * a user would type — `kimi` and `kc@` both have to reach Kimi Coding. The shortcut
+   * is matched by PREFIX (as the model list matches it) so `k` does not pull in every
+   * provider with a `k` somewhere in its slug.
+   */
+  const providerRows: ProviderState[] = matchProviders(providerPool, filter);
 
   /**
    * A MODEL COUNT ONLY WHERE ONE IS ACTUALLY KNOWN — the owner's rule: *"we could
@@ -446,9 +467,13 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // is typed they are letters again, because a user typing `codex` must get `codex`
   // and not the custom-spec dialog.
   //
-  // THE PROVIDER LIST TAKES NO FILTER AND SO NEEDS NO ESCAPE HATCH: its letters
-  // (`a`, `k`, `c`) are always commands, which is affordable because that list is
-  // short and named, never hundreds of rows a user needs to narrow.
+  // THE PROVIDER LIST NOW TAKES THE SAME FILTER, UNDER THE SAME RULE. It used to
+  // have none — its letters (`a`, `k`, `c`) were always commands, which was
+  // affordable because 17 named rows do not need narrowing — and the owner asked for
+  // one anyway: *"we need inline search in list of providers as well"*. Making it a
+  // SECOND interaction would have been the mistake: one filter idiom, one set of
+  // rules, applied on both screens. So `a`/`k`/`c` are live only while the filter is
+  // empty, `/` is the escape hatch, and `esc` clears before it leaves.
   useKeyboard((key) => {
     const name = key.name;
     if (key.ctrl && name === "c") {
@@ -475,9 +500,17 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     }
 
     if (view === "providers") {
-      // THE LANDING VIEW OWNS CANCEL. `esc` goes one step back everywhere else in
-      // this picker; here there is no step back, so it is what returns `null`.
+      // THE LANDING VIEW OWNS CANCEL — BUT THE FILTER COMES FIRST, which is the model
+      // list's rule applied unchanged. `esc` goes one step back everywhere else in
+      // this picker; here the step back is the filter while there is one, and only
+      // then does `esc` return `null`. Two screens, one meaning for the key.
       if (name === "escape") {
+        if (filter !== "" || typing) {
+          setFilter("");
+          setTyping(false);
+          setProviderCursor(0);
+          return;
+        }
         onDone(null);
         return;
       }
@@ -512,7 +545,17 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         }
         return;
       }
-      if (key.raw === "a") {
+      if (name === "backspace") {
+        setFilter((v) => v.slice(0, -1));
+        setProviderCursor(0);
+        return;
+      }
+      // THE THREE LETTER COMMANDS ARE LIVE ONLY WHILE THE FILTER IS EMPTY, which is
+      // the model list's rule and it is load-bearing here for the same reason: a user
+      // narrowing to `claude` must get `claude` and not the custom-spec dialog on the
+      // `c`. `/` is the escape hatch for a search that STARTS with one of them.
+      const providerCommands = filter === "" && !typing;
+      if (providerCommands && key.raw === "a") {
         setScope(null);
         setFilter("");
         setTyping(false);
@@ -520,11 +563,24 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         setView("models");
         return;
       }
-      if (key.raw === "k") {
+      if (providerCommands && key.raw === "k") {
         setRevealKeyless((v) => !v);
         return;
       }
-      if (key.raw === "c") setView("custom");
+      if (providerCommands && key.raw === "c") {
+        setView("custom");
+        return;
+      }
+      if (key.raw === "/") {
+        // Not inserted: `/` FOCUSES the filter, which here means "stop treating
+        // a / k / c as commands". See `typing`.
+        setTyping(true);
+        return;
+      }
+      if (printable(key.raw)) {
+        setFilter((v) => v + key.raw);
+        setProviderCursor(0);
+      }
       return;
     }
 
@@ -636,11 +692,10 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
 
   if (view === "providers") {
     const settled = !providers.probing;
-    // One row taller than the model list's list: this dialog spends no column
-    // header and no description block, and two of the three rows it spends
-    // instead — the omitted-provider summary and the credential sweep — are
-    // rendered blank rather than dropped, so the list does not shift under the
-    // cursor when a sweep finishes or `k` is pressed.
+    // Taller than the model list's list: this dialog spends no column header and no
+    // description block, and the rows it spends instead — the scroll position and the
+    // credential sweep — are rendered blank rather than dropped, so the list does not
+    // shift under the cursor when a sweep finishes or `k` is pressed.
     const windowRows = layout.listRows;
     const providerTop = scrollWindow(providerCursor, providerRows.length, windowRows);
     const providerWindow = providerRows.slice(providerTop, providerTop + windowRows);
@@ -658,6 +713,21 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           width={layout.width}
           marginLeft={0}
         >
+          {/* THE SAME FILTER ROW THE MODEL LIST CARRIES, in the same place, with the
+              same `matches of total` on the right. It is always rendered, blank
+              prompt and all, because a search box that appears when you start typing
+              cannot be found by someone who does not know it is there.
+              `idle=""` — this list is not SORTED, it is in the curated picker order,
+              so there is no `newest first` to claim here. That the model list's
+              caption is the one string separating the two views in a frame capture
+              (`listPainted`) is a happy consequence, not the reason. */}
+          <FilterRow
+            value={filter}
+            matches={providerRows.length}
+            total={providerPool.length}
+            width={layout.inner}
+            idle=""
+          />
           {/* TWO ROWS WHEN IT IS EMPTY, because `EmptyState` with a hint IS two
               rows and a one-row box would overprint the second onto the row
               below it. */}
@@ -673,11 +743,17 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             {providerWindow.length === 0 ? (
               <EmptyState
                 label={
-                  settled
-                    ? `no credential for any of the ${providers.total} providers`
-                    : "checking which providers you have credentials for…"
+                  filter !== ""
+                    ? `no provider matches “${filter}”`
+                    : settled
+                      ? `no credential for any of the ${providers.total} providers`
+                      : "checking which providers you have credentials for…"
                 }
-                {...(settled ? { hint: "k shows what each one needs" } : {})}
+                {...(filter !== ""
+                  ? { hint: "esc clears the filter" }
+                  : settled
+                    ? { hint: "k shows what each one needs" }
+                    : {})}
               />
             ) : (
               providerWindow.map((r) => (
@@ -689,7 +765,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
                   billing={r.billing}
                   count={counts.get(r.value) ?? null}
                   hasDiscovery={r.hasDiscovery}
-                  note={r.envVar === "" ? "needs sign-in" : `needs ${r.envVar}`}
+                  note={unavailableNote(r, notEnabledLocal)}
                   cursor={r.value === here?.value}
                   inner={layout.inner}
                 />
@@ -706,30 +782,19 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
             }
             width={layout.inner}
           />
-          {/* THE OMITTED PROVIDERS, COUNTED. They are off the list because the user
-              cannot launch any of them, and stated here because "where did the other
-              fourteen go" must have an answer on the screen that dropped them. */}
-          <HintRow
-            text={
-              keyless.length === 0
-                ? ""
-                : revealKeyless
-                  ? `showing ${keyless.length} with no credential · k hides them again`
-                  : `+${keyless.length} more need a key · k`
-            }
-            width={layout.inner}
-          />
-          {/* A DIFFERENT REASON, ON ITS OWN LINE. These are not missing a key: they
-              are opt-in in your config (`config.localProviders`) and were never
-              probed for liveness. */}
-          <HintRow
-            text={
-              providers.notEnabledLocal.length > 0
-                ? `${providers.notEnabledLocal.join(", ")} — local, not enabled in your config`
-                : ""
-            }
-            width={layout.inner}
-          />
+          {/* THE TWO SUMMARY LINES THAT WERE HERE ARE GONE, on the owner's
+              instruction — *"remove this, 5 lines which has no value"*. They were
+              `+14 more need a key · k` and `ollama, lmstudio, vllm, mlx — local, not
+              enabled in your config`.
+              WHAT THEY WERE FOR SURVIVES, WHICH IS THE ONLY REASON THEY COULD GO.
+              They existed so a dropped provider was an EXPLAINED absence rather than
+              a silent one, and the explanation has simply moved somewhere better: the
+              footer's `[k][show]` is the way in, and each revealed row now states its
+              OWN reason in its tail — `needs MOONSHOT_API_KEY` for a missing
+              credential, `not enabled in config` for a local provider that is opt-in
+              (`unavailableNote`). A per-row reason is strictly more information than
+              one counted summary, and it costs no rows at all when nothing is hidden.
+              At 80×24 those two rows were 2 of the 13 the dialog has. */}
           {/* THE ONE METER IN THE PICKER, on the one screen that waits for anything.
               It is `done/total` over a roster derived synchronously — real progress
               over countable work — and it disappears, leaving its row, when the last
@@ -755,8 +820,20 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
           />
           <Hints
             hints={[
-              { key: "↑↓", label: "move" },
+              // `↑↓ move` IS THE HINT THIS ROW GAVE UP TO ANNOUNCE THE FILTER, and
+              // the arithmetic is why rather than taste: MEASURED with `hintsWidth`,
+              // this row was 70 cells against the 72 the dialog has at 80 columns, and
+              // `/ filter` costs 11 more. `Hints` sets `overflow="hidden"`, so the
+              // overflow would have been a silently clipped `esc qu` — the exact
+              // failure the model list's footer already shipped once.
+              //
+              // Of the six, the arrows are the one hint that says what every list in
+              // the program already does, and the ONE thing on this screen a reader
+              // cannot guess is now the `/` prompt sitting above the list saying
+              // nothing about itself. A test pins that putting `↑↓ move` back
+              // overflows, so this stays a measurement and not a preference.
               { key: "⏎", label: "open", on: here !== null },
+              { key: "/", label: "filter" },
               { key: "a", label: "all models" },
               // `show` / `hide`, NOT `needs key` — AND THE SHORTENING IS WHAT PAID FOR
               // THE PILLS. A keycap is two filled segments now (`chrome.tsx`), which
@@ -764,15 +841,18 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
               // cells past the 72 the dialog has: `esc quit` rendered as `esc qu`.
               //
               // This is the label that could shrink without losing anything, because
-              // `needs key` DUPLICATED the row directly above it — `+14 more need a
-              // key · k` says the same thing one line up and says it in full. So the
-              // reason lives where there is room for it and the footer says only what
-              // the key does. (`keyless` was the label before that and said the
-              // OPPOSITE of what it meant: these providers need a key, which is
-              // precisely why they are hidden.)
+              // `needs key` DUPLICATED the row that used to sit directly above it.
+              // That row is gone now and the duplication argument with it — but the
+              // reason it names is not lost, it moved ONTO the revealed rows
+              // (`unavailableNote`), which say it per provider and say it precisely.
+              // (`keyless` was the label before that and said the OPPOSITE of what it
+              // meant: these providers need a key, which is precisely why they are
+              // hidden.)
               { key: "k", label: revealKeyless ? "hide" : "show", on: keyless.length > 0 },
               { key: "c", label: "custom" },
-              { key: "esc", label: "quit" },
+              // `clear`, then `quit` — the model list's exact rule. `esc` is one step
+              // back and the filter is the first step there is.
+              { key: "esc", label: filter !== "" ? "clear" : "quit" },
             ]}
           />
         </Dialog>
@@ -1019,6 +1099,33 @@ export function countModels(rows: readonly { model: ModelInfo }[]): number {
   return new Set(rows.map((r) => r.model.id)).size;
 }
 
+/**
+ * WHY A REVEALED PROVIDER CANNOT BE LAUNCHED — the row's own tail, now that the
+ * summary lines below the list are gone.
+ *
+ * TWO REASONS, AND THEY ARE NOT THE SAME REASON. A cloud provider is unavailable
+ * because claudish found no credential for it, and the actionable fact is WHICH
+ * credential — an env var name the user can go and set, or a sign-in for the
+ * OAuth-only ones that have no env var at all. A built-in LOCAL provider is
+ * unavailable for a different reason entirely: nothing is missing, it is opt-in in
+ * the profile config (`config.localProviders`) and has not been opted into. Telling
+ * that user to go and find an API key would send him looking for something that does
+ * not exist.
+ *
+ * `notEnabledLocalProviders()` IS THE ORACLE, not `billing === "local"`. It is the
+ * same derived list the deleted summary line printed, and it answers the precise
+ * question — enabled in THIS config or not — where the billing mode only says what
+ * kind of thing the provider is. An enabled-but-dead Ollama is a different state
+ * again, and it is not this one: the probe answers for liveness.
+ */
+export function unavailableNote(
+  provider: { value: string; envVar: string },
+  notEnabledLocal: ReadonlySet<string>
+): string {
+  if (notEnabledLocal.has(provider.value)) return "not enabled in config";
+  return provider.envVar === "" ? "needs sign-in" : `needs ${provider.envVar}`;
+}
+
 /** A roster entry as the facts the detail line prints. Derived, never a table. */
 function factsOf(choice: PickerProviderChoice): ProviderFacts {
   return {
@@ -1055,6 +1162,34 @@ export function statusRow(
   if (shown > visible && visible > 0) return `${cursor + 1} of ${shown} — ↑↓ for more`;
   if (tasks.length > 0) return `still checking: ${tasks.map((t) => t.label).join(", ")}`;
   return "";
+}
+
+/**
+ * Which providers a filter keeps. Pure, so the matching rules can be asserted
+ * without a renderer — and exported because they ARE the rules, not an aid to them.
+ *
+ * THREE THINGS MATCH, and the first two are what is printed on the row: the readable
+ * NAME (`Kimi / Moonshot`) and the routing SHORTCUT (`kc@`). The third is the
+ * provider's internal `value` (`kimi-coding`), which is on no screen here but is what
+ * the user types on argv and reads in `--debug` output, so a search for it finding
+ * nothing would be a false absence.
+ *
+ * THE SHORTCUT MATCHES BY PREFIX, THE NAMES BY SUBSTRING, exactly as the model list
+ * does it. A shortcut is a short token the user is spelling from the left; a display
+ * name is a phrase he may recall the middle of.
+ */
+export function matchProviders<T extends { label: string; shortcut: string; value: string }>(
+  rows: T[],
+  filter: string
+): T[] {
+  const needle = filter.trim().toLowerCase();
+  if (needle === "") return rows;
+  return rows.filter(
+    (r) =>
+      r.label.toLowerCase().includes(needle) ||
+      r.shortcut.toLowerCase().startsWith(needle) ||
+      r.value.toLowerCase().includes(needle)
+  );
 }
 
 /** One row of the list, whichever list it is. */

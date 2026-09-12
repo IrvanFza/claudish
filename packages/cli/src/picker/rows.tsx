@@ -40,14 +40,14 @@
  * block, the inactive one is plain muted text with no background at all.
  *
  *   `or@` / `zengo@`  subtle TEXT             a routing IDENTIFIER, never a status
- *   `$`               QUIET chip, near-bg     metered — the unremarkable default
+ *   `$$$`             QUIET chip, rose        metered — this one costs you per token
  *   `FREE` / `SUB`    SIGNAL chip, green      no per-token charge — the SAME claim
  *   `local`           SIGNAL chip, green      no charge either, by another mechanism
  *   `catalog`         warn text               NOT the live roster — `DiscoveryNotice`
  *   `N/A`             dead text               the catalog does not say
  *   selection         accent + `C.bgHighlight`, and a `▶` so it survives greyscale
  *
- * THE PREFIX KEEPS NO FILL AND `$` GOT ONE BACK — and the two are not the same
+ * THE PREFIX KEEPS NO FILL AND `$$$` GOT ONE — and the two are not the same
  * question. A routing prefix is an IDENTIFIER: every row has one, they have no
  * states, and a column with no notable member has nothing for a fill to mark. The
  * billing cell is a STATUS with a closed vocabulary, and the owner's instruction
@@ -57,27 +57,31 @@
  * of two fills.
  *
  * WHICH MEANS THE BANDING RISK IS REAL AND IS ANSWERED BY THE PAIR, NOT BY A GAP.
- * `$` and `SUB`/`local` partition the roster, so this is a fill on all 17 rows —
+ * `$$$` and `SUB`/`local` partition the roster, so this is a fill on all 17 rows —
  * exactly the shape that fused into one grey band when the PREFIX was chipped. What
  * failed there was that all 17 fills were the SAME colour; here they alternate, and
- * the two fills are held apart by measurement rather than by hope: ΔE76 22.7 on the
- * light palette (`#BCE5CD` vs `#E2E6F0`) and 54.6 on the dark one (`#2f8250` vs
- * `#2E323D`), where ~2.3 is a just-noticeable difference. Pinned by
+ * the two fills are held apart by measurement rather than by hope: ΔE76 44.9 on the
+ * light palette (`#BCE5CD` vs `#EDABB4`) and 63.4 on the dark one (`#2f8250` vs
+ * `#6B3B42`), where ~2.3 is a just-noticeable difference. Pinned by
  * `theme-contrast.test.ts` so a future tweak that collapses them fails a test rather
- * than a screenshot. Verified on `dialog7-*` at 80x24 and 145x45, dark and light.
+ * than a screenshot. Verified on `dialog8-*` at 80x24 and 145x45, dark and light.
  *
- * THE LIGHT PAIR IS THE TIGHT ONE, AND DELIBERATELY SO. Both light chips are TINTS
- * (see `theme.ts`), so they sit within 0.1 of each other in luminance and the whole
- * distinction is HUE — 22.7 ΔE, ten just-noticeable differences, but a tenth of the
- * headroom the dark pair has. That is why the banding gate matters MORE under this
- * construction than under the saturated one it replaces, not less.
+ * THE GATE IS OVER EVERY PAIR THE COLUMN CAN PAINT, NOT OVER THE TWO THAT CHANGED.
+ * `CHIP_COLUMN_LABELS` is the closed vocabulary and `billingLabel`/`priceChipBg` map
+ * it onto fills, so the test derives that map and measures every unordered pair of
+ * DISTINCT fills — which also pins the other half of the design: `FREE`, `SUB` and
+ * `local` must keep sharing ONE fill, because all three make the same claim, and a
+ * third fill appearing there would be caught as a pair that has to be 20 apart.
  *
- * AND THE QUIET HALF IS QUIET BY MEASUREMENT TOO. ΔE alone would accept two equally
- * loud fills of different hue, which is what shipped: a mid-grey `#6b7280` slab at
- * 4.53:1 on a light page beside a green at 4.70:1 — the same weight, so the column
- * read as two competing claims. The gate now also pins that `$` carries less than
- * half the CHROMA of `SUB` in whichever palette is loaded — the axis that survives
- * both constructions, since on a light page the two tints barely differ in weight.
+ * THE REDDISH HALF IS QUIET BY MEASUREMENT, AND THAT IS NOW A GATE ABOUT FAILURE.
+ * The old measurement was that `$` carried less than half the CHROMA of `SUB` — the
+ * axis that said "metered is the absence of a claim". That is no longer the design:
+ * `$$$` is half of an opposition and carries a hue of its own (C* 25.9 light, 22.6
+ * dark). What replaced it is the register test against the colour reddish now has to
+ * coexist with: the cost fill stays under the QUIET CEILING off its own page while
+ * `C.red` clears 3:1, it carries under half the chroma of `C.red`, and it is ΔE76 ≥ 20
+ * from both `C.red` and `C.bgError`. Loud-versus-quiet is still the axis; the thing it
+ * is measured against moved from `SUB` to the error.
  *
  * ONE FILL WIDTH FOR THE WHOLE COLUMN, WHICH IS THE ONE PLACE PADDING GOES INSIDE A
  * FILL. `aesthetics-and-color.md` forbids padding inside the label because 24 `UP`
@@ -87,15 +91,23 @@
  * print (`local`, 5, + 2) and every chip paints exactly that, label centred inside —
  * a hardcoded 5 would have clipped `local` and `FREE` by the two cells Yoga then
  * steals from a neighbouring cell. Both columns that print these tokens use the same
- * number, so `$`, `SUB`, `FREE` and `local` line up in the provider list and in the
- * model list alike.
+ * number, so `$$$`, `SUB`, `FREE` and `local` line up in the provider list and in the
+ * model list alike. `$$$` happens to be three cells, the same as `SUB` — which is what
+ * the owner's earlier "same width" instruction asked for and this one delivers for
+ * free — but the width is still DERIVED, because the coincidence is not a rule.
  *
- * `SUB` WAS `tokens.warn` UNTIL THIS PASS, AND THAT WAS A ONE-COLOUR-ONE-MEANING
+ * `SUB` WAS `tokens.warn` UNTIL A PASS AGO, AND THAT WAS A ONE-COLOUR-ONE-MEANING
  * VIOLATION IN THE SHIPPED BUILD, not in a prototype. `warn` is `C.orange` —
  * `#ff8800` on dark and a rust `#c2410c` on light — which is the hue this app
  * spends on failure. `SUB` is the opposite of a failure: it is the route the user
- * already pays for, free at the point of use. Red now means only failure here: the
- * `HTTP 4xx` badge and the discovery-failure panel, and nothing else.
+ * already pays for, free at the point of use.
+ *
+ * RED NOW MEANS TWO THINGS HERE AND THAT IS DELIBERATE, WHICH IS NOT THE SAME AS
+ * UNPRINCIPLED. Failure is SATURATED red — the `HTTP 4xx` badge, the discovery
+ * banner's border and wash. Cost is a QUIET rose TINT. Rule 1 forbids one COLOUR
+ * carrying two meanings; these are two registers of a hue, measured apart and pinned
+ * apart, and the reason it is worth spending is that "costs money" has no other
+ * natural colour — the alternative was the near-neutral nobody read as a claim.
  *
  * THREE CHIPS THAT LOOK THE SAME MEAN THE SAME THING. `FREE`, `SUB` and `local` share
  * one positive fill on purpose — all three say "running this costs you no per-token
@@ -144,7 +156,7 @@ export type Readiness = "pending" | "ready" | "missing";
  * cell. The list is the vocabulary, not a sample of it: `billingLabel` and
  * `priceChipBg` between them answer exactly these four words and nothing else.
  */
-export const CHIP_COLUMN_LABELS = ["$", "SUB", "FREE", "local"] as const;
+export const CHIP_COLUMN_LABELS = ["$$$", "SUB", "FREE", "local"] as const;
 
 /**
  * The fill EVERY chip in a status column paints, in cells.
@@ -240,23 +252,86 @@ export function readinessGlyph(r: Readiness): { glyph: string; fg: string } {
  * `$` used to be drawn as muted text on the grounds that a fill on every row of the
  * column is the banding defect; what the owner saw on the shipped screen was the
  * other half of that trade — a 5-cell green chip beside a 1-cell word, so the column
- * had no edges. Two fills 55–67 ΔE apart alternate visibly, which a single fill on
+ * had no edges. Two fills 45–63 ΔE apart alternate visibly, which a single fill on
  * every row could not.
  *
- * THE TWO FILLS ARE NOT TWO SHADES OF ONE IDEA. `SUB`/`local` is a SIGNAL — it
- * separates hard from the page. `$` is a NEAR-BACKGROUND fill, a measured shade off
- * the page carrying body ink, because metered is what a route IS by default rather
- * than a caution about it and the number that matters is on the model row. That is
- * why each fill states its own ink: `C.pillKeyFg` on the signal, `C.pillMutedFg` on
- * the quiet one. On DARK that is white on a saturated green; on LIGHT it is deep
- * green on a pale green TINT, which is the inverted construction a white page needs.
- * All four are read at RENDER time — a module-level `const` now ships not just the
- * wrong hex but the wrong recipe to the other theme.
+ * `$$$`, NOT `$`, AND THE TWO FILLS ARE NOW A SEMANTIC PAIR. The owner's instruction:
+ * *"instead of $ it should be '$$$' with light reddish colour"*. It is three cells
+ * like `SUB`, so the two labels are the same width by construction rather than by
+ * padding — but `CHIP_FILL_CELLS` still derives from the longest label the column can
+ * print (`local`), because the coincidence is not a rule.
+ *
+ * The colour is the substantive half. `$` was a near-neutral because metered was
+ * framed as the UNREMARKABLE default; paired with a green `SUB` that made the column
+ * "a claim and the absence of one". It now reads as one opposition — GREEN is free at
+ * the point of use, REDDISH costs you per token — and a near-neutral cannot carry
+ * half of an opposition. Each fill still states its own ink (`C.pillKeyFg`,
+ * `C.pillCostFg`): on DARK, saturated/near-bg fills with light ink; on LIGHT, pale
+ * TINTS with deep ink of their own hue, which is the inverted construction a white
+ * page needs. All four are read at RENDER time — a module-level `const` ships not just
+ * the wrong hex but the wrong recipe to the other theme.
+ *
+ * REDDISH IS THE HUE FAILURE ALREADY OWNS, AND THAT IS SETTLED BY REGISTER, NOT BY
+ * AVOIDANCE. The `HTTP 401` badge and the discovery banner are SATURATED red with
+ * light ink; the cost chip is a QUIET tint with deep ink, held under a 3:1 ceiling off
+ * its own page. `theme-contrast.test.ts` pins ΔE76 ≥ 20 between the cost fill and BOTH
+ * failure fills (`C.red` and the banner's `C.bgError` wash), per palette — the same
+ * instrument and the same floor as the banding gate. Measured: 65.4 / 22.4 on light
+ * and 73.7 / 20.8 on dark. If a future tweak moves them together it is the COST tint
+ * that gives way; the error colour is the one that must not move.
+ *
+ * `$$$` IS THE CHIP AND NOTHING ELSE. The price column prints real numbers (`$2.25`,
+ * `$30.00`) and its header prints the unit (`$/1M`); the detail line says
+ * `metered — billed per token`. Those are values and words, not this token, and none
+ * of them became `$$$`.
  */
 export function billingLabel(mode: BillingMode): { text: string; fg: string; bg: string } {
   if (mode === "sub") return { text: "SUB", fg: C.pillKeyFg, bg: C.pillKeyBg };
   if (mode === "local") return { text: "local", fg: C.pillKeyFg, bg: C.pillKeyBg };
-  return { text: "$", fg: C.pillMutedFg, bg: C.pillMutedBg };
+  return { text: "$$$", fg: C.pillCostFg, bg: C.pillCostBg };
+}
+
+/**
+ * What a provider row says in its tail when it is not saying why it is unavailable.
+ *
+ * `null` PRINTS NOTHING — not `0`, not `—`, not a guess. See `ProviderRowProps.count`.
+ *
+ * `0 models` IS A DIFFERENT CLAIM FOR A DISCOVERY PROVIDER, and printing it there
+ * would be the original defect in miniature: Devin and Antigravity carry no catalog
+ * entries by design and ask their own endpoint the moment you scope to them, so
+ * "0 models" reads as "this provider has nothing" about a provider nothing has asked.
+ *
+ * AND IT SAYS WHAT THE USER GETS, NOT HOW CLAUDISH FETCHES IT. The words were
+ * `asks its own roster`, which the owner read on a live run and rejected. "Roster" is
+ * this codebase's word for a provider's model list and appears nowhere else in the
+ * UI, so the row described an implementation detail of the thing the reader was
+ * trying to choose between. His replacement, verbatim: *"subscription models"*.
+ *
+ * TWO PHRASINGS, BECAUSE ONE WOULD BE FALSE FOR HALF THE SET. Every provider that
+ * reaches this branch today is flat-rate — Devin, Antigravity, OpenCode Zen Go — and
+ * for those "subscription models" is exactly right: what you get is the model list
+ * your plan includes. But `hasDiscovery` is a property of the PROVIDER DEFINITION and
+ * not of its billing, so a metered or local provider with no catalog entries lands
+ * here too (a self-hosted vLLM, an Ollama daemon), and telling that user he has a
+ * subscription would be a lie the screen states as fact. So the billing mode picks the
+ * words, and the other phrasing names the provider's OWN list — which is the real
+ * distinction, since every counted row on this screen is counted from the shared
+ * catalog.
+ *
+ * Pure and exported so the wording is asserted directly. The state that produces it
+ * needs a warm catalog, a scoped visit and an empty count, which is three awaits away
+ * from a screenshot.
+ */
+export function providerCountText(row: {
+  count: number | null;
+  hasDiscovery: boolean;
+  billing: BillingMode;
+}): string {
+  if (row.count === null) return "";
+  if (row.count === 0 && row.hasDiscovery) {
+    return row.billing === "sub" ? "subscription models" : "lists its own models";
+  }
+  return `${row.count} model${row.count === 1 ? "" : "s"}`;
 }
 
 const SPACES = "                                        ";
@@ -271,8 +346,8 @@ const gap = (n: number): string => SPACES.slice(0, Math.max(0, n));
  *    plain, unfilled space, emitted before the chip when the cell right-aligns
  *    (`badgePad` can only pad after it) and by `badgePad` when it left-aligns.
  *    This is the skill's rule and it is kept.
- *  · the LABEL's surplus — `local` is 5 cells and `$` is 1 — is centred INSIDE the
- *    fill, which is the sanctioned exception (file header). It is what makes one
+ *  · the LABEL's surplus — `local` is 5 cells and `SUB`/`$$$` are 3 — is centred INSIDE
+ *    the fill, which is the sanctioned exception (file header). It is what makes one
  *    straight-edged column out of four labels of different lengths, and a column is
  *    not the row of 24 identical chips the rule was measured on.
  *
@@ -486,18 +561,10 @@ export function ProviderRow({
   const { glyph, fg } = readinessGlyph(readiness);
   const bill = billingLabel(billing);
   const L = deriveProviderRowLayout(inner);
-  // `0 models` IS A DIFFERENT CLAIM FOR A DISCOVERY PROVIDER, and printing it there
-  // would be the original defect in miniature: Devin and Antigravity carry no catalog
-  // entries by design and ask their own endpoint for a roster the moment you scope to
-  // them, so "0 models" reads as "this provider has nothing" about a provider that
-  // has not been asked yet.
-  const countText =
-    count === null
-      ? ""
-      : count === 0 && hasDiscovery
-        ? "asks its own roster"
-        : `${count} model${count === 1 ? "" : "s"}`;
-  const tail = readiness === "missing" && note !== "" ? note : countText;
+  const tail =
+    readiness === "missing" && note !== ""
+      ? note
+      : providerCountText({ count, hasDiscovery, billing });
   return (
     <box height={1} flexShrink={0} backgroundColor={cursor ? C.bgHighlight : undefined}>
       <text attributes={A.boldIf(cursor)}>
@@ -514,8 +581,8 @@ export function ProviderRow({
         {/* BOTH STATES ARE CHIPS AND BOTH ARE `CHIP_FILL_CELLS` WIDE — the owner's
             "make $$$ the same width and badge as well". What keeps the column from
             reading as one band is the distance between the two fills, not a gap, and
-            what keeps `$` from competing with `SUB` is that only one of them is a
-            signal: `theme-contrast.test.ts` pins both. */}
+            what keeps `$$$` from being read as an ERROR is that only one of the two
+            reds is saturated: `theme-contrast.test.ts` pins both. */}
         <ChipCell label={bill.text} bg={bill.bg} fg={bill.fg} width={L.billing} />
         <span fg={readiness === "missing" ? tokens.dead : tokens.subtle}>
           {padStartTo(truncate(tail, L.tail), L.tail)}

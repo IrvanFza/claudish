@@ -194,7 +194,7 @@ contrast on the block and then had to print white on it.
 
 - **SIGNAL** (`pillKeyBg`, `pillOauthBg`, `tabActiveBg`, `red`) — 3:1 against its
   own palette's reference page.
-- **QUIET** (`pillMutedBg`, both keycap segments) — a near-background fill, and
+- **QUIET** (`pillCostBg`, both keycap segments) — a near-background fill, and
   the bar is a FLOOR *and a CEILING*: perceptible (≥ 1.10:1 off the page and off
   the `bgAlt` panel) and never louder than 3:1. The ceiling is the gate nobody
   had — a purple keycap at 5.04:1 on cream passed every earlier test, because
@@ -202,23 +202,67 @@ contrast on the block and then had to print white on it.
 - **Ink** is text-grade (4.5:1) on every chip, under both constructions. That is
   the one bar that did not move.
 
-Quiet fills are also in `SURFACE_TOKENS`: a near-background fill IS a surface, so
-it must be re-tinted onto a cream terminal exactly as `bgAlt` is. They joined that
-list only when they stopped being saturated blocks.
+The keycap segments are also in `SURFACE_TOKENS`: a near-background fill IS a
+surface, so it must be re-tinted onto a cream terminal exactly as `bgAlt` is.
+`pillCostBg` LEFT that list when its label became `$$$` — see below; a fill whose
+whole content is its hue cannot be re-expressed in the page's hue.
 
 ### Two fills still cannot be told apart by contrast ratio
 
-The picker's billing column fills every row — `SUB`/`local` signal, `$` quiet —
-so the design depends on the two reading as different, and under the tinted
-construction they sit within 0.1 of each other in luminance. The assertion is
-therefore perceptual and it matters MORE than before, not less: ΔE76 ≥ 20 (light
-measures 22.7, dark 54.6) and the quiet fill at under half the signal's chroma,
-in `theme-contrast.test.ts` alongside a CIELAB helper written out independently
-for the same reason the luminance formula is.
+The picker's billing column fills every row — `SUB`/`FREE`/`local` on `pillKeyBg`,
+`$$$` on `pillCostBg` — so the design depends on the two reading as different, and
+under the tinted construction they sit close in luminance. The assertion is
+therefore perceptual: ΔE76 ≥ 20 (light measures 44.9, dark 63.4), in
+`theme-contrast.test.ts` alongside a CIELAB helper written out independently for
+the same reason the luminance formula is.
 
 A column of identical fills still fuses — unchanged, and why a scoped flat-rate
 roster draws its repeated `SUB` as text (`priceVaries`). ALTERNATING fills do
 not, provided the alternation is measured rather than assumed.
+
+### Reddish means TWO things now, and the second one had to buy its way in (2026-09-13)
+
+The owner's instruction was *"instead of $ it should be '$$$' with light reddish
+colour"*. Until then red was reserved for FAILURE — the `HTTP 401` badge fill, the
+discovery banner's border and its `bgError` wash — and the metered chip was a
+near-neutral slate, which is why the column read as "a claim (green) and the
+absence of one" rather than as the opposition it actually encodes: **green is free
+at the point of use, reddish costs you per token**.
+
+Two meanings on one hue is admissible only while the two cannot be confused, so
+the split is by REGISTER and the register is measured:
+
+| | fill | ink | off its page |
+|---|---|---|---|
+| failure | SATURATED `C.red` | white | ≥ 3:1 (signal bar) |
+| cost | QUIET tint `pillCostBg` | deep/pale rose | ≤ 3:1 (quiet ceiling) |
+
+`theme-contrast.test.ts` pins, per palette: ΔE76 ≥ 20 from BOTH failure fills
+(`C.red` **and** `C.bgError` — the wash is the panel, and a chip that matches the
+panel is the defect), the cost fill under half the chroma of `C.red`, and failure
+separating harder from the page than cost does. **If a future pass brings them
+together it is the COST tint that moves.**
+
+Hexes, both CIELAB hue ~11–13° (a warm rose, not a pink): light `#EDABB4` on
+`#881337` ink, dark `#6B3B42` on `#F0B2BC`. Measured with
+`validation/cost-chip-finalists.ts`: ΔE76 to `C.red` 65.4 / 73.7, to `C.bgError`
+22.4 / 20.8, to `pillKeyBg` 44.9 / 63.4.
+
+**The obvious literal was measured first and rejected.** madbench's `diffDelBg`
+(`#F8D2D5` light, `#2E1216` dark) sits opposite the `diffAddBg` family the green
+came from and is the natural pair — and it measures ΔE76 **6.3** and **9.7** from
+`C.bgError`. That is the same colour to a reader: the chips would have looked like
+fragments of the error panel. Clearing 20 without leaving the red arc costs two
+steps of LIGHTNESS, which is what makes these dusty rather than pale. (A sweep with
+no hue constraint answers with magenta and violet, because walking away from red
+entirely is the cheapest way to satisfy the distance — which is not what was asked
+for. The hue is a constraint; the quietness is what gets optimised inside it.)
+
+The two never share a frame — the banner is drawn only by the models view, `$$$`
+only by the provider list — but they are one keystroke apart, which is close
+enough to carry the first into the second. `validation/cost-vs-error-montage.sh`
+concatenates the two captures into one image so the comparison can actually be
+looked at.
 
 ### A keycap is a PILL of two segments
 

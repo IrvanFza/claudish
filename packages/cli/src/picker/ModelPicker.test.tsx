@@ -35,10 +35,10 @@ import type { ModelInfo, PickerDiscoveryOutcome } from "../model-selector.js";
 import type { DescriptionIndex } from "../providers/model-descriptions.js";
 import { C } from "../tui/theme.js";
 import { ModelPicker } from "./ModelPicker.js";
+import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
 import { type Hint, hintsWidth } from "./chrome.js";
 import { MAX_DIALOG_ROWS, deriveDialogLayout } from "./layout.js";
 import { CHIP_FILL_CELLS } from "./rows.js";
-import type { PickerDataSource, PickerProviderChoice } from "./PickerDataSource.js";
 
 // ── a scriptable source ──────────────────────────────────────────────────────────
 
@@ -77,6 +77,8 @@ interface FakeOpts {
   served?: ModelInfo[];
   /** `modelId` → prose sentence, as the description index answers. */
   descriptions?: Record<string, string>;
+  /** Built-in local providers the profile config has not opted into. */
+  notEnabledLocal?: string[];
   /** Never settles — the in-flight states. */
   hang?: boolean;
 }
@@ -96,7 +98,7 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
   return {
     calls,
     providerRoster: () => roster,
-    notEnabledLocalProviders: () => [],
+    notEnabledLocalProviders: () => opts.notEnabledLocal ?? [],
     displayName: (p) => roster.find((r) => r.value === p)?.label ?? p,
     async *probeCredentials(names) {
       if (opts.hang) await never;
@@ -320,9 +322,15 @@ describe("the dialog", () => {
     try {
       // The hints row is the last PAINTED row above the bottom border.
       const footer = (): string => painted(d.recapture().text).at(-2) ?? "";
-      for (const hint of ["move", "open", "all models", "custom", "quit"]) {
+      // THE PROVIDER ROW DOES NOT SAY `move`, AND THAT IS THE ONE DELIBERATE
+      // DIFFERENCE BETWEEN THE TWO FOOTERS. Announcing `/ filter` cost 11 cells on a
+      // row that was already 70 against 72, and the arrows are the hint that repeats
+      // what every list in this program does. The budget half of that claim is the
+      // test below; this half is that the row still names every OTHER action.
+      for (const hint of ["open", "filter", "all models", "show", "custom", "quit"]) {
         expect(footer()).toContain(hint);
       }
+      expect(footer()).not.toContain("move");
       await d.press(["a"]);
       await d.until(listPainted);
       for (const hint of ["move", "select", "filter", "custom", "back"]) {
@@ -374,8 +382,8 @@ describe("the dialog", () => {
     const withLabel = (hints: Hint[], key: string, label: string): Hint[] =>
       hints.map((h) => (h.key === key ? { ...h, label } : h));
     const providerList: Hint[] = [
-      { key: "↑↓", label: "move" },
       { key: "⏎", label: "open" },
+      { key: "/", label: "filter" },
       { key: "a", label: "all models" },
       { key: "k", label: "show" },
       { key: "c", label: "custom" },
@@ -391,14 +399,26 @@ describe("the dialog", () => {
     ];
     expect({
       providerRowFits: hintsWidth(providerList) <= inner,
+      // …in BOTH of its states: `esc` says `clear` while a filter is on, which is one
+      // cell more than `quit` and lands exactly on the budget.
+      providerRowFitsWhileFiltering: hintsWidth(withLabel(providerList, "esc", "clear")) <= inner,
       scopedRowFits: hintsWidth(scopedList) <= inner,
       needsKeyWouldNotFit: hintsWidth(withLabel(providerList, "k", "needs key")) > inner,
       providersWouldNotFit: hintsWidth(withLabel(scopedList, "esc", "providers")) > inner,
+      // AND THE HINT THE PROVIDER ROW GAVE UP TO CARRY `/ filter` REALLY DOES NOT
+      // FIT. `↑↓ move` is on the model list's footer and not on this one; that asymmetry
+      // is a measurement, and this is the measurement.
+      arrowsWouldNotFit:
+        hintsWidth([{ key: "↑↓", label: "move" }, ...providerList]) > inner &&
+        hintsWidth([{ key: "↑↓", label: "move" }, ...withLabel(providerList, "esc", "clear")]) >
+          inner,
     }).toEqual({
       providerRowFits: true,
+      providerRowFitsWhileFiltering: true,
       scopedRowFits: true,
       needsKeyWouldNotFit: true,
       providersWouldNotFit: true,
+      arrowsWouldNotFit: true,
     });
   });
 });
@@ -440,27 +460,36 @@ describe("the billing and prefix CHIPS", () => {
     }
   });
 
-  test("`$` IS A CHIP TOO, ON ITS OWN QUIETER FILL — and the two are not one band", async () => {
-    // The owner's instruction, verbatim: "make sub badge not as bright, make it
-    // softer and make $$$ the same width and badge as well". So the billing column
-    // carries a fill on every row, which is only legible as a two-tone column if the
-    // two fills are different — and `captureCharFrame` reads `$` and `SUB` the same
-    // whatever colour they are, so the assertion has to be on the spans.
+  test("`$$$` IS A CHIP TOO, ON THE COST FILL — and it is not the failure red", async () => {
+    // The owner's instruction, verbatim: "instead of $ it should be '$$$' with light
+    // reddish colour". The LABEL is the half a character frame can see; the FILL is
+    // the half it cannot, and the fill is where this goes wrong expensively —
+    // reddish is the hue the `HTTP 401` badge and the discovery banner already own,
+    // so a cost chip that picked one of those up would paint a failure on every
+    // healthy metered row. Hence both assertions, on the spans.
     const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
-      const dollars = labelled(f, "$");
+      const dollars = labelled(f, "$$$");
       expect(dollars.length).toBeGreaterThan(0);
+      // And the label it REPLACED is gone from the column rather than merely joined
+      // by the new one: a lone `$` chip surviving here is the half-applied edit.
+      expect(labelled(f, "$")).toEqual([]);
       for (const chip of dollars) {
-        expect(bgOf(chip)).toBe(rgb(C.pillMutedBg));
-        // Never the positive family's fill, and never a row background: a `$` that
+        expect(bgOf(chip)).toBe(rgb(C.pillCostBg));
+        // Never the no-charge family's fill, and never a row background: a `$$$` that
         // picked up `pillKeyBg` would claim the route costs nothing.
         expect(bgOf(chip)).not.toBe(rgb(C.pillKeyBg));
         expect(bgOf(chip)).not.toBe(rgb(C.bgAlt));
-        expect(chip.fg.toInts().slice(0, 3).join()).toBe(rgb(C.pillMutedFg));
+        // NEVER THE FAILURE FILLS. `theme-contrast.test.ts` measures how far apart
+        // they have to be; this pins that they are not literally the same object,
+        // which is the version of the mistake a hurried edit actually makes.
+        expect(bgOf(chip)).not.toBe(rgb(C.red));
+        expect(bgOf(chip)).not.toBe(rgb(C.bgError));
+        expect(chip.fg.toInts().slice(0, 3).join()).toBe(rgb(C.pillCostFg));
       }
-      expect(rgb(C.pillMutedBg)).not.toBe(rgb(C.pillKeyBg));
+      expect(rgb(C.pillCostBg)).not.toBe(rgb(C.pillKeyBg));
     } finally {
       d.destroy();
     }
@@ -488,7 +517,7 @@ describe("the billing and prefix CHIPS", () => {
   });
 
   test("EVERY STATUS CHIP IS THE SAME WIDTH, and the cell's surplus stays unfilled", async () => {
-    // ONE COLUMN, ONE FILL WIDTH — the owner asked for `$` and `SUB` at the same
+    // ONE COLUMN, ONE FILL WIDTH — the owner asked for `$$$` and `SUB` at the same
     // width, and a 1-cell fill beside a 5-cell one is what he was looking at. The
     // label is centred INSIDE the fill, which is the one sanctioned place for that
     // (`rows.tsx` header): a column wants straight edges, and the rule it bends was
@@ -504,7 +533,7 @@ describe("the billing and prefix CHIPS", () => {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
       const status = spansOf(f).filter(
-        (sp) => bgOf(sp) === rgb(C.pillKeyBg) || bgOf(sp) === rgb(C.pillMutedBg)
+        (sp) => bgOf(sp) === rgb(C.pillKeyBg) || bgOf(sp) === rgb(C.pillCostBg)
       );
       expect(status.length).toBeGreaterThan(0);
       // Every fill in the column is CHIP_FILL_CELLS wide, whatever its label…
@@ -698,10 +727,17 @@ describe("the picker opens on the PROVIDER list", () => {
     }
   });
 
-  test("a provider with NO credential is not on the list, and the omission is counted", async () => {
-    // "we should not show unsetted providers, just active". Not deleted — counted,
-    // with the key that brings them back, because an unexplained absence is the
-    // defect class this feature exists to remove.
+  test("a provider with NO credential is off the list, and `k` reveals it WITH its reason", async () => {
+    // "we should not show unsetted providers, just active". Not deleted — reachable,
+    // because an unexplained absence is the defect class this feature exists to
+    // remove.
+    //
+    // THE SUMMARY LINE THAT USED TO COUNT THEM IS GONE, on the owner's instruction
+    // ("remove this, 5 lines which has no value"), and this test is where that has to
+    // be paid for: the whole explanation now lives on the REVEALED ROW, so `k` must
+    // still reach it and the row must still say why. A build that hid the count and
+    // also dropped the reason would have looked fine on a screenshot of the default
+    // state, which is the only state a screenshot was ever taken of.
     const d = await draw(
       <ModelPicker
         source={fakeSource({ roster, ready: { openrouter: true, "kimi-coding": false } })}
@@ -713,13 +749,14 @@ describe("the picker opens on the PROVIDER list", () => {
       expect(before).toContain("OpenRouter");
       expect(before).not.toContain("Kimi Coding");
       expect(before).not.toContain("MOONSHOT_API_KEY");
-      expect(before).toContain("+1 more need a key");
+      // And the deleted line is really deleted, in the state that used to print it.
+      expect(before).not.toContain("more need a key");
 
       await d.press(["k"]);
       const after = joined(d.recapture().text);
       expect(after).toContain("Kimi Coding");
       // Revealed WITH the exact variable to inspect, which is the whole value of
-      // showing them at all.
+      // showing them at all — and now the ONLY place that fact appears.
       expect(after).toContain("MOONSHOT_API_KEY");
     } finally {
       d.destroy();
@@ -753,6 +790,237 @@ describe("the picker opens on the PROVIDER list", () => {
     try {
       await d.press(["ESCAPE"]);
       expect(got).toBeNull();
+    } finally {
+      d.destroy();
+    }
+  });
+});
+
+// ── the two summary lines are gone, and their content moved onto the rows ───────
+
+describe("`k` reveals BOTH kinds of unavailable provider, each with its own reason", () => {
+  // The owner deleted the two lines under the list — *"remove this, 5 lines which has
+  // no value"* — and they were the only place the screen distinguished a provider
+  // missing a CREDENTIAL from a local one that is merely not ENABLED. The distinction
+  // is real (one sends you to find an API key, the other to a config flag), so it had
+  // to land somewhere: it is now each row's own tail.
+  const roster = [
+    provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+    provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
+    provider({
+      value: "ollama",
+      label: "Ollama (local)",
+      shortcut: "ollama@",
+      billing: "local",
+      envVar: "",
+      hasDiscovery: true,
+    }),
+  ];
+
+  test("neither summary line is on the screen any more", async () => {
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster,
+          ready: { openrouter: true, "kimi-coding": false, ollama: false },
+          notEnabledLocal: ["ollama"],
+        })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      const before = joined(d.recapture().text);
+      expect(before).not.toContain("more need a key");
+      expect(before).not.toContain("not enabled in your config");
+      // And the rows themselves are still hidden, which is what the lines described.
+      expect(before).not.toContain("Kimi Coding");
+      expect(before).not.toContain("Ollama");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("and `k` brings both back, each saying WHY it cannot be used", async () => {
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster,
+          ready: { openrouter: true, "kimi-coding": false, ollama: false },
+          notEnabledLocal: ["ollama"],
+        })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      await d.press(["k"]);
+      await d.until((t) => t.join("").includes("Ollama"));
+      const after = joined(d.recapture().text);
+      // A cloud provider names the credential — the actionable fact.
+      expect(after).toContain("Kimi Coding");
+      expect(after).toContain("MOONSHOT_API_KEY");
+      // A local one names the config, because nothing is missing: it is opt-in and
+      // has not been opted into. Sending this user to look for an API key would send
+      // him after something that does not exist.
+      expect(after).toContain("Ollama");
+      expect(after).toContain("not enabled in config");
+      expect(after).not.toContain("needs sign-in");
+    } finally {
+      d.destroy();
+    }
+  });
+});
+
+// ── the provider list filters, in the model list's own idiom ────────────────────
+
+describe("the PROVIDER list filters as you type", () => {
+  // The owner: *"we need inline search in list of providers as well"*. It was a
+  // deliberate omission — 17 named rows do not need narrowing — and the point of this
+  // block is that what was added is the SAME interaction as the model list, not a
+  // second one to learn.
+  const roster = [
+    provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
+    provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
+    provider({ value: "google", label: "Google Gemini", shortcut: "go@", hasDiscovery: false }),
+  ];
+
+  test("typing NARROWS the list, and the count on the right follows it", async () => {
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      expect(joined(d.recapture().text)).toContain("OpenRouter");
+
+      // `im`, not `kimi`: `k` is a COMMAND while the filter is empty (see the test
+      // below), so a bare `k` would toggle the hidden providers instead of typing.
+      await d.press(["i", "m"]);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("Kimi Coding");
+      expect(after).not.toContain("OpenRouter");
+      expect(after).not.toContain("Google Gemini");
+      // The same `matches of total` the model list prints, from the same component.
+      expect(after).toContain("1 of 3");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("the SHORTCUT matches too, because `kc@` is what the row shows beside the name", async () => {
+    // Two vocabularies reach the same row — what it is called and how it is routed —
+    // and a user who knows the prefix should not have to remember the display name.
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      // `/` first, because `kc@` starts with one of the three command letters — which
+      // is precisely the case the escape hatch exists for.
+      await d.press(["/"]);
+      await d.press(["k", "c"]);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("Kimi Coding");
+      expect(after).not.toContain("OpenRouter");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`k` TYPES once the filter is live — it does not toggle the hidden providers", async () => {
+    // THE RULE THE MODEL LIST ALREADY HAD, AND THE REASON IT EXISTS. A letter that is
+    // a command while the filter is empty must become a letter once it is not, or
+    // narrowing to `kimi` fires `k` (reveal), `i`, `m`, `i` and the user watches the
+    // screen do something else entirely. `k` is the sharpest case here because its
+    // command is a VISIBLE toggle.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({
+          roster,
+          ready: { openrouter: true, "kimi-coding": true, google: false },
+        })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      // First `k` is the command: the credential-less provider appears.
+      await d.press(["k"]);
+      expect(joined(d.recapture().text)).toContain("Google Gemini");
+      await d.press(["ESCAPE"]);
+      // `/` focuses the filter, so the NEXT `k` is a letter even though the filter is
+      // still empty — which is the whole point of the escape hatch.
+      await d.press(["/"]);
+      await d.press(["k"]);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("Kimi Coding");
+      expect(after).not.toContain("OpenRouter");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("`esc` CLEARS the filter first and only then quits — the model list's rule", async () => {
+    let got: string | null | undefined;
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster })}
+        onDone={(spec) => {
+          got = spec;
+        }}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      await d.press(["i", "m"]);
+      expect(joined(d.recapture().text)).not.toContain("OpenRouter");
+
+      await d.press(["ESCAPE"]);
+      await d.until((t) => t.join("").includes("OpenRouter"));
+      // Cleared, NOT cancelled: the whole list is back and the picker is still open.
+      expect(got).toBeUndefined();
+      const cleared = joined(d.recapture().text);
+      expect(cleared).toContain("OpenRouter");
+      expect(cleared).toContain("Google Gemini");
+
+      // And the second `esc`, with nothing to clear, is the landing view's cancel.
+      await d.press(["ESCAPE"]);
+      expect(got).toBeNull();
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("a filter that matches nothing SAYS SO, and says how to get out", async () => {
+    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    try {
+      await d.until(providerListPainted);
+      await d.press(["z", "z"]);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("no provider matches");
+      expect(after).toContain("esc clears the filter");
+    } finally {
+      d.destroy();
+    }
+  });
+
+  test("entering a provider does not carry the filter into its model list", async () => {
+    // One `filter` state serves both views, which is what keeps the two screens
+    // behaving identically — and it is only safe because every transition clears it.
+    // A leaked filter would open a provider onto `no model matches “kimi”`.
+    const d = await draw(
+      <ModelPicker
+        source={fakeSource({ roster, byProvider: { "kimi-coding": [model({ id: "kimi-k3" })] } })}
+        onDone={() => {}}
+      />
+    );
+    try {
+      await d.until(providerListPainted);
+      await d.press(["i", "m"]);
+      await d.press(["RETURN"]);
+      await d.until(listPainted);
+      const after = joined(d.recapture().text);
+      expect(after).toContain("kimi-k3");
+      expect(after).not.toContain("no model matches");
+      // `newest first` is the model list's idle caption — it is only drawn when the
+      // filter is empty, so its presence IS the assertion that nothing leaked.
+      expect(after).toContain("newest first");
     } finally {
       d.destroy();
     }
