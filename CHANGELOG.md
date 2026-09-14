@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.3.1] - 2026-09-14
+
+### Bug Fixes
+
+- drop exited slots from team liveness; send x-opencode-session to Zen Go *(team,zen)* ([`d675536`](https://github.com/MadAppGang/claudish/commit/d6755362a51669854cc0ba155d3d5e857c3a738e))
+
+### Documentation
+
+- add the handoff for the four advisor follow-ups([`1397aac`](https://github.com/MadAppGang/claudish/commit/1397aacae91a7e36673df8f52cb2643ff58954d2))
+- archive the advisor build evidence, and park three follow-ups([`fe0bd29`](https://github.com/MadAppGang/claudish/commit/fe0bd29c160e4a9b1f33692708273db781578a55))
+- update CHANGELOG.md for v9.3.0([`301182d`](https://github.com/MadAppGang/claudish/commit/301182dc8bd0b708bf7bea3680214a788a2e22b0))
+
+### Other Changes
+
+- v9.3.1 *(release)* ([`6f6e026`](https://github.com/MadAppGang/claudish/commit/6f6e0261e249858bf7dea4a088fe448270c49154))
+
 ## [9.3.0] - 2026-09-10
 
 ### Bug Fixes
