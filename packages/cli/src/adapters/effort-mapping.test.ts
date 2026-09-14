@@ -674,6 +674,24 @@ function dsPrep(modelId: string, req: any): any {
 }
 
 describe("DeepSeek V4 reasoning_effort + thinking", () => {
+  // Seed the catalog because the dialect consults it before its name rule.
+  let cleanupCatalog: (() => void) | undefined;
+
+  beforeEach(() => {
+    cleanupCatalog = seedDefaultCatalog([
+      {
+        modelId: SYNTHETIC_FUGU_MODEL_ID,
+        aliases: [],
+        sources: {},
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    cleanupCatalog?.();
+    cleanupCatalog = undefined;
+  });
+
   test("V4: low → high, medium → high, high → high", () => {
     expect(dsPrep("deepseek-v4-flash", { output_config: { effort: "low" } }).reasoning_effort).toBe(
       "high"
@@ -719,6 +737,27 @@ describe("DeepSeek V4 reasoning_effort + thinking", () => {
     });
     expect(out.reasoning_effort).toBeUndefined();
     expect(out.thinking).toBeUndefined();
+  });
+
+  test("catalog reasoning opinion overrides the V4 alias name rule", () => {
+    // Measured 2026-09-14: deepseek-chat advertises supported:false, control:"none".
+    const cleanupOpinionCatalog = seedDefaultCatalog([
+      {
+        modelId: "deepseek-chat",
+        aliases: [],
+        sources: {},
+        reasoning: { supported: false, control: "none" },
+      },
+    ]);
+
+    try {
+      expect(
+        dsPrep("deepseek-chat", { output_config: { effort: "low" } }).reasoning_effort
+      ).toBeUndefined();
+      expect(dsPrep("deepseek-chat", { thinking: { budget_tokens: 5 } }).thinking).toBeUndefined();
+    } finally {
+      cleanupOpinionCatalog();
+    }
   });
 });
 
