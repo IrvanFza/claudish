@@ -132,4 +132,4 @@ TODO — not settled by detection, and worth answering on the next release:
   `packages/cli/src/tui/viz/color.test.ts` should be quarantined, since they fail
   on `main` and every release ships over them.
 
-verified: 2026-09-11 @ 9d70a59
+verified: 2026-09-14 @ 22cef36
