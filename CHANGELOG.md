@@ -2,6 +2,13 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.4.0] - 2026-09-15
+
+### Documentation
+
+- stamp the playbook verified at v9.3.2 *(release)* ([`488a17f`](https://github.com/MadAppGang/claudish/commit/488a17fdcc609f715cdd8b5374bfe4f76b6c655e))
+- update CHANGELOG.md for v9.3.2([`464637a`](https://github.com/MadAppGang/claudish/commit/464637ae289c2b178e5474b2e6b6a14bc60f82af))
+
 ## [9.3.2] - 2026-09-14
 
 ### Documentation
