@@ -70,7 +70,7 @@ describe("conversationKey", () => {
 });
 
 describe("OpenCodeZenTransport", () => {
-  test("adds the conversation header without replacing base authorization", async () => {
+  test("adds client identity headers without replacing base authorization", async () => {
     const request = requestFor(SESSION_ID_A);
     const transport = new OpenCodeZenTransport(
       remoteProvider("opencode-zen-go"),
@@ -80,7 +80,26 @@ describe("OpenCodeZenTransport", () => {
 
     const headers = await transport.getHeaders(request);
     expect(headers.Authorization).toBe("Bearer zen-key");
+    expect(headers["User-Agent"]).toMatch(/^claudish\/\d+\.\d+\.\d+$/);
     expect(headers["x-opencode-session"]).toBe(conversationKey(request));
+  });
+
+  test("lets provider-defined identity headers override generated values", async () => {
+    const provider = {
+      ...remoteProvider("opencode-zen-go"),
+      headers: {
+        "User-Agent": "pinned",
+        "x-opencode-session": "pinned-session",
+      },
+    };
+    const transport = new OpenCodeZenTransport(provider, "minimax-m3", "zen-key");
+
+    const headers = await transport.getHeaders(requestFor(SESSION_ID_A));
+    expect(headers).toMatchObject({
+      Authorization: "Bearer zen-key",
+      "User-Agent": "pinned",
+      "x-opencode-session": "pinned-session",
+    });
   });
 
   test("derives each header from its request rather than transport instance state", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { _setCatalogEntriesForTest } from "../providers/catalog-client.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "../providers/catalog-client.js";
 import {
   ADVISOR_STUB_PATHS,
   _debug_resetTrackedAdvisorIds,
@@ -56,11 +56,15 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  // Reset process-global state, then pin an empty catalog so these tests never
+  // fall through to the developer's real disk cache.
+  _resetCatalogClient();
   _setCatalogEntriesForTest(null);
 });
 
 afterEach(() => {
-  _setCatalogEntriesForTest(null);
+  // `null` is a sticky empty-catalog override, not a reset between tests.
+  _resetCatalogClient();
 });
 
 describe("advisorRouteFor", () => {

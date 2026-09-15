@@ -1,6 +1,78 @@
-import { describe, expect, test } from "bun:test";
-import { resolveTargetForCatalog } from "./catalog-client.js";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  _resetCatalogClient,
+  catalogWarmDisabledFor,
+  refreshCatalog,
+  resolveTargetForCatalog,
+} from "./catalog-client.js";
 import { parseModelSpec } from "./model-parser.js";
+
+const realFetch = globalThis.fetch;
+let previousDisableCatalogWarm: string | undefined;
+
+beforeEach(() => {
+  previousDisableCatalogWarm = process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+  _resetCatalogClient();
+});
+
+afterEach(() => {
+  if (previousDisableCatalogWarm === undefined) {
+    delete process.env.CLAUDISH_DISABLE_CATALOG_WARM;
+  } else {
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = previousDisableCatalogWarm;
+  }
+  globalThis.fetch = realFetch;
+  _resetCatalogClient();
+});
+
+describe("refreshCatalog catalog-warm kill switch", () => {
+  // This regression is a race: a sibling test's sticky empty-catalog override
+  // could let the process exit before a live fetch reached the developer's
+  // cache. The fetch assertion proves the kill switch returns before that path.
+  test("returns disabled before network or disk side effects", async () => {
+    process.env.CLAUDISH_DISABLE_CATALOG_WARM = "1";
+    const fetchStub = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            models: [
+              {
+                modelId: "offline-test-model",
+                aliases: [],
+                sources: { test: { externalId: "test/offline-test-model" } },
+              },
+            ],
+            plans: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+    );
+    globalThis.fetch = fetchStub as unknown as typeof fetch;
+
+    const outcome = await refreshCatalog(100);
+
+    expect(outcome).toEqual({ kind: "fetch_failed", reason: "disabled" });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  test('recognizes only "1" as disabled', () => {
+    expect(catalogWarmDisabledFor("1")).toBe(true);
+  });
+
+  // Pass negative values as arguments: this avoids writing a process-global
+  // another file's detached warmCatalog() may read, and a required parameter is
+  // the only way to express "explicitly unset" because a default fires on undefined.
+  for (const [label, switchValue] of [
+    ['"true"', "true"],
+    ['"0"', "0"],
+    ['""', ""],
+    ["undefined", undefined],
+  ] as const) {
+    test(`does not disable catalog warm for ${label}`, () => {
+      expect(catalogWarmDisabledFor(switchValue)).toBe(false);
+    });
+  }
+});
 
 describe("resolveTargetForCatalog", () => {
   test("rewrites a changed explicit MiniMax spec and returns its resolution", () => {
