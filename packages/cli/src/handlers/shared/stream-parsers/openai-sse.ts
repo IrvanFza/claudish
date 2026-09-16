@@ -64,6 +64,30 @@ export interface StreamingState {
    * and were maintained by hand at 27 emit sites.
    */
   tools: Map<number, ToolState>;
+  /**
+   * Argument fragments that arrived for a `tool_calls` index BEFORE its
+   * `function.name` did, keyed by that index.
+   *
+   * OpenAI's own streams put the name in the first fragment for an index, so
+   * this map is empty on every capture in the tree. Providers that do not — and
+   * they exist — used to have the head of their JSON object silently dropped by
+   * an `&& t` guard, leaving arguments that begin mid-object and cannot parse.
+   * A dropped head is indistinguishable downstream from a model that emitted
+   * bad JSON.
+   *
+   * Drained into `ToolState.arguments` the moment the tool is created.
+   */
+  pendingToolArgs: Map<number, string>;
+  /**
+   * `function.name` fragments per `tool_calls` index, accumulated.
+   *
+   * A provider may split the name across chunks. The name is read from here
+   * rather than from `tc.function.name` so that there is ONE place where a
+   * complete name exists — which is where the truncated→original decode belongs
+   * (decoding a fragment yields a miss, and the allowlist gate then drops the
+   * call with no error).
+   */
+  pendingToolName: Map<number, string>;
   toolIds: Set<string>;
   lastActivity: number;
   accumulatedText: string; // Accumulated text for potential tool call extraction
@@ -135,6 +159,8 @@ export function createStreamingState(): StreamingState {
     usage: null,
     finalized: false,
     tools: new Map(),
+    pendingToolArgs: new Map(),
+    pendingToolName: new Map(),
     toolIds: new Set(),
     lastActivity: Date.now(),
     accumulatedText: "",
@@ -297,6 +323,20 @@ export function createStreamingResponseHandler(
           state.finalized = true;
 
           try {
+            // Argument fragments whose `function.name` never arrived. A call with
+            // no name is not a call — there is nothing to dispatch and no schema to
+            // validate against — so they are discarded. Named in the log because
+            // silently dropping them is precisely the defect this buffer fixes, and
+            // a buffer that survives to here means the provider is doing something
+            // the accumulator did not anticipate. "error" puts it in the always-on
+            // structural log.
+            for (const [idx, pending] of state.pendingToolArgs) {
+              log(
+                `[Streaming] Tool argument error: discarding ${pending.length} buffered chars for tool_calls index ${idx} — function.name never arrived`
+              );
+            }
+            state.pendingToolArgs.clear();
+
             // Debug: Log accumulated text for analysis
             if (state.accumulatedText.length > 0) {
               const preview = state.accumulatedText.slice(0, 500).replace(/\n/g, "\\n");
@@ -631,12 +671,19 @@ export function createStreamingResponseHandler(
                       const idx = tc.index;
                       let t = state.tools.get(idx);
                       if (tc.function?.name) {
+                        // Accumulate the name BEFORE anything reads it: a provider
+                        // may split `function.name` across chunks, and this is the
+                        // one place a complete name exists.
+                        const accumulatedName =
+                          (state.pendingToolName.get(idx) ?? "") + tc.function.name;
+                        state.pendingToolName.set(idx, accumulatedName);
                         if (!t) {
                           // The hand-written "close thinking, then close text"
                           // pair that used to stand here is `openTool`'s job now.
-                          // Restore truncated tool name to original if mapping exists
-                          const rawName = tc.function.name;
-                          const restoredName = toolNameMap?.get(rawName) || rawName;
+                          // Restore truncated tool name to original if mapping exists.
+                          // THIS IS THE DECODE POINT: it reads the accumulated name,
+                          // never a single chunk's fragment.
+                          const restoredName = toolNameMap?.get(accumulatedName) || accumulatedName;
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
                             name: restoredName,
@@ -645,7 +692,9 @@ export function createStreamingResponseHandler(
                             blockIndex: writer.reserve(),
                             started: false,
                             closed: false,
-                            arguments: "", // Initialize arguments accumulator
+                            // Seeded, not empty: fragments that arrived for this
+                            // index before the name did are drained in here.
+                            arguments: state.pendingToolArgs.get(idx) ?? "",
                             ref: null,
                             // Buffer if we have schemas to validate, OR if a behavior
                             // rule wants to rewrite this call — repair is only
@@ -654,6 +703,12 @@ export function createStreamingResponseHandler(
                               (!!toolSchemas && toolSchemas.length > 0) ||
                               behavior?.shouldBufferTool?.(restoredName) === true,
                           };
+                          if (t.arguments) {
+                            log(
+                              `[Streaming] tool ${t.name} (index ${idx}): seeded ${t.arguments.length} argument chars that arrived before function.name`
+                            );
+                          }
+                          state.pendingToolArgs.delete(idx);
                           state.tools.set(idx, t);
                           if (isWebSearchToolCall(restoredName)) {
                             warnWebSearchUnsupported(restoredName, target);
@@ -667,7 +722,22 @@ export function createStreamingResponseHandler(
                             index: t.blockIndex,
                           });
                           t.started = true;
+                          // Flush the seed as ONE delta, right after the start.
+                          // Skipped when the seed is empty, which is every capture
+                          // in the tree — so the common case stays byte-identical.
+                          if (t.arguments) writer.append(t.ref, t.arguments);
                         }
+                      }
+                      if (tc.function?.arguments && !t) {
+                        // Arguments before the name. This used to be dropped by an
+                        // `&& t` guard, so the head of the JSON object vanished and
+                        // what survived began mid-object and could not parse —
+                        // indistinguishable downstream from a model emitting bad
+                        // JSON. Hold it until the name creates the tool.
+                        state.pendingToolArgs.set(
+                          idx,
+                          (state.pendingToolArgs.get(idx) ?? "") + tc.function.arguments
+                        );
                       }
                       if (tc.function?.arguments && t) {
                         // Always accumulate arguments
