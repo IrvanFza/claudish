@@ -6,6 +6,7 @@
  */
 
 import { log } from "../logger.js";
+import type { StreamFormat } from "../providers/transport/types.js";
 
 /**
  * The character shape of a tool name, as a pattern fragment.
@@ -153,4 +154,38 @@ export function encodeToolName(
     );
   }
   return encoded;
+}
+
+/**
+ * The stream parsers that are handed this request's decode map, and can
+ * therefore restore an encoded tool name before Claude Code sees it.
+ *
+ * A LIST OF PARSERS WITH A DECODER, not a list of OpenAI-shaped request wires —
+ * those are two different questions and conflating them is the encoder/decoder
+ * split this constant exists to close. `ComposedHandler.handleStream` threads
+ * `toolNameMap` into exactly these two cases; `anthropic-sse`, `gemini-sse`,
+ * `ollama-jsonl` and `connect-proto` receive no map and have no parameter to
+ * receive one, so a name encoded on the way out reaches the client verbatim —
+ * a tool name the client never advertised, dropped by its allowlist with no
+ * error anywhere.
+ *
+ * That pairing is real and reachable today: a custom endpoint may declare
+ * `{transport: "openai", streamFormat: "anthropic-sse"}` (an aggregator that
+ * takes an OpenAI-shaped request and answers in Anthropic SSE), and
+ * `streamFormat` accepts all five values, so `gemini-sse` and `ollama-jsonl`
+ * pair with the OpenAI transport the same way.
+ *
+ * Add a wire here ONLY together with a decode path in its parser.
+ */
+export const TOOL_NAME_DECODING_WIRES = ["openai-sse", "openai-responses-sse"] as const;
+
+/**
+ * Whether the parser selected for the RESPONSE can decode an encoded tool name.
+ *
+ * `undefined` — nobody said — is treated as "cannot decode", which is the safe
+ * direction: not encoding costs a 400 on a >64-char name (loud, recoverable),
+ * while encoding without a decoder drops the call silently.
+ */
+export function wireDecodesToolNames(format: StreamFormat | undefined): boolean {
+  return format !== undefined && (TOOL_NAME_DECODING_WIRES as readonly string[]).includes(format);
 }

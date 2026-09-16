@@ -13,6 +13,7 @@
 
 import { mapToolChoiceToOpenAI } from "../handlers/shared/format/openai-tools.js";
 import { log } from "../logger.js";
+import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 import { resolveModelDialect } from "./dialect-manager.js";
 
@@ -152,6 +153,16 @@ export class LocalModelAdapter extends BaseAPIFormat {
     delete request.thinking;
 
     return request;
+  }
+
+  override setResponseWireFormat(format: StreamFormat | undefined): void {
+    // The inner adapter runs its own prepareRequest template (above) and
+    // encodes into its own bindings, so it needs the same answer to "can this
+    // response be decoded". Load-bearing here: a local provider can serve this
+    // adapter over `ollama-jsonl`, whose parser takes no decode map, while the
+    // inner dialect's own `getStreamFormat()` still says "openai-sse".
+    super.setResponseWireFormat(format);
+    this.innerAdapter.setResponseWireFormat(format);
   }
 
   override getToolNameMap(): Map<string, string> {

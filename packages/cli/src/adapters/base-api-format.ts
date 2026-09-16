@@ -16,7 +16,12 @@ import type { APIFormat } from "./api-format.js";
 import { type ReasoningCapability, lookupModel, lookupModelReasoning } from "./model-catalog.js";
 import type { ModelDialect } from "./model-dialect.js";
 import { rejectedOptionalParams } from "./optional-param-rejection.js";
-import { type ToolNameBindings, encodeToolName, newToolNameBindings } from "./tool-name-utils.js";
+import {
+  type ToolNameBindings,
+  encodeToolName,
+  newToolNameBindings,
+  wireDecodesToolNames,
+} from "./tool-name-utils.js";
 
 /**
  * The OPTIONAL parameters {@link BaseAPIFormat.applyOpenAISamplingParams} adds
@@ -133,6 +138,36 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * historical OpenAI default so nothing changes for existing call sites.
    */
   protected readonly wireFormat?: StreamFormat;
+
+  /**
+   * The parser the RESPONSE will actually be fed to, as ComposedHandler
+   * resolves it — `provider.overrideStreamFormat()` first, then the adapters.
+   *
+   * Distinct from {@link wireFormat}, which is the REQUEST shape. They are
+   * usually the same and are not always: a custom endpoint may declare
+   * `{transport:"openai", streamFormat:"anthropic-sse"}`, and then the payload
+   * is OpenAI-shaped (so the encoder arms) while the parser is the Anthropic
+   * passthrough (which has no decode map). Only {@link getToolNameLimit} reads
+   * this; nothing else should branch on it.
+   *
+   * Set ONCE, from the ComposedHandler constructor. It is a property of the
+   * composition, not of the request — `resolveStreamFormat()` does not look at
+   * the request at all — so this carries none of the per-request race that made
+   * {@link toolNameBindings} per-request.
+   */
+  private responseWireFormat?: StreamFormat;
+
+  /**
+   * Tell this adapter which parser will read the response it is helping build.
+   *
+   * Called once per handler, at construction. A delegating adapter that runs an
+   * inner adapter's `prepareRequest` MUST override this and pass it on, or the
+   * inner adapter encodes names into a wire that cannot decode them
+   * (OpenRouterAPIFormat and LocalAdapter both do).
+   */
+  setResponseWireFormat(format: StreamFormat | undefined): void {
+    this.responseWireFormat = format;
+  }
 
   /**
    * This request's tool-name bindings, in both directions.
@@ -261,28 +296,30 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   /**
    * Maximum tool name length this request's wire accepts, or null for no limit.
    *
-   * A RULE about the wire, not a roster of adapters. OpenAI validates a function
-   * name against `^[a-zA-Z0-9_-]{1,64}$` on both of its shapes, so every
-   * OpenAI-shaped wire gets 64 and everything else gets null. Before this, the
-   * method returned null on every adapter except Xiaomi, so nothing else
-   * truncated at all — and a real 65-character MCP name
-   * (`mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent`) fails
-   * the WHOLE request, not just that tool.
+   * THE QUESTION IS "CAN THE RESPONSE BE DECODED", NOT "IS THE REQUEST
+   * OpenAI-SHAPED". Those come apart, and when they do the encoder runs with no
+   * decoder behind it and Claude Code receives a tool name it never advertised.
+   * `wireDecodesToolNames` is the one list of parsers that are handed this
+   * request's map; a wire absent from it gets null and nothing is encoded. The
+   * cost of not encoding is a loud 400 on a >64-char name; the cost of encoding
+   * without a decoder is a silently dropped tool call.
    *
-   * The Anthropic-wire check comes FIRST and is load-bearing: a dialect is
-   * selected by model name and cannot know its wire, so `getStreamFormat()`
-   * still answers "openai-sse" for a dialect reached over Qwen Plan's
-   * Anthropic-compatible endpoint. Encoding there would rewrite names the
-   * anthropic-sse parser has no map to decode.
+   * OpenAI validates a function name against `^[a-zA-Z0-9_-]{1,64}$` on both of
+   * its shapes, so 64 is that limit and not a guess about any one model. Before
+   * item 7 this method returned null on every adapter except Xiaomi, so nothing
+   * truncated at all — and a real 65-character MCP name
+   * (`mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent`) failed
+   * the WHOLE request, not just that tool.
    */
   getToolNameLimit(): number | null {
-    // The COMPOSED wire wins when it was supplied. A dialect self-selects by
-    // model name and its own `getStreamFormat()` answers "openai-sse" whatever
-    // it was composed into — so a dialect running under Ollama's JSONL wire, or
-    // Qwen Plan's Anthropic one, would otherwise encode names that wire's parser
-    // has no map to decode.
-    const wire = this.wireFormat ?? this.getStreamFormat();
-    return wire === "openai-sse" || wire === "openai-responses-sse" ? OPENAI_TOOL_NAME_LIMIT : null;
+    // Precedence mirrors ComposedHandler.resolveStreamFormat(), which is what
+    // actually picks the parser: the provider's RESPONSE override first, then
+    // the composed request wire, then the dialect's own guess. A dialect
+    // self-selects by model name and its `getStreamFormat()` answers
+    // "openai-sse" whatever it was composed into, so it is the last word, never
+    // the first.
+    const wire = this.responseWireFormat ?? this.wireFormat ?? this.getStreamFormat();
+    return wireDecodesToolNames(wire) ? OPENAI_TOOL_NAME_LIMIT : null;
   }
 
   /**

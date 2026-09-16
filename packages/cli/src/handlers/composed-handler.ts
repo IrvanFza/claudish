@@ -22,7 +22,7 @@
 
 import type { Context } from "hono";
 import type { BaseAPIFormat, EffortLevel } from "../adapters/base-api-format.js";
-import type { ProviderTransport } from "../providers/transport/types.js";
+import type { ProviderTransport, StreamFormat } from "../providers/transport/types.js";
 import type { ModelHandler } from "./types.js";
 // Alias for readability within this file
 type BaseModelAdapter = BaseAPIFormat;
@@ -223,6 +223,28 @@ export class ComposedHandler implements ModelHandler {
     if (resolvedModelAdapter.getName() !== "DefaultAPIFormat") {
       this.modelAdapter = resolvedModelAdapter;
     }
+
+    // Tell every adapter which PARSER will read the response.
+    //
+    // This is the only place that knows: `resolveStreamFormat()` consults
+    // `provider.overrideStreamFormat()` FIRST, and no adapter can see that. The
+    // pairing it exists for is `{transport:"openai", streamFormat:"anthropic-sse"}`
+    // — an OpenAI-shaped REQUEST answered in Anthropic SSE. The request shape
+    // armed the 64-char tool-name encoder while the Anthropic passthrough parser
+    // takes no decode map, so Claude Code received a tool name it never
+    // advertised and its allowlist dropped the call with no error anywhere.
+    // `getToolNameLimit()` now returns null for any wire whose parser cannot
+    // decode. See `wireDecodesToolNames`.
+    //
+    // Set once, here, because it is a property of the COMPOSITION:
+    // `resolveStreamFormat()` never looks at the request, so this carries none
+    // of the per-request race that made the tool-name bindings per-request.
+    // `resolvedDialect`, not `modelAdapter`: an unrecognized model leaves
+    // `modelAdapter` unset and `getAdapter()` then returns the dialect, which is
+    // the instance that would do the encoding.
+    const responseWire = this.resolveStreamFormat() as StreamFormat;
+    this.resolvedDialect.setResponseWireFormat(responseWire);
+    this.explicitAdapter?.setResponseWireFormat(responseWire);
 
     // Initialize middleware (only register model-specific middleware when applicable).
     // Use bareModelName for the middleware gate — .includes() works identically for
