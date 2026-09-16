@@ -145,9 +145,7 @@ describe("advisorNativeSession — a reason no model is needed, exactly like --m
       const viaMonitor = { ...gate, monitor: true, advisorNativeSession: false };
       const viaAdvisor = { ...gate, monitor: false, advisorNativeSession: true };
       expect(shouldOpenPicker(viaAdvisor, tty)).toBe(shouldOpenPicker(viaMonitor, tty));
-      expect(requiresExplicitModel(viaAdvisor, tty)).toBe(
-        requiresExplicitModel(viaMonitor, tty)
-      );
+      expect(requiresExplicitModel(viaAdvisor, tty)).toBe(requiresExplicitModel(viaMonitor, tty));
       checked++;
     }
     expect(checked).toBe(32);

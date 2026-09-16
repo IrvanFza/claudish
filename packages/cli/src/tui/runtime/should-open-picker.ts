@@ -83,9 +83,7 @@ export interface ModelPickerGate {
  * silently and still be told to name a model, or the reverse.
  */
 function noModelConfigured(gate: ModelPickerGate): boolean {
-  return (
-    !gate.monitor && !gate.advisorNativeSession && !gate.model && !gate.hasProfileTiers
-  );
+  return !gate.monitor && !gate.advisorNativeSession && !gate.model && !gate.hasProfileTiers;
 }
 
 /**
