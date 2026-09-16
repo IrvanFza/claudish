@@ -40,15 +40,9 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
     return 128;
   }
 
-  /** Tool name truncation — a wire-agnostic API constraint. */
-  protected override prepareRequestCommon(request: any, _originalRequest: any): any {
-    this.truncateToolNames(request);
-    if (request.messages) {
-      this.truncateToolNamesInMessages(request.messages);
-    }
-
-    return request;
-  }
+  // Tool-name encoding used to live here, and here ONLY, which is why no other
+  // OpenAI-shaped adapter did it. It is now in `prepareRequest`'s template, so
+  // this hook has nothing left to do.
 
   /**
    * OpenAI's own reasoning knob. Not called on the Anthropic wire.

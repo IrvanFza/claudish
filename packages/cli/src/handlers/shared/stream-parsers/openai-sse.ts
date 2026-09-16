@@ -420,7 +420,11 @@ export function createStreamingResponseHandler(
                     // The `<function=NAME><parameter=P>` envelope carries no
                     // types, so every value arrives as a string. The schemas are
                     // what turn `"5"` back into 5 and `"true"` into true.
-                    toolSchemas as ToolSchema[] | undefined
+                    toolSchemas as ToolSchema[] | undefined,
+                    // Recovery reads the name the MODEL wrote, which is the
+                    // encoded one. The allowlist is built from the client's
+                    // originals, so an undecoded name is dropped in silence.
+                    toolNameMap ? (name: string) => toolNameMap.get(name) ?? name : undefined
                   );
             if (state.tools.size > 0 && state.accumulatedText.length > 0) {
               log(
@@ -835,13 +839,14 @@ export function createStreamingResponseHandler(
                         const accumulatedName =
                           (state.pendingToolName.get(idx) ?? "") + tc.function.name;
                         state.pendingToolName.set(idx, accumulatedName);
+                        // THIS IS THE DECODE POINT: it reads the accumulated name,
+                        // never a single chunk's fragment. Decoding a fragment
+                        // misses the map, and the allowlist then drops the call
+                        // in silence.
+                        const restoredName = toolNameMap?.get(accumulatedName) || accumulatedName;
                         if (!t) {
                           // The hand-written "close thinking, then close text"
                           // pair that used to stand here is `openTool`'s job now.
-                          // Restore truncated tool name to original if mapping exists.
-                          // THIS IS THE DECODE POINT: it reads the accumulated name,
-                          // never a single chunk's fragment.
-                          const restoredName = toolNameMap?.get(accumulatedName) || accumulatedName;
                           t = {
                             id: tc.id || `tool_${Date.now()}_${idx}`,
                             name: restoredName,
@@ -870,6 +875,28 @@ export function createStreamingResponseHandler(
                           state.tools.set(idx, t);
                           if (isWebSearchToolCall(restoredName)) {
                             warnWebSearchUnsupported(restoredName, target);
+                          }
+                        } else if (t.name !== restoredName) {
+                          // A LATER fragment completed the name. The tool was
+                          // created from the first fragment, so its name is a
+                          // prefix — and a prefix of an encoded name decodes to
+                          // nothing, which is how a call gets dropped without a
+                          // word anywhere.
+                          if (t.started) {
+                            // The block is already on the wire under the short
+                            // name; it cannot be recalled. "error" is deliberate
+                            // — it is what carries this to the structural log.
+                            log(
+                              `[Streaming] error: tool block ${t.blockIndex} was started as "${t.name}" but the full name is "${restoredName}" — the client sees the wrong name`
+                            );
+                          } else {
+                            t.name = restoredName;
+                            t.buffered =
+                              (!!toolSchemas && toolSchemas.length > 0) ||
+                              behavior?.shouldBufferTool?.(restoredName) === true;
+                            if (isWebSearchToolCall(restoredName)) {
+                              warnWebSearchUnsupported(restoredName, target);
+                            }
                           }
                         }
                         // Only send content_block_start immediately if NOT buffering

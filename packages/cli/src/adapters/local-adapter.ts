@@ -138,13 +138,13 @@ export class LocalModelAdapter extends BaseAPIFormat {
   // ─── Request post-processing ────────────────────────────────────────
 
   protected override prepareRequestCommon(request: any, originalRequest: any): any {
-    // Delegate to inner adapter (Qwen tool name truncation, etc.)
+    // Delegate to inner adapter (Qwen tool name encoding, etc.). The inner
+    // adapter's template encodes the names into ITS bindings; this adapter's
+    // template then runs over an already-encoded payload and changes nothing.
+    // `getToolNameMap()` below merges both, so there is no eager copy here —
+    // copying into this instance's bindings would also mean mutating a map the
+    // previous request's parser may still be holding.
     this.innerAdapter.prepareRequest(request, originalRequest);
-
-    // Merge inner adapter's tool name map
-    for (const [k, v] of this.innerAdapter.getToolNameMap()) {
-      this.toolNameMap.set(k, v);
-    }
 
     // Strip cloud-only thinking params that local providers don't understand
     delete request.enable_thinking;

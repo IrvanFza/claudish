@@ -288,9 +288,15 @@ export class GrokModelDialect extends BaseAPIFormat {
   }
 
   /**
-   * Reset internal state (useful between requests)
+   * Reset internal state (useful between requests).
+   *
+   * `super.reset()` is load-bearing: it mints this request's tool-name
+   * bindings. Without it they accumulate for the life of the process, because
+   * this override used to replace the base entirely — harmless while nothing
+   * encoded names, not harmless now.
    */
-  reset(): void {
+  override reset(): void {
+    super.reset();
     this.xmlBuffer = "";
   }
 }

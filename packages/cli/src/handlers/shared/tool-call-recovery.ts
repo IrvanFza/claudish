@@ -76,15 +76,24 @@ export function hasExtractableFunctionTag(text: string): boolean {
 /**
  * Drop extracted calls that are not real tools.
  *
- * Two gates. The shape gate rejects a name that is not an identifier, which is
- * how a swallowed argument value is caught. The allowlist gate rejects a
- * well-shaped name the client never advertised, which is how a hallucinated tool
- * is caught. The allowlist is the request's own tool list, so it is exact rather
- * than a hardcoded roster.
+ * Three steps, and the ORDER is the design:
+ *
+ *  1. **Shape.** Reject a name that is not an identifier — this is how a
+ *     swallowed argument value is caught. It runs on the name as it came off
+ *     the WIRE, which is the only name `TOOL_NAME_SHAPE`'s 64-character bound
+ *     describes.
+ *  2. **Decode.** On a wire that renames tools, the model wrote the encoded
+ *     name; the client's own name may legitimately be longer than the wire
+ *     allows. Decoding before step 1 would fail a real 65-character MCP name on
+ *     a shape rule that was never about it.
+ *  3. **Allowlist.** Reject a well-shaped name the client never advertised —
+ *     this is how a hallucinated tool is caught. The allowlist is the request's
+ *     own tool list, so it is exact rather than a hardcoded roster.
  */
 function keepOnlyRealTools(
   extracted: ExtractedToolCall[],
-  knownToolNames?: string[]
+  knownToolNames?: string[],
+  decodeToolName?: (name: string) => string
 ): ExtractedToolCall[] {
   const kept: ExtractedToolCall[] = [];
   for (const call of extracted) {
@@ -96,16 +105,18 @@ function keepOnlyRealTools(
       );
       continue;
     }
+    const decoded = decodeToolName ? decodeToolName(call.name) : call.name;
+    const named = decoded === call.name ? call : { ...call, name: decoded };
     if (!knownToolNames || knownToolNames.length === 0) {
-      kept.push(call);
+      kept.push(named);
       continue;
     }
-    const canonical = knownToolNames.find((t) => t.toLowerCase() === call.name.toLowerCase());
+    const canonical = knownToolNames.find((t) => t.toLowerCase() === named.name.toLowerCase());
     if (!canonical) {
-      log(`[ToolRecovery] Dropped extracted call for unadvertised tool: ${call.name}`);
+      log(`[ToolRecovery] Dropped extracted call for unadvertised tool: ${named.name}`);
       continue;
     }
-    kept.push(canonical === call.name ? call : { ...call, name: canonical });
+    kept.push(canonical === named.name ? named : { ...named, name: canonical });
   }
   return kept;
 }
@@ -226,18 +237,24 @@ function normalizeAgainstSchema(
  *
  * `toolSchemas`, when supplied, types the extracted values: the envelope format
  * carries no types, so every value arrives as a string.
+ *
+ * `decodeToolName`, when supplied, turns the name the MODEL wrote back into the
+ * client's own. The model was given the encoded roster, so on a renaming wire
+ * every recovered call carries an encoded name that `knownToolNames` — built
+ * from the client's originals — would otherwise reject in silence.
  */
 export function extractToolCallsFromText(
   text: string,
   knownToolNames?: string[],
-  toolSchemas?: ToolSchema[]
+  toolSchemas?: ToolSchema[],
+  decodeToolName?: (name: string) => string
 ): ExtractedToolCall[] {
   // Tried FIRST, and short-circuits: a response that is nothing but function
   // tags is unambiguous, and reading it as a delimited envelope beats six
   // regexes scanning for fragments of one.
   const envelope = parseFunctionTagEnvelope(text);
   if (envelope) {
-    return keepOnlyRealTools(envelope, knownToolNames).map((call) =>
+    return keepOnlyRealTools(envelope, knownToolNames, decodeToolName).map((call) =>
       normalizeAgainstSchema(call, toolSchemas)
     );
   }
@@ -460,7 +477,7 @@ export function extractToolCallsFromText(
     }
   }
 
-  return keepOnlyRealTools(extracted, knownToolNames);
+  return keepOnlyRealTools(extracted, knownToolNames, decodeToolName);
 }
 
 /**

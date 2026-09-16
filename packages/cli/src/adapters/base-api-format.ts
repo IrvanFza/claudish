@@ -16,7 +16,7 @@ import type { APIFormat } from "./api-format.js";
 import { type ReasoningCapability, lookupModel, lookupModelReasoning } from "./model-catalog.js";
 import type { ModelDialect } from "./model-dialect.js";
 import { rejectedOptionalParams } from "./optional-param-rejection.js";
-import { truncateToolName } from "./tool-name-utils.js";
+import { type ToolNameBindings, encodeToolName, newToolNameBindings } from "./tool-name-utils.js";
 
 /**
  * The OPTIONAL parameters {@link BaseAPIFormat.applyOpenAISamplingParams} adds
@@ -25,6 +25,13 @@ import { truncateToolName } from "./tool-name-utils.js";
  * payload is either required or owned by a dialect that must recover it itself.
  */
 const OPTIONAL_SAMPLING_PARAMS: readonly string[] = ["stop", "top_p"];
+
+/**
+ * OpenAI validates a function name against `^[a-zA-Z0-9_-]{1,64}$` on both the
+ * Chat Completions and the Responses shape. 64 is that limit, not a guess about
+ * any one model.
+ */
+const OPENAI_TOOL_NAME_LIMIT = 64;
 
 /**
  * Match a model ID against a model family name, handling vendor-prefixed IDs.
@@ -128,10 +135,18 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   protected readonly wireFormat?: StreamFormat;
 
   /**
-   * Map of truncated tool names back to original names.
-   * Populated during prepareRequest() when tool names are truncated.
+   * This request's tool-name bindings, in both directions.
+   *
+   * PER REQUEST, and REPLACED rather than cleared — never mutated after it has
+   * been handed out. Handlers are cached one per model while `claudish serve`
+   * hosts several conversations, so the instance is shared: clearing the map
+   * that request A's parser is still decoding with, because request B started,
+   * turns A's tool calls into names nothing recognises — and `keepOnlyRealTools`
+   * then drops them with no error anywhere. `adapters.md` records the same
+   * hazard class for `getHeaders`. `reset()` mints a new pair; the old one stays
+   * whole for whoever is still reading it.
    */
-  protected toolNameMap: Map<string, string> = new Map();
+  protected toolNameBindings: ToolNameBindings = newToolNameBindings();
 
   constructor(modelId: string, wireFormat?: StreamFormat) {
     this.modelId = modelId;
@@ -244,11 +259,30 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
-   * Maximum tool name length allowed by this model's API.
-   * Returns null if no limit (default).
+   * Maximum tool name length this request's wire accepts, or null for no limit.
+   *
+   * A RULE about the wire, not a roster of adapters. OpenAI validates a function
+   * name against `^[a-zA-Z0-9_-]{1,64}$` on both of its shapes, so every
+   * OpenAI-shaped wire gets 64 and everything else gets null. Before this, the
+   * method returned null on every adapter except Xiaomi, so nothing else
+   * truncated at all — and a real 65-character MCP name
+   * (`mcp__plugin_browser-use_browser-use__retry_with_browser_use_agent`) fails
+   * the WHOLE request, not just that tool.
+   *
+   * The Anthropic-wire check comes FIRST and is load-bearing: a dialect is
+   * selected by model name and cannot know its wire, so `getStreamFormat()`
+   * still answers "openai-sse" for a dialect reached over Qwen Plan's
+   * Anthropic-compatible endpoint. Encoding there would rewrite names the
+   * anthropic-sse parser has no map to decode.
    */
   getToolNameLimit(): number | null {
-    return null;
+    // The COMPOSED wire wins when it was supplied. A dialect self-selects by
+    // model name and its own `getStreamFormat()` answers "openai-sse" whatever
+    // it was composed into — so a dialect running under Ollama's JSONL wire, or
+    // Qwen Plan's Anthropic one, would otherwise encode names that wire's parser
+    // has no map to decode.
+    const wire = this.wireFormat ?? this.getStreamFormat();
+    return wire === "openai-sse" || wire === "openai-responses-sse" ? OPENAI_TOOL_NAME_LIMIT : null;
   }
 
   /**
@@ -264,18 +298,22 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
-   * Get the tool name map (truncated -> original).
-   * Use after prepareRequest() to get the mapping for response processing.
+   * This request's decode map (encoded → original).
+   *
+   * Read it ONCE, immediately after `prepareRequest`, and thread that reference
+   * onward — do not re-read it after an `await`. `reset()` replaces the
+   * bindings, so a later read on a shared handler returns the NEXT request's
+   * map.
    */
   getToolNameMap(): Map<string, string> {
-    return this.toolNameMap;
+    return this.toolNameBindings.byEncoded;
   }
 
   /**
-   * Restore a potentially truncated tool name to its original.
+   * Restore a possibly-encoded tool name to its original.
    */
   restoreToolName(name: string): string {
-    return this.toolNameMap.get(name) || name;
+    return this.toolNameBindings.byEncoded.get(name) || name;
   }
 
   /**
@@ -308,6 +346,12 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    */
   prepareRequest(request: any, originalRequest: any): any {
     const prepared = this.prepareRequestCommon(request, originalRequest) ?? request;
+
+    // Tool-name encoding lives in the TEMPLATE, not in the hook, so that every
+    // adapter gets it exactly once and no subclass can lose it by overriding
+    // `prepareRequestCommon` without calling super — which is how it came to be
+    // on OpenAIAPIFormat and Xiaomi alone. One call site for the whole tree.
+    this.encodeToolNames(prepared);
 
     if (!this.isAnthropicWire()) {
       return this.applyNativeReasoning(prepared, originalRequest) ?? prepared;
@@ -631,7 +675,9 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * Reset internal state between requests (prevents state contamination)
    */
   reset(): void {
-    this.toolNameMap.clear();
+    // REPLACE, never clear: a parser from the previous request may still be
+    // decoding with the old map. See {@link toolNameBindings}.
+    this.toolNameBindings = newToolNameBindings();
   }
 
   // ─── ComposedHandler integration (Phase 1c) ───────────────────────
@@ -765,50 +811,71 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   }
 
   /**
-   * Truncate tool names in the request payload if the model has a name length limit.
-   * Handles both Chat Completions format ({type:"function", function:{name}})
-   * and Responses API format ({type:"function", name}).
-   * Stores the mapping in this.toolNameMap for reverse mapping in responses.
+   * Rewrite every tool name in this payload into what the wire accepts, and
+   * record the way back.
+   *
+   * THREE places carry a tool name, and all three must agree or the request is
+   * worse than it was before:
+   *
+   *   1. `tools[]` — what the model may call. Both shapes: Chat Completions
+   *      `{type:"function", function:{name}}` and the Responses API's flat
+   *      `{type:"function", name}`.
+   *   2. The HISTORY — `messages[]` assistant `tool_calls`, and the Responses
+   *      API's `input[]` `function_call` items. A history naming a tool that is
+   *      not in `tools[]` is rejected by strict endpoints and confuses every
+   *      other one.
+   *   3. `tool_choice` — pointing at a name the model was never offered is a
+   *      400 on the first forced-tool turn.
+   *
+   * Encoding runs on the BUILT payload rather than inside each builder because
+   * that is where all three live, and because the map has to be minted
+   * somewhere both the payload and the parser can see.
+   *
+   * Idempotent: an already-encoded name transforms to itself and is bound to
+   * itself, so a delegating adapter that runs this after its inner adapter
+   * already did changes nothing.
    */
-  protected truncateToolNames(request: any): void {
+  protected encodeToolNames(request: any): void {
     const limit = this.getToolNameLimit();
-    if (!limit || !request.tools) return;
+    if (!limit || !request) return;
 
-    for (const tool of request.tools) {
-      const originalName = tool.function?.name || tool.name;
-      if (originalName && originalName.length > limit) {
-        const truncated = truncateToolName(originalName, limit);
-        this.toolNameMap.set(truncated, originalName);
-        if (tool.function?.name) {
-          tool.function.name = truncated;
-        } else if (tool.name) {
-          tool.name = truncated;
+    const encode = (name: string) => encodeToolName(name, limit, this.toolNameBindings);
+
+    if (Array.isArray(request.tools)) {
+      for (const tool of request.tools) {
+        if (tool?.function?.name) {
+          tool.function.name = encode(tool.function.name);
+        } else if (tool?.name) {
+          tool.name = encode(tool.name);
         }
       }
     }
-  }
 
-  /**
-   * Truncate tool names in assistant message history (for messages array).
-   * This is needed because historical tool_use blocks in the conversation
-   * may contain names that exceed the model's limit.
-   */
-  protected truncateToolNamesInMessages(messages: any[]): void {
-    const limit = this.getToolNameLimit();
-    if (!limit) return;
-
-    for (const msg of messages) {
-      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+    if (Array.isArray(request.messages)) {
+      for (const msg of request.messages) {
+        if (msg?.role !== "assistant" || !Array.isArray(msg.tool_calls)) continue;
         for (const tc of msg.tool_calls) {
-          const name = tc.function?.name;
-          if (name && name.length > limit) {
-            const truncated = truncateToolName(name, limit);
-            tc.function.name = truncated;
-            if (!this.toolNameMap.has(truncated)) {
-              this.toolNameMap.set(truncated, name);
-            }
-          }
+          if (tc?.function?.name) tc.function.name = encode(tc.function.name);
         }
+      }
+    }
+
+    // Responses API history. `input` holds `function_call` items rather than an
+    // assistant message with `tool_calls`, so the branch above cannot see them.
+    if (Array.isArray(request.input)) {
+      for (const item of request.input) {
+        if (item?.type === "function_call" && item.name) item.name = encode(item.name);
+      }
+    }
+
+    const choice = request.tool_choice;
+    if (choice && typeof choice === "object") {
+      // `{type:"function", function:{name}}` (chat) and `{type:"function", name}`
+      // (responses). The string forms — "auto"/"none"/"required" — name nothing.
+      if (choice.function?.name) {
+        choice.function.name = encode(choice.function.name);
+      } else if (choice.name) {
+        choice.name = encode(choice.name);
       }
     }
   }

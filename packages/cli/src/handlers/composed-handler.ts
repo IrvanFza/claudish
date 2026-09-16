@@ -1488,7 +1488,11 @@ export class ComposedHandler implements ModelHandler {
         return createResponsesStreamHandler(c, response, {
           modelName: this.bareModelName,
           onTokenUpdate,
-          toolNameMap: adapter.getToolNameMap(),
+          // The map THIS request captured right after prepareRequest — not a
+          // fresh read. This runs after an awaited fetch, and on a handler
+          // shared by two conversations the adapter's own map may already
+          // belong to the next request by now.
+          toolNameMap,
           contextWindow: lookupModelForProvider(this.bareModelName, this.provider.name),
           onApiError,
           priorInputTokens,

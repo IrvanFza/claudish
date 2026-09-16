@@ -317,6 +317,12 @@ export type ResponsesToolChoice = string | { type: "function"; name: string };
  * @param choice - the inbound `tool_choice`, if any
  * @param encodeName - applied to the named tool, so a wire that renames tools
  *   names the SAME tool here as in `tools[]`. Identity when omitted.
+ *
+ * NOTE on `encodeName`: production does not pass it. Tool-name encoding runs as
+ * a post-pass over the BUILT payload (`BaseAPIFormat.encodeToolNames`), because
+ * the name also lives in the message history, which no `tool_choice` mapper can
+ * reach — and because the codec's map is minted there. The hook stays for a
+ * builder that ever has the bindings in hand before it builds.
  */
 export function mapToolChoiceToOpenAI(
   choice: ClaudeToolChoice | null | undefined,
