@@ -171,7 +171,14 @@ export function createBlockWriter(send: SendFn): BlockWriter {
     openTool({ id, name, index }) {
       closeCurrent();
       const ref: BlockRef = { index: index ?? nextIndex++, kind: "tool_use", toolId: id };
-      start(ref, { type: "tool_use", id, name });
+      // `input: {}` is part of Anthropic's `content_block_start` for a tool_use:
+      // the block opens with an EMPTY input object, which the `input_json_delta`
+      // frames then fill in. Omitting it leaves the client with a tool_use block
+      // whose `input` is undefined until the first delta lands — and if the turn
+      // dies in between there is no `input` key at all, which is a different
+      // shape from an empty one. This is the single site that spells it; before
+      // the block writer it had to be spelled at seven.
+      start(ref, { type: "tool_use", id, name, input: {} });
       emittedToolRefs.push(ref);
       return ref;
     },
