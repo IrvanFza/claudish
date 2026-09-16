@@ -4,6 +4,8 @@
  * Converts Claude/Anthropic message format to OpenAI message format.
  */
 
+import { log } from "../../../logger.js";
+
 /**
  * Convert Claude/Anthropic messages to OpenAI format
  * @param simpleFormat - If true, use simple string content only (for MLX and other basic providers)
@@ -45,11 +47,69 @@ export function convertMessagesToOpenAI(
   return messages;
 }
 
-function imageBlockToUrlPart(block: any): any {
-  return {
-    type: "image_url",
-    image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` },
-  };
+/**
+ * Convert one Claude `image` block to an OpenAI `image_url` part.
+ *
+ * Claude carries an image in one of two source shapes, and only ONE of them is
+ * base64:
+ *
+ *   { type: "base64", media_type: "image/png", data: "<b64>" }
+ *   { type: "url",    url: "https://…" }
+ *
+ * This function used to build a data URL unconditionally, so a `url` source
+ * produced the literal string `data:undefined;base64,undefined` — a syntactically
+ * valid data URL carrying the word "undefined", which no provider rejects loudly.
+ * It is decoded as garbage bytes or ignored, and the user sees a model that
+ * cannot see the image it was sent.
+ *
+ * Returns `null` for a source this converter cannot express, so the caller drops
+ * the part rather than forwarding a broken one. Every caller MUST skip `null`;
+ * in particular the tool_result path counts the forwarded images to decide
+ * whether to emit its "[image returned…]" marker.
+ *
+ * The media type is validated for SHAPE (a non-empty string), not against a list
+ * of accepted image types. An allowlist here would be a second roster to keep
+ * current, and a media type this converter has not heard of is the upstream
+ * provider's judgement to make, not ours.
+ */
+function imageBlockToUrlPart(block: any): any | null {
+  const source = block?.source;
+  if (!source || typeof source !== "object") {
+    log("[OpenAIMessages] Dropping image block: error — no source object");
+    return null;
+  }
+
+  const url = typeof source.url === "string" ? source.url : "";
+  const data = typeof source.data === "string" ? source.data : "";
+  // `source.type` is the declaration; the payload present is the fallback, for
+  // an older client that omits the discriminator on a base64 source.
+  const kind = source.type || (url ? "url" : data ? "base64" : "");
+
+  if (kind === "url") {
+    if (!url) {
+      log("[OpenAIMessages] Dropping image block: error — url source carries no url");
+      return null;
+    }
+    // Forwarded verbatim. OpenAI-shaped providers fetch the URL themselves; a
+    // data: URL handed to us as a url source is equally valid here.
+    return { type: "image_url", image_url: { url } };
+  }
+
+  if (kind === "base64") {
+    if (!data) {
+      log("[OpenAIMessages] Dropping image block: error — base64 source carries no data");
+      return null;
+    }
+    const mediaType = typeof source.media_type === "string" ? source.media_type : "";
+    if (!mediaType) {
+      log("[OpenAIMessages] Dropping image block: error — base64 source carries no media_type");
+      return null;
+    }
+    return { type: "image_url", image_url: { url: `data:${mediaType};base64,${data}` } };
+  }
+
+  log(`[OpenAIMessages] Dropping image block: error — unsupported source type ${kind || "(none)"}`);
+  return null;
 }
 
 function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
@@ -72,7 +132,8 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
         }
       } else if (block.type === "image") {
         if (!simpleFormat) {
-          contentParts.push(imageBlockToUrlPart(block));
+          const part = imageBlockToUrlPart(block);
+          if (part) contentParts.push(part);
         }
         // Skip images in simple format - MLX doesn't support vision
       } else if (block.type === "tool_result") {
@@ -87,11 +148,19 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
         } else if (Array.isArray(block.content)) {
           const texts: string[] = [];
           const others: any[] = [];
+          let droppedImages = 0;
           for (const inner of block.content) {
             if (inner.type === "text") {
               texts.push(inner.text);
             } else if (inner.type === "image" && inner.source) {
-              if (!simpleFormat) toolResultImages.push(imageBlockToUrlPart(inner));
+              // A dropped image must NOT be counted: `toolResultImages.length`
+              // below decides whether the tool message points at a following
+              // image message that would not exist.
+              if (!simpleFormat) {
+                const part = imageBlockToUrlPart(inner);
+                if (part) toolResultImages.push(part);
+                else droppedImages++;
+              }
             } else {
               others.push(inner);
             }
@@ -99,8 +168,14 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
           resultText = texts.join("\n");
           if (others.length) resultText += (resultText ? "\n" : "") + JSON.stringify(others);
           // Tool/function messages must be non-empty; point at the forwarded image.
+          // An image whose source could not be expressed leaves nothing to point
+          // at, so the omission is named instead — otherwise a tool_result whose
+          // only block was that image becomes an empty tool message.
           if (!resultText) {
-            resultText = toolResultImages.length ? "[image returned; see following message]" : "";
+            if (toolResultImages.length) resultText = "[image returned; see following message]";
+            else if (droppedImages)
+              resultText = "[image returned, but its source could not be forwarded]";
+            else resultText = "";
           }
         } else {
           resultText = JSON.stringify(block.content);
