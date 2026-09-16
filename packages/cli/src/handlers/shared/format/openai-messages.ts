@@ -363,18 +363,32 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
         } else if (Array.isArray(block.content)) {
           const texts: string[] = [];
           const others: any[] = [];
+          // BOTH counters are per RESULT, and that is the whole point.
+          // `toolResultImages` is per TURN — it accumulates across every
+          // tool_result in this Claude message, because they all leave together
+          // in one following user message. Testing its length to choose THIS
+          // result's marker therefore answered a question about some EARLIER
+          // result: tool_result B, whose only image could not be expressed,
+          // said "[image returned; see following message]" and pointed at tool
+          // result A's image. The model then reads the wrong screenshot as B's
+          // output, with no error anywhere.
+          let forwardedImages = 0;
           let droppedImages = 0;
           for (const inner of block.content) {
             if (inner.type === "text") {
               texts.push(inner.text);
             } else if (inner.type === "image" && inner.source) {
-              // A dropped image must NOT be counted: `toolResultImages.length`
-              // below decides whether the tool message points at a following
+              // A dropped image must NOT be counted as forwarded: the marker
+              // below decides whether this tool message points at a following
               // image message that would not exist.
               if (!simpleFormat) {
                 const part = imageBlockToUrlPart(inner);
-                if (part) toolResultImages.push(part);
-                else droppedImages++;
+                if (part) {
+                  toolResultImages.push(part);
+                  forwardedImages++;
+                } else {
+                  droppedImages++;
+                }
               }
             } else {
               others.push(inner);
@@ -387,7 +401,7 @@ function processUserMessage(msg: any, messages: any[], simpleFormat = false) {
           // at, so the omission is named instead — otherwise a tool_result whose
           // only block was that image becomes an empty tool message.
           if (!resultText) {
-            if (toolResultImages.length) resultText = "[image returned; see following message]";
+            if (forwardedImages) resultText = "[image returned; see following message]";
             else if (droppedImages)
               resultText = "[image returned, but its source could not be forwarded]";
             else resultText = "";

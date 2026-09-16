@@ -1703,6 +1703,98 @@ describe("Regression: OpenAI/Codex images in tool_result", () => {
       )
     ).toBe(false);
   });
+
+  // ─── The marker is decided per RESULT ─────────────────────────────────────
+  //
+  // Constructed Anthropic request bodies, in the same style as the tests above.
+  // These are request-side, and `test-fixtures/sse-responses/` holds response
+  // streams, so no capture can reach this converter. No fixture was invented.
+
+  /** Two tool_results in ONE Claude user turn — the shape the bug needs. */
+  function twoResults(secondImageSource: any) {
+    return {
+      model: "gpt-5.6-sol",
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_a", name: "Read", input: {} },
+            { type: "tool_use", id: "toolu_b", name: "Read", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_a",
+              content: [
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: TINY_PNG_B64 },
+                },
+              ],
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_b",
+              content: [{ type: "image", source: secondImageSource }],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  test("a result whose image could NOT be forwarded names the omission, not tool A's image", async () => {
+    // `toolResultImages` accumulates across the whole turn, because every lifted
+    // image leaves in one following user message. Testing its length to choose
+    // THIS result's marker answered a question about an EARLIER result: result B
+    // said "see following message" and pointed at result A's screenshot, and the
+    // model read the wrong image as B's output with no error anywhere.
+    const convertMessagesToOpenAI = await getConverter();
+    const messages = convertMessagesToOpenAI(
+      // A url source carrying no url: unusable, so `imageBlockToUrlPart`
+      // returns null and nothing is forwarded for B.
+      twoResults({ type: "url" }),
+      "gpt-5.6-sol"
+    );
+
+    const toolMsgs = messages.filter((m: any) => m.role === "tool");
+    expect(toolMsgs.map((m: any) => m.tool_call_id)).toEqual(["toolu_a", "toolu_b"]);
+    expect(toolMsgs[0].content).toBe("[image returned; see following message]");
+    expect(toolMsgs[1].content).toBe("[image returned, but its source could not be forwarded]");
+
+    // Exactly ONE image really is forwarded — A's.
+    const imageParts = messages
+      .filter((m: any) => m.role === "user" && Array.isArray(m.content))
+      .flatMap((m: any) => m.content.filter((p: any) => p.type === "image_url"));
+    expect(imageParts.length).toBe(1);
+    expect(imageParts[0].image_url.url).toBe(`data:image/png;base64,${TINY_PNG_B64}`);
+  });
+
+  test("when BOTH images are forwardable, both results point at the following message", async () => {
+    // The non-regression half: the per-result counter must not withhold the
+    // pointer from a result whose own image did travel.
+    const convertMessagesToOpenAI = await getConverter();
+    const messages = convertMessagesToOpenAI(
+      twoResults({ type: "url", url: "https://example.invalid/b.png" }),
+      "gpt-5.6-sol"
+    );
+
+    const toolMsgs = messages.filter((m: any) => m.role === "tool");
+    expect(toolMsgs[0].content).toBe("[image returned; see following message]");
+    expect(toolMsgs[1].content).toBe("[image returned; see following message]");
+
+    const urls = messages
+      .filter((m: any) => m.role === "user" && Array.isArray(m.content))
+      .flatMap((m: any) => m.content.filter((p: any) => p.type === "image_url"))
+      .map((p: any) => p.image_url.url);
+    expect(urls).toEqual([
+      `data:image/png;base64,${TINY_PNG_B64}`,
+      "https://example.invalid/b.png",
+    ]);
+  });
 });
 
 describe("Regression: Z.AI GLM-5 input_tokens in final usage event (#74)", () => {
