@@ -44,7 +44,108 @@ export function convertMessagesToOpenAI(
     }
   }
 
-  return messages;
+  return normalizeMessageSequence(messages);
+}
+
+/**
+ * Merge two adjacent `user` contents, or return `undefined` for "do not merge".
+ *
+ * Two shapes reach here: a plain string (a Claude turn whose content was not a
+ * block array) and an array of OpenAI content parts. A string pair stays a
+ * string — keeping the simple shape matters for providers that only accept one.
+ * A mixed pair is lifted to parts. Anything else (a null content, an object) is
+ * left alone rather than guessed at.
+ */
+function mergeUserContent(a: any, b: any): any | undefined {
+  if (typeof a === "string" && typeof b === "string") {
+    if (!a) return b;
+    if (!b) return a;
+    return `${a}\n\n${b}`;
+  }
+  const toParts = (c: any): any[] | undefined => {
+    if (typeof c === "string") return c ? [{ type: "text", text: c }] : [];
+    if (Array.isArray(c)) return c;
+    return undefined;
+  };
+  const pa = toParts(a);
+  const pb = toParts(b);
+  if (!pa || !pb) return undefined;
+  return [...pa, ...pb];
+}
+
+/** Push a `user` message, merging it into the preceding one when there is one. */
+function pushUserMessage(out: any[], msg: any) {
+  const prev = out[out.length - 1];
+  if (prev?.role === "user") {
+    const merged = mergeUserContent(prev.content, msg.content);
+    if (merged !== undefined) {
+      prev.content = merged;
+      return;
+    }
+  }
+  out.push(msg);
+}
+
+/**
+ * Post-pass over the converted message list, fixing two sequence-level defects
+ * that are only visible AFTER conversion.
+ *
+ * It has to be a post-pass rather than an edit inside `processUserMessage`,
+ * because the converter itself emits up to three messages for a single Claude
+ * user turn (the tool results, the images lifted out of them, and the turn's own
+ * content). The adjacency is created here, so it can only be seen from here.
+ *
+ * 1. **Adjacent `user` messages merge.** Chat Completions does not require
+ *    strict alternation, but several relays and local runtimes do, and a
+ *    provider that silently keeps only the last of a run drops the user's words.
+ *
+ * 2. **A `tool` message must answer an open tool round** — it must follow either
+ *    an `assistant` carrying `tool_calls` or another `tool` message in the same
+ *    round. An orphan (the assistant turn was compacted out of history, or the
+ *    client replayed a result alone) is rejected by OpenAI with
+ *    `messages with role 'tool' must be a response to a preceding message with
+ *    tool_calls`, which reaches the user as an opaque 400. It is re-emitted as a
+ *    `user` message prefixed `[Tool Result]:` — the same degradation
+ *    `simpleFormat` already applies — so the content survives.
+ *
+ * FCC additionally inserts a synthetic `assistant: " "` between a tool round and
+ * a following user turn. That is NOT done here, per the design's ruling: the
+ * synthetic turn is itself a fidelity cost (it enters history as words the
+ * assistant never said, and is replayed on every later turn), and
+ * `assistant(tool_calls) → tool → user` is legal OpenAI on its own. What
+ * "closing the round" means here is rule 2 — a tool message outside a round
+ * stops being one.
+ *
+ * No message is ever moved or dropped by this pass.
+ */
+export function normalizeMessageSequence(messages: any[]): any[] {
+  const out: any[] = [];
+  // True while the last non-tool message was an assistant carrying tool_calls.
+  let toolRoundOpen = false;
+
+  for (const msg of messages) {
+    if (msg.role === "tool") {
+      if (toolRoundOpen) {
+        out.push(msg);
+        continue;
+      }
+      log(
+        `[OpenAIMessages] error — tool result ${msg.tool_call_id} answers no open tool round; ` +
+          "re-emitted as a user message"
+      );
+      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      pushUserMessage(out, { role: "user", content: `[Tool Result]: ${text}` });
+      continue;
+    }
+
+    toolRoundOpen =
+      msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+
+    if (msg.role === "user") pushUserMessage(out, msg);
+    else out.push(msg);
+  }
+
+  return out;
 }
 
 /**

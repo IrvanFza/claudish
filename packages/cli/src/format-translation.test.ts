@@ -601,6 +601,15 @@ describe("Adapter: convertMessagesToOpenAI", () => {
     const convert = await getConverter();
     const req = {
       messages: [
+        // The assistant turn that made the call. It was absent when this test
+        // was written; item 13 made the sequence matter, because a `tool`
+        // message that answers no open round is a 400 on the real wire.
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_123", name: "Read", input: { file_path: "/tmp/a" } },
+          ],
+        },
         {
           role: "user",
           content: [
@@ -611,10 +620,10 @@ describe("Adapter: convertMessagesToOpenAI", () => {
     };
 
     const messages = convert(req, "test-model");
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("tool");
-    expect(messages[0].tool_call_id).toBe("call_123");
-    expect(messages[0].content).toBe("file contents here");
+    expect(messages).toHaveLength(2);
+    expect(messages[1].role).toBe("tool");
+    expect(messages[1].tool_call_id).toBe("call_123");
+    expect(messages[1].content).toBe("file contents here");
   });
 
   test("Kimi K2.5: empty thinking block still produces reasoning_content field", async () => {
@@ -696,6 +705,111 @@ describe("Adapter: convertMessagesToOpenAI", () => {
     const messages = convert(req, "test-model");
     expect(messages).toHaveLength(1);
     expect(Object.prototype.hasOwnProperty.call(messages[0], "reasoning_content")).toBe(false);
+  });
+});
+
+// ─── Item 13: message-sequence normalization ────────────────────────────────
+//
+// These inputs are CONSTRUCTED Anthropic request bodies, not captures. No real
+// inbound body exists anywhere under test-fixtures/ (the one file under
+// transcripts/ is a tool-id ledger, and .sse captures are response-side), so
+// there is nothing to replay here. They are written in the same inline style as
+// the sibling `convertMessagesToOpenAI` tests above, and they assert only the
+// conversion contract — never a provider's wire behaviour.
+describe("Adapter: normalizeMessageSequence (item 13)", () => {
+  async function getConverter() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.convertMessagesToOpenAI;
+  }
+
+  test("adjacent user messages merge into one", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "user", content: "first" },
+          { role: "user", content: "second" },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("first\n\nsecond");
+  });
+
+  test("a string user turn and a block-array user turn merge into content parts", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "user", content: "first" },
+          { role: "user", content: [{ type: "text", text: "second" }] },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toEqual([
+      { type: "text", text: "first" },
+      { type: "text", text: "second" },
+    ]);
+  });
+
+  test("a user turn after a tool round is NOT merged across the tool message", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "user", content: "read it" },
+          { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "Read", input: {} }] },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "ok" }] },
+          { role: "user", content: "now what?" },
+        ],
+      },
+      "test-model"
+    );
+
+    // user, assistant(tool_calls), tool, user — and no synthetic assistant turn
+    // between the tool output and the following user turn (design ruling; FCC
+    // inserts `assistant: " "` there).
+    expect(messages.map((m: any) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+    expect(messages[3].content).toBe("now what?");
+  });
+
+  test("a tool result answering no open round degrades to a user message", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "c9", content: "ok" }] },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("[Tool Result]: ok");
+  });
+
+  test("a degraded tool result merges into the user turn before it", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "c9", content: "ok" }] },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("hello\n\n[Tool Result]: ok");
   });
 });
 
