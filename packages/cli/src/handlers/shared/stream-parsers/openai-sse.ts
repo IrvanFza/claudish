@@ -424,7 +424,74 @@ export function createStreamingResponseHandler(
               );
             }
             log(`[Streaming] Text-based tool calls found: ${textToolCalls.length}`);
-            if (textToolCalls.length > 0) {
+
+            // ── How this turn ENDED ────────────────────────────────────────────
+            //
+            // Classified HERE — after recovery has run but BEFORE anything it
+            // found is emitted — because recovery adds both content and tools, and
+            // a classification taken before it runs would read a pre-recovery
+            // state. Local models, the population text recovery exists for, are
+            // exactly the ones most likely to end with no finish_reason.
+            //
+            // `finish_reason` is the ONLY completion signal. Neither the `[DONE]`
+            // sentinel nor a final usage object counts: both are transport
+            // punctuation that a proxy, a load balancer or a truncated body can
+            // produce without the model ever having finished.
+            const producedContent =
+              state.accumulatedText.length > 0 ||
+              writer.anyBlockEmitted ||
+              state.tools.size > 0 ||
+              textToolCalls.length > 0;
+            const toolInFlight =
+              // Already on the wire, including text-recovered calls from earlier
+              // turns of this same finalize — `state.tools` does not cover those.
+              writer.emittedToolRefs.length > 0 ||
+              // `&& !t.closed` is load-bearing: `buffered && !started` is TRUE for
+              // a tool that already failed validation and was closed.
+              Array.from(state.tools.values()).some(
+                (t) => !t.closed && (t.started || t.buffered)
+              ) ||
+              textToolCalls.length > 0;
+
+            /**
+             * `success`  — the provider said how it finished, or produced nothing.
+             * `silent-truncation` — no finish_reason, content, but no tool: the
+             *   partial prose is harmless and VISIBLE, and `max_tokens` is
+             *   Anthropic's own "the turn was cut off" label. An `error` here would
+             *   discard text the user can read.
+             * `failure` — the turn cannot be presented as complete. Ends with an
+             *   SSE `error` event, which Claude Code honours by discarding a
+             *   partial `tool_use` and retrying (verified against a real client,
+             *   reports/truncated-toolcall-live-verification.md).
+             */
+            const ending: "success" | "silent-truncation" | "failure" =
+              reason === "error"
+                ? "failure"
+                : state.finishReason !== null || !producedContent
+                  ? "success"
+                  : toolInFlight
+                    ? "failure"
+                    : "silent-truncation";
+
+            if (ending !== "success") {
+              log(
+                `[Streaming] Stream ending error: reason=${reason} finish_reason=${state.finishReason ?? "null"} content=${producedContent} tool_in_flight=${toolInFlight} → ${ending}`
+              );
+            }
+
+            // On a failure ending claudish emits NO NEW tool block and NO completed
+            // tool call: the buffered flush below is skipped and recovered calls are
+            // suppressed. It cannot recall a non-buffered tool block already on the
+            // wire — `content_block_start` went out before a single argument byte
+            // existed — but that partial is exactly the case the client-side
+            // measurement covers.
+            const emitToolCalls = ending !== "failure";
+
+            if (textToolCalls.length > 0 && !emitToolCalls) {
+              log(
+                `[Streaming] Suppressing ${textToolCalls.length} text-recovered tool call(s): the turn ended in failure`
+              );
+            } else if (textToolCalls.length > 0) {
               log(
                 `[Streaming] Found ${textToolCalls.length} text-based tool call(s), converting to structured format`
               );
@@ -450,7 +517,13 @@ export function createStreamingResponseHandler(
             // Some models (e.g., Gemini via LiteLLM) send tool calls with finish_reason="stop"
             // instead of "tool_calls", so the normal validation path (line ~695) is never reached.
             // We must send these buffered tools here so Claude Code can execute them.
-            for (const t of Array.from(state.tools.values())) {
+            //
+            // SKIPPED ENTIRELY on a failure ending. Before this gate a failed turn
+            // shipped a COMPLETE, parseable tool call and then an `error` event, so
+            // the protection rested wholly on the client discarding it. Now only an
+            // incomplete partial can reach the client on a failure ending, which is
+            // precisely the case the client-side measurement covers.
+            for (const t of emitToolCalls ? Array.from(state.tools.values()) : []) {
               if (!t.closed && t.buffered && !t.started) {
                 if (toolSchemas && toolSchemas.length > 0) {
                   const validation = validateToolArguments(
@@ -511,8 +584,17 @@ export function createStreamingResponseHandler(
               await middlewareManager.afterStreamComplete(target, streamMetadata);
             }
 
-            if (reason === "error") {
-              send("error", { type: "error", error: { type: "api_error", message: err } });
+            if (ending === "failure") {
+              // An SSE `error` event is the ONE ending Claude Code honours by
+              // discarding a partial `tool_use` and retrying the turn. `end_turn`
+              // means "the turn finished, run the tool" and made the client execute
+              // truncated JSON; `max_tokens` was assumed to rescue it and measurably
+              // does not (adapters.md, and the 2026-09-10 live verification).
+              const message =
+                err ??
+                "Upstream stream ended with no finish_reason while a tool call was in flight. " +
+                  "The tool call is incomplete and was not dispatched.";
+              send("error", { type: "error", error: { type: "api_error", message } });
             } else {
               // Set stop_reason based on whether we sent ANY tool calls (text-based or structured)
               const hasStructuredTools = Array.from(state.tools.values()).some((t) => t.started);
@@ -524,7 +606,13 @@ export function createStreamingResponseHandler(
               // `content_filter` is the same class: the provider refused, which is
               // Anthropic's "refusal", not a turn the model chose to end.
               // openai-responses-sse.ts already maps both this way.
-              const truncated = state.finishReason === "length";
+              // `length` still OUTRANKS `tool_use` — a truncated turn is reported as
+              // truncated even when it carries a tool call. A silent truncation (no
+              // finish_reason, content produced, no tool in flight) takes the same
+              // label: it IS a cut-off turn, and `max_tokens` is Anthropic's word
+              // for one. Neither can collide with the other: `finishReason` is
+              // non-null in the first case and null in the second.
+              const truncated = state.finishReason === "length" || ending === "silent-truncation";
               const refused = state.finishReason === "content_filter";
               const stopReason = refused
                 ? "refusal"
