@@ -162,3 +162,78 @@ describe("a reserved index that was never opened is still honoured", () => {
     expect(startIndices(frames)).toEqual([1, 0]);
   });
 });
+
+describe("exactly one block is open at a time — item 5's invariant", () => {
+  /**
+   * `ccca029`'s behaviour change, pinned at the altitude where it is reachable.
+   *
+   * The defect it fixed: a `reasoning_content` chunk arriving AFTER text opened
+   * a `thinking` block without closing the open text block, leaving two open and
+   * hanging the client's rendering. `block-nesting.test.ts` cannot see it — it
+   * replays real captures, and no capture in the tree emits reasoning after
+   * content (verified: every OpenAI-shaped capture is R…T…C, never T…R). That
+   * gap is recorded in the session's `tests/test-plan.md` rather than closed
+   * with an invented fixture. These assertions close the half that CAN be
+   * reached honestly: the writer's own transition table.
+   */
+  test("openThinking closes an open TEXT block first", () => {
+    const { writer, frames } = recordingWriter();
+
+    const text = writer.openText();
+    writer.append(text, "answer");
+    const thinking = writer.openThinking();
+    writer.append(thinking, "late thought");
+    writer.closeCurrent();
+
+    expect(nestingViolations(frames)).toEqual([]);
+    expect(frames.map((f) => `${f.event}@${f.data.index}`)).toEqual([
+      "content_block_start@0",
+      "content_block_delta@0",
+      "content_block_stop@0",
+      "content_block_start@1",
+      "content_block_delta@1",
+      "content_block_stop@1",
+    ]);
+  });
+
+  test("openText closes an open THINKING block first", () => {
+    const { writer, frames } = recordingWriter();
+
+    const thinking = writer.openThinking();
+    writer.append(thinking, "thought");
+    const text = writer.openText();
+    writer.append(text, "answer");
+    writer.closeCurrent();
+
+    expect(nestingViolations(frames)).toEqual([]);
+    expect(startIndices(frames)).toEqual([0, 1]);
+  });
+
+  test("openTool closes whatever was open, of either kind", () => {
+    for (const open of ["text", "thinking"] as const) {
+      const { writer, frames } = recordingWriter();
+      const first = open === "text" ? writer.openText() : writer.openThinking();
+      writer.append(first, "x");
+      const tool = writer.openTool({ id: "call_0", name: "Read" });
+      writer.append(tool, "{}");
+      writer.close(tool);
+      expect(nestingViolations(frames)).toEqual([]);
+    }
+  });
+
+  test("re-opening the SAME kind reuses the open block rather than nesting", () => {
+    // Text and thinking reuse; a tool never does, because two `openTool` calls
+    // are two calls and the repair path depends on that.
+    const { writer, frames } = recordingWriter();
+
+    expect(writer.openText().index).toBe(writer.openText().index);
+    expect(writer.openThinking().index).toBe(writer.openThinking().index);
+    const a = writer.openTool({ id: "call_0", name: "Read" });
+    const b = writer.openTool({ id: "call_1", name: "Read" });
+    expect(b.index).not.toBe(a.index);
+    writer.closeCurrent();
+
+    expect(nestingViolations(frames)).toEqual([]);
+    expect(startIndices(frames)).toEqual([0, 1, 2, 3]);
+  });
+});
