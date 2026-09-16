@@ -18,6 +18,7 @@ import {
 import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-detector.js";
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
 import { messageStartUsage } from "./message-start-usage.js";
+import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
 
 /**
  * Hard ceiling, in characters, on ONE logged raw SSE payload.
@@ -268,6 +269,56 @@ export function createStreamingResponseHandler(
         // through here. It owns the block-index counter, so nothing else
         // allocates an index.
         const writer = createBlockWriter(send);
+        const thinkSplitter = createThinkTagSplitter();
+
+        /**
+         * Route one splitter result to its blocks.
+         *
+         * Shared by the streaming path and by `finalize()`'s flush, so a fragment
+         * released at the end of the turn takes exactly the same hold-back
+         * decision as one released mid-stream — rather than bypassing it and
+         * emitting a lone fragment of text that the hold-back is withholding the
+         * rest of.
+         */
+        const emitSplitContent = ({ thinking, text }: ThinkSplit): void => {
+          if (thinking) {
+            behavior?.onAssistantText?.(thinking, "reasoning");
+            writer.append(writer.openThinking(), thinking);
+          }
+          if (!text) return;
+
+          // Accumulate text for potential tool call extraction
+          state.accumulatedText += text;
+
+          // Check if text contains STRUCTURED tool call patterns that we should hold back
+          // Only hold back for patterns we can actually parse (XML, JSON), not natural language
+          // Natural language patterns are extracted at finalization, not held back
+          const hasStructuredToolPattern =
+            // Qwen XML-style: <function=ToolName>. Same shape the
+            // extractor accepts, so text held back here is always text
+            // the extractor can act on. A looser test here withheld
+            // text that nothing later emitted.
+            hasExtractableFunctionTag(state.accumulatedText) ||
+            // JSON tool call in text: {"name": "Task", "arguments":
+            /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
+              state.accumulatedText
+            ) ||
+            // XML tool_call tags: <tool_call>
+            /<tool_call>/.test(state.accumulatedText);
+
+          // Only hold back if we have a structured pattern AND haven't accumulated too much
+          // (if we've accumulated > 1000 chars without a complete pattern, release the text)
+          const shouldHoldBack = hasStructuredToolPattern && state.accumulatedText.length < 1000;
+
+          if (shouldHoldBack) {
+            log(
+              `[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`
+            );
+            return;
+          }
+
+          writer.append(writer.openText(), text);
+        };
 
         send("message_start", {
           type: "message_start",
@@ -323,6 +374,13 @@ export function createStreamingResponseHandler(
           state.finalized = true;
 
           try {
+            // Release anything the think-tag splitter is still holding — at most
+            // seven characters of a tag that never completed. Runs FIRST, before
+            // text-based tool-call recovery reads `accumulatedText`, so a held
+            // fragment is part of the text recovery scans rather than arriving
+            // after it.
+            emitSplitContent(thinkSplitter.flush());
+
             // Argument fragments whose `function.name` never arrived. A call with
             // no name is not a call — there is nothing to dispatch and no schema to
             // validate against — so they are discarded. Named in the log because
@@ -581,6 +639,12 @@ export function createStreamingResponseHandler(
                   // dropped every OpenRouter thinking model's reasoning.
                   const reasoningText = delta.reasoning_content || delta.reasoning;
                   if (reasoningText) {
+                    // This provider has a reasoning FIELD, so a `<think>` in its
+                    // content is a model writing about tags, not speaking in them.
+                    // Close-tag handling stays armed: these are exactly the
+                    // providers whose chat template opens `<think>` server-side and
+                    // leaks the bare close into the content.
+                    thinkSplitter.disarmOpen();
                     behavior?.onAssistantText?.(reasoningText, "reasoning");
                     state.lastActivity = Date.now();
                     // Reasoning arriving AFTER text used to open a thinking block
@@ -626,39 +690,12 @@ export function createStreamingResponseHandler(
                     }
 
                     if (res.cleanedText) {
-                      // Accumulate text for potential tool call extraction
-                      state.accumulatedText += res.cleanedText;
-
-                      // Check if text contains STRUCTURED tool call patterns that we should hold back
-                      // Only hold back for patterns we can actually parse (XML, JSON), not natural language
-                      // Natural language patterns are extracted at finalization, not held back
-                      const hasStructuredToolPattern =
-                        // Qwen XML-style: <function=ToolName>. Same shape the
-                        // extractor accepts, so text held back here is always text
-                        // the extractor can act on. A looser test here withheld
-                        // text that nothing later emitted.
-                        hasExtractableFunctionTag(state.accumulatedText) ||
-                        // JSON tool call in text: {"name": "Task", "arguments":
-                        /\{\s*"(?:name|tool)"\s*:\s*"(?:Task|Read|Write|Edit|Bash|Grep|Glob)"/i.test(
-                          state.accumulatedText
-                        ) ||
-                        // XML tool_call tags: <tool_call>
-                        /<tool_call>/.test(state.accumulatedText);
-
-                      // Only hold back if we have a structured pattern AND haven't accumulated too much
-                      // (if we've accumulated > 1000 chars without a complete pattern, release the text)
-                      const shouldHoldBack =
-                        hasStructuredToolPattern && state.accumulatedText.length < 1000;
-
-                      if (shouldHoldBack) {
-                        log(
-                          `[Streaming] Text held back (structured tool pattern): ${state.accumulatedText.length} chars accumulated`
-                        );
-                      }
-
-                      if (!shouldHoldBack) {
-                        writer.append(writer.openText(), res.cleanedText);
-                      }
+                      // `<think>…</think>` carried in the ORDINARY content field is
+                      // reasoning, not the answer. Split it out here, after the
+                      // adapter, so the thinking half never enters
+                      // `accumulatedText` (tool-call recovery scans that) and never
+                      // renders as the assistant's words.
+                      emitSplitContent(thinkSplitter.push(res.cleanedText));
                     }
                   }
 
