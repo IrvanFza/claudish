@@ -626,6 +626,35 @@ export function createStreamingResponseHandler(
                   `[Streaming] Upstream finish_reason=${state.finishReason} → stop_reason=${stopReason} (${state.accumulatedText.length} chars produced)`
                 );
               }
+
+              // A turn that ended NORMALLY must carry at least one content block.
+              // `stop_reason: "end_turn"` with an empty `content` array is not a
+              // shape Anthropic's API produces, and a client that indexes the last
+              // block, or renders the turn, has nothing to work with — the turn
+              // reads as a success that delivered nothing, with no diagnostic.
+              //
+              // The test is `stop_reason === "end_turn"` rather than "the ending was
+              // a success", because that single value already excludes every case
+              // where emptiness is MEANINGFUL and must be preserved:
+              //   • "max_tokens" — reasoning consumed the whole budget and the turn
+              //     was cut off. `gemini-3.1-pro-or-maxtokens-empty.sse` is a real
+              //     capture of exactly this; it must not be papered over.
+              //   • "max_tokens" from a silent truncation (item 4) — same reasoning.
+              //   • "refusal" — the provider refused. Emptiness IS the answer.
+              //   • "tool_use" — a tool block was emitted, so it is not contentless.
+              //
+              // An EMPTY text block, not placeholder prose and not an error. Prose
+              // would enter the conversation history as the assistant's words and be
+              // replayed forever; an `error` would trigger the client's retry loop on
+              // a deterministic outcome, which is adapters.md's stated reason for
+              // keeping `max_tokens` over an error on the sibling case.
+              if (stopReason === "end_turn" && !writer.anyBlockEmitted) {
+                log(
+                  `[Streaming] Contentless turn error: end_turn with no content block emitted (finish_reason=${state.finishReason ?? "null"}) — emitting an empty text block`
+                );
+                writer.close(writer.openText());
+              }
+
               send("message_delta", {
                 type: "message_delta",
                 delta: { stop_reason: stopReason, stop_sequence: null },
