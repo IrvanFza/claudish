@@ -278,3 +278,114 @@ function summarizeToolParameters(schema: any): any {
 
   return summarized;
 }
+
+// ─── tool_choice ────────────────────────────────────────────────────────────
+
+/**
+ * Claude's `tool_choice`, as Claude Code sends it.
+ *
+ * `any` is the one that used to fall through every OpenAI-shaped builder in
+ * this tree: four verbatim copies of a three-branch mapping each handled
+ * `tool`, `auto` and `none`, and silently omitted `any`. Omitting it inverts the
+ * caller's instruction — "you MUST call a tool" became "call one if you feel
+ * like it" — and there is no error anywhere, only a model that answers in prose
+ * when the harness was waiting for a call.
+ */
+export interface ClaudeToolChoice {
+  type?: string;
+  name?: string;
+}
+
+/** An OpenAI Chat Completions `tool_choice` value. */
+export type OpenAIToolChoice = string | { type: "function"; function: { name: string } };
+
+/** An OpenAI Responses API `tool_choice` value (the function form is flat). */
+export type ResponsesToolChoice = string | { type: "function"; name: string };
+
+/**
+ * Map Claude's `tool_choice` onto the OpenAI Chat Completions spelling.
+ *
+ * THE single definition for every OpenAI-shaped adapter — openai, openrouter,
+ * litellm and local each carried their own copy, and `adapters.md:476-482`
+ * records that class of duplication for these exact files. A fifth copy is how
+ * the next `any` gets forgotten.
+ *
+ * Returns `undefined` for "send no tool_choice at all", which is the right
+ * answer for an absent choice, an unrecognised type, and a `tool` choice that
+ * names no tool.
+ *
+ * @param choice - the inbound `tool_choice`, if any
+ * @param encodeName - applied to the named tool, so a wire that renames tools
+ *   names the SAME tool here as in `tools[]`. Identity when omitted.
+ */
+export function mapToolChoiceToOpenAI(
+  choice: ClaudeToolChoice | null | undefined,
+  encodeName?: (name: string) => string
+): OpenAIToolChoice | undefined {
+  if (!choice) return undefined;
+  const { type, name } = choice;
+
+  if (type === "tool" && name) {
+    return { type: "function", function: { name: encodeName ? encodeName(name) : name } };
+  }
+  // Claude's "any" means "you must call one of the tools"; OpenAI spells that
+  // "required".
+  if (type === "any") return "required";
+  if (type === "auto" || type === "none") return type;
+  return undefined;
+}
+
+/**
+ * The same mapping in the Responses API spelling, where the function form is
+ * `{type:"function", name}` rather than nesting it under `function`.
+ */
+export function mapToolChoiceToResponsesAPI(
+  choice: ClaudeToolChoice | null | undefined,
+  encodeName?: (name: string) => string
+): ResponsesToolChoice | undefined {
+  const mapped = mapToolChoiceToOpenAI(choice, encodeName);
+  if (mapped === undefined || typeof mapped === "string") return mapped;
+  return { type: "function", name: mapped.function.name };
+}
+
+/** Gemini's `toolConfig` — the same instruction in the protobuf spelling. */
+export interface GeminiToolConfig {
+  functionCallingConfig: {
+    mode: "AUTO" | "ANY" | "NONE";
+    allowedFunctionNames?: string[];
+  };
+}
+
+/**
+ * Map Claude's `tool_choice` onto Gemini's `toolConfig`.
+ *
+ * Gemini had NO tool_choice handling at all: `buildPayload` wrote `contents`,
+ * `generationConfig`, `systemInstruction`, `tools` and `thinkingConfig` and
+ * nothing else, so every forced-tool turn on `g@`/`go@`/`ag@` ran as if the
+ * caller had said `auto`.
+ *
+ * `mode` is a protobuf ENUM: `AUTO`, `ANY` and `NONE` are the spellings the
+ * server accepts, and a misspelling is a 400 on the first tool-using request of
+ * a session, not a degraded response. `tool` maps to `ANY` restricted by
+ * `allowedFunctionNames` — Gemini has no single-function mode.
+ */
+export function mapToolChoiceToGemini(
+  choice: ClaudeToolChoice | null | undefined,
+  encodeName?: (name: string) => string
+): GeminiToolConfig | undefined {
+  if (!choice) return undefined;
+  const { type, name } = choice;
+
+  if (type === "tool" && name) {
+    return {
+      functionCallingConfig: {
+        mode: "ANY",
+        allowedFunctionNames: [encodeName ? encodeName(name) : name],
+      },
+    };
+  }
+  if (type === "any") return { functionCallingConfig: { mode: "ANY" } };
+  if (type === "auto") return { functionCallingConfig: { mode: "AUTO" } };
+  if (type === "none") return { functionCallingConfig: { mode: "NONE" } };
+  return undefined;
+}

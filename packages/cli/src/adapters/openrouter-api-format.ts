@@ -10,7 +10,10 @@
  * - Tool choice mapping from Claude format
  */
 
-import { convertToolsToOpenAI } from "../handlers/shared/format/openai-tools.js";
+import {
+  convertToolsToOpenAI,
+  mapToolChoiceToOpenAI,
+} from "../handlers/shared/format/openai-tools.js";
 import { type AdapterResult, BaseAPIFormat } from "./base-api-format.js";
 import { resolveModelDialect } from "./dialect-manager.js";
 
@@ -129,14 +132,9 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
       payload.thinking = claudeRequest.thinking;
     }
 
-    // Tool choice mapping from Claude format
-    if (claudeRequest.tool_choice) {
-      const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
-        payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
-        payload.tool_choice = type;
-      }
+    const toolChoice = mapToolChoiceToOpenAI(claudeRequest.tool_choice);
+    if (toolChoice !== undefined) {
+      payload.tool_choice = toolChoice;
     }
 
     this.applyOpenAISamplingParams(payload, claudeRequest);

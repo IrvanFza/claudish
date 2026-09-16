@@ -11,6 +11,7 @@
  * Also serves as Layer 2 ModelDialect for OpenAI-native models (o1/o3 reasoning params).
  */
 
+import { mapToolChoiceToOpenAI } from "../handlers/shared/format/openai-tools.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import { type AdapterResult, BaseAPIFormat, type EffortLevel } from "./base-api-format.js";
@@ -329,13 +330,9 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       payload.tools = tools;
     }
 
-    if (claudeRequest.tool_choice) {
-      const { type, name } = claudeRequest.tool_choice;
-      if (type === "tool" && name) {
-        payload.tool_choice = { type: "function", function: { name } };
-      } else if (type === "auto" || type === "none") {
-        payload.tool_choice = type;
-      }
+    const toolChoice = mapToolChoiceToOpenAI(claudeRequest.tool_choice);
+    if (toolChoice !== undefined) {
+      payload.tool_choice = toolChoice;
     }
 
     // Map Claude Code's effort (output_config.effort, or legacy
