@@ -63,7 +63,8 @@ export interface BlockWriter {
    *
    * `index` is honoured only when no text block is already open — the
    * validation-failure path reserves a buffered tool's index and then spends it
-   * on a `⚠️` text block instead.
+   * on a `⚠️` text block instead — and only when that index has not already
+   * been stopped (see `openTool`).
    */
   openText(opts?: { index?: number }): BlockRef;
 
@@ -75,7 +76,10 @@ export interface BlockWriter {
    * are two blocks, which is what the repair path needs.
    *
    * `index` is supplied when the index was reserved earlier — a buffered tool
-   * reserves at the moment its name arrives and emits at finish_reason time.
+   * reserves at the moment its name arrives and emits at finish_reason time. A
+   * requested index that has ALREADY been stopped is refused and a fresh one is
+   * allocated instead: an index names a block for the whole message, so
+   * re-opening a spent one gives the client two blocks under one name.
    */
   openTool(opts: { id: string; name: string; index?: number }): BlockRef;
 
@@ -126,6 +130,37 @@ export function createBlockWriter(send: SendFn): BlockWriter {
 
   const describe = (ref: BlockRef | null) => (ref ? `${ref.kind}@${ref.index}` : "none");
 
+  /**
+   * A requested index, or a fresh one when that index has already been stopped.
+   *
+   * AN INDEX IS SPENT ONCE. Anthropic's wire identifies a content block by its
+   * index for the whole message, so re-opening one that already had its
+   * `content_block_stop` gives the client two different blocks wearing one name:
+   * two `content_block_start`s, two lifecycles, and a renderer that has to guess
+   * which deltas belong to which. The tool-observation hook counts the call
+   * twice as well — its own comment rests on "exactly one
+   * `content_block_start` is emitted per tool call".
+   *
+   * `openai-sse.ts` reaches this: when a tool's fragments lose the open block
+   * mid-arguments it degrades that tool to the buffered path
+   * (`started = false; ref = null`) while KEEPING `blockIndex`, and
+   * finalization then re-opens that spent index. Reachable with no tool
+   * schemas and two interleaved unbuffered calls.
+   *
+   * Correct, log, continue — never throw (see the header). A fresh index costs
+   * a gap in the sequence, which is cosmetic; the alternatives are a corrupt
+   * stream or a silently truncated HTTP 200.
+   */
+  const spendableIndex = (requested: number | undefined, kind: BlockKind): number => {
+    if (requested === undefined) return nextIndex++;
+    if (!stopped.has(requested)) return requested;
+    const replacement = nextIndex++;
+    log(
+      `[BlockWriter] open error: index ${requested} was already stopped; ${kind} block re-indexed to ${replacement}`
+    );
+    return replacement;
+  };
+
   const closeCurrent = (): void => {
     if (!openRef) return;
     send("content_block_stop", { type: "content_block_stop", index: openRef.index });
@@ -158,7 +193,7 @@ export function createBlockWriter(send: SendFn): BlockWriter {
         return openRef;
       }
       closeCurrent();
-      const index = opts?.index ?? nextIndex++;
+      const index = spendableIndex(opts?.index, "text");
       return start({ index, kind: "text" }, { type: "text", text: "" });
     },
 
@@ -170,7 +205,11 @@ export function createBlockWriter(send: SendFn): BlockWriter {
 
     openTool({ id, name, index }) {
       closeCurrent();
-      const ref: BlockRef = { index: index ?? nextIndex++, kind: "tool_use", toolId: id };
+      const ref: BlockRef = {
+        index: spendableIndex(index, "tool_use"),
+        kind: "tool_use",
+        toolId: id,
+      };
       // `input: {}` is part of Anthropic's `content_block_start` for a tool_use:
       // the block opens with an EMPTY input object, which the `input_json_delta`
       // frames then fill in. Omitting it leaves the client with a tool_use block
