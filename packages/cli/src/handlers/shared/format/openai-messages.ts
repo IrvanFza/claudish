@@ -116,17 +116,36 @@ function pushUserMessage(out: any[], msg: any) {
  * "closing the round" means here is rule 2 — a tool message outside a round
  * stops being one.
  *
- * No message is ever moved or dropped by this pass.
+ * Within a round, the `tool` messages are aligned against the calls that opened
+ * it — see `alignToolRound`.
  */
 export function normalizeMessageSequence(messages: any[]): any[] {
   const out: any[] = [];
-  // True while the last non-tool message was an assistant carrying tool_calls.
-  let toolRoundOpen = false;
+  // The assistant message whose tool_calls are currently unanswered, and the
+  // tool messages collected against it. Both are null/empty outside a round.
+  let openRound: any = null;
+  let collected: any[] = [];
+
+  const flushRound = (isFinal = false) => {
+    if (!openRound) return;
+    // A round left open at the END of the list with NO results at all is not a
+    // history gap — it is a request that stops on the assistant's own tool calls
+    // (a continuation/prefill). Answering it with synthetic "no result" messages
+    // would tell the model its calls had failed. A PARTIALLY answered trailing
+    // round is a gap and is completed like any other.
+    if (isFinal && collected.length === 0) {
+      openRound = null;
+      return;
+    }
+    out.push(...alignToolRound(openRound, collected));
+    openRound = null;
+    collected = [];
+  };
 
   for (const msg of messages) {
     if (msg.role === "tool") {
-      if (toolRoundOpen) {
-        out.push(msg);
+      if (openRound) {
+        collected.push(msg);
         continue;
       }
       log(
@@ -138,14 +157,109 @@ export function normalizeMessageSequence(messages: any[]): any[] {
       continue;
     }
 
-    toolRoundOpen =
-      msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+    // Any non-tool message ends the round, so the collected results are emitted
+    // before it — they are never moved past another message.
+    flushRound();
+
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      out.push(msg);
+      openRound = msg;
+      continue;
+    }
 
     if (msg.role === "user") pushUserMessage(out, msg);
     else out.push(msg);
   }
 
+  flushRound(true);
   return out;
+}
+
+/**
+ * The text a synthetic `tool` message carries when a call got no result.
+ * It names the omission rather than asserting a single cause: the model must not
+ * read it as the tool having run and returned nothing.
+ */
+function missingResultText(name: string): string {
+  const call = name ? `\`${name}\` call` : "call";
+  return (
+    `[No tool result was provided for this ${call} — it was interrupted, cancelled, ` +
+    "or dropped from the conversation history.]"
+  );
+}
+
+/**
+ * Align one tool round's `tool` messages against the `tool_calls` that opened it.
+ *
+ * Claude carries `tool_result` blocks in a user turn, in whatever order the
+ * client assembled them; OpenAI carries them as separate `tool` messages and
+ * ties each to a call by id. Two things go wrong in the gap, and both surface as
+ * an opaque 400 rather than a diagnosis:
+ *
+ * - **Order.** Several relays and local runtimes pair results to calls
+ *   positionally instead of by `tool_call_id`, so a parallel tool turn whose
+ *   results came back out of order hands each tool the wrong output — silently,
+ *   with no error anywhere. Results are emitted in the calls' own order.
+ * - **A call with no result at all.** OpenAI rejects an assistant `tool_calls`
+ *   message that is not answered by one `tool` message per call. Passing that
+ *   through unchanged turns a recoverable history gap into a failed request, so
+ *   the omission is NAMED by a synthetic `tool` message instead.
+ *
+ * Only the IMMEDIATELY preceding assistant message's calls are indexed — ids
+ * from an earlier turn are not in scope and must not be matched. A result whose
+ * id is in no call of this round is dropped with a log: OpenAI rejects an
+ * unknown `tool_call_id`, and there is no call for it to answer.
+ *
+ * De-duplication is unchanged. `processUserMessage` dedupes by `tool_use_id`
+ * within one Claude message; two results for the same id that arrived in
+ * DIFFERENT messages are still both emitted here, adjacent and in arrival order.
+ * This pass reorders, it does not decide identity.
+ */
+function alignToolRound(assistant: any, collected: any[]): any[] {
+  const calls: any[] = Array.isArray(assistant.tool_calls) ? assistant.tool_calls : [];
+
+  const byId = new Map<string, any[]>();
+  for (const m of collected) {
+    const list = byId.get(m.tool_call_id);
+    if (list) list.push(m);
+    else byId.set(m.tool_call_id, [m]);
+  }
+
+  const ordered: any[] = [];
+  let synthesized = 0;
+  for (const call of calls) {
+    const matched = byId.get(call.id);
+    if (matched) {
+      ordered.push(...matched);
+      byId.delete(call.id);
+      continue;
+    }
+    synthesized++;
+    log(
+      `[OpenAIMessages] error — tool call ${call.id} (${call.function?.name || "?"}) has no ` +
+        "result; a synthetic tool message names the omission"
+    );
+    ordered.push({
+      role: "tool",
+      content: missingResultText(call.function?.name || ""),
+      tool_call_id: call.id,
+    });
+  }
+
+  let dropped = 0;
+  for (const [id, list] of byId) {
+    dropped += list.length;
+    log(
+      `[OpenAIMessages] error — tool result ${id} matches no call in the round it follows; dropped`
+    );
+  }
+
+  const reordered = ordered.some((m, i) => m !== collected[i]);
+  if (reordered && !synthesized && !dropped) {
+    log(`[OpenAIMessages] Reordered ${ordered.length} tool results to their tool_calls order`);
+  }
+
+  return ordered;
 }
 
 /**

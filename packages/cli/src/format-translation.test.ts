@@ -813,6 +813,158 @@ describe("Adapter: normalizeMessageSequence (item 13)", () => {
   });
 });
 
+// ─── Item 14: tool-round alignment ──────────────────────────────────────────
+//
+// Same provenance note as item 13 above: constructed request bodies, no capture
+// exists, none invented.
+describe("Adapter: tool round alignment (item 14)", () => {
+  async function getConverter() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.convertMessagesToOpenAI;
+  }
+
+  const parallelCalls = {
+    role: "assistant",
+    content: [
+      { type: "tool_use", id: "c1", name: "Read", input: {} },
+      { type: "tool_use", id: "c2", name: "Grep", input: {} },
+      { type: "tool_use", id: "c3", name: "Glob", input: {} },
+    ],
+  };
+
+  test("results are emitted in the order their calls were made", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          parallelCalls,
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "c3", content: "third" },
+              { type: "tool_result", tool_use_id: "c1", content: "first" },
+              { type: "tool_result", tool_use_id: "c2", content: "second" },
+            ],
+          },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages.map((m: any) => m.tool_call_id)).toEqual([undefined, "c1", "c2", "c3"]);
+    expect(messages.map((m: any) => m.content)).toEqual([null, "first", "second", "third"]);
+  });
+
+  test("a call with no result gets a tool message naming the omission", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          parallelCalls,
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "c1", content: "first" },
+              { type: "tool_result", tool_use_id: "c3", content: "third" },
+            ],
+          },
+        ],
+      },
+      "test-model"
+    );
+
+    // Every call is answered — OpenAI rejects an assistant tool_calls message
+    // that is not, and the answer for c2 says so rather than inventing output.
+    expect(messages.map((m: any) => m.tool_call_id)).toEqual([undefined, "c1", "c2", "c3"]);
+    expect(messages[2].role).toBe("tool");
+    expect(messages[2].content).toContain("No tool result was provided");
+    expect(messages[2].content).toContain("Grep");
+  });
+
+  test("a round with no results at all is fully answered", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [parallelCalls, { role: "user", content: "stop, do something else" }],
+      },
+      "test-model"
+    );
+
+    expect(messages.map((m: any) => m.role)).toEqual(["assistant", "tool", "tool", "tool", "user"]);
+    expect(messages.map((m: any) => m.tool_call_id)).toEqual([
+      undefined,
+      "c1",
+      "c2",
+      "c3",
+      undefined,
+    ]);
+    expect(messages[4].content).toBe("stop, do something else");
+  });
+
+  test("a trailing round with no results is left alone, not answered synthetically", async () => {
+    const convert = await getConverter();
+    const messages = convert({ messages: [parallelCalls] }, "test-model");
+
+    // The request stops on the assistant's own tool calls — a continuation, not
+    // a history gap. Synthetic "no result" messages here would tell the model
+    // its calls had failed.
+    expect(messages).toHaveLength(1);
+    expect(messages[0].tool_calls).toHaveLength(3);
+  });
+
+  test("a result matching no call in this round is dropped", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "Read", input: {} }] },
+          {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "c1", content: "first" },
+              { type: "tool_result", tool_use_id: "stale_from_an_earlier_turn", content: "x" },
+            ],
+          },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages.map((m: any) => m.tool_call_id)).toEqual([undefined, "c1"]);
+  });
+
+  test("images lifted out of a tool result still follow the tool message", async () => {
+    const convert = await getConverter();
+    const messages = convert(
+      {
+        messages: [
+          { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "Bash", input: {} }] },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "c1",
+                content: [
+                  { type: "text", text: "screenshot taken" },
+                  {
+                    type: "image",
+                    source: { type: "base64", media_type: "image/png", data: "QUJD" },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      "test-model"
+    );
+
+    expect(messages.map((m: any) => m.role)).toEqual(["assistant", "tool", "user"]);
+    expect(messages[2].content[0].type).toBe("image_url");
+  });
+});
+
 describe("Adapter: AnthropicAPIFormat", () => {
   async function getAdapter() {
     const mod = await import("./adapters/anthropic-api-format.js");
