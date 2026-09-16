@@ -265,9 +265,26 @@ describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
 // tests must run — an env-only gate would silently skip a suite that could
 // actually test something. LiteLLM additionally needs its base URL, which is an
 // endpoint (not a credential) and so stays an env check.
-const HAS_OR = await hasCredential("openrouter");
-const HAS_LL = !!process.env.LITELLM_BASE_URL && (await hasCredential("litellm"));
-const HAS_XAI = await hasCredential("x-ai");
+//
+// The credential check answers "can this run at all"; it does NOT answer "may this
+// SPEND". Those are two different questions and this file only ever asked the first,
+// so on any machine where credentials resolve (here, through 1Password) every group
+// below called a real, metered provider on every `bun run test:safe` — including runs
+// that had set `CLAUDISH_SKIP_LIVE_E2E=1` precisely to avoid that. Measured: B1a hit
+// OpenRouter and B3 hit xAI with the flag set, and a spent subscription fell through
+// the chain to a per-token provider. The suite's own failure count then tracked quota
+// balance rather than code, which is what makes it unusable as a regression baseline.
+//
+// The flag is the same one `channel/e2e-channel.test.ts` already honours and that
+// `.github/workflows/test.yml` sets for CI. It is ANDed with the credential check, not
+// a replacement for it: "do not spend" and "cannot run" both have to be false before a
+// live call is made.
+const SKIP_LIVE_E2E = process.env.CLAUDISH_SKIP_LIVE_E2E === "1";
+const HAS_OR = SKIP_LIVE_E2E ? false : await hasCredential("openrouter");
+const HAS_LL = SKIP_LIVE_E2E
+  ? false
+  : !!process.env.LITELLM_BASE_URL && (await hasCredential("litellm"));
+const HAS_XAI = SKIP_LIVE_E2E ? false : await hasCredential("x-ai");
 
 describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
