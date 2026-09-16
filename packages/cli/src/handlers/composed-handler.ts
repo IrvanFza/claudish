@@ -68,7 +68,7 @@ import { createGeminiSseStream } from "./shared/stream-parsers/gemini-sse.js";
 import { createOllamaJsonlStream } from "./shared/stream-parsers/ollama-jsonl.js";
 import { createResponsesStreamHandler } from "./shared/stream-parsers/openai-responses-sse.js";
 import { createStreamingResponseHandler } from "./shared/stream-parsers/openai-sse.js";
-import { TokenTracker } from "./shared/token-tracker.js";
+import { TokenTracker, type UsageCacheDetail } from "./shared/token-tracker.js";
 import { captureUpstreamError } from "./shared/upstream-error-capture.js";
 
 /**
@@ -1404,20 +1404,25 @@ export class ComposedHandler implements ModelHandler {
     // Local mutable copy so we can null it out after firing (prevents double-firing)
     // without reassigning the function parameter.
     let pendingOnComplete = onComplete;
-    const onTokenUpdate = (input: number, output: number) => {
+    // `input` is the FULL context size, always — never the cache-reduced figure
+    // that rides on the wire. `detail` is the optional cached breakdown of that
+    // same number and is used for COST ONLY; see UsageCacheDetail and
+    // `context-window.md`, which records what happens when a reduced count
+    // reaches the context accounting (auto-compaction silently disarms).
+    const onTokenUpdate = (input: number, output: number, detail?: UsageCacheDetail) => {
       const strategy = this.options.tokenStrategy || "standard";
       switch (strategy) {
         case "accumulate-both":
-          this.tokenTracker.accumulateBoth(input, output);
+          this.tokenTracker.accumulateBoth(input, output, detail);
           break;
         case "delta-aware":
-          this.tokenTracker.updateWithDelta(input, output);
+          this.tokenTracker.updateWithDelta(input, output, detail);
           break;
         case "local":
-          this.tokenTracker.updateLocal(input, output);
+          this.tokenTracker.updateLocal(input, output, detail);
           break;
         default:
-          this.tokenTracker.update(input, output);
+          this.tokenTracker.update(input, output, detail);
           break;
       }
       // Fire onComplete after token update so recordStats() sees the final token counts.

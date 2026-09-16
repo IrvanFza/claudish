@@ -19,6 +19,7 @@ import { isWebSearchToolCall, warnWebSearchUnsupported } from "../web-search-det
 import { type BlockRef, createBlockWriter } from "./block-writer.js";
 import { messageStartUsage } from "./message-start-usage.js";
 import { type ThinkSplit, createThinkTagSplitter } from "./think-tag-splitter.js";
+import { splitPromptTokens } from "./usage-cache-split.js";
 
 /**
  * Hard ceiling, in characters, on ONE logged raw SSE payload.
@@ -178,7 +179,17 @@ export function createStreamingResponseHandler(
   adapter: any,
   target: string,
   middlewareManager: any,
-  onTokenUpdate?: (input: number, output: number) => void,
+  /**
+   * `input` is ALWAYS `prompt_tokens` — the full context size. The cached
+   * breakdown rides in the third argument and is for COST ONLY; handing the
+   * reduced wire figure to the tracker would report a nearly-full conversation
+   * as almost empty and disarm auto-compaction (`context-window.md`).
+   */
+  onTokenUpdate?: (
+    input: number,
+    output: number,
+    detail?: { cacheReadTokens: number; cacheCreationTokens: number }
+  ) => void,
   toolSchemas?: any[], // Tool schemas for validation
   toolNameMap?: Map<string, string>, // Truncated → original tool name mapping
   priorInputTokens?: number, // Last request's context size — seeds message_start.usage
@@ -663,6 +674,30 @@ export function createStreamingResponseHandler(
                 writer.close(writer.openText());
               }
 
+              // The three input counters are derived ONCE and used for both the
+              // wire and the cost update below, so the two cannot disagree.
+              const split = splitPromptTokens(state.usage);
+              // One degenerate turn is sent UNSPLIT, and this is not a special
+              // case so much as the merge rule read honestly.
+              //
+              // Claude Code only lets a delta value override its running total
+              // when that value is GREATER THAN ZERO (2.1.273:
+              // `n.input_tokens !== null && n.input_tokens > 0 ? n.input_tokens : e.input_tokens`).
+              // So on a turn whose input is entirely cache — possible only when
+              // the request repeats one already cached, i.e. a retry — an
+              // `input_tokens: 0` is DISCARDED and the message_start seed (the
+              // PREVIOUS turn's full context) survives beside a full-size
+              // `cache_read_input_tokens`. The client would then sum the two and
+              // believe the conversation is roughly twice its real size.
+              //
+              // Reporting that turn as ordinary input keeps the client's sum
+              // exactly equal to `prompt_tokens`, which is the invariant that
+              // matters. It costs nothing on the money side: the cost split is
+              // taken from `splitPromptTokens` independently, below.
+              const fullyCached = split.promptTokens > 0 && split.inputTokens === 0;
+              const wireInput = fullyCached ? split.promptTokens : split.inputTokens;
+              const wireCacheRead = fullyCached ? 0 : split.cacheReadTokens;
+              const wireCacheCreation = fullyCached ? 0 : split.cacheCreationTokens;
               send("message_delta", {
                 type: "message_delta",
                 delta: { stop_reason: stopReason, stop_sequence: null },
@@ -671,10 +706,26 @@ export function createStreamingResponseHandler(
                 // could only carry an estimate. Omitting it left the client
                 // believing every conversation was 100 tokens, which silently
                 // disabled auto-compaction on every openai-sse provider.
+                //
+                // All THREE keys ship TOGETHER, unconditionally, and that is not
+                // stylistic. Claude Code reconstructs the conversation size by
+                // summing them (verified in the 2.1.273 binary:
+                // `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`,
+                // read by both the context meter and the auto-compaction
+                // threshold), so a reduced `input_tokens` sent WITHOUT its two
+                // siblings understates the context by exactly the cached portion
+                // — on the measured xAI turn, 20352 of 20379 tokens. That is the
+                // one shape that reproduces the failure the paragraph above
+                // records. `splitPromptTokens` guarantees the three sum back to
+                // `prompt_tokens`.
+                //
+                // `input_tokens` is emitted even when it is 0 (a fully-cached
+                // turn), because omitting it is the same silent-omission bug in a
+                // different disguise.
                 usage: {
-                  ...(state.usage?.prompt_tokens
-                    ? { input_tokens: state.usage.prompt_tokens }
-                    : {}),
+                  input_tokens: wireInput,
+                  cache_read_input_tokens: wireCacheRead,
+                  cache_creation_input_tokens: wireCacheCreation,
                   output_tokens: state.usage?.completion_tokens || 0,
                 },
               });
@@ -688,7 +739,16 @@ export function createStreamingResponseHandler(
                 log(
                   `[Streaming] Final usage: prompt=${state.usage.prompt_tokens || 0}, completion=${state.usage.completion_tokens || 0}`
                 );
-                onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0);
+                // FIRST ARGUMENT STAYS `prompt_tokens`: the tracker's input number
+                // is the context-occupancy figure the status line renders and the
+                // billing baseline the delta strategy compares against. The split
+                // goes in the third argument, where only the cost arithmetic sees
+                // it.
+                const costSplit = splitPromptTokens(state.usage);
+                onTokenUpdate(state.usage.prompt_tokens || 0, state.usage.completion_tokens || 0, {
+                  cacheReadTokens: costSplit.cacheReadTokens,
+                  cacheCreationTokens: costSplit.cacheCreationTokens,
+                });
               } else {
                 // Estimate tokens for local models that don't return usage data
                 // Rough estimate: ~4 characters per token
