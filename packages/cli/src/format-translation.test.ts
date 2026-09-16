@@ -2709,3 +2709,132 @@ describe("Regression: finalize teardown survives callback failures", () => {
     expect(result.events?.filter((event) => event.data?.type === "message_stop")).toHaveLength(1);
   });
 });
+
+// ─── Item 1 — an empty-string required argument is PRESENT ──────────────────
+
+/**
+ * Regression from a LIVE `gk@grok-4.6` run, captured 2026-09-16.
+ *
+ * The model was asked to delete a line and emitted exactly the right call:
+ *
+ *   Edit{"file_path":"…/sample.ts","old_string":"const dead = 1;\n","new_string":""}
+ *
+ * `finish_reason: "tool_calls"`, nothing truncated, the JSON complete. An empty
+ * `new_string` IS the deletion — it is the whole point of the call. claudish's
+ * presence filter tested `parsedArgs[param] === ""`, declared `new_string`
+ * missing, suppressed the tool call and emitted
+ * `⚠️ Tool call "Edit" failed: missing required parameters: new_string`
+ * instead. The file was left unchanged and the model was told its own correct
+ * call was malformed.
+ *
+ * The fixture is that response, verbatim. The capture logged two concurrent
+ * upstream requests into one file, so its events were separated by response id;
+ * nothing else was changed.
+ */
+describe("OpenAI SSE: a required argument whose value is an empty string is present", () => {
+  async function getParser() {
+    const mod = await import("./handlers/shared/openai-compat.js");
+    return mod.createStreamingResponseHandler;
+  }
+
+  async function getDefaultAdapter() {
+    const mod = await import("./adapters/base-api-format.js");
+    return new mod.DefaultAPIFormat("test-model");
+  }
+
+  /** Claude Code's own Edit schema: all three of these are required. */
+  const EDIT_SCHEMA = [
+    {
+      name: "Edit",
+      input_schema: {
+        type: "object",
+        properties: {
+          file_path: { type: "string" },
+          old_string: { type: "string" },
+          new_string: { type: "string" },
+          replace_all: { type: "boolean" },
+        },
+        required: ["file_path", "old_string", "new_string"],
+      },
+    },
+  ];
+
+  const CAPTURE = "grok-4.6-openai-edit-empty-new-string.sse";
+
+  async function replayEditCapture(toolSchemas: any[] = EDIT_SCHEMA): Promise<ClaudeEvent[]> {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixtureToResponse(join(FIXTURES_DIR, CAPTURE)),
+      adapter,
+      "grok-4.6",
+      null,
+      undefined,
+      toolSchemas
+    );
+    return parseClaudeSseStream(response);
+  }
+
+  /** The complete input JSON of the first tool_use block, as the client sees it. */
+  function toolInput(events: ClaudeEvent[]): Record<string, unknown> {
+    const start = events.find(
+      (e) => e.data?.type === "content_block_start" && e.data?.content_block?.type === "tool_use"
+    );
+    expect(start).toBeDefined();
+    const index = start?.data.index;
+    const json = events
+      .filter(
+        (e) =>
+          e.data?.type === "content_block_delta" &&
+          e.data?.index === index &&
+          e.data?.delta?.type === "input_json_delta"
+      )
+      .map((e) => e.data.delta.partial_json)
+      .join("");
+    return JSON.parse(json);
+  }
+
+  test('the Edit call reaches the client with new_string preserved as ""', async () => {
+    const events = await replayEditCapture();
+
+    expect(extractToolNames(events)).toContain("Edit");
+
+    const input = toolInput(events);
+    expect(Object.hasOwn(input, "new_string")).toBe(true);
+    expect(input.new_string).toBe("");
+    expect(input.old_string).toBe("const dead = 1;\n");
+    expect(input.file_path).toMatch(/sample\.ts$/);
+  });
+
+  test("no missing-parameter warning is emitted for it", async () => {
+    const text = extractText(await replayEditCapture());
+    expect(text).not.toContain("missing required parameters");
+    expect(text).not.toContain('Tool call "Edit" failed');
+  });
+
+  test("the turn still ends as a tool call", async () => {
+    expect(extractStopReason(await replayEditCapture())).toBe("tool_use");
+  });
+
+  test("a genuinely absent required argument still fails visibly", async () => {
+    // The same capture, validated against a schema declaring a parameter the
+    // model never sent. The warning block is NOT weakened by item 1 — absence
+    // and emptiness are now different things, and this is the absence half.
+    const events = await replayEditCapture([
+      {
+        name: "Edit",
+        input_schema: {
+          type: "object",
+          properties: EDIT_SCHEMA[0].input_schema.properties,
+          required: [...EDIT_SCHEMA[0].input_schema.required, "never_sent"],
+        },
+      },
+    ]);
+
+    expect(extractText(events)).toContain(
+      'Tool call "Edit" failed: missing required parameters: never_sent'
+    );
+    expect(extractToolNames(events)).not.toContain("Edit");
+  });
+});
