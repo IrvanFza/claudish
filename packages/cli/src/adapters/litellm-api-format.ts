@@ -119,6 +119,8 @@ export class LiteLLMAPIFormat extends DefaultAPIFormat {
       }
     }
 
+    this.applyOpenAISamplingParams(payload, claudeRequest);
+
     return payload;
   }
 

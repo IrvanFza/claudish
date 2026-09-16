@@ -15,7 +15,16 @@ import type { StreamFormat } from "../providers/transport/types.js";
 import type { APIFormat } from "./api-format.js";
 import { type ReasoningCapability, lookupModel, lookupModelReasoning } from "./model-catalog.js";
 import type { ModelDialect } from "./model-dialect.js";
+import { rejectedOptionalParams } from "./optional-param-rejection.js";
 import { truncateToolName } from "./tool-name-utils.js";
+
+/**
+ * The OPTIONAL parameters {@link BaseAPIFormat.applyOpenAISamplingParams} adds
+ * speculatively, and therefore the only ones
+ * {@link BaseAPIFormat.recoverFromRejection} will remove. Anything else in the
+ * payload is either required or owned by a dialect that must recover it itself.
+ */
+const OPTIONAL_SAMPLING_PARAMS: readonly string[] = ["stop", "top_p"];
 
 /**
  * Match a model ID against a model family name, handling vendor-prefixed IDs.
@@ -155,11 +164,81 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
   abstract getName(): string;
 
   /**
-   * Optional: repair a request that a provider rejected because of an OPTIONAL
-   * parameter this dialect added speculatively. See `ModelDialect` for the full
+   * Repair a request that a provider rejected because of an OPTIONAL parameter
+   * this format/dialect added speculatively. See `ModelDialect` for the full
    * rationale; ComposedHandler calls it at most once per request.
+   *
+   * The base implementation covers the sampling controls
+   * {@link applyOpenAISamplingParams} forwards. A dialect that overrides this
+   * for its own parameter MUST end by delegating to `super`, or it silently
+   * removes that cover for its own models (GrokModelDialect does).
    */
-  recoverFromRejection?(payload: any, errorText: string): { payload: any; note: string } | null;
+  recoverFromRejection(payload: any, errorText: string): { payload: any; note: string } | null {
+    return this.recoverFromSamplingParamRejection(payload, errorText);
+  }
+
+  /**
+   * Drop whichever of {@link OPTIONAL_SAMPLING_PARAMS} this 4xx named, or
+   * return null when it named none.
+   *
+   * Narrow on purpose: a missed recovery is a visible failed request, while a
+   * wrong one silently strips a parameter the model did accept.
+   */
+  protected recoverFromSamplingParamRejection(
+    payload: any,
+    errorText: string
+  ): { payload: any; note: string } | null {
+    if (!payload) return null;
+    const present = OPTIONAL_SAMPLING_PARAMS.filter((p) => payload[p] !== undefined);
+    if (present.length === 0) return null;
+
+    const rejected = rejectedOptionalParams(errorText, present);
+    if (rejected.length === 0) return null;
+
+    const next = { ...payload };
+    for (const p of rejected) delete next[p];
+    return { payload: next, note: `dropped ${rejected.join(", ")} for ${this.modelId}` };
+  }
+
+  /**
+   * Forward the two sampling controls Claude Code sends that every
+   * OpenAI-shaped builder in this tree used to drop: `stop_sequences` → `stop`,
+   * and `top_p`.
+   *
+   * `stop` matters more than it looks. Claude Code's own classifier requests
+   * carry stop sequences, and a relay that never receives them keeps generating
+   * past the point the caller said to stop — which reads as a slow, rambling
+   * model rather than as a dropped parameter. `anthropic-api-format.ts` already
+   * forwards `stop_sequences` on the Anthropic wire, so this closes the
+   * OpenAI-shaped half only.
+   *
+   * Both are OPTIONAL parameters sent speculatively:
+   * {@link recoverFromRejection} drops whichever one a strict relay rejects and
+   * the request is retried once.
+   *
+   * No cap is applied to the sequence count. OpenAI documents a limit of four,
+   * but capping here would silently discard the fifth sequence — the failure
+   * mode this repo keeps paying for — whereas sending all of them fails loudly
+   * and recovers.
+   *
+   * @param payload - the provider payload being built (mutated in place)
+   * @param claudeRequest - the inbound Anthropic-shaped request
+   */
+  protected applyOpenAISamplingParams(payload: any, claudeRequest: any): void {
+    if (!payload || !claudeRequest) return;
+
+    const sequences = claudeRequest.stop_sequences;
+    if (Array.isArray(sequences)) {
+      // An empty string is not a stop sequence anywhere, and strict relays 400
+      // on one. Dropping the empty entries keeps the real ones.
+      const usable = sequences.filter((s: unknown) => typeof s === "string" && s.length > 0);
+      if (usable.length > 0) payload.stop = usable;
+    }
+
+    if (claudeRequest.top_p !== undefined && claudeRequest.top_p !== null) {
+      payload.top_p = claudeRequest.top_p;
+    }
+  }
 
   /**
    * Maximum tool name length allowed by this model's API.
@@ -593,6 +672,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     if (claudeRequest.temperature !== undefined) {
       payload.temperature = claudeRequest.temperature;
     }
+    this.applyOpenAISamplingParams(payload, claudeRequest);
     return payload;
   }
 

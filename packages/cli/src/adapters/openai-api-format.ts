@@ -349,6 +349,8 @@ export class OpenAIAPIFormat extends BaseAPIFormat {
       }
     }
 
+    this.applyOpenAISamplingParams(payload, claudeRequest);
+
     return payload;
   }
 }

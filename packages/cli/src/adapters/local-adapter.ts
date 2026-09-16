@@ -127,6 +127,11 @@ export class LocalModelAdapter extends BaseAPIFormat {
       }
     }
 
+    // AFTER the literal above, so an explicit caller `top_p` wins over the
+    // family default this adapter picked. The default is a guess about the
+    // model; the request is a statement about this turn.
+    this.applyOpenAISamplingParams(payload, claudeRequest);
+
     return payload;
   }
 

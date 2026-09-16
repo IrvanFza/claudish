@@ -139,6 +139,8 @@ export class OpenRouterAPIFormat extends BaseAPIFormat {
       }
     }
 
+    this.applyOpenAISamplingParams(payload, claudeRequest);
+
     return payload;
   }
 
