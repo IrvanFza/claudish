@@ -737,13 +737,34 @@ export class ComposedHandler implements ModelHandler {
       //
       // Bounded to a single attempt on purpose: the dialect records the verdict,
       // so a second failure means the error was never about that parameter.
-      if (
-        response.status >= 400 &&
-        response.status < 500 &&
-        this.modelAdapter?.recoverFromRejection
-      ) {
-        const errorText = await response.clone().text();
-        const recovery = this.modelAdapter.recoverFromRejection(requestPayload, errorText);
+      //
+      // BOTH ADAPTERS ARE ASKED, in Layer order. This used to call
+      // `this.modelAdapter` alone, which silently excluded every model that
+      // resolves to `DefaultAPIFormat`: `resolveModelDialect` returns it for any
+      // model no dialect recognises, and the constructor above deliberately
+      // leaves `modelAdapter` unset for exactly that value. So an unrecognized
+      // model on a custom OpenAI-compatible endpoint — a brand-new
+      // `vendor/new-model`, which is the population most likely to meet a strict
+      // relay — reached a 400 `Unknown parameter: 'stop'` with no recovery at
+      // all, even though `BaseAPIFormat.recoverFromRejection` is written to
+      // repair precisely that. The Layer 1 converter is also the adapter that
+      // BUILT the payload (`getAdapter()` is `explicitAdapter || resolvedDialect`),
+      // so it is the one that added the optional parameter in the first place.
+      //
+      // Deduped by identity, first non-null wins. Every implementation is
+      // stateless with respect to the payload — it returns a NEW object and
+      // mutates nothing — so asking a second one after the first declines costs
+      // nothing and cannot corrupt the retry.
+      if (response.status >= 400 && response.status < 500) {
+        const candidates = [this.modelAdapter, this.getAdapter()].filter(
+          (a, i, all): a is BaseModelAdapter => !!a?.recoverFromRejection && all.indexOf(a) === i
+        );
+        const errorText = candidates.length > 0 ? await response.clone().text() : "";
+        let recovery: { payload: any; note: string } | null = null;
+        for (const candidate of candidates) {
+          recovery = candidate.recoverFromRejection(requestPayload, errorText);
+          if (recovery) break;
+        }
         if (recovery) {
           log(`[${this.provider.displayName}] Parameter rejected — retrying: ${recovery.note}`);
           requestPayload = recovery.payload;
