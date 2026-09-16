@@ -893,7 +893,22 @@ export function createStreamingResponseHandler(
                     }
                   }
                 }
-              } catch (e) {}
+              } catch (e) {
+                // NEVER swallow silently. Everything a chunk would have emitted —
+                // a content block, a tool call, the finish_reason — is lost here,
+                // and the turn still ends HTTP 200, so the only symptom is a
+                // missing block several layers away. The bare `catch {}` this
+                // replaces made every such fault undiagnosable from the log.
+                //
+                // "error" in the text is load-bearing: `isStructuralLogWorthy`
+                // (logger.ts) matches on it, so this reaches the always-on
+                // structural log, not just a `--debug` run. The payload itself
+                // was already logged verbatim above as `[SSE:openai]`, so only a
+                // short locator is repeated here.
+                log(
+                  `[Streaming] Chunk processing error (chunk dropped): ${e} — payload starts: ${dataStr.slice(0, 120)}`
+                );
+              }
             }
           }
           await finalize("unexpected");
