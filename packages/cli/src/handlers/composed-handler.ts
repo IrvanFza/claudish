@@ -60,7 +60,11 @@ import { sniffDevinStreamHead } from "./shared/devin-stream-head-sniffer.js";
 import { hasActionableLink, hasModelUnsupportedWording } from "./shared/model-unsupported.js";
 import { filterIdentity } from "./shared/openai-compat.js";
 import { hasPlanLimitWording, isQuotaExhaustionError } from "./shared/quota-exhaustion.js";
-import { isRequestShapeError } from "./shared/request-shape.js";
+import {
+  CONTEXT_OVERFLOW_PHRASE,
+  isContextOverflowError,
+  isRequestShapeError,
+} from "./shared/request-shape.js";
 import { sniffResponsesStreamHead } from "./shared/stream-head-sniffer.js";
 import { createAnthropicPassthroughStream } from "./shared/stream-parsers/anthropic-sse.js";
 import { createDevinConnectStream } from "./shared/stream-parsers/devin-connect.js";
@@ -968,6 +972,12 @@ export class ComposedHandler implements ModelHandler {
             status: response.status,
             hint,
             providerMessage: providerMsg,
+            // The one phrase an Anthropic client recognises for an oversized
+            // prompt. Providers state the same fact in their own words, which
+            // no client matches — see CONTEXT_OVERFLOW_PHRASE.
+            leadPhrase: isContextOverflowError(response.status, errorText)
+              ? CONTEXT_OVERFLOW_PHRASE
+              : undefined,
           });
           // Carry the ORIGINAL upstream status as a structured field so
           // machine consumers (probe classification) can tell a remapped
@@ -1782,6 +1792,13 @@ export function getRecoveryHint(
       return "Input too large. Reduce message history or use a larger-context model.";
     }
     return "Request format may be incompatible with provider.";
+  }
+  // 413 is "Payload Too Large" by definition, and until now fell through to
+  // "Unexpected HTTP 413 from <provider>" — a status name where the actionable
+  // advice already exists three lines above. Gated on the narrow predicate, so a
+  // 413 about something other than the prompt keeps the generic line.
+  if (isContextOverflowError(status, errorText)) {
+    return "Input too large. Reduce message history or use a larger-context model.";
   }
   if (status >= 500) {
     return "Server error — retry after a brief wait.";
