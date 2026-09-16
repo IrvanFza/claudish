@@ -109,3 +109,7 @@ gtd/sessions/
 !/.mcp.json
 /.claude/.coaching
 /.claude/gtd
+
+# Added by claudeup
+# A managed rule says this path should stay out of git.
+.claude/models.json
