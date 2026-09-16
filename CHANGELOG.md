@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.5.0] - 2026-09-16
+
+### Bug Fixes
+
+- choose the tool_result image marker per RESULT, not per turn *(format)* ([`9f4488d`](https://github.com/MadAppGang/claudish/commit/9f4488d325a2ae152b189c524482064295925478))
+- the block writer refuses to re-open an index it already stopped *(sse)* ([`48f1f90`](https://github.com/MadAppGang/claudish/commit/48f1f90d510804c1cea60f4c5ff76a25bfc0f5ca))
+- ask BOTH adapters to recover from a rejected parameter *(handlers)* ([`9013032`](https://github.com/MadAppGang/claudish/commit/90130322e75eb7bc42e291a7a327b3245176b109))
+- never encode tool names into a wire that cannot decode them *(adapters)* ([`5b15868`](https://github.com/MadAppGang/claudish/commit/5b15868760cca73b178c9dbcd7b06a4b421cd099))
+- a context overflow leads with `prompt is too long` (item 8) *(errors)* ([`e0b4016`](https://github.com/MadAppGang/claudish/commit/e0b401699b11fc8b68b594758317d07f1d12f1a2))
+- split prompt_tokens into the three input counters (item 6) *(tokens)* ([`f9baf2e`](https://github.com/MadAppGang/claudish/commit/f9baf2effbaefd811f18bd6a68d4d3853b96666a))
+- a reversible 64-char tool-name codec on every OpenAI wire (item 7) *(adapters)* ([`2e18042`](https://github.com/MadAppGang/claudish/commit/2e18042c67504f9b6e07de75feed1ded491d7efe))
+- map tool_choice any to required, from one shared mapper (item 10) *(adapters)* ([`d170a3f`](https://github.com/MadAppGang/claudish/commit/d170a3ff3b8063d72d55a22ec1087aec5ec17f79))
+- forward stop_sequences as stop, and top_p (item 11) *(adapters)* ([`912031e`](https://github.com/MadAppGang/claudish/commit/912031e61128becc77727e79bb465040fe5309be))
+- order tool results by their calls and name a missing one (item 14) *(format)* ([`a981d13`](https://github.com/MadAppGang/claudish/commit/a981d13acfe906407567f435d3fa3026617c0d4b))
+- merge adjacent user messages and close an orphan tool round (item 13) *(format)* ([`b9e2163`](https://github.com/MadAppGang/claudish/commit/b9e21638283a3524dbe8bf8dc261fba763b55820))
+- forward a url image source as that url (item 16) *(format)* ([`84578c9`](https://github.com/MadAppGang/claudish/commit/84578c9d42e58a7e270bbba45f3d5a54086368c6))
+- parse the function-tag envelope first, then type its values (item 9) *(tools)* ([`4a0948c`](https://github.com/MadAppGang/claudish/commit/4a0948c45f03cde86feed73aae16f2ac7a3c2a6f))
+- an empty-string required argument is present, not missing (item 1) *(tools)* ([`417ef5c`](https://github.com/MadAppGang/claudish/commit/417ef5c49c3a18aa06bfa79c81e8d3c1721fe446))
+- a successful turn is never contentless (item 12) *(sse)* ([`edd4ce9`](https://github.com/MadAppGang/claudish/commit/edd4ce9407324e72c7ef05f8a342a4758ea60b57))
+- a stream that ends with no finish_reason after producing content is a failure (item 4) *(sse)* ([`c1b907f`](https://github.com/MadAppGang/claudish/commit/c1b907ffb1630bddbb5af02b8ff050ffa46caf0a))
+- <think>…</think> in content becomes a thinking block (item 3) *(sse)* ([`d4cba87`](https://github.com/MadAppGang/claudish/commit/d4cba87ef27e8910fd1351db363ac8ef5355a097))
+- buffer tool-argument fragments that arrive before function.name (item 2) *(sse)* ([`baf19ef`](https://github.com/MadAppGang/claudish/commit/baf19efb210f3c9586df7146926830826a688642))
+- a tool_use content_block_start carries input: {} (item 17) *(sse)* ([`1fb4e31`](https://github.com/MadAppGang/claudish/commit/1fb4e31d290a4fbf34244cd6db6b647970e704ac))
+- exactly one content block open at a time (item 5) *(sse)* ([`ccca029`](https://github.com/MadAppGang/claudish/commit/ccca029c43d04b33fc7c85348c4b941a9c444dd3))
+- log instead of swallowing in the openai-sse chunk-loop catch *(sse)* ([`ea5258c`](https://github.com/MadAppGang/claudish/commit/ea5258c3db15017a1c9f334472dfdb3f6b0c549d))
+
+### Documentation
+
+- stamp the playbook verified at v9.4.0 *(release)* ([`ea19974`](https://github.com/MadAppGang/claudish/commit/ea1997432207759102468237a8eabc081cd410fd))
+- update CHANGELOG.md for v9.4.0([`f1c6f7a`](https://github.com/MadAppGang/claudish/commit/f1c6f7a3adcb5240dede167f8f60adc5d550bf67))
+
+### Other Changes
+
+- v9.5.0 *(release)* ([`a939149`](https://github.com/MadAppGang/claudish/commit/a9391494c7eadffa832ab37c467ee505b6e8da6b))
+
 ## [9.4.0] - 2026-09-15
 
 ### Documentation
