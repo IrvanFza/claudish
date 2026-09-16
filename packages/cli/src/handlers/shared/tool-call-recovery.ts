@@ -21,7 +21,13 @@
 
 import { TOOL_NAME_SHAPE, TOOL_NAME_SOURCE } from "../../adapters/tool-name-utils.js";
 import { log } from "../../logger.js";
-import { type JsonSchemaNode, missingRequired } from "./schema-validate.js";
+import {
+  type JsonSchemaNode,
+  applySchemaDefaults,
+  coerceToSchema,
+  missingRequired,
+  renameToDeclaredKeys,
+} from "./schema-validate.js";
 
 export interface ExtractedToolCall {
   name: string;
@@ -104,6 +110,112 @@ function keepOnlyRealTools(
   return kept;
 }
 
+/** `<function=NAME>` at exactly the cursor. Sticky, so it cannot skip ahead. */
+const FUNCTION_TAG_AT_CURSOR = new RegExp(`<function=(${TOOL_NAME_SOURCE})>`, "y");
+
+/** `<parameter=NAME>` at exactly the cursor, inside a function block. */
+const PARAMETER_TAG_AT_CURSOR = /<parameter=([^>\s]+)>/y;
+
+/**
+ * Parse a response that is ENTIRELY a `<function=NAME><parameter=P>V` envelope.
+ *
+ * Returns `null` the moment anything else appears, and that strictness is the
+ * whole point: it is what makes running this BEFORE the six loose regex
+ * patterns safe. Prose that merely mentions a function tag — a model explaining
+ * the format, or quoting a previous turn — does not match, so it cannot
+ * short-circuit anything.
+ *
+ * The loose Pattern 0 that still runs afterwards has a different failure mode: it
+ * scans anywhere in the text, so it takes the *last* value of a repeated
+ * parameter and swallows a trailing `</function>` into the value. Parsed as an
+ * envelope, both are handled — the block is delimited rather than guessed at.
+ *
+ * Nothing here relaxes the two gates. The name must be an identifier
+ * (`TOOL_NAME_SOURCE`), and the caller's own advertised tool list still filters
+ * the result through `keepOnlyRealTools`.
+ *
+ * NOT ADOPTED, deliberately: the upstream heuristic that reads a WebSearch call
+ * out of ordinary prose. It dispatches a tool from a sentence that only
+ * describes one.
+ */
+export function parseFunctionTagEnvelope(text: string): ExtractedToolCall[] | null {
+  const body = text.trim();
+  if (body.length === 0) return null;
+  if (!body.startsWith("<function=")) return null;
+
+  const calls: ExtractedToolCall[] = [];
+  let cursor = 0;
+
+  while (cursor < body.length) {
+    FUNCTION_TAG_AT_CURSOR.lastIndex = cursor;
+    const open = FUNCTION_TAG_AT_CURSOR.exec(body);
+    if (!open) return null;
+    cursor = FUNCTION_TAG_AT_CURSOR.lastIndex;
+
+    const args: Record<string, any> = {};
+    // Parameters, until the block ends. A block ends at `</function>`, at the
+    // next `<function=`, or at the end of the text — models emit all three.
+    while (cursor < body.length) {
+      const rest = body.slice(cursor);
+      const closeLen = /^\s*<\/function>/.exec(rest)?.[0].length;
+      if (closeLen !== undefined) {
+        cursor += closeLen;
+        break;
+      }
+      if (/^\s*<function=/.test(rest)) break;
+
+      const lead = /^\s*/.exec(rest)?.[0].length ?? 0;
+      PARAMETER_TAG_AT_CURSOR.lastIndex = cursor + lead;
+      const param = PARAMETER_TAG_AT_CURSOR.exec(body);
+      // Anything that is not a parameter tag means this is not an envelope.
+      if (!param) return null;
+
+      let valueStart = PARAMETER_TAG_AT_CURSOR.lastIndex;
+      // A newline directly after the tag is formatting, not content.
+      if (body[valueStart] === "\n") valueStart += 1;
+
+      const tail = body.slice(valueStart);
+      const end = /<\/parameter>|<\/function>|<parameter=|<function=/.exec(tail);
+      const raw = end ? tail.slice(0, end.index) : tail;
+      args[param[1]] = raw.trim();
+
+      cursor = valueStart + raw.length;
+      const consumedClose = /^<\/parameter>/.exec(body.slice(cursor))?.[0].length;
+      if (consumedClose !== undefined) cursor += consumedClose;
+    }
+
+    calls.push({ name: open[1], arguments: args, source: "xml_text" });
+
+    const gap = /^\s*/.exec(body.slice(cursor))?.[0].length ?? 0;
+    cursor += gap;
+  }
+
+  return calls.length > 0 ? calls : null;
+}
+
+/** Give one extracted call's arguments the shape its own schema declares. */
+function normalizeAgainstSchema(
+  call: ExtractedToolCall,
+  toolSchemas?: ToolSchema[]
+): ExtractedToolCall {
+  const schema = toolSchemas?.find((t) => t.name === call.name)?.input_schema as
+    | JsonSchemaNode
+    | undefined;
+  if (!schema) return call;
+
+  const renamed = renameToDeclaredKeys(schema, call.arguments);
+  const defaulted = applySchemaDefaults(schema, renamed.args);
+  const coerced = coerceToSchema(schema, defaulted.args);
+  if (renamed.renamed.length + defaulted.applied.length + coerced.coerced.length === 0) {
+    return call;
+  }
+  log(
+    `[ToolRecovery] Normalized ${call.name} against its schema: ` +
+      `renamed=[${renamed.renamed}] defaults=[${defaulted.applied}] coerced=[${coerced.coerced}]`
+  );
+  return { ...call, arguments: coerced.args as Record<string, any> };
+}
+
 /**
  * Extract tool calls from text content
  * Many local models output tool calls as JSON in their text rather than using structured tool_calls
@@ -111,11 +223,25 @@ function keepOnlyRealTools(
  * `knownToolNames` is the tool list the client advertised on THIS request. Pass
  * it whenever it is in hand: every pattern below is then held to it, not just
  * the natural-language one.
+ *
+ * `toolSchemas`, when supplied, types the extracted values: the envelope format
+ * carries no types, so every value arrives as a string.
  */
 export function extractToolCallsFromText(
   text: string,
-  knownToolNames?: string[]
+  knownToolNames?: string[],
+  toolSchemas?: ToolSchema[]
 ): ExtractedToolCall[] {
+  // Tried FIRST, and short-circuits: a response that is nothing but function
+  // tags is unambiguous, and reading it as a delimited envelope beats six
+  // regexes scanning for fragments of one.
+  const envelope = parseFunctionTagEnvelope(text);
+  if (envelope) {
+    return keepOnlyRealTools(envelope, knownToolNames).map((call) =>
+      normalizeAgainstSchema(call, toolSchemas)
+    );
+  }
+
   const extracted: ExtractedToolCall[] = [];
 
   // Pattern 0: Qwen-style function calls <function=NAME><parameter=PARAM>VALUE
@@ -340,11 +466,16 @@ export function extractToolCallsFromText(
 /**
  * Validate a tool call's arguments against the tool's own JSON Schema.
  *
- * `repaired` is reserved for a NON-DESTRUCTIVE transform of what the model
- * supplied — schema `default`s applied, a value moved to the key the schema
- * declares, a string coerced to its declared type. It must never again mean
- * "invented": the inference that used to set it is deleted (see the file header).
- * Nothing in this commit sets it; item 9 re-establishes it with that meaning.
+ * `repaired: true` means, and only means, that a schema `default` was applied or
+ * a supplied value was moved onto the key the schema declares. It must never
+ * again mean "invented": the inference that used to set it is deleted (see the
+ * file header).
+ *
+ * Coercion runs on every call but does NOT set `repaired`. It changes a value's
+ * type, never whether the call would have succeeded, and `repaired` drives a
+ * path in `openai-sse.ts` that supersedes an already-streamed tool block with a
+ * second one — a flag that fires on ordinary valid calls would mint duplicate
+ * blocks for nothing.
  *
  * `valid: false` therefore means the model genuinely omitted a required
  * argument, which the caller surfaces to the user as a visible failure rather
@@ -372,7 +503,11 @@ export function validateAndRepairToolCall(
   } catch (e) {
     // Try to extract from text if structured parsing failed
     if (textContent) {
-      const extracted = extractToolCallsFromText(textContent);
+      const extracted = extractToolCallsFromText(
+        textContent,
+        toolSchemas.map((t) => t.name),
+        toolSchemas
+      );
       const matching = extracted.find((tc) => tc.name === toolName);
       if (matching) {
         parsedArgs = matching.arguments;
@@ -381,11 +516,32 @@ export function validateAndRepairToolCall(
     }
   }
 
-  const missingParams = missingRequired(schema.input_schema as JsonSchemaNode, parsedArgs);
+  const input = schema.input_schema as JsonSchemaNode;
 
-  if (missingParams.length === 0) {
-    return { valid: true, args: parsedArgs, repaired: false, missingParams: [] };
+  // Rename first — a value under a synonym has to land on the declared key
+  // before anything asks whether that key is absent. Then defaults, which are
+  // the client's own declaration. Then types, over the final set.
+  const renamed = renameToDeclaredKeys(input, parsedArgs);
+  const defaulted = applySchemaDefaults(input, renamed.args);
+  const coerced = coerceToSchema(input, defaulted.args);
+  const args = coerced.args as Record<string, any>;
+  const repaired = renamed.renamed.length > 0 || defaulted.applied.length > 0;
+
+  if (repaired) {
+    log(
+      `[ToolRecovery] ${toolName}: applied schema defaults [${defaulted.applied}] ` +
+        `and key renames [${renamed.renamed}] — nothing was invented`
+    );
+  }
+  if (coerced.coerced.length > 0) {
+    log(`[ToolRecovery] ${toolName}: coerced to declared types [${coerced.coerced}]`);
   }
 
-  return { valid: false, args: parsedArgs, repaired: false, missingParams };
+  const missingParams = missingRequired(input, args);
+
+  if (missingParams.length === 0) {
+    return { valid: true, args, repaired, missingParams: [] };
+  }
+
+  return { valid: false, args, repaired: false, missingParams };
 }

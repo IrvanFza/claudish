@@ -416,7 +416,11 @@ export function createStreamingResponseHandler(
                 ? []
                 : extractToolCallsFromText(
                     state.accumulatedText,
-                    toolSchemas?.map((t: any) => t?.name).filter((n: any): n is string => !!n)
+                    toolSchemas?.map((t: any) => t?.name).filter((n: any): n is string => !!n),
+                    // The `<function=NAME><parameter=P>` envelope carries no
+                    // types, so every value arrives as a string. The schemas are
+                    // what turn `"5"` back into 5 and `"true"` into true.
+                    toolSchemas as ToolSchema[] | undefined
                   );
             if (state.tools.size > 0 && state.accumulatedText.length > 0) {
               log(
