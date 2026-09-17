@@ -13,7 +13,12 @@ import { getModelPricing } from "../handlers/shared/remote-provider-types.js";
 import { log } from "../logger.js";
 import type { StreamFormat } from "../providers/transport/types.js";
 import type { APIFormat } from "./api-format.js";
-import { type ReasoningCapability, lookupModel, lookupModelReasoning } from "./model-catalog.js";
+import {
+  type ReasoningCapability,
+  lookupModel,
+  lookupModelReasoning,
+  lookupModelReasoningStatus,
+} from "./model-catalog.js";
 import type { ModelDialect } from "./model-dialect.js";
 import { rejectedOptionalParams } from "./optional-param-rejection.js";
 import {
@@ -103,6 +108,78 @@ const NON_ANTHROPIC_REASONING_FIELDS = [
   "enable_thinking",
   "thinking_budget",
 ] as const;
+
+/**
+ * Smallest reasoning budget a provider will accept.
+ *
+ * Anthropic's Messages API documents `budget_tokens >= 1024`, and the
+ * Anthropic-compatible endpoints claudish speaks to inherit it. Below this a
+ * budget is not "small", it is invalid, so the correct move is to stop
+ * expressing depth as a budget rather than to send a smaller number.
+ */
+export const MIN_THINKING_BUDGET = 1024;
+
+/**
+ * Output tokens reserved for the answer itself when a budget is clamped.
+ *
+ * A budget equal to the ceiling is rejected outright (`max_completion_tokens
+ * [32000] must be greater than thinking_budget [38912]` is the same rule seen
+ * from the other side), and a budget one token under it leaves a model that has
+ * thought and cannot speak. Reserving a real slice keeps a clamped request
+ * useful rather than merely legal.
+ */
+export const ANSWER_TOKEN_RESERVE = 1024;
+
+/**
+ * The output ceiling a reasoning budget must fit under.
+ *
+ * Read from the ORIGINAL Claude-format request first, because `max_tokens` is
+ * the field every wire derives its own ceiling from and the only one guaranteed
+ * to be present before the payload is built. The payload is consulted second,
+ * under all three names the wires use, so a dialect that runs after its
+ * converter still sees the number actually being sent.
+ *
+ * Deliberately NOT the catalog's `maxOutputTokens`: the provider validates the
+ * budget against the ceiling in the request, so that is the number that decides
+ * whether the pair is legal.
+ */
+export function outputCeilingOf(originalRequest: any, payload?: any): number | undefined {
+  const candidates = [
+    originalRequest?.max_tokens,
+    payload?.max_tokens,
+    payload?.max_completion_tokens,
+    payload?.max_output_tokens,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Fit a reasoning budget under an output ceiling.
+ *
+ * Returns:
+ * - the budget unchanged when it already fits,
+ * - a smaller budget when the ceiling requires one,
+ * - `undefined` when there is no budget to send in the first place (effort
+ *   `max` omits it so the model uses its own maximum), or when no ceiling is
+ *   known and the caller's number therefore stands,
+ * - `"no-room"` when the ceiling cannot hold a legal budget AND leave room to
+ *   answer. That is a distinct outcome from "no budget": the caller must stop
+ *   expressing depth as a budget, not send the request without one.
+ */
+export function clampThinkingBudget(
+  budget: number | undefined,
+  ceiling: number | undefined
+): number | undefined | "no-room" {
+  if (budget === undefined) return undefined;
+  if (ceiling === undefined) return budget;
+
+  const allowed = ceiling - ANSWER_TOKEN_RESERVE;
+  if (allowed < MIN_THINKING_BUDGET) return "no-room";
+  return Math.min(budget, allowed);
+}
 
 export interface AdapterResult {
   /** Cleaned text content (with XML/special formats removed) */
@@ -471,9 +548,42 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * vocabulary (MiniMax answers `adaptive`, not `enabled`).
    */
   protected applyAnthropicWireReasoning(request: any, originalRequest: any): any {
+    // ── Truthful unknown ────────────────────────────────────────────────────
+    //
+    // Checked FIRST, before the request's own effort signal, because an unknown
+    // control makes every downstream branch a guess regardless of what was
+    // asked for.
+    //
+    // There is no generic fallback here any more. The one that used to sit at
+    // the bottom of this method emitted the effort ladder's token budget for any
+    // model the catalog did not describe, which is how `qwen3.8-max` was sent
+    // `budget_tokens: 38912` against a `max_tokens` of 32000 and rejected with
+    // "max_completion_tokens [32000] must be greater than thinking_budget
+    // [38912]" — a 400 before any inference, on a model the provider serves
+    // perfectly well.
+    //
+    // A guessed knob is not a safe default. It is a claim about a wire contract
+    // we have not read, and the failure lands on the newest models, which are
+    // exactly the ones the catalog has not caught up with yet.
+    //
+    // `supportsThinking` is deliberately NOT consulted as a substitute. The
+    // catalog publishes that flag even while reporting the status unknown
+    // (`query-handler.ts` sets `reasoningStatus: "unknown"` and can still emit
+    // `supportsThinking` from coarse capability data), so it is present exactly
+    // where it proves nothing about the knob.
+    const status = this.lookupReasoningStatus();
+    if (status !== "known") {
+      log(
+        `[${this.getName()}] ${this.modelId} reasoning control ${status === "unknown" ? "unknown" : "absent from the catalog"} -> no reasoning parameter emitted`
+      );
+      return request;
+    }
+
     const reasoning = this.lookupReasoningCapability();
 
     // Catalog is explicit that the model cannot reason — never switch it on.
+    // This is a KNOWN answer, and the opposite instruction to the unknown case
+    // above: there we say nothing, here we say off.
     if (reasoning?.supported === false) {
       request.thinking = { type: "disabled" };
       log(`[${this.getName()}] ${this.modelId} reports no reasoning support -> thinking: disabled`);
@@ -486,56 +596,127 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     if (!effort) return request;
 
     if (effort === "none" || effort === "minimal") {
+      // `mandatory` means the model cannot run with reasoning off, so a
+      // `disabled` here is a request the provider must reject. Honour the
+      // intent as far as the model allows: the lowest level it advertises.
+      if (reasoning?.mandatory) {
+        return this.enableAnthropicEffort(request, effort, reasoning, "mandatory reasoning");
+      }
       request.thinking = { type: "disabled" };
       log(`[${this.getName()}] effort ${effort} -> thinking.type: disabled for ${this.modelId}`);
       return request;
     }
 
-    // A token budget is only legitimate where the catalog says the model takes
-    // one (`control: "budget"` / `supportsBudgetTokens`).
-    if (reasoning && (reasoning.control === "budget" || reasoning.supportsBudgetTokens)) {
-      return this.enableAnthropicThinkingWithBudget(request, effort, "catalog: budget-controlled");
+    // ── Control-driven dispatch ─────────────────────────────────────────────
+    //
+    // `control` is authoritative and is read BEFORE `supportsBudgetTokens`.
+    // That order is the rule: a model may advertise discrete levels AND accept a
+    // budget, and in that case the levels are the control the vendor documents.
+    // The previous code tested `control === "budget" || supportsBudgetTokens`,
+    // so an optional budget capability silently overrode an effort control and
+    // sent a token count to a model whose knob is a level.
+    const control = reasoning?.control;
+    const advertisesEfforts = (reasoning?.efforts?.length ?? 0) > 0;
+
+    if (control === "effort" || (control === undefined && advertisesEfforts)) {
+      return this.enableAnthropicEffort(request, effort, reasoning, "catalog: effort-controlled");
     }
 
-    // A discrete level: clamp into what this model actually advertises.
-    const advertised = reasoning?.efforts?.length ? reasoning : undefined;
-    if (advertised) {
-      const level = this.clampToAdvertisedEffort(effort, advertised);
-      request.thinking = { type: "enabled" };
-      if (level) {
-        request.output_config = { ...(request.output_config ?? {}), effort: level };
-      }
-      log(
-        `[${this.getName()}] effort ${effort} -> thinking: enabled, output_config.effort: ${level ?? "(none advertised)"} for ${this.modelId} (advertised: ${advertised.efforts?.join("/")})`
-      );
-      return request;
+    if (control === "budget" || (control === undefined && reasoning?.supportsBudgetTokens)) {
+      return this.enableAnthropicBudget(request, effort, originalRequest, reasoning);
     }
 
-    // `control: "toggle"` (or an unrecognized control with no level list):
-    // reasoning is on/off only. Emit the switch and nothing else.
-    if (reasoning) {
-      request.thinking = { type: "enabled" };
-      log(
-        `[${this.getName()}] effort ${effort} -> thinking: enabled (no depth knob; catalog control=${reasoning.control ?? "unknown"}) for ${this.modelId}`
-      );
-      return request;
-    }
-
-    // No catalog entry at all (cold cache, or a model newer than the catalog —
-    // qwen3.8-max-preview is exactly this today). No information means keep the
-    // generic behaviour rather than guess a narrower one.
-    return this.enableAnthropicThinkingWithBudget(request, effort, "no catalog entry");
-  }
-
-  /** Enable Anthropic-wire thinking with the generic token-budget ladder. */
-  private enableAnthropicThinkingWithBudget(request: any, effort: EffortLevel, why: string): any {
-    const budget = this.effortToThinkingTokenBudget(effort);
-    request.thinking =
-      budget === undefined ? { type: "enabled" } : { type: "enabled", budget_tokens: budget };
+    // `toggle`, `adaptive`, or a control this build does not recognise:
+    // reasoning is on/off only. Emit the switch and no depth.
+    request.thinking = { type: "enabled" };
+    this.stripAnthropicEffortField(request);
     log(
-      `[${this.getName()}] effort ${effort} -> thinking: enabled, budget_tokens: ${budget ?? "(model max)"} for ${this.modelId} (${why})`
+      `[${this.getName()}] effort ${effort} -> thinking: enabled (no depth knob; catalog control=${control ?? "unspecified"}) for ${this.modelId}`
     );
     return request;
+  }
+
+  /**
+   * Emit a discrete level, clamped into what the model advertises.
+   *
+   * Never also emits a budget: on this wire `output_config.effort` and
+   * `thinking.budget_tokens` are two spellings of the same intent, and sending
+   * both is a self-contradicting payload.
+   */
+  private enableAnthropicEffort(
+    request: any,
+    effort: EffortLevel,
+    reasoning: ReasoningCapability | undefined,
+    why: string
+  ): any {
+    const level = reasoning ? this.clampToAdvertisedEffort(effort, reasoning) : undefined;
+    request.thinking = { type: "enabled" };
+    if (level) {
+      request.output_config = { ...(request.output_config ?? {}), effort: level };
+    }
+    log(
+      `[${this.getName()}] effort ${effort} -> thinking: enabled, output_config.effort: ${level ?? "(none advertised)"} for ${this.modelId} (${why}; advertised: ${reasoning?.efforts?.join("/") ?? "none"})`
+    );
+    return request;
+  }
+
+  /**
+   * Emit a token budget, clamped to fit under the request's output ceiling.
+   *
+   * The ceiling is the REQUEST's `max_tokens`, not the catalog's
+   * `maxOutputTokens`, because `max_tokens` is the number the provider
+   * validates the budget against — it is the one we are about to send.
+   */
+  private enableAnthropicBudget(
+    request: any,
+    effort: EffortLevel,
+    originalRequest: any,
+    reasoning: ReasoningCapability | undefined
+  ): any {
+    const requested = this.effortToThinkingTokenBudget(effort);
+    const ceiling = outputCeilingOf(originalRequest, request);
+    const budget = clampThinkingBudget(requested, ceiling);
+
+    if (budget === "no-room") {
+      // The ceiling cannot hold a legal budget AND leave room for an answer.
+      // A mandatory-reasoning model still has to reason, so send the plain
+      // on-switch and let the provider pick its own depth; anything else is a
+      // payload it must reject.
+      if (reasoning?.mandatory) {
+        request.thinking = { type: "enabled" };
+      } else {
+        request.thinking = { type: "disabled" };
+      }
+      this.stripAnthropicEffortField(request);
+      log(
+        `[${this.getName()}] effort ${effort} -> budget ${requested ?? "(model max)"} does not fit under max_tokens ${ceiling}; sent thinking.type: ${request.thinking.type} for ${this.modelId}`
+      );
+      return request;
+    }
+
+    request.thinking =
+      budget === undefined ? { type: "enabled" } : { type: "enabled", budget_tokens: budget };
+    // A budget and a level are mutually exclusive expressions of depth.
+    this.stripAnthropicEffortField(request);
+    log(
+      `[${this.getName()}] effort ${effort} -> thinking: enabled, budget_tokens: ${budget ?? "(model max)"}${
+        budget !== undefined && budget !== requested
+          ? ` (clamped from ${requested} under max_tokens ${ceiling})`
+          : ""
+      } for ${this.modelId} (catalog: budget-controlled)`
+    );
+    return request;
+  }
+
+  /**
+   * Remove `output_config.effort` from a payload that expresses depth another
+   * way, dropping the container when it is left empty.
+   */
+  private stripAnthropicEffortField(request: any): void {
+    if (!request?.output_config || typeof request.output_config !== "object") return;
+    if (request.output_config.effort === undefined) return;
+    delete request.output_config.effort;
+    if (Object.keys(request.output_config).length === 0) delete request.output_config;
   }
 
   /**
@@ -624,6 +805,21 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     } catch {
       // lookupModelReasoning throws only on a provider-routed id, which a
       // dialect should never see. Stay fail-soft regardless.
+      return undefined;
+    }
+  }
+
+  /**
+   * Whether the catalog KNOWS this model's reasoning control.
+   *
+   * Fail-soft to `undefined`, which callers must treat exactly like
+   * `"unknown"`: emit no reasoning parameter. A lookup that threw has told us
+   * nothing, and "nothing" must never become a guessed knob.
+   */
+  protected lookupReasoningStatus(): "known" | "unknown" | undefined {
+    try {
+      return lookupModelReasoningStatus(this.modelId);
+    } catch {
       return undefined;
     }
   }

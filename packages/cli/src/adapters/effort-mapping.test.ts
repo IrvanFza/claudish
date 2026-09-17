@@ -442,6 +442,24 @@ class StubbedGLM extends GLMModelDialect {
   protected override lookupReasoningCapability(): any {
     return this.stub;
   }
+
+  /**
+   * The stub stands in for the WHOLE catalog answer, status included.
+   *
+   * Overriding only `lookupReasoningCapability` used to be enough, because the
+   * dispatch read nothing else. It now reads the status FIRST and emits no
+   * reasoning parameter at all when the control is not known — so a stub that
+   * leaves the status unstubbed falls through to the real cache on disk, and
+   * the test's answer depends on whether the developer's machine happens to
+   * have a warm catalog. That is green locally and red in CI, which is exactly
+   * how this surfaced.
+   *
+   * A supplied stub means "the catalog describes this model"; `undefined` means
+   * "the catalog has no entry", which the two no-entry callers below rely on.
+   */
+  protected override lookupReasoningStatus(): "known" | "unknown" | undefined {
+    return this.stub ? "known" : undefined;
+  }
 }
 
 const CATALOG = {

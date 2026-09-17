@@ -194,6 +194,58 @@ function createMockContext(): any {
 
 // ─── OpenAI SSE Parser Tests ────────────────────────────────────────────────
 
+describe("describeInStreamError", () => {
+  async function getFormatter() {
+    const mod = await import("./handlers/shared/stream-parsers/openai-sse.js");
+    return mod.describeInStreamError;
+  }
+
+  test("describes the production OpenRouter refusal with provider, code, type, and message", async () => {
+    const describeInStreamError = await getFormatter();
+    const productionFrame = {
+      id: "gen-1789563247-…",
+      object: "chat.completion.chunk",
+      created: 1789563247,
+      model: "unknown",
+      provider: "Google AI Studio",
+      choices: [],
+      error: {
+        code: 400,
+        message: "SYNTHETIC upstream message (real text unknown)",
+        metadata: {
+          error_type: "invalid_request",
+          provider_code: "400",
+        },
+      },
+    };
+
+    expect(describeInStreamError(productionFrame)).toBe(
+      "[Google AI Studio] 400 invalid_request SYNTHETIC upstream message (real text unknown)"
+    );
+  });
+
+  test("returns undefined for a normal content frame", async () => {
+    const describeInStreamError = await getFormatter();
+
+    expect(
+      describeInStreamError({
+        choices: [{ index: 0, delta: { content: "healthy content" }, finish_reason: null }],
+      })
+    ).toBeUndefined();
+  });
+
+  test("handles bare-string and message-only errors", async () => {
+    const describeInStreamError = await getFormatter();
+
+    expect(describeInStreamError({ error: "gateway refused the request" })).toBe(
+      "gateway refused the request"
+    );
+    expect(describeInStreamError({ error: { message: "signature missing" } })).toBe(
+      "signature missing"
+    );
+  });
+});
+
 describe("OpenAI SSE → Claude SSE (createStreamingResponseHandler)", () => {
   // Dynamic import to avoid circular dependency issues at module level
   async function getParser() {
@@ -270,6 +322,83 @@ describe("OpenAI SSE → Claude SSE (createStreamingResponseHandler)", () => {
 
     // Should end with tool_use
     expect(extractStopReason(events)).toBe("tool_use");
+  });
+
+  test("REGRESSION: an OpenRouter error frame with empty choices emits error and no message_stop", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "regression-openrouter-google-ai-studio-empty-choices-error.sse")
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "test-model",
+      null,
+      undefined,
+      undefined
+    );
+    const events = await parseClaudeSseStream(response);
+    const errorEvent = events.find((event) => event.event === "error");
+
+    expect(errorEvent?.data?.type).toBe("error");
+    expect(errorEvent?.data?.error?.type).toBe("api_error");
+    expect(errorEvent?.data?.error?.message).toBe(
+      "[Google AI Studio] 400 invalid_request SYNTHETIC upstream message (real text unknown)"
+    );
+    expect(events.some((event) => event.data?.type === "message_stop")).toBe(false);
+  });
+
+  test("REGRESSION: content before an in-stream error is preserved and followed by error", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const fixture = fixtureToResponse(
+      join(FIXTURES_DIR, "regression-openrouter-google-ai-studio-content-then-error.sse")
+    );
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "test-model",
+      null,
+      undefined,
+      undefined
+    );
+    const events = await parseClaudeSseStream(response);
+    const textEventIndex = events.findIndex(
+      (event) =>
+        event.data?.type === "content_block_delta" && event.data?.delta?.type === "text_delta"
+    );
+    const errorEventIndex = events.findIndex((event) => event.event === "error");
+
+    expect(extractText(events)).toBe("Earlier content survives.");
+    expect(textEventIndex).toBeGreaterThan(-1);
+    expect(errorEventIndex).toBeGreaterThan(textEventIndex);
+    expect(events.some((event) => event.data?.type === "message_stop")).toBe(false);
+  });
+
+  test("CONTROL: a healthy stream still emits message_delta and message_stop without error", async () => {
+    const createStreamingResponseHandler = await getParser();
+    const adapter = await getDefaultAdapter();
+    const fixture = fixtureToResponse(join(FIXTURES_DIR, "SEED-openai-text-only.sse"));
+
+    const response = createStreamingResponseHandler(
+      createMockContext(),
+      fixture,
+      adapter,
+      "test-model",
+      null,
+      undefined,
+      undefined
+    );
+    const events = await parseClaudeSseStream(response);
+
+    expect(events.some((event) => event.event === "error")).toBe(false);
+    expect(events.some((event) => event.data?.type === "message_delta")).toBe(true);
+    expect(events.some((event) => event.data?.type === "message_stop")).toBe(true);
   });
 });
 

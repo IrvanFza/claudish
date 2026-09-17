@@ -429,6 +429,33 @@ export interface TeamVerdict {
  */
 export const STDOUT_TAIL_LIMIT = 4000;
 
+/** Budget for the stdout snippet recorded in `status.json`. */
+const SNIPPET_LIMIT = 2000;
+
+/** Bytes of the snippet budget spent on the START of the text. */
+const SNIPPET_HEAD = 600;
+
+/**
+ * Keep the snippet within budget WITHOUT discarding the beginning.
+ *
+ * A plain `.slice(-2000)` threw away the first half of a 4000-byte tail that was
+ * already in hand, and the beginning is where a shape mismatch is usually
+ * legible: a `require_pattern` near-miss like `**Verdict**: **FAIL**` against
+ * `/\*\*Verdict\*\*: (PASS|CONDITIONAL|FAIL)/` is diagnosed the moment the
+ * reader sees the model's actual wording. Ending a report at the tail can show
+ * the reader the last 2000 bytes of prose and none of the line that explains it.
+ *
+ * Short text is returned whole, so the elision marker only ever appears when
+ * something really was dropped.
+ */
+export function snippetHeadAndTail(text: string): string {
+  if (text.length <= SNIPPET_LIMIT) return text;
+  const head = text.slice(0, SNIPPET_HEAD);
+  const tail = text.slice(-(SNIPPET_LIMIT - SNIPPET_HEAD));
+  const omitted = text.length - head.length - tail.length;
+  return `${head}\n\n… [${omitted} bytes omitted] …\n\n${tail}`;
+}
+
 /** Claude Code prints API failures into its stdout and still exits 0. */
 const API_ERROR_RE = /\[API Error:\s*([^\]]{0,300})\]/i;
 
@@ -1385,7 +1412,7 @@ export async function startModels(
               // Redacted: these land in status.json on disk and are read back
               // by anything inspecting the run.
               stderrSnippet: stderr ? redactSecrets(stderr).slice(-2000) : undefined,
-              stdoutSnippet: stdoutTail ? redactSecrets(stdoutTail).slice(-2000) : undefined,
+              stdoutSnippet: stdoutTail ? snippetHeadAndTail(redactSecrets(stdoutTail)) : undefined,
               errorLogPath,
               // Only when the child actually wrote one. Naming a file that does
               // not exist sends a reader after evidence that was never captured.

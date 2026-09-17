@@ -18,6 +18,7 @@ import {
   type RouteVariant,
   type SlimModelEntry,
   readAllModelsCache,
+  reasoningStatusOf,
 } from "../providers/all-models-cache.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 
@@ -89,6 +90,53 @@ export function lookupModelReasoning(
   cachePath?: string
 ): ReasoningCapability | undefined {
   return findCacheEntry(modelId, cachePath)?.reasoning;
+}
+
+/**
+ * Whether the catalog KNOWS this model's reasoning control.
+ *
+ * Three answers, and they are three different instructions:
+ *
+ * - `"known"` — {@link lookupModelReasoning} describes the real wire control.
+ *   Use it.
+ * - `"unknown"` — the catalog has the model but never learned its control.
+ *   Send NO reasoning knob. Do not fall back to a budget, a toggle, or
+ *   `supportsThinking`; the catalog publishes that flag even when the status is
+ *   unknown, so it is present exactly when it proves nothing.
+ * - `undefined` — no row at all (cold cache, or a model the catalog does not
+ *   carry). Same instruction as `"unknown"`, reported separately so a caller
+ *   can tell "the catalog is silent about everything" from "the catalog knows
+ *   this model and is explicit that the control was never described".
+ *
+ * None of the three is a reason to drop a route. A model claudish cannot
+ * describe is still a model the provider will serve.
+ */
+export function lookupModelReasoningStatus(
+  modelId: string,
+  cachePath?: string
+): "known" | "unknown" | undefined {
+  const entry = findCacheEntry(modelId, cachePath);
+  return entry ? reasoningStatusOf(entry) : undefined;
+}
+
+/**
+ * The model's published output ceiling, or undefined when the catalog has none.
+ *
+ * Undefined means UNKNOWN, never zero and never "unlimited". The slim
+ * projection omits the field rather than sending a null, and it does not carry
+ * the `maxOutputTokensNotApplicable` flag the richer projections use, so a
+ * missing value cannot be distinguished from "not applicable to this model".
+ *
+ * This is reporting data. Request shaping clamps against the REQUEST's own
+ * ceiling, because that is the number the provider validates a reasoning budget
+ * against.
+ */
+export function lookupModelMaxOutputTokens(
+  modelId: string,
+  cachePath?: string
+): number | undefined {
+  const value = findCacheEntry(modelId, cachePath)?.maxOutputTokens;
+  return typeof value === "number" && value > 0 ? value : undefined;
 }
 
 /**
@@ -431,6 +479,50 @@ function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | u
     }
   }
 
+  // Last step: the id may be a subscription plan's WIRE id, which is not
+  // required to exist as a catalog id or alias. `modelDescriptions` is the
+  // catalog's own exact map from such an id to the canonical row that describes
+  // it — `claude-opus-4-5-20251101` is the dated id Claude Code sends, while
+  // the row is stored undated.
+  //
+  // Metadata only. The canonical id is never returned to a caller that builds a
+  // request: every consumer of this function reads capability fields, and the
+  // id sent upstream stays the one the caller was given.
+  const canonical = resolvePlanDescribedModelId(modelId, cache.plans);
+  if (!canonical) return undefined;
+
+  const canonicalLower = canonical.toLowerCase();
+  for (const entry of cache.entries) {
+    if (entry.modelId.toLowerCase() === canonicalLower) return entry;
+    if (entry.aliases?.some((a) => a.toLowerCase() === canonicalLower)) return entry;
+  }
+
+  return undefined;
+}
+
+/**
+ * The canonical catalog id a plan's exact roster id resolves to, or undefined.
+ *
+ * Only a `described` resolution answers. `missing` and `ambiguous` are the
+ * catalog stating that IT could not resolve the id, and inventing a lookup on
+ * top of that verdict is precisely the guessing this map exists to end — so
+ * they return undefined and the caller degrades to "no information".
+ *
+ * The scan is across plans because one wire id can appear in several (three
+ * plans list `qwen3.8-max`). They agree by construction: each generation builds
+ * the map against one model snapshot. Taking the first `described` hit is
+ * therefore deterministic, and a disagreement would be a backend defect rather
+ * than something to arbitrate here.
+ */
+export function resolvePlanDescribedModelId(
+  wireId: string,
+  plans: CachedSubscriptionPlan[] | undefined
+): string | undefined {
+  if (!plans) return undefined;
+  for (const plan of plans) {
+    const described = plan.modelDescriptions?.[wireId];
+    if (described?.status === "described" && described.modelId) return described.modelId;
+  }
   return undefined;
 }
 
