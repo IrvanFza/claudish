@@ -2,6 +2,28 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.6.0] - 2026-09-17
+
+### Bug Fixes
+
+- keep the head of a response in stdoutSnippet *(team)* ([`9a96b19`](https://github.com/MadAppGang/claudish/commit/9a96b1974545111d553ba9f3bdc620f67ac728e3))
+- put the pid in log filenames so concurrent children stop clobbering *(logger)* ([`819ed50`](https://github.com/MadAppGang/claudish/commit/819ed5011d16754e52f8e33be554043cfdde5c40))
+- keep Claude Code's unrecognized-model line out of child stderr *(runner)* ([`3ea3dbd`](https://github.com/MadAppGang/claudish/commit/3ea3dbd6025ca76d5ab7e32c71fc6bab078bc627))
+- surface an upstream error carried inside a 200 stream *(sse)* ([`321c2f0`](https://github.com/MadAppGang/claudish/commit/321c2f040da78c37553b6d2ae2458575e80fac69))
+
+### Documentation
+
+- record the gemini in-band 400 investigation *(reports)* ([`c3e95b4`](https://github.com/MadAppGang/claudish/commit/c3e95b47bfc9b645ada199ff5387dbf15596f818))
+- update CHANGELOG.md for v9.5.0([`b7a7868`](https://github.com/MadAppGang/claudish/commit/b7a7868df64e4241839f1658235179693f3d5250))
+
+### New Features
+
+- consume the repaired models-index contract *(catalog)* ([`d50ae6a`](https://github.com/MadAppGang/claudish/commit/d50ae6a24b246eeea46b263dc4a601e30c4cd21a))
+
+### Other Changes
+
+- v9.6.0 *(release)* ([`cbfd9fa`](https://github.com/MadAppGang/claudish/commit/cbfd9fab09cb5bf7e1c6db059d1d53c8e5b75941))
+
 ## [9.5.0] - 2026-09-16
 
 ### Bug Fixes
