@@ -1387,6 +1387,97 @@ export function resolveAdvisorModelArg(
   };
 }
 
+/**
+ * Child stderr lines claudish answers for, and therefore does not pass on.
+ *
+ * ONE entry, and the bar for a second is high: claudish must be able to say
+ * both that the line is certainly wrong-headed and that nothing downstream
+ * needs it. Swallowing a child's stderr is how a real failure goes missing.
+ *
+ * `[claude-code:unrecognized_model]` is Claude Code reporting that a model id
+ * is absent from its own table. Running a model that is absent from that table
+ * is claudish's entire purpose, so the line is guaranteed noise on every
+ * foreign route — and it is error-shaped, so it lands directly above the real
+ * failure in `team`'s `errors/NN.log` and in the `stderrSnippet` a diagnosing
+ * reader opens first.
+ *
+ * It cannot be fixed at the source. Measured 2026-09-17:
+ *   - a bare catalog name does not help; ANY id outside Claude Code's table
+ *     warns, and every foreign model claudish routes is outside it;
+ *   - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` only moves it, from
+ *     `query_source: generate_session_title` to `query_source: sdk`;
+ *   - `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1` do not touch it.
+ */
+const CHILD_STDERR_NOISE = [/^\[claude-code:unrecognized_model\]/];
+
+/** Whether claudish answers for this child stderr line instead of relaying it. */
+export function isSuppressibleChildStderrLine(line: string): boolean {
+  return CHILD_STDERR_NOISE.some((re) => re.test(line));
+}
+
+/**
+ * Relay a child's stderr verbatim, minus the lines in {@link CHILD_STDERR_NOISE}.
+ *
+ * PRINT MODE ONLY. In an interactive session the child owns the terminal and its
+ * stderr is the TTY it is painting; putting a pipe in that path risks the output
+ * corruption `terminal-output-isolation` documents, to remove one cosmetic line.
+ * Not a trade worth making, so the interactive path keeps `inherit` untouched.
+ *
+ * Line-buffered because a filter that reads raw chunks would match a prefix
+ * split across a chunk boundary as two unmatched fragments and pass the noise
+ * through anyway. The tail is flushed on `end` so a child that dies mid-line
+ * still gets its last, unterminated bytes out — that fragment is often the
+ * crash.
+ *
+ * Suppressed lines are written to the session log, so the record is moved out of
+ * the way rather than destroyed.
+ */
+export function relayChildStderr(stream: NodeJS.ReadableStream): void {
+  let buffered = "";
+
+  const emit = (line: string): void => {
+    if (isSuppressibleChildStderrLine(line)) {
+      // `debugLog`, NOT `logStderr`. In print mode there is no diag sink, so
+      // `logStderr` falls through to `process.stderr` and re-emits the very line
+      // being suppressed, one prefix heavier. `debugLog` writes only to the session
+      // logs, and the `[Suppressed]` prefix is what carries it into the
+      // always-on log (logger's `isStructuralLogWorthy` matches it).
+      debugLog(`[Suppressed] claude-code-stderr: ${line.trimEnd()}`);
+      return;
+    }
+    process.stderr.write(`${line}\n`);
+  };
+
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk: string) => {
+    buffered += chunk;
+    const lines = buffered.split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) emit(line);
+  });
+  const flush = (): void => {
+    if (buffered.length === 0) return;
+    const tail = buffered;
+    buffered = "";
+    // No trailing newline: reproduce what the child actually wrote.
+    if (isSuppressibleChildStderrLine(tail)) {
+      debugLog(`[Suppressed] claude-code-stderr: ${tail}`);
+    } else {
+      process.stderr.write(tail);
+    }
+  };
+  stream.on("end", flush);
+  stream.on("close", flush);
+  // A read error must not take the session down, and must not be silent either.
+  // This one DOES go to stderr: it means the diagnostic channel itself broke,
+  // which the user has to know, and it is claudish speaking rather than a
+  // relayed child line. `logStderr` supplies the `[claudish]` prefix.
+  stream.on("error", (err) => {
+    flush();
+    logStderr(`child stderr relay ended: ${err}`);
+  });
+}
+
 export async function runClaudeWithProxy(
   config: ClaudishConfig,
   proxyUrl: string,
@@ -1579,6 +1670,35 @@ export async function runClaudeWithProxy(
   // and causes the child Claude Code to refuse to start. Since claudish makes
   // independent API calls through a proxy (not nesting sessions), this is safe.
   delete env.CLAUDECODE;
+
+  // Print mode only: switch off Claude Code's background side-calls.
+  //
+  // A one-shot run generates a session title it will never display and a resume
+  // summary nothing will ever resume. Both are billed on the ROUTED model, so a
+  // three-slot `team` run pays for three of them.
+  //
+  // Measured 2026-09-17, same prompt and model (`qc@qwen3.8-max`), counting
+  // upstream responses in the session log:
+  //
+  //   suppressed : 1 upstream request
+  //   baseline   : 2 upstream requests
+  //
+  // WHAT THIS DOES NOT DO — and the reason is worth keeping, because the
+  // opposite is the obvious assumption. It does NOT remove the
+  // `[claude-code:unrecognized_model]` line from stderr. That warning fires for
+  // any model id outside Claude Code's own table, which is every foreign model
+  // claudish routes. Suppressing the title call only moves which call reports
+  // it: `query_source` changes from `generate_session_title` to `sdk`, and the
+  // line count stays at one. Both were measured. Renaming the model would not
+  // help either, and cannot be done anyway without breaking routing.
+  //
+  // INTERACTIVE SESSIONS ARE LEFT ALONE. There the title is shown in the UI and
+  // the resume summary is used, so the traffic is not "non-essential" to the
+  // person watching. A user who wants it off in print mode too, or on, can set
+  // the variable themselves — an explicit value is never overridden.
+  if (!config.interactive && env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined) {
+    env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  }
 
   // Handle API key and model based on mode
   if (config.monitor || advisorNativeSession) {
@@ -1800,14 +1920,27 @@ export async function runClaudeWithProxy(
     );
   }
 
+  // Pipe the child's stderr ONLY in print mode, and only when we are not handing
+  // it a tty. stdin and stdout stay inherited either way, so the answer itself
+  // never travels through claudish — only the diagnostic channel does.
+  const filterChildStderr = !config.interactive && ttyFd === undefined;
+
   const stdio: Parameters<typeof spawn>[2]["stdio"] =
-    ttyFd !== undefined ? [0, ttyFd, ttyFd] : "inherit";
+    ttyFd !== undefined
+      ? [0, ttyFd, ttyFd]
+      : filterChildStderr
+        ? ["inherit", "inherit", "pipe"]
+        : "inherit";
 
   const proc = spawn(spawnCommand, claudeArgs, {
     env,
     stdio,
     shell: needsShell,
   });
+
+  if (filterChildStderr && proc.stderr) {
+    relayChildStderr(proc.stderr);
+  }
 
   // From this line until the child exits, Claude Code owns the terminal. Close
   // claudish's write channel to it so a stray console.error — ours, a
