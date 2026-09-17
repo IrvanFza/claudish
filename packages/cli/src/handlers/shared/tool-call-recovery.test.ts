@@ -119,3 +119,72 @@ describe("parseFunctionTagEnvelope strictness", () => {
     expect(extractToolCallsFromText(envelope, ["Read"])).toEqual([]);
   });
 });
+
+/**
+ * The `<tool_call>`-wrapped envelope.
+ *
+ * Reproduced live against the published 9.5.0 binary through a mock upstream:
+ * the wrapped form produced `{"city":"Paris</parameter></function></tool_call>"}`
+ * while the identical unwrapped form produced `{"city":"Paris"}`. The failure is
+ * silent — the tool runs on the corrupted argument — so every assertion here
+ * checks the VALUE, not merely that a call came out.
+ */
+describe("parseFunctionTagEnvelope with a <tool_call> wrapper", () => {
+  it("parses the wrapped form identically to the unwrapped one", () => {
+    const wrapped =
+      "<tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>";
+    const unwrapped = "<function=get_weather><parameter=city>Paris</parameter></function>";
+    expect(parseFunctionTagEnvelope(wrapped)).toEqual(parseFunctionTagEnvelope(unwrapped));
+    expect(parseFunctionTagEnvelope(wrapped)).toEqual([
+      { name: "get_weather", arguments: { city: "Paris" }, source: "xml_text" },
+    ]);
+  });
+
+  it("never leaves a closing tag inside the last parameter value", () => {
+    const calls = extractToolCallsFromText(
+      "<tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>",
+      ["get_weather"]
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].arguments.city).toBe("Paris");
+    expect(JSON.stringify(calls[0].arguments)).not.toContain("</");
+  });
+
+  it("handles several wrapped calls in one response", () => {
+    expect(
+      parseFunctionTagEnvelope(
+        "<tool_call><function=Read><parameter=file_path>/a</parameter></function></tool_call>\n" +
+          "<tool_call><function=Bash><parameter=command>ls -la</parameter></function></tool_call>"
+      )
+    ).toEqual([
+      { name: "Read", arguments: { file_path: "/a" }, source: "xml_text" },
+      { name: "Bash", arguments: { command: "ls -la" }, source: "xml_text" },
+    ]);
+  });
+
+  it("accepts a wrapper the stream never closed", () => {
+    expect(parseFunctionTagEnvelope("<tool_call><function=Read><parameter=file_path>/a")).toEqual([
+      { name: "Read", arguments: { file_path: "/a" }, source: "xml_text" },
+    ]);
+  });
+
+  it("still refuses a wrapped envelope with prose in front of it", () => {
+    expect(
+      parseFunctionTagEnvelope(
+        "Let me check: <tool_call><function=Read><parameter=file_path>/a</parameter></function></tool_call>"
+      )
+    ).toBeNull();
+  });
+
+  it("leaves the JSON-payload <tool_call> shape to the legacy pattern that owns it", () => {
+    const json = '<tool_call>{"name": "Read", "arguments": {"file_path": "/a"}}</tool_call>';
+    expect(parseFunctionTagEnvelope(json)).toBeNull();
+    // Patterns 1 and 2 both match this shape, so the legacy path returns it
+    // twice — pre-existing, and unchanged by the unwrap.
+    expect(extractToolCallsFromText(json, ["Read"])).toContainEqual({
+      name: "Read",
+      arguments: { file_path: "/a" },
+      source: "xml_text",
+    });
+  });
+});
