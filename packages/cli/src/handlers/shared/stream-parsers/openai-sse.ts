@@ -118,6 +118,66 @@ export interface ToolState {
 }
 
 /**
+ * Render an error carried INSIDE a 200 stream into one readable line.
+ *
+ * ## Why this exists
+ *
+ * OpenRouter answers HTTP 200 and then reports the upstream's refusal as a
+ * frame in the body:
+ *
+ *   data: {"id":"…","model":"unknown","provider":"Google AI Studio",
+ *          "choices":[],"error":{"code":400,"message":"…",
+ *          "metadata":{"error_type":"invalid_request","provider_code":"400"}}}
+ *
+ * The frame has an EMPTY `choices` array, so every field the parser reads
+ * (`choices[0].delta`, `choices[0].finish_reason`) is undefined and the frame
+ * matched nothing at all. It was dropped without a log line, the stream ended
+ * with no content and no `finish_reason`, and the turn looked like a model that
+ * simply had nothing to say. Measured 2026-09-16: a 105-second session ended
+ * `exit 0` with zero bytes of output twice in a row, after billing the tokens
+ * its earlier successful turns had spent.
+ *
+ * Claudish already learned this lesson twice on other wires —
+ * `stream-head-sniffer.ts` for the Codex Responses backend and
+ * `devin-stream-head-sniffer.ts` for Devin, both of which open by noting that
+ * "every retry hook in claudish keys off the HTTP status". The OpenAI-shaped
+ * wire, which is the most used one, never got the same treatment.
+ *
+ * Returns undefined when the frame carries no error, so the caller can test the
+ * result directly rather than duplicating the shape-sniffing.
+ */
+export function describeInStreamError(chunk: unknown): string | undefined {
+  if (!chunk || typeof chunk !== "object") return undefined;
+  const error = (chunk as { error?: unknown }).error;
+  if (!error) return undefined;
+
+  // Some gateways send a bare string; most send an object.
+  if (typeof error === "string") return error;
+  if (typeof error !== "object") return String(error);
+
+  const e = error as Record<string, unknown>;
+  const metadata = (e.metadata ?? {}) as Record<string, unknown>;
+
+  const parts: string[] = [];
+  // The vendor that actually refused, when the aggregator names it. Without
+  // this the message reads as though the aggregator itself rejected the call.
+  const provider = (chunk as { provider?: unknown }).provider;
+  if (typeof provider === "string" && provider) parts.push(`[${provider}]`);
+
+  const code = e.code ?? metadata.provider_code;
+  const type = e.type ?? metadata.error_type;
+  const label = [code, type].filter((v) => v !== undefined && v !== null && v !== "").join(" ");
+  if (label) parts.push(label);
+
+  const message = e.message ?? metadata.raw;
+  parts.push(
+    typeof message === "string" && message.trim() ? message : JSON.stringify(error).slice(0, 500)
+  );
+
+  return parts.join(" ");
+}
+
+/**
  * Validate tool call arguments against the tool schema
  * Now includes automatic repair of missing parameters
  */
@@ -795,6 +855,23 @@ export function createStreamingResponseHandler(
                   log(
                     `[Streaming] Usage data received: prompt=${chunk.usage.prompt_tokens}, completion=${chunk.usage.completion_tokens}, total=${chunk.usage.total_tokens}`
                   );
+                }
+
+                // An error carried inside the 200 body. Checked AFTER `usage`
+                // so the tokens the turn already spent are still reported, and
+                // BEFORE the `choices[0]` reads below, which an error frame's
+                // empty `choices` array silently fails to match.
+                //
+                // `finalize("error", …)` emits an SSE `error` event, which is
+                // the only thing that makes Claude Code surface the failure. The
+                // alternative — turning it into an assistant text block — is the
+                // mistake `stream-head-sniffer.ts` documents: it freezes a
+                // provider failure into the transcript as a successful answer.
+                const inStreamError = describeInStreamError(chunk);
+                if (inStreamError) {
+                  log(`[Streaming] Upstream error inside a 200 stream: ${inStreamError}`);
+                  await finalize("error", inStreamError);
+                  return;
                 }
 
                 const delta = chunk.choices?.[0]?.delta;
