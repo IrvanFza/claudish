@@ -64,7 +64,9 @@ const DEFAULT_CATALOG_URL =
  * property read per refresh.
  */
 function catalogUrl(): string {
-  return process.env.CLAUDISH_CATALOG_URL ?? process.env.FIREBASE_CATALOG_URL ?? DEFAULT_CATALOG_URL;
+  return (
+    process.env.CLAUDISH_CATALOG_URL ?? process.env.FIREBASE_CATALOG_URL ?? DEFAULT_CATALOG_URL
+  );
 }
 
 /** The plans endpoint, derived from the catalog URL unless overridden. */

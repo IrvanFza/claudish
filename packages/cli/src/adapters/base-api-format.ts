@@ -700,7 +700,9 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     this.stripAnthropicEffortField(request);
     log(
       `[${this.getName()}] effort ${effort} -> thinking: enabled, budget_tokens: ${budget ?? "(model max)"}${
-        budget !== undefined && budget !== requested ? ` (clamped from ${requested} under max_tokens ${ceiling})` : ""
+        budget !== undefined && budget !== requested
+          ? ` (clamped from ${requested} under max_tokens ${ceiling})`
+          : ""
       } for ${this.modelId} (catalog: budget-controlled)`
     );
     return request;

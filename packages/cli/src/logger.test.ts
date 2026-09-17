@@ -16,7 +16,9 @@ afterEach(() => {
 describe("logger filenames", () => {
   test("concurrent processes in the same second create distinct rotation-compatible paths", async () => {
     tempDir = mkdtempSync(join(tmpdir(), "claudish-logger-test-"));
-    const loggerUrl = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "logger.ts")).href;
+    const loggerUrl = pathToFileURL(
+      join(dirname(fileURLToPath(import.meta.url)), "logger.ts")
+    ).href;
     const fixedTime = Date.parse("2026-09-17T00:00:00.000Z");
     const childCode = `
       const NativeDate = Date;
