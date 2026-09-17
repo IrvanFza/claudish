@@ -61,6 +61,7 @@ import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
 import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
+import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import {
   buildRoutingChain,
   loadRoutingRules,
@@ -616,9 +617,25 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       // Pick up --provider <slug> anywhere in the argv. We DON'T consume it
       // from the loop — it's read-once here and harmless to let the outer
       // passthrough swallow it later because we exit before that.
+      //
+      // Both spellings are read. `--provider=x-ai` used to match nothing, so
+      // the flag was silently dropped and the FULL top-100 printed — a wrong
+      // answer that looks like a right one, which is the same failure class as
+      // the empty-for-a-valid-slug case below.
       const providerIdx = args.indexOf("--provider");
-      const providerSlug =
-        providerIdx !== -1 && providerIdx + 1 < args.length ? args[providerIdx + 1] : null;
+      const inlineProvider = args.find((a) => a.startsWith("--provider="));
+      let providerSlug: string | null = null;
+      if (inlineProvider) {
+        providerSlug = inlineProvider.slice("--provider=".length);
+      } else if (providerIdx !== -1) {
+        const next = args[providerIdx + 1];
+        providerSlug = next && !next.startsWith("--") ? next : "";
+      }
+      if (providerSlug === "") {
+        console.error("--provider needs a slug: claudish --models --provider <slug>");
+        console.error("Run `claudish --providers` for the full list.");
+        process.exit(1);
+      }
 
       if (forceUpdate) clearAllModelCaches();
 
@@ -1052,11 +1069,85 @@ async function printTop100(jsonOutput: boolean): Promise<void> {
 }
 
 /**
+ * Say what the typed token IS, rather than reporting an empty catalog.
+ *
+ * Three facts, each printed only when true: the near-miss slugs, the routing
+ * prefix the token really belongs to, and where the full vocabulary lives. The
+ * `--json` form carries the same three so a script does not have to scrape
+ * prose, and both exit non-zero — this is a user error, not an empty result.
+ */
+function printUnknownProviderSlug(
+  typedSlug: string,
+  resolved: ReturnType<typeof resolveProviderSlug>,
+  catalogSize: number,
+  jsonOutput: boolean
+): void {
+  if (jsonOutput) {
+    console.log(
+      JSON.stringify(
+        {
+          error: `"${typedSlug}" is not a provider slug in the model catalog`,
+          provider: typedSlug,
+          suggestions: resolved.suggestions.map((s) => s.slug),
+          routingPrefixOwner: resolved.routingOwner,
+          validSlugs: catalogSize,
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  console.error(`\n❌ "${typedSlug}" is not a provider slug in the model catalog.`);
+  if (resolved.suggestions.length > 0) {
+    const list = resolved.suggestions
+      .map((s) => `${s.slug} (${s.count} active model${s.count === 1 ? "" : "s"})`)
+      .join(", ");
+    console.error(`\n   Did you mean: ${list}`);
+  }
+  if (resolved.routingOwner) {
+    console.error(
+      `\n   "${typedSlug}" IS a claudish routing prefix for the "${resolved.routingOwner}" provider —` +
+        `\n   use it with --model: claudish --model ${typedSlug}@<model-id>` +
+        "\n   Routing prefixes and catalog vendor slugs are different vocabularies."
+    );
+  }
+  console.error(`\n   claudish --providers    lists all ${catalogSize} catalog slugs`);
+  console.error(
+    `   claudish -s ${typedSlug}${" ".repeat(Math.max(1, 12 - typedSlug.length))}searches model ids instead\n`
+  );
+}
+
+/**
  * Print the Firebase catalog filtered to a single provider slug. No local
  * footer — this view is explicitly scoped by the user and cross-cutting
  * probes would be noise.
  */
-async function printByProvider(providerSlug: string, jsonOutput: boolean): Promise<void> {
+async function printByProvider(typedSlug: string, jsonOutput: boolean): Promise<void> {
+  // Validate against the catalog's OWN vocabulary before querying it. An
+  // unknown token used to produce "No active models found for provider X",
+  // which states a fact about the catalog that is false for every token from a
+  // different vocabulary — `moonshot` is a routing prefix, and the vendor is in
+  // the catalog as `moonshotai`. See providers/provider-slug-resolve.ts.
+  //
+  // A failure to fetch the list is NOT a validation failure: `resolveProviderSlug`
+  // fails open on an empty list, so a catalog outage degrades to the old
+  // behaviour rather than to a confident rejection.
+  let catalogProviders: Awaited<ReturnType<typeof getProviderList>> = [];
+  try {
+    catalogProviders = await getProviderList();
+  } catch {
+    // Fail open — the query below still runs.
+  }
+
+  const resolved = resolveProviderSlug(typedSlug, catalogProviders);
+  if (resolved.kind === "unknown") {
+    printUnknownProviderSlug(typedSlug, resolved, catalogProviders.length, jsonOutput);
+    process.exit(1);
+  }
+
+  const providerSlug = resolved.canonical ?? typedSlug;
   let models: ModelDoc[];
   try {
     models = await getModelsByProvider(providerSlug, 200);
@@ -1076,9 +1167,12 @@ async function printByProvider(providerSlug: string, jsonOutput: boolean): Promi
   }
 
   if (models.length === 0) {
+    // A KNOWN slug with nothing active is a different fact from an unknown
+    // slug, and has a different remedy, so it keeps its own wording.
     console.log(
-      `\nNo active models found for provider "${providerSlug}". Try \`claudish -s <query>\` to search the full catalog.\n`
+      `\nProvider "${providerSlug}" is in the catalog but has no active models right now.`
     );
+    console.log("Try `claudish -s <query>` to search the full catalog.\n");
     return;
   }
 

@@ -90,6 +90,90 @@ describe("coerceToSchema: declared types, and a failure keeps the value", () => 
   });
 });
 
+/**
+ * The `array` and `object` branches, which shipped untested.
+ *
+ * They are the branches the `<function=NAME><parameter=P>` envelope needs most:
+ * that wire has no types at all, so a tool declaring `string[]` receives the
+ * JSON text `'["a","b"]'` and a tool declaring an object receives `'{"a":1}'`.
+ * Everything here is a call on this tree's own function with argument values —
+ * no provider bytes, no fixture.
+ */
+describe("coerceToSchema: array and object", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      tags: { type: "array", items: { type: "string" } },
+      sizes: { type: "array", items: { type: "number" } },
+      anything: { type: "array" },
+      options: { type: "object" },
+    },
+  };
+
+  test("a JSON array string becomes an array", () => {
+    expect(coerceToSchema(schema, { tags: '["a","b"]' }).args).toEqual({ tags: ["a", "b"] });
+  });
+
+  test("the declared items type is applied to each element", () => {
+    expect(coerceToSchema(schema, { sizes: '["1","2.5"]' }).args).toEqual({ sizes: [1, 2.5] });
+  });
+
+  test("an element that cannot be coerced keeps its own value, and its siblings still convert", () => {
+    // A failed element is never dropped and never guessed at: the harness
+    // re-validates the call, so a wrong type is visible while a missing one is not.
+    expect(coerceToSchema(schema, { sizes: '["1","later"]' }).args).toEqual({
+      sizes: [1, "later"],
+    });
+  });
+
+  test("an array with no declared items is parsed but not touched element-wise", () => {
+    expect(coerceToSchema(schema, { anything: '["1",true,null]' }).args).toEqual({
+      anything: ["1", true, null],
+    });
+  });
+
+  test("a JSON object string is NOT accepted for an array field", () => {
+    // `parseJsonOfKind` keeps the parse only if it decoded to the expected kind.
+    // Without that check a tool declaring a list would receive a map.
+    expect(coerceToSchema(schema, { tags: '{"a":1}' }).args).toEqual({ tags: '{"a":1}' });
+  });
+
+  test("a JSON object string becomes an object", () => {
+    expect(coerceToSchema(schema, { options: '{"depth":2}' }).args).toEqual({
+      options: { depth: 2 },
+    });
+  });
+
+  test("a JSON array string is NOT accepted for an object field", () => {
+    expect(coerceToSchema(schema, { options: "[1,2]" }).args).toEqual({ options: "[1,2]" });
+  });
+
+  test("a string that is not JSON at all keeps its value", () => {
+    expect(coerceToSchema(schema, { tags: "a, b", options: "depth=2" }).args).toEqual({
+      tags: "a, b",
+      options: "depth=2",
+    });
+  });
+
+  test("a bare scalar is not wrapped into a one-element array", () => {
+    // Wrapping would be inventing a shape the model did not write.
+    expect(coerceToSchema(schema, { tags: "a" }).args).toEqual({ tags: "a" });
+  });
+
+  test("a value already of the declared kind is left alone, elements included", () => {
+    // The top-level type already matches, so the branch never runs — the
+    // element-wise pass exists for values parsed OUT of a string, not for
+    // re-typing an array a structured wire already delivered.
+    const args = { sizes: ["1", "2"] };
+    expect(coerceToSchema(schema, args).args).toBe(args);
+  });
+
+  test("the coerced-key list names exactly the keys that changed", () => {
+    const result = coerceToSchema(schema, { tags: '["a"]', options: "not json" });
+    expect(result.coerced).toEqual(["tags"]);
+  });
+});
+
 describe("applySchemaDefaults: the schema's own value, for required keys only", () => {
   const schema = {
     type: "object",

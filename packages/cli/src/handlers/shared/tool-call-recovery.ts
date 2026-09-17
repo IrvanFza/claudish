@@ -127,6 +127,65 @@ const FUNCTION_TAG_AT_CURSOR = new RegExp(`<function=(${TOOL_NAME_SOURCE})>`, "y
 /** `<parameter=NAME>` at exactly the cursor, inside a function block. */
 const PARAMETER_TAG_AT_CURSOR = /<parameter=([^>\s]+)>/y;
 
+/** `<tool_call>` at exactly the cursor, with any whitespace after it. Sticky. */
+const TOOL_CALL_OPEN_AT_CURSOR = /<tool_call>\s*/y;
+const TOOL_CALL_CLOSE_TAG = "</tool_call>";
+
+/**
+ * Unwrap the `<tool_call>` envelope Qwen- and Hermes-family models put around a
+ * function-tag block, so the envelope parser below sees the shape it was written
+ * for.
+ *
+ * This is an ENTRY condition, not a parser change. The wrapped form
+ *
+ *     <tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>
+ *
+ * failed `startsWith("<function=")`, fell through to the six loose regex
+ * patterns, and came out as `{"city":"Paris</parameter></function></tool_call>"}`
+ * — the closing tags swallowed into the value, silently, and a tool then ran on
+ * the corrupted argument. Measured live against the published 9.5.0 binary; the
+ * same input without the wrapper produced `{"city":"Paris"}`.
+ *
+ * The wrapper is REMOVED here rather than tolerated inside the parser, which is
+ * what keeps `</tool_call>` out of the last parameter's value: the parameter
+ * value scanner stops at `</parameter>`, `</function>`, `<parameter=` and
+ * `<function=`, and nothing it can see afterwards belongs to any value.
+ *
+ * Multiple wrapped calls in one response fall out of the same loop: each block
+ * is unwrapped in turn and they are rejoined, so the existing "a block ends at
+ * the next `<function=`" rule handles the boundary.
+ *
+ * Returns `null` — declining, so the caller keeps the original text — for
+ * anything that is not exactly this shape: a leading `<tool_call>` that wraps
+ * something other than a function tag (Pattern 1's JSON payload is precisely
+ * that), or trailing content after the last `</tool_call>`. An UNTERMINATED
+ * wrapper is accepted, because a truncated stream is a real capture and the
+ * block inside it is still unambiguous.
+ */
+function unwrapToolCallTags(body: string): string | null {
+  if (!body.startsWith("<tool_call>")) return null;
+
+  const blocks: string[] = [];
+  let cursor = 0;
+
+  while (cursor < body.length) {
+    TOOL_CALL_OPEN_AT_CURSOR.lastIndex = cursor;
+    if (!TOOL_CALL_OPEN_AT_CURSOR.exec(body)) return null;
+    cursor = TOOL_CALL_OPEN_AT_CURSOR.lastIndex;
+
+    const close = body.indexOf(TOOL_CALL_CLOSE_TAG, cursor);
+    const block = (close === -1 ? body.slice(cursor) : body.slice(cursor, close)).trim();
+    if (!block.startsWith("<function=")) return null;
+    blocks.push(block);
+    if (close === -1) break;
+
+    cursor = close + TOOL_CALL_CLOSE_TAG.length;
+    cursor += /^\s*/.exec(body.slice(cursor))?.[0].length ?? 0;
+  }
+
+  return blocks.length > 0 ? blocks.join("\n") : null;
+}
+
 /**
  * Parse a response that is ENTIRELY a `<function=NAME><parameter=P>V` envelope.
  *
@@ -150,8 +209,11 @@ const PARAMETER_TAG_AT_CURSOR = /<parameter=([^>\s]+)>/y;
  * describes one.
  */
 export function parseFunctionTagEnvelope(text: string): ExtractedToolCall[] | null {
-  const body = text.trim();
-  if (body.length === 0) return null;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  // The `<tool_call>` wrapper is stripped BEFORE the strict test, never parsed
+  // through: see `unwrapToolCallTags`.
+  const body = unwrapToolCallTags(trimmed) ?? trimmed;
   if (!body.startsWith("<function=")) return null;
 
   const calls: ExtractedToolCall[] = [];
