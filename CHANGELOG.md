@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.6.1] - 2026-09-17
+
+### Bug Fixes
+
+- tell --models --provider users which vocabulary their slug is from *(cli)* ([`a01f759`](https://github.com/MadAppGang/claudish/commit/a01f759834f79ada24a6df9b737fd656663e59ab))
+- separate SSE streams by upstream response id *(test-fixtures)* ([`4d5ae9f`](https://github.com/MadAppGang/claudish/commit/4d5ae9fc80e3f0ce1e86a5f63219a907d4dfa3f7))
+- unwrap <tool_call> envelopes before the strict parser sees them *(tools)* ([`58b5775`](https://github.com/MadAppGang/claudish/commit/58b577512cbd37e37844c07ba5b496670c0309de))
+
+### Documentation
+
+- update CHANGELOG.md for v9.6.0([`590777b`](https://github.com/MadAppGang/claudish/commit/590777b7e5c8ae8dc7e917bea0ee4ad5a35014e4))
+
+### Other Changes
+
+- v9.6.1 *(release)* ([`2cb18a2`](https://github.com/MadAppGang/claudish/commit/2cb18a2667a54a0c2e1ccc50b21a4d53fceace1c))
+
 ## [9.6.0] - 2026-09-17
 
 ### Bug Fixes
