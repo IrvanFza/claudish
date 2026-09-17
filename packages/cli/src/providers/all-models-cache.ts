@@ -126,6 +126,39 @@ export interface SlimModelEntry {
   /** Context window in tokens (present when Firebase has it) */
   contextWindow?: number;
   /**
+   * The model's own output ceiling, when the catalog publishes one.
+   *
+   * ABSENT MEANS UNKNOWN, never zero. The slim projection omits the field
+   * entirely when it has no value, and it does NOT carry the
+   * `maxOutputTokensNotApplicable` flag that the fuller projections use — so
+   * "no number here" cannot be told apart from "the concept does not apply to
+   * this model", and both must be treated as "we do not know".
+   *
+   * A reasoning budget is clamped against the REQUEST's ceiling rather than
+   * this one (`max_tokens` is what the provider validates against), so this
+   * value informs reporting, not request shaping.
+   */
+  maxOutputTokens?: number;
+  /**
+   * Whether the catalog KNOWS this model's reasoning control.
+   *
+   * `"known"` — the `reasoning` record below describes the real wire control.
+   * `"unknown"` — the source never described it. This is NOT the same as an
+   * explicit unsupported record (`reasoning.supported === false`), and the two
+   * demand opposite behaviour: unsupported means "switch reasoning off",
+   * unknown means "emit no reasoning knob at all and change nothing".
+   *
+   * Absent on caches written before the field existed. Treat absent as
+   * `"known"` only when a `reasoning` record is present — see
+   * {@link reasoningStatusOf}, which is the single place that rule lives.
+   *
+   * Do NOT derive a control from {@link supportsThinking} when this is
+   * `"unknown"`. The backend sets `reasoningStatus: "unknown"` while still
+   * publishing `supportsThinking` from coarse capability data, so the flag is
+   * present precisely in the case where it proves nothing about the knob.
+   */
+  reasoningStatus?: "known" | "unknown";
+  /**
    * Reasoning capability (present when Firebase has it). Already carried by the
    * on-disk `?catalog=slim` payload; the type previously dropped it, so every
    * consumer had to guess a model's reasoning knob instead of reading it.
@@ -174,6 +207,46 @@ export interface SlimModelEntry {
   endpoints?: Record<string, ModelEndpoint>;
 }
 
+/**
+ * Whether this entry's reasoning control is KNOWN, for entries written by any
+ * catalog version.
+ *
+ * The backend always sends `reasoningStatus` now, so the live path is a plain
+ * read. The inference below exists only for a cache written before the field
+ * shipped, and it is deliberately conservative: a `reasoning` record is
+ * self-describing, so its presence means known; its absence on an old cache is
+ * indistinguishable from "never described", so it reads unknown.
+ *
+ * That inference matches what the backend itself does
+ * (`reasoningStatus: reasoning !== undefined ? "known" : "unknown"`), so an old
+ * cache degrades to the same answer a fresh one would give rather than to a
+ * guess of its own.
+ */
+export function reasoningStatusOf(entry: SlimModelEntry): "known" | "unknown" {
+  if (entry.reasoningStatus === "known" || entry.reasoningStatus === "unknown") {
+    return entry.reasoningStatus;
+  }
+  return entry.reasoning !== undefined ? "known" : "unknown";
+}
+
+/**
+ * How one exact plan roster id resolves to a canonical catalog description.
+ *
+ * The KEY this is stored under is the wire id the provider expects for
+ * inference; `modelId` is the canonical id that carries the metadata. They are
+ * frequently different (`claude-opus-4-5-20251101` is the wire id, the row is
+ * stored undated), and conflating them is the whole point of the map: resolve
+ * metadata through `modelId`, keep sending the key.
+ *
+ * `missing` and `ambiguous` are explicit negative answers, not absence. They
+ * say the catalog looked and could not resolve the id, which is information —
+ * it must not be read as "this model has no reasoning" or as grounds to drop a
+ * subscription route.
+ */
+export type CatalogPlanModelDescription =
+  | { status: "described"; modelId: string }
+  | { status: "missing" | "ambiguous" };
+
 export type SubscriptionModelDiscovery = "catalog" | "client" | "hybrid";
 
 /** Minimal queryPlans projection needed by the synchronous routing engine. */
@@ -196,6 +269,15 @@ export interface CachedSubscriptionPlan {
     prefix?: string;
     nativeModelProviders?: string[];
   };
+  /**
+   * Exact plan roster id → canonical catalog description.
+   *
+   * Published for routed catalog/hybrid plans. Absent on `client`-discovery
+   * plans, whose `includedModels` are display labels rather than wire ids, and
+   * absent on caches written before the field shipped — in both cases callers
+   * fall back to matching the id directly against the catalog.
+   */
+  modelDescriptions?: Record<string, CatalogPlanModelDescription>;
 }
 
 /**
@@ -211,6 +293,16 @@ export interface DiskCacheV2 {
   models: Array<{ id: string }>;
   /** Additive queryPlans cache. Absent on legacy v2 files. */
   plans?: CachedSubscriptionPlan[];
+  /**
+   * The catalog generation every page in `entries` AND `plans` was read from.
+   *
+   * Recorded so the file can state which snapshot it is, rather than being an
+   * undated merge. A refresh writes this only when every page and the plans
+   * document agreed on one revision, so its presence is the assertion that the
+   * file is internally consistent. Absent on files written before pinning
+   * existed, which are still readable and are simply not known to be coherent.
+   */
+  catalogRevision?: string;
 }
 
 export const ALL_MODELS_CACHE_PATH = join(homedir(), ".claudish", "all-models.json");
@@ -244,6 +336,12 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
   const models = Array.isArray(data.models) ? (data.models as Array<{ id: string }>) : [];
   const entries = Array.isArray(data.entries) ? (data.entries as SlimModelEntry[]) : [];
   const plans = Array.isArray(data.plans) ? (data.plans as CachedSubscriptionPlan[]) : undefined;
+  // Read back explicitly. This function rebuilds the object from a known field
+  // list rather than spreading `data`, so any field not named here is silently
+  // dropped on the way in — which is what happened to `catalogRevision` until
+  // a round-trip check caught it writing correctly and reading back undefined.
+  const catalogRevision =
+    typeof data.catalogRevision === "string" ? data.catalogRevision : undefined;
 
   return {
     version: 2,
@@ -251,6 +349,7 @@ export function readAllModelsCache(path: string = ALL_MODELS_CACHE_PATH): DiskCa
     entries,
     models,
     ...(plans !== undefined ? { plans } : {}),
+    ...(catalogRevision !== undefined ? { catalogRevision } : {}),
   };
 }
 
@@ -281,6 +380,11 @@ export function writeAllModelsCache(
     ...(data.plans !== undefined || existing?.plans !== undefined
       ? { plans: data.plans ?? existing?.plans ?? [] }
       : {}),
+    // Carried, never merged from `existing`. The revision describes the entries
+    // and plans written in THIS call; inheriting the previous file's value onto
+    // a partial write would stamp new data with an old snapshot's identity and
+    // make the coherence claim a lie.
+    ...(data.catalogRevision !== undefined ? { catalogRevision: data.catalogRevision } : {}),
   };
 
   mkdirSync(dirname(path), { recursive: true });

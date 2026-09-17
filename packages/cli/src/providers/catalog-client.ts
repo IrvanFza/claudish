@@ -50,12 +50,27 @@ import {
  * Chiefly useful for integration tests that point at a local server to force
  * fetch failures.
  */
-const FIREBASE_CATALOG_URL =
-  process.env.CLAUDISH_CATALOG_URL ??
-  process.env.FIREBASE_CATALOG_URL ??
+const DEFAULT_CATALOG_URL =
   "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=1000";
 
-const FIREBASE_PLANS_URL = process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(FIREBASE_CATALOG_URL);
+/**
+ * Resolved PER CALL rather than once at import.
+ *
+ * A module-level constant freezes whatever the environment held at the instant
+ * this file was first imported, which makes the documented override untestable:
+ * a test that points `CLAUDISH_CATALOG_URL` at a local server only takes effect
+ * if it happens to run before any other file imports this module. Reading the
+ * variable at call time makes the override mean what it says, and costs one
+ * property read per refresh.
+ */
+function catalogUrl(): string {
+  return process.env.CLAUDISH_CATALOG_URL ?? process.env.FIREBASE_CATALOG_URL ?? DEFAULT_CATALOG_URL;
+}
+
+/** The plans endpoint, derived from the catalog URL unless overridden. */
+function plansUrl(): string {
+  return process.env.CLAUDISH_PLANS_URL ?? derivePlansUrl(catalogUrl());
+}
 
 function derivePlansUrl(catalogUrl: string): string {
   try {
@@ -78,8 +93,24 @@ export type DiskCache = DiskCacheV2;
  * ground truth so the launcher can make a policy decision.
  */
 export type RefreshOutcome =
-  | { kind: "refreshed"; modelCount: number }
-  | { kind: "fetch_failed"; reason: "timeout" | "network" | "http_error" | "empty" | "disabled" };
+  // `catalogRevision` and `pages` are diagnostics, and OPTIONAL so that
+  // constructing a success outcome (which several callers and fakes do) does not
+  // require knowing them. Requiring them would buy no safety: no caller branches
+  // on either value.
+  | { kind: "refreshed"; modelCount: number; catalogRevision?: string; pages?: number }
+  | {
+      kind: "fetch_failed";
+      reason:
+        | "timeout"
+        | "network"
+        | "http_error"
+        | "empty"
+        | "disabled"
+        /** A later page came from a different catalog generation than page 1. */
+        | "revision_mismatch"
+        /** The server said `hasMore` but the pages could not be completed. */
+        | "incomplete";
+    };
 
 /** Result of resolving a user-typed model name for a provider. */
 export interface ModelResolutionResult {
@@ -418,7 +449,121 @@ function catalogWarmDisabled(): boolean {
   return catalogWarmDisabledFor(process.env.CLAUDISH_DISABLE_CATALOG_WARM);
 }
 
-export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome> {
+// ---------------------------------------------------------------------------
+// Revision-pinned pagination
+// ---------------------------------------------------------------------------
+
+/**
+ * The header the catalog stamps every response with, naming the immutable
+ * generation that served it.
+ */
+const CATALOG_REVISION_HEADER = "x-catalog-revision";
+
+/**
+ * Hard ceiling on pages per refresh.
+ *
+ * A stop condition that does not depend on the server agreeing with itself.
+ * `hasMore` is the server's claim; this is ours. Without it, a server that
+ * always answers `hasMore: true` turns a warm into an unbounded fetch loop on
+ * the request path.
+ */
+const MAX_CATALOG_PAGES = 40;
+
+/**
+ * Page size requested per call.
+ *
+ * The backend clamps `limit` to 2000 (`query-handler.ts`, slim branch), so a
+ * single request can NOT be relied on to return the whole catalog however large
+ * a number is asked for. Paging is therefore mandatory, not an optimisation.
+ */
+const CATALOG_PAGE_LIMIT = 1000;
+
+/**
+ * Build one page request from the configured base URL.
+ *
+ * `offset`/`limit` are overwritten rather than appended, so a base URL that
+ * already carries them (the default does: `limit=1000`) pages correctly instead
+ * of sending the parameter twice. Every other parameter the user configured —
+ * `status`, `catalog`, and anything a test server needs — is preserved.
+ *
+ * `revision` pins the page to one immutable generation. It is a QUERY
+ * PARAMETER, not a request header: the backend reads `req.query.revision`.
+ * Sending it as a header would be silently ignored and every page would be
+ * served from whatever generation was current at that instant, which is exactly
+ * the torn read the pinning exists to prevent.
+ */
+export function buildCatalogPageUrl(
+  baseUrl: string,
+  offset: number,
+  limit: number,
+  revision?: string
+): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("offset", String(offset));
+  url.searchParams.set("limit", String(limit));
+  if (revision) url.searchParams.set("revision", revision);
+  return url.toString();
+}
+
+/** One slim page as the catalog returns it. */
+interface CatalogPage {
+  models: SlimModelEntry[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  hasMore?: boolean;
+}
+
+type PageResult =
+  | { ok: true; page: CatalogPage; revision?: string }
+  | { ok: false; reason: "timeout" | "network" | "http_error" };
+
+/** Fetch one page. Never throws; classifies its own failure. */
+async function fetchCatalogPage(url: string, timeoutMs: number): Promise<PageResult> {
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    const name = (err as { name?: string } | null | undefined)?.name;
+    const reason: "timeout" | "network" =
+      name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
+    return { ok: false, reason };
+  }
+
+  if (!response.ok) return { ok: false, reason: "http_error" };
+
+  let page: CatalogPage;
+  try {
+    page = (await response.json()) as CatalogPage;
+  } catch {
+    // Got a response but could not read it — network-class, distinct from "empty".
+    return { ok: false, reason: "network" };
+  }
+
+  const revision = response.headers.get(CATALOG_REVISION_HEADER) ?? undefined;
+  return { ok: true, page, revision };
+}
+
+/** Options for {@link refreshCatalog}. */
+export interface RefreshCatalogOptions {
+  /**
+   * Override the disk cache path.
+   *
+   * TESTS ONLY, and load-bearing for them. Without this seam a test that
+   * exercises a refresh writes the developer's real
+   * `~/.claudish/all-models.json` — which has happened: a suite seeded the live
+   * catalog because a refresh reached the default path, and the repo's
+   * guard-real-config list had to grow a second file afterwards. Coverage for
+   * pagination and revision mismatches inherently drives a refresh to
+   * completion, so that coverage cannot exist safely without this parameter.
+   */
+  cachePath?: string;
+}
+
+export async function refreshCatalog(
+  timeoutMs: number,
+  options: RefreshCatalogOptions = {}
+): Promise<RefreshOutcome> {
   // `CLAUDISH_DISABLE_CATALOG_WARM=1` turns every refresh into a no-op, which is
   // the same contract `CLAUDISH_DISABLE_KEYCHAIN` and `CLAUDISH_DISABLE_OP` give
   // the other two shared resources a test must not reach.
@@ -443,51 +588,96 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
     return { kind: "fetch_failed", reason: "disabled" };
   }
 
-  const plansPromise = fetchSubscriptionPlans(timeoutMs);
-  let response: Response;
-  try {
-    response = await fetch(FIREBASE_CATALOG_URL, { signal: AbortSignal.timeout(timeoutMs) });
-  } catch (err) {
-    const name = (err as { name?: string } | null | undefined)?.name;
-    const reason: "timeout" | "network" =
-      name === "TimeoutError" || name === "AbortError" ? "timeout" : "network";
-    return { kind: "fetch_failed", reason };
+  // ── Page the catalog, pinned to one generation ───────────────────────────
+  //
+  // NOTHING below touches `_memCache` or the disk file until every page AND the
+  // plans document have been read successfully from the SAME revision. A
+  // partial catalog is worse than a stale one: a model missing because its page
+  // never arrived is indistinguishable from a model the catalog does not serve,
+  // and the second reading silently drops a working route.
+  const entries: SlimModelEntry[] = [];
+  let revision: string | undefined;
+  let pages = 0;
+  let offset = 0;
+
+  for (;;) {
+    const url = buildCatalogPageUrl(catalogUrl(), offset, CATALOG_PAGE_LIMIT, revision);
+    const result = await fetchCatalogPage(url, timeoutMs);
+    if (!result.ok) {
+      // A first-page failure is the pre-existing "could not reach the catalog".
+      // A LATER page failing is a torn read, and reporting it as a plain network
+      // error would invite a caller to accept the partial pages already in hand.
+      return {
+        kind: "fetch_failed",
+        reason: pages === 0 ? result.reason : "incomplete",
+      };
+    }
+
+    const { page } = result;
+    if (!Array.isArray(page.models)) return { kind: "fetch_failed", reason: "empty" };
+
+    if (pages === 0) {
+      // Pin to whatever generation served page 1. When the deployment predates
+      // revision headers this stays undefined and the pages are simply
+      // unpinned — the previous behaviour, not a failure.
+      revision = result.revision;
+      if (page.models.length === 0) return { kind: "fetch_failed", reason: "empty" };
+    } else if (revision && result.revision && result.revision !== revision) {
+      // The generation rolled over mid-refresh. The pages in hand describe two
+      // different snapshots and must not be stitched together.
+      return { kind: "fetch_failed", reason: "revision_mismatch" };
+    }
+
+    entries.push(...page.models);
+    pages++;
+
+    if (page.hasMore !== true) break;
+
+    // `hasMore` with an empty page cannot make progress. Believing the flag
+    // would spin until MAX_CATALOG_PAGES; believing the page would silently
+    // truncate. Neither is a catalog, so refuse both.
+    if (page.models.length === 0) return { kind: "fetch_failed", reason: "incomplete" };
+
+    offset += page.models.length;
+
+    if (pages >= MAX_CATALOG_PAGES) {
+      // Our own stop condition, reached while the server still claims more.
+      return { kind: "fetch_failed", reason: "incomplete" };
+    }
   }
 
-  if (!response.ok) return { kind: "fetch_failed", reason: "http_error" };
+  if (entries.length === 0) return { kind: "fetch_failed", reason: "empty" };
 
-  let data: { models: SlimModelEntry[]; total?: number };
-  try {
-    data = (await response.json()) as { models: SlimModelEntry[]; total?: number };
-  } catch {
-    // Got a response but could not read it — network-class, distinct from "empty".
-    return { kind: "fetch_failed", reason: "network" };
-  }
-
-  if (!Array.isArray(data.models) || data.models.length === 0) {
-    return { kind: "fetch_failed", reason: "empty" };
-  }
+  // Plans are read AFTER the models and pinned to the same generation, so the
+  // `modelDescriptions` map joins against the exact snapshot in `entries`.
+  // Fetching it concurrently (as this once did) cannot be pinned at all: the
+  // revision is only known once page 1 has answered.
+  const plans = await fetchSubscriptionPlans(timeoutMs, revision);
 
   // Build the backward-compat models array BEFORE mutating shared state, so a
   // throw below leaves _memCache and the disk file untouched.
   const backwardCompatModels: Array<{ id: string }> = [];
-  for (const entry of data.models) {
+  for (const entry of entries) {
     const id = externalIdFor(entry, "openrouter");
     if (id) backwardCompatModels.push({ id });
   }
 
-  _memCache = data.models;
-  const plans = await plansPromise;
-  writeAllModelsCache({
-    entries: data.models,
-    models: backwardCompatModels,
-    ...(plans !== undefined ? { plans } : {}),
-  });
+  // ── Commit ──────────────────────────────────────────────────────────────
+  _memCache = entries;
+  writeAllModelsCache(
+    {
+      entries,
+      models: backwardCompatModels,
+      ...(plans !== undefined ? { plans } : {}),
+      ...(revision !== undefined ? { catalogRevision: revision } : {}),
+    },
+    options.cachePath
+  );
 
   // Short-circuit the proxy-server background warm.
   _warmPromise = Promise.resolve();
 
-  return { kind: "refreshed", modelCount: data.models.length };
+  return { kind: "refreshed", modelCount: entries.length, catalogRevision: revision, pages };
 }
 
 /**
@@ -495,10 +685,15 @@ export async function refreshCatalog(timeoutMs: number): Promise<RefreshOutcome>
  * discard a valid model refresh or erase the last-known-good routing join.
  */
 async function fetchSubscriptionPlans(
-  timeoutMs: number
+  timeoutMs: number,
+  revision?: string
 ): Promise<CachedSubscriptionPlan[] | undefined> {
   try {
-    const response = await fetch(FIREBASE_PLANS_URL, {
+    const url = new URL(plansUrl());
+    // Same generation as the model pages, so `modelDescriptions` resolves
+    // against the rows actually in hand rather than a newer snapshot's.
+    if (revision) url.searchParams.set("revision", revision);
+    const response = await fetch(url.toString(), {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return undefined;
