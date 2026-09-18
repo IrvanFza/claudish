@@ -763,7 +763,6 @@ export async function refreshCatalog(
   // refresh merge against a catalog it was told to ignore.
   clearCatalogIncompatibility();
 
-
   // ── Commit ──────────────────────────────────────────────────────────────
   _memCache = entries;
   writeAllModelsCache(

@@ -73,14 +73,18 @@ async function runRefreshChild(urls: {
     );
     console.log(JSON.stringify({ outcome, sentinel }));
   `;
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: tempHome,
+    CLAUDISH_CATALOG_URL: urls.catalogUrl,
+    CLAUDISH_PLANS_URL: urls.plansUrl,
+  };
+  // Safe: the loopback CLAUDISH_CATALOG_URL override and temp HOME's isolated
+  // cachePath keep this hermetic.
+  delete env.CLAUDISH_DISABLE_CATALOG_WARM;
   const child = Bun.spawn([process.execPath, "-e", source], {
     cwd: import.meta.dir,
-    env: {
-      ...process.env,
-      HOME: tempHome,
-      CLAUDISH_CATALOG_URL: urls.catalogUrl,
-      CLAUDISH_PLANS_URL: urls.plansUrl,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
