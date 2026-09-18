@@ -107,11 +107,11 @@ The handoff says the opposite: "An available PAYG key is permission to use it", 
 
 1. **Reader ownership:** the claudish session `v3-subscription:blocks-everyone` owns the reader and coordinates the provider changes. It rebases the Alibaba work from `worktree-qwen-token-plan` instead of rewriting it, and it has told that session.
 2. **No billing gate.** The reader follows the handoff: subscriptions → dynamic subscriptions → native API → aggregators → fallback, and a configured key is permission to use it. The two gate commits on `worktree-qwen-token-plan` are not carried.
-3. **claudish keeps its Alibaba names.** Only the Coding Plan is added:
+3. **claudish keeps its Alibaba provider names and shortcuts**, and only the Coding Plan is added. The Token Plan **key** is renamed: `QWEN_TOKEN_PLAN_API_KEY` is the name, and `QWEN_CLOUD_PLAN_API_KEY` is deprecated because it does not say which Alibaba plan it belongs to. The deprecated name keeps working and prints a one-time warning that names the replacement.
 
 | Product | claudish provider | Shortcut | Key | Binding |
 |---|---|---|---|---|
-| Token Plan | `qwen-cloud` | `qc` | `QWEN_CLOUD_PLAN_API_KEY` | `qwen/qwencloud-token-plan` |
+| Token Plan | `qwen-cloud` | `qc` | `QWEN_TOKEN_PLAN_API_KEY` (deprecated alias: `QWEN_CLOUD_PLAN_API_KEY`) | `qwen/qwencloud-token-plan` |
 | Coding Plan (new) | `qwen-coding` | `qcode` | `QWEN_CODING_PLAN_API_KEY` | `qwen/modelstudio-coding-plan` |
 | PAYG | `qwen-payg` | `qp` | `DASHSCOPE_API_KEY` | `qwen/dashscope-direct` |
 
@@ -119,7 +119,7 @@ The new gateway providers take the fixture's names, `together` and `fireworks`, 
 
 ## Requests to the backend
 
-1. **Portal identifiers:** show `qc` and `qp` instead of `qtoken` and `qpay`. `qcode` is correct. Today the portal shows users shortcuts that claudish rejects.
+1. **Portal identifiers:** show `qc` and `qp` instead of `qtoken` and `qpay`. `qcode` is correct. Today the portal shows users shortcuts that claudish rejects. The key names in the handoff (`QWEN_CODING_PLAN_API_KEY`, `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_API_KEY`) are correct and need no change.
 2. **Binding fixture:** in `functions/src/test-fixtures/consumer-subscription-bindings.ts`, the Token Plan row names `qwen-token-plan`. claudish's provider is `qwen-cloud`. The binding, `qwen/qwencloud-token-plan`, is unchanged.
 3. **Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks.
 
