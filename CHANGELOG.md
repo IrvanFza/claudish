@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.7.1] - 2026-09-18
+
+### Bug Fixes
+
+- stop Test All failing every provider when the probe catalog is unreadable *(tui)* ([`e5d3cc5`](https://github.com/MadAppGang/claudish/commit/e5d3cc543ee57ecd55a1ed1ea3c8cb414447f354))
+
+### Documentation
+
+- report the models-index v3 cutover to the backend([`a7c2b3a`](https://github.com/MadAppGang/claudish/commit/a7c2b3a2df9b675dac804efa626bb7c5195cfa85))
+- update CHANGELOG.md for v9.7.0([`06a82a5`](https://github.com/MadAppGang/claudish/commit/06a82a579d083addca59836e4dd0d9304748be62))
+
 ## [9.7.0] - 2026-09-18
 
 ### Bug Fixes
