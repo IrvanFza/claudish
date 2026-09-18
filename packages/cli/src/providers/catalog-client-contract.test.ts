@@ -80,8 +80,10 @@ async function runRefreshChild(urls: {
     CLAUDISH_PLANS_URL: urls.plansUrl,
   };
   // Safe: the loopback CLAUDISH_CATALOG_URL override and temp HOME's isolated
-  // cachePath keep this hermetic.
+  // cachePath keep this hermetic. The child has its own HOME, so remove an
+  // inherited shared sentinel path that would leak state between children.
   delete env.CLAUDISH_DISABLE_CATALOG_WARM;
+  delete env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH;
   const child = Bun.spawn([process.execPath, "-e", source], {
     cwd: import.meta.dir,
     env,
@@ -119,14 +121,18 @@ async function runWarmCacheChild(urls: {
     const after = client.getCatalogEntries();
     console.log(JSON.stringify({ before, after }));
   `;
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: tempHome,
+    CLAUDISH_CATALOG_URL: urls.catalogUrl,
+    CLAUDISH_PLANS_URL: urls.plansUrl,
+  };
+  // The child has its own HOME, so remove an inherited shared sentinel path
+  // that would leak state between children.
+  delete env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH;
   const child = Bun.spawn([process.execPath, "-e", source], {
     cwd: import.meta.dir,
-    env: {
-      ...process.env,
-      HOME: tempHome,
-      CLAUDISH_CATALOG_URL: urls.catalogUrl,
-      CLAUDISH_PLANS_URL: urls.plansUrl,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
