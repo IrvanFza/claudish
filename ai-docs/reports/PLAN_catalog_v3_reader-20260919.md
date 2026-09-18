@@ -55,6 +55,36 @@ All 30 registered profiles, and the claudish provider each one means:
 
 The local providers (`ollama`, `lmstudio`, `vllm`, `mlx`, `litellm`) have no catalog profile and are unaffected.
 
+## Reconciling the work on `worktree-qwen-token-plan`
+
+That session stopped on 2026-09-19 and holds 9 commits plus 72 uncommitted files (+1,175 / −3,228). The uncommitted files are unsigned, because 1Password refused there too. Its export is preserved in this worktree's session folder (`qwen-branch-handoff/uncommitted-vs-1e5e157.patch`, SHA-256 `c6967f95…`). The session's own map of what is safe to carry drives this table.
+
+**Commits**
+
+| Commit | Carry | Why |
+|---|---|---|
+| `c0ac7d8` failed vs absent credentials | yes | The readiness notices below depend on it. |
+| `56066fc` gate subscription → metered | **no** | The billing gate. Jack decided against it. |
+| `24d6074` gate bypasses | **split** | Drop the gate parts. Keep three fixes: `op-source.ts`, where `hasOpSources()` sniffed globally, so a locked 1Password marked a never-configured provider "failed" instead of absent; the readiness test that built the real `AntigravityCredentialProvider` and spawned a bare `security` against the login keychain (1 spawn before the fix, 0 after); and one `describeReadiness` per candidate in `routing-rules.ts`. |
+| `fe8722e` stop persisting the dynamic catalog | yes, edited | Remove 1 gate line in `routing-rules.test.ts`. |
+| `83f9afb` roster → dynamic models catalog | yes | It is independent of the gate. |
+| `6b627f1` black-box tests | yes, edited | Drop `metered-fallback.ts` and `metered-fallback.blackbox.test.ts`. |
+| `80ff29b`, `1e5e157` docs | yes, edited | Remove the gate passages (53 and 2 lines). |
+| `0ba1bfa` three products | yes, edited | Remove `meteredFallbackDefault: "block"` from `qwen-coding` and the test that it blocks; apply Jack's names. |
+
+**Uncommitted groups**
+
+| Group | Carry | Why |
+|---|---|---|
+| A. rename to `qwen-token-plan`/`qtoken`/`qpay`, delete the aliases | **no** | Contradicts Jack's decision. The key rename is the one part kept, via the deprecated alias. |
+| B. gate removal | only the log fix | The gate is never carried. Keep the fix for `routing-rules.ts` printing `[claudish] [claudish]`, a bug already on `main`. |
+| C. video capability | yes | The handoff requires it: `videoOutput` excludes chat, `videoInput` alone never does, and the name-shaped rule applies only where the catalog has no row. Runtime-verified there on 6 cases. |
+| D. public discovery is not entitlement | yes | The handoff requires it. `qwen-coding` lists its models without authentication, so its list proves coverage, not account access. Availability denies only on `"account"` evidence. |
+| E. partial v3 join | no, rebuilt | It is unverified after a late edit, and this plan translates at the edge instead. Its `subscriptionPlanIds` handling is a reference. |
+| F. tests and fixtures | with their groups | |
+
+**Contract conflict to resolve with the backend.** models-index `ai-docs/alibaba-provider-changes.md` line 15 reads: "Product identities have one spelling and no aliases, migration shims, alternate credential names, or retired-name diagnostics." Its table names `qwen-token-plan` / `qtoken` / `qpay`. Jack's decisions keep `qwen-cloud` / `qc` / `qp` and deprecate `QWEN_CLOUD_PLAN_API_KEY` with a warning. That document must be amended, or the two sides disagree again.
+
 ## Slices
 
 Each slice ends green and committed. Codex writes the tests from real captured responses; each slice is also checked against the live generation.

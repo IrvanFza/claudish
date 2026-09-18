@@ -122,6 +122,7 @@ The new gateway providers take the fixture's names, `together` and `fireworks`, 
 1. **Portal identifiers:** show `qc` and `qp` instead of `qtoken` and `qpay`. `qcode` is correct. Today the portal shows users shortcuts that claudish rejects. The key names in the handoff (`QWEN_CODING_PLAN_API_KEY`, `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_API_KEY`) are correct and need no change.
 2. **Binding fixture:** in `functions/src/test-fixtures/consumer-subscription-bindings.ts`, the Token Plan row names `qwen-token-plan`. claudish's provider is `qwen-cloud`. The binding, `qwen/qwencloud-token-plan`, is unchanged.
 3. **Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks.
+4. **Amend `ai-docs/alibaba-provider-changes.md`.** Its table names the Token Plan `qwen-token-plan` / `qtoken` and PAYG `qpay`, and line 15 forbids "aliases, migration shims, alternate credential names, or retired-name diagnostics". claudish keeps `qwen-cloud` / `qc` and `qp`, and accepts `QWEN_CLOUD_PLAN_API_KEY` with a deprecation warning. Please change the table to claudish's names and allow that one deprecated key name, so the document and the client agree.
 
 ## Reproduce
 
