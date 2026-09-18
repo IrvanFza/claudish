@@ -7,7 +7,7 @@
 
 ## Result
 
-Every backend claim in the handoff holds: **48 of 48 checks pass** against generation `g-20260918181642356-73127622`.
+Every backend claim in the handoff holds: **48 of 48 checks pass** against generation `g-20260918181642356-73127622`. The shared Alibaba contract's own promises hold too: **10 of 10**.
 
 The claims about claudish also hold. Released 9.7.1 cannot read v3, Poe's factory is unimplemented, and the Vertex transport exists.
 
@@ -32,6 +32,24 @@ The checks also surfaced three things the reader must do that the handoff does n
 | Both probe maps, filtered by `routeId` | ✓ | `?routeId=qwen` → 2 routes and 1 unavailable |
 | Grok video booleans | ✓ | `grok-imagine-video`: `videoInput:true`, `videoOutput:true`. `grok-imagine-video-1.5`: `videoInput:false`, `videoOutput:true` |
 | OpenRouter restored | ✓ | 470 mapped `openrouter/gateway` connections (0 before) |
+
+### The shared contract's own promises
+
+models-index `ai-docs/alibaba-provider-changes.md` makes promises the handoff does not repeat. **10 of 10 pass** on the same generation, via `VERIFY_models_index_v3_contract-20260919.ts`:
+
+| Promise | Live result |
+|---|---|
+| Coding Plan published as unknown, with no callable route | `routeStatus: unknown`, `routeReason: authenticated_account_roster_required`, no `route` |
+| Coding Plan kept out of recommendations and defaults | 0 mentions in `catalog=recommended` and in `queryPluginDefaults` |
+| An unknown connection is never callable | 372 unknown rows, 0 with `externalModelId` or `route`, all 372 with `observedExternalModelId`. Reasons: `unsupported_provider` 268, `unverified_mapping` 94, `mutable_pointer_only` 8, `identity_conflict` 2 |
+| Every mapped connection is callable | 0 mapped rows without `externalModelId` |
+| PAYG is metered, not a subscription record | no plan is bound to `qwen/dashscope-direct` |
+| Token Plan Individual and Team stay separate records | two plans, both bound to `qwen/qwencloud-token-plan` |
+| One video field per direction, no duplicate | exactly `videoInput` and `videoOutput` |
+| Redirects published | 3, all on `z-ai/glm-coding-subscription`, e.g. `GLM-4.7` → `glm-5.3-flash` |
+| Membership coverage on every plan | present on all 19 |
+
+Not a failure, but worth a look given the rule that static values match: the contract calls the products "Alibaba Coding Plan" and "Alibaba Token Plan", while the plan records are named "Alibaba Cloud Model Studio Coding Plan", "QwenCloud Token Plan Individual" and "QwenCloud Token Plan Team Edition". Those are commercial plan names rather than product labels, so they may be intended.
 
 ### The six wire translations
 
@@ -119,9 +137,32 @@ Removed outright: provider `qwen-cloud`, prefixes `qc`, `qp` and `dashscope`, an
 
 The new gateway providers take the fixture's names, `together` and `fireworks`, because claudish has no earlier name to keep.
 
-## Request to the backend
+## Requests to the backend
 
-**Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks. No backend change is requested. The portal identifiers, the binding fixture and `alibaba-provider-changes.md` are already correct, and claudish changes to match them.
+**1. Reader ownership.** Your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks. The portal identifiers, the binding fixture and `alibaba-provider-changes.md` are already correct, and claudish changes to match them.
+
+**2. Retire "roster" from the wire contract (Jack, 2026-09-19).** The word carries two meanings in the contract today, and neither reader can tell which is meant. claudish already retired it for the same reason (commit `83f9afb`, "roster becomes the dynamic models catalog"). Static values must stay identical on both sides, so the rename happens in the backend first and claudish reads the new names.
+
+- The **dynamic models catalog** is the per-credential model list a provider's discovery endpoint returns. It is never persisted.
+- **Membership** is a plan's published member list, part of the cloud catalog. The handoff already uses this word: "Use `subscriptionPlanIds` for memberships".
+
+| Current | Meaning | Requested |
+|---|---|---|
+| `authenticated_account_roster_required` (inclusion reason, and the Coding Plan's `routeReason`) | dynamic models catalog | **`dynamic_models_catalog_required`** (decided by Jack) |
+| `authenticated_variant_roster_required` | dynamic models catalog | `dynamic_variant_catalog_required` |
+| `rosterCoverage` | membership | `membershipCoverage` |
+| `rosterRequirements` | membership | `membershipRequirements` |
+| `rosterId` (in `rosterRequirements[]`) | membership | `membershipSourceId` |
+| `RosterEntryV3` | membership | `MembershipEntryV3` |
+| `rosters` (`ManualApprovalRequiredErrorV3`) | membership | `memberships` |
+| `authoritative_roster_identity_unresolved` | membership | `authoritative_membership_identity_unresolved` |
+| `no_exact_callable_roster` | membership | `no_exact_callable_membership` |
+| `sourceText` prose: "account-specific Devin model roster", "account-specific Grok subscription roster" | dynamic models catalog | "account-specific Devin dynamic models catalog", and the same for Grok |
+| `sourceText` prose: "exact roster not published" | membership | "exact membership not published" |
+
+Only the first row's spelling is Jack's decision. The others are proposed to follow the same two terms; please confirm or adjust them in the change, and claudish will read whatever is published. The reader is being written now, so renaming before it ships means one migration instead of two.
+
+Found by searching the live OpenAPI document and the live plan and probe data of generation `g-20260918181642356-73127622` for every occurrence of the word. The spec itself has no prose using it.
 
 ## Reproduce
 

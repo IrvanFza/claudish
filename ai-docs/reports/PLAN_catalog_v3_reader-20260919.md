@@ -13,7 +13,7 @@ The reader instead converts v3 into the internal shape those files already read,
 What v3 can express and the internal shape could not must still survive the translation:
 
 - `routeStatus: "unknown"` rows are **not routable**. They carry no callable id, so they are dropped from connections. Availability stays three-valued, and an unknown route never becomes "not served".
-- `rosterCoverage` travels with each plan. Only complete, unexpired coverage licenses a "not served" answer.
+- Membership coverage travels with each plan. Only complete, unexpired coverage licenses a "not served" answer. The field is `rosterCoverage` today; the backend is asked to rename it `membershipCoverage`, with every other "roster" name (see request 2 in the verification report), and the reader reads whichever name is published when it ships.
 - Plan membership comes from `subscriptionPlanIds`, counted by distinct model.
 
 ## The binding table
@@ -106,7 +106,7 @@ Each slice ends green and committed. Codex writes the tests from real captured r
 - `together` and `fireworks` gateway providers, each in both `BUILTIN_PROVIDERS` and `PROVIDER_PROFILES`.
 - Poe's provider factory.
 
-**4. Roster coverage.** Expired or unknown coverage means "unknown", never "not served".
+**4. Membership coverage.** Expired or unknown coverage means "unknown", never "not served".
 
 **5. Dev validation and release.** On the live generation, exercise everything the handoff's release acceptance lists:
 
