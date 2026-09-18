@@ -682,9 +682,16 @@ describe("Group C — custom endpoint registration", () => {
 // Those are inert by construction (unmatched → ignored), so their presence is
 // NOT a claudish defect and must never fail this suite. A stale allowlist here
 // used to hard-fail CI every time models-index shipped a new provider.
+//
+// SKIPPED under CLAUDISH_SKIP_LIVE_E2E, and the group now needs that gate for a
+// second reason. These tests assert the v2 slim-catalog shape. As observed on
+// 2026-09-18 the live endpoint serves contract v3: 426 without the v3 Accept
+// header, 503 with it. The shape asserted below is therefore no longer served at
+// all. Rewrite them against v3 as part of the v3 reader work — do not delete
+// them, because the aggregator-shape coverage is still wanted.
 const ROUTABLE_FIREBASE_SLUGS = new Set(Object.values(pickerProviderToFirebaseSlug));
 
-describe("Group D — Firebase slim catalog", () => {
+describe.skipIf(SKIP_LIVE_E2E)("Group D — Firebase slim catalog", () => {
   let cachedBody: any = null;
 
   async function fetchCatalog(): Promise<any> {
