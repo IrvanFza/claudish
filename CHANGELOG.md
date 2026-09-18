@@ -2,6 +2,22 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [9.7.0] - 2026-09-18
+
+### Bug Fixes
+
+- stop the incompatibility guard exiting, and let the sentinel expire *(catalog)* ([`eec9e7e`](https://github.com/MadAppGang/claudish/commit/eec9e7e156a1f832cc5219c35fadd7499f44837a))
+
+### Documentation
+
+- record the v3 remediation and d0c1538 reviews([`8bb4097`](https://github.com/MadAppGang/claudish/commit/8bb4097fca452cfd16b23ade3a30b3b42c95dfdd))
+- review the models-index v3 implementation from the client side([`510e7cd`](https://github.com/MadAppGang/claudish/commit/510e7cdd8d893b41c232f3612584e5140c968443))
+- update CHANGELOG.md for v9.6.1([`e712718`](https://github.com/MadAppGang/claudish/commit/e712718d94d23c43b3d6cddd5fab100a7ba6ed75))
+
+### New Features
+
+- refuse a stale cache when the catalog contract moves ahead *(catalog)* ([`cb46b0a`](https://github.com/MadAppGang/claudish/commit/cb46b0a04f0642f810ad763f28a6bda02f176568))
+
 ## [9.6.1] - 2026-09-17
 
 ### Bug Fixes
