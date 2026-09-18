@@ -64,6 +64,13 @@ const GUARDED = [
       "pass a temp path to readAllModelsCache/writeAllModelsCache, or seed in memory the way " +
       "catalog-client.ts's _setCatalogEntriesForTest does, instead of writing the real cache",
   },
+  {
+    path: join(homedir(), ".claudish", "catalog-incompatible.json"),
+    label: "REAL CATALOG CONTRACT SENTINEL",
+    remedy:
+      "pass a temp path to markCatalogIncompatible/readCatalogIncompatibility, or run the " +
+      "refresh in a child process with its own HOME, instead of writing the real sentinel",
+  },
 ] as const;
 
 interface Snapshot {
