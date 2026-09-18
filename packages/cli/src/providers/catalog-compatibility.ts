@@ -100,6 +100,23 @@ export interface CatalogIncompatibility {
 export const CATALOG_INCOMPATIBLE_PATH = join(homedir(), ".claudish", "catalog-incompatible.json");
 
 /**
+ * The sentinel path in effect: `CLAUDISH_CATALOG_INCOMPATIBLE_PATH` when set,
+ * otherwise {@link CATALOG_INCOMPATIBLE_PATH}.
+ *
+ * A TEST seam, set for the whole run by `scripts/guard-real-config.ts`. It is
+ * read per call rather than at import, so it takes effect whenever it is set.
+ * Without it, every default-path read in a test reaches the developer's real
+ * file — and once a machine has run a build against a v3 catalog, that file
+ * exists and says "incompatible". Measured 2026-09-18: 25 tests across
+ * catalog-warm, model-catalog and the context-window suite failed on exactly
+ * that, while CI, whose home directory never holds the file, stayed green.
+ */
+export function catalogIncompatiblePath(): string {
+  const override = process.env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH;
+  return override !== undefined && override.length > 0 ? override : CATALOG_INCOMPATIBLE_PATH;
+}
+
+/**
  * The running process's own copy. Set by {@link markCatalogIncompatible} before
  * the write is attempted, so a failed write still protects this process.
  */
@@ -220,7 +237,7 @@ export function isIncompatibleContractVersion(version: number | null): version i
  */
 export function markCatalogIncompatible(
   info: Omit<CatalogIncompatibility, "detectedAt" | "clientContractVersion">,
-  path: string = CATALOG_INCOMPATIBLE_PATH
+  path: string = catalogIncompatiblePath()
 ): void {
   const record: CatalogIncompatibility = {
     detectedAt: new Date().toISOString(),
@@ -264,7 +281,7 @@ export function markCatalogIncompatible(
  * @param path Override the sentinel path. Only tests should pass this.
  */
 export function readCatalogIncompatibility(
-  path: string = CATALOG_INCOMPATIBLE_PATH
+  path: string = catalogIncompatiblePath()
 ): CatalogIncompatibility | null {
   if (_memFlag) return _memFlag;
   if (_fileMemo && _fileMemo.path === path) return _fileMemo.value;
@@ -391,7 +408,7 @@ function parseSentinelFile(raw: string): CatalogIncompatibility {
  *
  * @param path Override the sentinel path. Only tests should pass this.
  */
-export function clearCatalogIncompatibility(path: string = CATALOG_INCOMPATIBLE_PATH): void {
+export function clearCatalogIncompatibility(path: string = catalogIncompatiblePath()): void {
   _memFlag = null;
   _fileMemo = { path, value: null };
 

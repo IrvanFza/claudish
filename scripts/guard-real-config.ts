@@ -42,8 +42,16 @@
  * no equivalent. Until it does, this guard is the backstop.
  */
 import { spawn } from "node:child_process";
-import { copyFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  copyFileSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -189,6 +197,15 @@ for (const g of GUARDED) {
 // it cannot put back the hermeticity. A test whose result depends on what the
 // hosted catalog said this morning is the failure that turned two DeepSeek
 // tests red mid-release.
+//
+// `CLAUDISH_CATALOG_INCOMPATIBLE_PATH` is the fourth, and it REDIRECTS rather
+// than disables. The contract sentinel is state a real build writes on every
+// launch against a newer catalog, so on a developer's machine it usually
+// EXISTS — and every default-path read in the suite then sees "this catalog is
+// unreadable". Measured 2026-09-18: 25 tests failed on that alone, and CI,
+// whose home directory never holds the file, stayed green. A fresh directory
+// per run means no run can read a sentinel an earlier run wrote either.
+const sentinelDir = mkdtempSync(join(tmpdir(), "claudish-guard-sentinel-"));
 const child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
   env: {
@@ -196,6 +213,7 @@ const child = spawn(cmd[0], cmd.slice(1), {
     CLAUDISH_DISABLE_KEYCHAIN: "1",
     CLAUDISH_DISABLE_OP: "1",
     CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
   },
 });
 
@@ -253,6 +271,7 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
 }
 
 child.on("exit", (code, signal) => {
+  rmSync(sentinelDir, { recursive: true, force: true });
   // Every guarded file is checked and restored before the first exit, so one
   // clobbered file cannot mask a second. Reporting only the first would send
   // the author to fix one test while another keeps rewriting the machine.
