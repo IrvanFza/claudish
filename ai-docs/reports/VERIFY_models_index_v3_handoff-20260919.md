@@ -101,14 +101,27 @@ Branch `worktree-qwen-token-plan` (worktree locked, 9 commits ahead of `main`, 3
 - `feat(routing): gate the crossing from a subscription to metered billing`
 - `fix(routing): close three gate bypasses and the over-block they hid behind`
 
-The handoff says the opposite: "An available PAYG key is permission to use it", and the backend review adds "These corrections introduce no billing permission or fallback protection gate." The owner must choose one before the reader lands. Merging this branch as it stands would ship the gate.
+The handoff says the opposite: "An available PAYG key is permission to use it", and the backend review adds "These corrections introduce no billing permission or fallback protection gate." Merging this branch as it stands would ship the gate. Decided below: the gate is not carried.
 
-## Decisions for the owner
+## Decisions (Jack, 2026-09-19)
 
-1. **Who owns the reader.** The handoff asks for one session. The `worktree-qwen-token-plan` session holds overlapping Alibaba work.
-2. **Alibaba names.** Recommended: adopt `qwen-token-plan`, `qtoken` and `qpay` as the handoff asks, and keep `qc`, `qp` and `QWEN_CLOUD_PLAN_API_KEY` working as aliases. Existing setups then keep working, and the portal's identifiers become valid.
-3. **The billing gate** on the unmerged branch: drop it, as the handoff says, or keep it and tell the backend.
-4. **Together, Fireworks and Poe:** in scope for the reader release, because release acceptance requires all five gateway profiles.
+1. **Reader ownership:** the claudish session `v3-subscription:blocks-everyone` owns the reader and coordinates the provider changes. It rebases the Alibaba work from `worktree-qwen-token-plan` instead of rewriting it, and it has told that session.
+2. **No billing gate.** The reader follows the handoff: subscriptions → dynamic subscriptions → native API → aggregators → fallback, and a configured key is permission to use it. The two gate commits on `worktree-qwen-token-plan` are not carried.
+3. **claudish keeps its Alibaba names.** Only the Coding Plan is added:
+
+| Product | claudish provider | Shortcut | Key | Binding |
+|---|---|---|---|---|
+| Token Plan | `qwen-cloud` | `qc` | `QWEN_CLOUD_PLAN_API_KEY` | `qwen/qwencloud-token-plan` |
+| Coding Plan (new) | `qwen-coding` | `qcode` | `QWEN_CODING_PLAN_API_KEY` | `qwen/modelstudio-coding-plan` |
+| PAYG | `qwen-payg` | `qp` | `DASHSCOPE_API_KEY` | `qwen/dashscope-direct` |
+
+The new gateway providers take the fixture's names, `together` and `fireworks`, because claudish has no earlier name to keep.
+
+## Requests to the backend
+
+1. **Portal identifiers:** show `qc` and `qp` instead of `qtoken` and `qpay`. `qcode` is correct. Today the portal shows users shortcuts that claudish rejects.
+2. **Binding fixture:** in `functions/src/test-fixtures/consumer-subscription-bindings.ts`, the Token Plan row names `qwen-token-plan`. claudish's provider is `qwen-cloud`. The binding, `qwen/qwencloud-token-plan`, is unchanged.
+3. **Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks.
 
 ## Reproduce
 
