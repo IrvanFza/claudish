@@ -64,6 +64,32 @@ Every connection on these profiles publishes an exact `externalModelId`. Example
 | `x-ai/direct-api` | 7 | 3 | `grok-4.20` → `grok-4.20-0309-reasoning` |
 | `deepseek/direct-api` | 2 | 1 | `deepseek-v4.1-flash` → `deepseek-flash` |
 
+## claudish's own functions against the live v3
+
+`VERIFY_claudish_functions_vs_v3-20260919.ts` calls claudish's catalog functions from source and compares each answer with what the live generation publishes. It covers 34 cases in six areas: reading the catalog, wire-id translation, bare-name routing, subscription coverage, model metadata, and the first model Test All tries.
+
+| User state | Correct | Wrong |
+|---|---|---|
+| **9.7.x after one launch** (the contract sentinel is set) | **0** | **34** |
+| **9.6.x** (no guard; reads the v2 cache frozen at the cutover) | 18 | 16 |
+
+**9.7.x is worse than 9.6.x.** The guard refuses a cache that is mostly still right, so bare-name routing, translation, coverage and metadata all stop at once. Contract line 21 says the opposite: report the state and keep routing. The reader release fixes this.
+
+What the frozen v2 cache gets **wrong** (all of it is fixed by reading v3):
+
+- **A Fireworks id sent to OpenRouter.** A bare `qwen3.8-max` falls back to `openrouter` with `accounts/fireworks/models/qwen3p8-max`. v3 has no OpenRouter connection for that model at all, so the call cannot succeed.
+- **Untranslated subscription ids:** `minimax-coding` sends `minimax-m3` for `MiniMax-M3`; `glm-coding` sends `glm-5.3` for `GLM-5.3` and `glm-5.3-flash` for `GLM-5.3-Flash`; `opencode-zen-go` sends `deepseek-v4.1-flash`, which v3 does publish, alongside `deepseek-flash`.
+- **Coverage unknown** for the GLM Coding Plan and OpenCode Go, although v3 lists the models as members.
+- **Video capability absent:** no `videoInput` for `grok-imagine-video` or `grok-imagine-video-1.5`.
+- **Stale first picks for Test All:** `gpt-5.6-luna` where v3 says `gpt-6-astra`, `kimi-for-coding` where v3 says `k3`.
+
+What it gets **right** and the reader must keep: translation through model connections (`kimi-k3` → `k3` on Kimi Coding, `kimi-k3:cloud` on Ollama Cloud, `MiniMax-M3` on the MiniMax API, `deepseek-flash`, `grok-4.20-0309-reasoning`, `anthropic/claude-opus-4.5` on OpenRouter), coverage for Kimi Coding, Codex and the Token Plan, context windows, and picker search.
+
+Two facts about the published data came out of this, and the reader must handle both:
+
+- **Subscription wire ids can live only in plan inclusions.** The GLM Coding Plan publishes no model connections; its `GLM-5.3` and `GLM-5.3-Flash` exist only as `inclusions[].externalModelId`. A reader that reads connections alone calls those models by their canonical ids.
+- **OpenRouter publishes two ids for some models:** the exact id (`moonshotai/kimi-k3`) and a moving pointer (`~moonshotai/kimi-latest`). A pinned model must be called by the exact id. The 9.6.x cache already does this.
+
 ## Reader requirements the verification surfaced
 
 **R1. Read the complete projection.** The default `queryModels` projection returns 1,111 models. It omits 181 deprecated models and 9 route variants:
