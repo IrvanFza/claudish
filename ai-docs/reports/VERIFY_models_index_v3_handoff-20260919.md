@@ -90,7 +90,7 @@ Missing on `main`, all needed for the handoff's release acceptance:
 | Token Plan | `qwen-token-plan` / `qtoken` / `QWEN_TOKEN_PLAN_API_KEY` | `qwen-cloud` / `qc` / `QWEN_CLOUD_PLAN_API_KEY` | `qwen-cloud` / `qc`, `qtp` / `QWEN_TOKEN_PLAN_API_KEY` + alias `QWEN_CLOUD_PLAN_API_KEY` |
 | PAYG | `qwen-payg` / `qpay` / `DASHSCOPE_API_KEY` | `qwen-payg` / `qp`, `dashscope` / `DASHSCOPE_API_KEY` | same as `main` |
 
-The backend portal already shows users `qcode`, `qtoken` and `qpay`. claudish accepts none of them today.
+The backend portal already shows users `qcode`, `qtoken` and `qpay`. claudish accepts none of them today, which is claudish's defect to fix.
 
 4. **Poe cannot make a request** until its factory exists.
 
@@ -107,22 +107,21 @@ The handoff says the opposite: "An available PAYG key is permission to use it", 
 
 1. **Reader ownership:** the claudish session `v3-subscription:blocks-everyone` owns the reader and coordinates the provider changes. It rebases the Alibaba work from `worktree-qwen-token-plan` instead of rewriting it, and it has told that session.
 2. **No billing gate.** The reader follows the handoff: subscriptions → dynamic subscriptions → native API → aggregators → fallback, and a configured key is permission to use it. The two gate commits on `worktree-qwen-token-plan` are not carried.
-3. **claudish keeps its Alibaba provider names and shortcuts**, and only the Coding Plan is added. The Token Plan **key** is renamed: `QWEN_TOKEN_PLAN_API_KEY` is the name, and `QWEN_CLOUD_PLAN_API_KEY` is deprecated because it does not say which Alibaba plan it belongs to. The deprecated name keeps working and prints a one-time warning that names the replacement.
+3. **claudish adopts the backend's Alibaba identities exactly.** The static values in models-index `ai-docs/alibaba-provider-changes.md` are the single source: one spelling, and no aliases, migration shims, alternate credential names or retired-name diagnostics. The old names are removed, not deprecated.
 
-| Product | claudish provider | Shortcut | Key | Binding |
+| Product | Provider | Prefix | Credential | Binding |
 |---|---|---|---|---|
-| Token Plan | `qwen-cloud` | `qc` | `QWEN_TOKEN_PLAN_API_KEY` (deprecated alias: `QWEN_CLOUD_PLAN_API_KEY`) | `qwen/qwencloud-token-plan` |
-| Coding Plan (new) | `qwen-coding` | `qcode` | `QWEN_CODING_PLAN_API_KEY` | `qwen/modelstudio-coding-plan` |
-| PAYG | `qwen-payg` | `qp` | `DASHSCOPE_API_KEY` | `qwen/dashscope-direct` |
+| Alibaba Coding Plan (new) | `qwen-coding` | `qcode` | `QWEN_CODING_PLAN_API_KEY` | `qwen/modelstudio-coding-plan` |
+| Alibaba Token Plan | `qwen-token-plan` | `qtoken` | `QWEN_TOKEN_PLAN_API_KEY` | `qwen/qwencloud-token-plan` |
+| Alibaba PAYG | `qwen-payg` | `qpay` | `DASHSCOPE_API_KEY` | `qwen/dashscope-direct` |
+
+Removed outright: provider `qwen-cloud`, prefixes `qc`, `qp` and `dashscope`, and the credentials `QWEN_CLOUD_PLAN_API_KEY` and `QWEN_API_KEY`.
 
 The new gateway providers take the fixture's names, `together` and `fireworks`, because claudish has no earlier name to keep.
 
-## Requests to the backend
+## Request to the backend
 
-1. **Portal identifiers:** show `qc` and `qp` instead of `qtoken` and `qpay`. `qcode` is correct. Today the portal shows users shortcuts that claudish rejects. The key names in the handoff (`QWEN_CODING_PLAN_API_KEY`, `QWEN_TOKEN_PLAN_API_KEY`, `DASHSCOPE_API_KEY`) are correct and need no change.
-2. **Binding fixture:** in `functions/src/test-fixtures/consumer-subscription-bindings.ts`, the Token Plan row names `qwen-token-plan`. claudish's provider is `qwen-cloud`. The binding, `qwen/qwencloud-token-plan`, is unchanged.
-3. **Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks.
-4. **Amend `ai-docs/alibaba-provider-changes.md`.** Its table names the Token Plan `qwen-token-plan` / `qtoken` and PAYG `qpay`, and line 15 forbids "aliases, migration shims, alternate credential names, or retired-name diagnostics". claudish keeps `qwen-cloud` / `qc` and `qp`, and accepts `QWEN_CLOUD_PLAN_API_KEY` with a deprecation warning. Please change the table to claudish's names and allow that one deprecated key name, so the document and the client agree.
+**Reader ownership:** your handoff lists claudish's reader-ownership prompt as pending. It is answered: one claudish session owns the reader, as the handoff asks. No backend change is requested. The portal identifiers, the binding fixture and `alibaba-provider-changes.md` are already correct, and claudish changes to match them.
 
 ## Reproduce
 
