@@ -147,6 +147,21 @@ Each fix was checked against the live catalog or a live account, not only by uni
 
 **Test All after the fixes (dev build, real credentials):** 15 ready, 3 FAIL. The three are account quota answers, not claudish errors: MiniMax Coding `429` "Plan limit reached", GLM `429` "Out of quota", Sakana Fugu `429` "Out of quota … Prepaid".
 
+**Later on the same branch.** Each entry passed typecheck, lint and the full guarded suite (3,607 pass, 0 fail, 29 live tests skipped).
+
+| Change | Commit | Evidence |
+|---|---|---|
+| "Roster" retired in code, with a guard test that fails on the word | `ab1fc09`, `5d87942` | 0 hits, including the two NUL-byte files that `grep -I` skips |
+| Dropped-subscription notice printed `[claudish] [claudish]` | `eceab30` | live: `[claudish] kimi-coding does not serve kimi-k3 — using Kimi, which bills per token.` |
+| Credential readiness is `present` / `absent` / `failed`; a subscription whose credential could not be read gets its own notice | `7127287`, `4362311` | real-credential routes unchanged for 5 models; a locked 1Password with an unrelated `op://` ref reads `absent`, not `failed` |
+| "Model not exist" is a model-unsupported error; a 401 names the other Alibaba plans' keys | `fa09cb7` | the hint for a 400 "Model not exist" changed from "Request format may be incompatible" to "Model not supported by this provider" |
+| An incomplete provider model list cannot deny; a missing base URL is a recorded failure | `28fc06d` | no configured provider's list is emptied by the rule (11 providers checked live) |
+| `qwen-coding` and `qwen-payg` in every hand-written table | `8691eed` | drift test over routing hints and the Routing tab |
+| Alibaba docs and reports, without the billing gate | `cc55c1b`, `ab7d0f5`, `9d0e2fa` | |
+| Tests for the eight reader-gap fixes | `5d87942` | 30 tests; each fails when its fix is reverted |
+
+**Not ported: the rule that a public model list may never deny (old group D).** It targets the Coding Plan, whose `/v1/models` answers without a credential. In generation `g-20260919013346169-feffb8ad` the Coding Plan is `supported` with a catalog membership of 10 models, so catalog membership drops a non-member before the public list is read, and every member is on the public list. The public list decides alone only when the catalog is missing. There, its denial keeps an unlisted id away from the Coding Plan, which answers `400 Model not exist`, and that error does not advance the routing chain. Porting the rule would reopen that dead end.
+
 **Contract line 21, measured with the dev build.** A dead catalog server prints `WARNING: Catalog refresh failed … Using cached version.`; a `426` prints `Model catalog contract v4 is not supported by this build.`; neither overwrites the cache. With no catalog at all, routing continues and keeps `glm-coding`, `qwen-token-plan`, `openai-codex` and `antigravity` first. One gap: `kimi-k3` loses its Kimi Coding hop. That plan serves the model as `k3`, only the catalog records that `kimi-k3` and `k3` are the same model, and Kimi Coding's own list answers `not-served` for `kimi-k3`. The chain falls to OpenCode Zen Go, another subscription, so billing does not change. Closing the gap without a catalog would mean guessing a name, which the exact-id rule forbids; it is part of the cold-start decision (Q4).
 
 ## Reader requirements the verification surfaced
