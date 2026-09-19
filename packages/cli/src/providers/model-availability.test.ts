@@ -59,7 +59,7 @@ function discoveryProvider(): ProviderDefinition {
   };
 }
 
-function stubRoster(...ids: string[]): void {
+function stubModelsCatalog(...ids: string[]): void {
   globalThis.fetch = mock(
     async () =>
       new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
@@ -112,7 +112,7 @@ describe("providerServesModel catalog evidence", () => {
 
     // Catalog coverage is partial, so absence from one row cannot deny service:
     // openai-codex appears on only 1 of ~760 rows yet genuinely serves gpt-5.
-    // Only a complete live roster may turn absence into "not-served".
+    // Only a complete dynamic models catalog may turn absence into "not-served".
     expect(await providerServesModel(CATALOG_PROVIDER, "model-one")).toBe("unknown");
   });
 
@@ -168,21 +168,21 @@ describe("providerServesModel catalog evidence", () => {
 });
 
 describe("providerServesModel live discovery", () => {
-  test("returns serves for exact and case-insensitive roster membership", async () => {
-    stubRoster("MiniMax-M3");
+  test("returns serves for exact and case-insensitive matches in the dynamic models catalog", async () => {
+    stubModelsCatalog("MiniMax-M3");
 
     expect(await providerServesModel(DISCOVERY_PROVIDER, "MiniMax-M3")).toBe("serves");
     expect(await providerServesModel(DISCOVERY_PROVIDER, "minimax-m3")).toBe("serves");
   });
 
-  test("returns not-served when a non-empty roster omits the model", async () => {
-    stubRoster("available-model");
+  test("returns not-served when a non-empty dynamic models catalog omits the model", async () => {
+    stubModelsCatalog("available-model");
 
     expect(await providerServesModel(DISCOVERY_PROVIDER, "missing-model")).toBe("not-served");
   });
 
-  test("returns unknown when discovery returns an empty roster", async () => {
-    stubRoster();
+  test("returns unknown when discovery returns an empty dynamic models catalog", async () => {
+    stubModelsCatalog();
 
     // A temporarily unavailable listing endpoint must not silently switch the
     // user away from the provider they selected and may already pay for.
@@ -191,7 +191,7 @@ describe("providerServesModel live discovery", () => {
 
   test("uses discovery before conflicting catalog evidence", async () => {
     _setCatalogEntriesForTest([catalogEntry("model-one", [{ provider: DISCOVERY_PROVIDER }])]);
-    stubRoster("different-model");
+    stubModelsCatalog("different-model");
 
     expect(await providerServesModel(DISCOVERY_PROVIDER, "model-one")).toBe("not-served");
   });

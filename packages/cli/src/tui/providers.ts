@@ -194,7 +194,7 @@ export function providerAuthCapabilities(
 }
 
 /**
- * The provider roster, built LIVE from the catalog on every call.
+ * The provider list, built LIVE from the catalog on every call.
  *
  * It used to be a module-load-time `const`, and that made it a snapshot taken
  * before `ensureEndpointsRegistered()` had run — so a runtime provider (a

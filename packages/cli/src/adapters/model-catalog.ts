@@ -41,7 +41,7 @@ export interface ModelEntry {
   /**
    * Curated release date (ISO `YYYY-MM-DD`), when Firebase has one. The
    * authoritative freshness signal — pickers prefer it over any date a provider
-   * endpoint reports, which is a roster-added timestamp, not a release.
+   * endpoint reports, which is a date-added timestamp, not a release.
    */
   releaseDate?: string;
 }
@@ -232,7 +232,7 @@ export function lookupFamilyDefaultVariant(
  * an error and must never block a request.
  *
  * @param provider Only return variants recorded on this serving provider. A
- *   preset is an observation about ONE provider's roster, not a portable fact
+ *   preset is an observation about ONE provider's model list, not a portable fact
  *   about the model — the same parameter may not exist on another host — so a
  *   caller that cannot verify the parameter independently should pass the
  *   provider it is actually routing to.
@@ -347,13 +347,13 @@ export function resolveSubscriptionRouting(
       : { kind: "unknown" };
   }
 
-  // Client-selected and hybrid rosters are decided by the user's live session.
+  // Client-selected and hybrid memberships are decided by the user's live session.
   if (plans.some((plan) => plan.modelDiscovery !== "catalog")) return { kind: "unknown" };
   const ids = new Set(plans.map((plan) => plan.id));
-  const hasRoster = cache.entries.some((candidate) =>
+  const hasMembership = cache.entries.some((candidate) =>
     candidate.subscriptionPlanIds?.some((planId) => ids.has(planId))
   );
-  return hasRoster ? { kind: "not-served" } : { kind: "unknown" };
+  return hasMembership ? { kind: "not-served" } : { kind: "unknown" };
 }
 
 /**
@@ -422,7 +422,7 @@ function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | u
 }
 
 /**
- * The canonical catalog id a plan's exact roster id resolves to, or undefined.
+ * The canonical catalog id an exact wire id in a plan's membership resolves to, or undefined.
  *
  * Only a `described` resolution answers. `missing` and `ambiguous` are the
  * catalog stating that IT could not resolve the id, and inventing a lookup on

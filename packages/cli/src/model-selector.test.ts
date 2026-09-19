@@ -92,7 +92,7 @@ describe("warnDiscoveryFailure", () => {
           async () => new Response("not-json", { status: 200 })
         ) as unknown as typeof fetch;
         break;
-      case "empty-roster":
+      case "empty-models-catalog":
         globalThis.fetch = mock(
           async () => new Response(JSON.stringify({ data: [] }), { status: 200 })
         ) as unknown as typeof fetch;
@@ -125,10 +125,10 @@ describe("warnDiscoveryFailure", () => {
     }
   }
 
-  test("writes nothing when no failure is recorded or the roster is empty", async () => {
+  test("writes nothing when no failure is recorded or the dynamic models catalog is empty", async () => {
     expect(captureWarning()).toEqual({ stderr: "", stdout: "", stderrCalls: 0, stdoutCalls: 0 });
 
-    await recordFailure("empty-roster");
+    await recordFailure("empty-models-catalog");
     expect(captureWarning()).toEqual({ stderr: "", stdout: "", stderrCalls: 0, stdoutCalls: 0 });
   });
 
@@ -204,9 +204,9 @@ describe("buildExplicitModelSpec", () => {
   });
 });
 
-// ─── picker provider roster ──────────────────────────────────────────────────
+// ─── picker provider list ────────────────────────────────────────────────────
 
-describe("picker provider roster", () => {
+describe("picker provider list", () => {
   const pickableBuiltins = BUILTIN_PROVIDERS.filter(isPickableProvider);
   const unpickableBuiltins = BUILTIN_PROVIDERS.filter((def) => !isPickableProvider(def));
 

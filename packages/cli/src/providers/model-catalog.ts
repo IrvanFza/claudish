@@ -111,7 +111,7 @@ const OWNER_PROVIDER_SLUGS = new Set<string>([
 ]);
 
 /**
- * Cold-start seed for the aggregator set. NOT the roster — see
+ * Cold-start seed for the aggregator set. NOT the list itself — see
  * {@link aggregatorProviderSlugs}, which derives the real one from the catalog.
  *
  * Used only when the slim cache is empty (first run, before the first fetch),

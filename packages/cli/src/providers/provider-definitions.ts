@@ -177,7 +177,7 @@ export interface ProviderDefinition {
   /**
    * Opt in to live, per-subscription model discovery. When set, claudish calls
    * the provider's own authenticated model-listing endpoint to learn the real
-   * roster and per-model context windows for THIS user's plan, instead of
+   * dynamic models catalog and per-model context windows for THIS user's plan, instead of
    * trusting a static list. Required for subscription endpoints whose context
    * window varies by tier (see providers/model-discovery.ts).
    */
@@ -319,8 +319,8 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "antigravity/", stripPrefix: true },
     ],
     // Not a GET — an OAuth POST to v1internal:fetchAvailableModels, so `path`
-    // is ignored. Declared so the picker prefers the LIVE per-subscription
-    // roster and, more importantly, its per-model `maxTokens`: the backend and
+    // is ignored. Declared so the picker prefers the per-subscription dynamic
+    // models catalog and, more importantly, its per-model `maxTokens`: the backend and
     // the shared catalog disagree by 4x on claude-sonnet-4-6 (250K vs 1M).
     modelDiscovery: { path: "", format: "antigravity" },
     isDirectApi: true,
@@ -534,9 +534,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     // routing chain instead, where this provider sits FIRST — subscription
     // before metered, so a user holding both credentials is never silently
     // billed per token for a model their subscription already covers.
-    // The served roster is ACCOUNT-SCOPED and drifts, so it is discovered, never
+    // The dynamic models catalog is ACCOUNT-SCOPED and drifts, so it is discovered, never
     // pinned. `/v1/models` is genuinely authenticated here (401 without a token,
-    // unlike Alibaba's coding-intl roster where a 200 proves nothing), and it
+    // unlike Alibaba's coding-intl model list where a 200 proves nothing), and it
     // answers the standard OpenAI `{object, data:[{id}]}` shape. Discovery falls
     // back to the credential authority when `apiKeyEnvVar` is empty, which also
     // supplies the mandatory client-version headers.

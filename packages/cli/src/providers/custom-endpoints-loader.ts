@@ -108,7 +108,7 @@ export interface EndpointDefinitionOverrides {
   apiKeyUrl?: string;
   /** Credential label shown in the TUI. Default: `<name> (custom endpoint)`. */
   apiKeyDescription?: string;
-  /** Roster/TUI description. Default: `Custom endpoint: <name>`. */
+  /** Picker/TUI description. Default: `Custom endpoint: <name>`. */
   description?: string;
 }
 

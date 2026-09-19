@@ -20,7 +20,7 @@ const envelope = (
   });
 
 describe("v3 provider-scoped pagination", () => {
-  test("returns the complete provider roster from one generation", async () => {
+  test("returns the provider's complete model list from one generation", async () => {
     const requests: Array<{
       cursor: string | null;
       generation: string | null;

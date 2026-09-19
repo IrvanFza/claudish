@@ -128,11 +128,11 @@ describe("resolveSubscriptionRouting", () => {
     });
   });
 
-  test("preserves not-served when no Qwen plan includes the model and both rosters are catalog-authoritative", () => {
+  test("preserves not-served when no Qwen plan includes the model and both memberships are catalog-authoritative", () => {
     writeCatalog(
       [
         modelEntry("qwen3-coder-plus", [], "qwen-token-plan"),
-        modelEntry("qwen-roster-proof", [
+        modelEntry("qwen-membership-proof", [
           "alibaba-token-plan-individual",
           "alibaba-token-plan-team-edition",
         ]),

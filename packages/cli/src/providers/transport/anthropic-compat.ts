@@ -118,8 +118,8 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * probe exercises the model the user would actually get.
    *
    * Non-chat rows are dropped with the shared `isChatCapable()` filter rather
-   * than a per-provider skip list: qwen-token-plan's roster mixes image/TTS models
-   * (`wan2.7-image`, `qwen-audio-3.0-tts-plus`) in with the text models, and
+   * than a per-provider skip list: qwen-token-plan's dynamic models catalog mixes
+   * image/TTS models (`wan2.7-image`, `qwen-audio-3.0-tts-plus`) in with the text models, and
    * hardcoding model ids here would rot the moment Alibaba ships the next one.
    */
   async discoverProbeModel(exclude?: ReadonlySet<string>): Promise<DiscoveryOutcome> {

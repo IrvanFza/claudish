@@ -9,7 +9,7 @@
  * `SUBSCRIPTION_PROVIDERS`.
  *
  * Everything here is derived from the live definitions rather than pinned to a
- * roster: which providers are local, and which carry an `oauthFallback`, are
+ * provider list: which providers are local, and which carry an `oauthFallback`, are
  * both read at run time, so adding a provider cannot leave a stale list behind.
  */
 
@@ -126,7 +126,7 @@ describe("describeMissingCredential — everything else is unchanged", () => {
       const signup = info?.url ? ` Get one at ${info.url}.` : "";
       // `siblingKeyEnvVars` appends one clause and is declared by almost nobody,
       // so the expectation is derived from the SAME field rather than pinned to
-      // a roster — a provider adopting it later must not have to edit this test,
+      // a provider list — a provider adopting it later must not have to edit this test,
       // and one that quietly LOSES the declaration must still fail below.
       const expected = keyNames
         ? `No API key for provider "${name}". Set ${keyNames} (env, config, or 1Password import).${signup}${siblingClause(name)}`

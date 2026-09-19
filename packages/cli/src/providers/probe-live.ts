@@ -385,7 +385,7 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
     // Nor is it an auth failure when the provider handed back a link to act on.
     // Measured: Zen Go answers a model the account has not opted into with
     // `403 RegionError … requires explicit opt in: <url>` — the credential is
-    // fine, the model IS in its live roster, and the fix is a click. Reporting
+    // fine, the model IS in its dynamic models catalog, and the fix is a click. Reporting
     // `auth-failed` there points the user at a working key. `error` keeps the
     // failure semantics (it is in `isFailureState`) without the false cause.
     if (hasActionableLink(body)) {

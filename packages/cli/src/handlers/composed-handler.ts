@@ -475,7 +475,7 @@ export class ComposedHandler implements ModelHandler {
     const behaviorSession = this.behaviorEngine.startSession({
       modelId: this.bareModelName,
       providerName: this.provider.name,
-      // A naming rule, not a pinned roster: Claude models are `claude-*`, and
+      // A naming rule, not a pinned model list: Claude models are `claude-*`, and
       // they already follow these conventions (measured 87/87 on plan mode).
       //
       // `forceForeignModel` is the one escape hatch, and it exists because the
@@ -1575,7 +1575,7 @@ export class ComposedHandler implements ModelHandler {
           // default `false` — which silently made the one dialect override of
           // it (MiniMaxModelDialect's `true`) unreachable dead code, and would
           // do the same to the base's wire-keyed `true` for every other model
-          // on this wire (qtoken@'s qwen / glm / deepseek rosters).
+          // on this wire (qtoken@'s qwen / glm / deepseek models).
           adapter: (this.modelAdapter ?? adapter) as BaseAPIFormat,
           shouldBufferTool: (name) => behaviorSession?.interceptsTool(name) ?? false,
           repairToolArgs: (name, argsJson) =>

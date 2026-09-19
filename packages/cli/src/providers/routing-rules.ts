@@ -399,12 +399,12 @@ async function routeBare(
   // it does not carry this model.
   //
   // This runs AFTER the credential filter, not before, and the order is not
-  // cosmetic: `providerServesModel` may hit the provider's own roster endpoint,
+  // cosmetic: `providerServesModel` may hit the provider's own discovery endpoint,
   // which needs that provider's credential. Asking about a provider the user
   // cannot authenticate to would be a guaranteed-failing round-trip.
   //
   // Only "not-served" removes anything. "unknown" — no source covers this
-  // provider, the catalog is cold, the roster endpoint was briefly down — keeps
+  // provider, the catalog is cold, the discovery endpoint was briefly down — keeps
   // the candidate exactly where it was. That asymmetry is the whole safety
   // property: reading absence of evidence as denial would drop every provider
   // neither source covers, which is almost entirely the SUBSCRIPTION providers,
@@ -460,7 +460,7 @@ async function routeBare(
  * whose ids are already vendor-qualified and are their own spec. Availability
  * must be asked about the wire id, never the name the user typed — comparing the
  * typed name would test the wrong side of an `externalId` mapping, and that
- * mapping is exactly what a roster settles (OpenCode Zen Go serves
+ * mapping is exactly what a dynamic models catalog settles (OpenCode Zen Go serves
  * `deepseek-v4-pro`, while the catalog id carries a date suffix).
  */
 function wireIdOf(route: Route): string {

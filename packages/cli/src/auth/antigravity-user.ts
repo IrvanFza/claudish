@@ -34,7 +34,7 @@ import { log } from "../logger.js";
  *     daily-cloudcode-pa.googleapis.com  generate gemini-3.6-flash-high -> 200
  *
  * On `cloudcode-pa` that account reads `currentTier: free-tier`, is served a
- * roster of `gemini-2.5-*` and editor-internal `chat_*`/`tab_*` ids, reports
+ * dynamic models catalog of `gemini-2.5-*` and editor-internal `chat_*`/`tab_*` ids, reports
  * every quota bucket at 100% forever (nothing is ever consumed), and can
  * generate with EXACTLY the two `tab_*` completion models — free Code Assist's
  * remaining entitlement — while all 28 chat models return a contentless

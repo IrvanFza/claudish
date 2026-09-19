@@ -80,7 +80,7 @@ export function hasModelUnsupportedWording(errorBody: string): boolean {
  *        https://opencode.ai/workspace/<id>/go"}}
  *
  * The route is fine, the credential is fine, the model IS carried (it is in the
- * live roster, so the availability filter correctly kept the provider) — the
+ * dynamic models catalog, so the availability filter correctly kept the provider) — the
  * account simply has not opted into that region. claudish rendered it as
  * "Check API key / OAuth credentials.", sending the user to audit a working key
  * while the fix — a link — sat in the same sentence.

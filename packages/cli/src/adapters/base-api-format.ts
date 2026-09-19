@@ -524,7 +524,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * it, for every dialect.
    *
    * The SHAPE of the knob is a PER-MODEL fact read from the slim catalog's
-   * `reasoning` record, never from a table here. Alibaba's Alibaba Token Plan roster is
+   * `reasoning` record, never from a table here. The Alibaba Token Plan's membership is
    * why a fixed ladder is wrong: `qwen3.7-plus` is `control: "toggle"` (it
    * exposes no depth parameter at all, so a `budget_tokens` would be an
    * invented field), while `glm-5.2` and `deepseek-v4-pro` on the SAME endpoint
@@ -1023,7 +1023,7 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * `createAnthropicPassthroughStream` strips it and RE-INDEXES the remaining
    * content blocks to a contiguous 0,1,2… sequence.
    *
-   * Gating on the WIRE rather than a model roster is deliberate — a hardcoded
+   * Gating on the WIRE rather than a model list is deliberate — a hardcoded
    * list would silently miss the next model added to a multi-vendor plan, which
    * is exactly how `qtoken@glm-5.2` and `qtoken@deepseek-v4-pro` kept leaking after
    * `qtoken@qwen3.7-plus` was fixed. `wireFormat` is the composition hint

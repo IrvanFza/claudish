@@ -436,11 +436,11 @@ export function App({ requestLogin }: AppProps = {}) {
     // is sorting — calling it again inside the comparator would make every
     // `indexOf` return -1 and collapse the catalog order the sort exists to
     // preserve.
-    const roster = getProviderDefs();
-    return [...roster].sort((a, b) => {
+    const providerDefs = getProviderDefs();
+    return [...providerDefs].sort((a, b) => {
       const aReady = providerIsReadyForDisplay(a, config, localLiveness);
       const bReady = providerIsReadyForDisplay(b, config, localLiveness);
-      if (aReady === bReady) return roster.indexOf(a) - roster.indexOf(b);
+      if (aReady === bReady) return providerDefs.indexOf(a) - providerDefs.indexOf(b);
       return aReady ? -1 : 1;
     });
   }, [config, localLiveness]);
@@ -961,7 +961,7 @@ export function App({ requestLogin }: AppProps = {}) {
           setKeychainEnabled(true);
           refreshKeychainVars();
           // Every provider whose key just changed has a stale authority memo,
-          // and the endpoint roster may now include vendors that were gated out
+          // and the endpoint list may now include vendors that were gated out
           // for lack of a local credential.
           credentials.invalidate();
           invalidateProbeProxyHandlers();

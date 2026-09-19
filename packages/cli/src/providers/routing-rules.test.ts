@@ -1157,7 +1157,7 @@ function routingCatalogEntry(modelId: string, providers: string[]): SlimModelEnt
   };
 }
 
-function rosterProvider(name: string): ProviderDefinition {
+function modelsCatalogProvider(name: string): ProviderDefinition {
   return {
     name,
     displayName: name,
@@ -1187,16 +1187,16 @@ describe("route() model-availability filtering", () => {
   let cachePath = "";
   let cleanupCache: (() => void) | undefined;
   let credentialedProviders = new Set<string>();
-  let rosters = new Map<string, string[]>();
+  let modelsCatalogs = new Map<string, string[]>();
   let fetchCalls: string[] = [];
 
   function allowCredentials(...providers: string[]): void {
     credentialedProviders = new Set(providers);
   }
 
-  function registerRoster(name: string, ...ids: string[]): void {
-    registerRuntimeProvider(rosterProvider(name));
-    rosters.set(name, ids);
+  function registerModelsCatalog(name: string, ...ids: string[]): void {
+    registerRuntimeProvider(modelsCatalogProvider(name));
+    modelsCatalogs.set(name, ids);
   }
 
   beforeEach(() => {
@@ -1206,7 +1206,7 @@ describe("route() model-availability filtering", () => {
     clearRuntimeRegistry();
 
     credentialedProviders = new Set();
-    rosters = new Map();
+    modelsCatalogs = new Map();
     fetchCalls = [];
 
     const tempCatalog = makeTempCatalog({ modelId: AVAILABILITY_MODEL });
@@ -1222,8 +1222,8 @@ describe("route() model-availability filtering", () => {
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       const provider = new URL(rawUrl).hostname.replace(/\.invalid$/, "");
       fetchCalls.push(provider);
-      const ids = rosters.get(provider);
-      if (!ids) throw new Error(`Unexpected roster request for ${provider}`);
+      const ids = modelsCatalogs.get(provider);
+      if (!ids) throw new Error(`Unexpected discovery request for ${provider}`);
       return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -1244,7 +1244,7 @@ describe("route() model-availability filtering", () => {
 
   test("removes not-served candidates and preserves the surviving order", async () => {
     const denied = "availability-denied";
-    registerRoster(denied, "some-other-model");
+    registerModelsCatalog(denied, "some-other-model");
     allowCredentials(denied, "openai", "openrouter");
     _setCatalogEntriesForTest([routingCatalogEntry(AVAILABILITY_MODEL, ["openai", "openrouter"])]);
 
@@ -1302,8 +1302,8 @@ describe("route() model-availability filtering", () => {
   test("returns no-route naming every checked provider when all are not-served", async () => {
     const first = "availability-denied-first";
     const second = "availability-denied-second";
-    registerRoster(first, "other-first");
-    registerRoster(second, "other-second");
+    registerModelsCatalog(first, "other-first");
+    registerModelsCatalog(second, "other-second");
     allowCredentials(first, second);
 
     const plan = await route(
@@ -1322,7 +1322,7 @@ describe("route() model-availability filtering", () => {
 
   test("explicit not-served spec returns no-route without silent substitution", async () => {
     const denied = "availability-explicit-denied";
-    registerRoster(denied, "some-other-model");
+    registerModelsCatalog(denied, "some-other-model");
     allowCredentials(denied, "openai");
 
     const plan = await route(
@@ -1341,7 +1341,7 @@ describe("route() model-availability filtering", () => {
 
   test("explicit serves spec returns ok with the named provider", async () => {
     const serving = "availability-explicit-serving";
-    registerRoster(serving, AVAILABILITY_MODEL);
+    registerModelsCatalog(serving, AVAILABILITY_MODEL);
     allowCredentials(serving);
 
     const plan = await route(`${serving}@${AVAILABILITY_MODEL}`, {}, undefined, cachePath);
@@ -1355,8 +1355,8 @@ describe("route() model-availability filtering", () => {
   test("checks availability only after filtering providers without credentials", async () => {
     const noCredential = "availability-no-credential";
     const credentialed = "availability-credentialed";
-    registerRoster(noCredential, AVAILABILITY_MODEL);
-    registerRoster(credentialed, AVAILABILITY_MODEL);
+    registerModelsCatalog(noCredential, AVAILABILITY_MODEL);
+    registerModelsCatalog(credentialed, AVAILABILITY_MODEL);
     allowCredentials(credentialed);
 
     const plan = await route(
@@ -1370,7 +1370,7 @@ describe("route() model-availability filtering", () => {
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe(credentialed);
     // A provider the user cannot authenticate to must never incur the
-    // guaranteed-failing roster round-trip.
+    // guaranteed-failing discovery round-trip.
     expect(fetchCalls).toEqual([credentialed]);
     expect(fetchCalls).not.toContain(noCredential);
   });

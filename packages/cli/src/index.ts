@@ -575,12 +575,12 @@ async function runCli() {
     // Register the bundled endpoint catalog before ANYTHING enumerates or
     // validates providers. Two consumers below need it and both run long before
     // the proxy (which has always registered endpoints for the request path):
-    // the interactive picker enumerates the roster, and `validateApiKeysForModels`
+    // the interactive picker enumerates the provider list, and `validateApiKeysForModels`
     // decides whether an explicit `vendor@model` has a credential — a provider
     // that is not registered yet reads as an unknown one.
     //
     // Placed AFTER parseArgs on purpose: terminal flags (`--version`, `--models`,
-    // `--probe`) exit inside it, so those paths pay nothing for a roster they
+    // `--probe`) exit inside it, so those paths pay nothing for a provider list they
     // never show. Sync, config-only, idempotent; dynamically imported like every
     // other heavy module in runCli.
     await traceSpan("startup:endpoint-registration", async () => {

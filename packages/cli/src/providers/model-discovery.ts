@@ -1,7 +1,7 @@
 /**
  * Live, per-subscription model discovery.
  *
- * Some providers serve a model roster — and per-model context windows — that
+ * Some providers serve a dynamic models catalog — and per-model context windows — that
  * the cloud catalog CANNOT know statically, because the answer depends on the
  * caller's subscription tier. Kimi Code is the motivating case: `k3` advertises
  * a 1M context window, but only on Allegretto or higher; a Moderato subscriber
@@ -26,7 +26,7 @@
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
-import type { ModelOffer, RosterAxis, RosterEntry } from "./model-resolvers/types.js";
+import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
 
 /** A model as reported by the provider's own live endpoint. */
@@ -42,9 +42,9 @@ export interface DiscoveredModel {
    * when it reports a plausible one.
    *
    * NOT an authoritative release date — it is whenever the provider added the
-   * model to this account's roster — but for a plan endpoint whose models the
+   * model to this account's dynamic models catalog — but for a plan endpoint whose models the
    * public catalog may not list at all, it is the only freshness signal there
-   * is, and it orders a roster correctly. The catalog's own `releaseDate` wins
+   * is, and it orders a dynamic models catalog correctly. The catalog's own `releaseDate` wins
    * wherever it exists; this covers the rest.
    */
   releaseDate?: string;
@@ -52,8 +52,8 @@ export interface DiscoveredModel {
    * Ignore the CATALOG's release date for this row, ordering it by the version
    * encoded in its id instead.
    *
-   * For a roster of tuned VARIANTS the catalog does not list, a catalog date is
-   * not a fresher signal — it is a date for a DIFFERENT model. Antigravity is
+   * For a dynamic models catalog of tuned VARIANTS the cloud catalog does not list,
+   * a catalog date is not a fresher signal — it is a date for a DIFFERENT model. Antigravity is
    * the case: measured 2026-08-24, 6 of its 19 served ids had a catalog date and
    * every one of those six was an OLD base model, while every new variant had
    * none:
@@ -66,7 +66,7 @@ export interface DiscoveredModel {
    * `compareByReleaseDateDesc` puts undated rows after dated ones, so a 2025
    * model sat at the top of the picker and the newest model on the plan sat at
    * the bottom — the exact complaint that prompted this. With the catalog date
-   * suppressed the whole roster falls through to the version-parts rule and
+   * suppressed the whole dynamic models catalog falls through to the version-parts rule and
    * orders 3.7 > 3.6 > 3.5 > 3.1 > 3 > 2.5, which is what the user meant by
    * "newest first".
    */
@@ -76,7 +76,7 @@ export interface DiscoveredModel {
    *
    * Most endpoints report a flat list where each id is already the thing a
    * human would choose, and leave all of this undefined. Devin does not: its
-   * roster is ~33 models multiplied out by reasoning tier, speed premium, and
+   * dynamic models catalog is ~33 models multiplied out by reasoning tier, speed premium, and
    * context window, and it publishes which is which. Carrying that here is what
    * lets `providers/model-resolvers/` fold 170 ids into 42 rows and unfold them
    * again at request time.
@@ -87,7 +87,7 @@ export interface DiscoveredModel {
   costTier?: number;
   isFamilyDefault?: boolean;
   isRecommended?: boolean;
-  axes?: RosterAxis[];
+  axes?: ModelsCatalogAxis[];
   offer?: ModelOffer;
   /**
    * Whether the model can call tools, when the endpoint says so.
@@ -95,13 +95,13 @@ export interface DiscoveredModel {
    * Only Ollama reports it (via its own capability list / name heuristics), and
    * it genuinely varies there — a local embedding or vision-only pull cannot
    * drive Claude Code. Undefined means "not reported", which callers read as
-   * yes, since every hosted roster in claudish is tool-capable.
+   * yes, since every hosted dynamic models catalog in claudish is tool-capable.
    */
   supportsTools?: boolean;
 }
 
 /** A discovered model in the shape the model-resolver seam consumes. */
-export function toRosterEntry(model: DiscoveredModel): RosterEntry {
+export function toModelsCatalogEntry(model: DiscoveredModel): ModelsCatalogEntry {
   const { id, ...rest } = model;
   return { wireId: id, ...rest };
 }
@@ -133,10 +133,10 @@ export interface ModelDiscoveryDescriptor {
 }
 
 /**
- * A roster fetcher for a format this module does not know how to speak.
+ * A dynamic models catalog fetcher for a format this module does not know how to speak.
  *
  * Returning `[]` means "asked, got nothing" — the caller records an
- * `empty-roster` failure. Throwing is also fine; the caller converts it.
+ * `empty-models-catalog` failure. Throwing is also fine; the caller converts it.
  */
 export type ModelDiscoveryFetcher = (providerName: string) => Promise<DiscoveredModel[]>;
 
@@ -184,7 +184,7 @@ const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>
  * launch or a picker — but for a long time "fail-soft" also meant "fail
  * SILENT": all five failure modes below collapsed into the same empty array
  * behind a `--debug`-only log line. Callers could not tell "your API key was
- * rejected" from "this provider genuinely publishes no roster", so the picker
+ * rejected" from "this provider genuinely publishes no models", so the picker
  * rendered a rejected credential as a free-text prompt, which reads as a
  * feature rather than an error. (Measured on qwen-token-plan: a 401 from Alibaba's
  * plan host was indistinguishable in the UI from a provider with no list.)
@@ -192,7 +192,7 @@ const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>
  * The kinds are ordered by what the user should do about them, not by HTTP
  * status: `unauthorized` and `no-credentials` are setup problems the user can
  * fix, `unreachable` and `http-error` are usually transient, and
- * `empty-roster` means the endpoint answered correctly with nothing to offer —
+ * `empty-models-catalog` means the endpoint answered correctly with nothing to offer —
  * the only kind where falling through to a catalog or free-text entry is the
  * genuinely right response.
  */
@@ -202,7 +202,7 @@ export type DiscoveryFailureKind =
   | "http-error"
   | "unreachable"
   | "malformed"
-  | "empty-roster";
+  | "empty-models-catalog";
 
 export interface DiscoveryFailure {
   kind: DiscoveryFailureKind;
@@ -285,7 +285,7 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
       return `the model list was unreachable${at}${because}`;
     case "malformed":
       return `the model list was not valid JSON${at}`;
-    case "empty-roster":
+    case "empty-models-catalog":
       return `the endpoint answered${at} but listed no models`;
   }
 }
@@ -389,7 +389,7 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   const descriptor = def?.modelDiscovery;
   if (!def || !descriptor) return [];
 
-  // Devin's roster is not a GET — it is two protobuf rpcs (capability ∩
+  // Devin's dynamic models catalog is not a GET — it is two protobuf rpcs (capability ∩
   // entitlement), owned by the module that speaks that wire. The import is
   // DYNAMIC to keep the codec off the cold-start path and out of a static
   // cycle. (If a third such provider ever appears, replace this branch with a
@@ -405,13 +405,13 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       fetcher = getModelDiscoveryFetcher(descriptor.format);
     }
     if (!fetcher) {
-      // A declared format nothing claims. Report it as a roster miss rather
-      // than falling through to the GET path, which would hit a bogus URL.
-      return recordFailure({ kind: "empty-roster", provider: providerName });
+      // A declared format nothing claims. Report it as an empty dynamic models
+      // catalog rather than falling through to the GET path, which would hit a bogus URL.
+      return recordFailure({ kind: "empty-models-catalog", provider: providerName });
     }
     const models = await fetcher(providerName);
     if (models.length === 0) {
-      return recordFailure({ kind: "empty-roster", provider: providerName });
+      return recordFailure({ kind: "empty-models-catalog", provider: providerName });
     }
     _failures.delete(providerName);
     log(`[model-discovery:${providerName}] discovered ${models.length} models`);
@@ -464,7 +464,7 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
 
   // Identify ourselves, and honour the definition's own headers.
   //
-  // `getRequestAuth` mints AUTH headers only, so a roster request went out with
+  // `getRequestAuth` mints AUTH headers only, so a discovery request went out with
   // whatever User-Agent the runtime defaults to. Measured 2026-08-18: OpenCode
   // Zen Go answers such a request with `403 error code: 1010` — Cloudflare's
   // browser-integrity block, not an auth failure — while the identical request
@@ -528,7 +528,7 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
 
   const models = parseOpenAIModelsList(body);
   if (models.length === 0) {
-    return recordFailure({ kind: "empty-roster", provider: providerName, endpoint });
+    return recordFailure({ kind: "empty-models-catalog", provider: providerName, endpoint });
   }
 
   _failures.delete(providerName);
@@ -555,7 +555,7 @@ export async function discoverContextWindow(
 }
 
 /**
- * Rank a discovered roster for presentation, largest context window first
+ * Rank a dynamic models catalog for presentation, largest context window first
  * (ties broken alphabetically for determinism). The head of this list is the
  * picker's default.
  *
@@ -566,7 +566,7 @@ export async function discoverContextWindow(
  *
  * This is the PROBE-candidate ordering (`discoverProbeModel`), where widest
  * window first is the point. The model PICKER does not use it for presentation
- * — a plan whose whole roster is 1M collapses to alphabetical — and sorts its
+ * — a plan whose whole dynamic models catalog is 1M collapses to alphabetical — and sorts its
  * rows by release date instead; see `buildDiscoveredModelRows`.
  */
 export function rankDiscoveredModels(models: DiscoveredModel[]): DiscoveredModel[] {

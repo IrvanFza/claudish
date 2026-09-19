@@ -1006,9 +1006,9 @@ function defineTools(
   tools.push({
     name: "preflight",
     description:
-      "DIAGNOSTIC. For a roster of models, report which provider would serve each, " +
+      "DIAGNOSTIC. For a list of models, report which provider would serve each, " +
       "whether that hop is subscription or metered, and whether it is reachable right " +
-      "now. This is for a human investigating a roster. It is NOT a step before " +
+      "now. This is for a human investigating a model list. It is NOT a step before " +
       "`team`, `create_session` or `run_prompt` — those resolve their own routing, and " +
       "a caller that hands them a bare model name never needs to know the route.",
     inputSchema: {
@@ -1039,7 +1039,7 @@ function defineTools(
     group: "agentic",
     // N models each waiting on a live provider can sit well past the client's MCP
     // idle window, and this tool is specifically meant to be called with a big
-    // roster — exactly the shape that gets aborted without a keepalive.
+    // model list — exactly the shape that gets aborted without a keepalive.
     heartbeat: true,
     handler: async (args, ctx) => {
       const models = Array.isArray(args.models) ? (args.models as string[]) : [];
@@ -1053,7 +1053,7 @@ function defineTools(
       const doProbe = args.probe !== false;
       const timeoutMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 20_000;
       // Start the proxy only if something will actually be probed. Native names
-      // never are (see the loop), so an all-native roster must neither wait on
+      // never are (see the loop), so an all-native model list must neither wait on
       // proxy startup nor throw from it.
       const needsProxy = doProbe && models.some((m) => nativeRouteFor(m) === null);
       const proxy = needsProxy ? await getProxy() : null;
@@ -1117,7 +1117,7 @@ function defineTools(
 
         if (plan.kind === "no-route") {
           // No credentialed provider can serve this at all. Reported as a FAILURE
-          // rather than omitted, because "this model is not in your roster" is the
+          // rather than omitted, because "none of your credentials reaches this model" is the
           // single most useful thing to learn before the run rather than during it.
           failedModels.push(model);
           rows.push(`| \`${model}\` | — | — | ❌ no route | ${plan.reason} |`);
@@ -1732,7 +1732,7 @@ function defineTools(
         // an option — it is process-global and races concurrent calls.
         const requestedModel = args.model as string;
         const workDir = args.work_dir as string | undefined;
-        // The roster is cwd-dependent, so validate against the directory this
+        // The agent list is cwd-dependent, so validate against the directory this
         // session will actually run in, not the parent's.
         await assertAgentAvailable(args.agent as string | undefined, workDir ?? process.cwd());
 
