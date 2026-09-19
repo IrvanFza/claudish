@@ -1,6 +1,6 @@
 /**
  * Read-only accessor module over the slim model catalog cache
- * (`~/.claudish/all-models.json`).
+ * (`~/.claudish/cloud-models-catalog-v3.json`).
  *
  * Used by feature code that needs to look up catalog entries without going
  * through the full `OpenRouterCatalogResolver` resolution chain. The resolver
@@ -77,7 +77,7 @@ function project(entry: SlimModelEntry): CatalogEntryQueryResult {
 // ---------------------------------------------------------------------------
 //
 // The pricing-cache lookup runs on every proxied request. Re-reading and
-// JSON-parsing `~/.claudish/all-models.json` each call adds non-trivial
+// JSON-parsing `~/.claudish/cloud-models-catalog-v3.json` each call adds non-trivial
 // overhead (the slim catalog can hold hundreds of entries). We cache the
 // parsed entries in module scope and invalidate whenever the file's `mtimeMs`
 // changes — that catches both writes from `OpenRouterCatalogResolver`'s

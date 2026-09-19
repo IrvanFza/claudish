@@ -89,7 +89,17 @@ export interface DiskCacheV3 {
   catalogGenerationId: string;
 }
 
-export const ALL_MODELS_CACHE_PATH = join(homedir(), ".claudish", "all-models.json");
+/**
+ * The cloud models catalog cache: contract-3 data, in a file of its own.
+ *
+ * NOT `all-models.json`. That name belongs to older claudish builds, which read
+ * it as a v2 catalog; a v3 cache written there crashed them on every bare-name
+ * route (`TypeError … entry.sources["openrouter-api"]`, measured 2026-09-19),
+ * and it was ALSO the file the MCP server overwrote with an OpenRouter model dump.
+ * A contract change gets a new file, so no build ever reads a shape it cannot
+ * parse. `all-models.json` is left untouched for the builds that still read it.
+ */
+export const ALL_MODELS_CACHE_PATH = join(homedir(), ".claudish", "cloud-models-catalog-v3.json");
 
 function hasRoute(value: unknown): value is { routeId: string; routeProfileId: string } {
   if (!value || typeof value !== "object") return false;

@@ -326,7 +326,7 @@ function reportUnusableCatalog(
   // It reaches here through `CLAUDISH_DISABLE_CATALOG_WARM=1`, which
   // `scripts/guard-real-config.ts` sets on the whole test run — and the e2e
   // suites spawn `src/index.ts` as a child, which inherits it. So on a machine
-  // with no `~/.claudish/all-models.json`, the untreated path fails those tests
+  // with no `~/.claudish/cloud-models-catalog-v3.json`, the untreated path fails those tests
   // with a network diagnosis.
   //
   // "skipped" is the accurate answer, and it is the same one

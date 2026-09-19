@@ -65,7 +65,7 @@ export interface CatalogClient {
    *
    * For aggregator/gateway providers (e.g. "opencode-zen", "openrouter"):
    * returns models whose `aggregators[]` lists this vendor. Reads from the
-   * slim catalog cache at ~/.claudish/all-models.json (24h TTL).
+   * slim catalog cache at ~/.claudish/cloud-models-catalog-v3.json (24h TTL).
    *
    * For LiteLLM, Ollama, LM Studio: returns []. These have no Firebase
    * catalog by design — callers handle this with a free-text input prompt.
@@ -274,7 +274,7 @@ export interface CatalogClientDeps {
   getModelsByProvider?: typeof getModelsByProvider;
   getModelByIdFromFirebase?: typeof getModelByIdFromFirebase;
   searchModels?: typeof searchModelsFromFirebase;
-  /** Returns the parsed slim cache or null. Default reads ~/.claudish/all-models.json. */
+  /** Returns the parsed slim cache or null. Default reads ~/.claudish/cloud-models-catalog-v3.json. */
   readSlimCache?: () => ReturnType<typeof readAllModelsCache>;
 }
 

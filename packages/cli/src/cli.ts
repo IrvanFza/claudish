@@ -98,9 +98,10 @@ export function getVersion(): string {
  * Clear writable claudish caches (pricing, LiteLLM, recommended models).
  * Called when --models-refresh flag is used.
  *
- * NOTE: We intentionally do NOT delete `all-models.json` — that file is the
- * OpenRouter catalog resolver's slim-catalog cache, sourced from Firebase.
- * Deleting it would force a cold re-warm on every --models-refresh call.
+ * NOTE: We intentionally do NOT delete `cloud-models-catalog-v3.json`, the cloud
+ * models catalog cache. Deleting it would force a cold re-warm on every
+ * --models-refresh call. `all-models.json` is not ours to delete either: older
+ * claudish builds still read it.
  */
 function clearAllModelCaches(): void {
   const cacheDir = join(homedir(), ".claudish");

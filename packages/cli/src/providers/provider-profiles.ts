@@ -76,7 +76,7 @@ export interface ProfileContext {
    *
    * `requiresResponsesApi` reads the model catalog, which made the composition
    * table in `provider-profiles.test.ts` depend on whichever
-   * `~/.claudish/all-models.json` the machine happened to have. That is the
+   * `~/.claudish/cloud-models-catalog-v3.json` the machine happened to have. That is the
    * v7.43.0 trap: green on every dev box, and a different answer on a cold CI
    * runner. Passing a fixture path here keeps that table hermetic.
    */
@@ -245,7 +245,7 @@ export const devinProfile: ProviderProfile = {
  * opinion to read.
  *
  * @param cachePath Test seam. Points the catalog lookup at a fixture, so a test
- *   never depends on a warm `~/.claudish/all-models.json`.
+ *   never depends on a warm `~/.claudish/cloud-models-catalog-v3.json`.
  */
 export function requiresResponsesApi(modelName: string, cachePath?: string): boolean {
   const endpoint = lookupModelEndpoint(modelName, "openai", cachePath);

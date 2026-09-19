@@ -141,7 +141,7 @@ export interface ComposedHandlerOptions {
   sessionEventRegistry?: SessionEventRegistry;
   /**
    * Test seam for the model-catalog cache path used by preset resolution.
-   * Defaults to ~/.claudish/all-models.json. Only tests should pass this.
+   * Defaults to ~/.claudish/cloud-models-catalog-v3.json. Only tests should pass this.
    */
   catalogCachePath?: string;
 }

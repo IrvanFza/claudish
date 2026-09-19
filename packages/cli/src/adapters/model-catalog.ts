@@ -2,7 +2,7 @@
  * Model metadata catalog — Firebase slim cache is the sole source of truth.
  *
  * All model facts (contextWindow, supportsVision) come from the slim catalog
- * at ~/.claudish/all-models.json, populated at proxy startup by the OpenRouter
+ * at ~/.claudish/cloud-models-catalog-v3.json, populated at proxy startup by the OpenRouter
  * catalog resolver.
  *
  * Adapter-specific behavior (temperature ranges, tool name limits, max tool
@@ -61,7 +61,7 @@ export interface ModelEntry {
  *   - modelId isn't in the cache
  *   - The entry exists but has no `contextWindow`
  *
- * @param cachePath Override cache path. Defaults to `~/.claudish/all-models.json`.
+ * @param cachePath Override cache path. Defaults to `~/.claudish/cloud-models-catalog-v3.json`.
  *                  Only tests should pass this.
  */
 export function lookupModel(modelId: string, cachePath?: string): ModelEntry | undefined {

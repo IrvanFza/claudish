@@ -297,7 +297,7 @@ const SUBSCRIPTION_PRICING: ModelInfo["pricing"] = {
  * THIS subscription, so it beats any catalog (Kimi Coding reports it; Qwen
  * Plan does not). On a miss, fall back to the Firebase slim catalog, which
  * already knows most of these models — that is a read of the local
- * `~/.claudish/all-models.json`, never a network call, so the picker never
+ * `~/.claudish/cloud-models-catalog-v3.json`, never a network call, so the picker never
  * blocks on it. Still-unknown stays 0 and renders as "N/A": there is no
  * per-model cloud lookup, because a window the slim catalog lacks is a
  * models-index gap, not something N extra round-trips can discover.

@@ -87,7 +87,10 @@ const __dirname = dirname(__filename);
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const CLAUDISH_CACHE_DIR = join(homedir(), ".claudish");
-const ALL_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "all-models.json");
+// OpenRouter's own model list, for `search_models`. Its OWN file: this once shared
+// `all-models.json` with the cloud models catalog cache, and each writer erased the
+// other's data, because the two hold different shapes.
+const OPENROUTER_MODELS_CACHE_PATH = join(CLAUDISH_CACHE_DIR, "openrouter-models.json");
 const CACHE_MAX_AGE_DAYS = 2;
 
 /** Instructions added to Claude's system prompt when channel mode is active. */
@@ -183,9 +186,9 @@ interface ToolDefinition {
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
 async function loadAllModels(forceRefresh = false): Promise<any[]> {
-  if (!forceRefresh && existsSync(ALL_MODELS_CACHE_PATH)) {
+  if (!forceRefresh && existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
     try {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+      const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
       const lastUpdated = new Date(cacheData.lastUpdated);
       const ageInDays = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60 * 24);
       if (ageInDays <= CACHE_MAX_AGE_DAYS) {
@@ -203,14 +206,14 @@ async function loadAllModels(forceRefresh = false): Promise<any[]> {
     const models = data.data || [];
     mkdirSync(CLAUDISH_CACHE_DIR, { recursive: true });
     writeFileSync(
-      ALL_MODELS_CACHE_PATH,
+      OPENROUTER_MODELS_CACHE_PATH,
       JSON.stringify({ lastUpdated: new Date().toISOString(), models }),
       "utf-8"
     );
     return models;
   } catch {
-    if (existsSync(ALL_MODELS_CACHE_PATH)) {
-      const cacheData = JSON.parse(readFileSync(ALL_MODELS_CACHE_PATH, "utf-8"));
+    if (existsSync(OPENROUTER_MODELS_CACHE_PATH)) {
+      const cacheData = JSON.parse(readFileSync(OPENROUTER_MODELS_CACHE_PATH, "utf-8"));
       return cacheData.models || [];
     }
     return [];
