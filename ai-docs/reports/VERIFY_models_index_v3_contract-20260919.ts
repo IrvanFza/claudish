@@ -30,19 +30,24 @@ const plans: Json[] = (await get(`queryPlans?generationId=${gen}`)).body.data.pl
 const planById = new Map(plans.map((p) => [p.id, p]));
 console.log(`generation ${gen}: ${models.length} models, ${plans.length} plans`);
 
-// ── K1 (contract responsibility 3): Coding Plan is "unknown", reason authenticated roster ──
+// ── K1 (contract responsibility 3, AMENDED 2026-09-19 by models-index 704d456) ──
+// Was: "unknown, without a callable plan route". Now: supported through
+// qwen/modelstudio-coding-plan, with probes, defaults and recommendations using its
+// exact published membership and the dedicated qcode credential boundary.
 const coding = planById.get("alibaba-ai-coding-plan");
-check("K1", "Coding Plan: routeStatus unknown, routeReason authenticated_account_roster_required, no callable route",
-  coding?.routeStatus === "unknown" && coding?.routeReason === "authenticated_account_roster_required" && !coding?.route,
-  `routeStatus=${coding?.routeStatus} routeReason=${coding?.routeReason} route=${JSON.stringify(coding?.route)}`);
+check("K1", "Coding Plan: routeStatus supported, route qwen/modelstudio-coding-plan",
+  coding?.routeStatus === "supported" && coding?.route?.routeId === "qwen" && coding?.route?.routeProfileId === "modelstudio-coding-plan",
+  `routeStatus=${coding?.routeStatus} route=${JSON.stringify(coding?.route)} routeReason=${coding?.routeReason}`);
 
-// ── K2: Coding Plan kept out of recommendations and plugin defaults ──
-const rec = await get(`queryModels?catalog=recommended&generationId=${gen}`);
-const defaults = await get(`queryPluginDefaults?generationId=${gen}`);
-const recText = JSON.stringify(rec.body?.data ?? {});
-const defText = JSON.stringify(defaults.body?.data ?? {});
-check("K2", "Coding Plan absent from recommendations", rec.status === 200 && !/modelstudio-coding-plan|alibaba-ai-coding-plan/.test(recText), `HTTP ${rec.status}; mentions=${(recText.match(/modelstudio-coding-plan|alibaba-ai-coding-plan/g) ?? []).length}`);
-check("K2", "Coding Plan absent from plugin defaults", defaults.status === 200 && !/modelstudio-coding-plan|alibaba-ai-coding-plan/.test(defText), `HTTP ${defaults.status}; mentions=${(defText.match(/modelstudio-coding-plan|alibaba-ai-coding-plan/g) ?? []).length}`);
+// ── K2: its probe pick is one of its own published members, on its own binding ──
+const probe = (await get(`probeModels?generationId=${gen}`)).body.data;
+const pick = probe.routes["qwen/modelstudio-coding-plan"];
+const codingMembers = new Set((coding?.inclusions ?? []).map((i: Json) => i.externalModelId));
+check("K2", "Coding Plan probe pick is one of its exact published members",
+  !!pick && codingMembers.has(pick.externalModelId) && pick.planId === "alibaba-ai-coding-plan",
+  `pick=${JSON.stringify(pick)}; members=${[...codingMembers].join(",")}`);
+const tokenLeak = JSON.stringify(pick ?? {}).includes("qwencloud-token-plan");
+check("K2", "Coding Plan never references the Token Plan binding", !tokenLeak && coding?.route?.routeProfileId !== "qwencloud-token-plan", `pick mentions token plan: ${tokenLeak}`);
 
 // ── K3: unknown aggregator rows carry no callable id ──
 let unknown = 0, unknownWithCallable = 0, unknownWithObserved = 0, mappedWithoutExt = 0;

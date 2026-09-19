@@ -90,6 +90,38 @@ Two facts about the published data came out of this, and the reader must handle 
 - **Subscription wire ids can live only in plan inclusions.** The GLM Coding Plan publishes no model connections; its `GLM-5.3` and `GLM-5.3-Flash` exist only as `inclusions[].externalModelId`. A reader that reads connections alone calls those models by their canonical ids.
 - **OpenRouter publishes two ids for some models:** the exact id (`moonshotai/kimi-k3`) and a moving pointer (`~moonshotai/kimi-latest`). A pinned model must be called by the exact id. The 9.6.x cache already does this.
 
+## Live validation of PR #266 (2026-09-19)
+
+The backend moved to runtime **1.2.90** and generation **`g-20260919013346169-feffb8ad`** (1,309 models, 24 probe picks, 6 unavailable reasons). It deliberately amended the contract so the Coding Plan is `supported` through `qwen/modelstudio-coding-plan`; its probe pick is `qwen3.7-plus`, one of its own members. Rerun on the new generation: the handoff checks pass except the four counts that moved with it, and the amended contract checks pass 10 of 10. The handoff document still names runtime 1.2.84 and the previous generation.
+
+A v3 reader already exists: **PR #266**, "Claudish 9.8.0: strict catalog v3 reader and three Alibaba products", built in the Codex worktree `claudish-catalog-v3-reader`. Its last runs wrote the v3 cache to the real `~/.claudish/all-models.json` at 12:57:52 local, 87 seconds before its commit.
+
+**Functional check against live v3:** PR #266 answers 30 of 36 cases correctly (9.7.x: 0 of 34). The 6 remaining are real defects:
+
+| # | Defect | Evidence |
+|---|---|---|
+| 1 | A plan member is missing | The reader fetches `status=all&catalog=slim` without `includeRouteVariants`, so `kimi-code`'s member `kimi-k3-256k`, a route variant, has no model row. |
+| 2–3 | OpenRouter called by moving pointer | `kimi-k3` → `~moonshotai/kimi-latest`, `gpt-6-astra` → `~openai/gpt-astra-latest`, although v3 publishes the exact ids. 9.6.x used the exact ids. |
+| 4 | A fallback hop that cannot succeed | A bare `qwen3.8-max` falls back to OpenRouter, which v3 does not list as serving it. |
+| 5–6 | Video capability not consumed | `videoInput`/`videoOutput` are stored (`all-models-cache.ts:46-47`) and read nowhere. The handoff requires that video output excludes a model from chat. |
+
+**Live Test All with real credentials:**
+
+| | 9.7.1 | PR #266 |
+|---|---|---|
+| ready | 15 | 13 |
+| real 429 quota answers | 3 | 3 (MiniMax Coding, GLM, Sakana Fugu) |
+| **Antigravity** | ready | **FAIL: "no probe model: transport does not support discovery"** |
+| Token Plan | ready as "Qwen Plan (qc@)" | not set: the key is stored as `QWEN_CLOUD_PLAN_API_KEY`, which has no alias by decision |
+
+The Antigravity failure follows from the new probe map. v3 marks it `client_model_selection_required`, and Test All then relies on endpoint discovery, which the Antigravity transport does not implement. 9.7.1 passed only by trying a stale cached pick. The PR's own report covers Antigravity through `--probe`, not Test All.
+
+**Decisions honoured:** Alibaba identities are exactly `qwen-token-plan`/`qtoken`, `qwen-coding`/`qcode` and `qwen-payg`/`qpay`, with no old name left in the source. There is no billing gate. "Roster" still appears in 7 lines the PR adds.
+
+**Mixed versions on one machine:** the PR writes v3 entries into the same `~/.claudish/all-models.json` older builds read. 9.7.1 code reading that file with no sentinel crashes on every bare-name route with `TypeError: undefined is not an object (evaluating 'entry.sources["openrouter-api"]')`, measured here. 9.7.x is protected while its sentinel stands, and the PR no longer writes or removes it. A 9.6.x process, or any 9.7.x process without the sentinel, crashes after a 9.8.0 run on the same machine. A separate cache file name would remove the risk.
+
+**Not validated live:** Poe and Vertex requests, the three Alibaba products (no stored keys under the new names), metered Zen, and the behaviour of 9.8.0 when a catalog it cannot read arrives (contract line 21).
+
 ## Reader requirements the verification surfaced
 
 **R1. Read the complete projection.** The default `queryModels` projection returns 1,111 models. It omits 181 deprecated models and 9 route variants:

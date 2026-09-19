@@ -19,12 +19,15 @@ const sentinelCopy = join(tmp, "catalog-incompatible.json");
 if (existsSync(realSentinel) && process.env.VERIFY_WITHOUT_SENTINEL !== "1") copyFileSync(realSentinel, sentinelCopy);
 process.env.CLAUDISH_CATALOG_INCOMPATIBLE_PATH = sentinelCopy;
 
-const src = "../../packages/cli/src";
+// VERIFY_SRC points the check at another build's source, e.g. a PR's worktree.
+const src = process.env.VERIFY_SRC ?? "../../packages/cli/src";
+console.log(`source under test: ${src}`);
 const cc = await import(`${src}/providers/catalog-client.js`);
 const mc = await import(`${src}/adapters/model-catalog.js`);
 const rr = await import(`${src}/providers/routing-rules.js`);
 const pc = await import(`${src}/providers/probe-catalog.js`);
-const compat = await import(`${src}/providers/catalog-compatibility.js`);
+// The 9.7 guard module; a v3 reader may have removed it.
+const compat: any = await import(`${src}/providers/catalog-compatibility.js`).catch(() => ({ SUPPORTED_CONTRACT_VERSION: "(module removed)" }));
 
 // ── the truth: the live v3 generation ────────────────────────────────────────
 const BASE = "https://us-central1-claudish-6da10.cloudfunctions.net";
@@ -44,6 +47,8 @@ do {
 const plans: any[] = (await get(`queryPlans?generationId=${gen}`)).data.plans;
 const probes = (await get(`probeModels?generationId=${gen}`)).data;
 const byId = new Map(models.map((m) => [m.modelId, m]));
+// 9.7.x names the Token Plan provider qwen-cloud; the v3 reader renames it qwen-token-plan.
+const TOKEN = process.env.VERIFY_TOKEN_PLAN_PROVIDER ?? "qwen-cloud";
 
 // claudish provider for each v3 binding (ai-docs/reports/PLAN_catalog_v3_reader-20260919.md)
 const BIND: Record<string, string[]> = {
@@ -54,7 +59,7 @@ const BIND: Record<string, string[]> = {
   "ollama/cloud": ["ollamacloud"], "openai/codex-subscription": ["openai-codex"], "openai/direct-api": ["openai"],
   "opencode/go-subscription": ["opencode-zen-go"], "opencode/zen": ["opencode-zen"], "openrouter/gateway": ["openrouter"],
   "poe/gateway": ["poe"], "qwen/dashscope-direct": ["qwen-payg"], "qwen/modelstudio-coding-plan": ["qwen-coding"],
-  "qwen/qwencloud-token-plan": ["qwen-cloud"], "sakana/direct-api": ["sakana"], "sakana/fugu-subscription": ["sakana-subscription"],
+  "qwen/qwencloud-token-plan": ["qwen-cloud", "qwen-token-plan"], "sakana/direct-api": ["sakana"], "sakana/fugu-subscription": ["sakana-subscription"],
   "together-ai/gateway": ["together"], "vertex/google-cloud": ["vertex"], "x-ai/direct-api": ["x-ai"],
   "x-ai/supergrok-subscription": ["grok-subscription"], "z-ai/direct-api": ["z-ai", "glm"], "z-ai/glm-coding-subscription": ["glm-coding"],
 };
@@ -108,7 +113,17 @@ const refresh: any =
     ? { kind: "skipped (9.6.x: the 426 is a generic http_error)" }
     : await safe(() => cc.refreshCatalog(15000, { cachePath: join(tmp, "all-models.json") }));
 row("read", "refreshCatalog()", `${models.length} models, ${plans.length} plans, generation ${gen}`, JSON.stringify(refresh), refresh?.kind === "refreshed");
-row("read", "contract version this build reads", 3, compat.SUPPORTED_CONTRACT_VERSION, compat.SUPPORTED_CONTRACT_VERSION === 3);
+row("read", "contract version this build reads", 3, compat.SUPPORTED_CONTRACT_VERSION, compat.SUPPORTED_CONTRACT_VERSION === 3 || refresh?.kind === "refreshed");
+// Every plan member must exist as a model row the build can look up.
+if (Array.isArray(await safe(() => cc.getCatalogEntries()))) {
+  const have = new Set((cc.getCatalogEntries() as any[]).map((e) => e.modelId));
+  const missing: string[] = [];
+  for (const p of plans) for (const i of p.inclusions ?? []) {
+    const id = i.resolution?.modelId ?? i.modelId;
+    if (id && !have.has(id)) missing.push(`${p.id}:${id}`);
+  }
+  row("read", "every plan member has a model row", "0 missing", `${missing.length} missing${missing.length ? ": " + missing.slice(0, 8).join(", ") : ""}`, missing.length === 0);
+}
 const entries: any = await safe(() => cc.getCatalogEntries());
 row("read", "getCatalogEntries()", `${models.length} entries`, Array.isArray(entries) ? `${entries.length} entries` : JSON.stringify(entries)?.slice(0, 100), Array.isArray(entries) && entries.length > 0);
 
@@ -116,7 +131,7 @@ row("read", "getCatalogEntries()", `${models.length} entries`, Array.isArray(ent
 for (const [model, provider] of [
   ["kimi-k3", "kimi-coding"], ["kimi-k3", "ollamacloud"], ["minimax-m3", "minimax"], ["minimax-m3", "minimax-coding"],
   ["glm-5.3-flash", "glm-coding"], ["deepseek-v4.1-flash", "deepseek"], ["grok-4.20", "x-ai"], ["claude-opus-4-5", "openrouter"],
-  ["deepseek-v4.1-flash", "opencode-zen-go"], ["deepseek-v4.1-flash", "qwen-cloud"],
+  ["deepseek-v4.1-flash", "opencode-zen-go"], ["deepseek-v4.1-flash", TOKEN],
 ] as const) {
   const want = wiresFor(model, provider);
   const got: any = await safe(() => cc.resolveExternalId(model, provider));
@@ -141,6 +156,7 @@ for (const model of ["kimi-k3", "glm-5.3", "minimax-m3", "deepseek-v4.1-flash", 
     const expected = wiresFor(model, h.provider);
     if (!want.includes(h.provider)) wrong.push(`${h.provider} does not serve it in v3, yet is sent ${wire}`);
     else if (expected.length && !expected.includes(wire)) wrong.push(`${h.provider} sends ${wire}, v3 says ${expected.join(" or ")}`);
+    else if (wire.startsWith("~") && expected.some((x) => !x.startsWith("~"))) wrong.push(`${h.provider} sends the moving pointer ${wire}, not the exact ${expected.find((x) => !x.startsWith("~"))}`);
     return `${h.provider}:${wire}`;
   });
   row("route", `bare ${model}`, want.join(","), `${shown.join(" > ")}${wrong.length ? "  WRONG: " + wrong.join("; ") : ""}`, wrong.length === 0);
@@ -149,7 +165,7 @@ for (const model of ["kimi-k3", "glm-5.3", "minimax-m3", "deepseek-v4.1-flash", 
 // ── 4. subscription coverage: does the plan cover the model? ────────────────
 for (const [model, provider, planId] of [
   ["kimi-k3", "kimi-coding", "kimi-code"], ["gpt-6-astra", "openai-codex", "openai-codex"],
-  ["glm-5.3-flash", "glm-coding", "z-ai-glm-coding-plan"], ["qwen3.8-max", "qwen-cloud", "alibaba-token-plan-individual"],
+  ["glm-5.3-flash", "glm-coding", "z-ai-glm-coding-plan"], ["qwen3.8-max", TOKEN, "alibaba-token-plan-individual"],
   ["deepseek-v4.1-flash", "opencode-zen-go", "opencode-go"],
 ] as const) {
   const member = (byId.get(model)?.subscriptionPlanIds ?? []).includes(planId);
@@ -172,6 +188,8 @@ const v3Kimi = models.filter((m) => m.modelId.toLowerCase().includes("kimi")).le
 row("metadata", "search 'kimi' (picker)", `${v3Kimi} models`, Array.isArray(hits) ? `${hits.length} matches` : hits, Array.isArray(hits) && hits.length > 0);
 
 // ── 6. probe picks (Test All) ────────────────────────────────────────────────
+const probeFetch: any = await safe(() => pc.ensureProbeModelsCached());
+row("probe", "fetch /probeModels", "200 with both maps", JSON.stringify(probeFetch)?.slice(0, 120), probeFetch?.kind === "ok");
 for (const [slug, binding] of [["openai-codex", "openai/codex-subscription"], ["kimi-coding", "moonshotai/kimi-code-subscription"], ["openrouter", "openrouter/gateway"], ["glm-coding", "z-ai/glm-coding-subscription"]] as const) {
   const want = probes.routes[binding]?.externalModelId ?? `(${probes.unavailableRoutes[binding]?.reason})`;
   const got: any = await safe(() => pc.getProbeModel(slug));
