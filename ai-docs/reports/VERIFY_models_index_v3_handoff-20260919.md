@@ -122,6 +122,33 @@ The Antigravity failure follows from the new probe map. v3 marks it `client_mode
 
 **Not validated live:** Poe and Vertex requests, the three Alibaba products (no stored keys under the new names), metered Zen, and the behaviour of 9.8.0 when a catalog it cannot read arrives (contract line 21).
 
+## Fixes on `fix/v3-reader-gaps` (2026-09-19)
+
+Each fix was checked against the live catalog or a live account, not only by unit tests.
+
+| Defect | Commit | Live evidence |
+|---|---|---|
+| 1. Route-variant plan member missing | `30f70d4` | 894 rows fetched, 0 plan members without a row |
+| 2–3. OpenRouter called by moving pointer | `30f70d4` | `openrouter:moonshotai/kimi-k3`, `openrouter:openai/gpt-6-astra`; a pointer is sent only when the requested id is itself a pointer |
+| 4. Fallback hop that cannot succeed | open | part of the routing redesign (catalog-derived chains), waiting for decisions Q1–Q5 |
+| 5–6. Video capability not consumed | `492b0e4` | all 43 `videoOutput` models excluded from chat; 86 of 93 video-reading models still offered (the 7 hidden are image and embedding models, excluded by name) |
+| Mixed versions share one cache file | `af02ca3` | v3 cache is `cloud-models-catalog-v3.json`, the MCP OpenRouter list is `openrouter-models.json`; a forced warm left `all-models.json` byte-identical |
+| Antigravity FAIL in Test All | `4128e07` | the transport now offers the account's own model list; Test All shows Antigravity ready |
+| Claude on Antigravity rejects a thinking budget ≥ `max_tokens` (found while fixing the above) | `5fc423c` | `max_tokens` 16000/high and 8000/medium returned 400 before and 200 after |
+
+**The Antigravity probe needed two fixes.** With discovery in place, every probe still returned `400 INVALID_ARGUMENT`. The probe sends effort "minimal", which the Gemini adapter turns into `thinkingBudget: 0` on Gemini 2.5, and Antigravity rejects that. "low" is not a general fix: Antigravity also serves Claude, and a 1024-token budget is not below the probe's 512-token cap. The probe knows the provider, not the model family, so for Antigravity it now sends no effort field. All nine models tried then returned visible text.
+
+| Antigravity model | `minimal` | `low` | no effort field |
+|---|---|---|---|
+| `gemini-2.5-flash` | 400 | 200 | 200 |
+| `gemini-2.5-flash-lite` | 400 | 200 | 200 |
+| `gemini-3-flash` | 200 | 200 | 200 |
+| `claude-sonnet-4-6` | 200 | 400 | 200 |
+
+**Test All after the fixes (dev build, real credentials):** 15 ready, 3 FAIL. The three are account quota answers, not claudish errors: MiniMax Coding `429` "Plan limit reached", GLM `429` "Out of quota", Sakana Fugu `429` "Out of quota … Prepaid".
+
+**Contract line 21, measured with the dev build.** A dead catalog server prints `WARNING: Catalog refresh failed … Using cached version.`; a `426` prints `Model catalog contract v4 is not supported by this build.`; neither overwrites the cache. With no catalog at all, routing continues and keeps `glm-coding`, `qwen-token-plan`, `openai-codex` and `antigravity` first. One gap: `kimi-k3` loses its Kimi Coding hop. That plan serves the model as `k3`, only the catalog records that `kimi-k3` and `k3` are the same model, and Kimi Coding's own list answers `not-served` for `kimi-k3`. The chain falls to OpenCode Zen Go, another subscription, so billing does not change. Closing the gap without a catalog would mean guessing a name, which the exact-id rule forbids; it is part of the cold-start decision (Q4).
+
 ## Reader requirements the verification surfaced
 
 **R1. Read the complete projection.** The default `queryModels` projection returns 1,111 models. It omits 181 deprecated models and 9 route variants:
