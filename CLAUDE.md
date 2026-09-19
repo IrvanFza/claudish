@@ -9,7 +9,7 @@ lives in `ROADMAP.md`.
 
 ## Where the rationale lives — all files below are in `ai-docs/architecture/`
 
-- `routing.md` — `provider@model` syntax, every provider prefix, `DEFAULT_ROUTING_RULES`, `defaultProvider`, the derived picker roster, `SUBSCRIPTION_PROVIDERS`, local models
+- `routing.md` — `provider@model` syntax, every provider prefix, `DEFAULT_ROUTING_RULES`, `defaultProvider`, the derived picker provider list, `SUBSCRIPTION_PROVIDERS`, local models
 - `adapters.md` — Layers 1–3, stream parsers, error classification and retry, the 400 remap, why Gemini tool schemas need `items` on every array
 - `behavior-layer.md` — Layer 4, the harness-conformance supervisor
 - `advisor.md` — `--advisor` for any main model: independent of `--monitor`, decorator on the routed handler, ids by tool name, retained session state, stub paths S1-S10, Claude Code's gates, metered panel billing; read before editing advisor, decorator, monitor-launch or native-auth code
@@ -29,17 +29,36 @@ lives in `ROADMAP.md`.
 
 Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing site: `docs/`.
 
+## Vocabulary — one name per concept
+
+The full dictionary is `.claude/output-styles/terminology.md`. It binds code, comments, commit
+messages, docs and conversation alike. The terms most often confused:
+
+- **cloud models catalog** — hosted models-index metadata, keyed by model id; no credential.
+- **dynamic models catalog** — the models a provider's discovery endpoint returns for ONE
+  credential; never persisted.
+- **membership** — the models a subscription plan publishes (`subscriptionPlanIds`). Coverage,
+  not proof that an account may use them.
+- **Never write "roster".** It meant both of the last two, so no reader could tell which. The
+  word survives only inside models-index wire names quoted verbatim (`rosterCoverage`), until the
+  backend renames them.
+- Provider names, shortcuts, credential names and hosts are copied from the backend contract
+  (models-index `ai-docs/alibaba-provider-changes.md`, and the binding fixture). A rename REMOVES
+  the old name: no alias, no shim, no deprecation notice.
+
+`AGENTS.md` is a symlink to this file, so Codex reads the same instructions.
+
 ## Invariants — each of these fails SILENTLY
 
 - A new provider needs entries in BOTH `BUILTIN_PROVIDERS` and `PROVIDER_PROFILES`; a missing profile routes to OpenRouter with no error.
 - `apiKeyEnvVar` stays `""` for `devin`, `antigravity`, `grok-subscription` — non-empty means the handler is never built and the model falls through to OpenRouter.
-- Never hardcode rosters, context windows, `maxOutputTokens`, or pricing. Discover live; a default is a rule, never a pinned id.
+- Never hardcode a provider's models, a plan's membership, context windows, `maxOutputTokens`, or pricing. Discover live; a default is a rule, never a pinned id.
 - Terminal errors are remapped to 400, so any `status ===` under `handlers/` is suspect — recover the real one with `extractUpstreamStatus`.
 - Read `C.*` / `tokens.*` at RENDER time; a module-level `const` snapshots the dark palette before detection runs.
 - A provider absent from `SUBSCRIPTION_PROVIDERS` quotes flat-rate users a per-token price and accrues fictional spend.
 - `openai-codex` bills by the CREDENTIAL that signed, never by its name, so it is in `CREDENTIAL_DECIDED_PROVIDERS` and must never also be in `SUBSCRIPTION_PROVIDERS` — the name check short-circuits the probe. The probe is installed only as a side effect of importing `auth/credentials/authority.ts`; unregistered, `cx@` silently reports metered (safe as money, but it also suppresses the `routing-rules.ts:413` cost warning). Probe with `CodexOAuth.hasCredentials()`, never `hasOAuthCredentials`/`describeSourceSync`.
 - What makes an arm the SUBSCRIPTION arm is `RequestAuth.arm === "oauth"`, set by the credential half itself — never "the composite returned an artifact". `CompositeCredentialProvider` falls through to the api-key half, which ALWAYS returns an object (`{headers:{}}` even with no key), so a truthiness test on the cached artifact labels every metered request SUB and accrues $0. Absent `arm` ⇒ metered. This shipped once and three reviewers read it as correct.
-- Cross-vendor subscription rosters such as Devin and Alibaba Token Plan must use exact catalog route/profile membership before a candidate is sent; account-selected models remain discoverable through their provider transport.
+- Cross-vendor subscriptions such as Devin and the Alibaba Token Plan send a candidate only when its exact catalog route/profile membership includes it; a model the account itself selects stays discoverable through the provider's dynamic models catalog.
 - `gk@` is the Grok SUBSCRIPTION; `grok@`/`xai@` is the metered `x-ai`. `moonshot-cn@` is a different service from `moonshot@`.
 - A bare Claude name (`claude-opus-5`, `opus`, `internal`) must never reach `route()`: `native-anthropic` has no credential store, so the credential filter drops it and the chain degrades to OpenRouter. Check `nativeRouteFor()` (`providers/native-route.ts`) FIRST, as the proxy does — `preflight` and the TUI probe once didn't and told agents to drop their own subscription's models. Native routes also cannot be probed from outside a session (the handler forwards the inbound Claude Code header); report them as a third outcome, never as success or failure.
 - A new `ClaudishProfileConfig` field MUST be added to `loadConfig`'s allowlist in `profile-config.ts`; otherwise it survives on disk until the first global save and is then dropped. Bit `onepasswordEnvironments`, then `keychain`.

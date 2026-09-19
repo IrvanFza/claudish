@@ -38,7 +38,9 @@ conversation. A concept with two names reads as two concepts.
 | routing chain | fallback chain | fallback properly names only the last-resort `defaultProvider` hop, not the whole credential-filtered candidate list |
 | metered | pay-as-you-go | the pricing code and tests say metered; PAYG survives only in the `qwen-payg` provider name and its picker label |
 | subscription | plan | plan is the vendor's product name (Coding Plan, Token Plan) while `SUBSCRIPTION_PROVIDERS` is claudish's own billing category |
-| roster | catalog | a roster is the live per-account served set, the catalog is hosted models-index metadata, and blurring them is how hardcoded model data sneaks in |
+| cloud models catalog | catalog, when the kind matters | the hosted models-index metadata, keyed by model id and read with no credential; static within one catalog generation |
+| dynamic models catalog | roster | the model list a provider's discovery endpoint returns for one credential; never persisted. "Roster" named this and a plan's members alike, so neither reader could tell which was meant |
+| membership | roster, plan roster | the models a subscription plan publishes in the cloud models catalog (`subscriptionPlanIds`); it is coverage, not proof that a given account may use them |
 | picker | selector | docs, tests, and constants (`PICKER_ORDER`, `isPickableProvider`) say picker even though the file is `model-selector.ts` |
 | foreign model | external model | the antonym of native is foreign (`forceForeignModel`), and a local Ollama model is external to nothing yet still foreign to the harness |
 | harness | host | harness means Claude Code driving the session, while host already names the MCP host that spawns the server |
