@@ -13,6 +13,7 @@
  */
 
 import { log } from "../../logger.js";
+import { readAllModelsCache } from "../all-models-cache.js";
 
 /**
  * In-memory cache. Stores the FULL ranked list of candidates so the probe
@@ -38,10 +39,16 @@ const SMALL_MODEL_PATTERNS = [
 ];
 
 /**
- * Models that can't handle a `/v1/chat/completions` probe request: image
- * generation, embeddings, TTS, ASR. These often appear in /v1/models lists
- * alongside chat models (especially on LiteLLM aggregators) but will 404
- * or 400 the probe. Filter them out before ranking.
+ * Models that cannot answer a chat turn: image generation, embeddings, TTS,
+ * speech-to-text. They appear in `/v1/models` lists beside chat models and 404
+ * or 400 a probe.
+ *
+ * A NEGATIVE name rule: it can deny, never confirm. It exists because the slim
+ * cloud models catalog publishes no image-output or audio-output flag (the full
+ * projection does), and providers the catalog never covers (Ollama, LiteLLM,
+ * custom endpoints) publish nothing at all. Once the catalog carries explicit
+ * input and output modalities on every projection, the catalog decides and this
+ * list is consulted only for models it does not know.
  */
 const NON_CHAT_PATTERNS = [
   /\bimage\b/i,
@@ -61,21 +68,131 @@ const NON_CHAT_PATTERNS = [
   /-(image|tts|audio|embedding|vision-only)(-|$)/i,
 ];
 
+/**
+ * Ids that LOOK like video generators — a fallback the catalog overrides.
+ *
+ * Kept apart from {@link NON_CHAT_PATTERNS} because the catalog publishes
+ * `videoOutput` (a defined boolean, `false` included), so for any model it knows
+ * the fact replaces this guess. The guess still matters for models the catalog
+ * does not cover. One word, two directions: `\bvideo\b` cannot tell a video
+ * GENERATOR from a model that READS video, and video input alone never excludes a
+ * chat model — which is why a published `videoOutput: false` switches this off.
+ */
+const VIDEO_OUTPUT_NAME_PATTERNS = [
+  /\bvideo\b/i, // video-01, wan2.2-video, hunyuan-video
+  /(^|[-_.])(t2v|i2v|r2v|v2v)([-_.]|$)/i, // happyhorse-1.1-t2v / -i2v / -r2v; MiniMax T2V-01
+  /\bveo\b/i, // Google Veo
+  /\bsora\b/i, // OpenAI Sora
+];
+
 function isSmallName(name: string): boolean {
   return SMALL_MODEL_PATTERNS.some((re) => re.test(name));
 }
 
 /**
- * Reject non-chat-capable models (image/embedding/audio/wildcard route
- * patterns). Exported so size-sorted picks (Ollama-native path) can use
- * the same filter as name-sorted picks.
+ * What is known about whether a model can answer a chat turn.
+ *
+ * - `"not-chat"` — positive evidence of another output modality: the catalog's
+ *   `videoOutput: true`, a {@link NON_CHAT_PATTERNS} match, or a LiteLLM wildcard
+ *   route. Never offered as a chat model.
+ * - `"chat"` — the catalog knows the id and declares a chat-shaped capability
+ *   (tools, thinking or vision).
+ * - `"unknown"` — neither. Still offered. Rounding it to `"chat"` would assert
+ *   what nothing established; rounding it to `"not-chat"` would hide a newly
+ *   shipped chat model with no error and no trace.
+ */
+export type ChatCapability = "chat" | "not-chat" | "unknown";
+
+/**
+ * Memoized projection of the cloud models catalog, rebuilt at most once per TTL:
+ * a per-id lookup would re-read the cache file once per model when filtering a
+ * 300-model LiteLLM list.
+ */
+const CATALOG_CHAT_INDEX_TTL_MS = 60_000;
+interface CatalogCapabilityIndex {
+  /** Ids the catalog declares chat-shaped. */
+  chat: Set<string>;
+  /** Ids the catalog declares video GENERATORS (`videoOutput: true`). */
+  videoOutput: Set<string>;
+  /** Ids with ANY published `videoOutput`, `false` included: a statement, not a silence. */
+  videoOutputKnown: Set<string>;
+}
+const _catalogChatIndex = new Map<string, { index: CatalogCapabilityIndex; expiresAt: number }>();
+
+/** Drop the memoized catalog projection — tests, and after a catalog refresh. */
+export function _clearChatCapabilityIndex(): void {
+  _catalogChatIndex.clear();
+}
+
+/** The catalog key for an id: lowercased, vendor prefix dropped (`openai/x` is `x`). */
+function catalogKey(name: string): string {
+  const lower = name.toLowerCase();
+  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
+}
+
+function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
+  const key = cachePath ?? "";
+  const hit = _catalogChatIndex.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.index;
+
+  const index: CatalogCapabilityIndex = {
+    chat: new Set(),
+    videoOutput: new Set(),
+    videoOutputKnown: new Set(),
+  };
+  for (const entry of readAllModelsCache(cachePath)?.entries ?? []) {
+    const keys = [catalogKey(entry.modelId), ...(entry.aliases ?? []).map(catalogKey)];
+    // `videoOutput` is read in both directions; `videoInput` is never read as a
+    // denial, because a model that reads video is still a chat model.
+    if (entry.videoOutput !== undefined) {
+      for (const k of keys) index.videoOutputKnown.add(k);
+    }
+    if (entry.videoOutput === true) {
+      for (const k of keys) index.videoOutput.add(k);
+      continue;
+    }
+    // Positive flags only: `undefined` means no opinion and must stay `unknown`.
+    const chatShaped =
+      entry.supportsTools === true ||
+      entry.supportsThinking === true ||
+      entry.supportsVision === true;
+    if (chatShaped) for (const k of keys) index.chat.add(k);
+  }
+  _catalogChatIndex.set(key, { index, expiresAt: Date.now() + CATALOG_CHAT_INDEX_TTL_MS });
+  return index;
+}
+
+/**
+ * Classify whether a model can answer a chat turn — see {@link ChatCapability}.
+ *
+ * The catalog's published facts outrank every name rule: a `videoOutput: true`
+ * denies, and a published `videoOutput` of either value switches the video name
+ * guess off. Name rules decide only what the catalog does not cover.
+ *
+ * @param cachePath Override the catalog cache path. Tests only.
+ */
+export function classifyChatCapability(name: string, cachePath?: string): ChatCapability {
+  // Wildcard entries ("gemini/*") are LiteLLM route patterns, not models.
+  if (name.includes("*")) return "not-chat";
+
+  const index = catalogCapabilityIndex(cachePath);
+  const key = catalogKey(name);
+
+  if (index.videoOutput.has(key)) return "not-chat";
+  if (NON_CHAT_PATTERNS.some((re) => re.test(name))) return "not-chat";
+  if (!index.videoOutputKnown.has(key) && VIDEO_OUTPUT_NAME_PATTERNS.some((re) => re.test(name))) {
+    return "not-chat";
+  }
+  if (index.chat.has(key)) return "chat";
+  return "unknown";
+}
+
+/**
+ * Whether a model may be offered as a chat model: everything but `"not-chat"`.
+ * A projection of {@link classifyChatCapability}, so every caller shares one rule.
  */
 export function isChatCapable(name: string): boolean {
-  // Wildcard entries (e.g. "gemini/*", "gem-mad/*") are route patterns
-  // returned by some LiteLLM deployments — they appear in /v1/models
-  // listings but aren't pingable as concrete models.
-  if (name.includes("*")) return false;
-  return !NON_CHAT_PATTERNS.some((re) => re.test(name));
+  return classifyChatCapability(name) !== "not-chat";
 }
 
 /**
