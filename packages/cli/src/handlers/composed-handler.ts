@@ -36,6 +36,7 @@ import { getBehaviorEngine } from "../behavior/index.js";
 import { getLogLevel, log, logStderr, logStructured, truncateContent } from "../logger.js";
 import { GeminiThoughtSignatureMiddleware, MiddlewareManager } from "../middleware/index.js";
 import { deepMergeParams } from "../model-params.js";
+import { describeSiblingKeys, getProviderByName } from "../providers/provider-definitions.js";
 import { isTerminal429 } from "../providers/transport/openai.js";
 import {
   type OpenAIImageBlock,
@@ -924,7 +925,13 @@ export class ComposedHandler implements ModelHandler {
           response.status,
           errorText,
           this.provider.displayName,
-          transportTerminal
+          transportTerminal,
+          // The INTERNAL name, beside the display name: the catalog is keyed by
+          // it, and an auth failure on a vendor with sibling-tier keys needs
+          // that lookup to say which other key exists. A transport whose name
+          // is not a catalog entry (a custom endpoint) simply finds nothing and
+          // gets today's sentence unchanged.
+          this.provider.name
         );
         let parsedErrorBody: any;
         try {
@@ -1726,12 +1733,21 @@ export class ComposedHandler implements ModelHandler {
  * heuristics below, which are pattern-matching prose and cannot tell a spent
  * plan from a per-minute throttle when the provider phrases both identically.
  * `undefined` — every transport without the hook — keeps the original behaviour.
+ *
+ * `providerUid` is the INTERNAL provider name (`ProviderTransport.name`, e.g.
+ * `qwen-token-plan`), not the display name, because it is what the provider
+ * catalog is keyed by. It is optional and every branch below is unchanged
+ * without it: it only lets the auth branch look up whether this vendor ships a
+ * SECOND, non-interchangeable key for another tier (`siblingKeyEnvVars`).
+ * Nothing is inferred from the credential itself — see the branch for why the
+ * key's own bytes are deliberately not read.
  */
 export function getRecoveryHint(
   status: number,
   errorText: string,
   providerName: string,
-  transportTerminal429?: boolean
+  transportTerminal429?: boolean,
+  providerUid?: string
 ): string {
   const lower = errorText.toLowerCase();
 
@@ -1806,6 +1822,31 @@ export function getRecoveryHint(
     if (hasActionableLink(errorText)) {
       return "Provider rejected the request and gave a specific fix — follow the link in the message below.";
     }
+    // Reached only when the credential really is the most likely cause. For a
+    // vendor that sells the SAME models under several plans, "check your key"
+    // is still not the whole story: the plans' keys are isolated and rejected
+    // by each other's hosts with a near-identical 401, so "right key, wrong
+    // silo" is at least as likely as "bad key". Measured 2026-09-17 with one
+    // real Alibaba Token Plan key: 200 on `token-plan…`, 401 `invalid access
+    // token or token expired` on `coding-intl…`, 401 `Incorrect API key
+    // provided` on `dashscope-intl…`.
+    //
+    // Driven by `siblingKeyEnvVars`, so it is a property of any vendor that
+    // declares one (`opencode-zen-go` does today) rather than an Alibaba
+    // special case — and the variable names come from the catalog via
+    // `describeSiblingKeys`, the same sentence `describeMissingCredential`
+    // emits, so the two cannot drift into saying different things about one
+    // pair of keys.
+    //
+    // What this deliberately does NOT do is look at the key. A Token Plan key
+    // can match `sk-sp-`, which Alibaba's own Coding Plan docs call their
+    // format, so a prefix hint would confidently mislabel a working
+    // credential. The key's bytes are never read, which also keeps a failed
+    // secret operation out of a status line.
+    const siblingNote = providerUid ? describeSiblingKeys(getProviderByName(providerUid)) : "";
+    if (siblingNote) {
+      return `Check API key / OAuth credentials. This vendor sells several plans whose keys are isolated, so a 401 can also mean the right key on the wrong plan's host.${siblingNote}`;
+    }
     return "Check API key / OAuth credentials.";
   }
   if (status === 404) {
@@ -1830,6 +1871,19 @@ export function getRecoveryHint(
     // advice sent the reader to shrink a prompt that was never the problem.
     if (isRequestShapeError(errorText)) {
       return "Wrong request shape for this endpoint — the provider named the parameter it rejected (see the message below). Nothing was too large; a shorter prompt will not help.";
+    }
+    // A model the provider does not carry also arrives as a 400 — Alibaba's
+    // silos answer an id outside the plan with a bare `Model not exist`. Same
+    // predicate the 401/403 branch above uses, for the same reason it exists:
+    // one reading of "the MODEL is the problem", so the hint cannot say
+    // something different depending on which status the provider chose.
+    //
+    // Placed AFTER `isRequestShapeError` (a provider that names a parameter has
+    // stated the fact, and a heuristic must not talk over it) and BEFORE the
+    // size test, which is a bare `includes("token")` and would otherwise claim
+    // any model-unsupported body that happens to spell "tokens".
+    if (hasModelUnsupportedWording(errorText)) {
+      return "Model not supported by this provider. Verify model name.";
     }
     if (lower.includes("context") || lower.includes("too long") || lower.includes("token")) {
       return "Input too large. Reduce message history or use a larger-context model.";

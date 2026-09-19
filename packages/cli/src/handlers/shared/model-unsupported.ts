@@ -49,6 +49,18 @@ const UNSUPPORTED_PHRASES = [
   "model not found",
   "model_not_found",
   "unknown model",
+  // Alibaba's wording, and it is NOT a typo on our side: the Token Plan and
+  // PAYG hosts answer an id their silo does not serve with a bare
+  // `400 Model not exist` (measured 2026-09-17; `qwen-alibaba.md` records the
+  // dead end it produced). It matched none of the phrases above — not "model
+  // not found", not "does not exist" — so the one hint claudish could give was
+  // "Request format may be incompatible with provider", which sends the reader
+  // to audit a payload that is fine.
+  //
+  // Recognised for the MESSAGE only. `FallbackHandler.isRetryableError` keeps
+  // its own 400 phrase list and deliberately does not carry this one, so the
+  // chain still stops on it rather than advancing.
+  "model not exist",
   "no such model",
 ] as const;
 

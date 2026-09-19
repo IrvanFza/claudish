@@ -1487,8 +1487,15 @@ export function describeMissingCredential(providerName: string): string {
  * is already in the catalog as `apiKeyEnvVar`. A variable no provider claims
  * (a rename, a removal) degrades to the bare name instead of asserting a
  * provider that no longer exists.
+ *
+ * Exported because the SECOND place a user meets this fact is a 401 — they set
+ * the sibling key, and the vendor's other host rejected it with wording that
+ * attributes nothing (`invalid access token or token expired`). The recovery
+ * hint in `composed-handler.ts` appends this same sentence there, rather than
+ * writing a second one, so the "no key" copy and the "wrong key" copy can never
+ * disagree about which variable belongs to which plan.
  */
-function describeSiblingKeys(def: ProviderDefinition | undefined): string {
+export function describeSiblingKeys(def: ProviderDefinition | undefined): string {
   const vars = def?.siblingKeyEnvVars ?? [];
   if (vars.length === 0) return "";
   const all = getAllProviders();
