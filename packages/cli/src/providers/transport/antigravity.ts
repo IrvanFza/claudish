@@ -45,6 +45,8 @@ import { credentials } from "../../auth/credentials/authority.js";
 import type { RequestAuth } from "../../auth/credentials/types.js";
 import { GeminiRequestQueue } from "../../handlers/shared/gemini-queue.js";
 import { log, logStderr } from "../../logger.js";
+import type { DiscoveryOutcome } from "./probe-discovery.js";
+import { discoverProviderProbeModel } from "./provider-model-discovery.js";
 import type { ProviderTransport, StreamFormat } from "./types.js";
 
 // The backend host comes from `antigravityHost()` — ONE source, shared with the
@@ -349,6 +351,18 @@ export class AntigravityProviderTransport implements ProviderTransport {
 
   getActiveModelName(): string | undefined {
     return this._activeModelName;
+  }
+
+  /**
+   * Pick a probe model from this account's own model list (fetchAvailableModels).
+   *
+   * The cloud catalog marks Antigravity `client_model_selection_required`: the
+   * served set is per account, so no hosted pick can be right for everyone.
+   * Without this method Test All had no candidate at all and reported "no probe
+   * model: transport does not support discovery" for a working subscription.
+   */
+  async discoverProbeModel(exclude?: ReadonlySet<string>): Promise<DiscoveryOutcome> {
+    return discoverProviderProbeModel(this.name, this.displayName, exclude);
   }
 
   getEndpoint(): string {

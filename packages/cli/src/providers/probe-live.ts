@@ -118,7 +118,25 @@ export interface ProbeLinkInput {
  */
 const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic"]);
 
-function effortForProvider(provider: string): string {
+/**
+ * Providers where NO effort value is valid for every model they serve, so the
+ * probe sends none and lets each model use its default.
+ *
+ * Antigravity serves Gemini 2.5, Gemini 3 and Claude behind one request shape,
+ * and the probe knows only the provider, never the model family. Measured
+ * 2026-09-19 with the 512-token probe cap:
+ *   - "minimal" → `thinkingBudget: 0` on Gemini 2.5, which Antigravity rejects:
+ *     `400 INVALID_ARGUMENT` on gemini-2.5-flash and gemini-2.5-flash-lite.
+ *   - "low" → a 1024-token budget, which Claude rejects because it is not below
+ *     the cap: "`max_tokens` must be greater than `thinking.budget_tokens`".
+ *   - no field → 200 on all of them.
+ * Claude Code never sends "minimal" and sends a far larger max_tokens, so user
+ * sessions reach neither failure through this path.
+ */
+const EFFORT_OMITTED = new Set(["antigravity"]);
+
+function effortForProvider(provider: string): string | undefined {
+  if (EFFORT_OMITTED.has(provider)) return undefined;
   return MINIMAL_EFFORT_UNSUPPORTED.has(provider) ? "low" : "minimal";
 }
 
@@ -138,6 +156,7 @@ export async function probeLink(
   }
 
   const startedAt = Date.now();
+  const probeEffort = effortForProvider(link.provider);
   let response: Response;
 
   try {
@@ -174,7 +193,7 @@ export async function probeLink(
         // omitting the field both return 200. So EVERY native-anthropic probe
         // failed on the payload before the model id was even considered, which
         // is why that link could never report `live`.
-        output_config: { effort: effortForProvider(link.provider) },
+        ...(probeEffort ? { output_config: { effort: probeEffort } } : {}),
         stream: true,
       }),
       signal: AbortSignal.timeout(timeoutMs),
