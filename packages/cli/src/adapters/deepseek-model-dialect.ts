@@ -39,6 +39,14 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
       if (effort === "none" || effort === "minimal") {
         // Disable thinking on V4+.
         request.thinking = { type: "disabled" };
+        // Never leave a depth knob contradicting the off-switch — the same rule
+        // GLM's dialect already applies. `OpenAIAPIFormat` runs first and had
+        // already set `reasoning_effort` (minimal clamps to "low" against the
+        // catalog's ladder), so the pair went out together and OpenCode Zen
+        // answered `400 "thinking.type='disabled' conflicts with a non-'none'
+        // reasoning_effort"` for deepseek-v4.1-flash (measured 2026-09-19; the
+        // same request with effort "low" returns 200).
+        if (request.reasoning_effort !== undefined) delete request.reasoning_effort;
         log(
           `[DeepSeekModelDialect] effort ${effort} -> thinking.type: disabled for ${this.modelId}`
         );
