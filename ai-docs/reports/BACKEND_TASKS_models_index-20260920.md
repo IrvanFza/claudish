@@ -1,0 +1,174 @@
+# Tasks for models-index, from claudish (2026-09-20)
+
+Every item below was measured against the **live** service, not a cache. Unless stated otherwise the
+generation is `g-20260919132927305-5a035947` (893 slim rows), read with
+`Accept: application/vnd.models-index.catalog+json;version=3`.
+
+Reproduce any line with:
+
+```
+BASE=https://us-central1-claudish-6da10.cloudfunctions.net
+ACCEPT='Accept: application/vnd.models-index.catalog+json;version=3'
+curl -sH "$ACCEPT" "$BASE/queryModels?status=all&catalog=slim&includeRouteVariants=true&limit=1000"
+curl -sH "$ACCEPT" "$BASE/queryModels?status=all&catalog=full&limit=5"
+curl -sH "$ACCEPT" "$BASE/queryPlans?limit=100"
+curl -sH "$ACCEPT" "$BASE/probeModels"
+```
+
+Context: claudish now reads contract 3, sends exact wire ids, and decides chat capability from
+`videoOutput`. The tasks below are the gaps that remain on the publishing side. None of them is
+urgent for correctness of what claudish already ships; each removes a guess claudish would otherwise
+have to make, and claudish will not work around any of them locally.
+
+---
+
+## T1. Publish input and output modalities on every projection
+
+**What we see.** The full projection's `capabilities` object carries, in this generation:
+`audioInput, audioOutput, batchApi, citations, codeExecution, fineTuning, imageOutput, jsonMode,
+pdfInput, promptCaching, streaming, structuredOutput, tools, videoInput, videoOutput, vision`.
+No row carries any key matching `/modal/i`, on any projection. The slim projection carries only
+`supportsVision`, `videoInput` and `videoOutput`.
+
+**Why it matters.** claudish must decide whether a model is a chat model, that is text in and text
+out. Today it infers that from `videoOutput` plus a name-shaped rule for rows the catalog does not
+cover. Both are inferences about something the catalog knows.
+
+**Asked for.** `inputModalities` and `outputModalities` per model, as explicit lists (for example
+`["text","image"]` and `["text"]`), on the slim and full projections alike, for every model
+including route variants.
+
+**Acceptance.** A slim row for a text model reports `outputModalities: ["text"]`; an image generator
+reports `["image"]`; a model that reads video but answers in text reports video in the input list and
+only text in the output list.
+
+---
+
+## T2. Rename the retired "roster" vocabulary on the wire
+
+**What we see.** `queryPlans` publishes `rosterRequirements[]` (with `rosterId`, `authority`,
+`requiredForActivation`, `maxAgeHours`) and `rosterCoverage` (`status`, `observedAt`, `expiresAt`),
+and these `routeReason` values: `authenticated_account_roster_required`,
+`authenticated_variant_roster_required`, `no_exact_callable_roster`,
+`authoritative_roster_identity_unresolved`. The slim projection carries the word inside collector
+ids, for example `"sourceCollectorId":"checked-roster:anthropic-claude-code-checked"`. `probeModels`
+is already clean.
+
+**Why it matters.** Both projects agreed one name per concept: a **dynamic models catalog** is the
+list one credential can see, and a **membership** is what a plan publishes. "Roster" was used for
+both, which is how the two got confused in the first place. claudish has removed the word from its
+own source (0 occurrences) and quotes these wire names verbatim until they change.
+
+**Asked for.**
+- `rosterCoverage` → `membershipCoverage`; `rosterRequirements` → `membershipRequirements`;
+  `rosterId` → `membershipId` (or `sourceId` where it names the collector, not a membership).
+- `authenticated_account_roster_required` → `dynamic_models_catalog_required` (agreed with Jack).
+- `authenticated_variant_roster_required`, `no_exact_callable_roster` and
+  `authoritative_roster_identity_unresolved` → the same vocabulary; propose names and we will follow.
+- Collector ids: rename at your convenience; they are opaque to claudish.
+
+**Acceptance.** `curl … | grep -i roster` returns nothing for `queryModels`, `queryPlans` and
+`probeModels`. Please tell us the generation in which the rename lands, so claudish can switch on the
+same day: claudish keeps no alias for a renamed value.
+
+---
+
+## T3. Publish pricing for metered route profiles
+
+**What we see.** 23 of 24 route profiles have mapped connections without `pricing`. Whole metered
+profiles have none at all:
+
+| Route profile | Priced / mapped |
+|---|---|
+| `qwen/dashscope-direct` | 0 / 141 |
+| `openai/direct-api` | 0 / 130 |
+| `google/direct-api` | 0 / 46 |
+| `fireworks/gateway` | 0 / 26 |
+| `mistralai/direct-api` | 0 / 20 |
+| `opencode/zen` | 61 / 78 |
+| `openrouter/gateway` | 401 / 526 |
+| `together-ai/gateway` | 243 / 244 |
+| `ollama/cloud` | 20 / 24 |
+
+Where pricing exists it is `{input, output, cachedRead}`, which is the shape claudish wants.
+
+**Why it matters.** Jack decided claudish's routing order on 2026-09-20: inside one tier, the model's
+own vendor first, then **cheapest by the catalog's price**, then the rest, with no local table and no
+local state. Without a price for a metered connection, claudish cannot order it and must fall back to
+"the rest", which puts an expensive gateway ahead of a cheap one by accident.
+
+**Asked for.** `pricing` on every **metered** mapped connection (`direct-api` and `gateway`
+profiles). Subscription profiles need none, and should carry none rather than a zero.
+
+**Acceptance.** Each metered profile above reports priced == mapped, or names the models it cannot
+price and why.
+
+---
+
+## T4. Probe picks must be models an ordinary account can call
+
+**What we see.** Two of the 24 picks fail that test.
+
+- `mistralai/direct-api` → `labs-leanstral-1-5`. Measured 2026-09-19 with a working Mistral key:
+  `403 "Model labs-leanstral-1-5 is a Labs model. To use Labs models, an admin must enable them in
+  your organization settings at https://admin.mistral.ai/plateforme/privacy."` The same account's
+  `/v1/models` returns 53 models, of which 51 are not Labs.
+- `qwen/dashscope-direct` → `qwen3.8-omni-flash`, an omni model, as the pick for a text chat probe.
+
+**Why it matters.** The pick is the first model Test All tries. A pick no ordinary account may call
+reads to the user as "this provider is broken". claudish now walks to the next candidate where the
+provider publishes a model list, but the first impression is still a failure, and a provider without
+a list has no second candidate.
+
+**Asked for.** Pick a generally available text chat model: exclude Labs, preview and allow-listed
+models, and prefer a plain text model over an omni, audio, image or realtime variant.
+
+**Acceptance.** Every pick in `probeModels` is a model whose access needs nothing beyond a valid key
+for that product, and whose output modality is text (see T1).
+
+---
+
+## T5. Split `ollama/cloud` into a subscription profile and a metered profile
+
+**What we see.** One profile, `ollama/cloud`. The plan `ollama-cloud` binds to it
+(`routeStatus: supported`), and 20 of its 24 mapped connections also carry per-token `pricing`.
+OpenCode is already split the way we mean: `opencode/go-subscription` and `opencode/zen`.
+
+**Why it matters.** Jack's rule of 2026-09-20: metered and subscription are always separate products
+in claudish, even when one key serves both, so that spending money is explicit and each lands in its
+own tier of the routing chain. With one profile, claudish cannot tell which one a request would bill.
+
+**Asked for.** Two profiles under `ollama`, following the OpenCode precedent: one for the Cloud
+subscription that the `ollama-cloud` plan binds to, and one metered. Tell us the profile ids; claudish
+adds the second provider only once they exist, and will not invent the identity.
+
+**Acceptance.** `queryPlans` binds `ollama-cloud` to the subscription profile, and the metered
+profile carries the pricing.
+
+---
+
+## T6. Poe and Vertex: `no_verified_probe_model`
+
+**What we see.** `poe/gateway` and `vertex/google-cloud` are the only two unavailable picks that are
+not `client_model_selection_required`. Poe answers normally with a key: `/v1/models` returns 341
+models and a chat request returns 200 (measured 2026-09-19).
+
+**Why it matters.** Low. claudish now discovers a Poe model from the account's own list and probes it
+(`gpt-5.4`, live). Vertex is moving to Google's Application Default Credentials on our side.
+
+**Asked for.** Either verify a pick for these two, or mark them `client_model_selection_required`,
+which is what they behave like. Today's reason says the backend intends to have a pick and does not,
+which reads as a temporary gap rather than a decision.
+
+**Acceptance.** Each of the two carries a verified pick, or the reason states that the client selects.
+
+---
+
+## Not a backend task, recorded to close the question
+
+**Alibaba PAYG "Model access denied" is not a catalog fault.** The catalog's `qwen/dashscope-direct`
+wire ids match the account's own list, spelled the same. The account's `GET
+/compatible-mode/v1/models` returns 200 with 169 models, and a chat request for an id taken from that
+list (`qwen-plus-character`) answers `403 Model.AccessDenied`, exactly as the catalog's ids do. The
+account's model permissions are the cause. claudish ships a script for this,
+`scripts/validate-dashscope-key.ts`, which separates "key rejected" from "access denied".
