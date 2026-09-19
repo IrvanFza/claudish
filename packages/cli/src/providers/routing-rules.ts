@@ -443,7 +443,8 @@ async function routeBare(
     const droppedSubscription = notServing.filter((p) => isSubscriptionProvider(p));
     if (droppedSubscription.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
       logStderr(
-        `[claudish] ${droppedSubscription.join(", ")} does not serve ${model} — ` +
+        // No "[claudish]" here: logStderr adds the prefix itself.
+        `${droppedSubscription.join(", ")} does not serve ${model} — ` +
           `using ${serving[0].displayName}, which bills per token.`
       );
     }
