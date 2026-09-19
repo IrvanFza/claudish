@@ -11,7 +11,7 @@ import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
 
 const DEFAULT_CATALOG_URL =
-  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=all&catalog=slim&limit=1000";
+  "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=all&catalog=slim&includeRouteVariants=true&limit=1000";
 const MAX_CATALOG_PAGES = 40;
 const CATALOG_PAGE_LIMIT = 1000;
 
@@ -112,14 +112,41 @@ function allExternalIds(entry: SlimModelEntry): string[] {
   );
 }
 
+/**
+ * A wire id that redirects over time, e.g. OpenRouter's `~moonshotai/kimi-latest`
+ * ("always redirects to the latest model in the Kimi family"). Today it may land on
+ * the same model as the exact id; the day the vendor ships a successor it lands
+ * somewhere else, silently.
+ */
+export function isMovingPointer(wireId: string): boolean {
+  const lastSegment = wireId.split("/").pop() ?? wireId;
+  return wireId.startsWith("~") || /(^|-)latest$/i.test(lastSegment);
+}
+
+/**
+ * The wire id to send `provider` for a catalog model.
+ *
+ * The catalog can publish several connections to one provider for one model: the
+ * exact id and a moving pointer. A user who asked for a pinned model gets the EXACT
+ * id — never a pointer claudish chose for them, because a pointer is the vendor's
+ * alias, not the model they named. Taking the first matching row, as this once did,
+ * sent `~moonshotai/kimi-latest` for `kimi-k3` because the catalog happened to list
+ * the pointer first. With no exact id the answer is null, not the pointer.
+ *
+ * A model whose own canonical id is pointer-shaped (`chatgpt-4o-latest`) is the one
+ * case where a pointer-shaped wire id is exactly what was asked for.
+ */
 export function externalIdFor(entry: SlimModelEntry, provider: string): string | null {
-  const connection = entry.aggregators?.find(
-    (candidate) =>
-      candidate.routeStatus === "mapped" &&
-      catalogRouteMatchesProvider(candidate.route, provider) &&
-      typeof candidate.externalModelId === "string"
+  const wireIds = (entry.aggregators ?? []).flatMap((candidate) =>
+    candidate.routeStatus === "mapped" &&
+    catalogRouteMatchesProvider(candidate.route, provider) &&
+    typeof candidate.externalModelId === "string"
+      ? [candidate.externalModelId]
+      : []
   );
-  return connection?.externalModelId ?? null;
+  if (wireIds.length === 0) return null;
+  if (isMovingPointer(entry.modelId)) return wireIds[0] ?? null;
+  return wireIds.find((wireId) => !isMovingPointer(wireId)) ?? null;
 }
 
 export function resolveExternalId(
@@ -223,6 +250,12 @@ export function buildCatalogPageUrl(
   const url = new URL(baseUrl);
   url.searchParams.delete("offset");
   url.searchParams.delete("revision");
+  // Plan membership points at deprecated models and at route variants, and the
+  // backend returns neither unless asked. Without these two, `kimi-code`'s member
+  // `kimi-k3-256k` (a context=256k route variant) had no model row at all. Set here,
+  // not only in the default URL, so a CLAUDISH_CATALOG_URL override cannot drop them.
+  url.searchParams.set("status", "all");
+  url.searchParams.set("includeRouteVariants", "true");
   url.searchParams.set("limit", String(limit));
   if (cursor) url.searchParams.set("cursor", cursor);
   else url.searchParams.delete("cursor");
