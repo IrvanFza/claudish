@@ -26,13 +26,14 @@ import {
   lookupModelForProvider,
   searchCatalogModels,
 } from "./adapters/model-catalog.js";
+import { getEffectiveBaseUrl, getProviderByName } from "./providers/provider-definitions.js";
 
 const MINIMAX_API_KEY = process.env.MINIMAX_CODING_API_KEY || process.env.MINIMAX_API_KEY;
-const SKIP_REAL_API = !MINIMAX_API_KEY;
-// Choose the host by key type because PAYG and coding are separate credential silos.
-const MINIMAX_API_BASE = process.env.MINIMAX_CODING_API_KEY
-  ? "https://api.minimax.io/anthropic/v1/messages"
-  : "https://api.minimaxi.com/anthropic/v1/messages";
+const SKIP_REAL_API = process.env.CLAUDISH_SKIP_LIVE_E2E === "1" || !MINIMAX_API_KEY;
+const MINIMAX_PROVIDER = getProviderByName(
+  process.env.MINIMAX_CODING_API_KEY ? "minimax-coding" : "minimax"
+)!;
+const MINIMAX_API_BASE = `${getEffectiveBaseUrl(MINIMAX_PROVIDER)}${MINIMAX_PROVIDER.apiPath}`;
 
 // ─── Mock slim-cache seeding ─────────────────────────────────────────────────
 

@@ -138,7 +138,8 @@ export function validateRemoteProviderApiKey(provider: RemoteProvider): string |
         "export OPENAI_API_KEY='sk-...' (get from https://platform.openai.com/api-keys)",
       OPENROUTER_API_KEY:
         "export OPENROUTER_API_KEY='sk-or-...' (get from https://openrouter.ai/keys)",
-      MINIMAX_API_KEY: "export MINIMAX_API_KEY='your-key' (get from https://www.minimaxi.com/)",
+      MINIMAX_API_KEY:
+        "export MINIMAX_API_KEY='your-key' (get from https://platform.minimax.io/user-center/basic-information/interface-key; a China-platform key also needs MINIMAX_BASE_URL=https://api.minimaxi.com)",
       MINIMAX_CODING_API_KEY:
         "export MINIMAX_CODING_API_KEY='your-key' (get from https://platform.minimax.io/user-center/basic-information/interface-key)",
       MOONSHOT_API_KEY:

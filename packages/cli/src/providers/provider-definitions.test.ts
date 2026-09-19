@@ -490,16 +490,22 @@ describe("getApiKeyEnvVars", () => {
 // equivalence matrix in auth/credentials/equivalence.test.ts.
 
 describe("MiniMax credential silo endpoints", () => {
-  test("keeps PAYG and coding providers on their matching hosts", () => {
-    const payg = getProviderByName("minimax")!;
+  test("defaults both MiniMax providers to the international platform and exposes metered discovery", () => {
+    const metered = getProviderByName("minimax")!;
     const coding = getProviderByName("minimax-coding")!;
 
-    expect(payg.baseUrl).toBe("https://api.minimaxi.com");
+    expect(metered.baseUrl).toBe("https://api.minimax.io");
     expect(coding.baseUrl).toBe("https://api.minimax.io");
-    // This is the actual regression guard: identical URLs sent PAYG keys to the coding host.
-    expect(payg.baseUrl).not.toBe(coding.baseUrl);
-    expect(payg.apiKeyUrl).toContain("minimaxi.com");
-    expect(payg.baseUrl).toContain("minimaxi.com");
+    expect(metered.apiKeyUrl).toBe(
+      "https://platform.minimax.io/user-center/basic-information/interface-key"
+    );
+    expect(new URL(metered.apiKeyUrl!).hostname).toBe("platform.minimax.io");
+    expect(new URL(metered.baseUrl).hostname).toBe("api.minimax.io");
+    expect(metered.baseUrlEnvVars).toContain("MINIMAX_BASE_URL");
+    expect(metered.modelDiscovery).toEqual({
+      path: "/v1/models",
+      format: "openai-models-list",
+    });
   });
 });
 

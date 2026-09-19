@@ -551,20 +551,26 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     name: "minimax",
     displayName: "MiniMax",
     transport: "anthropic",
-    // NOT api.minimax.io — that host is the CODING PLAN's, and the two are
-    // separate credential silos rather than aliases of one service. Measured
-    // 2026-08-11 with a real coding key: api.minimax.io answers 200, while
-    // api.minimaxi.com answers 401 "invalid api key" for the same key. A PAYG
-    // key sent to minimax.io fails the same way in reverse, which is what
-    // `mm@`/`mmax@` did from here. `apiKeyUrl` below has always pointed at
-    // minimaxi.com, so this entry was telling users to fetch a key from one
-    // silo and then spending it against the other.
-    baseUrl: "https://api.minimaxi.com",
+    // The two MiniMax hosts are REGIONS, and a key works only on the host of the
+    // platform that issued it: api.minimax.io for the international platform
+    // (platform.minimax.io), api.minimaxi.com for the China platform
+    // (minimaxi.com). Metered and coding-plan keys follow the same rule.
+    //
+    // The default is the international host. Measured 2026-09-19 with a fresh
+    // international metered key: api.minimax.io answered 200 on /v1/models,
+    // /anthropic/v1/messages and /v1/chat/completions, and api.minimaxi.com
+    // answered 401 "invalid api key (2049)" on all three. This entry pointed at
+    // minimaxi.com from 2026-08-11 (b7173d2), so every international metered key
+    // failed. A China-platform key needs MINIMAX_BASE_URL=https://api.minimaxi.com.
+    // The catalog publishes one profile, `minimax/direct-api`, with no region, so
+    // the host is claudish's choice rather than a contract value.
+    baseUrl: "https://api.minimax.io",
     baseUrlEnvVars: ["MINIMAX_BASE_URL"],
     apiPath: "/anthropic/v1/messages",
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MINIMAX_API_KEY",
     apiKeyDescription: "MiniMax API Key",
-    apiKeyUrl: "https://www.minimaxi.com/",
+    apiKeyUrl: "https://platform.minimax.io/user-center/basic-information/interface-key",
     authScheme: "bearer",
     shortcuts: ["mm", "mmax"],
     shortestPrefix: "mm",

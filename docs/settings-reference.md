@@ -194,7 +194,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `OPENROUTER_API_KEY` | OpenRouter (default backend / universal fallback) | | https://openrouter.ai/keys |
 | `GEMINI_API_KEY` | Google Gemini direct API (`g@`, `google@`) | | https://aistudio.google.com/app/apikey |
 | `OPENAI_API_KEY` | OpenAI direct API (`oai@`) | | https://platform.openai.com/api-keys |
-| `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | | https://www.minimaxi.com/ |
+| `MINIMAX_API_KEY` | MiniMax (`mm@`, `mmax@`) | | https://platform.minimax.io/user-center/basic-information/interface-key (China platform: https://www.minimaxi.com/, and set `MINIMAX_BASE_URL`) |
 | `MINIMAX_CODING_API_KEY` | MiniMax Coding Plan (`mmc@`) | | https://platform.minimax.io/ |
 | `MOONSHOT_API_KEY` | Kimi/Moonshot (`kimi@`, `moon@`) | `KIMI_API_KEY` | https://platform.moonshot.cn/ |
 | `KIMI_CODING_API_KEY` | Kimi Coding Plan (`kc@`); also accepts OAuth via `claudish --kimi-login` | | https://kimi.com/code |
@@ -249,7 +249,7 @@ Claudish automatically loads `.env` from the current working directory at startu
 |----------|----------|---------|
 | `GEMINI_BASE_URL` | Google Gemini API | `https://generativelanguage.googleapis.com` |
 | `OPENAI_BASE_URL` | OpenAI API (also for Azure-compatible) | `https://api.openai.com` |
-| `MINIMAX_BASE_URL` | MiniMax API | `https://api.minimaxi.com` |
+| `MINIMAX_BASE_URL` | MiniMax API | `https://api.minimax.io`; set `https://api.minimaxi.com` for a China-platform key |
 | `MINIMAX_CODING_BASE_URL` | MiniMax Coding Plan endpoint | `https://api.minimax.io` |
 | `MOONSHOT_BASE_URL` | Kimi/Moonshot API | `https://api.moonshot.ai` |
 | `KIMI_BASE_URL` | Alias for `MOONSHOT_BASE_URL` | |
