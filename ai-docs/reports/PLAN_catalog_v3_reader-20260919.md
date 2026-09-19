@@ -118,3 +118,34 @@ Each slice ends green and committed. Codex writes the tests from real captured r
 - an authenticated Poe request and a project-aware Vertex request.
 
 Then release as 9.8.0 and tell the backend.
+
+## Test All with every key set (2026-09-19, dev 9.8.0 at `fa0ac40`)
+
+30 providers tested: 16 ready, 3 local servers not running (LM Studio, vLLM, MLX), Vertex not set up, 10 failed. Each failure below was re-probed alone through the probe path to get the full error.
+
+**claudish fixes (planned, not started)**
+
+1. **Gemini direct API: probe effort "minimal".** Probe pick `gemini-3.8-flash` answers `400 "Thinking level MINIMAL is not supported for this model"`. Same class as the Antigravity fix (`4128e07`): the probe's effort must not be a value the model rejects. Decide per provider (`EFFORT_OMITTED` or "low" for `google`), and check whether the Gemini adapter itself must map "minimal" to the lowest level a Gemini 3 model accepts.
+2. **Wrong hint for that error.** The 400 above is labelled "Model not supported by this provider. Verify model name." The model is fine; only the thinking level is rejected. The model-unsupported wording (`fa09cb7`) matches "not supported for this model". Narrow the match so a parameter rejection is not read as an unknown model.
+3. **Mistral: probe pick is a Labs model.** Pick `labs-leanstral-1-5` answers `403 "… is a Labs model. To use Labs models, an admin must enable them in your organization settings"`. The backend's probe pick is wrong for accounts without Labs: report it to models-index; in claudish, a 403 of this kind must move Test All to the next candidate instead of stopping.
+4. **Poe: no probe pick.** The catalog lists Poe as `no_verified_probe_model`, and Poe has no model list in claudish, so Test All says "transport does not support discovery". Add Poe's model list (`/v1/models`, to verify) and `discoverProbeModel`, the same way as Antigravity.
+5. **Devin: model list timed out during Test All.** "no probe model: The operation timed out" while 30 providers ran in parallel. Alone, the same call returned 209 models. Check the discovery timeout under load.
+6. **403 hint wording.** Alibaba PAYG's 403 "Model access denied." is shown with the 401 text "a 401 can also mean the right key on the wrong plan's host". Give a 403 its own hint.
+
+**Account side (Jack), measured**
+
+- **Alibaba Coding Plan:** the key stored as `QWEN_CODING_PLAN_API_KEY` is the Token Plan key (both show `sk-••Cxg`); coding-intl answers `401 invalid access token`. Store the Coding Plan's own key.
+- **Alibaba PAYG:** the key is accepted by `dashscope-intl` but every model answers `"Model access denied."` (qwen3.7-plus, qwen3.8-max, qwen3.8-flash, qwen3.8-omni-flash); the China host rejects the key (403). Grant model access for the account in the Model Studio console.
+- **MiniMax metered:** `401 invalid api key` on both `api.minimaxi.com` and `api.minimax.io`, so it is the key, not the host.
+- **Quota, not errors:** MiniMax Coding `429` plan limit; GLM on bigmodel.cn `429` insufficient balance (the same key is `ready` on Z.AI); Sakana Fugu API `429` prepaid credit.
+
+**Vertex: move from API key to Application Default Credentials**
+
+Vertex AI Express uses an API key today. Move it to ADC, as set up by Jack: `aiplatform.googleapis.com` enabled on project `xlabs-ai-tools`, credentials at `~/.config/gcloud/application_default_credentials.json` with quota project `xlabs-ai-tools`, verified by a `gemini-3.8-flash` request.
+
+- Read the ADC file (`authorized_user` refresh token, or a service account), exchange it for an access token, and refresh before expiry. No key in claudish config.
+- Project from the ADC quota project, with an env override; location with an env override and a documented default.
+- Endpoint `https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent`.
+- Readiness: `present` when the ADC file resolves to a token, `failed` with a detail when it exists but cannot be exchanged, `absent` when there is no file.
+- To check first: `providers/transport/vertex-oauth.ts` is already a project-aware transport and may already read ADC; read `ai-docs/architecture/` for any Vertex notes before changing it.
+- Validate with a real request and Test All; the catalog binding is `vertex/google-cloud` (gateway).
