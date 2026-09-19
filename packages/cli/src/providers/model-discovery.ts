@@ -191,7 +191,8 @@ const _cache = new Map<string, { models: DiscoveredModel[]; expiresAt: number }>
  *
  * The kinds are ordered by what the user should do about them, not by HTTP
  * status: `unauthorized` and `no-credentials` are setup problems the user can
- * fix, `unreachable` and `http-error` are usually transient, and
+ * fix, `unreachable` and `http-error` are usually transient, `incomplete` means
+ * the answer arrived but cannot be trusted as an enumeration, and
  * `empty-models-catalog` means the endpoint answered correctly with nothing to offer —
  * the only kind where falling through to a catalog or free-text entry is the
  * genuinely right response.
@@ -202,6 +203,7 @@ export type DiscoveryFailureKind =
   | "http-error"
   | "unreachable"
   | "malformed"
+  | "incomplete"
   | "empty-models-catalog";
 
 export interface DiscoveryFailure {
@@ -285,6 +287,8 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
       return `the model list was unreachable${at}${because}`;
     case "malformed":
       return `the model list was not valid JSON${at}`;
+    case "incomplete":
+      return `the model list could not be read as a complete list${at}${because}`;
     case "empty-models-catalog":
       return `the endpoint answered${at} but listed no models`;
   }
@@ -351,17 +355,43 @@ function readCreatedDate(row: Record<string, unknown>): string | undefined {
   return iso.slice(0, 10);
 }
 
+/**
+ * What a parse of an OpenAI-style `{ data: [...] }` list produced.
+ *
+ * `dropped` and `total` exist because the parser used to `continue` silently
+ * over rows it could not use, and a caller therefore could not tell "the server
+ * listed 28 models" from "the server listed 28 and we understood 25". The
+ * enumeration we hold is only the enumeration the server sent when nothing was
+ * dropped — and only a complete enumeration may deny a model.
+ */
+interface ParsedModelsList {
+  models: DiscoveredModel[];
+  /** Rows the parser could not use: not an object, or no usable `id`. */
+  dropped: number;
+  /** Rows the server sent, or null when the declared container was missing. */
+  total: number | null;
+}
+
 /** Parse an OpenAI-style `{ data: [...] }` model list. */
-function parseOpenAIModelsList(body: unknown): DiscoveredModel[] {
+function parseOpenAIModelsList(body: unknown): ParsedModelsList {
   const data = (body as { data?: unknown })?.data;
-  if (!Array.isArray(data)) return [];
+  // A missing `data` is NOT an empty plan. Answering it with `[]` made the two
+  // indistinguishable, which is the collapse this whole contract exists to stop.
+  if (!Array.isArray(data)) return { models: [], dropped: 0, total: null };
 
   const models: DiscoveredModel[] = [];
+  let dropped = 0;
   for (const raw of data) {
-    if (!raw || typeof raw !== "object") continue;
+    if (!raw || typeof raw !== "object") {
+      dropped++;
+      continue;
+    }
     const row = raw as Record<string, unknown>;
     const id = row.id;
-    if (typeof id !== "string" || id.trim().length === 0) continue;
+    if (typeof id !== "string" || id.trim().length === 0) {
+      dropped++;
+      continue;
+    }
 
     const displayName = typeof row.display_name === "string" ? row.display_name : undefined;
     models.push({
@@ -371,15 +401,65 @@ function parseOpenAIModelsList(body: unknown): DiscoveredModel[] {
       releaseDate: readCreatedDate(row),
     });
   }
-  return models;
+  return { models, dropped, total: data.length };
+}
+
+/**
+ * Top-level fields that would mean "there is more of this list elsewhere".
+ *
+ * A guard against a FUTURE paginating endpoint rather than a description of
+ * today's: the Token Plan list's measured key union is `created, id, object,
+ * owned_by`, with no continuation field at all. It costs nothing now and is the
+ * only thing that would notice the day one appears.
+ */
+const CONTINUATION_FIELDS = ["has_more", "next", "next_page", "next_page_token"] as const;
+
+function describeContinuation(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const root = body as Record<string, unknown>;
+  for (const field of CONTINUATION_FIELDS) {
+    const value = root[field];
+    const signalled = field === "has_more" ? value === true : Boolean(value);
+    if (signalled) return `${field}: ${JSON.stringify(value)}`;
+  }
+  return null;
+}
+
+/**
+ * Why this 200 does not establish a COMPLETE list, or null when it does.
+ *
+ * The conditions, in order: the container is present and is an array; no
+ * continuation is signalled; nothing was dropped in parsing; and at least one
+ * model came out. (HTTP 200 with a body that parses is settled before this is
+ * called.)
+ *
+ * Note what is deliberately NOT here: any comparison of a count to a previous
+ * count or to a constant. Alibaba's coverage is reported as 20, 31, 24, 52 and
+ * 25 by five different sources, so a count rule would encode a number the
+ * vendor itself does not agree on.
+ *
+ * And note the limit, which is real: these endpoints publish no total, no
+ * pagination and no continuation signal, so a well-formed non-empty SUBSET is
+ * indistinguishable from a complete response. Completeness here is DETECTED,
+ * not proven — an undetectably partial answer can still be accepted.
+ */
+function describeIncompleteness(body: unknown, parsed: ParsedModelsList): string | null {
+  if (parsed.total === null) return "the response carried no `data` array";
+  const continuation = describeContinuation(body);
+  if (continuation) return `the endpoint signalled more results (${continuation})`;
+  if (parsed.dropped > 0) return `${parsed.dropped} of ${parsed.total} entries were unparseable`;
+  if (parsed.models.length === 0) return "the endpoint listed no models";
+  return null;
 }
 
 /**
  * List the models this provider serves for the CURRENT credentials.
  *
  * Returns [] when the provider declares no `modelDiscovery`, has no usable
- * credentials, or the endpoint is unreachable/malformed — callers fall back to
- * the cloud catalog.
+ * credentials, or the endpoint is unreachable/malformed/incomplete — callers
+ * fall back to the cloud models catalog. Every one of those except "declares no
+ * `modelDiscovery`" records a reason for `getDiscoveryFailure`, so `[]` is
+ * never silently read as "the plan lists nothing".
  */
 export async function discoverProviderModels(providerName: string): Promise<DiscoveredModel[]> {
   const cached = _cache.get(providerName);
@@ -420,7 +500,16 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
   }
 
   const baseUrl = resolveBaseUrl(providerName);
-  if (!baseUrl) return [];
+  if (!baseUrl) {
+    // This used to return [] with nothing recorded, i.e. "this plan lists no
+    // models" — a configuration fault reported as an entitlement fact.
+    const overrides = (def.baseUrlEnvVars ?? []).join(", ");
+    return recordFailure({
+      kind: "unreachable",
+      provider: providerName,
+      detail: `no base URL resolved — check ${overrides || "the provider's baseUrl"}`,
+    });
+  }
   const endpoint = `${baseUrl}${descriptor.path}`;
 
   // Auth via the credential authority — it owns OAuth-vs-API-key precedence
@@ -526,10 +615,27 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
     return recordFailure({ kind: "malformed", provider: providerName, endpoint });
   }
 
-  const models = parseOpenAIModelsList(body);
-  if (models.length === 0) {
-    return recordFailure({ kind: "empty-models-catalog", provider: providerName, endpoint });
+  const parsed = parseOpenAIModelsList(body);
+  const incomplete = describeIncompleteness(body, parsed);
+  if (incomplete) {
+    // Not cached, and nothing returned. A list that fails the completeness
+    // checks is one we could not trust: shown as though it were the account's
+    // dynamic models catalog, it is the confident-looking wrong answer, and
+    // handed to `providerServesModel` it would DENY every model the missing
+    // rows or pages held. `[]` plus a recorded failure reads as `unknown`
+    // there, so an untrusted list confirms nothing and denies nothing.
+    //
+    // `empty-models-catalog` stays its own KIND rather than folding into
+    // `incomplete`: "the endpoint answered with nothing to offer" has its own
+    // sentence, and the picker already treats it differently.
+    return recordFailure({
+      kind: parsed.models.length === 0 ? "empty-models-catalog" : "incomplete",
+      provider: providerName,
+      endpoint,
+      detail: incomplete,
+    });
   }
+  const models = parsed.models;
 
   _failures.delete(providerName);
   log(
