@@ -135,8 +135,14 @@ Then release as 9.8.0 and tell the backend.
 **Account side (Jack), measured**
 
 - **Alibaba Coding Plan:** the key stored as `QWEN_CODING_PLAN_API_KEY` is the Token Plan key (both show `sk-••Cxg`); coding-intl answers `401 invalid access token`. Store the Coding Plan's own key.
-- **Alibaba PAYG:** the key is accepted by `dashscope-intl` but every model answers `"Model access denied."` (qwen3.7-plus, qwen3.8-max, qwen3.8-flash, qwen3.8-omni-flash); the China host rejects the key (403). Grant model access for the account in the Model Studio console.
-- **MiniMax metered:** `401 invalid api key` on both `api.minimaxi.com` and `api.minimax.io`, so it is the key, not the host.
+- **Alibaba PAYG:** the key is accepted by `dashscope-intl` but every model answers `"Model access denied."` (qwen3.7-plus, qwen3.8-max, qwen3.8-flash, qwen3.8-omni-flash); the China host rejects the key (403). Re-checked against the account's OWN list: `GET /compatible-mode/v1/models` returns 200 with 169 models, the catalog's `qwen/dashscope-direct` wire ids appear in it with the same spelling, and a chat request for an id taken from that list (`qwen-plus-character`) is also `403 Model.AccessDenied`. So the catalog data is not the cause on this evidence; the account's model permissions are (Model Studio activation or workspace access). Open until Jack confirms the account works in Alibaba's own console.
+- **Alibaba Coding Plan:** skipped by Jack's decision (not available on this account).
+- **MiniMax metered, CORRECTED: claudish bug.** The old key failed on both hosts. Jack reset it, and the fresh key (`sk-••0EQ`) answers 200 on `api.minimax.io` for `GET /v1/models`, `/anthropic/v1/messages` and `/v1/chat/completions`, and `401 invalid api key (2049)` on `api.minimaxi.com` for all three. claudish fixes metered MiniMax to the China host (`b7173d2`, 2026-08-11), which was right for a China key and is wrong for an international one. The catalog publishes one profile, `minimax/direct-api`, with no region, so the host is claudish's choice. Fix options: (a) the host follows the key, found once by `GET /v1/models` on each host and kept in memory; (b) default to the international host, with `MINIMAX_BASE_URL` for China. Either way add `modelDiscovery` (`/v1/models` works), which metered MiniMax lacks today.
+
+**Local servers, measured**
+
+- Port 8000 is **oMLX** (`omlx-server`, an MLX server), not vLLM. It is bound to `127.0.0.1:8000` and answers `401` without an API key. claudish maps port 8000 to vLLM (`VLLM_API_KEY`) and expects MLX on port 8080, so the vLLM row reaches oMLX and fails, and the MLX row finds nothing. Needs a decision: point the MLX provider at oMLX (`MLX_BASE_URL`, `MLX_API_KEY`), or teach claudish to recognise oMLX.
+- LM Studio answers on port 1234 (200).
 - **Quota, not errors:** MiniMax Coding `429` plan limit; GLM on bigmodel.cn `429` insufficient balance (the same key is `ready` on Z.AI); Sakana Fugu API `429` prepaid credit.
 
 **Vertex: move from API key to Application Default Credentials**
