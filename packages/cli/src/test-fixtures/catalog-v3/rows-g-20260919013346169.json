@@ -29,11 +29,7 @@
       "releaseDate": "2026-07-16",
       "contextWindow": 1048576,
       "maxOutputTokens": 943718,
-      "subscriptionPlanIds": [
-        "kimi-code",
-        "ollama-cloud",
-        "opencode-go"
-      ],
+      "subscriptionPlanIds": ["kimi-code", "ollama-cloud", "opencode-go"],
       "aggregators": [
         {
           "sourceProviderId": "fireworks",
@@ -193,11 +189,7 @@
         "supported": true,
         "mandatory": false,
         "control": "effort",
-        "efforts": [
-          "max",
-          "high",
-          "low"
-        ],
+        "efforts": ["max", "high", "low"],
         "defaultEffort": "max"
       }
     },
@@ -232,9 +224,7 @@
       "modelId": "gemini-omni-1.1-flash",
       "displayName": "Gemini Omni 1.1 Flash",
       "provider": "google",
-      "aliases": [
-        "google/gemini-omni-1.1-flash"
-      ],
+      "aliases": ["google/gemini-omni-1.1-flash"],
       "status": "active",
       "releaseDate": "2026-08-27",
       "contextWindow": 1048576,
@@ -265,10 +255,7 @@
       "modelId": "gemini-3.8-flash",
       "displayName": "Gemini 3.8 Flash",
       "provider": "google",
-      "aliases": [
-        "google/gemini-3.8-flash",
-        "google/gemini-3.8-flash:batch"
-      ],
+      "aliases": ["google/gemini-3.8-flash", "google/gemini-3.8-flash:batch"],
       "status": "active",
       "releaseDate": "2026-09-02",
       "contextWindow": 1048576,
@@ -348,11 +335,7 @@
         "supported": true,
         "mandatory": true,
         "control": "effort",
-        "efforts": [
-          "high",
-          "medium",
-          "low"
-        ],
+        "efforts": ["high", "medium", "low"],
         "defaultEffort": "medium"
       },
       "endpoints": {
