@@ -9,6 +9,7 @@
 import { credentials } from "../../auth/credentials/authority.js";
 import type { RemoteProvider } from "../../handlers/shared/remote-provider-types.js";
 import { log } from "../../logger.js";
+import { getProviderByName } from "../provider-definitions.js";
 import { isTerminal429 } from "./openai.js";
 import type { DiscoveryOutcome } from "./probe-discovery.js";
 import { discoverProviderProbeModel } from "./provider-model-discovery.js";
@@ -175,18 +176,37 @@ export class AnthropicProviderTransport implements ProviderTransport {
     return lastResponse!;
   }
 
-  private static formatDisplayName(name: string): string {
-    const map: Record<string, string> = {
-      minimax: "MiniMax",
-      "minimax-coding": "MiniMax Coding",
-      kimi: "Kimi",
-      "kimi-coding": "Kimi Coding",
-      "qwen-token-plan": "Alibaba Token Plan",
-      "qwen-payg": "Qwen API",
-      moonshot: "Kimi",
-      "z-ai": "Z.AI",
-    };
-    return map[name.toLowerCase()] || name.charAt(0).toUpperCase() + name.slice(1);
+  /**
+   * DERIVED from the provider catalog — deliberately not a second table.
+   *
+   * This used to be a private map of eight names that SHADOWED
+   * `ProviderDefinition.displayName`, so renaming a provider in one place
+   * silently left this transport's log lines on the old label. That is the
+   * two-table coupling `provider-definitions.ts` exists to prevent: a provider
+   * whose label is stored twice keeps the stale one wherever nobody looked.
+   * `qwen-coding` was missing from the map and logged "Qwen-coding";
+   * `qwen-payg` logged "Qwen API" while its definition says "Alibaba PAYG".
+   *
+   * The other former entries are byte-identical to their definition's
+   * `displayName` (minimax, minimax-coding, kimi, kimi-coding, z-ai,
+   * qwen-token-plan). `moonshot → "Kimi"` is dropped on purpose: `moonshot` is
+   * one of `kimi`'s SHORTCUTS, never a provider `name`, so the entry was
+   * unreachable from `provider.name` — and `moonshot-cn` is a genuinely
+   * different service (CLAUDE.md), which the old entry would have collapsed
+   * into "Kimi" had it ever been reached.
+   *
+   * The title-case fallback is unchanged, so a runtime custom endpoint with no
+   * definition renders exactly as it did before.
+   *
+   * NOTE: `transport/openai.ts` keeps its own map on purpose — it carries no
+   * Alibaba entry, and deriving it would rename `Zen`/`Zen Go` in every log
+   * line for two providers this change has no business touching.
+   */
+  static formatDisplayName(name: string): string {
+    return (
+      getProviderByName(name.toLowerCase())?.displayName ||
+      name.charAt(0).toUpperCase() + name.slice(1)
+    );
   }
 }
 

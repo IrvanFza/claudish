@@ -14,8 +14,18 @@ function chainStr(chain: string[]): string {
   return chain.join(" → ");
 }
 
-// Reasons shown beneath each probe entry
-const PROVIDER_REASONS: Record<string, string> = {
+/**
+ * Reasons shown beneath each probe entry.
+ *
+ * Exported for the drift test only. A provider missing from here renders its
+ * bare uid (`entry.provider`) as its own explanation — which is not an error and
+ * not visibly wrong, so the three Alibaba rows would silently read
+ * "qwen-token-plan / qwen-coding / qwen-payg" instead of naming the three
+ * products the user is choosing between. Nothing is DERIVED from this map; it
+ * only labels. The Alibaba labels equal each definition's `displayName`, and
+ * `qwen-coding-plan.test.ts` holds them to it.
+ */
+export const PROVIDER_REASONS: Record<string, string> = {
   litellm: "LiteLLM proxy",
   "opencode-zen": "Free tier (OpenCode Zen)",
   "opencode-zen-go": "Zen Go plan",
@@ -26,6 +36,8 @@ const PROVIDER_REASONS: Record<string, string> = {
   glm: "Native GLM API",
   "glm-coding": "GLM Coding Plan",
   "qwen-token-plan": "Alibaba Token Plan",
+  "qwen-coding": "Alibaba Coding Plan",
+  "qwen-payg": "Alibaba PAYG",
   google: "Direct Gemini API",
   openai: "Direct OpenAI API",
   "openai-codex": "OpenAI Codex (Responses API)",
