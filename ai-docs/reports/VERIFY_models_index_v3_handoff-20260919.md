@@ -222,6 +222,18 @@ Only the first row's spelling is Jack's decision. The others are proposed to fol
 
 Found by searching the live OpenAPI document and the live plan and probe data of generation `g-20260918181642356-73127622` for every occurrence of the word. The spec itself has no prose using it.
 
+**3. Publish input and output modalities on every model, in every projection.** claudish must decide whether a model can answer a chat turn, and today the data cannot say.
+
+| Field | Full projection | Slim projection |
+|---|---|---|
+| image input (`vision`), `videoInput`, `videoOutput` | ✓ | ✓ |
+| `imageOutput`, `audioOutput`, `audioInput`, `pdfInput` | ✓ | missing |
+| text input, text output | not published | not published |
+
+Measured consequences: `gpt-image-2.5-flare` (`imageOutput: true`) is in the slim projection with nothing marking it as an image generator, and seven video-reading models (`gemini-3-pro-image`, `gemini-embedding-2`, …) can be excluded from chat only by their names. A speech-to-text model (`grok-voice-transcribe-2.0`: audio in, text out) cannot be told from a chat model at all, because text is never stated.
+
+Requested shape, as OpenRouter publishes it: `inputModalities` and `outputModalities` arrays drawn from `text`, `image`, `audio`, `video`, `file`, on every model row including slim, alongside the existing booleans. claudish's rule then becomes data: a chat model takes `text` in and gives only `text` out.
+
 ## Reproduce
 
 ```
