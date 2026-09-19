@@ -1,5 +1,6 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
+import type { ReadinessResult } from "../auth/credentials/types.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
@@ -369,19 +370,48 @@ async function routeBare(
   const candidates = buildRoutingChain(entries, model, cachePath);
   const credentialed: Route[] = [];
   const skipped: string[] = [];
+  const skippedFailed: string[] = [];
 
+  // ── ONE CREDENTIAL READ PER CANDIDATE PER ROUTING DECISION ────────────────
+  //
   // Resolve each candidate's credentials concurrently (each call funnels through
   // the SDK serialization queue internally), but keep the original chain ORDER
   // when partitioning into credentialed / skipped.
-  const checks = await Promise.all(
-    candidates.map((candidate) => hasCredentialsForProvider(candidate.provider))
+  //
+  // A SUBSCRIPTION candidate is described ONCE, and both facts come from that
+  // single answer: whether it joins the chain, and — when it does not — whether
+  // its credential was ABSENT or FAILED to resolve. Reading twice (a boolean to
+  // partition, then `describeReadiness` to ask why) is the trap: the authority
+  // memoizes a resolved key but deliberately NOT a failure, so the two reads
+  // can disagree, and a credential that recovered between them would fall out
+  // of both partitions and erase the evidence of the failure that removed it.
+  //
+  // Non-subscription candidates keep the boolean, which is all they can
+  // contribute: `skippedFailed` is subscription-only by construction. The
+  // boolean is itself the `=== "present"` projection of one `describeReadiness`
+  // (authority.ts), so the partition is byte-identical to what it was.
+  const verdicts = await Promise.all(
+    candidates.map(async (candidate): Promise<ReadinessResult> => {
+      if (isSubscriptionProvider(candidate.provider)) {
+        return credentials.describeReadiness(candidate.provider);
+      }
+      const present = await hasCredentialsForProvider(candidate.provider);
+      return { readiness: present ? "present" : "absent" };
+    })
   );
   candidates.forEach((candidate, i) => {
-    if (checks[i]) {
+    const verdict = verdicts[i];
+    if (verdict.readiness === "present") {
       credentialed.push(candidate);
-    } else {
-      skipped.push(candidate.provider);
+      return;
     }
+    skipped.push(candidate.provider);
+    // Measured causes of a real, present subscription key reading as "no key":
+    // a concurrent 1Password handshake denial and its 15-second suppression
+    // window, a locked Mac, a disabled or denied Keychain backend, and a stale
+    // `.env` shadowing the op:// chain. Each one used to route a paid
+    // subscription onto a metered provider with NOTHING printed.
+    if (verdict.readiness === "failed") skippedFailed.push(candidate.provider);
   });
 
   if (credentialed.length === 0) {
@@ -448,6 +478,19 @@ async function routeBare(
           `using ${serving[0].displayName}, which bills per token.`
       );
     }
+  }
+
+  // A subscription dropped because its credential FAILED gets its own notice,
+  // never folded into "does not serve": the remedy differs (unlock the keychain
+  // or 1Password, not "pick another model"), and "no key" would tell the user
+  // to buy a subscription they already hold. Same billing condition as above —
+  // said out loud only when the request lands on a metered provider.
+  if (skippedFailed.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
+    logStderr(
+      // No "[claudish]" here: logStderr adds the prefix itself.
+      `${skippedFailed.join(", ")}: the credential could not be READ (not "no key") — ` +
+        `using ${serving[0].displayName}, which bills per token.`
+    );
   }
 
   const [primary, ...fallbacks] = serving;
