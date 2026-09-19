@@ -203,6 +203,9 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `ZAI_API_KEY` | Z.AI Anthropic-compatible API (`zai@`) | | https://z.ai/ |
 | `SAKANA_API_KEY` | Sakana Fugu API / token plan (`sakana@`, `fugu@`) | | https://console.sakana.ai/get-started |
 | `SAKANA_CODING_API_KEY` | Sakana Fugu Subscription (`sc@`) | `SAKANA_API_KEY` | https://console.sakana.ai/get-started |
+| `QWEN_TOKEN_PLAN_API_KEY` | Alibaba Token Plan (`qtoken@`) — Model Studio subscription, metered in Credits | _(none by design — see the note below)_ | https://docs.qwencloud.com/token-plan/overview |
+| `QWEN_CODING_PLAN_API_KEY` | Alibaba Coding Plan (`qcode@`) — Model Studio subscription, metered in requests | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/coding-plan |
+| `DASHSCOPE_API_KEY` | Alibaba PAYG (`qpay@`) — Model Studio pay-as-you-go, billed per token | _(none by design — see the note below)_ | https://www.alibabacloud.com/help/en/model-studio/get-api-key |
 | `OLLAMA_API_KEY` | OllamaCloud hosted API (`oc@`, `llama@`, `lc@`, `meta@`) | | https://ollama.com/account |
 | `OPENCODE_API_KEY` | OpenCode Zen (`zen@`) — **required** | | https://opencode.ai/ |
 | `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`, `zengo@`) — **required** | | https://opencode.ai/ |
@@ -223,6 +226,23 @@ Claudish automatically loads `.env` from the current working directory at startu
 
 **Note on OpenCode Zen Go (changed 2026-09-02)**: `zgo@` used to accept `OPENCODE_API_KEY` as an alias, on the documented claim that a key minted for one OpenCode tier is refused by the other with a `401`. That claim was measured and is false — a Zen Go key is accepted by the plain Zen endpoint (`200`), against a bogus-key control that endpoint answers `401`. The alias is removed: `zgo@` requires `OPENCODE_GO_API_KEY`. The reason is billing, not access — `opencode-zen-go` is classified as a flat-rate plan, so a metered Zen key reaching it would have been reported as `SUB` at `$0` while OpenCode billed per token. If you previously ran `zgo@` on `OPENCODE_API_KEY`, set `OPENCODE_GO_API_KEY` to the key your Lite Plan subscription minted.
 
+**Note on Alibaba Model Studio — four products, three isolated silos.** Model Studio (also fronted by the QwenCloud console; same service, two consoles) sells four things whose keys and base URLs are, in Alibaba's own words, "completely isolated and must be used in matching pairs". Every silo answers every other silo's key with a near-identical 401, so picking the wrong key is both easy and hard to diagnose. Each silo has its own provider and its own variable, so you can hold all three keys at the same time:
+
+| Product | Billing unit | Prefix | Key | Host |
+|---------|--------------|--------|-----|------|
+| **Coding Plan** | Subscription metered in **requests** — 6,000 per 5h, 45,000 per week, 90,000 per month ($50/month in Alibaba's published pricing as of 2026-09-17) | `qcode@` | `QWEN_CODING_PLAN_API_KEY` | `coding-intl.dashscope.aliyuncs.com` |
+| **Token Plan — Individual** | Subscription metered in **Credits** | `qtoken@` | `QWEN_TOKEN_PLAN_API_KEY` | `token-plan.ap-southeast-1.maas.aliyuncs.com` |
+| **Token Plan — Team** | Subscription metered in **Credits**, one key per seat | `qtoken@` | `QWEN_TOKEN_PLAN_API_KEY` | `token-plan.ap-southeast-1.maas.aliyuncs.com` |
+| **Credit Packs** | Extra Credits with a limited validity window | n/a — a top-up on Token Plan Credits | — | — |
+| **Pay-as-you-go** | Metered **per token** | `qpay@` | `DASHSCOPE_API_KEY` | `dashscope-intl.aliyuncs.com` |
+
+- **One product, one variable, one prefix.** Each Alibaba product is named by the variable that opens it and the prefix that selects it, and no product accepts a second spelling of either. A name that identifies a vendor (`QWEN_…`) or a category (`…CLOUD_PLAN…`) is true of more than one of these three products and therefore selects none of them, which is how a subscription key ends up signing a metered request.
+- **No key ever crosses a silo.** A Coding Plan key set as the Token Plan's variable is rejected by the Token Plan host, and the reverse holds too; `DASHSCOPE_API_KEY` is metered and must never stand in for either subscription, which would cross a plan with a per-token bill. Claudish names the sibling variables in its "no API key" and 401 messages precisely because they are the keys you are most likely to already have exported.
+- **The key format identifies nothing.** Alibaba documents `sk-sp-…` as the Coding Plan's format; a measured Token Plan key has the same prefix. Claudish never infers a product from a key's bytes, and neither should you.
+- **A bare Qwen name tries the Coding Plan first.** `qwen3.*` and `qwen3-*` names route Coding Plan → Token Plan → OpenCode Zen Go → PAYG → OpenRouter, each step only when its credential is present (see §5.3). The Coding Plan serves other vendors' namespaces (`glm-4.7`, `glm-5`, `kimi-k2.5`, `MiniMax-M2.5`) alongside both Qwen naming styles, and its model-list endpoint is public — it answers in full with no credential at all — so neither the name nor the list can establish that *your* key covers a model. Alibaba answers an id outside the plan with `400 Model not exist` (measured on the Token Plan and PAYG hosts), and claudish does not move on to the next candidate after that error. To pin one product, name it: `qcode@qwen3-coder-plus`, `qtoken@qwen3.7-plus`.
+- **Credit Packs need no configuration.** They change the Credits balance, never the route or the dynamic models catalog.
+- **Individual vs Team is not modelled.** A key's edition is not derivable from anything claudish can read, so nothing in claudish depends on it.
+
 ### 3.4 Custom Endpoints (Remote Providers)
 
 | Variable | Provider | Default |
@@ -236,6 +256,9 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `ZHIPU_BASE_URL` | GLM/Zhipu API | `https://open.bigmodel.cn` |
 | `GLM_BASE_URL` | Alias for `ZHIPU_BASE_URL` | |
 | `ZAI_BASE_URL` | Z.AI API | `https://api.z.ai` |
+| `QWEN_TOKEN_PLAN_BASE_URL` | Alibaba Token Plan endpoint | `https://token-plan.ap-southeast-1.maas.aliyuncs.com` |
+| `QWEN_CODING_PLAN_BASE_URL` | Alibaba Coding Plan endpoint | `https://coding-intl.dashscope.aliyuncs.com` |
+| `DASHSCOPE_BASE_URL` | Alibaba PAYG endpoint; repoint here for a mainland-China account | `https://dashscope-intl.aliyuncs.com` |
 | `OLLAMACLOUD_BASE_URL` | OllamaCloud hosted API | `https://ollama.com` |
 | `OPENCODE_BASE_URL` | OpenCode Zen API (base; `/v1/chat/completions` appended) | `https://opencode.ai/zen` |
 | `LITELLM_BASE_URL` | LiteLLM proxy server URL (**required** to enable LiteLLM routing) | none |
@@ -413,6 +436,9 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `zai` | `zai` | Z.AI Anthropic-compatible API (`ZAI_API_KEY`) |
 | `sakana`, `fugu` | `sakana` | Sakana Fugu API / token plan (`SAKANA_API_KEY`) |
 | `sc` | `sakana-coding` | Sakana Fugu Subscription (`SAKANA_CODING_API_KEY` or `SAKANA_API_KEY`) |
+| `qtoken` | `qwen-token-plan` | Alibaba Token Plan — Model Studio subscription, Credits (`QWEN_TOKEN_PLAN_API_KEY`) |
+| `qcode` | `qwen-coding` | Alibaba Coding Plan — Model Studio subscription, requests (`QWEN_CODING_PLAN_API_KEY`) |
+| `qpay` | `qwen-payg` | Alibaba PAYG — Model Studio pay-as-you-go, per token (`DASHSCOPE_API_KEY`) |
 | `oc`, `llama`, `lc`, `meta` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`) |
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY` required) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan (`OPENCODE_GO_API_KEY` required) |
@@ -447,7 +473,9 @@ When no `provider@` prefix is given, Claudish detects the provider from the mode
 | `z-ai/*` or `zai/*` | Z.AI | |
 | `fugu*` or `sakana/*` | Sakana Fugu | |
 | `ollamacloud/*` or `meta-llama/*` or `llama-*` or `llama3*` | OllamaCloud | |
-| `qwen*` | Auto-routed (no direct API) | Falls to OpenRouter or LiteLLM |
+| `qwen3.*` (dotted Model Studio names, e.g. `qwen3.7-plus`) | Alibaba Token Plan (`qtoken@`) | Bare-name routing chain: Alibaba Coding Plan (`qcode@`), Alibaba Token Plan (`qtoken@`), OpenCode Zen Go, Alibaba PAYG (`qpay@`), then OpenRouter — each step only if that credential is present |
+| `qwen3-*` (hyphenated, e.g. `qwen3-coder-plus`) | Auto-routed (no direct API) | Same routing chain as `qwen3.*` |
+| `qwen*` (everything else) | Auto-routed (no direct API) | Falls to OpenRouter or LiteLLM |
 | `poe:*` | Poe | Literal `poe:` prefix |
 | `anthropic/*` or `claude-*` | Native Anthropic | Claude Code's own auth, no proxy |
 | `vendor/model` (unknown vendor) | Error | Must use explicit `openrouter@vendor/model` |
