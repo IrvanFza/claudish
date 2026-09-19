@@ -17,6 +17,59 @@
  *  - `invalidate()` — drop any memoized resolution (after a TUI hydrate-on-add).
  */
 
+/**
+ * Three-valued credential readiness — "I could not ask" is NOT "there is
+ * nothing there".
+ *
+ * `isAvailable()` answers a boolean, and a boolean has exactly one slot for two
+ * different facts. Every resolution failure therefore collapsed into `false`,
+ * which reads downstream as "this user has no credential for this provider":
+ * the candidate is filtered out of the routing chain and a metered provider
+ * serves the request with no line printed. A locked Mac, a denied 1Password
+ * handshake or a keychain ACL the user declined would silently move a
+ * flat-rate subscriber onto pay-per-token.
+ *
+ *  - `present` — a credential resolved (or none is required).
+ *  - `absent`  — every source was consulted and none holds one. A STABLE answer.
+ *  - `failed`  — a source could not be consulted at all. TRANSIENT, and it says
+ *                nothing about whether the credential exists.
+ *
+ * `failed` still keeps a candidate out of the chain — a credential that will
+ * not resolve cannot sign a request either — so routing is unchanged. What is
+ * new is that the REASON survives to the caller. The same line the keychain
+ * engine draws (`{present, failed}` / `{value?, failed}`) and the same line the
+ * op source draws for denied handshakes, carried one layer further up.
+ */
+export type CredentialReadiness = "present" | "absent" | "failed";
+
+/** A readiness verdict, with a one-line diagnostic when it is `failed`. */
+export interface ReadinessResult {
+  readiness: CredentialReadiness;
+  /**
+   * Why the credential could not be resolved. Set only for `failed`, and NEVER
+   * key material — these strings reach stderr and the routing warning.
+   */
+  detail?: string;
+}
+
+/**
+ * A thrown value as ONE bounded line, for {@link ReadinessResult.detail}.
+ *
+ * Lives here, beside the type it serves, so the authority, the composite and
+ * every provider format a failure the same way — a second implementation of
+ * this is a second thing that can disagree. It is bounded because an SDK error
+ * can be a multi-line Rust struct dump, and pasting one into a routing warning
+ * buries the sentence that matters.
+ *
+ * Message text only. A credential source never puts key material in an error
+ * message, and this does not go looking for any.
+ */
+export function readinessDetail(err: unknown): string | undefined {
+  const line = (err instanceof Error ? err.message : String(err ?? "")).split("\n")[0].trim();
+  if (!line) return undefined;
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
 export interface RequestAuthContext {
   model: string;
   forceRefresh?: boolean;
@@ -68,6 +121,23 @@ export interface CredentialProvider {
    * server keeps running. Memoized: the SDK is touched at most once per provider.
    */
   isAvailable(opts?: { allowOpPrompt?: boolean }): Promise<boolean>;
+  /**
+   * OPTIONAL three-valued readiness — implement it wherever this provider can
+   * tell "no credential" apart from "could not ask" (see
+   * {@link CredentialReadiness}).
+   *
+   * CONTRACT, and it is load-bearing: the authority projects
+   * `isAvailable(name)` as `describeReadiness(name).readiness === "present"`, so
+   * an implementation MUST agree with its own `isAvailable()` on that boundary
+   * or routing changes. The safe way to hold the contract is to define
+   * `isAvailable()` as the projection of this method rather than writing the
+   * two independently — every implementation here does.
+   *
+   * A provider that does not implement it is not wrong, only less informative:
+   * the authority falls back to `isAvailable()` and maps `false` to `absent`,
+   * which is exactly the behaviour that existed before.
+   */
+  describeReadiness?(opts?: { allowOpPrompt?: boolean }): Promise<ReadinessResult>;
   /** ASYNC: the rich artifact for an outgoing request. Refreshes OAuth / pulls op:// internally. */
   getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth>;
   /** Drop any memoized resolution so the next read re-resolves (TUI hydrate-on-add). */
