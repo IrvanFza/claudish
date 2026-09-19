@@ -133,6 +133,54 @@ plan refresh does not replace a complete cached snapshot.
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
 
+## Two model catalogs, and which one may deny
+
+Name them apart, because they are different KINDS of fact:
+
+| | **cloud models catalog** | **dynamic models catalog** |
+|---|---|---|
+| what it is | the hosted models-index metadata, keyed by canonical model id | the list one provider's discovery endpoint returns for ONE credential |
+| scope | the same for everybody | per account, per key, per seat |
+| lifetime | cached on disk in `~/.claudish/all-models.json` | in memory only, per process |
+| owns | model IDENTITY and published plan membership | ENTITLEMENT — which models this key may call |
+
+**A dynamic models catalog is never persisted.** `providers/model-discovery.ts` keeps the
+list in an in-memory `Map` for `CACHE_TTL_MS` (five minutes) and writes nothing to disk;
+the Antigravity served set is likewise in memory (`auth/antigravity-user.ts`). Every disk
+writer holds hosted or credential-free data. A stored per-account list would outlive the
+key or seat that earned it and answer with something no longer true.
+
+For a bare name, `route()` asks three questions of each routing-chain candidate, in this
+order, and each may remove it (an explicit `provider@model` skips the first):
+
+1. **Catalog membership** (`buildRoutingChain` → `resolveSubscriptionRouting`,
+   `adapters/model-catalog.ts`). Only for a plan whose route is `supported` and whose
+   `modelDiscovery` is `"catalog"`: a model outside its published membership is dropped
+   **before** any credential is read or any discovery request is made. A plan whose
+   `modelDiscovery` is `"client"` or `"hybrid"` answers `unknown` here and keeps the
+   candidate.
+2. **Credential** (`hasCredentialsForProvider`). No key, no candidate.
+3. **Availability** (`providerServesModel`, `providers/model-availability.ts`). For a
+   provider that declares `modelDiscovery`, a non-empty dynamic models catalog decides:
+   listed is `serves`, unlisted is `not-served`. The cloud models catalog may only
+   confirm, never deny.
+
+**Only a successful, complete account answer may deny, and a failed refresh denies
+nothing.** Every failure path of `discoverProviderModels` (no credential, 401/403, other
+HTTP errors, unreachable host, malformed JSON, no base URL) returns `[]` with a reason
+recorded for `getDiscoveryFailure`, and `providerServesModel` reads `[]` as `unknown`, so
+the candidate keeps its place. A refresh that could not run cannot erase access. The same
+holds for a 200 whose list fails the completeness checks: rows the parser had to drop, or
+a continuation field (`has_more: true`, `next`, `next_page`, `next_page_token`), record an
+`incomplete` failure, return `[]` and are not cached. Completeness is DETECTED, not
+proven: the vendor endpoints publish no total, so a well-formed subset still reads as a
+complete list.
+
+**What step 3 cannot tell apart.** It treats any non-empty list as the account's answer.
+`qwen-coding`'s `/v1/models` answers in full with no credential at all
+([`providers/qwen-alibaba.md`](providers/qwen-alibaba.md)), so for that provider the list
+records what the plan covers, not what the key may call, and it can still deny.
+
 ## The interactive picker roster is DERIVED — never add a membership table
 
 Bare `claudish` shows "Select provider:" from `model-selector.ts`. That list used to be a
