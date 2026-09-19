@@ -919,6 +919,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     transport: "poe",
     baseUrl: "https://api.poe.com",
     apiPath: "/v1/chat/completions",
+    // The catalog has no verified probe pick for Poe, so the account's own list
+    // is the only source of one. Measured 2026-09-19: /v1/models answers 200
+    // with 341 models.
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "POE_API_KEY",
     apiKeyDescription: "Poe API Key",
     apiKeyUrl: "https://poe.com/api_key",

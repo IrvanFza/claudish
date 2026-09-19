@@ -211,22 +211,43 @@ export interface DiscoveryResult {
   reason?: string;
 }
 
+/** Attempts for one discovery call: the first, plus two retries after a timeout. */
+const DISCOVERY_ATTEMPTS = 3;
+const DISCOVERY_TIMEOUT_MS = 8000;
+
 export async function discoverProbeModelFromEndpoint(
   proxyUrl: string,
   providerSlug: string,
   exclude?: ReadonlySet<string>
 ): Promise<DiscoveryResult> {
-  let response: Response;
+  let response: Response | undefined;
+  let lastError = "fetch failed";
   const excludeParam =
     exclude && exclude.size > 0 ? `&exclude=${encodeURIComponent([...exclude].join(","))}` : "";
-  try {
-    response = await fetch(
-      `${proxyUrl}/v1/probe-discover?provider=${encodeURIComponent(providerSlug)}${excludeParam}`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-  } catch (error) {
-    return { model: null, reason: error instanceof Error ? error.message : "fetch failed" };
+  // Retry a TIMEOUT only, and nothing else: an answer means the provider spoke,
+  // and repeating a real "no model" wastes the probe's budget. Test All runs
+  // every provider at once, and under that load Devin's list — two protobuf
+  // calls, not a GET — ran past the 8s deadline and reported "no probe model:
+  // The operation timed out" for a subscription that answered in ~1s alone
+  // (measured 2026-09-19, 30 providers in parallel). A retry is cheap because
+  // the provider memoizes its list, so a call that finished late server-side is
+  // already warm for the next attempt.
+  for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt++) {
+    try {
+      response = await fetch(
+        `${proxyUrl}/v1/probe-discover?provider=${encodeURIComponent(providerSlug)}${excludeParam}`,
+        { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) }
+      );
+      break;
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "";
+      lastError = error instanceof Error ? error.message : "fetch failed";
+      const timedOut =
+        name === "TimeoutError" || name === "AbortError" || /timed? ?out/i.test(lastError);
+      if (!timedOut || attempt === DISCOVERY_ATTEMPTS) return { model: null, reason: lastError };
+    }
   }
+  if (!response) return { model: null, reason: lastError };
   let body: unknown;
   try {
     body = await response.json();

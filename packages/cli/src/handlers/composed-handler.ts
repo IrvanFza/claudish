@@ -1843,9 +1843,19 @@ export function getRecoveryHint(
     // format, so a prefix hint would confidently mislabel a working
     // credential. The key's bytes are never read, which also keeps a failed
     // secret operation out of a status line.
+    // "Access denied" for a MODEL is not a credential fault. Alibaba's Model
+    // Studio answers `403 Model.AccessDenied "Model access denied."` while the
+    // SAME key lists 169 models on the same host, and it answers that way for
+    // every model, including ids taken from the account's own list (measured
+    // 2026-09-19 on dashscope-intl). Sending the reader to check a key that the
+    // provider just accepted wastes the one clue they have: the account, not the
+    // credential, is what lacks access.
+    if (status === 403 && /access denied|accessdenied/i.test(lower)) {
+      return "The provider accepted the credential but denied access to this model — check model access or activation for this account in the provider's console, not the key.";
+    }
     const siblingNote = providerUid ? describeSiblingKeys(getProviderByName(providerUid)) : "";
     if (siblingNote) {
-      return `Check API key / OAuth credentials. This vendor sells several plans whose keys are isolated, so a 401 can also mean the right key on the wrong plan's host.${siblingNote}`;
+      return `Check API key / OAuth credentials. This vendor sells several plans whose keys are isolated, so a ${status} can also mean the right key on the wrong plan's host.${siblingNote}`;
     }
     return "Check API key / OAuth credentials.";
   }
