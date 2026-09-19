@@ -1087,6 +1087,14 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     baseUrl: "https://api.mistral.ai",
     baseUrlEnvVars: ["MISTRAL_BASE_URL"],
     apiPath: "/v1/chat/completions",
+    // Without this, Test All had ONE candidate and no way past it. The catalog's
+    // probe pick is `labs-leanstral-1-5`, and a Labs model answers `403 "… is a
+    // Labs model. To use Labs models, an admin must enable them in your
+    // organization settings"` for any account that has not enabled Labs
+    // (measured 2026-09-19). The account's own list answers 200 with 53 models,
+    // only 2 of them Labs, so endpoint discovery can walk to a model the account
+    // can actually call.
+    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
     apiKeyEnvVar: "MISTRAL_API_KEY",
     apiKeyDescription: "Mistral API Key",
     apiKeyUrl: "https://console.mistral.ai/api-keys",

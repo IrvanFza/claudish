@@ -115,8 +115,16 @@ export interface ProbeLinkInput {
  * stop a reasoning model spending the whole probe cap on hidden reasoning and
  * returning 200 with zero visible text. "low" preserves that intent and is
  * accepted (both verified against the live API).
+ *
+ * `google` is here for the Gemini 3 thinking levels. Measured 2026-09-19 on the
+ * direct API: gemini-3.8-flash answers `400 "Thinking level MINIMAL is not
+ * supported for this model"`, while "low" and "high" return 200; gemini-2.5-flash
+ * accepts all of them, since 2.5 takes a numeric budget instead. The probe pick
+ * for google is a Gemini 3 model, so every Gemini probe failed on its effort
+ * field. (Antigravity serves both families and needs no field at all — see
+ * EFFORT_OMITTED below.)
  */
-const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic"]);
+const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic", "google"]);
 
 /**
  * Providers where NO effort value is valid for every model they serve, so the

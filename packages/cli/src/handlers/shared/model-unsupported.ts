@@ -65,6 +65,25 @@ const UNSUPPORTED_PHRASES = [
 ] as const;
 
 /**
+ * "not supported" with a PARAMETER as its subject, which is a different fault.
+ *
+ * The phrase list above is matched anywhere in the body, and "not supported" is
+ * the loosest entry in it. Gemini answers a thinking level its model does not
+ * take with `400 "Thinking level MINIMAL is not supported for this model."`
+ * (measured 2026-09-19 on gemini-3.8-flash). The model is real, reachable and
+ * carried; only the one field is wrong. Matching it as model-unsupported told
+ * the reader to "Verify model name", which sends them to check a name that is
+ * already correct — the same wrong-direction failure the narrowness note above
+ * describes, one level down.
+ *
+ * Keyed on the SUBJECT, not the model: a capability sentence such as "tools are
+ * not supported for this model" is also excluded, and rightly so. The model
+ * exists there too; what fails is the request's shape.
+ */
+const PARAMETER_IS_UNSUPPORTED =
+  /\b(thinking[ _-]?(level|budget)|reasoning[ _-]?effort|effort|temperature|top[_ ]?[pk]|tool[_ ]?choice|tools?|function[ _-]?calling|parameter|argument|field|image[s]?|audio|video|streaming|stream|json[ _-]?mode|response[ _-]?format|system[ _-]?(prompt|instruction)s?)\b[^.]{0,60}?\b(is|are|was|were)?\s*not supported\b/;
+
+/**
  * True when this error body says the provider does not carry the requested
  * model, whatever status it arrived under.
  *
@@ -75,6 +94,7 @@ const UNSUPPORTED_PHRASES = [
  */
 export function hasModelUnsupportedWording(errorBody: string): boolean {
   const lower = (errorBody || "").toLowerCase();
+  if (PARAMETER_IS_UNSUPPORTED.test(lower)) return false;
   return UNSUPPORTED_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
