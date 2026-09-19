@@ -119,6 +119,26 @@ Each slice ends green and committed. Codex writes the tests from real captured r
 
 Then release as 9.8.0 and tell the backend.
 
+## Routing redesign: decided (Jack, 2026-09-20)
+
+The order stands and must be implemented: **user rules → subscriptions (catalog membership) → dynamic subscriptions (the account's own model list) → native API → gateways → fallback.** Then drop every hop without a credential, and send exact wire ids.
+
+**Inside a tier (Q1).** No local preference list and no local state. The model's own vendor first (for `kimi-k3` that is Kimi Coding, because Moonshot makes it), then cheapest by the catalog's per-connection `pricing`, then everything else. A spent limit is not remembered: the request simply moves to the next hop.
+
+*Available:* `pricing` is published per connection as `{input, output, cachedRead}` (560 of 894 models in `g-20260919013346169-feffb8ad` carry one). Where a connection has no price, it sorts after the priced ones.
+
+**Metered and subscription are always separate providers (Q2),** even when one key serves both, so that spending money is explicit and each lands in its own tier. OpenCode already is: `opencode/zen` (metered) and `opencode/go-subscription`. Ollama Cloud is not: the contract publishes one profile, `ollama/cloud`, the `ollama-cloud` subscription plan binds to it, and its connections also carry metered prices. **Backend request:** split it, as OpenCode is split. claudish adds the second provider once the profile exists; it does not invent the identity.
+
+**The fallback (Q3)** stays, and it is exactly the answer to "the providers that serve this model are absent or failing". It is optional, and configurable to any aggregator. It is appended only when that aggregator serves the model. When nothing serves the model, no service is enabled for it, or the aggregator does not list it, claudish returns an error rather than a hop that cannot work. So the dead `qwen3.8-max` → OpenRouter hop becomes either a working Fireworks hop or an error.
+
+**No catalog (Q4).** Sharp rule: no guessing and no local state. claudish never converts a model id it was not given. Without the cloud catalog it cannot reach the cloud at all, so offline it serves local providers only. A subscription whose wire id differs (Kimi Coding's `k3`) is simply not offered until the catalog is readable.
+
+**A dynamic subscription's list (Q5).** Fetch it with a short timeout and retries; it is cached afterwards. On a timeout, keep the hop only when the name is in that provider's namespace.
+
+**What this deletes:** `default-routing-rules.ts`, `buildCatalogRoutingRules`, `retainKnownCatalogRoutingRules` and the four-way `mergeRoutingRules`. Only the user's own rules remain as a dictionary, and they are used verbatim.
+
+**The gate:** a before-and-after route table over every model in the catalog, read by hand. Every difference must be a deliberate addition or a removal this decision names; no route may disappear silently.
+
 ## Test All with every key set (2026-09-19, dev 9.8.0 at `fa0ac40`)
 
 30 providers tested: 16 ready, 3 local servers not running (LM Studio, vLLM, MLX), Vertex not set up, 10 failed. Each failure below was re-probed alone through the probe path to get the full error.
