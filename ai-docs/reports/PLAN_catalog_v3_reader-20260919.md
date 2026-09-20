@@ -167,6 +167,41 @@ The order stands and must be implemented: **user rules → subscriptions (catalo
 - LM Studio answers on port 1234 (200).
 - **Quota, not errors:** MiniMax Coding `429` plan limit; GLM on bigmodel.cn `429` insufficient balance (the same key is `ready` on Z.AI); Sakana Fugu API `429` prepaid credit.
 
+## Vertex on ADC: what it would take (evaluated 2026-09-20, nothing built)
+
+**Already there, measured on this machine.** `auth/vertex-auth.ts` supports ADC and a service
+account; the ADC file is an `authorized_user` with `quota_project_id: xlabs-ai-tools`; `gcloud auth
+application-default print-access-token` works; and with `VERTEX_PROJECT` set, the credential
+authority mints a 254-character Bearer for `vertex`. The transport, the endpoint builder and the
+per-publisher adapters (Gemini, Anthropic, OpenAI-shaped) all exist.
+
+**The blocker is not auth.** `resolveRemoteProvider("vertex@…")` returns null, so no handler is ever
+built and the proxy answers "its provider has no credential", which is the wrong reason. The remote
+registry drops every provider whose effective base URL is empty
+(`providers/remote-provider-registry.ts:41-50`), and Vertex's definition carries `baseUrl: ""`
+because its transport builds the URL from project, location and publisher. Vertex is therefore
+unreachable today whatever credential is configured.
+
+**Work items, in order.**
+
+| # | Work | Touches | Size |
+|---|---|---|---|
+| 1 | Let a provider declare that its transport builds the endpoint, and keep it in the registry. Fix the message so an excluded provider does not read as a missing credential. | `provider-definitions.ts` (one flag), `remote-provider-registry.ts`, `proxy-server.ts` | S |
+| 2 | Resolve the project without an env var: ADC `quota_project_id`, else `gcloud config get project`, with `VERTEX_PROJECT` still winning. Same for the location, with a documented default. | `auth/vertex-auth.ts` | S |
+| 3 | Report readiness honestly: ready on ADC, "needs a project", or "needs `gcloud auth application-default login`", and show the source in the Providers tab instead of a key column that expects `VERTEX_PROJECT`. | `auth/credentials/*vertex*`, `tui/` | M |
+| 4 | Probe pick: models-index marks Vertex client-selected, so claudish lists the publisher models for the project and ranks them newest-first, like every other dynamic provider. | `transport/vertex-oauth.ts`, `model-discovery.ts` | M |
+| 5 | Live validation: a Gemini publisher model and an Anthropic publisher model, streaming, plus the 401 refresh path. Tests by Codex, and the settings docs. | tests, `docs/` | M |
+
+**Estimate.** Items 1 and 2 are the difference between "unreachable" and "works with ADC", and are
+small and self-contained. Items 3 to 5 are what make it a first-class provider. Whole thing: one
+focused session, roughly 8 to 12 hours of agent work with live checks; items 1 and 2 alone are about
+2 hours.
+
+**Risks.** Model availability is per project and per location, so a probe pick that works here may
+404 elsewhere; the Anthropic publisher path uses `rawPredict` and its own payload shape, so it needs
+its own live check; and a service-account setup (rather than a user ADC) is a second credential shape
+we would not have exercised.
+
 **Vertex: move from API key to Application Default Credentials**
 
 Vertex AI Express uses an API key today. Move it to ADC, as set up by Jack: `aiplatform.googleapis.com` enabled on project `xlabs-ai-tools`, credentials at `~/.config/gcloud/application_default_credentials.json` with quota project `xlabs-ai-tools`, verified by a `gemini-3.8-flash` request.
