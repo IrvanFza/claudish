@@ -13,18 +13,12 @@
 `authoritative_roster_identity_unresolved`) are inclusion-resolution reasons, not `routeReason`
 values. The rename request is unchanged; only our label for them was wrong.
 
-**Design question 1: how to publish an unknown modality.** claudish asks for an explicit `null`, and
-treats a missing field the same way. The three states must be distinguishable:
-
-| Published | Meaning | What claudish does |
-|---|---|---|
-| `["text"]`, `["text","image"]` … | verified, from the owner | uses it: a model whose output list has no text is not a chat model |
-| `null` (or the field absent) | no evidence | unknown: claudish keeps the model, and falls back to its own rule (a `videoOutput` flag, then a name-shaped guess) |
-| `[]` | never publish this | ambiguous between "none" and "unknown" |
-
-Please do not infer a list from a name or a probe, exactly as you propose. An explicit unknown is
-more useful to us than a guess, because claudish can say "unknown" to the user and keep the model
-available, while a wrong `["text"]` would silently route an image model into a chat.
+**Design question 1: how to publish an unknown modality.** Publish what you verified, and leave the
+rest unknown in whichever way suits the schema: `null`, the field absent, or an empty list. claudish
+treats all three as unknown, because **no model produces nothing**, so an empty output list cannot
+mean "this model has no outputs" and can only mean "not established". Please do not infer a list from
+a name or a probe, exactly as you propose: claudish can say "unknown" and keep the model available,
+while a wrong `["text"]` would silently route an image model into a chat.
 
 **Design question 2: how to represent tiered prices.** claudish needs one comparable number per
 connection, because Jack's routing rule of 2026-09-20 orders candidates inside a tier by the model's
@@ -32,26 +26,47 @@ own vendor first, then by price. A shape that keeps the truth and still sorts:
 
 ```jsonc
 "pricing": {
-  "shape": "flat" | "tiered" | "unavailable",
+  "type": "flat" | "tiered" | "free" | "unavailable",
   "input": 0.3, "output": 1.2, "cachedRead": 0.006,   // flat: as today
-  "tiers": [                                           // tiered: in ascending order
+  "tiers": [                                           // tiered: ascending, by input size
     { "maxInputTokens": 32000,  "input": 0.3, "output": 1.2 },
     { "maxInputTokens": 128000, "input": 0.6, "output": 2.4 }
   ]
 }
 ```
 
-- For `tiered`, claudish orders by the FIRST tier and labels the choice "tiered" where it shows a
-  price. It will not average, and will not pick a tier by guessing the request size.
-- For `unavailable`, claudish treats the connection as unpriced and places it after priced ones
-  inside the same tier, which is what we already agreed for missing prices.
-- Alibaba's 28 tiered models are exactly the case this shape is for; the 20 PAYG ids with no
-  representable price should be `"shape": "unavailable"` rather than omitted, so we can tell "no
-  price yet" from "not published".
+`type` is a discriminator: it says how to read the rest of the object. Without it, a reader cannot
+tell "no price published" from "the price is zero", nor whether the top-level numbers are the whole
+price or only the first tier.
 
-**Alibaba PAYG, reconciled.** We agree the credential is good: it reads the official model API here
-too (`GET /compatible-mode/v1/models` on `dashscope-intl`, HTTP 200, 169 models). The failure is on
-chat calls only, and it is not about the model id:
+- `flat`: as today.
+- `tiered`: claudish orders by the FIRST tier and labels the choice "tiered" where it shows a price.
+  It will not average tiers and will not guess a tier from the request size.
+- `free`: a genuinely free model. `flat` with `input: 0, output: 0` says the same thing; pick
+  whichever is cleaner in your schema, as long as it is distinguishable from "unknown".
+- `unavailable`: claudish treats the connection as unpriced and places it after priced ones inside
+  the same tier, which is what we already agreed for missing prices.
+
+Alibaba's 28 tiered models are the case `tiered` exists for; the 20 PAYG ids with no representable
+price should be `"type": "unavailable"` rather than omitted, so we can tell "no price yet" from "not
+published".
+
+**Probe picks: no change requested.** You publish one pick per static route, chosen from the models
+common to every account and recent, and client-selected routes are already marked. That is sound, and
+claudish treats a pick as the first candidate rather than an entitlement, so a per-account denial
+costs one attempt. Nothing for you to do here.
+
+**Alibaba PAYG: deferred on our side, no action needed from you.** We are leaving it until after the
+v3 release. Do not spend time reconciling the remaining PAYG ids: the denial does not depend on the
+id. Measured directly with the key, outside claudish, on `dashscope-intl`: three request shapes
+(Anthropic `/apps/anthropic/v1/messages`, OpenAI `/compatible-mode/v1/chat/completions`, DashScope
+native `/api/v1/services/aigc/text-generation/generation`) times three models (`qwen3.8-max-0902`,
+`qwen-plus`, `qwen-max`) are nine of nine `403 Model.AccessDenied`, while the same key lists 169
+models; the China host rejects the key outright.
+
+**Alibaba PAYG, earlier evidence.** We agree the credential is good: it reads the official model API
+here too (`GET /compatible-mode/v1/models` on `dashscope-intl`, HTTP 200, 169 models). The failure is
+on chat calls only, and it is not about the model id:
 
 - your new pick `qwen3.8-max-0902`: `403 Model.AccessDenied` through claudish, after we fixed our own
   fault on that path (we were sending `output_config.effort: "minimal"`, which that host rejects by

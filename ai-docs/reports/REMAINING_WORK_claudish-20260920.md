@@ -88,7 +88,7 @@ has tests). One brief, one Codex run, each test verified to fail when its fix is
 
 | Item | What we do when it lands |
 |---|---|
-| T1 modalities | consume `inputModalities`/`outputModalities`; treat `null` as unknown; drop the name-shaped guess |
+| T1 modalities | consume `inputModalities`/`outputModalities`; treat `null`, an absent field AND an empty list as unknown, since no model produces nothing; drop the name-shaped guess |
 | T2 naming | switch the reader on the generation they name, with no alias; we read no `roster*` field today, so only the reason mapping matters |
 | T3 prices | activate price ordering inside a tier; `unavailable` sorts after priced |
 | T6 Poe | prefer their verified pick; keep our account-list discovery as the fallback |
@@ -109,7 +109,11 @@ has tests). One brief, one Codex run, each test verified to fail when its fix is
   refuses to deny whenever `getDiscoveryFailure(provider)` is set, while the picker and the probe use
   the rows — no type change, the failure channel already exists;
   **(c)** treat only a continuation marker as incomplete and tolerate dropped rows.
-  Recommendation: (b). **DISCUSS** if you want (c) instead, which is less safe but never hides rows.
+  **Decided (Jack, 2026-09-20): (b), and the incompleteness must be RETURNED, not only recorded.** A
+  partial list is still a partial-failure state, and the caller has to be able to see it: a future
+  picker can then say "this list may be incomplete" instead of quietly showing fewer models. Shape to
+  build: a detailed call (`{ models, incomplete?: { reason, droppedRows?, hasMore? } }`) with the
+  existing array function kept as a thin wrapper, so no caller has to change at once.
 - Redact `readinessDetail` before anything displays it. Nothing displays it today.
 - A probe failure rendered `[object Object]` as its error (seen on the Mistral walk). **RESEARCH** where the object reaches the message.
 - Extend the vocabulary guard to the retired terms above once they are renamed.
@@ -130,3 +134,8 @@ says so.
 - After 9.8.0 is installed: delete the `QWEN_CLOUD_PLAN_API_KEY` Keychain item.
 - `/Users/jack/mag/claudish/.env` holds 5 duplicate lines.
 - Jack's side, not claudish: the Alibaba Coding key is the Token Plan key, and PAYG needs model access granted in the Model Studio console.
+- **Alibaba PAYG is deferred until after the v3 release (Jack, 2026-09-20).** Measured: nine of nine
+  combinations denied on `dashscope-intl` (Anthropic, OpenAI and DashScope-native request shapes,
+  each with `qwen3.8-max-0902`, `qwen-plus` and `qwen-max`), while the same key lists 169 models; the
+  China host rejects the key. So the endpoint and the parameters are not the cause. Nobody should
+  spend time reconciling ids until the account's model access is settled.
