@@ -127,7 +127,9 @@ The order stands and must be implemented: **user rules → subscriptions (catalo
 
 *Available:* `pricing` is published per connection as `{input, output, cachedRead}` (560 of 894 models in `g-20260919013346169-feffb8ad` carry one). Where a connection has no price, it sorts after the priced ones.
 
-**Metered and subscription are always separate providers (Q2),** even when one key serves both, so that spending money is explicit and each lands in its own tier. OpenCode already is: `opencode/zen` (metered) and `opencode/go-subscription`. Ollama Cloud is not: the contract publishes one profile, `ollama/cloud`, the `ollama-cloud` subscription plan binds to it, and its connections also carry metered prices. **Backend request:** split it, as OpenCode is split. claudish adds the second provider once the profile exists; it does not invent the identity.
+**Metered and subscription are always separate providers (Q2),** even when one key serves both, so that spending money is explicit and each lands in its own tier. OpenCode already is: `opencode/zen` (metered) and `opencode/go-subscription`.
+
+**Ollama Cloud is the exception, settled 2026-09-20.** models-index keeps one `ollama/cloud` route: Ollama spends included credits first and then purchased credits on the same account, and the API exposes no request-level choice, so a second provider would imply a billing boundary Ollama cannot enforce. Jack's decision: the single route is **metered**, because money can be spent once the included credits are gone, and a customer who wants it earlier rewrites the route in their own rules. claudish already classifies `ollamacloud` as metered, so no code changed.
 
 **The fallback (Q3)** stays, and it is exactly the answer to "the providers that serve this model are absent or failing". It is optional, and configurable to any aggregator. It is appended only when that aggregator serves the model. When nothing serves the model, no service is enabled for it, or the aggregator does not list it, claudish returns an error rather than a hop that cannot work. So the dead `qwen3.8-max` → OpenRouter hop becomes either a working Fireworks hop or an error.
 
