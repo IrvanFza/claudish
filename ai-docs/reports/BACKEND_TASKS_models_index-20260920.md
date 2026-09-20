@@ -1,5 +1,77 @@
 # Tasks for models-index, from claudish (2026-09-20)
 
+> **Revision 2, after the backend's re-review.** The live generation is now
+> `g-20260920004438652-e636f445` (models-index v1.2.104); the generation named further down was
+> current when the tasks were written. Status of each task, and the two design questions the backend
+> asked, are answered in "Answers and corrections" immediately below. T4 is **done**; T1, T2, T3 and
+> T6 are confirmed by both sides; T5 is settled as "one route, classified metered by claudish".
+
+## Answers and corrections (claudish, revision 2)
+
+**Correction accepted.** The four values we listed (`authenticated_account_roster_required`,
+`authenticated_variant_roster_required`, `no_exact_callable_roster`,
+`authoritative_roster_identity_unresolved`) are inclusion-resolution reasons, not `routeReason`
+values. The rename request is unchanged; only our label for them was wrong.
+
+**Design question 1: how to publish an unknown modality.** claudish asks for an explicit `null`, and
+treats a missing field the same way. The three states must be distinguishable:
+
+| Published | Meaning | What claudish does |
+|---|---|---|
+| `["text"]`, `["text","image"]` … | verified, from the owner | uses it: a model whose output list has no text is not a chat model |
+| `null` (or the field absent) | no evidence | unknown: claudish keeps the model, and falls back to its own rule (a `videoOutput` flag, then a name-shaped guess) |
+| `[]` | never publish this | ambiguous between "none" and "unknown" |
+
+Please do not infer a list from a name or a probe, exactly as you propose. An explicit unknown is
+more useful to us than a guess, because claudish can say "unknown" to the user and keep the model
+available, while a wrong `["text"]` would silently route an image model into a chat.
+
+**Design question 2: how to represent tiered prices.** claudish needs one comparable number per
+connection, because Jack's routing rule of 2026-09-20 orders candidates inside a tier by the model's
+own vendor first, then by price. A shape that keeps the truth and still sorts:
+
+```jsonc
+"pricing": {
+  "shape": "flat" | "tiered" | "unavailable",
+  "input": 0.3, "output": 1.2, "cachedRead": 0.006,   // flat: as today
+  "tiers": [                                           // tiered: in ascending order
+    { "maxInputTokens": 32000,  "input": 0.3, "output": 1.2 },
+    { "maxInputTokens": 128000, "input": 0.6, "output": 2.4 }
+  ]
+}
+```
+
+- For `tiered`, claudish orders by the FIRST tier and labels the choice "tiered" where it shows a
+  price. It will not average, and will not pick a tier by guessing the request size.
+- For `unavailable`, claudish treats the connection as unpriced and places it after priced ones
+  inside the same tier, which is what we already agreed for missing prices.
+- Alibaba's 28 tiered models are exactly the case this shape is for; the 20 PAYG ids with no
+  representable price should be `"shape": "unavailable"` rather than omitted, so we can tell "no
+  price yet" from "not published".
+
+**Alibaba PAYG, reconciled.** We agree the credential is good: it reads the official model API here
+too (`GET /compatible-mode/v1/models` on `dashscope-intl`, HTTP 200, 169 models). The failure is on
+chat calls only, and it is not about the model id:
+
+- your new pick `qwen3.8-max-0902`: `403 Model.AccessDenied` through claudish, after we fixed our own
+  fault on that path (we were sending `output_config.effort: "minimal"`, which that host rejects by
+  enum with `400 InvalidParameter`; the Token Plan host accepts it);
+- ids taken from the account's own list (`qwen-plus-character`, `qwen3.8-flash`, `qwen3.8-max`,
+  `qwen3.7-plus`): the same `403 Model.AccessDenied`.
+
+So no PAYG id we tried is callable by this account, while the same key lists models. We read that as
+account model access, not catalog data, and claudish ships `scripts/validate-dashscope-key.ts` so a
+user can separate the two themselves.
+
+**Poe.** Agreed that discovery belongs in the backend, and we will consume `poe/gateway` identities
+and a verified pick once they are mapped. claudish keeps its own account-list discovery as the
+fallback for a provider with no published pick, which is what makes Poe testable today.
+
+**Vertex.** Agreed. The rule that grants `client_model_selection_required` only to subscription
+profiles is the reason Vertex reads `no_verified_probe_model`; claudish owns discovery there either
+way, so this is cosmetic for us and worth fixing only so the reason states the decision.
+
+
 Every item below was measured against the **live** service, not a cache. Unless stated otherwise the
 generation is `g-20260919132927305-5a035947` (893 slim rows), read with
 `Accept: application/vnd.models-index.catalog+json;version=3`.
