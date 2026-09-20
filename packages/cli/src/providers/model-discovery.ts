@@ -26,6 +26,7 @@
 import { credentials } from "../auth/credentials/authority.js";
 import { log } from "../logger.js";
 import { VERSION } from "../version.js";
+import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
 
@@ -661,23 +662,27 @@ export async function discoverContextWindow(
 }
 
 /**
- * Rank a dynamic models catalog for presentation, largest context window first
- * (ties broken alphabetically for determinism). The head of this list is the
- * picker's default.
+ * Rank a dynamic models catalog for presentation, largest context window first,
+ * then NEWEST. The head of this list is the picker's default and the first model
+ * a probe tries.
  *
  * Deliberately a RULE rather than a pinned model id: pinning "k3" today would
  * rot into exactly the `fixedModel: "kimi-for-coding"` bug this replaces —
  * stale the moment the provider ships its next model. A capability-ordered
  * list upgrades itself.
  *
- * This is the PROBE-candidate ordering (`discoverProbeModel`), where widest
- * window first is the point. The model PICKER does not use it for presentation
- * — a plan whose whole dynamic models catalog is 1M collapses to alphabetical — and sorts its
- * rows by release date instead; see `buildDiscoveredModelRows`.
+ * The tie-break used to be alphabetical, "for determinism", and on a plan whose
+ * whole catalog shares one window that decided everything: Antigravity serves 21
+ * models at 1M, so the head of the list was `gemini-2.5-flash` and the newest
+ * model on the plan sat near the bottom (measured 2026-09-19). Alphabetical order
+ * on version numbers reads oldest-first, which is the opposite of what both the
+ * picker and a probe want. `compareByReleaseDateDesc` is the comparator the
+ * picker already uses: release date first, then the version encoded in the id
+ * (3.8 above 2.5), then the id, so it stays deterministic.
  */
 export function rankDiscoveredModels(models: DiscoveredModel[]): DiscoveredModel[] {
   return [...models].sort((a, b) => {
     const diff = (b.contextWindow ?? 0) - (a.contextWindow ?? 0);
-    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    return diff !== 0 ? diff : compareByReleaseDateDesc(a, b);
   });
 }
