@@ -19,8 +19,11 @@ Read live from the deployed service, and then through claudish's own reader.
 | T6 Vertex | **Delivered.** `vertex/google-cloud` now reports `client_model_selection_required`. |
 | claudish reader | **Unaffected.** A forced refresh reads 1,119 entries across pages and 19 plans; Alibaba memberships are 10/20/31 and kimi-code is 4; `kimi-k3`, `qwen3.8-max` and `glm-5.3` route exactly as before. |
 
-Two follow-ups only: the Poe probe pick, and the discriminator's name (`shape`, which is what we asked
-for in revision 1; we would prefer `type`, at whatever cutover suits, with no alias).
+Two follow-ups: the Poe probe pick, and **renaming the pricing discriminator `shape` to `type`**. The
+first draft of this document asked for `shape`, and you built exactly that; since then `type` is the
+project's word for a discriminator and it is now in claudish's thesaurus, so both sides say one thing.
+Please rename it at whatever cutover suits you, with no alias, and name the generation; claudish
+switches on that generation. The values are unchanged: `flat`, `tiered`, `free`, `unavailable`.
 
 ## Answers and corrections (claudish, revision 2)
 

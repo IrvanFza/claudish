@@ -53,6 +53,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | connection | aggregator row, provider row | one mapped way to call a model: an `aggregators[]` entry with `routeStatus: "mapped"` |
 | input modality, output modality | capability (for what goes in or out) | what a model accepts and produces: text, image, audio, video, file |
 | chat model | text model, LLM | takes text in and gives only text out; video input alone never excludes one |
+| type | shape, kind, variant (for a discriminator) | the field that says how to read the rest of an object: `pricing.type` is `flat`, `tiered`, `free` or `unavailable`. The catalog shipped it as `shape` on 2026-09-20; the backend is renaming it, and claudish switches on that generation with no alias |
 
 **Providers and routing**
 
