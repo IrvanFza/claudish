@@ -36,9 +36,9 @@ publisher.
 1.1 and 1.2 together are about two hours and turn Vertex from unreachable into working on ADC. All
 five are one focused session, roughly 8 to 12 hours with live checks.
 
-- **DISCUSS.** What happens to the Express API-key path: delete it, or keep it only when
-  `VERTEX_API_KEY` is set explicitly? Deleting is simpler and matches "one way in"; keeping it costs
-  a branch we cannot test without an Express key.
+- **Decided (Jack, 2026-09-20): delete the Express API-key path.** One way in. `VERTEX_API_KEY`, its
+  alias on `apiKeyEnvVar`, the `express` branch in `vertexProfile` and `selectVertexAuthMode`'s
+  express arm all go; the provider's credential becomes ADC or a service account.
 - **RESEARCH.** Service-account credentials are a second shape we have never exercised here.
   Per-location model availability means a pick verified on this project may 404 on another.
   Anthropic-on-Vertex uses `rawPredict` with its own payload shape and needs its own live check.
@@ -62,11 +62,13 @@ list and no local state; a spent limit is not remembered, the request moves to t
 | 2.6 | No catalog: local providers only, and never a guessed id | Kimi Coding's `k3` is simply not offered until the catalog is readable |
 | 2.7 | Gate: a before-and-after route table over every model in the catalog, read by hand | no route may disappear silently |
 
-- **DISCUSS.** "The model's own vendor first" needs one clarification for vendors that sell both a
-  plan and a direct API (Moonshot sells Kimi Coding and the Kimi API). The tiers already separate
-  them, so vendor-first only orders within a tier; confirm that reading.
-- **DISCUSS.** The fallback's configuration: the config key's name, whether it defaults to OpenRouter
-  as today, and how a user turns it off.
+- **Decided (Jack, 2026-09-20): vendor-first orders only WITHIN a tier.** The tiers already separate a
+  vendor's subscription from its metered API, so Kimi Coding and the Kimi API never compete for the
+  same slot.
+- **Decided: the fallback needs no new work beyond 2.4.** `defaultProvider` already accepts any
+  provider and is skipped when empty, so "any aggregator, or none" is configurable today. What 2.4
+  adds is the rule that the fallback is not appended when the catalog says that aggregator does not
+  serve the model, which is what turns a dead hop into an error.
 - **Partly waiting on the backend.** Price ordering needs T3; until then most metered connections are
   unpriced and sort last, which is correct but not yet useful.
 
@@ -96,7 +98,18 @@ has tests). One brief, one Codex run, each test verified to fail when its fix is
 ## 5. Smaller follow-ups
 
 - Retire "served set" in the code (33 uses) and "roster" in `ai-docs/architecture` (about 13 files) and `docs/settings-reference.md:747`.
-- An incomplete provider list currently empties that provider's list in the picker as well as for availability. It should stay visible and only lose the right to deny. **DISCUSS** the exact rule.
+- **The incomplete-list rule has one consumer too many.** `discoverProviderModels()` feeds three
+  callers: the availability filter (`providerServesModel`), the interactive picker, and probe
+  discovery. Since `28fc06d`, a list that dropped unparseable rows or carries a continuation marker
+  (`has_more`, `next`, `next_page`, `next_page_token`) records an `incomplete` failure and returns
+  `[]`, uncached. That is right for availability, which must not deny on a partial list, and wrong
+  for the other two, which then see a provider with no models at all. The options:
+  **(a)** leave it: one malformed row hides a provider from the picker;
+  **(b)** return the rows that DID parse and keep the recorded failure, so `providerServesModel`
+  refuses to deny whenever `getDiscoveryFailure(provider)` is set, while the picker and the probe use
+  the rows — no type change, the failure channel already exists;
+  **(c)** treat only a continuation marker as incomplete and tolerate dropped rows.
+  Recommendation: (b). **DISCUSS** if you want (c) instead, which is less safe but never hides rows.
 - Redact `readinessDetail` before anything displays it. Nothing displays it today.
 - A probe failure rendered `[object Object]` as its error (seen on the Mistral walk). **RESEARCH** where the object reaches the message.
 - Extend the vocabulary guard to the retired terms above once they are renamed.
