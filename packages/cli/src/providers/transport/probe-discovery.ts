@@ -309,7 +309,20 @@ function cacheSetRanked(key: string, ranked: string[]): void {
 export async function discoverViaOpenAIModels(
   endpoint: string,
   headers: Record<string, string>,
-  cacheKey: CacheKey & { displayName?: string; exclude?: ReadonlySet<string> }
+  cacheKey: CacheKey & {
+    displayName?: string;
+    exclude?: ReadonlySet<string>;
+    /**
+     * Whether a key is configured for this provider, for the 401/403 message.
+     *
+     * A local server that wants a key and a local server that rejects the key
+     * are different problems with different fixes, and "HTTP 401 from
+     * http://localhost:8000/v1/models" told the reader neither. Measured
+     * 2026-09-19: an oMLX server on vLLM's default port answers
+     * `401 {"error":{"message":"API key required"}}` to an unauthenticated list.
+     */
+    hasApiKey?: boolean;
+  }
 ): Promise<DiscoveryOutcome> {
   const cached = cacheGet(cacheKey.key, cacheKey.exclude);
   if (cached !== undefined) return cached;
@@ -331,7 +344,16 @@ export async function discoverViaOpenAIModels(
   }
 
   if (!response.ok) {
-    const reason = `HTTP ${response.status} from ${endpoint}`;
+    const who = cacheKey.displayName ?? "this provider";
+    const authFailure =
+      response.status === 401 || response.status === 403
+        ? cacheKey.hasApiKey === false
+          ? `the server requires an API key and none is configured for ${who}`
+          : `the server rejected the configured API key for ${who}`
+        : "";
+    const reason = authFailure
+      ? `HTTP ${response.status} from ${endpoint} — ${authFailure}`
+      : `HTTP ${response.status} from ${endpoint}`;
     log(`[probe-discovery${cacheKey.displayName ? `:${cacheKey.displayName}` : ""}] ${reason}`);
     cacheSetFailure(cacheKey.key, reason);
     return { model: null, reason };

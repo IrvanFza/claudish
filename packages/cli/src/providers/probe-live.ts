@@ -123,8 +123,20 @@ export interface ProbeLinkInput {
  * for google is a Gemini 3 model, so every Gemini probe failed on its effort
  * field. (Antigravity serves both families and needs no field at all — see
  * EFFORT_OMITTED below.)
+ *
+ * `qwen-payg` validates the enum the same way Anthropic does, and says so:
+ * `400 InvalidParameter "Invalid value 'minimal' for output_config.effort.
+ * Supported values are: low, medium, high, xhigh, max."` (measured 2026-09-20 on
+ * dashscope-intl with qwen3.8-max-0902). Its sibling products do not: the Token
+ * Plan host accepts "minimal" on the same round of measurements, so this is one
+ * product's host, not a vendor-wide rule.
  */
-const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic", "google"]);
+const MINIMAL_EFFORT_UNSUPPORTED = new Set([
+  "native-anthropic",
+  "anthropic",
+  "google",
+  "qwen-payg",
+]);
 
 /**
  * Providers where NO effort value is valid for every model they serve, so the
@@ -385,6 +397,23 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
     if (hasModelUnsupportedWording(body)) {
       return {
         state: "model-not-found",
+        latencyMs,
+        httpStatus: authStatus,
+        errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
+      };
+    }
+    // Nor is it an auth failure when the provider accepted the credential and
+    // denied THIS MODEL. Alibaba's Model Studio answers
+    // `403 {"code":"Model.AccessDenied","message":"Model access denied."}` while
+    // the same key lists 169 models on the same host (measured 2026-09-19), so
+    // the credential is proven good by the provider itself. Reported as
+    // `auth-failed` it both blamed a working key and STOPPED Test All on the
+    // first candidate: the loop retries `error`, never `auth-failed`, so an
+    // account that may call some models but not the catalog's pick never got a
+    // second try. `error` keeps the failure without the false cause.
+    if (/model[^"]{0,24}access[ _-]?denied|access[ _-]?denied[^"]{0,24}model/i.test(body)) {
+      return {
+        state: "error",
         latencyMs,
         httpStatus: authStatus,
         errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
