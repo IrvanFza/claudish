@@ -6,6 +6,22 @@
 > asked, are answered in "Answers and corrections" immediately below. T4 is **done**; T1, T2, T3 and
 > T6 are confirmed by both sides; T5 is settled as "one route, classified metered by claudish".
 
+## Delivery validated (claudish, 2026-09-21, generation `g-20260920154425586-418ad3dd`)
+
+Read live from the deployed service, and then through claudish's own reader.
+
+| Task | Result |
+|---|---|
+| T1 modalities | **Delivered.** 702 of the first 1,000 slim rows carry `inputModalities`/`outputModalities`; 211 of those have a non-text output (`gpt-image-2.5-flare: image`). Unknown is encoded as an absent field: 0 nulls, 0 empty lists, 298 absent. That matches the contract. |
+| T2 naming | **Delivered.** No "roster" token remains in `queryModels`, `queryPlans` or `probeModels`; the plans carry `membershipRequirements`, `membershipId` and `membershipCoverage`. claudish reads none of these, so nothing broke. |
+| T3 prices | **Delivered.** Every metered profile is now fully priced: `qwen/dashscope-direct` 136/136, `openai/direct-api` 130/130, `google/direct-api` 46/46, `mistralai/direct-api` 18/18, `fireworks/gateway` 25/25, `poe/gateway` 281/281, `together-ai/gateway` 236/236, `openrouter/gateway` 468/468, `ollama/cloud` 24/24, `opencode/zen` 74/74. Subscription profiles stay unpriced, which is right. The discriminator is published as `shape`: flat 1,004, unavailable 469, tiered 28. On all 28 tiered connections the top-level `input`/`output` equal the first tier, so claudish can order by the top-level number. |
+| T6 Poe | **Half delivered.** 281 mapped connections, and no verified probe pick: `poe/gateway` still reports `no_verified_probe_model`. |
+| T6 Vertex | **Delivered.** `vertex/google-cloud` now reports `client_model_selection_required`. |
+| claudish reader | **Unaffected.** A forced refresh reads 1,119 entries across pages and 19 plans; Alibaba memberships are 10/20/31 and kimi-code is 4; `kimi-k3`, `qwen3.8-max` and `glm-5.3` route exactly as before. |
+
+Two follow-ups only: the Poe probe pick, and the discriminator's name (`shape`, which is what we asked
+for in revision 1; we would prefer `type`, at whatever cutover suits, with no alias).
+
 ## Answers and corrections (claudish, revision 2)
 
 **Correction accepted.** The four values we listed (`authenticated_account_roster_required`,
