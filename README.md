@@ -367,8 +367,7 @@ Claudish automatically loads `.env` from the current directory at startup. For t
 | `OPENCODE_GO_API_KEY` | OpenCode Zen Go plan (`zgo@`) | _(separate from the metered Zen credential)_ |
 | `LITELLM_API_KEY` | LiteLLM (`ll@`) — requires `LITELLM_BASE_URL` | |
 | `POE_API_KEY` | Poe (`poe@`) | |
-| `VERTEX_API_KEY` | Vertex AI Express (`v@`) | |
-| `VERTEX_PROJECT` | Vertex AI OAuth mode (`v@`) | `GOOGLE_CLOUD_PROJECT` |
+| `VERTEX_PROJECT` | Vertex AI (`v@`) — optional; the ADC quota project or `gcloud config get project` is used otherwise | `GOOGLE_CLOUD_PROJECT` |
 | `ANTHROPIC_API_KEY` | Placeholder (suppresses Claude Code dialog) | |
 
 #### Bundled Endpoint Catalog
@@ -645,7 +644,7 @@ claudish --model ollama@llama3.2:3 "code review"  # 3 concurrent requests
 | `oc@` | OllamaCloud | `OLLAMA_API_KEY` | `oc@llama-3.1-70b` |
 | `zen@` | OpenCode Zen | `OPENCODE_API_KEY` | `zen@gpt-5-nano` |
 | `zgo@`, `zengo@` | OpenCode Zen Go plan | `OPENCODE_GO_API_KEY` | `zgo@glm-5` |
-| `v@`, `vertex@` | Vertex AI | `VERTEX_API_KEY` | `v@gemini-2.5-flash` |
+| `v@`, `vertex@` | Vertex AI | _(Application Default Credentials; `VERTEX_PROJECT` optional)_ | `v@gemini-2.5-flash` |
 | `ag@`, `antigravity@` | Antigravity (Gemini subscription) | _(OAuth via `claudish login antigravity`)_ | `ag@gemini-3.6-flash` |
 | `go@` | _deprecated alias → `ag@`_ | _(OAuth)_ | `go@gemini-2.5-flash` |
 | `poe@` | Poe | `POE_API_KEY` | `poe@GPT-4o` |
@@ -691,9 +690,10 @@ claudish --model openrouter@deepseek/deepseek-r1 "deep analysis"
 claudish --model llama@llama-3.1-70b "code review"
 claudish --model oc@llama-3.2-vision "analyze image"
 
-# Vertex AI - Google Cloud
-VERTEX_API_KEY=... claudish --model v@gemini-2.5-flash "task"
-VERTEX_PROJECT=my-project claudish --model vertex@gemini-2.5-flash "OAuth mode"
+# Vertex AI - Google Cloud (Application Default Credentials)
+gcloud auth application-default login                # once
+claudish --model v@gemini-2.5-flash "task"           # project from ADC / gcloud config
+VERTEX_PROJECT=my-project claudish --model vertex@gemini-2.5-flash "explicit project"
 
 # Alibaba Cloud Model Studio products
 claudish --model qcode@qwen3.7-plus "implement feature"

@@ -18,7 +18,7 @@ import type { ModelDiscoveryDescriptor } from "./model-discovery.js";
 // Type-only, like ModelDiscoveryDescriptor below: erased at compile time, so
 // declaring the handler here costs nothing at module load. The 28 heavy imports
 // in provider-profiles.ts arrive only when `lazyHandler`'s thunk is invoked.
-import type { ProfileContext, ProviderProfile } from "./provider-profiles.js";
+import type { AsyncProviderProfile, ProfileContext, ProviderProfile } from "./provider-profiles.js";
 import { getRuntimeProviders } from "./runtime-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,9 @@ type ProfileBuilders = typeof import("./provider-profiles.js");
  * be a third place to typo a provider name, which is the exact failure this
  * merge exists to remove.
  */
-function lazyHandler(pick: (m: ProfileBuilders) => ProviderProfile): LazyHandlerFactory {
+function lazyHandler(
+  pick: (m: ProfileBuilders) => ProviderProfile | AsyncProviderProfile
+): LazyHandlerFactory {
   return async (ctx) => pick(await import("./provider-profiles.js")).createHandler(ctx);
 }
 
@@ -130,6 +132,25 @@ export interface ProviderDefinition {
   baseUrl: string;
   /** Environment variables that can override the base URL */
   baseUrlEnvVars?: string[];
+  /**
+   * This provider's TRANSPORT builds the request URL itself, so an empty
+   * `baseUrl` is correct and complete rather than missing.
+   *
+   * Declared because "no base URL" otherwise means "not configured", and
+   * `getRemoteProviders()` drops such a provider from the registry — after which
+   * `resolveRemoteProvider("vertex@…")` returns null and the failure reads as a
+   * missing credential, sending the user to find a key that was never the
+   * problem. LiteLLM has the same empty `baseUrl` but a DIFFERENT cause: its URL
+   * arrives from `LITELLM_BASE_URL`, so resolving `baseUrlEnvVars` rescues it.
+   * No env var can ever rescue this case, because there is no single URL to
+   * name: Vertex's endpoint is assembled per request from the project, the
+   * location and the publisher
+   * (`https://<location>-aiplatform.googleapis.com/v1/projects/<project>/…`).
+   *
+   * A capability, not a name check: anything whose transport composes its own
+   * endpoint sets this, and nothing in the registry mentions "vertex".
+   */
+  buildsOwnEndpoint?: true;
   /** API path template (e.g., "/v1/chat/completions") */
   apiPath: string;
   /** Primary API key environment variable */
@@ -874,10 +895,20 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
     displayName: "Vertex AI",
     transport: "vertex",
     baseUrl: "",
+    // The transport composes the endpoint from project + location + publisher,
+    // so the empty baseUrl above is the finished answer. Without this the
+    // registry filter drops Vertex entirely (see `buildsOwnEndpoint`).
+    buildsOwnEndpoint: true,
     apiPath: "",
+    // Not an API key: the project ID, paired with Application Default
+    // Credentials. It stays on `apiKeyEnvVar` because that is what makes the
+    // credential authority resolve Vertex at all, and what names the remedy in
+    // "no credential" messages. VERTEX_API_KEY (Express) was REMOVED from
+    // `apiKeyAliases` on 2026-09-21 along with the mode itself. Claudish also
+    // resolves the project from the ADC file and `gcloud config` — see
+    // `resolveVertexConfig` — so an unset VERTEX_PROJECT is not fatal.
     apiKeyEnvVar: "VERTEX_PROJECT",
-    apiKeyAliases: ["VERTEX_API_KEY"],
-    apiKeyDescription: "Vertex AI API Key",
+    apiKeyDescription: "Vertex AI project ID (with Application Default Credentials)",
     apiKeyUrl: "https://console.cloud.google.com/vertex-ai",
     shortcuts: ["v", "vertex"],
     shortestPrefix: "v",
@@ -886,7 +917,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       { prefix: "vertex/", stripPrefix: true },
     ],
     isDirectApi: true,
-    description: "Vertex AI Express (v@, vertex@)",
+    description: "Vertex AI on Application Default Credentials (v@, vertex@)",
   },
 
   // ── LiteLLM ────────────────────────────────────────────────────────

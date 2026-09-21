@@ -28,7 +28,7 @@ import { lookupModelEndpoint } from "../adapters/model-catalog.js";
 import { OllamaAPIFormat } from "../adapters/ollama-api-format.js";
 import { OpenAIAPIFormat } from "../adapters/openai-api-format.js";
 import {
-  getVertexConfig,
+  resolveVertexConfig,
   selectVertexAuthMode,
   validateVertexOAuthConfig,
 } from "../auth/vertex-auth.js";
@@ -37,7 +37,6 @@ import type { ModelHandler } from "../handlers/types.js";
 import { log, logStderr } from "../logger.js";
 import { formatProvenanceLog, resolveApiKeyProvenance } from "./api-key-provenance.js";
 import { getProviderByName } from "./provider-definitions.js";
-import { getRegisteredRemoteProviders } from "./remote-provider-registry.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
 import { AntigravityProviderTransport } from "./transport/antigravity.js";
@@ -110,6 +109,23 @@ export interface ProviderProfile {
    * Returning null causes proxy-server.ts to skip caching and fall through.
    */
   createHandler(ctx: ProfileContext): ModelHandler | null;
+}
+
+/**
+ * A profile whose construction needs I/O before it can build anything.
+ *
+ * Only Vertex needs this: its endpoint is built from a project that may have to
+ * be read out of the ADC file or `gcloud config`. Kept as a SEPARATE type rather
+ * than widening `ProviderProfile.createHandler` to a union, because a union
+ * return type would force every existing caller of a sync profile to disambiguate
+ * a Promise it will never receive.
+ *
+ * `LazyHandlerFactory` (provider-definitions.ts) already returns a Promise, so a
+ * definition wires this exactly like a sync profile and nothing downstream
+ * changes.
+ */
+export interface AsyncProviderProfile {
+  createHandler(ctx: ProfileContext): Promise<ModelHandler | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,70 +482,57 @@ export const litellmProfile: ProviderProfile = {
 };
 
 /**
- * Vertex AI — supports two modes:
- *   1. OAuth Mode (VERTEX_PROJECT) — full project-based access with OAuth tokens.
- *      Uses VertexProviderTransport + publisher-specific format (Gemini/Anthropic/Default).
- *   2. Express Mode (VERTEX_API_KEY) — used when no project is configured.
- *      Uses GeminiProviderTransport (with the gemini provider config) + GeminiAPIFormat.
+ * Vertex AI — ONE mode: OAuth over a Google Cloud project.
  *
- * Returns null if neither key nor project config is available.
+ * Uses VertexProviderTransport + a publisher-specific format
+ * (Gemini/Anthropic/Default). The project comes from `resolveVertexConfig`
+ * (VERTEX_PROJECT, the ADC file's quota_project_id, or `gcloud config`), and the
+ * token from the credential authority via the transport.
+ *
+ * The Express API-key mode (VERTEX_API_KEY on the plain Gemini endpoint) was
+ * deleted on 2026-09-21. Returns null when no project resolves or no ADC /
+ * service-account credential is present, having logged which of the two it was.
+ *
+ * ASYNC because project resolution is: it may read the ADC file or shell out to
+ * gcloud. That is why this is an AsyncProviderProfile rather than a
+ * ProviderProfile — the sync contract every other provider meets cannot express
+ * an I/O-backed endpoint.
  */
-export const vertexProfile: ProviderProfile = {
-  createHandler(ctx) {
-    const mode = selectVertexAuthMode();
-    const vertexConfig = getVertexConfig();
-
-    if (mode === "project" && vertexConfig) {
-      const oauthError = validateVertexOAuthConfig();
-      if (oauthError) {
-        log(`[Proxy] Vertex OAuth config error: ${oauthError}`);
-        return null;
-      }
-      const parsed = parseVertexModel(ctx.modelName);
-      const transport = new VertexProviderTransport(vertexConfig, parsed);
-
-      let adapter: BaseModelAdapter;
-      if (parsed.publisher === "google") {
-        adapter = new GeminiAPIFormat(ctx.modelName);
-      } else if (parsed.publisher === "anthropic") {
-        adapter = new AnthropicAPIFormat(parsed.model, "vertex");
-      } else {
-        const modelId =
-          parsed.publisher === "mistralai" ? parsed.model : `${parsed.publisher}/${parsed.model}`;
-        adapter = new DefaultAPIFormat(modelId);
-      }
-
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(
-        `[Proxy] Created Vertex AI OAuth handler (composed): ${ctx.modelName} [${parsed.publisher}] (project: ${vertexConfig.projectId})`
-      );
-      return handler;
+export const vertexProfile: AsyncProviderProfile = {
+  async createHandler(ctx) {
+    const configError = await validateVertexOAuthConfig();
+    const vertexConfig = await resolveVertexConfig();
+    if (
+      configError ||
+      !vertexConfig ||
+      selectVertexAuthMode({ project: vertexConfig.projectId }) !== "project"
+    ) {
+      log(`[Proxy] Vertex AI is not usable: ${configError ?? "no Google Cloud project resolved"}`);
+      return null;
     }
 
-    if (mode === "express") {
-      // Express Mode — Vertex Express uses the standard Gemini API endpoint
-      // but with VERTEX_API_KEY instead of GEMINI_API_KEY.
-      // Must use the Gemini provider config (which has the correct baseUrl/apiPath)
-      // because the vertex provider config has empty baseUrl/apiPath (designed for OAuth mode).
-      const geminiConfig = getRegisteredRemoteProviders().find((p) => p.name === "gemini");
-      const expressProvider = geminiConfig || ctx.provider;
-      // ctx.apiKey is the authority-resolved Vertex credential (Express key when
-      // VERTEX_API_KEY is set) — single source of truth, no raw env read here.
-      const transport = new GeminiProviderTransport(expressProvider, ctx.modelName, ctx.apiKey);
-      const adapter = new GeminiAPIFormat(ctx.modelName);
-      const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
-        adapter,
-        ...ctx.sharedOpts,
-      });
-      log(`[Proxy] Created Vertex AI Express handler (composed): ${ctx.modelName}`);
-      return handler;
+    const parsed = parseVertexModel(ctx.modelName);
+    const transport = new VertexProviderTransport(vertexConfig, parsed);
+
+    let adapter: BaseModelAdapter;
+    if (parsed.publisher === "google") {
+      adapter = new GeminiAPIFormat(ctx.modelName);
+    } else if (parsed.publisher === "anthropic") {
+      adapter = new AnthropicAPIFormat(parsed.model, "vertex");
+    } else {
+      const modelId =
+        parsed.publisher === "mistralai" ? parsed.model : `${parsed.publisher}/${parsed.model}`;
+      adapter = new DefaultAPIFormat(modelId);
     }
 
-    log("[Proxy] Vertex AI requires either VERTEX_API_KEY or VERTEX_PROJECT");
-    return null;
+    const handler = new ComposedHandler(transport, ctx.targetModel, ctx.modelName, ctx.port, {
+      adapter,
+      ...ctx.sharedOpts,
+    });
+    log(
+      `[Proxy] Created Vertex AI OAuth handler (composed): ${ctx.modelName} [${parsed.publisher}] (project: ${vertexConfig.projectId})`
+    );
+    return handler;
   },
 };
 

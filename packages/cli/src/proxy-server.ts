@@ -478,7 +478,18 @@ export async function createProxyServer(
     // If resolver says use direct-api, resolve credentials via the authority.
     if (resolution.category === "direct-api") {
       const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) return null;
+      if (!resolved) {
+        // A KNOWN provider name that resolves to nothing has no endpoint: it
+        // declares no static baseUrl, no set `baseUrlEnvVars`, and not
+        // `buildsOwnEndpoint`. Say that here, because everything downstream of
+        // this null (OpenRouter fallback, or a 400 on an explicit spec) reads as
+        // "my key is missing" — which is how `vertex@` sent users looking for a
+        // key that was never involved.
+        log(
+          `[Proxy] No remote provider resolved for "${resolveTarget}" — no endpoint is configured for it (not a credential problem)`
+        );
+        return null;
+      }
 
       // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
       if (resolved.provider.name === "openrouter") {

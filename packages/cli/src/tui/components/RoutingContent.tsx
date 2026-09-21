@@ -43,7 +43,7 @@ export const PROVIDER_REASONS: Record<string, string> = {
   "openai-codex": "OpenAI Codex (Responses API)",
   zai: "Z.AI API",
   ollamacloud: "Cloud Ollama",
-  vertex: "Vertex AI Express",
+  vertex: "Vertex AI (ADC)",
   openrouter: "Fallback: 580+ models",
 };
 

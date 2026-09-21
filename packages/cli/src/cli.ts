@@ -2459,8 +2459,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("OPENCODE_GO_API_KEY")}             OpenCode Zen Go plan ${dim("(zgo@, zengo@; separate plan key)")}
   ${blue("POE_API_KEY")}                     Poe ${dim("(poe@)")}
   ${blue("LITELLM_API_KEY")}                 LiteLLM ${dim("(litellm@, ll@; needs LITELLM_BASE_URL)")}
-  ${blue("VERTEX_API_KEY")}                  Vertex AI Express ${dim("(v@)")}
-  ${blue("VERTEX_PROJECT")}                  Vertex AI project ID ${dim("(OAuth mode, v@)")}
+  ${blue("VERTEX_PROJECT")}                  Vertex AI project ID ${dim("(v@; optional — ADC quota project or `gcloud config get project` is used otherwise)")}
   ${blue("VERTEX_LOCATION")}                 Vertex AI region ${dim("(default: us-central1)")}
   ${blue("ANTHROPIC_API_KEY")}               Placeholder (prevents Claude Code dialog)
   ${blue("ANTHROPIC_AUTH_TOKEN")}            Placeholder (prevents Claude Code login screen)

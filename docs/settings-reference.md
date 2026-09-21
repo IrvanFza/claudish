@@ -212,15 +212,22 @@ Claudish automatically loads `.env` from the current working directory at startu
 | `XAI_API_KEY` | xAI / Grok (direct API, detected in model selector) | | https://x.ai/ |
 | `LITELLM_API_KEY` | LiteLLM proxy (`ll@`, `litellm@`) | | https://docs.litellm.ai/ |
 | `POE_API_KEY` | Poe (`poe@`) | | https://poe.com/ |
-| `VERTEX_API_KEY` | Vertex AI Express mode (`v@`, `vertex@`) | | https://console.cloud.google.com/vertex-ai |
-| `VERTEX_PROJECT` | Vertex AI OAuth mode — GCP project ID | `GOOGLE_CLOUD_PROJECT` | GCP Console |
+| `VERTEX_PROJECT` | Vertex AI (`v@`, `vertex@`) — GCP project ID; optional, see the note below | `GOOGLE_CLOUD_PROJECT` | GCP Console |
 | `VERTEX_LOCATION` | Vertex AI region | `us-central1` | |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON file (Vertex OAuth) | | GCP Console |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (Vertex AI) | `GOOGLE_CLOUD_PROJECT_ID` | |
 
-**Note on Vertex AI**: Vertex supports two authentication modes:
-- Express mode (`VERTEX_API_KEY`): Uses the Gemini API endpoint; supports Gemini models only.
-- OAuth mode (`VERTEX_PROJECT` + Application Default Credentials via `gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`): Supports all Vertex models including partner models (Anthropic Claude, Mistral, etc.).
+**Note on Vertex AI (changed 2026-09-21)**: Vertex has ONE authentication mode — OAuth over a Google Cloud project, using Application Default Credentials (`gcloud auth application-default login`) or a service account (`GOOGLE_APPLICATION_CREDENTIALS`). It reaches every Vertex model, partner models (Anthropic Claude, Mistral, etc.) included.
+
+The Express API-key mode (`VERTEX_API_KEY`) is **removed**, not deprecated: the variable is no longer read anywhere. Express served Gemini models from the plain Gemini API endpoint, which `GEMINI_API_KEY` and `g@` already do.
+
+You do not have to set `VERTEX_PROJECT`. Claudish resolves the project in this order, and stops at the first answer:
+
+1. `VERTEX_PROJECT`, then `GOOGLE_CLOUD_PROJECT`
+2. `quota_project_id` in `~/.config/gcloud/application_default_credentials.json`
+3. `gcloud config get project`
+
+If none of them answers, the error says so and names both remedies (`VERTEX_PROJECT=…` or `gcloud config set project …`). The project is resolved once per process and never written to disk, so `gcloud config set project` takes effect on the next run. `VERTEX_LOCATION` defaults to `us-central1`.
 
 **Note on OpenCode Zen (changed 2026-08-22)**: `OPENCODE_API_KEY` is now **required** for every model on the zen endpoint. Claudish previously sent `"Bearer public"` when no key was set, on the basis that free-tier models (cost.input === 0) needed no credential. The endpoint answers `401 — Missing API key` to that token, and because the fallback also made the provider report **Ready** without ever issuing a request, the failure only surfaced under a live test. The fallback has been removed; a Zen row with no key now correctly reads "not set".
 
@@ -442,7 +449,7 @@ Provider part is **case-insensitive**. Shortcuts are resolved to canonical provi
 | `oc`, `llama`, `lc`, `meta` | `ollamacloud` | OllamaCloud hosted API (`OLLAMA_API_KEY`) |
 | `zen` | `opencode-zen` | OpenCode Zen (`OPENCODE_API_KEY` required) |
 | `zengo`, `zgo` | `opencode-zen-go` | OpenCode Zen Go subscription plan (`OPENCODE_GO_API_KEY` required) |
-| `v`, `vertex` | `vertex` | Vertex AI (`VERTEX_API_KEY` or `VERTEX_PROJECT`) |
+| `v`, `vertex` | `vertex` | Vertex AI — Application Default Credentials (`VERTEX_PROJECT` optional) |
 | `mistral` | `mistralai` | Direct Mistral API (`MISTRAL_API_KEY`) |
 | `ag`, `antigravity` | `antigravity` | Gemini via your Antigravity subscription (`claudish login antigravity`) |
 | `go` | `antigravity` | _deprecated alias_ — Gemini Code Assist was retired by Google |

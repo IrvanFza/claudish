@@ -51,6 +51,10 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   // refuses to sign with — a row asserting readiness nothing has verified, the
   // same defect as the removed publicKeyFallback.
   "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY" },
-  vertex: { envVar: "VERTEX_API_KEY", aliases: ["VERTEX_PROJECT"] },
+  // Vertex takes no API key: the project ID plus Application Default
+  // Credentials. VERTEX_API_KEY (Express) was deleted on 2026-09-21, and it was
+  // the primary here — so `--probe` asked for a variable no longer read while
+  // treating the one that IS read as an alias.
+  vertex: { envVar: "VERTEX_PROJECT" },
   poe: { envVar: "POE_API_KEY" },
 };
