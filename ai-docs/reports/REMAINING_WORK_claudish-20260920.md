@@ -1,200 +1,184 @@
 # Remaining work on the claudish side
 
-**Revision 2, 2026-09-21.** Branch `fix/v3-reader-gaps`, 47 commits on top of PR #266. Nothing pushed,
-CI has never run on them, nothing released. Full suite green (3,608 pass, 0 fail, 28 live tests
-skipped). Test All: 24 providers ready.
+**Revision 3, 2026-09-21.** Branch `fix/v3-reader-gaps`. Nothing pushed, CI has never run on this
+branch, nothing released.
 
-What changed since revision 1: models-index delivered modalities, the membership rename, route prices
-and the Vertex reason on generation `g-20260920154425586-418ad3dd`, all validated live. That unblocks
-Phase 1. Two items are still theirs: Poe's verified probe pick, and renaming the pricing
-discriminator `shape` to `type`.
+What changed since revision 2: the backend shipped BOTH remaining items — the pricing discriminator
+is now `type` and Poe has a verified probe pick — so Phase 1 is finished, not merely unblocked. The
+Vertex ADC refactor's first three items are done and live-verified. One defect was found that was
+not in any plan: the catalog quotes a metered price of zero on 167 connections, which would have
+made routing prefer them.
 
 Every decision below is Jack's unless marked **DISCUSS** (needs a decision) or **RESEARCH** (needs a
 measurement). Sizes are agent-hours including live verification.
 
 ---
 
-## Phase 1 — consume the catalog data the backend just shipped
+## Done since revision 2
 
-The data exists; claudish still guesses. This phase is small, independent, and removes guesses.
+All verified against live data on generation `g-20260921062451697-f490edba`, not against fixtures.
 
-### 1.1 Modalities replace the name-shaped guess (M, ~3h)
+| Item | Commit | Evidence |
+|---|---|---|
+| 1.1 Modalities decide chat capability | `7fce457` | 543 models chat and 270 excluded by catalog evidence, 51 still unknown; 16 models that write text stopped being hidden by their names (`gpt-5-image`, `gemini-3.1-flash-image`, `qwen-audio-3.0-realtime-plus`) |
+| 1.2 Comparable price per connection | `7fce457` | 923 of 1,734 mapped connections priced; `qwen3.7-flash` reads `$0.16/M` from its first tier, never the `0.553` mean |
+| 1.3 `shape` → `type` | `7fce457` | Backend cut over; `shape` is gone from the wire entirely, so claudish reads `type` with no alias, as agreed |
+| 1.4 Poe probe pick | verified, no code change | `poe/gateway` → `gemini-3.8-flash` reaches our probe path; `App.tsx:1342` already prefers the catalog pick over discovery |
+| Zero-price defect (NEW) | `9bedcf7b` | A `flat`/`tiered` price summing to zero is unknown, not free; connections reading as free fell from 197 to exactly the 30 that declare it |
+| 3.1–3.3 Vertex on ADC | `ae785275` | `buildsOwnEndpoint` keeps Vertex in the registry; project resolves from env → ADC `quota_project_id` → `gcloud config`; Express deleted across 17 references; live token obtained with no env var set |
+| The routing gate | `182116eb` | `scripts/route-table-snapshot.ts`; baseline of all 1,123 models captured on the current generation |
 
-**Today.** `classifyChatCapability()` in `providers/transport/probe-discovery.ts` decides "is this a
-chat model" from the catalog's `videoOutput` flag, and then from a list of name patterns
-(`\bimage\b`, `-tts`, `t2v`, …). The name rule is the last guess left in that path.
-
-**Change.** Persist `inputModalities` and `outputModalities` through the reader and decide from them.
-
-- `providers/all-models-cache.ts`: add both fields to `SlimModelEntry`, optional.
-- `providers/catalog-client.ts`: carry them through the slim projection into the cache.
-- `providers/transport/probe-discovery.ts`: a row whose `outputModalities` exists and lacks `"text"`
-  is not a chat model; a row that has them and includes `"text"` is; only a row with none of them
-  (absent, `null` or `[]`, all meaning unknown) falls through to `videoOutput` and then the name rule.
-- Keep the name rule for models the catalog does not know at all (local servers, custom endpoints).
-
-**Acceptance.** Against the live cache: the 211 rows with a non-text output are excluded by catalog
-evidence, not by name; no row with `outputModalities: ["text"]` is excluded; the count of models the
-picker offers changes only in the direction of removing non-chat models. Tests by Codex, including a
-row whose name looks like an image model but whose catalog output is text.
-
-### 1.2 Prices feed the routing order (M, ~3h; needed by Phase 2)
-
-**Today.** Nothing reads `pricing`. Ordering inside a tier is arbitrary.
-
-**Change.**
-- `providers/all-models-cache.ts` and `catalog-client.ts`: persist the connection's `pricing` object
-  verbatim, including `shape`/`type`, `tiers`, `input`, `output`, `cachedRead`.
-- New helper (`providers/connection-price.ts`): return one comparable number per connection, and a
-  label. Rules, from the agreement with the backend: `flat` uses `input`+`output`; `tiered` uses the
-  FIRST tier, which the catalog guarantees equals the top-level numbers; `free` is zero; `unavailable`
-  and a missing object are unknown and sort after every priced connection. Never average tiers, never
-  guess a tier from request size.
-
-**Acceptance.** A unit test over the real fixture rows: 28 tiered connections rank by their first
-tier; an `unavailable` connection never outranks a priced one. No behaviour change until Phase 2 uses
-it.
-
-### 1.3 Switch `shape` to `type` when the backend names the generation (S, ~30m)
-
-One rename in the reader plus the fixture; no alias, same day as their cutover. Blocked on them.
-
-### 1.4 Prefer Poe's verified pick when it appears (S, ~30m)
-
-No code change is expected: the catalog pick already wins over discovery when present. Verify on the
-generation that publishes it, and keep our account-list discovery as the fallback. Blocked on them.
+Tests were authored by Codex with a mutation proof on every load-bearing case: each was shown to
+fail with its fix reverted, and the implementation restored byte-for-byte afterwards.
 
 ---
 
-## Phase 2 — the routing redesign (the large one)
+## What the gate measured, and why Phase 2 matters more than we thought
 
-**Decided.** One order: user rules → subscriptions (catalog membership) → dynamic subscriptions (the
-account's own list) → native API → gateways → fallback. Inside a tier: the model's own vendor first,
-then cheapest by catalog price, then the rest. No local preference list, no local state. Vendor-first
-orders only WITHIN a tier. A spent limit is not remembered; the request moves to the next hop.
+Today's routing sends **417 chat models to a final hop the catalog never mapped.** Only 492 of 1,123
+models have an OpenRouter connection, yet 1,109 chains end at an OpenRouter-style hop, because the
+hand-written table carries `"*": ["openrouter"]` (`default-routing-rules.ts:152`). For those models
+the catalog already names a provider that does serve them: Poe 241, Together 163, Alibaba metered
+100, OpenAI 74, Google 22.
 
-### 2.1 Candidate gathering (M, ~4h)
+`qwen3.8-max` is the worked example. It has four mapped connections, none of them OpenRouter, and
+today's chain is `qtoken -> zengo -> qpay -> openrouter`, whose last hop cannot succeed. Fireworks,
+which the catalog says serves it, is absent entirely.
 
-New module, for example `providers/route-candidates.ts`, returning candidates with their tier,
-provider, wire id and price. Sources, all already in the cache: plan membership
-(`subscriptionPlanIds` plus plan `inclusions`), connections (`aggregators[]` with
-`routeStatus: "mapped"`), and each dynamic subscription's own model list. No hand-written table.
+Two consequences for the design:
 
-### 2.2 Tier assignment and ordering (M, ~3h)
-
-A `tier` on each provider definition: `subscription`, `dynamic-subscription`, `native`, `gateway`,
-`fallback`. Sort by tier, then vendor-first (the catalog's `provider` field equals the candidate's
-vendor), then by the price from 1.2, then by provider name for determinism.
-
-### 2.3 Credential filter and exact wire ids (done)
-
-Already true on this branch: hops without a credential are dropped, and ids come from the connection.
-
-### 2.4 The fallback rule (S, ~1h)
-
-`defaultProvider` already accepts any provider and is skipped when empty, so "any aggregator, or none"
-works today. What is missing: do not append the fallback when the catalog positively says that
-aggregator does not serve the model. Then `qwen3.8-max` either reaches Fireworks or returns a clear
-error instead of a hop that cannot succeed.
-
-### 2.5 Delete the hand-written table (M, ~2h)
-
-Remove `providers/default-routing-rules.ts`, `buildCatalogRoutingRules`,
-`retainKnownCatalogRoutingRules` and the four-way `mergeRoutingRules`. Only the user's own rules
-remain, used verbatim. This is where the "exact-key beats glob" hazard disappears.
-
-### 2.6 No catalog means local only (S, ~1h)
-
-Without a readable catalog claudish serves local providers and explicit `provider@model` specs, and
-never guesses a renamed id. A bare name returns an error naming the refresh command.
-
-### 2.7 The gate (M, ~3h)
-
-A before-and-after route table over every model in the catalog, produced by a script and read by
-hand. Every difference must be a deliberate addition, or a removal this design names. No route may
-disappear silently. Then Test All and a real session on two subscriptions.
-
-**DISCUSS before 2.2 lands:** what claudish should do when two candidates in one tier tie on price
-and neither is the vendor (today: provider name, alphabetical).
+1. The fallback MUST default to OpenRouter when `defaultProvider` is unset, or deleting the table
+   removes the last hop from 1,109 models at once. Jack's decision already says the fallback exists,
+   is optional and can be any aggregator; this makes its default explicit.
+2. Rule 2.4 is real and now has a precise form. `providerServesModel("openrouter", "qwen3.8-max")`
+   returns `unknown`, so the dead hop survives the availability filter. The asymmetry ("only a
+   positive no removes a hop") is right for a subscription, whose membership we cannot enumerate,
+   and wrong for a gateway whose complete connection list the backend publishes. The catalog itself
+   distinguishes them: a route marked `client_model_selection_required` is account-selected, so
+   absence stays unknown; any other route is backend-owned, so absence IS denial.
 
 ---
 
-## Phase 3 — Vertex: refactor to Application Default Credentials
+## Phase 2 — the routing redesign
 
-**Decided.** ADC is Google's way in. The Express API-key path is deleted, not kept.
+**Decided.** One order: user rules → subscriptions → dynamic subscriptions → native API → gateways →
+fallback. Inside a tier: the model's own vendor first, then cheapest by catalog price, then the
+larger context window, then provider name for determinism. No local preference list, no local state.
 
-| # | Work | Files | Size |
-|---|---|---|---|
-| 3.1 | A provider declares that its transport builds its own endpoint, and stays in the registry; the excluded-provider error stops reading as a missing credential | `provider-definitions.ts`, `providers/remote-provider-registry.ts`, `proxy-server.ts` | S, ~1h |
-| 3.2 | Resolve project and location from ADC `quota_project_id`, then `gcloud config get project`; `VERTEX_PROJECT`/`VERTEX_LOCATION` still win | `auth/vertex-auth.ts` | S, ~1h |
-| 3.3 | Delete the Express path: `VERTEX_API_KEY`, the alias on `apiKeyEnvVar`, the `express` arm of `selectVertexAuthMode`, the express branch of `vertexProfile`, and the docs that describe it | `provider-definitions.ts`, `provider-profiles.ts`, `auth/vertex-auth.ts`, `docs/` | S, ~1h |
-| 3.4 | Readiness and the Providers tab report an ADC credential, "needs a project", or "run `gcloud auth application-default login`" | `auth/credentials/*vertex*`, `tui/` | M, ~3h |
-| 3.5 | Probe pick from the project's publisher models, ranked newest first | `transport/vertex-oauth.ts`, `providers/model-discovery.ts` | M, ~3h |
-| 3.6 | Live validation and tests: a Gemini publisher model, an Anthropic publisher model, streaming, the 401 refresh | tests, `docs/` | M, ~3h |
+Two facts found today remove work from this phase:
 
-3.1 and 3.2 together turn Vertex from unreachable into working on ADC.
+- **Subscriptions are already connections.** `aggregators[]` carries `moonshotai/kimi-code-subscription`,
+  `openai/codex-subscription`, `z-ai/glm-coding-subscription`, `qwen/qwencloud-token-plan` and
+  `opencode/go-subscription` beside the gateways. One source covers every tier; only the tier itself
+  comes from claudish's provider table.
+- **The vendor needs no local table.** `route.routeId === entry.provider` identifies the vendor's own
+  route. True for 412 models; the other 709 are served only by gateways, which is a fact about those
+  models rather than a gap.
 
-**RESEARCH.** Service-account credentials are a shape we have never exercised here; per-location model
-availability means a pick verified on this project may 404 on another; Anthropic-on-Vertex uses
-`rawPredict` with its own payload shape.
+### 2A Candidate gathering (in progress)
+A `tier` on every provider definition plus one pure module `providers/route-candidates.ts`, gathering
+from catalog connections and from namespace claims for the four dynamic subscriptions the catalog
+cannot publish. Nothing is wired in; `scripts/route-candidates-preview.ts` compares what it WOULD do
+against today's chain for all 1,123 models.
+
+### 2B Wiring, and deleting the table (L, ~6h)
+Replace the first step of `routeBare` — matching the merged table — with candidate gathering. The
+credential filter and the availability filter after it are unchanged and must not be duplicated.
+Delete `default-routing-rules.ts`, `buildCatalogRoutingRules`, `retainKnownCatalogRoutingRules` and
+`mergeRoutingRules`; `loadRoutingRules()` then returns the user's own rules verbatim.
+
+Known scope beyond routing: the TUI shows which user rules "override a default"
+(`App.tsx:650-670`, `RoutingContent.tsx:382-385`). With no defaults left, that concept disappears
+and those views need to show the effective chain instead.
+
+### 2C The gate (M, ~3h)
+Capture after, diff against the committed baseline, review by hand. Every difference must be a
+deliberate addition or a removal this design names. Then Test All, a cold-cache run, and a real
+session on two subscriptions.
+
+**DISCUSS:** nothing outstanding. The tie-break inside a tier was decided on 2026-09-21: larger
+context window, then provider name.
+
+---
+
+## Phase 3 — Vertex, the rest
+
+| # | Work | Size |
+|---|---|---|
+| 3.4 | Readiness and the Providers tab. The credential authority is already correct via `resolveVertexConfig`; what remains is `--probe`'s provenance display, which still reports on `VERTEX_PROJECT` alone and so can call a working Vertex unconfigured (`api-key-map.ts:58`, consumed in `cli.ts`) | M, ~3h |
+| 3.5 | Probe pick from the project's publisher models, newest first. The catalog will never supply one: Vertex is `client_model_selection_required` by agreement, which is correct | M, ~3h |
+| 3.6 | Live validation and tests: a Gemini publisher model, an Anthropic publisher model, streaming, the 401 refresh | M, ~3h |
+
+**RESEARCH.** Service-account credentials are a shape never exercised here; per-location model
+availability means a pick verified on one project may 404 on another; Anthropic-on-Vertex uses
+`rawPredict` with its own payload. Codex also reported four branches of project resolution that
+cannot be tested without an injected ADC reader and command runner — worth adding those seams.
 
 ---
 
 ## Phase 4 — tests and debt
 
-### 4.1 Tests for the eleven fixes of 2026-09-19/20 (M, ~3h, Codex writes)
-
-The Gemini probe effort, the parameter-versus-model hint, Mistral's model list, Poe's pick and
-transport method, the discovery retries, the 403 "access denied" hint and its classification, the
-DeepSeek effort-versus-thinking conflict, the local 401 message, the newest-first ranking, and the
-Alibaba PAYG effort enum. One brief, one Codex run, each test verified to fail when its fix is
-reverted.
+### 4.1 The eleven fixes of 2026-09-19/20 (M, ~3h, Codex writes)
+Still outstanding. Today's Codex runs covered the NEW work only. The eleven are: the Gemini probe
+effort, the parameter-versus-model hint, Mistral's model list, Poe's pick and transport method, the
+discovery retries, the 403 access-denied hint and its classification, the DeepSeek
+effort-versus-thinking conflict, the local 401 message, the newest-first ranking, and the Alibaba
+metered effort enum.
 
 ### 4.2 An incomplete list must stay visible (S, ~1h)
+Unchanged from revision 2: return the incompleteness rather than only recording it.
 
-**Decided:** return the incompleteness, do not only record it. Add a detailed call
-(`{ models, incomplete?: { reason, droppedRows?, hasMore? } }`) with the array function kept as a thin
-wrapper; `providerServesModel` refuses to deny while the marker is set; the picker keeps the rows and
-can surface the state later.
-
-### 4.3 Vocabulary (S, ~2h)
-
-Retire "served set" in the code (33 uses) and "roster" in `ai-docs/architecture` (about 13 files) and
-`docs/settings-reference.md:747`. Extend `scripts/no-retired-terms.test.ts` to both words afterwards.
+### 4.3 Vocabulary (S, ~2h) — sequence AFTER 2B
+"served set" has 24 sites, and `routing-rules.ts` and `default-routing-rules.ts` hold most of them.
+The second file is deleted by 2B, so renaming words in it now is wasted work.
 
 ### 4.4 Two small defects (S, ~1h)
-
-Redact `readinessDetail` before anything displays it (nothing does today). Find where a probe error
-rendered `[object Object]`, seen on the Mistral candidate walk.
+Redact `readinessDetail` before anything displays it. The `[object Object]` probe error was hunted
+today and is NOT in `probe-discovery.ts`, `probe-catalog.ts` or `probe-live.ts` — every failure path
+there builds a string. It needs its reproduction (the Mistral candidate walk) to locate.
 
 ---
 
 ## Phase 5 — release 9.8.0
 
-1. Finish Phases 1 to 4, suite green, Test All re-run with all keys.
-2. Push `fix/v3-reader-gaps` onto PR #266's branch as a fast-forward, let CI run for the first time.
-3. Bump `package.json` and `packages/cli/package.json`, regenerate `version.ts`, merge, tag the merge
-   commit with an explicit ref, watch the release workflow, verify the published version.
-4. After the release: delete the `QWEN_CLOUD_PLAN_API_KEY` Keychain item, remove the 5 duplicate lines
-   in `/Users/jack/mag/claudish/.env`, and remove the four `worktree-agent-*` worktrees.
+Unchanged: finish the phases, suite green, Test All re-run, push onto PR #266 so CI runs for the
+first time, bump both manifests, regenerate `version.ts`, tag the merge commit by explicit ref, watch
+the release workflow, verify the published version. Then delete the `QWEN_CLOUD_PLAN_API_KEY`
+Keychain item, remove the 5 duplicate lines in `.env`, and remove the four `worktree-agent-*`
+worktrees.
+
+**Before the worktree is reaped:** `ai-docs/sessions/dev-feature-catalog-phase1-20260921-0015/`
+holds the implementation notes and probe scripts from today and is gitignored. Anything durable in
+it must be promoted to `ai-docs/` or `docs/` first. The measurements themselves are already in this
+file and in the commit messages.
+
+---
+
+## Outstanding with the backend
+
+Written up in `ai-docs/reports/BACKEND_zero_prices_models_index-20260921.md`:
+
+1. 167 connections quote `type: "flat"` with `input: 0, output: 0`; 163 are `together-ai/gateway` on
+   models Together AI charges for. Zero is the strongest possible price, so a missing measurement
+   PROMOTES those connections. Please publish `unavailable` instead. claudish's workaround is meant
+   to be deleted, not kept.
+2. `opencode/systemone` (2 connections) resolves to no claudish provider — is it a new profile we
+   should map? The other two unmapped routes need nothing: `qwen/realtime-websocket` is a WebSocket
+   API with no chat transport here, and `openrouter/decisions` publishes `["decisions"]` output.
 
 ---
 
 ## Deferred, with the reason
 
-- **Alibaba PAYG** until after the v3 release. Nine of nine request shapes and models are denied on
-  `dashscope-intl` while the same key lists 169 models; the account's model access is the cause, not
-  claudish and not the catalog.
-- **The public-list rule (old group D).** Catalog membership already gates the Coding Plan, and the
-  public list's denial is what keeps an unlisted id away from a `400 Model not exist` that does not
-  advance the chain.
+- **Alibaba metered** until after the v3 release. Nine of nine request shapes and models are denied
+  on `dashscope-intl` while the same key lists 169 models; the account's model access is the cause.
+- **The public-list rule (old group D).** Catalog membership already gates the Coding Plan.
 - **Alibaba Coding Plan** while the stored key is the Token Plan key.
 
 ---
 
 ## Suggested order
 
-Phase 1.1 and 1.2 first: they are small, they remove guesses, and 1.2 is a prerequisite for the
-ordering in Phase 2. Then Phase 3.1 to 3.3, which is two or three hours and makes Vertex usable. Then
-Phase 2, the largest piece, with its gate. Phase 4 can interleave whenever a Codex run is free. Phase
-5 last. Total, excluding anything blocked on the backend: roughly 30 to 35 agent-hours.
+2A's preview, reviewed by hand, then 2B behind its gate, then 4.3 (whose targets 2B rewrites), then
+Vertex 3.4 to 3.6, then 4.1, 4.2 and 4.4, then the release. Roughly 20 to 25 agent-hours remain,
+down from 30 to 35 at revision 2.
