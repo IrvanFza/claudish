@@ -1,5 +1,25 @@
 # Remaining work on the claudish side
 
+> **Revision 5 note, 2026-09-22 — v10.0.0 RELEASED.** Merge `91120dd6`, tag `v10.0.0`, CI green
+> (typecheck, lint, hermetic tests on macOS with pinned bun 1.3.10), four platform binaries built,
+> GitHub release live with 10 assets, `npm publish` returned `+ claudish@10.0.0` with provenance,
+> Homebrew updated. Two things CI caught that local runs could not: a secret-shaped test fixture
+> (GitHub push protection, correctly), and two tests asserting that a bare name still routes with an
+> EMPTY catalog — true only under the deleted table, and passing locally only because
+> `~/.claudish/codex-oauth.json` exists and triggered an early return.
+>
+> Still open at the time of writing: `claudish@10.0.0` 404s at its per-version manifest with no
+> `time` entry and no `unpublished` marker, while the four `@claudish/magmux-*` packages already
+> answer 200. That is the staged-publish signature from v9.3.1, which cleared itself in ~20 minutes.
+> If it does not clear, the number is burned and recovery is 10.0.1 — OIDC means nothing can be
+> published from a developer machine.
+>
+> **Deferred out of v10, deliberately:** 4.2 (return the incompleteness of a model list rather than
+> only recording it), the source half of the vocabulary pass ("served set", 24 sites), Vertex 3.6's
+> interactive checks, and `anthropic/direct-api`, which binds to a claudish provider name that has no
+> definition — pre-existing, and it does not affect bare Claude names because those resolve through
+> `nativeRouteFor()` before `route()` runs.
+
 > **Revision 4 note, 2026-09-22.** Phase 2 is DONE and behind its gate (`af98f4f2`): routing now
 > gathers candidates from the catalog, `default-routing-rules.ts` is deleted, and all 836 lost hops
 > classify as design decisions with zero cases where the catalog maps a provider and routing dropped
