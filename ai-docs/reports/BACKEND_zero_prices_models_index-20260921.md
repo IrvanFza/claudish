@@ -76,6 +76,35 @@ What is left after that filter is a handful we believe the vendor does host:
 Each may have a reason we cannot see — a retirement, a region, a different endpoint. Treat the list
 as a question rather than a defect report.
 
+## Which of your routes claudish can execute, now that routing reads the catalog
+
+claudish now builds every bare-name routing chain from your connections — the hand-written table
+of globs is deleted. That makes your route bindings load-bearing in a way they were not before, so
+here is the full census of generation `g-20260921062451697-f490edba`, 28 distinct mapped route
+pairs, so you can see exactly where we land:
+
+**25 of 28 execute.** `openrouter/gateway` (523 connections), `poe/gateway` (341),
+`together-ai/gateway` (244), `qwen/dashscope-direct` (136), `openai/direct-api` (130),
+`opencode/zen` (75), `google/direct-api` (46), `opencode/go-subscription` (37),
+`qwen/qwencloud-token-plan` (31), `fireworks/gateway` (26), `ollama/cloud` (24),
+`mistralai/direct-api` (20), `sakana/direct-api` (12), `anthropic/claude-code-subscription` (11),
+`z-ai/direct-api` (11), `qwen/modelstudio-coding-plan` (10), `minimax/direct-api` (8),
+`x-ai/direct-api` (7), `openai/codex-subscription` (5), `moonshotai/kimi-code-subscription` (4),
+`moonshotai/direct-api` (4), `deepseek/direct-api` (2), `z-ai/glm-coding-subscription` (2),
+`minimax/coding-plan-subscription` (2), and `vertex/google-cloud` through our own discovery.
+
+**Three do not, and only one is a question for you:**
+
+| Route | Connections | Why |
+|---|---|---|
+| `opencode/systemone` | 2 | **Please confirm what this profile is.** We have never seen it and it binds to no claudish provider, so those two models are unreachable here. If it is a product we should support, we will add the binding. |
+| `qwen/realtime-websocket` | 8 | Correct to skip: a WebSocket realtime API, and claudish has no transport for it. No action wanted. |
+| `openrouter/decisions` | 2 | Correct to skip: its `outputModalities` is `["decisions"]`, so it is not a chat model. No action wanted. |
+
+One more, ours rather than yours, recorded so the census is complete: `anthropic/direct-api` (11
+connections) binds to a claudish provider name that has no definition, so we cannot execute it
+today. That is our gap to close, not a defect in your data.
+
 ## Nothing else outstanding from our side
 
 The two design answers we sent still stand: unknown modalities as an absent field are right for
