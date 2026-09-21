@@ -1,5 +1,15 @@
 # Remaining work on the claudish side
 
+> **Revision 4 note, 2026-09-22.** Phase 2 is DONE and behind its gate (`af98f4f2`): routing now
+> gathers candidates from the catalog, `default-routing-rules.ts` is deleted, and all 836 lost hops
+> classify as design decisions with zero cases where the catalog maps a provider and routing dropped
+> it. The gate caught one real defect on the way — `glm` and `z-ai` are one endpoint under two key
+> silos and only one was bound. Vertex 3.4 and 3.5 are done; its publisher listing over-reports
+> (132 rows, 8 actually served), so each candidate is confirmed before being offered. Remaining:
+> Codex's test rewrite (the suite is red until it lands), the source half of the vocabulary pass,
+> 4.1, 4.2, Vertex 3.6, and the release. The sections below are revision 3 and are superseded where
+> they disagree.
+
 **Revision 3, 2026-09-21.** Branch `fix/v3-reader-gaps`. Nothing pushed, CI has never run on this
 branch, nothing released.
 
