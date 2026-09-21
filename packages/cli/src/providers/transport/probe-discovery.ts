@@ -43,12 +43,12 @@ const SMALL_MODEL_PATTERNS = [
  * speech-to-text. They appear in `/v1/models` lists beside chat models and 404
  * or 400 a probe.
  *
- * A NEGATIVE name rule: it can deny, never confirm. It exists because the slim
- * cloud models catalog publishes no image-output or audio-output flag (the full
- * projection does), and providers the catalog never covers (Ollama, LiteLLM,
- * custom endpoints) publish nothing at all. Once the catalog carries explicit
- * input and output modalities on every projection, the catalog decides and this
- * list is consulted only for models it does not know.
+ * A NEGATIVE name rule: it can deny, never confirm. It is now the FALLBACK, not
+ * the rule: the cloud models catalog publishes output modalities, so for a model
+ * it describes the published list decides and this list is never consulted. It
+ * still decides for what the catalog leaves without an output modality — local
+ * servers (Ollama, LM Studio), custom endpoints, LiteLLM deployments, and catalog
+ * rows that carry no modality field.
  */
 const NON_CHAT_PATTERNS = [
   /\bimage\b/i,
@@ -92,11 +92,16 @@ function isSmallName(name: string): boolean {
 /**
  * What is known about whether a model can answer a chat turn.
  *
- * - `"not-chat"` — positive evidence of another output modality: the catalog's
- *   `videoOutput: true`, a {@link NON_CHAT_PATTERNS} match, or a LiteLLM wildcard
- *   route. Never offered as a chat model.
- * - `"chat"` — the catalog knows the id and declares a chat-shaped capability
- *   (tools, thinking or vision).
+ * The cloud models catalog's OUTPUT MODALITY is the evidence; the name rules are
+ * the fallback for models it does not describe.
+ *
+ * - `"not-chat"` — the catalog's published output modalities exclude `"text"`
+ *   (image, audio, video, embeddings, transcription, speech, rerank, decisions);
+ *   or, for a model with no published output modality, `videoOutput: true`, a
+ *   {@link NON_CHAT_PATTERNS} match, or a LiteLLM wildcard route. Never offered.
+ * - `"chat"` — the catalog's published output modalities include `"text"`; or,
+ *   with none published, the catalog declares a chat-shaped capability (tools,
+ *   thinking or vision).
  * - `"unknown"` — neither. Still offered. Rounding it to `"chat"` would assert
  *   what nothing established; rounding it to `"not-chat"` would hide a newly
  *   shipped chat model with no error and no trace.
@@ -112,6 +117,10 @@ const CATALOG_CHAT_INDEX_TTL_MS = 60_000;
 interface CatalogCapabilityIndex {
   /** Ids the catalog declares chat-shaped. */
   chat: Set<string>;
+  /** Ids whose published output modalities INCLUDE `"text"`: chat models, by catalog evidence. */
+  textOutput: Set<string>;
+  /** Ids whose published output modalities EXCLUDE `"text"`: they produce something else only. */
+  nonTextOutput: Set<string>;
   /** Ids the catalog declares video GENERATORS (`videoOutput: true`). */
   videoOutput: Set<string>;
   /** Ids with ANY published `videoOutput`, `false` included: a statement, not a silence. */
@@ -130,6 +139,27 @@ function catalogKey(name: string): string {
   return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
 }
 
+/**
+ * File a catalog row's keys under its published OUTPUT modality.
+ *
+ * Unknown arrives as an absent field; `null` and `[]` read as unknown too, because
+ * no model produces nothing — such a row joins neither set and is left to the
+ * `videoOutput` boolean and the name rules. The test is "includes text", never
+ * "equals text": `["audio", "text"]` speaks AND writes, so it can answer a chat turn.
+ *
+ * An INPUT modality is never filed here, in either direction: a model that accepts
+ * video, audio or images is still a chat model.
+ */
+function indexOutputModality(
+  index: CatalogCapabilityIndex,
+  keys: string[],
+  modalities: string[] | null | undefined
+): void {
+  if (!Array.isArray(modalities) || modalities.length === 0) return;
+  const target = modalities.includes("text") ? index.textOutput : index.nonTextOutput;
+  for (const k of keys) target.add(k);
+}
+
 function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
   const key = cachePath ?? "";
   const hit = _catalogChatIndex.get(key);
@@ -137,11 +167,17 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
 
   const index: CatalogCapabilityIndex = {
     chat: new Set(),
+    textOutput: new Set(),
+    nonTextOutput: new Set(),
     videoOutput: new Set(),
     videoOutputKnown: new Set(),
   };
   for (const entry of readAllModelsCache(cachePath)?.entries ?? []) {
     const keys = [catalogKey(entry.modelId), ...(entry.aliases ?? []).map(catalogKey)];
+    // Filed BEFORE the `videoOutput: true` `continue` below, so a video generator
+    // still contributes its published output modality — and where the two disagree
+    // the modality list wins, being the more specific statement.
+    indexOutputModality(index, keys, entry.outputModalities);
     // `videoOutput` is read in both directions; `videoInput` is never read as a
     // denial, because a model that reads video is still a chat model.
     if (entry.videoOutput !== undefined) {
@@ -165,9 +201,16 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
 /**
  * Classify whether a model can answer a chat turn — see {@link ChatCapability}.
  *
- * The catalog's published facts outrank every name rule: a `videoOutput: true`
- * denies, and a published `videoOutput` of either value switches the video name
- * guess off. Name rules decide only what the catalog does not cover.
+ * The cloud models catalog's published OUTPUT MODALITY outranks every name rule,
+ * in both directions: a model named like an image generator whose published output
+ * is `["text"]` IS a chat model, and a model with a blameless name whose output is
+ * `["image"]` is NOT. Only where the catalog publishes no output modality — local
+ * servers, custom endpoints, LiteLLM deployments, catalog rows without the field —
+ * do the older `videoOutput` boolean and the name rules decide.
+ *
+ * Order: wildcard route, non-text output, text output, `videoOutput: true`,
+ * {@link NON_CHAT_PATTERNS}, the video name guess (only while `videoOutput` is
+ * unpublished), the chat-shaped capability flags, then `"unknown"`.
  *
  * @param cachePath Override the catalog cache path. Tests only.
  */
@@ -177,6 +220,10 @@ export function classifyChatCapability(name: string, cachePath?: string): ChatCa
 
   const index = catalogCapabilityIndex(cachePath);
   const key = catalogKey(name);
+
+  // Catalog evidence, ahead of every name rule.
+  if (index.nonTextOutput.has(key)) return "not-chat";
+  if (index.textOutput.has(key)) return "chat";
 
   if (index.videoOutput.has(key)) return "not-chat";
   if (NON_CHAT_PATTERNS.some((re) => re.test(name))) return "not-chat";

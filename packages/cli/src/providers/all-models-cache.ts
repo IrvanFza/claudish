@@ -45,6 +45,10 @@ export interface SlimModelEntry {
   supportsThinking?: boolean;
   videoInput?: boolean;
   videoOutput?: boolean;
+  /** What the model accepts, from the cloud models catalog. Absent, null or [] means unknown. */
+  inputModalities?: string[] | null;
+  /** What the model produces. Absent, null or [] means unknown; a list without "text" is not a chat model. */
+  outputModalities?: string[] | null;
   aggregators?: AggregatorEntry[];
   subscriptionPlanIds?: string[];
   tokenParam?: string;

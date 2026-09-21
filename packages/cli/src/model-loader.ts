@@ -128,6 +128,8 @@ export interface AggregatorEntry {
    * OpenRouter/OpenCode Zen can charge differently from the model owner.
    */
   pricing?: {
+    /** How to read the rest of this object. Absent means the price is unknown. */
+    type?: "flat" | "tiered" | "free" | "unavailable";
     input?: number;
     output?: number;
     cachedRead?: number;
@@ -135,6 +137,20 @@ export interface AggregatorEntry {
     imageInput?: number;
     audioInput?: number;
     batchDiscountPct?: number;
+    /**
+     * Ascending price bands by input size. The catalog guarantees the top-level
+     * `input`/`output` equal the first tier, verified on all 28 tiered
+     * connections of generations g-20260920154425586-418ad3dd and
+     * g-20260921062451697-f490edba (the latter being the first to carry the
+     * agreed `type` field name).
+     */
+    tiers?: Array<{
+      maxInputTokens?: number;
+      input?: number;
+      output?: number;
+      cachedRead?: number;
+      cachedWrite?: number;
+    }>;
   };
   /**
    * True per-aggregator context window (max input tokens) for this
