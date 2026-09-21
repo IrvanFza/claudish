@@ -7,7 +7,7 @@
 The only **binary** wire in the pipeline: Connect-protocol envelopes carrying protobuf, on
 `POST <server>/exa.api_server_pb.ApiServerService/GetChatMessage` with `authorization: Basic <k>-<k>`
 (the key literally doubled), `content-type: application/connect+proto`, `connect-protocol-version: 1`.
-Codec, request builder, credentials, live roster, and uid resolution live in `providers/devin/`;
+Codec, request builder, credentials, live model discovery, and uid resolution live in `providers/devin/`;
 Layer 1 is `adapters/devin-api-format.ts`, Layer 3 `providers/transport/devin.ts`, the parser
 `handlers/shared/stream-parsers/devin-connect.ts`. Full reverse-engineering write-up:
 `ai-docs/sessions/dev-arch-devin-subscription-20260806-120000-a1b2c3d4/protocol-spec.md` (write-up lost — predates the ai-docs tracking fix).
@@ -38,9 +38,10 @@ reasoning as Alibaba Token Plan, which also re-serves other vendors' models.
 
 **The reasoning tier is IN the model id — there is no effort parameter.** `dv@claude-opus-5` at
 effort `high` resolves to the uid `claude-opus-5-high` via `resolveDevinModelUid` against the LIVE
-roster (`getServedDevinModels` = `GetCliModelConfigs` ∩ `GetCliTeamSettings.allowed_model_uids`,
-minus `contextWindow === 0`, which is what drops the `adaptive` router pseudo-model). No roster,
-window, family, or tier is ever hardcoded — 167 models on the developer's own account. Note the two
+dynamic models catalog (`getServedDevinModels` = `GetCliModelConfigs` ∩
+`GetCliTeamSettings.allowed_model_uids`, minus `contextWindow === 0`, which is what drops the
+`adaptive` router pseudo-model). No model list, window, family, or tier is ever hardcoded —
+167 models on the developer's own account. Note the two
 metadata rpcs are **unary and BARE** (`application/proto`, no envelope), field 1 is `"chisel"` there
 versus `"devin-cli"` on `GetChatMessage`, `GetCliTeamSettings` lives on `SeatManagementService` not
 `ApiServerService`, and metadata field 7 is required (dropping it → HTTP 400).

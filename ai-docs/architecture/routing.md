@@ -1,6 +1,6 @@
 # Model routing
 
-> How a bare model name becomes a provider chain: defaultProvider, catalog resolvers, the derived picker roster, subscription pricing.
+> How a bare model name becomes a provider chain: defaultProvider, catalog resolvers, the derived picker provider list, subscription pricing.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -185,7 +185,7 @@ model connection's `externalModelId` to that transport.
 
 Plan absence has two different meanings:
 
-- `modelDiscovery: "catalog"`: the published roster is authoritative, so an absent model is
+- `modelDiscovery: "catalog"`: the published membership is authoritative, so an absent model is
   dropped from that subscription provider's candidate chain.
 - `modelDiscovery: "client"` or `"hybrid"`: the authenticated account may reveal models the
   public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
@@ -250,23 +250,23 @@ complete list.
 ([`providers/qwen-alibaba.md`](providers/qwen-alibaba.md)), so for that provider the list
 records what the plan covers, not what the key may call, and it can still deny.
 
-## The interactive picker roster is DERIVED — never add a membership table
+## The interactive picker's provider list is DERIVED — never hand-write one
 
 Bare `claudish` shows "Select provider:" from `model-selector.ts`. That list used to be a
 hand-written `ALL_PROVIDER_CHOICES` array, so **membership was opt-in and a new provider
 defaulted to invisible**. `devin` and `antigravity` were both fully working — routing,
 `--probe`, and the config TUI (which has always derived its list from `getAllProviders()`) —
-while absent from the picker. `3a293b9` even built Antigravity's correct 20-model roster for
-a provider the picker could not offer.
+while absent from the picker. `3a293b9` even built Antigravity's correct 20-model dynamic
+models catalog for a provider the picker could not offer.
 
 The v7389502 credential refactor is the trap here: it unified availability **checking** (it
-deleted the three duplicate readiness oracles) and left the **roster** alone. Unifying how a
+deleted the three duplicate readiness oracles) and left the **list itself** alone. Unifying how a
 list is filtered is not the same as unifying what is in it.
 
 - `isPickableProvider(def)` = `def.shortcuts.length > 0`. A definition with no shortcuts has
   no user-typeable `@` prefix and exists only so `nativeModelPatterns` can steer a BARE name;
   `qwen` and `native-anthropic` are the two, and both carry an empty `baseUrl`/`apiPath`.
-  A rule, not a roster — there is no exclusion list to keep current.
+  A rule, not a table — there is no exclusion list to keep current.
 - `PICKER_COPY` and `PICKER_ORDER` are **editorial only**: labels and ordering. Anything
   unlisted still appears, at the end. Never use either as a membership gate.
 - The `@prefix` filter aliases (`getProviderFilterAliases`) are derived the same way, from
@@ -294,7 +294,7 @@ hand-written provider table.** `configCommand` was exported and imported nowhere
 What makes it worth recording rather than just deleting: it was **actively maintained while
 dead**. The light-theme sweep (`c9cb626`) restyled it and a MiniMax endpoint fix (`b7173d2`)
 corrected its hostname — two people paid to keep a table current that no code could read. A
-dead hand-written roster is worse than a live one, because nothing can ever prove it wrong.
+dead hand-written table is worse than a live one, because nothing can ever prove it wrong.
 Check for importers before restyling a file.
 
 ## Subscription pricing is decided by BILLING, not by `modelDiscovery`

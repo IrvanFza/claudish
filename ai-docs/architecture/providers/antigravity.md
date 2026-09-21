@@ -41,7 +41,7 @@ daily-cloudcode-pa.googleapis.com  generate gemini-3.6-flash-high -> 200
 ```
 
 On `cloudcode-pa` that account reads `currentTier: free-tier` (while `paidTier`
-says `g1-ultra-tier`), is served a roster of `gemini-2.5-*` plus editor-internal
+says `g1-ultra-tier`), is served a dynamic models catalog of `gemini-2.5-*` plus editor-internal
 `chat_*`/`tab_*` ids, reports every quota bucket at 100% **forever** because
 nothing is ever consumed, and can generate with EXACTLY the two `tab_*`
 inline-completion models — free Code Assist's remaining entitlement — while all
@@ -88,7 +88,7 @@ nothing above it.
 vocabulary. Doing so produced a bug report asking a backend to add five ids that
 404 and delete the one that works.
 
-## The roster: what the backend declares unselectable
+## The dynamic models catalog: what the backend declares unselectable
 
 `fetchAvailableModels` returns the whole editor surface, and states three ways
 which of it is not a chat model — all of them read by
@@ -111,7 +111,7 @@ dropped a real model from the picker.
 
 Only `tab_*` needs a prefix rule; it appears in no list and carries no flag.
 
-## Ordering: catalog dates are poison for this roster
+## Ordering: cloud models catalog dates are poison for Antigravity's models
 
 Antigravity rows set `ignoreCatalogReleaseDate`. `compareByReleaseDateDesc` sorts
 undated rows last, and measured 2026-08-24 only 6 of 19 served ids had a catalog
@@ -124,7 +124,7 @@ UNDATED  gemini-3.7-flash-tiered          —       <- sorted to the BOTTOM
 
 The catalog dates *base* models; Antigravity serves *variants* it does not list.
 Six dated of nineteen was worse than zero: a partial signal ranked confidently on
-incomplete evidence. Suppressed, the whole roster falls through to version-parts
+incomplete evidence. Suppressed, the whole dynamic models catalog falls through to version-parts
 and orders 3.7 > 3.6 > 3.5 > 3.1 > 3 > 2.5.
 
 
@@ -133,6 +133,6 @@ and orders 3.7 > 3.6 > 3.5 > 3.1 > 3 > 2.5.
 - **Self-refresh**: when the token is expired, POST `oauth2/token` with `grant_type=refresh_token`. The Antigravity client_id/secret are **never shipped** — they're extracted at runtime from the user's own local `agy` binary (`strings` for the `…apps.googleusercontent.com` id + `GOCSPX-` secret; the working combo is discovered by first-200 and cached). The refreshed (and possibly rotated) token is written back to the shared store.
 - **Degradation**: no store (agy not installed / not signed in) or non-macOS → actionable error pointing at `g@` + `GEMINI_API_KEY`.
 
-**Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a roster. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
+**Model ids — LIVE discovery, no hardcoded map**: the Antigravity backend requires a reasoning-tier suffix (bare `gemini-3.6-flash` → 404), but which variants a subscription serves is **per-account and drifts**, so claudish never hardcodes a model list. `getServedAntigravityModels()` fetches the live set from the backend's own `v1internal:fetchAvailableModels` (body `{project}`) — the served ids are the response `models` keys, plus a backend `defaultAgentModelId` — cached with a TTL. `resolveAntigravityModelId(requested, servedIds, defaultId)` then resolves against that LIVE set: exact match passes through; a bare family (e.g. `gemini-3.6-flash`) resolves to the backend's `defaultAgentModelId` when it's a variant of that family, else to the strongest reasoning tier by a *rank rule* (`high>medium>low>extra-low>tiered` — a rule, like `rankCodeAssistModel`, not pinned ids); anything else passes through to the F1–F7 404 rewrite. The only literals are the tier-rank ordering and endpoint strings — no concrete model ids in source.
 
 **Identity strings**: `User-Agent: antigravity/cli/<ver> (aidev_client; os_type=<platform>; arch=<arch>; auth_method=consumer)` + `metadata: { ideType: "ANTIGRAVITY" }`. The transport keeps all the F1–F7 improvements from the old codeassist path (terminal-error → 400 surfaced inline, served-set-aware 404 rewrite, `rankCodeAssistModel`). Full reverse-engineering write-up: `ai-docs/sessions/antigravity-refactor-20260803-125333-d0791562/architecture.md` (write-up lost — predates the ai-docs tracking fix).
