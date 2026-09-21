@@ -53,6 +53,29 @@ both sides is rejected. We would rather delete that rule than keep it — it is 
 data, which is exactly what both sides agreed to avoid — so it goes as soon as the rows say
 `unavailable`.
 
+## A short list of first-party models that may be missing their vendor's own route
+
+Low priority, and we checked carefully before sending it, because our first pass at this was
+wrong. Counting raw totals suggested your own-API coverage was badly incomplete (deepseek 2 of 34,
+qwen 136 of 240). It is not. Vendors expose only current models on their own APIs, and once retired
+generations, open-weight releases, gateway quantizations (`-fp8`, `-fp4`, `-lora`), provider-suffixed
+variants (`-di`, `-n`, `-el`, `-fw`) and route variants (`kimi-k3-256k`) are excluded, your coverage
+matches what the vendors actually host. DeepSeek publishing only `deepseek-v4.1-flash` and
+`deepseek-v4-pro` on `deepseek/direct-api` is correct; z-ai's 11 and MiniMax's 8 are their current
+lineups.
+
+What is left after that filter is a handful we believe the vendor does host:
+
+| Model | Expected route | Note |
+|---|---|---|
+| `glm-4.5v`, `glm-4.6v`, `glm-5v-turbo` | `z-ai/direct-api` | Z.ai's own API serves its vision models |
+| `glm-4.7-flash` | `z-ai/direct-api` | the rest of the 4.7 line is mapped |
+| `kimi-k2-0905` | `moonshotai/direct-api` | |
+| `minimax-m2-her`, `minimax-m1` | `minimax/direct-api` | |
+
+Each may have a reason we cannot see — a retirement, a region, a different endpoint. Treat the list
+as a question rather than a defect report.
+
 ## Nothing else outstanding from our side
 
 The two design answers we sent still stand: unknown modalities as an absent field are right for

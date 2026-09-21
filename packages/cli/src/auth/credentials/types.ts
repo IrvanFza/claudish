@@ -61,13 +61,49 @@ export interface ReadinessResult {
  * can be a multi-line Rust struct dump, and pasting one into a routing warning
  * buries the sentence that matters.
  *
- * Message text only. A credential source never puts key material in an error
- * message, and this does not go looking for any.
+ * Message text only, and redacted — see {@link redactSecrets}. claudish's own
+ * credential sources never put key material in an error message, but this line
+ * is not always ours: it can be an SDK's, a shell tool's, or an upstream
+ * server's, and those quote what they were given.
  */
 export function readinessDetail(err: unknown): string | undefined {
-  const line = (err instanceof Error ? err.message : String(err ?? "")).split("\n")[0].trim();
-  if (!line) return undefined;
+  const raw = (err instanceof Error ? err.message : String(err ?? "")).split("\n")[0].trim();
+  if (!raw) return undefined;
+  const line = redactSecrets(raw);
   return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+}
+
+/**
+ * Remove anything key-shaped from a line that is about to be shown or logged.
+ *
+ * Defence in depth, for the case where the text is not ours. The concrete
+ * vector is a URL: Google's endpoints take the key as a QUERY PARAMETER, so any
+ * error that quotes the request URL — a fetch failure, a 400 body, a curl-style
+ * diagnostic from a shell tool — carries the key inside an otherwise ordinary
+ * sentence. An `Authorization` header echoed into an error body does the same.
+ *
+ * Deliberately narrow. It targets the shapes a secret actually takes, rather
+ * than masking every long token, because over-redacting destroys the part of
+ * the message a user needs: a redacted request id or model name turns a
+ * diagnosable failure into "something went wrong".
+ */
+export function redactSecrets(text: string): string {
+  return (
+    text
+      // `?key=…`, `&api_key=…`, `token=…`, `secret=…`, `password=…`
+      .replace(
+        /([?&](?:api[-_]?key|key|access[-_]?token|token|secret|password)=)[^&\s"']+/gi,
+        "$1[redacted]"
+      )
+      // `Authorization: Bearer …`, and a bare `Bearer …`
+      .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[redacted]")
+      // Vendor-prefixed keys, which are self-identifying: sk-…, sk_live_…, AIza…,
+      // ghp_…, xoxb-…. The prefix is kept so the reader can see WHICH credential.
+      .replace(/\b(sk|rk|pk)[-_][A-Za-z0-9_-]{12,}/g, "$1-[redacted]")
+      .replace(/\bAIza[A-Za-z0-9_-]{10,}/g, "AIza[redacted]")
+      .replace(/\b(gh[pousr]_)[A-Za-z0-9]{16,}/g, "$1[redacted]")
+      .replace(/\b(xox[abposr]-)[A-Za-z0-9-]{10,}/g, "$1[redacted]")
+  );
 }
 
 export interface RequestAuthContext {
