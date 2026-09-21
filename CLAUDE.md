@@ -53,7 +53,10 @@ negative case: if you are about to type one of those words, stop and use the lef
 | connection | aggregator row, provider row | one mapped way to call a model: an `aggregators[]` entry with `routeStatus: "mapped"` |
 | input modality, output modality | capability (for what goes in or out) | what a model accepts and produces: text, image, audio, video, file |
 | chat model | text model, LLM | takes text in and gives only text out; video input alone never excludes one |
-| type | shape, kind, variant (for a discriminator) | the field that says how to read the rest of an object: `pricing.type` is `flat`, `tiered`, `free` or `unavailable`. The catalog shipped it as `shape` on 2026-09-20; the backend is renaming it, and claudish switches on that generation with no alias |
+| type | shape, kind, variant (for a discriminator) | the field that says how to read the rest of an object: `pricing.type` is `flat`, `tiered`, `free` or `unavailable`. The catalog spelled it `shape` until the cutover on generation `g-20260921062451697-f490edba`; claudish reads `type` only, with no alias |
+| route candidate | option, hop (before filtering), chain entry | one `(provider, wire id)` pair gathered for a model, BEFORE the credential and availability filters. A candidate is a proposal; a hop is what survived |
+| tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price |
+| namespace claim | pattern match, native claim | a dynamic subscription becoming a candidate because its `nativeModelPatterns` match the name. It exists so the availability filter can ASK the account; it is never evidence that the account is served |
 
 **Providers and routing**
 
