@@ -2,6 +2,17 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.0.1] - 2026-09-21
+
+### Bug Fixes
+
+- never ask a GLM model to stop thinking([`974de4a`](https://github.com/MadAppGang/claudish/commit/974de4a0457d493293aaac5f58e3415f6df24118))
+
+### Documentation
+
+- record the v10.0.0 release and what was deferred from it([`addc0f8`](https://github.com/MadAppGang/claudish/commit/addc0f8fb28daa8dae0e592fc22b3dc96c8c282c))
+- update CHANGELOG.md for v10.0.0([`570b75f`](https://github.com/MadAppGang/claudish/commit/570b75f4e0b0f7d4918dbbb245b8638eead392ed))
+
 ## [10.0.0] - 2026-09-21
 
 ### Bug Fixes
