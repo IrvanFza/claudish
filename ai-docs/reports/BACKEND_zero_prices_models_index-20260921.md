@@ -105,6 +105,29 @@ One more, ours rather than yours, recorded so the census is complete: `anthropic
 connections) binds to a claudish provider name that has no definition, so we cannot execute it
 today. That is our gap to close, not a defect in your data.
 
+## `glm-5.3` is published with a thinking toggle it does not have
+
+Found while verifying our v10 release. The catalog gives `glm-5.3` a reasoning capability whose
+`control` reads as a toggle, so claudish offered the off-switch. Z.ai refuses it. Measured against
+`api.z.ai` on 2026-09-22 with `glm-5.3`:
+
+```
+{"thinking":{"type":"disabled"}}                          -> 400 code 1210
+   "This model always engages in thinking and cannot be disabled;
+    please use low, high, or max"
+{"thinking":{"type":"enabled"},"reasoning_effort":"low"}  -> 200
+```
+
+So the model's real control is an effort level with no "off", and the advertised levels are
+`low`, `high`, `max`. The Flash variants (`glm-5.3-flash`, and the one `glm-coding` picks) still
+accept `disabled`, so this is per-model rather than family-wide — which is exactly the kind of
+distinction only the catalog can carry.
+
+We have worked around it in our probe, and that workaround is ours to delete once the capability
+is right. What would fix it properly on your side is publishing, for a model that cannot stop
+reasoning, a control that has no disabled state — we read `reasoning.control` and
+`reasoning.efforts` and will follow whatever they say.
+
 ## Nothing else outstanding from our side
 
 The two design answers we sent still stand: unknown modalities as an absent field are right for

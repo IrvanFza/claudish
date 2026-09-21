@@ -68,6 +68,29 @@ describe("probe effort per provider", () => {
     expect((await captureProbeBody("native-anthropic")).output_config?.effort).toBe("low");
   });
 
+  for (const provider of ["glm", "z-ai", "glm-coding"]) {
+    test(`${provider} never asks GLM to stop thinking`, async () => {
+      const effort = (await captureProbeBody(provider)).output_config?.effort;
+
+      expect(effort).toBe("low");
+      expect(effort).not.toBe("minimal");
+    });
+  }
+
+  test("Google never receives unsupported minimal effort", async () => {
+    const effort = (await captureProbeBody("google")).output_config?.effort;
+
+    expect(effort).toBe("low");
+    expect(effort).not.toBe("minimal");
+  });
+
+  test("Alibaba PAYG never receives unsupported minimal effort", async () => {
+    const effort = (await captureProbeBody("qwen-payg")).output_config?.effort;
+
+    expect(effort).toBe("low");
+    expect(effort).not.toBe("minimal");
+  });
+
   test("OpenAI uses minimal effort", async () => {
     expect((await captureProbeBody("openai")).output_config?.effort).toBe("minimal");
   });

@@ -130,12 +130,34 @@ export interface ProbeLinkInput {
  * dashscope-intl with qwen3.8-max-0902). Its sibling products do not: the Token
  * Plan host accepts "minimal" on the same round of measurements, so this is one
  * product's host, not a vendor-wide rule.
+ *
+ * The three Z.ai products (`glm`, `z-ai`, `glm-coding` — one endpoint, three key
+ * silos) are here for a DIFFERENT reason, and it is worth stating because the
+ * remedy looks the same while the cause is not. Z.ai accepts the word "minimal"
+ * perfectly well; what it refuses is the REQUEST that word produces. The GLM
+ * dialect maps "minimal" to `thinking: {type: "disabled"}`, and GLM-5.3 cannot
+ * be told to stop thinking. Measured 2026-09-22 against api.z.ai with glm-5.3:
+ *
+ *   {"thinking":{"type":"disabled"}}                    -> 400 code 1210
+ *     "This model always engages in thinking and cannot be disabled;
+ *      please use low, high, or max"
+ *   {"thinking":{"type":"enabled"},"reasoning_effort":"low"} -> 200
+ *
+ * Only `glm` failed Test All, because its probe pick discovers `glm-5.3` while
+ * `z-ai` and `glm-coding` pick the Flash variants, which still accept the
+ * off-switch. All three are listed anyway: the constraint belongs to the GLM
+ * family on this endpoint, not to whichever model discovery happens to rank
+ * first today, and pinning only the one that broke would make the next pick a
+ * new bug.
  */
 const MINIMAL_EFFORT_UNSUPPORTED = new Set([
   "native-anthropic",
   "anthropic",
   "google",
   "qwen-payg",
+  "glm",
+  "z-ai",
+  "glm-coding",
 ]);
 
 /**
