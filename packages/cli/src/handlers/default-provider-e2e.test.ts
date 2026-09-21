@@ -288,19 +288,16 @@ const HAS_XAI = SKIP_LIVE_E2E ? false : await hasCredential("x-ai");
 
 describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
-    "B1a — defaultProvider=openrouter + gpt-5.4 bare → served by OpenRouter",
+    "B1a — catalog-gathered gpt-5.4 bare → served by credentialed OpenRouter",
     async () => {
-      // Pin routing for `gpt-*` to skip codex (commit 5: DEFAULT_ROUTING_RULES
-      // puts openai-codex first for `gpt-*`, which can fire on dev boxes that
-      // happen to have a codex OAuth file. The intent of this test is the
-      // openrouter default-provider path, so we override the gpt-* chain to
-      // exclude codex.)
+      // No user rule: the chain must come from the cloud models catalog. The
+      // gpt-5.4 row publishes OpenRouter, so defaultProvider is deduplicated
+      // rather than manufacturing a second connection.
       sandboxHome({
         version: "1.0.0",
         defaultProfile: "default",
         profiles: {},
         defaultProvider: "openrouter",
-        routing: { "gpt-*": ["openai", "openrouter"] },
       });
       captureStderr();
       const t0 = Date.now();
@@ -328,7 +325,7 @@ describe("Group B — real API routing", () => {
       // The proxy emits its `[Route] N providers for <model>: A → B` line ONLY
       // when the credential-filtered chain has MORE THAN ONE candidate
       // (proxy-server.ts: `if (!options.quiet && candidates.length > 1)`). The
-      // chain pinned above is ["openai","openrouter"], so on a machine WITHOUT
+      // gathered chain includes OpenAI and OpenRouter, so on a machine WITHOUT
       // an OpenAI credential it filters down to a single candidate and NO line
       // is emitted — which is the common case for someone holding only an
       // OpenRouter key. A bare `expect(stderr).toContain("openrouter")` therefore
@@ -401,7 +398,7 @@ describe("Group B — real API routing", () => {
   );
 
   test.skipIf(!HAS_LL)(
-    "B2 — defaultProvider=litellm + minimax-m2.5 bare → served by LiteLLM first",
+    "B2 — defaultProvider=litellm + minimax-m2.5 bare → LiteLLM remains the fallback",
     async () => {
       sandboxHome({
         version: "1.0.0",
@@ -429,10 +426,9 @@ describe("Group B — real API routing", () => {
         `[B2] model=minimax-m2.5 ok=${ok} elapsed=${elapsed}ms litellm@${llIdx} openrouter@${orIdx} textLen=${text.length}`
       );
       expect(ok).toBe(true);
-      // Proof LiteLLM came first when both are visible in stderr
-      if (llIdx >= 0 && orIdx >= 0) {
-        expect(llIdx).toBeLessThan(orIdx);
-      }
+      // `defaultProvider` is the last-resort fallback position. If both names
+      // are visible, the catalog-gathered OpenRouter connection must precede it.
+      if (llIdx >= 0 && orIdx >= 0) expect(orIdx).toBeLessThan(llIdx);
     },
     90_000
   );
@@ -564,7 +560,6 @@ describe("Group C — custom endpoint registration", () => {
   test.skipIf(!HAS_OR)(
     "C2 — invalid custom endpoint is warned but bare call still succeeds",
     async () => {
-      // Pin routing for `gpt-*` to skip codex (see B1a comment).
       sandboxHome({
         version: "1.0.0",
         defaultProfile: "default",
@@ -584,7 +579,6 @@ describe("Group C — custom endpoint registration", () => {
           },
         },
         defaultProvider: "openrouter",
-        routing: { "gpt-*": ["openai", "openrouter"] },
       });
 
       captureStderr();

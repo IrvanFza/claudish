@@ -112,9 +112,9 @@ describe("describeMissingCredential — local providers", () => {
 });
 
 describe("describeMissingCredential — everything else is unchanged", () => {
-  const plain = BUILTIN_PROVIDERS.filter((d) => !d.oauthFallback && !isLocalTransport(d.name)).map(
-    (d) => d.name
-  );
+  const plain = BUILTIN_PROVIDERS.filter(
+    (d) => d.name !== "vertex" && !d.oauthFallback && !isLocalTransport(d.name)
+  ).map((d) => d.name);
 
   test("plain providers keep today's exact sentence", () => {
     expect(plain.length).toBeGreaterThan(0);
@@ -154,5 +154,14 @@ describe("describeMissingCredential — everything else is unchanged", () => {
     expect(describeMissingCredential("no-such-provider")).toBe(
       'No API key for provider "no-such-provider".'
     );
+  });
+});
+
+describe("describeMissingCredential — Vertex", () => {
+  test("names project remedies and ADC instead of asking for an API key", () => {
+    expect(describeMissingCredential("vertex")).toBe(
+      'No Google Cloud project for provider "vertex". set VERTEX_PROJECT or run `gcloud config set project <id>`. Application Default Credentials already handles the credential; Vertex takes no API key.'
+    );
+    expect(describeMissingCredential("vertex")).not.toContain("Get one at");
   });
 });

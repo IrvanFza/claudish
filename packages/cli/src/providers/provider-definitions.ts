@@ -9,6 +9,7 @@
  * for identity/routing — only transport and adapter wiring in provider-profiles.ts.
  */
 
+import { VERTEX_SET_PROJECT_REMEDY } from "../auth/vertex-auth.js";
 import type { RemoteProvider } from "../handlers/shared/remote-provider-types.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { getEndpoint as getConfigEndpoint } from "../profile-config.js";
@@ -1705,6 +1706,13 @@ export function describeMissingCredential(providerName: string): string {
   const signup = info?.url ? ` Get one at ${info.url}.` : "";
   const def = getProviderByName(providerName);
   const sibling = describeSiblingKeys(def);
+
+  if (providerName === "vertex") {
+    return (
+      `No Google Cloud project for provider "vertex". ${VERTEX_SET_PROJECT_REMEDY}. ` +
+      "Application Default Credentials already handles the credential; Vertex takes no API key."
+    );
+  }
 
   if (isLocalTransport(providerName)) {
     const where = def ? ` Claudish will use ${getEffectiveBaseUrl(def)}.` : "";

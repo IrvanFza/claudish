@@ -173,9 +173,9 @@ function hasAnyCredentials(): boolean {
 // ---------------------------------------------------------------------------
 // (Group 1 — unit tests of getFallbackChain — removed in commit 5 of the
 // model-catalog and routing redesign. The fallback chain construction logic
-// moved from auto-route.ts (now ~50 lines) into routing-rules.ts route()
-// + DEFAULT_ROUTING_RULES. Equivalent matrix coverage lives in
-// providers/routing-rules.test.ts and providers/default-routing-rules.test.ts.)
+// moved from auto-route.ts (now ~50 lines) into routing-rules.ts route().
+// Equivalent matrix coverage lives in providers/routing-rules.test.ts and
+// providers/route-candidates.test.ts.)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

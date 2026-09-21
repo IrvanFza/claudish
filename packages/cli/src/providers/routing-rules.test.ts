@@ -2,8 +2,8 @@ import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Unit tests for providers/routing-rules.ts
  *
- * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, mergeRoutingRules,
- * and route() without hitting any real APIs or machine routing configuration.
+ * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, and route()
+ * without hitting any real APIs or machine routing configuration.
  *
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
@@ -15,65 +15,24 @@ import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
-import type { RecommendedModelsDoc } from "../model-loader.js";
 import type { RoutingRules } from "../profile-config.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { invalidateModelDiscovery } from "./model-discovery.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
   buildRoutingChain,
   loadRoutingRules,
   matchRoutingRule,
-  mergeRoutingRules,
   normalizeGlmSlug,
-  retainKnownCatalogRoutingRules,
   route,
+  validateRoutingRulesAgainstProviders,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
-const CATALOG_EXACT_MODEL_ID = "grok-4.6";
-
-const CATALOG_EXACT_ROUTE_DOC: RecommendedModelsDoc = {
-  version: "test",
-  lastUpdated: "2026-09-03T00:00:00.000Z",
-  models: [
-    {
-      id: CATALOG_EXACT_MODEL_ID,
-      name: "Grok 4.6",
-      description: "Synthetic catalog route used to isolate rule composition",
-      provider: "xAI",
-      category: "subscription",
-      priority: 1,
-      pricing: { input: "N/A", output: "N/A", average: "N/A" },
-      context: "N/A",
-      subscriptions: [
-        {
-          plan: "OpenCode Zen Go",
-          command: "zengo@grok-4.6",
-          routingProvider: "opencode-zen-go",
-          tier: "general",
-        },
-      ],
-    },
-  ],
-};
-
-function loadRulesWithCatalogExact(
-  globalRules: RoutingRules = {},
-  localRules: RoutingRules = {}
-): RoutingRules {
-  return loadRoutingRules({
-    globalRules,
-    localRules,
-    recommendedModels: CATALOG_EXACT_ROUTE_DOC,
-  });
-}
-
 function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
   return _resetCatalogClient;
@@ -82,12 +41,14 @@ function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
 function makeTempCatalog(
   model: {
     modelId: string;
+    aliases?: string[];
     externalId?: string;
     subscriptionPlanIds?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
   plans: string[] = model.subscriptionPlanIds ?? [],
-  routingProviderByPlan: Record<string, string> = {}
+  routingProviderByPlan: Record<string, string> = {},
+  additionalProviders: string[] = []
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
@@ -118,20 +79,29 @@ function makeTempCatalog(
 
   entries.push({
     modelId: model.modelId,
-    aliases: [],
+    aliases: model.aliases ?? [],
 
     subscriptionPlanIds: model.subscriptionPlanIds ?? [],
-    aggregators:
-      model.externalId && model.subscriptionPlanIds
-        ? model.subscriptionPlanIds.map((planId) => ({
+    aggregators: model.externalId
+      ? [
+          ...(model.subscriptionPlanIds ?? []).map((planId) => ({
             sourceProviderId: routingProviderByPlan[planId] ?? planId,
             sourceCollectorId: "test",
             routeStatus: "mapped" as const,
             route: catalogRouteForProvider(routingProviderByPlan[planId] ?? planId),
             externalModelId: model.externalId!,
             confidence: "scrape_verified" as const,
-          }))
-        : undefined,
+          })),
+          ...additionalProviders.map((provider) => ({
+            sourceProviderId: provider,
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider(provider),
+            externalModelId: model.externalId!,
+            confidence: "api_official" as const,
+          })),
+        ]
+      : undefined,
   });
 
   const cache: DiskCacheV3 = {
@@ -442,11 +412,7 @@ describe("buildRoutingChain", () => {
 // loadRoutingRules — source composition without disk I/O
 // ---------------------------------------------------------------------------
 
-describe("loadRoutingRules merges defaults", () => {
-  // The three behavioural tests below seed `sources.recommendedModels`, but the
-  // v9.0.1 path bypassed that seam and read a homedir-derived cache path. They
-  // can therefore stay green on a cold CI checkout; this source-boundary guard
-  // survives that cold cache by forbidding model-loader runtime imports here.
+describe("loadRoutingRules composes only user rules", () => {
   test("keeps model-loader imports type-only so routing rules cannot read ambient cache state", () => {
     const source = readFileSync(join(import.meta.dir, "routing-rules.ts"), "utf8");
     const modelLoaderImports = [
@@ -461,96 +427,84 @@ describe("loadRoutingRules merges defaults", () => {
     expect(valueImports).toEqual([]);
   });
 
-  test("default glob stays reachable when the catalog has an exact model key", () => {
-    // Catalog keys are exact, so retaining one here used to bypass the broader
-    // fallback chain solely because exact matching runs before glob matching.
-    const rules = loadRulesWithCatalogExact();
-
-    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(
-      DEFAULT_ROUTING_RULES["grok-*"]
-    );
+  test("returns an empty table when the user configured no rules", () => {
+    expect(loadRoutingRules({ globalRules: {}, localRules: {} })).toEqual({});
   });
 
-  test("user glob wins when the catalog has an exact model key", () => {
+  test("honours a user glob verbatim", () => {
     const userRules: RoutingRules = { "grok-*": ["x-ai", "openrouter"] };
-
-    // Docs recommend family globs; an exact cache row must not silently make a
-    // user's supported configuration style unreachable.
-    const rules = loadRulesWithCatalogExact(userRules);
-
-    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(userRules["grok-*"]);
+    const rules = loadRoutingRules({ globalRules: userRules, localRules: {} });
+    expect(matchRoutingRule("grok-4.6", rules)).toEqual(userRules["grok-*"]);
   });
 
-  test("returns only rule keys supplied by defaults or user config", () => {
+  test("returns only user-supplied rule keys", () => {
     const globalRules: RoutingRules = { "team-*": ["openrouter"] };
     const localRules: RoutingRules = { "project-model": ["x-ai"] };
-
-    // Cache contents vary by machine and over time, so they cannot be allowed
-    // to expand the effective configuration's key space.
-    const rules = loadRulesWithCatalogExact(globalRules, localRules);
-    const configuredRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, globalRules, localRules);
-
-    expect(Object.keys(rules).sort()).toEqual(Object.keys(configuredRules).sort());
-  });
-
-  test("catalog routes keep known providers and cannot shadow defaults with an unknown provider", () => {
-    expect(
-      retainKnownCatalogRoutingRules({
-        "mixed-model": ["future-provider@future-wire", "openrouter@vendor/model"],
-        "future-only-model": ["future-provider@future-wire"],
-      })
-    ).toEqual({
-      "mixed-model": ["openrouter@vendor/model"],
+    expect(loadRoutingRules({ globalRules, localRules })).toEqual({
+      "team-*": ["openrouter"],
+      "project-model": ["x-ai"],
     });
   });
 
-  test("with no user rules: merge returns defaults exactly", () => {
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, {}, {});
-    expect(merged).toEqual(DEFAULT_ROUTING_RULES);
+  test("an exact key beats a glob inside the user's own rules", () => {
+    const rules = loadRoutingRules({
+      globalRules: {
+        "grok-*": ["x-ai", "openrouter"],
+        "grok-4.6": ["grok-subscription"],
+      },
+      localRules: {},
+    });
+    expect(matchRoutingRule("grok-4.6", rules)).toEqual(["grok-subscription"]);
   });
 
-  test("user rule that overrides 'claude-*' wins; defaults still cover other patterns", () => {
-    const userGlobal: RoutingRules = {
-      "claude-*": ["openrouter"],
-    };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
-    expect(merged["claude-*"]).toEqual(["openrouter"]);
-    // Defaults still apply to unrelated patterns
-    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
-    expect(merged["*"]).toEqual(DEFAULT_ROUTING_RULES["*"]);
-  });
-
-  test("user '*' = [] removes the catch-all (verify match returns empty)", () => {
-    const userGlobal: RoutingRules = {
-      "*": [],
-    };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
-    expect(merged["*"]).toEqual([]);
-    // Other defaults still apply
-    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
-    // matchRoutingRule on a pattern only the catch-all would have caught
-    // returns the empty array (caller treats as "no route").
-    const m = matchRoutingRule("totally-unknown-model-xyz", merged);
-    expect(m).toEqual([]);
-  });
-
-  test("local overrides global; defaults still cover untouched patterns", () => {
+  test("local rules override global rules by exact key", () => {
     const userGlobal: RoutingRules = { "claude-*": ["openrouter"] };
     const userLocal: RoutingRules = { "claude-*": ["native-anthropic"] };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
-    // Local wins
-    expect(merged["claude-*"]).toEqual(["native-anthropic"]);
-    // Defaults still cover unrelated patterns
-    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
+    const rules = loadRoutingRules({ globalRules: userGlobal, localRules: userLocal });
+    expect(rules).toEqual({ "claude-*": ["native-anthropic"] });
   });
 
-  test("local + global add new patterns without disturbing defaults", () => {
-    const userGlobal: RoutingRules = { "my-custom-*": ["openrouter"] };
-    const userLocal: RoutingRules = { "my-other-*": ["openai"] };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
-    expect(merged["my-custom-*"]).toEqual(["openrouter"]);
-    expect(merged["my-other-*"]).toEqual(["openai"]);
-    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
+  test("preserves an explicit empty catch-all", () => {
+    const rules = loadRoutingRules({ globalRules: { "*": [] }, localRules: {} });
+    expect(matchRoutingRule("totally-unknown-model-xyz", rules)).toEqual([]);
+  });
+});
+
+describe("validateRoutingRulesAgainstProviders", () => {
+  test("throws when a rule references an unknown provider", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "fake-*": ["totally-not-a-real-provider"] })
+    ).toThrow(/unknown providers/);
+  });
+
+  test("lists every unknown provider without blaming known providers", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({
+        "a-*": ["typo-one"],
+        "b-*": ["typo-two", "openrouter"],
+      })
+    ).toThrow(/typo-one[\s\S]*typo-two/);
+    try {
+      validateRoutingRulesAgainstProviders({ "a-*": ["typo-one", "openrouter"] });
+    } catch (error) {
+      expect((error as Error).message).not.toContain('→ unknown provider "openrouter"');
+    }
+  });
+
+  test("accepts provider@wire-id rewrites", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "kimi-*": ["kimi-coding@whatever-model", "kimi"] })
+    ).not.toThrow();
+  });
+
+  test("accepts provider shortcuts", () => {
+    expect(() => validateRoutingRulesAgainstProviders({ "*": ["or"] })).not.toThrow();
+  });
+
+  test("rejects a typo in a provider@wire-id rewrite", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "kimi-*": ["typo-coding@kimi-for-coding"] })
+    ).toThrow(/typo-coding/);
   });
 });
 
@@ -653,7 +607,7 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -668,7 +622,7 @@ describe("route()", () => {
 
   test("explicit Devin dv@glm-5-2 preserves the dash-native uid without normalization", async () => {
     process.env.WINDSURF_API_KEY = "devin-session-token$test";
-    const plan = await route("dv@glm-5-2", DEFAULT_ROUTING_RULES);
+    const plan = await route("dv@glm-5-2", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.modelSpec).toBe("dv@glm-5-2");
@@ -677,14 +631,14 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
   });
 
   test("claude-opus-4-7 with no credentials → no-route, hint mentions both providers", async () => {
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     expect(plan.hint).toBeDefined();
@@ -696,7 +650,7 @@ describe("route()", () => {
 
   test("explicit prefix native-anthropic@claude-opus-4-7 with ANTHROPIC_API_KEY → ok", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("native-anthropic@claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("native-anthropic@claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -707,7 +661,7 @@ describe("route()", () => {
     // Even with OPENROUTER_API_KEY set, an explicit openai@ prefix must NOT
     // silently reroute to OpenRouter.
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("openai@gpt-5", DEFAULT_ROUTING_RULES);
+    const plan = await route("openai@gpt-5", {});
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     // Hint should mention the missing OpenAI key, not OpenRouter
@@ -729,7 +683,7 @@ describe("route()", () => {
     if (existsSync(codexOauth)) return;
 
     process.env.OPENAI_API_KEY = "sk-openai-test";
-    const plan = await route("gpt-5", DEFAULT_ROUTING_RULES);
+    const plan = await route("gpt-5", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
@@ -751,7 +705,7 @@ describe("route()", () => {
     const cachePath = join(dir, "all-models.json");
     try {
       process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
-      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
+      const plan = await route("gpt-5", {}, undefined, cachePath);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("openai-codex");
@@ -763,13 +717,18 @@ describe("route()", () => {
   test("qwen3.7-plus prefers qwen-token-plan over qwen-payg when both credentials are present", async () => {
     process.env.QWEN_TOKEN_PLAN_API_KEY = "qwen-plan-test";
     process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
-    const { path, cleanup } = makeTempCatalog({
-      modelId: "qwen3.7-plus",
-      externalId: "qwen3.7-plus",
-      subscriptionPlanIds: ["qwen-token-plan"],
-    });
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "qwen3.7-plus",
+        externalId: "qwen3.7-plus",
+        subscriptionPlanIds: ["qwen-token-plan"],
+      },
+      undefined,
+      {},
+      ["qwen-payg"]
+    );
     try {
-      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("qwen3.7-plus", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-token-plan");
@@ -792,10 +751,11 @@ describe("route()", () => {
       {
         "alibaba-ai-coding-plan": "qwen-coding",
         "alibaba-token-plan-individual": "qwen-token-plan",
-      }
+      },
+      ["qwen-payg"]
     );
     try {
-      const result = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      const result = await route("qwen3.7-plus", {}, undefined, path);
       expect(result.kind).toBe("ok");
       if (result.kind !== "ok") return;
       expect(result.primary.modelSpec).toBe("qcode@qwen3.7-plus");
@@ -810,13 +770,18 @@ describe("route()", () => {
 
   test("qwen3.7-plus falls through to qwen-payg with only DASHSCOPE_API_KEY", async () => {
     process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
-    const { path, cleanup } = makeTempCatalog({
-      modelId: "qwen3.7-plus",
-      externalId: "qwen3.7-plus",
-      subscriptionPlanIds: ["qwen-token-plan"],
-    });
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "qwen3.7-plus",
+        externalId: "qwen3.7-plus",
+        subscriptionPlanIds: ["qwen-token-plan"],
+      },
+      undefined,
+      {},
+      ["qwen-payg"]
+    );
     try {
-      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("qwen3.7-plus", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-payg");
@@ -838,7 +803,7 @@ describe("route()", () => {
       { "kimi-code": "kimi-coding" }
     );
     try {
-      const plan = await route("kimi-k3", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("kimi-k3", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -930,13 +895,14 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k3",
+        aliases: ["k3"],
         externalId: "k3",
         subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("k3", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -951,13 +917,14 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k3-256k",
+        aliases: ["k3-256k"],
         externalId: "k3-256k",
         subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3-256k", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("k3-256k", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -973,13 +940,16 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k2.5",
+        externalId: "kimi-k2.5",
         // No subscriptionPlanIds — this model is not part of the kimi-coding plan,
         // so the subscription candidate is dropped instead of silently substituting.
       },
-      ["kimi-coding"]
+      ["kimi-coding"],
+      {},
+      ["kimi"]
     );
     try {
-      const plan = await route("kimi-k2.5", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("kimi-k2.5", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi");
@@ -990,7 +960,7 @@ describe("route()", () => {
   });
 
   test("user disables catch-all with '*' = [] → no-route for unknown bare names", async () => {
-    const userRules: RoutingRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, { "*": [] }, {});
+    const userRules: RoutingRules = { "*": [] };
     process.env.OPENROUTER_API_KEY = "or-test";
     const plan = await route("totally-unknown-xyz", userRules);
     expect(plan.kind).toBe("no-route");
@@ -1014,7 +984,7 @@ describe("route()", () => {
       process.env.OPENAI_CODEX_API_KEY = "cx-test";
       process.env.OPENAI_API_KEY = "oai-test";
       process.env.OPENROUTER_API_KEY = "or-test";
-      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
+      const plan = await route("gpt-5", {}, undefined, cachePath);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("openai-codex");
@@ -1058,14 +1028,14 @@ describe("route() with defaultProvider", () => {
     credentials.invalidate();
   });
 
-  test("defaultProvider appended after matched chain when not already present", async () => {
+  test("a matched user rule is honoured verbatim without appending defaultProvider", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
     process.env.XAI_API_KEY = "xai-test";
     const plan = await route("gpt-5", { "gpt-*": ["openai"] }, "x-ai");
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
-    expect(plan.fallbacks.map((r) => r.provider)).toEqual(["x-ai"]);
+    expect(plan.fallbacks).toEqual([]);
   });
 
   test("defaultProvider deduped if already present in chain", async () => {
@@ -1080,30 +1050,33 @@ describe("route() with defaultProvider", () => {
 
   test("defaultProvider rescues unmatched model with no rule", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("totally-unknown-xyz", {}, "openrouter");
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("openrouter");
+    const { path, cleanup } = makeTempCatalog({ modelId: "catalog-readable-marker" });
+    try {
+      const plan = await route("totally-unknown-xyz", {}, "openrouter", path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("openrouter");
+    } finally {
+      cleanup();
+    }
   });
 
-  test("defaultProvider rescues when matched chain has no credentialed providers", async () => {
+  test("defaultProvider does not rescue a matched user chain with no credentials", async () => {
     process.env.XAI_API_KEY = "xai-test";
     const plan = await route("deepseek-r1", { "deepseek-*": ["deepseek"] }, "x-ai");
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("x-ai");
+    expect(plan.kind).toBe("no-route");
   });
 
-  test("defaultProvider undefined → identical behavior to omitted argument", () => {
+  test("defaultProvider undefined has the same effect as an omitted argument", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
-    const planA = route("gpt-5", { "gpt-*": ["openai"] }, undefined);
-    const planB = route("gpt-5", { "gpt-*": ["openai"] });
+    const planA = await route("gpt-5", { "gpt-*": ["openai"] }, undefined);
+    const planB = await route("gpt-5", { "gpt-*": ["openai"] });
     expect(planA).toEqual(planB);
   });
 
   test("defaultProvider not consulted for explicit provider@model spec", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("openrouter@gpt-5", DEFAULT_ROUTING_RULES, "xai");
+    const plan = await route("openrouter@gpt-5", {}, "xai");
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");

@@ -1,0 +1,416 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { credentials } from "../auth/credentials/authority.js";
+import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
+import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
+import { providersForCatalogRoute } from "./catalog-route-bindings.js";
+import {
+  getModelDiscoveryFetcher,
+  invalidateModelDiscovery,
+  registerModelDiscoveryFetcher,
+} from "./model-discovery.js";
+import "./model-discovery-builtins.js";
+import {
+  type RouteCandidate,
+  catalogDeniesProvider,
+  compareRouteCandidates,
+  gatherRouteCandidates,
+  routeOwnership,
+} from "./route-candidates.js";
+import { buildCatalogChain, route } from "./routing-rules.js";
+
+const GENERATION = "g-20260921062451697-f490edba";
+
+/**
+ * Trimmed verbatim from ~/.claudish/cloud-models-catalog-v3.json at GENERATION.
+ * The comments name every canonical model id used by a test; fields irrelevant
+ * to gathering are omitted, while route bindings, wire ids, prices, vendor and
+ * context windows remain exactly as published.
+ */
+const REAL_ENTRIES: SlimModelEntry[] = [
+  // gpt-6-astra: subscription + native API + gateways.
+  {
+    modelId: "gpt-6-astra",
+    provider: "openai",
+    aliases: ["openai/gpt-6-astra", "~openai/gpt-astra-latest"],
+    contextWindow: 1_050_000,
+    subscriptionPlanIds: ["openai-codex"],
+    aggregators: [
+      {
+        sourceProviderId: "openai-codex",
+        sourceCollectorId: "openai-codex-models",
+        confidence: "scrape_verified",
+        routeStatus: "mapped",
+        route: { routeId: "openai", routeProfileId: "codex-subscription" },
+        externalModelId: "gpt-6-astra",
+      },
+      {
+        sourceProviderId: "openai",
+        sourceCollectorId: "openai-api",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: { routeId: "openai", routeProfileId: "direct-api" },
+        externalModelId: "gpt-6-astra",
+        pricing: { type: "flat", input: 10, output: 50 },
+      },
+      {
+        sourceProviderId: "opencode-zen",
+        sourceCollectorId: "opencode-zen-pricing-scrape",
+        confidence: "gateway_official",
+        routeStatus: "mapped",
+        route: { routeId: "opencode", routeProfileId: "zen" },
+        externalModelId: "gpt-6-astra",
+        pricing: { type: "flat", input: 10, output: 50 },
+      },
+      {
+        sourceProviderId: "openrouter",
+        sourceCollectorId: "openrouter-api",
+        confidence: "aggregator_reported",
+        routeStatus: "mapped",
+        route: { routeId: "openrouter", routeProfileId: "gateway" },
+        externalModelId: "openai/gpt-6-astra",
+        pricing: { type: "flat", input: 10, output: 50 },
+      },
+    ],
+  },
+  // glm-4.7: z-ai/direct-api is bound to both z-ai and glm credential silos.
+  {
+    modelId: "glm-4.7",
+    provider: "z-ai",
+    aliases: ["z-ai/glm-4.7", "zai-org/GLM-4.7", "GLM-4.7"],
+    contextWindow: 202_752,
+    aggregators: [
+      {
+        sourceProviderId: "openrouter",
+        sourceCollectorId: "openrouter-api",
+        confidence: "aggregator_reported",
+        routeStatus: "mapped",
+        route: { routeId: "openrouter", routeProfileId: "gateway" },
+        externalModelId: "z-ai/glm-4.7",
+        pricing: { type: "flat", input: 0.4, output: 1.75 },
+      },
+      {
+        sourceProviderId: "z-ai",
+        sourceCollectorId: "zhipu-api",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: { routeId: "z-ai", routeProfileId: "direct-api" },
+        externalModelId: "glm-4.7",
+        pricing: { type: "unavailable" },
+      },
+    ],
+  },
+  // kimi-k3: vendor connection plus priced and unpriced alternatives.
+  {
+    modelId: "kimi-k3",
+    provider: "moonshotai",
+    aliases: ["moonshotai/kimi-k3", "~moonshotai/kimi-latest", "k3"],
+    contextWindow: 1_048_576,
+    aggregators: [
+      {
+        sourceProviderId: "moonshotai",
+        sourceCollectorId: "moonshot-api",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: { routeId: "moonshotai", routeProfileId: "direct-api" },
+        externalModelId: "kimi-k3",
+        pricing: { type: "unavailable" },
+      },
+      {
+        sourceProviderId: "opencode-zen",
+        sourceCollectorId: "opencode-zen-pricing-scrape",
+        confidence: "gateway_official",
+        routeStatus: "mapped",
+        route: { routeId: "opencode", routeProfileId: "zen" },
+        externalModelId: "kimi-k3",
+        pricing: { type: "flat", input: 3, output: 15 },
+      },
+      {
+        sourceProviderId: "openrouter",
+        sourceCollectorId: "openrouter-api",
+        confidence: "aggregator_reported",
+        routeStatus: "mapped",
+        route: { routeId: "openrouter", routeProfileId: "gateway" },
+        externalModelId: "moonshotai/kimi-k3",
+        pricing: { type: "flat", input: 1.7, output: 8.5 },
+      },
+    ],
+  },
+  // qwen3.8-max: subscriptions + native API, positively no OpenRouter connection.
+  {
+    modelId: "qwen3.8-max",
+    provider: "qwen",
+    aliases: ["accounts/fireworks/models/qwen3p8-max"],
+    contextWindow: 1_000_000,
+    subscriptionPlanIds: [
+      "alibaba-token-plan-individual",
+      "alibaba-token-plan-team-edition",
+      "opencode-go",
+    ],
+    aggregators: [
+      {
+        sourceProviderId: "opencode-go",
+        sourceCollectorId: "popular-coding-subscriptions",
+        confidence: "gateway_official",
+        routeStatus: "mapped",
+        route: { routeId: "opencode", routeProfileId: "go-subscription" },
+        externalModelId: "qwen3.8-max",
+      },
+      {
+        sourceProviderId: "qwen-cloud",
+        sourceCollectorId: "qwen-cloud-token-plan-scrape",
+        confidence: "scrape_verified",
+        routeStatus: "mapped",
+        route: { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
+        externalModelId: "qwen3.8-max",
+      },
+      {
+        sourceProviderId: "qwen",
+        sourceCollectorId: "dashscope-api",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: { routeId: "qwen", routeProfileId: "dashscope-direct" },
+        externalModelId: "qwen3.8-max",
+        pricing: { type: "flat", input: 2, output: 6 },
+      },
+    ],
+  },
+  // gemini-3.8-flash: metered connections plus Antigravity's namespace claim.
+  {
+    modelId: "gemini-3.8-flash",
+    provider: "google",
+    aliases: ["google/gemini-3.8-flash"],
+    contextWindow: 1_048_576,
+    aggregators: [
+      {
+        sourceProviderId: "google",
+        sourceCollectorId: "google-model-get-api",
+        confidence: "api_official",
+        routeStatus: "mapped",
+        route: { routeId: "google", routeProfileId: "direct-api" },
+        externalModelId: "gemini-3.8-flash",
+        pricing: { type: "flat", input: 0.75, output: 3.75 },
+      },
+      {
+        sourceProviderId: "openrouter",
+        sourceCollectorId: "openrouter-api",
+        confidence: "aggregator_reported",
+        routeStatus: "mapped",
+        route: { routeId: "openrouter", routeProfileId: "gateway" },
+        externalModelId: "google/gemini-3.8-flash",
+        pricing: { type: "flat", input: 0.75, output: 3.75 },
+      },
+    ],
+  },
+];
+
+const tempDir = mkdtempSync(join(tmpdir(), "claudish-route-candidates-"));
+const cachePath = join(tempDir, "cloud-models-catalog-v3.json");
+const missingCachePath = join(tempDir, "missing-catalog.json");
+
+beforeAll(() => {
+  const cache: DiskCacheV3 = {
+    version: 3,
+    catalogGenerationId: GENERATION,
+    lastUpdated: "2026-09-21T06:24:51.697Z",
+    entries: REAL_ENTRIES,
+    models: [],
+    plans: [],
+  };
+  writeAllModelsCache(cache, cachePath);
+});
+
+afterAll(() => {
+  _resetCatalogClient();
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+function gatheredCandidate(model: string, provider: string): RouteCandidate {
+  const candidate = gatherRouteCandidates(model, cachePath).candidates.find(
+    (item) => item.provider === provider
+  );
+  if (!candidate) throw new Error(`fixture produced no ${provider} candidate for ${model}`);
+  return candidate;
+}
+
+describe("catalog route candidate gathering and order", () => {
+  test("puts a flat-rate subscription before a metered connection", () => {
+    const candidates = gatherRouteCandidates("gpt-6-astra", cachePath).candidates;
+
+    expect(candidates[0]?.provider).toBe("openai-codex");
+    expect(candidates.map(({ provider }) => provider)).toContain("openrouter");
+  });
+
+  test("gathers every provider bound to z-ai/direct-api", () => {
+    const binding = { routeId: "z-ai", routeProfileId: "direct-api" };
+    expect(providersForCatalogRoute(binding)).toEqual(["z-ai", "glm"]);
+
+    const direct = gatherRouteCandidates("glm-4.7", cachePath).candidates.filter(
+      ({ wireId }) => wireId === "glm-4.7"
+    );
+    expect(direct.map(({ provider }) => provider).sort()).toEqual(["glm", "z-ai"]);
+  });
+
+  test("the vendor comes first when candidates share a tier", () => {
+    const vendor = gatheredCandidate("kimi-k3", "kimi");
+    const gateway = gatheredCandidate("kimi-k3", "openrouter");
+
+    // No current row puts a vendor-native connection and a gateway in one tier:
+    // RouteTier defines those separately. Equalising only the tier isolates the
+    // comparator contract while retaining kimi-k3's real wire ids, prices and
+    // moonshotai vendor binding.
+    const tied = [
+      { ...gateway, tier: "gateway" as const },
+      { ...vendor, tier: "gateway" as const },
+    ].sort(compareRouteCandidates);
+    expect(tied[0]?.provider).toBe("kimi");
+  });
+
+  test("orders known prices cheapest-first and every unknown price last", () => {
+    const openrouter = gatheredCandidate("kimi-k3", "openrouter");
+    const zen = gatheredCandidate("kimi-k3", "opencode-zen");
+    const unknown = gatheredCandidate("kimi-k3", "kimi");
+    const comparable = [openrouter, zen, unknown]
+      .map((candidate) => ({ ...candidate, tier: "gateway" as const, isVendorOwn: false }))
+      .sort(compareRouteCandidates);
+
+    expect(comparable.map(({ provider }) => provider)).toEqual([
+      "openrouter",
+      "opencode-zen",
+      "kimi",
+    ]);
+    expect(comparable.at(-1)?.price.known).toBe(false);
+  });
+
+  test("uses larger context next and provider name as the deterministic final tie-break", () => {
+    const kimi = gatheredCandidate("kimi-k3", "kimi");
+    const zai = gatheredCandidate("glm-4.7", "z-ai");
+
+    // Generation g-20260921062451697-f490edba publishes zero per-connection
+    // windows. The AggregatorEntry contract says omission inherits the model's
+    // headline window, so these are the real 1,048,576 and 202,752 values.
+    const neitherVendor = [zai, kimi].map((candidate) => ({
+      ...candidate,
+      isVendorOwn: false,
+    }));
+    expect(neitherVendor.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+      "kimi",
+      "z-ai",
+    ]);
+
+    const sameContext = neitherVendor
+      .map((candidate) => ({ ...candidate, contextWindow: kimi.contextWindow }))
+      .sort(compareRouteCandidates);
+    expect(sameContext.map(({ provider }) => provider)).toEqual(["kimi", "z-ai"]);
+  });
+});
+
+describe("namespace claims and availability", () => {
+  test("a namespace claim is gathered but the dynamic models catalog may remove it", async () => {
+    const gathered = gatherRouteCandidates("gemini-3.8-flash", cachePath);
+    expect(gathered.candidates).toContainEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        tier: "dynamic-subscription",
+        source: "namespace-claim",
+      })
+    );
+
+    const originalFetcher = getModelDiscoveryFetcher("antigravity");
+    const originalIsAvailable = credentials.isAvailable;
+    const originalDescribeReadiness = credentials.describeReadiness;
+    if (!originalFetcher) throw new Error("Antigravity discovery fetcher was not registered");
+
+    try {
+      registerModelDiscoveryFetcher("antigravity", async () => [{ id: "gemini-2.5-flash" }]);
+      invalidateModelDiscovery("antigravity");
+      credentials.isAvailable = async (provider: string) => provider === "antigravity";
+      credentials.describeReadiness = async (provider: string) => ({
+        readiness: provider === "antigravity" ? "present" : "absent",
+      });
+
+      const plan = await route("gemini-3.8-flash", {}, "", cachePath);
+      expect(plan.kind).toBe("no-route");
+      if (plan.kind === "no-route") {
+        expect(plan.reason).toBe('No provider serves "gemini-3.8-flash" (checked: antigravity).');
+      }
+    } finally {
+      registerModelDiscoveryFetcher("antigravity", originalFetcher);
+      invalidateModelDiscovery("antigravity");
+      credentials.isAvailable = originalIsAvailable;
+      credentials.describeReadiness = originalDescribeReadiness;
+    }
+  });
+});
+
+describe("fallback placement and no-catalog behavior", () => {
+  test("appends the fallback last and does not duplicate an existing candidate", () => {
+    const missingModel = buildCatalogChain("swe-1.7", undefined, cachePath);
+    expect(missingModel.routes.map(({ provider }) => provider)).toEqual(["devin", "openrouter"]);
+
+    const alreadyGathered = buildCatalogChain("gpt-6-astra", "openrouter", cachePath);
+    expect(alreadyGathered.routes.at(-1)?.provider).toBe("openrouter");
+    expect(alreadyGathered.routes.filter(({ provider }) => provider === "openrouter")).toHaveLength(
+      1
+    );
+  });
+
+  test("does not append a fallback when defaultProvider is explicitly empty", () => {
+    expect(
+      buildCatalogChain("swe-1.7", "", cachePath).routes.map(({ provider }) => provider)
+    ).toEqual(["devin"]);
+  });
+
+  test.skipIf(routeOwnership("openrouter") !== "backend-owned")(
+    "does not append a backend-owned gateway the cloud models catalog positively denies",
+    () => {
+      // The probe ownership cache and qwen3.8-max row are both generation
+      // g-20260921062451697-f490edba. The branch cannot be isolated from the
+      // default probe-cache path because production exposes no injection seam.
+      expect(catalogDeniesProvider("openrouter", "qwen3.8-max", cachePath)).toBe(true);
+      expect(
+        buildCatalogChain("qwen3.8-max", "openrouter", cachePath).routes.map(
+          ({ provider }) => provider
+        )
+      ).not.toContain("openrouter");
+    }
+  );
+
+  test("a matching empty user rule suppresses every fallback", async () => {
+    const originalIsAvailable = credentials.isAvailable;
+    try {
+      credentials.isAvailable = async () => true;
+      const plan = await route("gpt-6-astra", { "*": [] }, "openrouter", cachePath);
+      expect(plan).toEqual({
+        kind: "no-route",
+        reason: 'A routing rule matched "gpt-6-astra" and named no provider.',
+        hint: expect.any(String),
+      });
+    } finally {
+      credentials.isAvailable = originalIsAvailable;
+    }
+  });
+
+  test("no cloud models catalog blocks bare names but explicit model specs still work", async () => {
+    const originalIsAvailable = credentials.isAvailable;
+    _setCatalogEntriesForTest([]);
+    try {
+      credentials.isAvailable = async (provider: string) => provider === "openai";
+      const bare = await route("gpt-5", {}, undefined, missingCachePath);
+      expect(bare.kind).toBe("no-route");
+      if (bare.kind === "no-route") {
+        expect(bare.reason).toContain("No model catalog available");
+        expect(bare.hint).toContain("claudish --models-refresh");
+      }
+
+      const explicit = await route("openai@gpt-5", {}, undefined, missingCachePath);
+      expect(explicit.kind).toBe("ok");
+      if (explicit.kind === "ok") expect(explicit.primary.modelSpec).toBe("oai@gpt-5");
+    } finally {
+      credentials.isAvailable = originalIsAvailable;
+      _resetCatalogClient();
+    }
+  });
+});
