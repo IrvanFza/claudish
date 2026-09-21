@@ -96,11 +96,23 @@ the exact ambiguity that keeps `openai-codex` out of `SUBSCRIPTION_PROVIDERS`. B
 has no metered path, it is *not* dual-mode and **is** in that set. `GROK_DEPLOYMENT_KEY` (enterprise)
 is out of scope for v1 for the same reason: it would reintroduce the ambiguity.
 
-**Bare `grok-*` routes subscription-FIRST** — `["grok-subscription", "x-ai", "openrouter"]`, matching
-every other split family. Unlike Devin and Alibaba Token Plan, which are explicit-access-only because their
-uids collide with other vendors' namespaces, these ids are xAI's own, so a bare name is safe here.
-The provider declares **no `nativeModelPatterns`** (`x-ai` already owns `/^grok-/i`, and patterns are
-first-wins on array order); bare-name reachability comes from the routing chain instead.
+**Bare `grok-*` routes subscription-FIRST.** Unlike Devin and Alibaba Token Plan, which are
+explicit-access-only because their uids collide with other vendors' namespaces, these ids are
+xAI's own, so a bare name is safe here.
+
+That used to come from a hand-written chain, `["grok-subscription", "x-ai", "openrouter"]`. That
+table is gone. The provider now declares `nativeModelPatterns: [{ pattern: /^grok-/i }]` — a
+NAMESPACE CLAIM, which is the only way a dynamic subscription can enter a gathered chain at all:
+`x-ai/supergrok-subscription` is `client_model_selection_required` in the probe map and
+publishes zero `aggregators[]` rows, so the catalog cannot see the plan. `route-candidates.ts`
+turns the claim into a `dynamic-subscription`-tier candidate, which the tier order puts ahead of
+the metered `x-ai` hop.
+
+The claim does NOT win auto-detection, and that is deliberate: `x-ai` declares the same pattern
+and is defined earlier in `BUILTIN_PROVIDERS`, and `getNativeModelPatterns()` is first-wins on
+array order, so `parseModelSpec("grok-4.6").provider` is still `x-ai`. Two claimants on one
+namespace is fine now — the function that picked a single winner, `getProviderForModel`, no
+longer exists.
 
 **The roster is discovered, never pinned.** `/v1/models` is genuinely authenticated (401 without a
 token — unlike Alibaba's `coding-intl` roster, where a 200 proves nothing) and the served set is

@@ -35,7 +35,7 @@ import {
 import { ComposedHandler } from "../handlers/composed-handler.js";
 import type { ModelHandler } from "../handlers/types.js";
 import { log, logStderr } from "../logger.js";
-import { formatProvenanceLog, resolveApiKeyProvenance } from "./api-key-provenance.js";
+import { formatProvenanceLog, resolveCredentialProvenance } from "./api-key-provenance.js";
 import { getProviderByName } from "./provider-definitions.js";
 import { getRuntimeProfiles } from "./runtime-providers.js";
 import { AnthropicProviderTransport } from "./transport/anthropic-compat.js";
@@ -579,10 +579,13 @@ export async function createHandlerForProvider(ctx: ProfileContext): Promise<Mod
     return null;
   }
 
-  // Log API key provenance so debug logs show exactly which key is used and where it came from
+  // Log credential provenance so debug logs show exactly which credential is in
+  // use and where it came from. Provider-aware: Vertex's `apiKeyEnvVar` holds a
+  // PROJECT id, which may come from the ADC file or `gcloud config`, so the
+  // env-only reading logged "VERTEX_PROJECT=(not set)" for a working install.
   if (ctx.provider.apiKeyEnvVar) {
-    const provenance = resolveApiKeyProvenance(ctx.provider.apiKeyEnvVar);
-    log(`[Proxy] API key: ${formatProvenanceLog(provenance)}`);
+    const provenance = resolveCredentialProvenance(definitionName, ctx.provider.apiKeyEnvVar);
+    log(`[Proxy] Credential: ${formatProvenanceLog(provenance)}`);
   }
   log(`[Proxy] Handler: provider=${ctx.provider.name}, model=${ctx.modelName}`);
 

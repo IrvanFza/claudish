@@ -51,7 +51,7 @@ import {
   readProOnUltracode,
 } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
+import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
 import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
 import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
@@ -63,6 +63,7 @@ import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import {
+  buildCatalogChain,
   buildRoutingChain,
   hasCredentialsForProvider,
   loadRoutingRules,
@@ -1393,14 +1394,42 @@ async function probeModelRouting(
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
 
   // Snapshot user-defined routing keys so we can label matches as
-  // "custom-rules" vs "auto-chain" (default rules) in --probe output.
-  // Defaults are merged INSIDE loadRoutingRules() but are not returned
-  // from loadConfig/loadLocalConfig directly — those reads see only user
-  // overrides, which is exactly the discriminator we need here.
+  // "custom-rules" vs "auto-chain" in --probe output. Every rule
+  // `loadRoutingRules()` returns is now the user's own — there is no shipped
+  // table left to merge — so this set and that one have the same keys; the
+  // snapshot stays because the labelling reads more clearly for it.
   const userRoutingKeys = new Set<string>([
     ...Object.keys(loadConfig().routing ?? {}),
     ...Object.keys(loadLocalConfig()?.routing ?? {}),
   ]);
+
+  /**
+   * The remedy a credential-less row shows.
+   *
+   * Reads it off the PROVENANCE rather than naming providers here: a record that
+   * carries an `effectiveLabel` is one whose credential is not an environment
+   * variable at all (Vertex, whose Google Cloud project comes from the ADC file
+   * or `gcloud config`), and for those the variable name is the wrong
+   * instruction — its `effectiveSource` is the sentence that names both
+   * remedies. Everyone else keeps the bare variable name they always had.
+   */
+  function credentialHintFrom(
+    provenance: KeyProvenance | undefined,
+    envVar: string | undefined
+  ): string | undefined {
+    if (provenance?.effectiveLabel) return provenance.effectiveSource;
+    return envVar;
+  }
+
+  /** The same remedy where no provenance record has been built yet. */
+  function credentialHintFor(
+    provider: string,
+    envVar: string | undefined,
+    aliases: string[] | undefined
+  ): string | undefined {
+    if (!envVar) return undefined;
+    return credentialHintFrom(resolveCredentialProvenance(provider, envVar, aliases), envVar);
+  }
 
   /** Build chain + credential data for a single model (shared by both paths) */
   function buildModelChain(modelInput: string) {
@@ -1478,8 +1507,8 @@ async function probeModelRouting(
           matchedPattern: undefined,
         };
       }
-      // Routing rules now always include DEFAULT_ROUTING_RULES merged with
-      // user overrides — see loadRoutingRules() in providers/routing-rules.ts.
+      // Only the USER's rules now — the shipped table is gone, so most models
+      // match nothing here and are routed from the catalog instead.
       const routingRules = loadRoutingRules();
       const matched = matchRoutingRule(parsed.model, routingRules);
       if (matched) {
@@ -1493,8 +1522,6 @@ async function probeModelRouting(
           }
           return false;
         });
-        // Distinguish user overrides from shipped defaults so --probe can show
-        // "custom-rules" vs "auto-chain" exactly as before.
         const isUserKey = !!matchedPattern && userRoutingKeys.has(matchedPattern);
         return {
           routes: buildRoutingChain(matched, parsed.model),
@@ -1502,8 +1529,16 @@ async function probeModelRouting(
           matchedPattern,
         };
       }
+      // No user rule: the SAME chain `routeBare` would assemble — gathered from
+      // the cloud models catalog, with the fallback hop appended. This used to
+      // read the shipped rules table; reproducing the gathering by hand here
+      // would be the second copy of a routing decision, and the two would
+      // disagree the first time either changed. `--probe` still owns the
+      // credential-provenance display below, which is why it builds a chain at
+      // all instead of calling `route()`.
       return {
-        routes: [] as FallbackRoute[],
+        routes: buildCatalogChain(parsed.model, loadConfig().defaultProvider)
+          .routes as FallbackRoute[],
         source: "auto-chain" as const,
         matchedPattern: undefined,
       };
@@ -1535,13 +1570,13 @@ async function probeModelRouting(
       } else if (!keyInfo.envVar) {
         hasCredentials = true;
       } else {
-        provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+        provenance = resolveCredentialProvenance(route.provider, keyInfo.envVar, keyInfo.aliases);
         hasCredentials = provenance.hasValue;
         if (!hasCredentials && keyInfo.aliases) {
           hasCredentials = keyInfo.aliases.some((a) => !!process.env[a]);
         }
         if (!hasCredentials) {
-          credentialHint = keyInfo.envVar;
+          credentialHint = credentialHintFrom(provenance, keyInfo.envVar);
         }
       }
 
@@ -1577,16 +1612,20 @@ async function probeModelRouting(
     await Promise.all(
       result.chainDetails.map(async (link) => {
         link.hasCredentials = await credentialForProbe(link.provider);
+        const keyInfo = API_KEY_MAP[link.provider];
+        if (keyInfo?.envVar)
+          link.provenance = resolveCredentialProvenance(
+            link.provider,
+            keyInfo.envVar,
+            keyInfo.aliases
+          );
         link.credentialHint = link.hasCredentials
           ? undefined
           : link.provider === "native-anthropic"
             ? "ANTHROPIC_API_KEY (required to probe Claude Code)"
             : getProviderByName(link.provider)?.isLocal
               ? "enable local provider in global config"
-              : API_KEY_MAP[link.provider]?.envVar;
-        const keyInfo = API_KEY_MAP[link.provider];
-        if (keyInfo?.envVar)
-          link.provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+              : credentialHintFrom(link.provenance, keyInfo?.envVar);
       })
     );
     if (result.chain.source === "direct") await credentialForProbe(result.parsed.provider);
@@ -1652,7 +1691,7 @@ async function probeModelRouting(
 
     const hasCredentials = probeCredentialReadiness.get(parsed.provider) ?? false;
     const provenance = keyInfo?.envVar
-      ? resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases)
+      ? resolveCredentialProvenance(parsed.provider, keyInfo.envVar, keyInfo.aliases)
       : undefined;
 
     return [
@@ -1666,7 +1705,7 @@ async function probeModelRouting(
         credentialHint: !hasCredentials
           ? providerDef?.isLocal
             ? "enable local provider in global config"
-            : keyInfo?.envVar
+            : credentialHintFrom(provenance, keyInfo?.envVar)
           : undefined,
         provenance,
         probe: directProbe,
@@ -1701,7 +1740,7 @@ async function probeModelRouting(
           credentialHint: !directHasCreds
             ? directProviderDef?.isLocal
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases)
             : undefined,
           probe: directProbe,
         },
@@ -1850,7 +1889,7 @@ async function probeModelRouting(
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar;
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
           directProbeResult = await probeProviderRoute(
             liveProxy.url,
             {
@@ -2027,7 +2066,7 @@ async function probeModelRouting(
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar;
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
           allLinks.push({
             id: `${modelInput}:direct`,
             displayName: parsed.provider,

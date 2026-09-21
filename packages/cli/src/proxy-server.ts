@@ -572,9 +572,10 @@ export async function createProxyServer(
   // Firebase catalogs now. The OpenRouter catalog is still warmed below via
   // warmAllCatalogs() since it backs vendor-prefix resolution.
 
-  // Load effective routing rules once at startup. Returns a merged view of
-  // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
-  // routing engine consults these via route() for every bare-name request.
+  // Load effective routing rules once at startup: the USER's global config +
+  // local config (local wins), and nothing else — there is no shipped table any
+  // more. The routing engine consults these via route() for every bare-name
+  // request, and falls through to the catalog-gathered chain when none matches.
   const effectiveRoutingRules = loadRoutingRules();
 
   // Cache fallback handlers by target model string.
@@ -830,9 +831,9 @@ export async function createProxyServer(
           }
         } else {
           // No routable provider for a bare model name. Routing is fully
-          // data-driven now (DEFAULT_ROUTING_RULES + user overrides) — if the
-          // chain is empty and credential filtering produces nothing, that's
-          // the user's configured outcome. Throw so the request handler
+          // data-driven now (the user's own rules, else the cloud models
+          // catalog) — if the chain is empty and credential filtering produces
+          // nothing, that is what the data says. Throw so the request handler
           // surfaces a clean error instead of silently falling through to a
           // legacy OpenRouter fallback. (Pre-commit-5 there was a hidden
           // OpenRouter step 7 that masked the no-route case.)

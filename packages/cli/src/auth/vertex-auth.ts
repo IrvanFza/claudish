@@ -16,7 +16,7 @@
  */
 
 import { exec } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -32,12 +32,21 @@ const execAsync = promisify(exec);
  * credential-presence check and the project resolution all read the SAME file,
  * and a copy that drifted would make one of them disagree with the others.
  */
-function adcCredentialsPath(): string {
+export function adcCredentialsPath(): string {
   return join(homedir(), ".config/gcloud/application_default_credentials.json");
 }
 
 /** Vertex location used when VERTEX_LOCATION is unset — a DEFAULT, never a guess. */
 const DEFAULT_VERTEX_LOCATION = "us-central1";
+
+/**
+ * Environment variables that name the Google Cloud project, in precedence order.
+ *
+ * Exported because provenance reporting has to inspect the SAME list
+ * `resolveVertexConfig` reads. A second spelling in `api-key-provenance.ts` is
+ * how a display surface ends up saying "not set" about a variable that is set.
+ */
+export const VERTEX_PROJECT_ENV_VARS = ["VERTEX_PROJECT", "GOOGLE_CLOUD_PROJECT"] as const;
 
 interface VertexAccessToken {
   token: string;
@@ -216,27 +225,133 @@ export class VertexAuthManager {
  * machine's CURRENT gcloud state; a cached copy would outlive
  * `gcloud config set project` and silently bill the previous project.
  */
-let discoveredProjectPromise: Promise<string | null> | null = null;
+let discoveredProjectPromise: Promise<VertexProjectOrigin | null> | null = null;
 
 /**
- * Reset the discovery memo. Test seam — production resolves once per process.
+ * The SETTLED value of the promise above, once it has settled.
+ *
+ * Exists for the sync surfaces (React render paths, `describeSourceSync`), which
+ * cannot await a promise but must not report a working Vertex as unconfigured.
+ * `undefined` means "discovery has not finished"; `null` means "it finished and
+ * found nothing" — two different answers, so it is deliberately a tri-state.
+ */
+let discoveredProjectSettled: VertexProjectOrigin | null | undefined;
+
+/**
+ * Per-process memo of the SYNC ADC-file read, both outcomes.
+ *
+ * Same lifetime and rationale as the async memo: nothing is written to disk, and
+ * a resolved project is a fact about this machine's current gcloud state. Kept
+ * separate because the sync path can answer only the first discovery tier — it
+ * must never shell out to `gcloud` (a subprocess per React render), so a sync
+ * miss is not the same statement as an async miss.
+ */
+let syncAdcOrigin: VertexProjectOrigin | null | undefined;
+
+/**
+ * Reset the discovery memos. Test seam — production resolves once per process.
  */
 export function resetVertexProjectDiscovery(): void {
   discoveredProjectPromise = null;
+  discoveredProjectSettled = undefined;
+  syncAdcOrigin = undefined;
+}
+
+/** Which of the three tiers supplied the Google Cloud project. */
+export type VertexProjectSource = "env" | "adc-file" | "gcloud-config";
+
+/**
+ * A resolved project AND the thing that supplied it.
+ *
+ * The project alone is not enough for any surface that has to tell the user what
+ * to change: "not set" about `VERTEX_PROJECT` is a lie on a machine where the
+ * project came from the ADC file, and it sends the reader looking for an API key
+ * that does not exist.
+ */
+export interface VertexProjectOrigin {
+  projectId: string;
+  source: VertexProjectSource;
+  /** Exactly what supplied it: an env var NAME, a file path, or a command. */
+  detail: string;
+}
+
+/**
+ * A short, display-ready phrase naming the source — one wording, every surface.
+ *
+ * Deliberately WITHOUT the ADC file's full path: this goes in a table cell and a
+ * fixed-height detail row, and `~/.config/gcloud/application_default_credentials.json`
+ * is 52 characters that push the project id itself off the end. The exact path
+ * still appears as a provenance LAYER, which is the place that names locations.
+ */
+export function describeVertexProjectSource(origin: VertexProjectOrigin): string {
+  switch (origin.source) {
+    case "env":
+      return `$${origin.detail}`;
+    case "adc-file":
+      return "the ADC file's quota_project_id";
+    case "gcloud-config":
+      return `\`${origin.detail}\``;
+  }
+}
+
+/**
+ * What to do when no project resolves — ONE sentence, used by every surface.
+ *
+ * Names BOTH remedies and no API key, because Vertex has none: the Express
+ * API-key mode was deleted on 2026-09-21 and the credential is Application
+ * Default Credentials. `validateVertexOAuthConfig` is the long-form version for
+ * error paths; this is the one-liner for a table cell or a status row.
+ */
+export const VERTEX_SET_PROJECT_REMEDY =
+  "set VERTEX_PROJECT or run `gcloud config set project <id>`";
+
+/** The same two remedies, plus the fact that rules out the third guess. */
+export const VERTEX_NO_PROJECT_REMEDY = `${VERTEX_SET_PROJECT_REMEDY} — Vertex takes no API key`;
+
+/** The remedy with its cause in front, for a cell that stands on its own. */
+export const VERTEX_NO_PROJECT_HINT = `no Google Cloud project: ${VERTEX_NO_PROJECT_REMEDY}`;
+
+/** The project from the environment, read fresh on every call. */
+function envProjectOrigin(): VertexProjectOrigin | null {
+  for (const name of VERTEX_PROJECT_ENV_VARS) {
+    const value = process.env[name]?.trim();
+    if (value) return { projectId: value, source: "env", detail: name };
+  }
+  return null;
 }
 
 /** `quota_project_id` from the ADC file — the same file the token path reads. */
-async function readAdcQuotaProject(): Promise<string | null> {
+async function readAdcQuotaProject(): Promise<VertexProjectOrigin | null> {
   try {
     const raw = await readFile(adcCredentialsPath(), "utf-8");
-    const parsed = JSON.parse(raw) as { quota_project_id?: unknown };
-    const project =
-      typeof parsed.quota_project_id === "string" ? parsed.quota_project_id.trim() : "";
-    return project || null;
+    return adcOriginFromJson(raw);
   } catch (e: any) {
     log(`[VertexAuth] No project in ADC file: ${e.message}`);
     return null;
   }
+}
+
+/**
+ * The SYNC twin of the read above — the only discovery tier a render path can
+ * afford. A ~1KB JSON read, memoized per process; `gcloud config` is NOT
+ * consulted here, because spawning a subprocess on a React render is the
+ * mistake `keychain.md` records.
+ */
+export function peekVertexAdcProject(): VertexProjectOrigin | null {
+  if (syncAdcOrigin !== undefined) return syncAdcOrigin;
+  try {
+    syncAdcOrigin = adcOriginFromJson(readFileSync(adcCredentialsPath(), "utf-8"));
+  } catch {
+    syncAdcOrigin = null;
+  }
+  return syncAdcOrigin;
+}
+
+/** Parse one ADC file body into an origin. Shared by the sync and async reads. */
+function adcOriginFromJson(raw: string): VertexProjectOrigin | null {
+  const parsed = JSON.parse(raw) as { quota_project_id?: unknown };
+  const project = typeof parsed.quota_project_id === "string" ? parsed.quota_project_id.trim() : "";
+  return project ? { projectId: project, source: "adc-file", detail: adcCredentialsPath() } : null;
 }
 
 /**
@@ -252,7 +367,7 @@ async function readAdcQuotaProject(): Promise<string | null> {
  * Same 10s timeout as the token calls above: a hung gcloud must not hang a
  * request.
  */
-async function readGcloudConfigProject(): Promise<string | null> {
+async function readGcloudConfigProject(): Promise<VertexProjectOrigin | null> {
   for (const command of ["gcloud config get project", "gcloud config get-value project"]) {
     try {
       const { stdout } = await execAsync(command, { timeout: 10000 });
@@ -271,7 +386,7 @@ async function readGcloudConfigProject(): Promise<string | null> {
       // the user is waiting for an error message.
       if (!value || value === "(unset)" || /\s/.test(value)) return null;
       log(`[VertexAuth] Project from \`${command}\``);
-      return value;
+      return { projectId: value, source: "gcloud-config", detail: command };
     } catch (e: any) {
       log(`[VertexAuth] \`${command}\` failed: ${e.message}`);
     }
@@ -286,21 +401,64 @@ async function readGcloudConfigProject(): Promise<string | null> {
  * project would otherwise pay two `gcloud` invocations (up to their 10s timeout)
  * on every single request.
  */
-function discoverOnce(): Promise<string | null> {
+function discoverOnce(): Promise<VertexProjectOrigin | null> {
   if (!discoveredProjectPromise) {
-    discoveredProjectPromise = discoverVertexProject();
+    // The settled value is recorded as a SIDE EFFECT of the same promise, so the
+    // sync peek can never disagree with the async answer: there is one
+    // resolution, published twice.
+    discoveredProjectPromise = discoverVertexProject().then((origin) => {
+      discoveredProjectSettled = origin;
+      return origin;
+    });
   }
   return discoveredProjectPromise;
 }
 
 /** Discovery tiers only — the env tier lives in resolveVertexConfig. */
-async function discoverVertexProject(): Promise<string | null> {
+async function discoverVertexProject(): Promise<VertexProjectOrigin | null> {
   const fromAdc = await readAdcQuotaProject();
   if (fromAdc) {
     log("[VertexAuth] Project from ADC quota_project_id");
     return fromAdc;
   }
   return readGcloudConfigProject();
+}
+
+/**
+ * The project AND its source, with the same precedence as
+ * {@link resolveVertexConfig} — which is implemented in terms of this.
+ */
+export async function resolveVertexProjectOrigin(): Promise<VertexProjectOrigin | null> {
+  return envProjectOrigin() ?? (await discoverOnce());
+}
+
+/**
+ * The best answer available WITHOUT awaiting: the environment, then a settled
+ * discovery, then the ADC file read synchronously.
+ *
+ * Never shells out, so it can be called from a React render or any other sync
+ * classifier. `null` here means "nothing resolved by the tiers a sync caller can
+ * afford" — on a machine whose project comes only from `gcloud config`, that
+ * stays null until something async (the credential authority, a probe, a
+ * request) has run `resolveVertexProjectOrigin` once.
+ */
+export function peekVertexProjectOrigin(): VertexProjectOrigin | null {
+  const fromEnv = envProjectOrigin();
+  if (fromEnv) return fromEnv;
+  if (discoveredProjectSettled !== undefined) return discoveredProjectSettled;
+  return peekVertexAdcProject();
+}
+
+/**
+ * Whether an Application Default Credential (or a service-account file) is
+ * present at all — the thing that signs a Vertex request, as opposed to the
+ * project that addresses it.
+ *
+ * Sync and cheap (one `existsSync`, one env read) so display paths can tell
+ * "signed in but no project" from "no credential at all".
+ */
+export function hasVertexAdcCredentials(): boolean {
+  return existsSync(adcCredentialsPath()) || !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
 }
 
 /**
@@ -319,14 +477,13 @@ async function discoverVertexProject(): Promise<string | null> {
  * invented id. `validateVertexOAuthConfig` turns that null into the remedy.
  */
 export async function resolveVertexConfig(): Promise<VertexConfig | null> {
-  const projectId =
-    process.env.VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || (await discoverOnce());
-  if (!projectId) {
+  const origin = await resolveVertexProjectOrigin();
+  if (!origin) {
     return null;
   }
 
   return {
-    projectId,
+    projectId: origin.projectId,
     location: process.env.VERTEX_LOCATION || DEFAULT_VERTEX_LOCATION,
   };
 }
@@ -353,6 +510,8 @@ export function selectVertexAuthMode(configured: { project?: string }): "project
 export async function validateVertexOAuthConfig(): Promise<string | null> {
   const hasADC = existsSync(adcCredentialsPath());
   const hasServiceAccount = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  // One sentence per failure, and NEITHER of them mentions an API key: there is
+  // no key to find. The Express mode was deleted on 2026-09-21.
   const noCredentials =
     "No Vertex AI credentials found.\n\n" +
     "Options:\n" +

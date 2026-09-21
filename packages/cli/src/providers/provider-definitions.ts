@@ -418,6 +418,27 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
       { prefix: "ag/", stripPrefix: true },
       { prefix: "antigravity/", stripPrefix: true },
     ],
+    // THE NAMESPACE CLAIM, not an auto-detect win. `google` declares the same
+    // `/^gemini-/i` and is defined ABOVE, so `getNativeModelPatterns()` — which
+    // is first-wins on array order — still answers `google` for a bare
+    // `gemini-3.6-flash`, exactly as before. What this adds is the one thing
+    // `route-candidates.ts` needs: `google/antigravity-subscription` sits in the
+    // probe map as `client_model_selection_required` and publishes ZERO
+    // `aggregators[]` rows, so gathering from the catalog alone can never see
+    // this plan. Without a claim here, the 5 Gemini models a seat actually
+    // serves (measured on generation g-20260921062451697-f490edba) would move
+    // off a flat-rate plan onto the metered `google` hop — the one ordering
+    // error that costs money.
+    //
+    // The family, not a list of ids: which VARIANTS a seat serves is per-account
+    // and drifts (`v1internal:fetchAvailableModels`), and the AVAILABILITY
+    // filter asks the account itself. This only says "Gemini is the namespace
+    // this plan sells", which is the provider's product definition.
+    //
+    // Deliberately NOT `/^claude-/i`: the Antigravity backend does serve Claude
+    // ids, but a bare Claude name must never reach `route()` at all
+    // (`nativeRouteFor` handles it first — see CLAUDE.md's Invariants).
+    nativeModelPatterns: [{ pattern: /^gemini-/i }],
     // Not a GET — an OAuth POST to v1internal:fetchAvailableModels, so `path`
     // is ignored. Declared so the picker prefers the per-subscription dynamic
     // models catalog and, more importantly, its per-model `maxTokens`: the backend and
@@ -642,11 +663,23 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     shortcuts: ["gk", "grok-subscription"],
     shortestPrefix: "gk",
     legacyPrefixes: [{ prefix: "gk/", stripPrefix: true }],
-    // NO nativeModelPatterns: `x-ai` already owns /^grok-/i, and patterns are
-    // first-wins on array order. Bare-name reachability comes from the `grok-*`
-    // routing chain instead, where this provider sits FIRST — subscription
-    // before metered, so a user holding both credentials is never silently
-    // billed per token for a model their subscription already covers.
+    // THE NAMESPACE CLAIM. `x-ai` declares the same `/^grok-/i` and is defined
+    // ABOVE, so `getNativeModelPatterns()` — first-wins on array order — still
+    // answers `x-ai` for a bare `grok-4.6`, and this provider does NOT win
+    // auto-detection. A claim is not an auto-detect: it exists so
+    // `route-candidates.ts` can emit a candidate the CATALOG cannot publish.
+    // `x-ai/supergrok-subscription` sits in the probe map as
+    // `client_model_selection_required` with ZERO `aggregators[]` rows, so
+    // gathering would otherwise put a SuperGrok seat's 2 models (measured on
+    // generation g-20260921062451697-f490edba) on the metered `x-ai` hop and
+    // bill per token for what the plan already covers.
+    //
+    // Safe as a bare name for the reason the routing chain relied on before:
+    // these ids are xAI's OWN, so — unlike Devin's re-served uids — there is no
+    // other vendor's namespace to collide with. Which grok ids a seat serves
+    // stays ACCOUNT-SCOPED, so the claim names the family and the availability
+    // filter asks `/v1/models`.
+    nativeModelPatterns: [{ pattern: /^grok-/i }],
     // The dynamic models catalog is ACCOUNT-SCOPED and drifts, so it is discovered, never
     // pinned. `/v1/models` is genuinely authenticated here (401 without a token,
     // unlike Alibaba's coding-intl model list where a 200 proves nothing), and it
@@ -1350,6 +1383,20 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     shortcuts: ["sc"],
     shortestPrefix: "sc",
     legacyPrefixes: [{ prefix: "sc/", stripPrefix: true }],
+    // THE NAMESPACE CLAIM. `sakana` above declares the same `/^fugu/i` (plus
+    // `/^sakana\//i`, which `parseModelSpec` strips to a bare `fugu…` before
+    // routing ever sees it) and is defined FIRST, so auto-detection is
+    // unchanged. This claim is what lets `route-candidates.ts` emit a
+    // subscription candidate at all: `sakana/fugu-subscription` is
+    // `client_model_selection_required` in the probe map with ZERO
+    // `aggregators[]` rows, and without it the 8 Fugu models a plan serves
+    // (measured on generation g-20260921062451697-f490edba) would silently move
+    // onto the metered `sakana` key — which draws PREPAID CREDITS, a different
+    // wallet from the subscription, and has already billed a user once.
+    //
+    // `/^fugu/i` rather than `/^fugu-/i`: the bare id `fugu` is a real model, so
+    // a hyphen-anchored rule would miss the family's own head.
+    nativeModelPatterns: [{ pattern: /^fugu/i }],
     isDirectApi: true,
     description: "Sakana Fugu Subscription (sc@)",
   },
