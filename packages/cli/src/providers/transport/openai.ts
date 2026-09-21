@@ -96,7 +96,7 @@ export class OpenAIProviderTransport implements ProviderTransport {
    * Discover from the provider definition's authenticated model-list endpoint.
    *
    * OpenAI-compatible subscriptions such as Sakana Subscription and Grok
-   * Build have account-scoped rosters that are not interchangeable with their
+   * Build have account-scoped dynamic models catalogs that are not interchangeable with their
    * metered siblings. The shared helper uses the same credential authority and
    * model-discovery cache as the picker, so probe fallback never guesses a
    * cross-silo model id.

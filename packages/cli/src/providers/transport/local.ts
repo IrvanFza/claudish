@@ -112,6 +112,7 @@ export class LocalTransport implements ProviderTransport {
       key: `${this.config.name}:${this.config.baseUrl}`,
       displayName: this.displayName,
       exclude,
+      hasApiKey: Boolean(this.config.apiKey),
     };
     if (this.config.name === "ollama") {
       return discoverViaOllama(this.config.baseUrl, {

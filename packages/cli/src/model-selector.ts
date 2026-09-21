@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "./providers/catalog-route-bindings.js";
 /**
  * Model Selector with Fuzzy Search
  *
@@ -35,10 +36,10 @@ import {
   discoverProviderModels,
   getDiscoveryFailure,
   rankDiscoveredModels,
-  toRosterEntry,
+  toModelsCatalogEntry,
 } from "./providers/model-discovery.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
-import { collapseRoster } from "./providers/model-resolvers/registry.js";
+import { collapseModelsCatalog } from "./providers/model-resolvers/registry.js";
 import { type ModelOffer, offerIsLive } from "./providers/model-resolvers/types.js";
 import { PROVIDER_FILTER_ALIAS_EXTRA } from "./providers/picker-alias-extra.js";
 import {
@@ -120,7 +121,7 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   "opencode-zen": "opencode-zen",
   "opencode-zen-go": "opencode-zen-go",
   ollamacloud: "ollamacloud",
-  // NOTE: "qwen-cloud" is deliberately absent. `selectModelFromProvider` tries
+  // NOTE: "qwen-token-plan" is deliberately absent. `selectModelFromProvider` tries
   // `modelDiscovery` BEFORE this map, and the plan's /compatible-mode/v1/models
   // endpoint is authenticated — it answers with exactly what the subscription
   // is entitled to. The catalog's "qwen" vendor would be a bad fall-through
@@ -128,7 +129,7 @@ export const pickerProviderToFirebaseSlug: Record<string, string> = {
   // plan host does not serve. Adding it would also poison
   // `firebaseSlugToProviderName`, whose reverse lookup takes the FIRST picker
   // value for a slug — with no canonical `qwen` entry above it, every plain
-  // catalog Qwen model would render as "Qwen Plan". Discovery failure
+  // catalog Qwen model would render as "Alibaba Token Plan". Discovery failure
   // already degrades to the free-text prompt below, which is the right answer.
 };
 
@@ -146,14 +147,14 @@ const LOCAL_OR_USER_DEPLOYED = new Set<string>(["litellm", "ollama", "lmstudio"]
  * RUNTIME-registered provider — a user's `customEndpoints` entry, a bundled
  * catalog row — belongs in the same class and is recognised by derivation
  * rather than by being listed, because the whole point of those is that
- * claudish does not know their rosters.
+ * claudish does not know their models.
  *
  * That is not just "no data": for a name that happens to match a models-index
  * VENDOR slug, `modelsByVendor` answers with ids from the CREATOR namespace,
  * and the picker would then emit `vendor@<models-index id>` — an id the
  * vendor's own endpoint is not guaranteed to accept. Failing after the user
  * commits is worse than asking them to type a model name, and R7 forbids
- * shipping a roster to check against.
+ * shipping a model list to check against.
  */
 export function isUserDeployedProvider(value: string): boolean {
   return LOCAL_OR_USER_DEPLOYED.has(value) || getRuntimeProviders().has(value);
@@ -296,7 +297,7 @@ const SUBSCRIPTION_PRICING: ModelInfo["pricing"] = {
  * THIS subscription, so it beats any catalog (Kimi Coding reports it; Qwen
  * Plan does not). On a miss, fall back to the Firebase slim catalog, which
  * already knows most of these models — that is a read of the local
- * `~/.claudish/all-models.json`, never a network call, so the picker never
+ * `~/.claudish/cloud-models-catalog-v3.json`, never a network call, so the picker never
  * blocks on it. Still-unknown stays 0 and renders as "N/A": there is no
  * per-model cloud lookup, because a window the slim catalog lacks is a
  * models-index gap, not something N extra round-trips can discover.
@@ -316,15 +317,16 @@ function resolveDiscoveredContextLength(m: DiscoveredModel): number {
  * Release date for a live-discovered model row, catalog first.
  *
  * The Firebase slim catalog carries curated RELEASE dates, so it wins wherever
- * it has an entry. The endpoint's date is a roster-added timestamp, which is
+ * it has an entry. The endpoint's date is a date-added timestamp, which is
  * the only signal available for the models the slim catalog never listed —
  * `qwen3.8-max-preview` is exactly that, and without the fallback one of the
  * newest models on the plan would sort to the very bottom as undated.
  */
 function resolveDiscoveredReleaseDate(m: DiscoveredModel): string | undefined {
-  // A roster of variants the catalog does not list gets NO catalog date: the
-  // catalog would be dating a different (older, base) model, and a partially
-  // dated roster sorts its undated — newest — half to the bottom.
+  // A dynamic models catalog of variants the cloud models catalog does not list
+  // gets NO catalog date: the catalog would be dating a different (older, base)
+  // model, and a partially dated dynamic models catalog sorts its undated —
+  // newest — half to the bottom.
   if (m.ignoreCatalogReleaseDate) return m.releaseDate;
   try {
     const catalogDate = lookupModel(m.id)?.releaseDate;
@@ -360,7 +362,8 @@ function catalogModelToModelInfo(model: CatalogModel): ModelInfo {
   // Catalog models from the slim cache don't carry the owner provider — fall
   // back to the first aggregator's name so the picker still shows something
   // useful in the column.
-  const ownerOrFirstAggregator = model.provider || model.aggregators?.[0]?.provider || "unknown";
+  const ownerOrFirstAggregator =
+    model.provider || model.aggregators?.[0]?.sourceProviderId || "unknown";
   const providerLabel = formatFirebaseProviderLabel(ownerOrFirstAggregator);
   const contextLength = model.contextWindow || 0;
 
@@ -528,7 +531,7 @@ function formatModelChoiceAsSpec(model: ModelInfo, spec: string, priceStr: strin
  * model vendors.
  *
  * Derived, because the hand-written version was the same opt-in table the
- * provider roster used to be: `devin` and `antigravity` were both missing from
+ * provider list used to be: `devin` and `antigravity` were both missing from
  * it, so `@dv` silently matched nothing.
  *
  * Rebuilt per call — see the note above on why it is not memoized.
@@ -837,7 +840,7 @@ interface ProviderChoice {
 /**
  * Editorial overlay for the picker's provider rows — NOT a membership list.
  *
- * The roster itself is DERIVED from `getAllProviders()` (see
+ * The provider list itself is DERIVED from `getAllProviders()` (see
  * `buildProviderChoices`). This map only overrides copy where the picker's
  * wording beats the definition's `description`, which is written for the config
  * TUI's denser layout. A provider absent from this map still appears; it just
@@ -860,8 +863,12 @@ const PICKER_COPY: Record<string, { name?: string; description?: string }> = {
   "minimax-coding": { name: "MiniMax Coding", description: "Coding subscription" },
   kimi: { name: "Kimi / Moonshot", description: "Direct API" },
   "kimi-coding": { name: "Kimi Coding", description: "Coding subscription" },
-  "qwen-cloud": { name: "Qwen Plan", description: "Alibaba Model Studio subscription" },
-  "qwen-payg": { name: "Qwen API", description: "Alibaba Model Studio pay-as-you-go" },
+  "qwen-token-plan": {
+    name: "Alibaba Token Plan",
+    description: "Model Studio subscription credits",
+  },
+  "qwen-coding": { name: "Alibaba Coding Plan", description: "Model Studio subscription requests" },
+  "qwen-payg": { name: "Alibaba PAYG", description: "Model Studio pay-as-you-go tokens" },
   glm: { name: "GLM / Zhipu", description: "Direct API" },
   "glm-coding": { name: "GLM Coding Plan", description: "Coding subscription" },
   "z-ai": { name: "Z.AI", description: "Direct API" },
@@ -896,7 +903,8 @@ const PICKER_ORDER = [
   "minimax-coding",
   "kimi",
   "kimi-coding",
-  "qwen-cloud",
+  "qwen-token-plan",
+  "qwen-coding",
   "qwen-payg",
   "glm",
   "glm-coding",
@@ -925,7 +933,7 @@ const PICKER_ORDER = [
  * request time) and are both pickable. Everything else is offerable, and the
  * credential authority decides whether THIS user sees it.
  *
- * A rule, not a roster — which is the point. The old hand-written
+ * A rule, not a list — which is the point. The old hand-written
  * ALL_PROVIDER_CHOICES array made membership opt-in, so `devin` and
  * `antigravity` were both invisible here while working everywhere else
  * (the config TUI derives its list from the same definitions).
@@ -1016,7 +1024,7 @@ async function getProviderChoices() {
  * this provider. The four provider rows here are longer aliases that are
  * equally valid and read better on a command line the user may copy —
  * `google@gemini-3-pro` over
- * `g@gemini-3-pro`. `zen` is a legacy picker VALUE (the roster now uses the
+ * `g@gemini-3-pro`. `zen` is a legacy picker VALUE (the provider list now uses the
  * definition name `opencode-zen`); kept so an old caller still resolves.
  *
  * Do NOT add a row here just because a provider is new — the derived path
@@ -1101,7 +1109,7 @@ export function buildExplicitModelSpec(provider: string, modelId: string): strin
  */
 export function resolveProviderExternalId(provider: string, model: ModelInfo): string {
   const match = resolveProviderAggregatorEntry(provider, model);
-  if (match?.externalId) return match.externalId;
+  if (match?.externalModelId) return match.externalModelId;
   return model.id;
 }
 
@@ -1119,9 +1127,10 @@ function resolveProviderAggregatorEntry(
   // actually holds. Without this, removing an alias silently degrades the row
   // to the catalog id — `kc@kimi-k2.7-code` instead of the wire id
   // `kc@kimi-for-coding` — and drops the per-aggregator price with it.
-  const firebaseSlug = pickerProviderToFirebaseSlug[provider] ?? provider;
   if (!model.aggregators) return undefined;
-  return model.aggregators.find((a) => a.provider.toLowerCase() === firebaseSlug.toLowerCase());
+  return model.aggregators.find(
+    (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
+  );
 }
 
 /**
@@ -1252,7 +1261,7 @@ async function pickModelFromList(
  *  - **Not everything served is chat.** Alibaba's plan host answers with image
  *    and TTS models alongside chat ones. Filtered with the SAME predicate the
  *    probe path uses, so the picker and `--probe` agree on what is chat-capable
- *    — a name-based rule, never a model-id skip list. An all-non-chat roster
+ *    — a name-based rule, never a model-id skip list. An all-non-chat dynamic models catalog
  *    returns [] so the caller falls through to the catalog / free-text path
  *    instead of showing an empty list.
  *  - **Neither price nor (always) context is reported.** Context comes from the
@@ -1267,7 +1276,7 @@ async function pickModelFromList(
  * A live offer as a short badge, or undefined when there is nothing to say.
  *
  * Evaluated against the clock on every render, never cached: two of the four
- * promos on the measured Devin roster expired within days of being observed,
+ * promos in the measured Devin dynamic models catalog expired within days of being observed,
  * and a stale "FREE" badge is a wrong-price bug — strictly worse than no badge.
  */
 function describeOffer(offer: ModelOffer | undefined): string | undefined {
@@ -1288,7 +1297,7 @@ function describeOffer(offer: ModelOffer | undefined): string | undefined {
  * inquirer on stdout, and a model spec is what this module ultimately RETURNS
  * — a notice must not be capturable as part of a piped answer.
  *
- * `empty-roster` is deliberately silent: an endpoint that answers correctly
+ * `empty-models-catalog` is deliberately silent: an endpoint that answers correctly
  * with nothing chat-capable is not an error, and the free-text prompt that
  * follows is the right affordance for it. Only actionable failures are named.
  *
@@ -1300,7 +1309,7 @@ export function warnDiscoveryFailure(
   def: Pick<ProviderDefinition, "apiKeyEnvVar" | "apiKeyUrl">
 ): void {
   const failure = getDiscoveryFailure(provider);
-  if (!failure || failure.kind === "empty-roster") return;
+  if (!failure || failure.kind === "empty-models-catalog") return;
 
   process.stderr.write(
     `\n⚠ ${displayName} could not list its models: ${describeDiscoveryFailure(failure)}\n`
@@ -1355,7 +1364,7 @@ export async function buildDiscoveredModelRows(
   // where 167 served uids are ~39 real choices multiplied out by reasoning tier
   // and speed premium. The chosen id is always a real wire id, so it still
   // round-trips through buildExplicitModelSpec and argv unchanged.
-  const choices = collapseRoster(provider, discovered.map(toRosterEntry));
+  const choices = collapseModelsCatalog(provider, discovered.map(toModelsCatalogEntry));
   const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
   // The live endpoint decides WHICH models appear (entitlement) and overrides
@@ -1403,7 +1412,7 @@ export async function buildDiscoveredModelRows(
   // Present newest-first, with the SAME comparator the catalog path uses, so
   // every picker in claudish orders identically. `rankDiscoveredModels` above
   // is only a stable, deterministic input order — its widest-window-first rule
-  // is meaningful for probe candidates, but for a plan whose entire roster is
+  // is meaningful for probe candidates, but for a plan whose entire dynamic models catalog is
   // 1M it collapses to alphabetical, which is what made the picker look unsorted.
   return sortModelsNewestFirst(rows);
 }
@@ -1424,7 +1433,7 @@ async function selectModelFromProvider(
   const prefix = pickerModelPrefix(provider) ?? `${provider}@`;
   const displayName = getPickerDisplayName(provider);
 
-  // Subscription providers (e.g. Kimi Coding) serve a roster that only their
+  // Subscription providers (e.g. Kimi Coding) serve a dynamic models catalog that only their
   // own authenticated endpoint knows — the owner's public catalog lists models
   // the subscription can't serve, and the per-tier context windows aren't in it
   // at all. Ask the endpoint, and offer exactly what this user's plan allows.
@@ -1441,7 +1450,7 @@ async function selectModelFromProvider(
       //
       // The fall-through itself is correct and deliberate; what was wrong was
       // doing it silently. A rejected API key and a provider that publishes no
-      // roster both ended up as the same free-text prompt, so a credential
+      // dynamic models catalog both ended up as the same free-text prompt, so a credential
       // error was indistinguishable from normal behaviour.
       warnDiscoveryFailure(provider, displayName, def);
     }
@@ -1450,7 +1459,7 @@ async function selectModelFromProvider(
   // Ollama and LM Studio used to be handled here, each its own way — Ollama by
   // an inline `/api/tags` branch, LM Studio not at all (free-text only). Both
   // now declare `modelDiscovery`, so the block above lists them like every
-  // other provider that knows its own roster. A local daemon is not a different
+  // other provider that knows its own dynamic models catalog. A local daemon is not a different
   // KIND of thing; it is a provider whose endpoint happens to be on localhost.
 
   // Local / user-deployed providers: Firebase has no catalog, free-text only.

@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 /**
  * baseline-pricing — what the same tokens would have cost on Anthropic's own models.
  *
@@ -8,7 +9,7 @@
  * WHY NOT A CONSTANT. Hardcoding `sonnet = 3/15` would be wrong within a release —
  * claude-sonnet-5 is 2/10 while claude-sonnet-4-5 is 3/15, and a pinned model id ages
  * into a lie the moment the next model ships. The rule claudish already follows for
- * rosters and context windows applies verbatim to prices: defaults are RULES, not
+ * model lists and context windows applies verbatim to prices: defaults are RULES, not
  * pinned ids. So the baseline is resolved through the catalog's own
  * `~anthropic/claude-<tier>-latest` aliases — a rule that keeps pointing at the current
  * flagship without this file knowing which model that is. Today they resolve to
@@ -63,7 +64,7 @@ function resolveBaseline(alias: string, label: string): Baseline | null {
   if (!entry) return null;
 
   const firstParty = entry.aggregators?.find(
-    (a) => a.provider === FIRST_PARTY && typeof a.pricing?.input === "number"
+    (a) => catalogRouteMatchesProvider(a.route, FIRST_PARTY) && typeof a.pricing?.input === "number"
   );
   const input = firstParty?.pricing?.input;
   const output = firstParty?.pricing?.output;

@@ -1,5 +1,6 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
+import type { ReadinessResult } from "../auth/credentials/types.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
@@ -7,29 +8,13 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
-import {
-  CatalogIncompatibleError,
-  catalogIncompatibilityMessage,
-  readCatalogIncompatibility,
-} from "./catalog-compatibility.js";
-import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
+import { ensureEndpointsRegistered } from "./endpoint-registration.js";
 import { providerServesModel } from "./model-availability.js";
 import { PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { getProviderByName } from "./provider-definitions.js";
+import { catalogDeniesProvider, gatherRouteCandidates } from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
-
-/**
- * Pure merge — defaults < global < local. Exposed for testability so callers
- * can verify merge semantics without touching the disk.
- */
-export function mergeRoutingRules(
-  defaults: RoutingRules,
-  global_: RoutingRules,
-  local: RoutingRules
-): RoutingRules {
-  return { ...defaults, ...global_, ...local };
-}
 
 export interface RoutingRuleSources {
   globalRules: RoutingRules;
@@ -38,68 +23,28 @@ export interface RoutingRuleSources {
 }
 
 /**
- * Load effective routing rules. Layers:
- *   1. DEFAULT_ROUTING_RULES (built-in, see default-routing-rules.ts)
- *   2. Global config (~/.claudish/config.json)
- *   3. Local config (./.claudish.json)
+ * Load the user's effective routing rules. Two layers, both the user's own:
+ *   1. Global config (~/.claudish/config.json)
+ *   2. Local config (./.claudish.json)
  *
- * Local rules overwrite global rules overwrite defaults — same key wins.
- * User patterns OVERWRITE default patterns by exact key match (no glob-vs-glob
- * interleaving).
+ * Local overwrites global by exact key match — no glob-vs-glob interleaving.
  *
- * Always returns a non-null `RoutingRules` because defaults are baked in.
- * To get strict no-fallback mode, set `routing["*"] = []` in user config.
+ * THERE ARE NO BUILT-IN RULES. The 24-entry `DEFAULT_ROUTING_RULES` table this
+ * used to merge under the user's rules is gone: the providers that can serve a
+ * bare name are now GATHERED from the cloud models catalog
+ * (`route-candidates.ts`), which publishes every tier — subscriptions, native
+ * APIs and gateways — for every model, and which the table could only
+ * approximate by hand. So the result here is frequently `{}`, and `routeBare`
+ * treats "no rule matched" as "ask the catalog" rather than as an error.
  *
- * ── The catalog does NOT belong here. Do not add it back. ──────────────────
+ * What a user rule now MEANS is therefore stronger than it was: a match is used
+ * VERBATIM and is never merged with, reordered by or appended to by anything —
+ * including the fallback hop. `routing["*"] = []` is consequently still the
+ * strict no-route switch it always was, and `routing["*"] = [...]` replaces the
+ * fallback outright.
  *
- * v9.0.1 merged `buildCatalogRoutingRules(...)` into this dictionary and it
- * deleted providers from every chain it touched. The mechanism, in two facts
- * that are individually harmless:
- *
- *   - catalog keys are EXACT model ids (`grok-4.6`); default and user keys are
- *     GLOBS (`grok-*`);
- *   - `matchRoutingRule` below returns on the first exact hit, before it ever
- *     looks at a glob.
- *
- * So one catalog key makes the matching glob unreachable for that model, and
- * every provider the catalog did not name is gone. `buildCatalogRoutingRules`
- * reads `subscriptions[]`, which enumerates PLAN-backed routes only — never a
- * vendor's metered API, never OpenRouter — so its list is structurally
- * incomplete. Measured on a real cache: `grok-4.6` became
- * `["opencode-zen-go@grok-4.6"]`, leaving a user holding XAI_API_KEY and
- * OPENROUTER_API_KEY with no route at all. A user's own `grok-*` rule was
- * shadowed the same way, silently.
- *
- * Catalog knowledge reaches routing through two other call sites, and they are
- * NOT equally safe. Be precise about which:
- *
- *   - `providerServesModel` in `routeBare` IS safe. It is three-valued and drops
- *     a candidate only on `not-served`; `unknown` keeps it exactly where it was.
- *   - `resolveSubscriptionRouting` in `buildRoutingChain` is NOT, as of v9.0.1.
- *     Its `hasPublishedProviderRoster` check (model-catalog.ts:335) is evaluated
- *     at PROVIDER granularity across the whole cache, so one model publishing a
- *     plan membership makes every OTHER model's silence authoritative. Measured
- *     on the live cache: only `glm-5.3` and `glm-5.3-flash` list
- *     `z-ai-glm-coding-plan`, so `glm-4.7` resolves to
- *     `["glm@glm-4.7", "openrouter@z-ai/glm-4.7"]` — both subscriptions deleted,
- *     and a GLM Coding Plan holder is billed per token. Same shape for
- *     `qwen-cloud` on `qwen3-coder-plus`. At v9.0.0 this could not happen: the
- *     old code tested `subscriptionPlans.includes(providerUid)`, which was false
- *     for every provider, so it returned `unknown` and kept the candidate.
- *
- * That second one is a LIVE defect, not fixed here. This change restores the
- * routing-rule COMPOSITION to v9.0.0; it deliberately retains v9.0.1's
- * subscription-availability join, gap included. Do not read this file's fix as
- * "v9.0.3 == v9.0.0 routing" — see ai-docs/reports/ for the follow-up.
- *
- * `sources` keeps this composition boundary testable without reading machine
- * config or the recommended-models cache. `sources.recommendedModels` is
- * optional and deliberately unused: a regression test hands it a shadowing entry
- * and asserts it never reaches the output. That test alone is not a sufficient
- * guard, because the v9.0.1 bug read the cache AMBIENTLY rather than through
- * this seam — the guard that survives a cold CI checkout is the import-shape
- * test in routing-rules.test.ts, which fails on any VALUE import from
- * model-loader.js. Keep this file's model-loader import `import type`.
+ * `sources` keeps rule composition testable without reading machine config.
+ * The recommended-model projection is not a routing-rule override.
  */
 export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
   const local = sources ? sources.localRules : (loadLocalConfig()?.routing ?? {});
@@ -108,33 +53,45 @@ export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
   validateRoutingRules(local);
   validateRoutingRules(global_);
 
-  return mergeRoutingRules(DEFAULT_ROUTING_RULES, global_, local);
+  return { ...global_, ...local };
 }
 
 /**
- * Drop catalog entries naming a provider this client cannot execute.
+ * Validate that every provider name a routing rules table references exists in
+ * `provider-definitions.ts`. Walks each entry, strips the optional `@model`
+ * suffix, resolves shortcuts (e.g. `or` → `openrouter`), and looks each
+ * canonical provider up.
  *
- * NO PRODUCTION CALLER as of v9.0.3 — `loadRoutingRules` no longer consumes the
- * catalog, for the reasons documented there. Kept because the filter itself is
- * correct and the catalog-driven routing redesign will need it; its test pins
- * the behaviour meanwhile.
+ * Throws, so it is for a caller that wants a typo to be loud — a config
+ * validator or a test — never the request path. `loadRoutingRules` deliberately
+ * does not call it: a user whose hand-written rule names a provider claudish
+ * dropped should get a degraded chain and a warning, not a crash on every
+ * request.
  *
- * Note what the premise of the original comment got wrong, since it is the same
- * mistake that shipped the v9.0.1 regression: the backend does not own route
- * PREFERENCE. It owns availability — who serves a model, under what id. Order is
- * the user's, then claudish's defaults.
+ * Its subject used to be the shipped table, which is gone. What remains to
+ * check is the USER's rules, which is the only table left.
  */
-export function retainKnownCatalogRoutingRules(rules: RoutingRules): RoutingRules {
-  const retained: RoutingRules = {};
-  for (const [modelId, entries] of Object.entries(rules)) {
-    const knownEntries = entries.filter((entry) => {
-      const providerRaw = entry.split("@", 1)[0]?.toLowerCase() ?? "";
-      const provider = PROVIDER_SHORTCUTS[providerRaw] ?? providerRaw;
-      return getProviderByName(provider) !== undefined;
-    });
-    if (knownEntries.length > 0) retained[modelId] = knownEntries;
+export function validateRoutingRulesAgainstProviders(rules: RoutingRules): void {
+  const unknown: Array<{ rule: string; entry: string; provider: string }> = [];
+
+  for (const ruleKey of Object.keys(rules)) {
+    const entries = rules[ruleKey] ?? [];
+    for (const entry of entries) {
+      const atIdx = entry.indexOf("@");
+      const providerRaw = atIdx === -1 ? entry : entry.slice(0, atIdx);
+      const canonical = PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
+      if (!getProviderByName(canonical)) {
+        unknown.push({ rule: ruleKey, entry, provider: canonical });
+      }
+    }
   }
-  return retained;
+
+  if (unknown.length > 0) {
+    const lines = unknown.map(
+      (u) => `  rule "${u.rule}" → entry "${u.entry}" → unknown provider "${u.provider}"`
+    );
+    throw new Error(`[claudish] routing rules reference unknown providers:\n${lines.join("\n")}`);
+  }
 }
 
 /** Warn about config issues that would silently misbehave. */
@@ -251,24 +208,30 @@ export function buildRoutingChain(
     // `together-ai@glm-5` reach `zai-org/GLM-5` without either provider
     // needing bespoke code. No match → the name passes through unchanged.
     if (!wireIdResolved) {
-      modelName = resolveExternalId(modelName, provider) ?? modelName;
+      modelName = resolveExternalId(modelName, provider, cachePath) ?? modelName;
     }
 
-    // Build modelSpec. OpenRouter's ids are already vendor-qualified, so they
-    // are their own spec; everyone else takes a provider prefix.
-    let modelSpec: string;
-    if (provider === "openrouter") {
-      modelSpec = modelName;
-    } else {
-      const prefix = PROVIDER_TO_PREFIX[provider] ?? provider;
-      modelSpec = `${prefix}@${modelName}`;
-    }
-
-    const displayName = DISPLAY_NAMES[provider] ?? provider;
-    routes.push({ provider, modelSpec, displayName });
+    routes.push(routeFor(provider, modelName));
   }
 
   return routes;
+}
+
+/**
+ * One provider plus the id it will actually be SENT → a `Route`.
+ *
+ * The ONE copy of the modelSpec rule, which has exactly one exception:
+ * OpenRouter's ids are already vendor-qualified (`moonshotai/kimi-k3`), so they
+ * are their own spec, while everyone else takes a provider prefix. Both callers
+ * go through here — `buildRoutingChain`, which resolves a wire id from a user
+ * rule, and the catalog-candidate adapter, which is HANDED one — so the rule
+ * cannot drift between the two paths. `wireIdOf` is its inverse and would
+ * silently disagree if a second copy appeared.
+ */
+function routeFor(provider: string, wireId: string): Route {
+  const modelSpec =
+    provider === "openrouter" ? wireId : `${PROVIDER_TO_PREFIX[provider] ?? provider}@${wireId}`;
+  return { provider, modelSpec, displayName: DISPLAY_NAMES[provider] ?? provider };
 }
 
 /**
@@ -339,47 +302,9 @@ export async function hasCredentialsForProvider(provider: string): Promise<boole
 }
 
 /**
- * Emitted at most once per process — see `warnOnceIfCatalogIncompatible`.
- */
-let _warnedCatalogIncompatible = false;
-
-/**
- * Tell the user ONCE that the catalog is unreadable, on a path that still works.
- *
- * The explicit path is not gated (see routeExplicit), but it is degraded: wire-id
- * translation and the "does this provider serve it?" check both read a catalog
- * that now answers null, so a request may reach a provider under the name the
- * user typed rather than the id that provider actually uses. That is worth one
- * line. It is not worth one line PER REQUEST — an agent session routes hundreds,
- * and a warning repeated hundreds of times is one the user learns to scroll
- * past, which is how the important ones get missed too.
- */
-function warnOnceIfCatalogIncompatible(): void {
-  if (_warnedCatalogIncompatible) return;
-  if (!readCatalogIncompatibility()) return;
-  _warnedCatalogIncompatible = true;
-  logStderr(
-    "Model catalog is unavailable — this build cannot read the catalog server's current " +
-      "contract. Explicit provider@model routing still works; bare model names do not. " +
-      "Run `claudish update`."
-  );
-}
-
-/** Test seam: allow the explicit-path warning to fire again. @internal */
-export function _resetCatalogWarningForTest(): void {
-  _warnedCatalogIncompatible = false;
-}
-
-/**
  * Path 1: an explicit "provider@model" spec. Probe ONLY that provider's
  * credentials; never fall back silently.
  *
- * NOT gated on catalog compatibility, unlike the bare path. The user named the
- * vendor, so claudish infers no subscription and substitutes no provider — there
- * is no decision here that an unreadable catalog could get wrong in the user's
- * favour or against it. Blocking this would strand a `gk@grok-code` user who
- * knows exactly what they want, for the sake of a risk their spec already ruled
- * out.
  */
 async function routeExplicit(
   modelSpec: string,
@@ -387,8 +312,6 @@ async function routeExplicit(
   provider: string,
   cachePath?: string
 ): Promise<RoutePlan> {
-  warnOnceIfCatalogIncompatible();
-
   if (!(await hasCredentialsForProvider(provider))) {
     return {
       kind: "no-route",
@@ -427,13 +350,125 @@ async function routeExplicit(
 }
 
 /**
- * Path 2: a bare model name. Consult rules, build candidates, filter to those
- * with credentials, and return ok/no-route accordingly.
+ * The provider that occupies the LAST hop, or null when the user disabled it.
  *
- * If `defaultProvider` is set and not already present in the matched chain, it
- * is appended as a final entry — a safety net that catches models whose chain
- * has no credentialed providers. Deduped: if the chain already lists the
- * default provider, no second copy is added.
+ * The fallback is a POSITION, not a property of any provider (see `RouteTier`).
+ * Two ways to empty that position, and BOTH are preserved from the design this
+ * replaced:
+ *
+ *   - `defaultProvider: ""` — an explicitly empty string. `undefined` is not the
+ *     same thing: unset means "no preference", which takes `openrouter`, and
+ *     that is what the deleted `"*": ["openrouter"]` catch-all used to supply
+ *     for 1,109 models. Only a deliberate empty string disables.
+ *   - a user rule that matches — `routing["*"] = []` most explicitly. That
+ *     never reaches here at all: a matched rule is used verbatim and this
+ *     function is only consulted on the gathered path.
+ */
+function fallbackProviderFor(defaultProvider: string | undefined): string | null {
+  if (defaultProvider !== undefined && defaultProvider.length === 0) return null;
+  const named = defaultProvider ?? DEFAULT_FALLBACK_PROVIDER;
+  return PROVIDER_SHORTCUTS[named.toLowerCase()] ?? named.toLowerCase();
+}
+
+/**
+ * The provider the last hop takes when the user expressed no preference.
+ *
+ * A rule, not a pinned model id: it names the one gateway that resells nearly
+ * every vendor, which is why the deleted table used it as its catch-all. It is
+ * overridden by `defaultProvider` and emptied by `defaultProvider: ""`.
+ */
+export const DEFAULT_FALLBACK_PROVIDER = "openrouter";
+
+/** A chain assembled from the catalog, plus whether a catalog could be read. */
+export interface CatalogChain {
+  routes: Route[];
+  /**
+   * False means NO catalog was readable — not merely that it lacked this name.
+   * A caller must treat that as "claudish cannot answer", never as "no provider
+   * serves it": the two look identical in `routes` and only this tells them
+   * apart.
+   */
+  catalogReadable: boolean;
+}
+
+/**
+ * Steps 2 and 3 of the bare-name path: gather from the catalog, then append the
+ * fallback hop. No credential or availability filtering — those belong to
+ * `routeBare`, which owns them, and duplicating either here would create the
+ * second oracle `route-candidates.ts` exists to avoid.
+ *
+ * Exported because `--probe` reconstructs the chain it is about to test rather
+ * than calling `route()` (it needs per-hop credential provenance that a
+ * `RoutePlan` does not carry). Before this existed, the probe read the same
+ * hand-written table `route()` did; with that table gone, a probe that only
+ * consulted user rules would have shown an EMPTY chain for every model the user
+ * had not written a rule for — a display that says "nothing routes this" about
+ * models that route fine.
+ */
+export function buildCatalogChain(
+  model: string,
+  defaultProvider?: string,
+  cachePath?: string
+): CatalogChain {
+  // Bundled endpoints (`together`, `fireworks`) have no provider DEFINITION
+  // until this has run, and `gatherFromConnections` drops a connection whose
+  // provider it cannot resolve — silently, because that is also what a provider
+  // the user holds no key for looks like. An earlier preview ran without it and
+  // blamed this redesign for 241 unroutable `together-ai` connections it had
+  // not caused.
+  //
+  // Called HERE rather than trusted from a caller: six startup paths register
+  // endpoints and this is reachable from all of them plus the MCP server, the
+  // launcher's context-window probe and the TUI. Sync, config-only and latched,
+  // so every call after the first is free.
+  ensureEndpointsRegistered();
+
+  const gathering = gatherRouteCandidates(model, cachePath);
+  const routes = gathering.candidates.map((candidate) =>
+    routeFor(candidate.provider, candidate.wireId)
+  );
+
+  const fallback = fallbackProviderFor(defaultProvider);
+  if (
+    fallback &&
+    // NEVER invent a hop with no catalog: `openrouter@<name>` for a name nobody
+    // published is a metered request billed for its own 404, and a name the
+    // backend has since RENAMED looks identical.
+    gathering.catalogReadable &&
+    !routes.some((route) => route.provider === fallback) &&
+    !catalogDeniesProvider(fallback, model, cachePath)
+  ) {
+    // Through `buildRoutingChain`, not `routeFor`: the fallback is named by
+    // PROVIDER only, so its wire id still has to be resolved, and that
+    // resolution (subscription plan ids, then the catalog's `aggregators[]`)
+    // lives there. It legitimately yields nothing when a subscription's plan
+    // does not include the model.
+    routes.push(...buildRoutingChain([fallback], model, cachePath));
+  }
+
+  return { routes, catalogReadable: gathering.catalogReadable };
+}
+
+/**
+ * Path 2: a bare model name.
+ *
+ * ── STEP 1 IS THE ONLY THING THIS PHASE CHANGED ────────────────────────────
+ *
+ *   1. a user rule matches?  → that chain, VERBATIM. Never merged, reordered or
+ *                              appended to, including by the fallback. A match
+ *                              of `[]` is a match: the user said "no route".
+ *   2. otherwise             → `gatherRouteCandidates`, which reads every
+ *                              connection the catalog publishes for this model
+ *                              and orders them by tier, vendor, price, window.
+ *   3. append the fallback   → last, deduped, disableable, and NOT appended when
+ *                              the catalog positively denies it.
+ *   4. credential filter     → unchanged, below.
+ *   5. availability filter   → unchanged, below.
+ *   6. primary + fallbacks.
+ *
+ * Steps 4 and 5 are deliberately NOT duplicated by step 2 — see the header of
+ * `route-candidates.ts`. A gathered candidate is a claim about what the catalog
+ * publishes, never a claim that this user can call it.
  */
 async function routeBare(
   model: string,
@@ -442,67 +477,94 @@ async function routeBare(
   defaultProvider?: string,
   cachePath?: string
 ): Promise<RoutePlan> {
-  // THE LOUD GATE. Fail rather than pick a metered fallback.
-  //
-  // This is the one path where claudish, not the user, chooses the vendor, and
-  // it chooses it from catalog facts: which plan covers this model, which
-  // provider serves it, under what id. With the catalog unreadable those facts
-  // are not merely missing — `getCatalogEntries()` returns null, so every
-  // subscription lookup answers "no plan covers this" with total confidence, the
-  // filters below drop nothing, and the chain resolves to whatever metered
-  // provider happens to sit in it. The user gets a working session and a bill.
-  //
-  // Throwing is deliberate where the rest of this function returns `no-route`.
-  // A `no-route` is a routing VERDICT — claudish looked and found nothing — and
-  // callers are entitled to treat it as data. This is the opposite: claudish
-  // cannot look at all, and saying so has to be an exception so that no caller
-  // can mistake it for an answer. `CatalogIncompatibleError` carries it to the
-  // client as a 400 (see the class's own note on why not a 500), which renders
-  // inline instead of behind Claude Code's retry banner.
-  const incompatible = readCatalogIncompatibility();
-  if (incompatible) {
-    throw new CatalogIncompatibleError(catalogIncompatibilityMessage(incompatible));
+  // `null` and `[]` are DIFFERENT answers and the old `?? []` conflated them.
+  // `[]` is a user rule that matched and named no provider — strict no-route,
+  // and the one thing that must not then collect a fallback.
+  const matched = matchRoutingRule(model, rules);
+
+  let candidates: Route[];
+  if (matched !== null) {
+    candidates = buildRoutingChain(matched, model, cachePath);
+  } else {
+    const gathered = buildCatalogChain(model, defaultProvider, cachePath);
+
+    // NO CATALOG MEANS LOCAL ONLY. With nothing readable, claudish knows no
+    // provider serves this name and must say so rather than guess. A namespace
+    // claim still counts — that is claudish's own statement about a plan the
+    // user holds, not an inference from a catalog it could not read — so the
+    // check is on an EMPTY result, not on `catalogReadable` alone. Local
+    // providers and explicit `provider@model` specs are unaffected: neither
+    // comes through here.
+    if (!gathered.catalogReadable && gathered.routes.length === 0) {
+      return {
+        kind: "no-route",
+        reason: `No model catalog available, so "${model}" cannot be routed by name.`,
+        hint:
+          "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
+          `explicitly (e.g. \`openrouter@${model}\`).`,
+      };
+    }
+    candidates = gathered.routes;
   }
 
-  const matched = matchRoutingRule(model, rules) ?? [];
-  const entries = [...matched];
-
-  if (defaultProvider && defaultProvider.length > 0) {
-    const canonicalDefault =
-      PROVIDER_SHORTCUTS[defaultProvider.toLowerCase()] ?? defaultProvider.toLowerCase();
-    const alreadyPresent = entries.some((e) => {
-      const atIdx = e.indexOf("@");
-      const providerRaw = atIdx === -1 ? e : e.slice(0, atIdx);
-      const canonical = PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
-      return canonical === canonicalDefault;
-    });
-    if (!alreadyPresent) entries.push(defaultProvider);
-  }
-
-  if (entries.length === 0) {
+  if (candidates.length === 0) {
+    // Two very different causes, and a user reading the message needs to know
+    // which: their OWN rule named nothing (they asked for this), or the catalog
+    // publishes no way to call the model (nobody serves it).
     return {
       kind: "no-route",
-      reason: `No routing rule matched "${model}".`,
+      reason:
+        matched !== null
+          ? `A routing rule matched "${model}" and named no provider.`
+          : `No provider in the catalog serves "${model}".`,
       hint: buildCredentialHint(model, [nativeProvider]) ?? undefined,
     };
   }
 
-  const candidates = buildRoutingChain(entries, model, cachePath);
   const credentialed: Route[] = [];
   const skipped: string[] = [];
+  const skippedFailed: string[] = [];
 
+  // ── ONE CREDENTIAL READ PER CANDIDATE PER ROUTING DECISION ────────────────
+  //
   // Resolve each candidate's credentials concurrently (each call funnels through
   // the SDK serialization queue internally), but keep the original chain ORDER
   // when partitioning into credentialed / skipped.
-  const checks = await Promise.all(
-    candidates.map((candidate) => hasCredentialsForProvider(candidate.provider))
+  //
+  // A SUBSCRIPTION candidate is described ONCE, and both facts come from that
+  // single answer: whether it joins the chain, and — when it does not — whether
+  // its credential was ABSENT or FAILED to resolve. Reading twice (a boolean to
+  // partition, then `describeReadiness` to ask why) is the trap: the authority
+  // memoizes a resolved key but deliberately NOT a failure, so the two reads
+  // can disagree, and a credential that recovered between them would fall out
+  // of both partitions and erase the evidence of the failure that removed it.
+  //
+  // Non-subscription candidates keep the boolean, which is all they can
+  // contribute: `skippedFailed` is subscription-only by construction. The
+  // boolean is itself the `=== "present"` projection of one `describeReadiness`
+  // (authority.ts), so the partition is byte-identical to what it was.
+  const verdicts = await Promise.all(
+    candidates.map(async (candidate): Promise<ReadinessResult> => {
+      if (isSubscriptionProvider(candidate.provider)) {
+        return credentials.describeReadiness(candidate.provider);
+      }
+      const present = await hasCredentialsForProvider(candidate.provider);
+      return { readiness: present ? "present" : "absent" };
+    })
   );
   candidates.forEach((candidate, i) => {
-    if (checks[i]) {
+    const verdict = verdicts[i];
+    if (verdict.readiness === "present") {
       credentialed.push(candidate);
-    } else {
-      skipped.push(candidate.provider);
+      return;
     }
+    skipped.push(candidate.provider);
+    // Measured causes of a real, present subscription key reading as "no key":
+    // a concurrent 1Password handshake denial and its 15-second suppression
+    // window, a locked Mac, a disabled or denied Keychain backend, and a stale
+    // `.env` shadowing the op:// chain. Each one used to route a paid
+    // subscription onto a metered provider with NOTHING printed.
+    if (verdict.readiness === "failed") skippedFailed.push(candidate.provider);
   });
 
   if (credentialed.length === 0) {
@@ -520,12 +582,12 @@ async function routeBare(
   // it does not carry this model.
   //
   // This runs AFTER the credential filter, not before, and the order is not
-  // cosmetic: `providerServesModel` may hit the provider's own roster endpoint,
+  // cosmetic: `providerServesModel` may hit the provider's own discovery endpoint,
   // which needs that provider's credential. Asking about a provider the user
   // cannot authenticate to would be a guaranteed-failing round-trip.
   //
   // Only "not-served" removes anything. "unknown" — no source covers this
-  // provider, the catalog is cold, the roster endpoint was briefly down — keeps
+  // provider, the catalog is cold, the discovery endpoint was briefly down — keeps
   // the candidate exactly where it was. That asymmetry is the whole safety
   // property: reading absence of evidence as denial would drop every provider
   // neither source covers, which is almost entirely the SUBSCRIPTION providers,
@@ -564,10 +626,24 @@ async function routeBare(
     const droppedSubscription = notServing.filter((p) => isSubscriptionProvider(p));
     if (droppedSubscription.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
       logStderr(
-        `[claudish] ${droppedSubscription.join(", ")} does not serve ${model} — ` +
+        // No "[claudish]" here: logStderr adds the prefix itself.
+        `${droppedSubscription.join(", ")} does not serve ${model} — ` +
           `using ${serving[0].displayName}, which bills per token.`
       );
     }
+  }
+
+  // A subscription dropped because its credential FAILED gets its own notice,
+  // never folded into "does not serve": the remedy differs (unlock the keychain
+  // or 1Password, not "pick another model"), and "no key" would tell the user
+  // to buy a subscription they already hold. Same billing condition as above —
+  // said out loud only when the request lands on a metered provider.
+  if (skippedFailed.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
+    logStderr(
+      // No "[claudish]" here: logStderr adds the prefix itself.
+      `${skippedFailed.join(", ")}: the credential could not be READ (not "no key") — ` +
+        `using ${serving[0].displayName}, which bills per token.`
+    );
   }
 
   const [primary, ...fallbacks] = serving;
@@ -581,7 +657,7 @@ async function routeBare(
  * whose ids are already vendor-qualified and are their own spec. Availability
  * must be asked about the wire id, never the name the user typed — comparing the
  * typed name would test the wrong side of an `externalId` mapping, and that
- * mapping is exactly what a roster settles (OpenCode Zen Go serves
+ * mapping is exactly what a dynamic models catalog settles (OpenCode Zen Go serves
  * `deepseek-v4-pro`, while the catalog id carries a date suffix).
  */
 function wireIdOf(route: Route): string {
@@ -597,10 +673,10 @@ function wireIdOf(route: Route): string {
  *      probe ONLY that vendor's credentials; missing credentials → no-route
  *      with a credential hint. **No silent fallback** — `defaultProvider` is
  *      not consulted because the user named a specific vendor.
- *   2. Bare name: consult routing rules (defaults + user overrides), append
- *      `defaultProvider` as a final fallback if set and not already present,
- *      build the candidate chain, filter to credentialed entries, return the
- *      filtered chain. Empty filtered chain → no-route with hints.
+ *   2. Bare name: a matching USER rule wins verbatim; otherwise the chain is
+ *      gathered from the cloud models catalog and the fallback hop is appended
+ *      last. Then the credential and availability filters. Empty filtered chain
+ *      → no-route with hints. See `routeBare`.
  *
  * Rules and the default provider are loaded fresh each call (via `loadRoutingRules()`
  * and `loadConfig()`) unless overrides are supplied. Tests should pass overrides
@@ -608,8 +684,8 @@ function wireIdOf(route: Route): string {
  */
 /**
  * Rewrite a dash-slugified GLM version to its canonical dotted form
- * (`glm-5-2` → `glm-5.2`), so a client that slugifies dots still matches the
- * routing rule instead of falling through to `defaultProvider`.
+ * (`glm-5-2` → `glm-5.2`), so a client that slugifies dots still finds the
+ * catalog entry instead of missing it and falling through to the fallback hop.
  *
  * Anchored and deliberately narrow. The second group must be ALL digits to the
  * end (or to a `-suffix`), which is what keeps dash-native open-model ids
@@ -629,10 +705,14 @@ function wireIdOf(route: Route): string {
  * That matters because Devin re-serves other vendors' models under uids that
  * legitimately contain dashes, `glm-5-2` and `glm-5-2-1m` among them (see
  * providers/devin/model-id-resolver.ts). Those are matched against Devin's LIVE
- * served set, so a `dv@glm-5-2` that ever became `dv@glm-5.2` would request a
- * uid that does not exist. Bare names cannot reach Devin at all — it declares
- * no nativeModelPatterns and has no DEFAULT_ROUTING_RULES entry — so the bare
- * path is the only place this rewrite can apply and the only place it needs to.
+ * dynamic models catalog, so a `dv@glm-5-2` that ever became `dv@glm-5.2` would
+ * request a uid that does not exist.
+ *
+ * No bare name can reach Devin through a COLLIDING family, which is what makes
+ * the bare path safe to rewrite. Devin is a dynamic subscription, so it
+ * publishes no catalog connection and can only be gathered from its namespace
+ * claim — and that claim is exactly `/^swe-/i`, Cognition's own line. A bare
+ * `glm-5-2` therefore never produces a Devin candidate, by either route.
  */
 export function normalizeGlmSlug(model: string): string {
   return model.replace(

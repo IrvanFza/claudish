@@ -85,7 +85,7 @@ describe("getServedAntigravityModels", () => {
     expect("contextWindow" in result.meta["string-window"]).toBe(false);
   });
 
-  test("returns an indexable empty meta object for an empty roster", async () => {
+  test("returns an indexable empty meta object for an empty dynamic models catalog", async () => {
     globalThis.fetch = mock(async () =>
       Response.json({ models: {}, defaultAgentModelId: "unused-default" })
     ) as unknown as typeof fetch;

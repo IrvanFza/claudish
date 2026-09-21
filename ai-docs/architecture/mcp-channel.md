@@ -190,7 +190,7 @@ and `get_diagnostics` hands these records to an agent.
   `list_sessions`, `get_diagnostics`
 
 `preflight` exists because `--probe` is CLI-ONLY. An MCP consumer had no way to
-check a roster before committing to it, so it either shelled out to the CLI or
+check its models before committing to them, so it either shelled out to the CLI or
 discovered provisioning failures minutes in with the slots already spent — a real
 `team` run lost 3 of 10 slots that way. It reports, per model, WHICH provider
 would serve it (via `route()`, the same rules and credential filter a real run
@@ -200,7 +200,7 @@ of the PROVIDER, not the model, so the same bare name can be free through a plan
 or billed per token depending on which credential is present — which is precisely
 what a caller cannot see from the model id.
 
-The roster is pinned by an EXACT frozen array in `channel/e2e-channel.test.ts`, so
+The tool list is pinned by an EXACT frozen array in `channel/e2e-channel.test.ts`, so
 adding or removing a tool without updating that test fails CI. That is deliberate:
 it is a wire contract, and an accidental change to the tool surface should be loud.
 
@@ -309,7 +309,7 @@ Five files: scrollback-buffer, session-manager, stream-json-reducer, e2e-channel
 
 `session-manager.test.ts` carries seven mutation-proven regression guards, G1–G7: the timeout's status, the module-load signal exit codes (143/130), the reserved-flag rejection, the `--verbose`-before-`--quiet` argv order with a valueless `-p`, the delta firehose never reaching scrollback, and a promptless session reaching a usable state. Its fixtures replay real captured Claude Code 2.1.239 frames (`test-helpers/captured-stream-json.ts`), and its child (`test-helpers/fake-channel-stream-json.ts`) speaks bidirectional stream-json.
 
-**The tool roster is pinned twice, and adding a tool must break both.** `e2e-channel.test.ts` freezes the full 13-name list and the channel-only 6, deliberately: the roster is a wire contract and an accidental change to it should be loud. `get_diagnostics` broke both pins on the way in, which is the guard working.
+**The tool list is pinned twice, and adding a tool must break both.** `e2e-channel.test.ts` freezes the full 13-name list and the channel-only 6, deliberately: that list is a wire contract and an accidental change to it should be loud. `get_diagnostics` broke both pins on the way in, which is the guard working.
 
 E2E tests use `--strict-mcp-config --bare --dangerously-skip-permissions` for isolation. SessionManager tests point child spawns at the tree under test via `CLAUDISH_BIN` (`spawn-claudish.ts`), never at the installed binary.
 

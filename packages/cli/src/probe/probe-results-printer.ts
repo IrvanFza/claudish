@@ -732,10 +732,16 @@ function formatContextWindow(ctx: number): string {
 function buildKeyLine(activeEntry?: ChainEntry, directKeyVar?: string): string {
   if (activeEntry?.provenance) {
     const p = activeEntry.provenance;
+    // `effectiveLabel` replaces `$ENV_VAR` for a provider whose credential is not
+    // an environment variable — Vertex, whose project comes from the ADC file or
+    // `gcloud config`. Printing `$VERTEX_PROJECT (not set)` there names a
+    // variable that is not how the install works.
+    const subject = p.effectiveLabel ?? `$${p.envVar}`;
     if (p.hasValue) {
-      return `${pc.bold}Key${pc.reset}  $${p.envVar}  ${pc.dim}(${p.effectiveSource})${pc.reset}`;
+      return `${pc.bold}Key${pc.reset}  ${subject}  ${pc.dim}(${p.effectiveSource})${pc.reset}`;
     }
-    return `${pc.bold}Key${pc.reset}  $${p.envVar}  ${pc.dim}(not set)${pc.reset}`;
+    const why = p.effectiveLabel ? p.effectiveSource : "not set";
+    return `${pc.bold}Key${pc.reset}  ${subject}  ${pc.dim}(${why})${pc.reset}`;
   }
   if (directKeyVar) {
     const has = !!process.env[directKeyVar];

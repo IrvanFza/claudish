@@ -1,6 +1,6 @@
 # Model routing
 
-> How a bare model name becomes a provider chain: defaultProvider, catalog resolvers, the derived picker roster, subscription pricing.
+> How a bare model name becomes a provider chain: defaultProvider, catalog resolvers, the derived picker provider list, subscription pricing.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
@@ -33,8 +33,9 @@ claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
 - `gc@` → GLM Coding Plan
 - `sakana@`, `fugu@` → Sakana Fugu
 - `sc@` → Sakana Fugu Subscription
-- `qc@` → Qwen Plan (Alibaba Model Studio **Token Plan** subscription)
-- `qp@`, `dashscope@` → Qwen API (Alibaba Model Studio **pay-as-you-go**, `DASHSCOPE_API_KEY`)
+- `qcode@` → Alibaba Coding Plan (`QWEN_CODING_PLAN_API_KEY`)
+- `qtoken@` → Alibaba Token Plan (`QWEN_TOKEN_PLAN_API_KEY`)
+- `qpay@` → Alibaba PAYG (`DASHSCOPE_API_KEY`)
 - `dv@`, `devin@` → Devin (Cognition/Codeium subscription — see `ai-docs/architecture/providers/devin.md`)
 - `gk@` → Grok Build subscription (SuperGrok / X Premium+ — see `ai-docs/architecture/providers/grok-subscription.md`). `grok@` stays with the METERED `x-ai` provider
 - `x-ai@`, `xai@`, `grok@` → xAI direct API, metered (`XAI_API_KEY`)
@@ -55,9 +56,49 @@ Claudish supports local models via:
 Local APIs report `prompt_tokens` as the FULL conversation context on every request, not an
 increment — see `ai-docs/architecture/context-window.md`.
 
+## Where a bare name's chain comes from
+
+**There is no built-in routing table.** `providers/default-routing-rules.ts` — 24 hand-written
+globs (`"gpt-*": ["openai-codex", "openai", "openrouter"]`, `"*": ["openrouter"]`) — was
+DELETED, together with `mergeRoutingRules`, `retainKnownCatalogRoutingRules` and
+`validateDefaultRoutingRules`. `loadRoutingRules()` now returns the user's own global and
+project rules and nothing else.
+
+`routeBare` (`providers/routing-rules.ts`) has six steps, and only the first changed:
+
+1. **A user rule matches?** Use that chain **verbatim** — never merged, reordered or appended
+   to, including by the fallback hop. `[]` is a match: the user said "no route".
+2. **Otherwise gather from the catalog** — `gatherRouteCandidates` (`route-candidates.ts`)
+   reads every `aggregators[]` connection the cloud models catalog publishes for the model
+   and orders them: tier (`subscription` → `dynamic-subscription` → `native` → `gateway`),
+   then the model's own vendor, then cheapest (unknown price last), then larger context
+   window, then provider name.
+3. **Append the fallback hop** (below).
+4. Credential filter (unchanged).
+5. Availability filter (unchanged) — only a POSITIVE "not-served" removes anything.
+6. Primary + fallbacks.
+
+**No catalog means local only.** With no readable catalog a bare name returns a no-route naming
+`claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id
+nobody published to a metered gateway, and a RENAMED id looks identical.
+
+**A dynamic subscription is invisible to the catalog, so it claims a namespace instead.**
+`antigravity`, `grok-subscription`, `sakana-subscription` and `devin` sit in the probe map as
+`client_model_selection_required` and publish zero connections — the ACCOUNT decides what the
+seat serves. Each therefore declares a `nativeModelPatterns` claim (`/^gemini-/i`, `/^grok-/i`,
+`/^fugu/i`, `/^swe-/i`) that `gatherFromNamespaceClaims` turns into a candidate. The claim is
+not evidence of service; the availability filter asks the account's own dynamic models catalog.
+Each claim's namespace is ALSO owned by a metered sibling defined EARLIER in
+`BUILTIN_PROVIDERS` (`google`, `x-ai`, `sakana`), which keeps `parseModelSpec`'s first-wins
+auto-detection unchanged — two claimants on one namespace is now fine, because the function
+that picked a single winner (`getProviderForModel`) no longer exists.
+
 ## Default Provider Configuration (v7.0.0+)
 
-`defaultProvider` is a **last-resort fallback** appended to every bare-name routing chain. It is not a "front of the line" override — specific patterns (`gpt-*`, `gemini-*`, etc.) still try their normal providers first. `defaultProvider` only catches models whose explicit chain has zero credentialed providers, or models that match no rule at all.
+`defaultProvider` names the **fallback hop** — the last position in a gathered chain. It is a
+POSITION, not a property of any provider: whichever provider it names occupies it, and no
+definition declares `tier: "fallback"`. It is not a "front of the line" override; everything the
+catalog maps is tried first.
 
 Set it via:
 
@@ -82,7 +123,35 @@ Set it via:
 
 Valid values: any built-in provider name (`"openrouter"`, `"openai"`, `"google"`, `"litellm"`, etc.) or a custom endpoint name defined in `customEndpoints`.
 
-**How it interacts with routing rules**: For each bare-name model, `route()` matches against the rules table, builds the candidate chain, then **appends `defaultProvider` to the end** if it isn't already in the chain (deduped against shortcuts — `or` and `openrouter` are treated as the same provider). The combined chain is then credential-filtered. Explicit `provider@model` specs are not affected — `defaultProvider` only applies to bare names.
+**How it interacts with routing rules**: it applies ONLY to the catalog-gathered path. A bare
+name that matched a user rule gets that chain verbatim with no fallback appended — which is what
+makes `routing["*"] = []` a complete no-route switch. On the gathered path the hop is appended
+last, deduped against shortcuts (`or` and `openrouter` are the same provider), and then the
+whole chain is credential-filtered. Explicit `provider@model` specs are unaffected.
+
+**Three ways it is EMPTY, and they are different:**
+
+| Setting | Fallback hop |
+|---|---|
+| unset (`undefined`) | `openrouter` — "no preference" is not "disabled" |
+| `""` (explicit empty string) | none |
+| a matching user rule, e.g. `routing["*"] = []` | none — the rule is verbatim |
+
+**It is not appended when the catalog positively denies it.** The catalog draws the line itself:
+a route the probe map marks `client_model_selection_required` is ACCOUNT-selected, so absence
+from a model's connections proves nothing; every other probed route is BACKEND-owned and
+publishes its complete connection list, so for those absence IS denial. When the fallback
+provider is backend-owned and the model has a catalog entry with no mapped connection to it, the
+append is skipped (`catalogDeniesProvider`). Measured on generation
+`g-20260921062451697-f490edba`: only 492 of 1,123 models have an OpenRouter connection, so the
+deleted `"*": ["openrouter"]` catch-all was sending 417 chat models to a hop the catalog never
+mapped — `qwen3.8-max` among them, which has four mapped connections and no OpenRouter.
+
+This is NOT the availability filter and does not duplicate it. `providerServesModel` may never
+conclude "not served" from the catalog alone (catalog coverage of SUBSCRIPTION providers is
+partial by nature — `openai-codex` appears on 5 rows of 1,123). The route-ownership split is
+what makes the narrower question answerable, and only the fallback APPEND asks it: the
+difference is inventing a hop nobody published versus dropping one something else put there.
 
 **No more LiteLLM auto-promotion** (removed in commit 5 of the model-catalog and routing redesign): Setting `LITELLM_BASE_URL` + `LITELLM_API_KEY` no longer makes LiteLLM the default. Users who want LiteLLM as the catch-all must set `defaultProvider: "litellm"` explicitly.
 
@@ -107,52 +176,97 @@ API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that u
 
 ## Runtime subscription routes come from the backend contract
 
-Claudish refreshes the slim model catalog and `queryPlans` together and stores both in
-`~/.claudish/all-models.json`. A model's `subscriptionPlans[]` contains canonical commercial
-plan IDs such as `kimi-code`; those values are NOT provider names. The client joins each ID to
-`queryPlans[].routing.providerUid` before deciding whether a provider serves the model.
+Claudish refreshes the v3 slim model catalog and `queryPlans` together, pins
+each page to one generation, and stores the complete snapshot in
+`~/.claudish/all-models.json`. A model's `subscriptionPlanIds[]` contains
+commercial plan IDs such as `kimi-code`. The client joins those IDs with a
+plan's exact `route.routeId` and `route.routeProfileId`, then sends the matched
+model connection's `externalModelId` to that transport.
 
 Plan absence has two different meanings:
 
-- `modelDiscovery: "catalog"`: the published roster is authoritative, so an absent model is
+- `modelDiscovery: "catalog"`: the published membership is authoritative, so an absent model is
   dropped from that subscription provider's candidate chain.
 - `modelDiscovery: "client"` or `"hybrid"`: the authenticated account may reveal models the
   public backend cannot know, so absence remains unknown and the candidate is retained. Devin,
   Antigravity, and the `xai-supergrok` plan use this account-scoped behavior.
 
-The backend recommendation document supplies `routingProvider`, `tier`, and an exact `command`
-for each callable route. Claudish turns those rows into exact-model routing rules, orders them by
-`tier` (`native` before `general`, `metered`, and `aggregator`), and places them ahead of bundled
-defaults. `DEFAULT_ROUTING_RULES` remain the cold-cache and uncovered-model fallback. Global and
-local user routing config still overlay both backend and bundled rules with the existing
-exact-key merge semantics; an exact backend model route is replaced by a user rule for that same
-model ID.
-
-If `queryPlans` cannot refresh, the model refresh still succeeds and the last-known-good plan
-cache is preserved. Old cache files without a plan snapshot retain their legacy behavior until a
-successful refresh.
+The backend recommendation projection supplies canonical model IDs and exact
+route/profile identities. Claudish resolves them against the generation-pinned
+catalog for model wire IDs. A user routing rule decides preference when one
+matches; otherwise the catalog's own connections do, ordered by tier. Catalog
+availability removes only known-unserved candidates. A failed model or plan
+refresh does not replace a complete cached snapshot.
 
 **Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
 
 **Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
 
-## The interactive picker roster is DERIVED — never add a membership table
+## Two model catalogs, and which one may deny
+
+Name them apart, because they are different KINDS of fact:
+
+| | **cloud models catalog** | **dynamic models catalog** |
+|---|---|---|
+| what it is | the hosted models-index metadata, keyed by canonical model id | the list one provider's discovery endpoint returns for ONE credential |
+| scope | the same for everybody | per account, per key, per seat |
+| lifetime | cached on disk in `~/.claudish/all-models.json` | in memory only, per process |
+| owns | model IDENTITY and published plan membership | ENTITLEMENT — which models this key may call |
+
+**A dynamic models catalog is never persisted.** `providers/model-discovery.ts` keeps the
+list in an in-memory `Map` for `CACHE_TTL_MS` (five minutes) and writes nothing to disk;
+the Antigravity served set is likewise in memory (`auth/antigravity-user.ts`). Every disk
+writer holds hosted or credential-free data. A stored per-account list would outlive the
+key or seat that earned it and answer with something no longer true.
+
+For a bare name, `route()` asks three questions of each routing-chain candidate, in this
+order, and each may remove it (an explicit `provider@model` skips the first):
+
+1. **Catalog membership** (`buildRoutingChain` → `resolveSubscriptionRouting`,
+   `adapters/model-catalog.ts`). Only for a plan whose route is `supported` and whose
+   `modelDiscovery` is `"catalog"`: a model outside its published membership is dropped
+   **before** any credential is read or any discovery request is made. A plan whose
+   `modelDiscovery` is `"client"` or `"hybrid"` answers `unknown` here and keeps the
+   candidate.
+2. **Credential** (`hasCredentialsForProvider`). No key, no candidate.
+3. **Availability** (`providerServesModel`, `providers/model-availability.ts`). For a
+   provider that declares `modelDiscovery`, a non-empty dynamic models catalog decides:
+   listed is `serves`, unlisted is `not-served`. The cloud models catalog may only
+   confirm, never deny.
+
+**Only a successful, complete account answer may deny, and a failed refresh denies
+nothing.** Every failure path of `discoverProviderModels` (no credential, 401/403, other
+HTTP errors, unreachable host, malformed JSON, no base URL) returns `[]` with a reason
+recorded for `getDiscoveryFailure`, and `providerServesModel` reads `[]` as `unknown`, so
+the candidate keeps its place. A refresh that could not run cannot erase access. The same
+holds for a 200 whose list fails the completeness checks: rows the parser had to drop, or
+a continuation field (`has_more: true`, `next`, `next_page`, `next_page_token`), record an
+`incomplete` failure, return `[]` and are not cached. Completeness is DETECTED, not
+proven: the vendor endpoints publish no total, so a well-formed subset still reads as a
+complete list.
+
+**What step 3 cannot tell apart.** It treats any non-empty list as the account's answer.
+`qwen-coding`'s `/v1/models` answers in full with no credential at all
+([`providers/qwen-alibaba.md`](providers/qwen-alibaba.md)), so for that provider the list
+records what the plan covers, not what the key may call, and it can still deny.
+
+## The interactive picker's provider list is DERIVED — never hand-write one
 
 Bare `claudish` shows "Select provider:" from `model-selector.ts`. That list used to be a
 hand-written `ALL_PROVIDER_CHOICES` array, so **membership was opt-in and a new provider
 defaulted to invisible**. `devin` and `antigravity` were both fully working — routing,
 `--probe`, and the config TUI (which has always derived its list from `getAllProviders()`) —
-while absent from the picker. `3a293b9` even built Antigravity's correct 20-model roster for
-a provider the picker could not offer.
+while absent from the picker. `3a293b9` even built Antigravity's correct 20-model dynamic
+models catalog for a provider the picker could not offer.
 
 The v7389502 credential refactor is the trap here: it unified availability **checking** (it
-deleted the three duplicate readiness oracles) and left the **roster** alone. Unifying how a
+deleted the three duplicate readiness oracles) and left the **list itself** alone. Unifying how a
 list is filtered is not the same as unifying what is in it.
 
 - `isPickableProvider(def)` = `def.shortcuts.length > 0`. A definition with no shortcuts has
   no user-typeable `@` prefix and exists only so `nativeModelPatterns` can steer a BARE name;
   `qwen` and `native-anthropic` are the two, and both carry an empty `baseUrl`/`apiPath`.
-  A rule, not a roster — there is no exclusion list to keep current.
+  A rule, not a table — there is no exclusion list to keep current.
 - `PICKER_COPY` and `PICKER_ORDER` are **editorial only**: labels and ordering. Anything
   unlisted still appears, at the end. Never use either as a membership gate.
 - The `@prefix` filter aliases (`getProviderFilterAliases`) are derived the same way, from
@@ -180,7 +294,7 @@ hand-written provider table.** `configCommand` was exported and imported nowhere
 What makes it worth recording rather than just deleting: it was **actively maintained while
 dead**. The light-theme sweep (`c9cb626`) restyled it and a MiniMax endpoint fix (`b7173d2`)
 corrected its hostname — two people paid to keep a table current that no code could read. A
-dead hand-written roster is worse than a live one, because nothing can ever prove it wrong.
+dead hand-written table is worse than a live one, because nothing can ever prove it wrong.
 Check for importers before restyling a file.
 
 ## Subscription pricing is decided by BILLING, not by `modelDiscovery`

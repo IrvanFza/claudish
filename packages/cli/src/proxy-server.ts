@@ -34,7 +34,6 @@ import {
   resolveTargetForCatalog,
   warmCatalog,
 } from "./providers/catalog-client.js";
-import { CatalogIncompatibleError } from "./providers/catalog-compatibility.js";
 import { getEndpointUnavailableReason } from "./providers/endpoint-diagnostics.js";
 import {
   ensureEndpointsRegistered,
@@ -72,17 +71,8 @@ class RoutingError extends Error {
   }
 }
 
-/**
- * Terminal for the same reason a RoutingError is: no provider can be chosen.
- *
- * `routeBare` throws `CatalogIncompatibleError` rather than returning a
- * `no-route`, so it arrives here as an exception and would otherwise fall into
- * the 500 branch below — where Claude Code's own retry loop would replay the
- * request ten times and show "API error · Retrying" instead of the one sentence
- * that names the fix. Grouped with RoutingError so it renders inline as a 400.
- */
 function isTerminalRoutingFailure(e: unknown): e is Error {
-  return e instanceof RoutingError || e instanceof CatalogIncompatibleError;
+  return e instanceof RoutingError;
 }
 
 /**
@@ -488,7 +478,18 @@ export async function createProxyServer(
     // If resolver says use direct-api, resolve credentials via the authority.
     if (resolution.category === "direct-api") {
       const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) return null;
+      if (!resolved) {
+        // A KNOWN provider name that resolves to nothing has no endpoint: it
+        // declares no static baseUrl, no set `baseUrlEnvVars`, and not
+        // `buildsOwnEndpoint`. Say that here, because everything downstream of
+        // this null (OpenRouter fallback, or a 400 on an explicit spec) reads as
+        // "my key is missing" — which is how `vertex@` sent users looking for a
+        // key that was never involved.
+        log(
+          `[Proxy] No remote provider resolved for "${resolveTarget}" — no endpoint is configured for it (not a credential problem)`
+        );
+        return null;
+      }
 
       // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
       if (resolved.provider.name === "openrouter") {
@@ -571,9 +572,10 @@ export async function createProxyServer(
   // Firebase catalogs now. The OpenRouter catalog is still warmed below via
   // warmAllCatalogs() since it backs vendor-prefix resolution.
 
-  // Load effective routing rules once at startup. Returns a merged view of
-  // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
-  // routing engine consults these via route() for every bare-name request.
+  // Load effective routing rules once at startup: the USER's global config +
+  // local config (local wins), and nothing else — there is no shipped table any
+  // more. The routing engine consults these via route() for every bare-name
+  // request, and falls through to the catalog-gathered chain when none matches.
   const effectiveRoutingRules = loadRoutingRules();
 
   // Cache fallback handlers by target model string.
@@ -829,9 +831,9 @@ export async function createProxyServer(
           }
         } else {
           // No routable provider for a bare model name. Routing is fully
-          // data-driven now (DEFAULT_ROUTING_RULES + user overrides) — if the
-          // chain is empty and credential filtering produces nothing, that's
-          // the user's configured outcome. Throw so the request handler
+          // data-driven now (the user's own rules, else the cloud models
+          // catalog) — if the chain is empty and credential filtering produces
+          // nothing, that is what the data says. Throw so the request handler
           // surfaces a clean error instead of silently falling through to a
           // legacy OpenRouter fallback. (Pre-commit-5 there was a hidden
           // OpenRouter step 7 that masked the no-route case.)

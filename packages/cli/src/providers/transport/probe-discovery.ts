@@ -13,6 +13,7 @@
  */
 
 import { log } from "../../logger.js";
+import { readAllModelsCache } from "../all-models-cache.js";
 
 /**
  * In-memory cache. Stores the FULL ranked list of candidates so the probe
@@ -38,10 +39,16 @@ const SMALL_MODEL_PATTERNS = [
 ];
 
 /**
- * Models that can't handle a `/v1/chat/completions` probe request: image
- * generation, embeddings, TTS, ASR. These often appear in /v1/models lists
- * alongside chat models (especially on LiteLLM aggregators) but will 404
- * or 400 the probe. Filter them out before ranking.
+ * Models that cannot answer a chat turn: image generation, embeddings, TTS,
+ * speech-to-text. They appear in `/v1/models` lists beside chat models and 404
+ * or 400 a probe.
+ *
+ * A NEGATIVE name rule: it can deny, never confirm. It is now the FALLBACK, not
+ * the rule: the cloud models catalog publishes output modalities, so for a model
+ * it describes the published list decides and this list is never consulted. It
+ * still decides for what the catalog leaves without an output modality — local
+ * servers (Ollama, LM Studio), custom endpoints, LiteLLM deployments, and catalog
+ * rows that carry no modality field.
  */
 const NON_CHAT_PATTERNS = [
   /\bimage\b/i,
@@ -61,21 +68,178 @@ const NON_CHAT_PATTERNS = [
   /-(image|tts|audio|embedding|vision-only)(-|$)/i,
 ];
 
+/**
+ * Ids that LOOK like video generators — a fallback the catalog overrides.
+ *
+ * Kept apart from {@link NON_CHAT_PATTERNS} because the catalog publishes
+ * `videoOutput` (a defined boolean, `false` included), so for any model it knows
+ * the fact replaces this guess. The guess still matters for models the catalog
+ * does not cover. One word, two directions: `\bvideo\b` cannot tell a video
+ * GENERATOR from a model that READS video, and video input alone never excludes a
+ * chat model — which is why a published `videoOutput: false` switches this off.
+ */
+const VIDEO_OUTPUT_NAME_PATTERNS = [
+  /\bvideo\b/i, // video-01, wan2.2-video, hunyuan-video
+  /(^|[-_.])(t2v|i2v|r2v|v2v)([-_.]|$)/i, // happyhorse-1.1-t2v / -i2v / -r2v; MiniMax T2V-01
+  /\bveo\b/i, // Google Veo
+  /\bsora\b/i, // OpenAI Sora
+];
+
 function isSmallName(name: string): boolean {
   return SMALL_MODEL_PATTERNS.some((re) => re.test(name));
 }
 
 /**
- * Reject non-chat-capable models (image/embedding/audio/wildcard route
- * patterns). Exported so size-sorted picks (Ollama-native path) can use
- * the same filter as name-sorted picks.
+ * What is known about whether a model can answer a chat turn.
+ *
+ * The cloud models catalog's OUTPUT MODALITY is the evidence; the name rules are
+ * the fallback for models it does not describe.
+ *
+ * - `"not-chat"` — the catalog's published output modalities exclude `"text"`
+ *   (image, audio, video, embeddings, transcription, speech, rerank, decisions);
+ *   or, for a model with no published output modality, `videoOutput: true`, a
+ *   {@link NON_CHAT_PATTERNS} match, or a LiteLLM wildcard route. Never offered.
+ * - `"chat"` — the catalog's published output modalities include `"text"`; or,
+ *   with none published, the catalog declares a chat-shaped capability (tools,
+ *   thinking or vision).
+ * - `"unknown"` — neither. Still offered. Rounding it to `"chat"` would assert
+ *   what nothing established; rounding it to `"not-chat"` would hide a newly
+ *   shipped chat model with no error and no trace.
+ */
+export type ChatCapability = "chat" | "not-chat" | "unknown";
+
+/**
+ * Memoized projection of the cloud models catalog, rebuilt at most once per TTL:
+ * a per-id lookup would re-read the cache file once per model when filtering a
+ * 300-model LiteLLM list.
+ */
+const CATALOG_CHAT_INDEX_TTL_MS = 60_000;
+interface CatalogCapabilityIndex {
+  /** Ids the catalog declares chat-shaped. */
+  chat: Set<string>;
+  /** Ids whose published output modalities INCLUDE `"text"`: chat models, by catalog evidence. */
+  textOutput: Set<string>;
+  /** Ids whose published output modalities EXCLUDE `"text"`: they produce something else only. */
+  nonTextOutput: Set<string>;
+  /** Ids the catalog declares video GENERATORS (`videoOutput: true`). */
+  videoOutput: Set<string>;
+  /** Ids with ANY published `videoOutput`, `false` included: a statement, not a silence. */
+  videoOutputKnown: Set<string>;
+}
+const _catalogChatIndex = new Map<string, { index: CatalogCapabilityIndex; expiresAt: number }>();
+
+/** Drop the memoized catalog projection — tests, and after a catalog refresh. */
+export function _clearChatCapabilityIndex(): void {
+  _catalogChatIndex.clear();
+}
+
+/** The catalog key for an id: lowercased, vendor prefix dropped (`openai/x` is `x`). */
+function catalogKey(name: string): string {
+  const lower = name.toLowerCase();
+  return lower.includes("/") ? lower.slice(lower.lastIndexOf("/") + 1) : lower;
+}
+
+/**
+ * File a catalog row's keys under its published OUTPUT modality.
+ *
+ * Unknown arrives as an absent field; `null` and `[]` read as unknown too, because
+ * no model produces nothing — such a row joins neither set and is left to the
+ * `videoOutput` boolean and the name rules. The test is "includes text", never
+ * "equals text": `["audio", "text"]` speaks AND writes, so it can answer a chat turn.
+ *
+ * An INPUT modality is never filed here, in either direction: a model that accepts
+ * video, audio or images is still a chat model.
+ */
+function indexOutputModality(
+  index: CatalogCapabilityIndex,
+  keys: string[],
+  modalities: string[] | null | undefined
+): void {
+  if (!Array.isArray(modalities) || modalities.length === 0) return;
+  const target = modalities.includes("text") ? index.textOutput : index.nonTextOutput;
+  for (const k of keys) target.add(k);
+}
+
+function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
+  const key = cachePath ?? "";
+  const hit = _catalogChatIndex.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.index;
+
+  const index: CatalogCapabilityIndex = {
+    chat: new Set(),
+    textOutput: new Set(),
+    nonTextOutput: new Set(),
+    videoOutput: new Set(),
+    videoOutputKnown: new Set(),
+  };
+  for (const entry of readAllModelsCache(cachePath)?.entries ?? []) {
+    const keys = [catalogKey(entry.modelId), ...(entry.aliases ?? []).map(catalogKey)];
+    // Filed BEFORE the `videoOutput: true` `continue` below, so a video generator
+    // still contributes its published output modality — and where the two disagree
+    // the modality list wins, being the more specific statement.
+    indexOutputModality(index, keys, entry.outputModalities);
+    // `videoOutput` is read in both directions; `videoInput` is never read as a
+    // denial, because a model that reads video is still a chat model.
+    if (entry.videoOutput !== undefined) {
+      for (const k of keys) index.videoOutputKnown.add(k);
+    }
+    if (entry.videoOutput === true) {
+      for (const k of keys) index.videoOutput.add(k);
+      continue;
+    }
+    // Positive flags only: `undefined` means no opinion and must stay `unknown`.
+    const chatShaped =
+      entry.supportsTools === true ||
+      entry.supportsThinking === true ||
+      entry.supportsVision === true;
+    if (chatShaped) for (const k of keys) index.chat.add(k);
+  }
+  _catalogChatIndex.set(key, { index, expiresAt: Date.now() + CATALOG_CHAT_INDEX_TTL_MS });
+  return index;
+}
+
+/**
+ * Classify whether a model can answer a chat turn — see {@link ChatCapability}.
+ *
+ * The cloud models catalog's published OUTPUT MODALITY outranks every name rule,
+ * in both directions: a model named like an image generator whose published output
+ * is `["text"]` IS a chat model, and a model with a blameless name whose output is
+ * `["image"]` is NOT. Only where the catalog publishes no output modality — local
+ * servers, custom endpoints, LiteLLM deployments, catalog rows without the field —
+ * do the older `videoOutput` boolean and the name rules decide.
+ *
+ * Order: wildcard route, non-text output, text output, `videoOutput: true`,
+ * {@link NON_CHAT_PATTERNS}, the video name guess (only while `videoOutput` is
+ * unpublished), the chat-shaped capability flags, then `"unknown"`.
+ *
+ * @param cachePath Override the catalog cache path. Tests only.
+ */
+export function classifyChatCapability(name: string, cachePath?: string): ChatCapability {
+  // Wildcard entries ("gemini/*") are LiteLLM route patterns, not models.
+  if (name.includes("*")) return "not-chat";
+
+  const index = catalogCapabilityIndex(cachePath);
+  const key = catalogKey(name);
+
+  // Catalog evidence, ahead of every name rule.
+  if (index.nonTextOutput.has(key)) return "not-chat";
+  if (index.textOutput.has(key)) return "chat";
+
+  if (index.videoOutput.has(key)) return "not-chat";
+  if (NON_CHAT_PATTERNS.some((re) => re.test(name))) return "not-chat";
+  if (!index.videoOutputKnown.has(key) && VIDEO_OUTPUT_NAME_PATTERNS.some((re) => re.test(name))) {
+    return "not-chat";
+  }
+  if (index.chat.has(key)) return "chat";
+  return "unknown";
+}
+
+/**
+ * Whether a model may be offered as a chat model: everything but `"not-chat"`.
+ * A projection of {@link classifyChatCapability}, so every caller shares one rule.
  */
 export function isChatCapable(name: string): boolean {
-  // Wildcard entries (e.g. "gemini/*", "gem-mad/*") are route patterns
-  // returned by some LiteLLM deployments — they appear in /v1/models
-  // listings but aren't pingable as concrete models.
-  if (name.includes("*")) return false;
-  return !NON_CHAT_PATTERNS.some((re) => re.test(name));
+  return classifyChatCapability(name) !== "not-chat";
 }
 
 /**
@@ -192,7 +356,20 @@ function cacheSetRanked(key: string, ranked: string[]): void {
 export async function discoverViaOpenAIModels(
   endpoint: string,
   headers: Record<string, string>,
-  cacheKey: CacheKey & { displayName?: string; exclude?: ReadonlySet<string> }
+  cacheKey: CacheKey & {
+    displayName?: string;
+    exclude?: ReadonlySet<string>;
+    /**
+     * Whether a key is configured for this provider, for the 401/403 message.
+     *
+     * A local server that wants a key and a local server that rejects the key
+     * are different problems with different fixes, and "HTTP 401 from
+     * http://localhost:8000/v1/models" told the reader neither. Measured
+     * 2026-09-19: an oMLX server on vLLM's default port answers
+     * `401 {"error":{"message":"API key required"}}` to an unauthenticated list.
+     */
+    hasApiKey?: boolean;
+  }
 ): Promise<DiscoveryOutcome> {
   const cached = cacheGet(cacheKey.key, cacheKey.exclude);
   if (cached !== undefined) return cached;
@@ -214,7 +391,16 @@ export async function discoverViaOpenAIModels(
   }
 
   if (!response.ok) {
-    const reason = `HTTP ${response.status} from ${endpoint}`;
+    const who = cacheKey.displayName ?? "this provider";
+    const authFailure =
+      response.status === 401 || response.status === 403
+        ? cacheKey.hasApiKey === false
+          ? `the server requires an API key and none is configured for ${who}`
+          : `the server rejected the configured API key for ${who}`
+        : "";
+    const reason = authFailure
+      ? `HTTP ${response.status} from ${endpoint} — ${authFailure}`
+      : `HTTP ${response.status} from ${endpoint}`;
     log(`[probe-discovery${cacheKey.displayName ? `:${cacheKey.displayName}` : ""}] ${reason}`);
     cacheSetFailure(cacheKey.key, reason);
     return { model: null, reason };

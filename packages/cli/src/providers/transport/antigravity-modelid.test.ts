@@ -4,7 +4,7 @@ import { resolveAntigravityModelId } from "./antigravity.js";
 /**
  * resolveAntigravityModelId operates ONLY on the LIVE served set (no hardcoded
  * model ids). Every case injects its own servedIds + defaultId, so the tests
- * carry no pinned roster and touch no network.
+ * carry no pinned model list and touch no network.
  */
 describe("resolveAntigravityModelId", () => {
   test("returns an exactly-served id untouched", () => {

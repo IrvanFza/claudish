@@ -44,7 +44,11 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
   mistralai: { apiKeyEnvVar: "MISTRAL_API_KEY" },
   sakana: { apiKeyEnvVar: "SAKANA_API_KEY" },
   "sakana-subscription": { apiKeyEnvVar: "SAKANA_SUBSCRIPTION_API_KEY" },
-  "qwen-cloud": { apiKeyEnvVar: "QWEN_CLOUD_PLAN_API_KEY" },
+  // One row per Alibaba silo. Each product has exactly one variable, and the
+  // name says which product it opens — a hint that names a vendor rather than a
+  // product is how a subscription key ends up filed against a metered silo.
+  "qwen-token-plan": { apiKeyEnvVar: "QWEN_TOKEN_PLAN_API_KEY" },
+  "qwen-coding": { apiKeyEnvVar: "QWEN_CODING_PLAN_API_KEY" },
   "qwen-payg": { apiKeyEnvVar: "DASHSCOPE_API_KEY" },
   ollamacloud: { apiKeyEnvVar: "OLLAMA_API_KEY" },
   "native-anthropic": { apiKeyEnvVar: "ANTHROPIC_API_KEY" },

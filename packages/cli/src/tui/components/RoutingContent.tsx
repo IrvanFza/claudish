@@ -2,7 +2,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 /** @jsxImportSource @opentui/react */
 import { useEffect, useRef } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
-import { DEFAULT_ROUTING_RULES } from "../../providers/default-routing-rules.js";
+import { DEFAULT_FALLBACK_PROVIDER } from "../../providers/routing-rules.js";
 import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
 import { providerIsReady } from "../providers.js";
@@ -14,8 +14,18 @@ function chainStr(chain: string[]): string {
   return chain.join(" → ");
 }
 
-// Reasons shown beneath each probe entry
-const PROVIDER_REASONS: Record<string, string> = {
+/**
+ * Reasons shown beneath each probe entry.
+ *
+ * Exported for the drift test only. A provider missing from here renders its
+ * bare uid (`entry.provider`) as its own explanation — which is not an error and
+ * not visibly wrong, so the three Alibaba rows would silently read
+ * "qwen-token-plan / qwen-coding / qwen-payg" instead of naming the three
+ * products the user is choosing between. Nothing is DERIVED from this map; it
+ * only labels. The Alibaba labels equal each definition's `displayName`, and
+ * `qwen-coding-plan.test.ts` holds them to it.
+ */
+export const PROVIDER_REASONS: Record<string, string> = {
   litellm: "LiteLLM proxy",
   "opencode-zen": "Free tier (OpenCode Zen)",
   "opencode-zen-go": "Zen Go plan",
@@ -25,13 +35,15 @@ const PROVIDER_REASONS: Record<string, string> = {
   "minimax-coding": "MiniMax Coding Plan",
   glm: "Native GLM API",
   "glm-coding": "GLM Coding Plan",
-  "qwen-cloud": "Qwen Plan",
+  "qwen-token-plan": "Alibaba Token Plan",
+  "qwen-coding": "Alibaba Coding Plan",
+  "qwen-payg": "Alibaba PAYG",
   google: "Direct Gemini API",
   openai: "Direct OpenAI API",
   "openai-codex": "OpenAI Codex (Responses API)",
   zai: "Z.AI API",
   ollamacloud: "Cloud Ollama",
-  vertex: "Vertex AI Express",
+  vertex: "Vertex AI (ADC)",
   openrouter: "Fallback: 580+ models",
 };
 
@@ -350,34 +362,50 @@ export function RoutingContent({
       flexDirection="column"
       paddingX={1}
     >
-      {/* Catch-all default — the only "global" default that actually exists.
-          Per-pattern defaults (gpt-* → codex/openai/openrouter, etc.) are
-          visible in the rule table below alongside any user overrides.
-          Each header `<text>` is pinned to height={1} so flex layout doesn't
-          collapse them into the scrollbox below in tight viewports. */}
+      {/* The FALLBACK hop — the last-resort provider appended after the chain
+          gathered from the cloud models catalog, and the only routing fact left
+          that is global rather than per-model.
+
+          This used to compare `defaultProvider` against the shipped
+          DEFAULT_ROUTING_RULES catch-all and report which "overrode" which.
+          That table is gone, so there is no built-in to override; what is true
+          now is simply which provider occupies the last position, and whether
+          the user emptied it. Each header `<text>` is pinned to height={1} so
+          flex layout doesn't collapse them into the scrollbox below in tight
+          viewports. */}
       <text height={1}>
         <span fg={C.blue} attributes={A.bold}>
-          {" Catch-all default:"}
+          {" Fallback hop:"}
         </span>
-        <span fg={C.fgMuted}>{"  (used for any model not matched by a rule)"}</span>
+        <span fg={C.fgMuted}>{"  (tried last, after every provider the catalog maps)"}</span>
       </text>
       <text height={1}>
-        <span fg={C.dim}>{"  * "}</span>
-        <span fg={C.dim}>{"→ "}</span>
-        <span fg={C.cyan}>
-          {config.defaultProvider && config.defaultProvider.length > 0
-            ? config.defaultProvider
-            : (DEFAULT_ROUTING_RULES["*"]?.[0] ?? "openrouter")}
-        </span>
         {(() => {
-          const builtIn = DEFAULT_ROUTING_RULES["*"]?.[0] ?? "openrouter";
-          const override = config.defaultProvider;
-          const hasOverride = !!(override && override.length > 0);
-          const overridesBuiltIn = hasOverride && override !== builtIn;
-          return overridesBuiltIn ? (
-            <span fg={C.fgMuted}>{`  (defaultProvider — overrides built-in '${builtIn}')`}</span>
-          ) : (
-            <span fg={C.fgMuted}>{"  (built-in)"}</span>
+          const configured = config.defaultProvider;
+          // An explicitly EMPTY string disables the hop; unset means "no
+          // preference" and takes openrouter. `routeBare` draws the same line.
+          if (configured !== undefined && configured.length === 0) {
+            return (
+              <>
+                <span fg={C.dim}>{"  → "}</span>
+                <span fg={C.yellow}>{"disabled"}</span>
+                <span fg={C.fgMuted}>
+                  {"  (defaultProvider is empty — an unroutable model errors instead)"}
+                </span>
+              </>
+            );
+          }
+          const hasOverride = configured !== undefined && configured.length > 0;
+          return (
+            <>
+              <span fg={C.dim}>{"  → "}</span>
+              <span fg={C.cyan}>{hasOverride ? configured : DEFAULT_FALLBACK_PROVIDER}</span>
+              <span fg={C.fgMuted}>
+                {hasOverride
+                  ? "  (defaultProvider)"
+                  : "  (default — set defaultProvider to change)"}
+              </span>
+            </>
           );
         })()}
       </text>
@@ -451,47 +479,19 @@ export function RoutingContent({
           >
             {mergedRules.map((rule, idx) => {
               const sel = idx === providerIndex;
-              const isDefault = rule.kind === "default";
               const isProject = rule.kind === "project";
-              // Marker priority: project (▴ cyan) > override (★ yellow) >
-              // user (• green) > default (· dim). Each row owns one scope
-              // — no shadowing in the table — so override + project never
-              // collide on the same row.
-              let marker: string;
-              let markerFg: string;
-              if (isDefault) {
-                marker = "·";
-                markerFg = C.dim;
-              } else if (isProject) {
-                marker = "▴";
-                markerFg = C.cyan;
-              } else if (rule.overridesDefault) {
-                marker = "★";
-                markerFg = C.yellow;
-              } else {
-                marker = "•";
-                markerFg = C.green;
-              }
+              // Marker: project (▴ cyan) > global (• green). Every row is one
+              // of the user's own rules and owns one scope — no shadowing in
+              // the table. The dim "·" built-in row and the yellow "★"
+              // override-of-a-default row are both gone, because the shipped
+              // rules table they compared against no longer exists.
+              const marker = isProject ? "▴" : "•";
+              const markerFg = isProject ? C.cyan : C.green;
               // SCOPE column: explicit text, color-coded.
-              //   default → "—" (dim)
-              //   global  → "global" (green)
-              //   project → "project" (cyan)
-              let scopeText: string;
-              let scopeFg: string;
-              if (isDefault) {
-                scopeText = "—       ";
-                scopeFg = C.dim;
-              } else if (isProject) {
-                scopeText = "project ";
-                scopeFg = C.cyan;
-              } else {
-                scopeText = "global  ";
-                scopeFg = C.green;
-              }
-              // Pattern column: white when selected, cyan when user, dim when default.
-              const patFg = sel ? C.strong : isDefault ? C.fgMuted : C.cyan;
-              // Chain column: cyan when selected, fgMuted when user, dim when default.
-              const chainFg = sel ? C.cyan : isDefault ? C.dim : C.fgMuted;
+              const scopeText = isProject ? "project " : "global  ";
+              const scopeFg = isProject ? C.cyan : C.green;
+              const patFg = sel ? C.strong : C.cyan;
+              const chainFg = sel ? C.cyan : C.fgMuted;
               return (
                 <box
                   key={`${rule.kind}-${rule.pattern}`}
@@ -500,7 +500,7 @@ export function RoutingContent({
                   backgroundColor={sel ? C.bgHighlight : C.bg}
                 >
                   <text>
-                    <span fg={markerFg} attributes={A.boldIf(!isDefault)}>{` ${marker} `}</span>
+                    <span fg={markerFg} attributes={A.bold}>{` ${marker} `}</span>
                     <span fg={patFg} attributes={A.boldIf(sel)}>
                       {rule.pattern.padEnd(16).substring(0, 16)}
                     </span>

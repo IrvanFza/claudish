@@ -39,24 +39,27 @@ export type Mode =
 export type RoutingScope = "global" | "project";
 
 /**
- * A single row in the routing rules table. Rows from all three layers
- * (built-in defaults, global config, project-local config) are shown
- * concurrently — no shadowing in the UI. If a pattern exists at multiple
- * layers, multiple rows render and each is independently editable.
+ * A single row in the routing rules table — one of the USER's own rules, from
+ * global config or from project-local config. Both layers are shown
+ * concurrently, with no shadowing in the UI: if a pattern exists at both,
+ * two rows render and each is independently editable.
  *
- * Marker priority: project (▴ cyan) > override (★ yellow) > user (• green)
- * > default (· dim). `overridesDefault` is true when a user rule (global
- * or project) shares an exact pattern key with a built-in default — used
- * to pick ★ vs • for the marker. The runtime routing engine still applies
- * precedence (project beats global beats default), but the table reflects
- * disk state.
+ * There is no third `"default"` kind and no `overridesDefault` flag any more.
+ * Both described the shipped `DEFAULT_ROUTING_RULES` table, which was deleted
+ * when routing started gathering its candidates from the cloud models catalog.
+ * Nothing is left for a user rule to "override": a rule that matches is the
+ * whole chain, used verbatim, and a model with no matching rule is routed from
+ * the catalog. Keeping the flag would have gone on drawing a ★ against a
+ * comparison that no longer exists.
+ *
+ * Marker priority: project (▴ cyan) > global (• green). The runtime routing
+ * engine still applies precedence (project beats global), but the table
+ * reflects disk state.
  */
 export interface MergedRule {
-  kind: "default" | "global" | "project";
+  kind: "global" | "project";
   pattern: string;
   chain: string[];
-  /** True when a user rule (global or project) shares a key with a built-in default. */
-  overridesDefault: boolean;
 }
 
 export type ProbeMode = "idle" | "input" | "running" | "done";

@@ -115,10 +115,48 @@ export interface ProbeLinkInput {
  * stop a reasoning model spending the whole probe cap on hidden reasoning and
  * returning 200 with zero visible text. "low" preserves that intent and is
  * accepted (both verified against the live API).
+ *
+ * `google` is here for the Gemini 3 thinking levels. Measured 2026-09-19 on the
+ * direct API: gemini-3.8-flash answers `400 "Thinking level MINIMAL is not
+ * supported for this model"`, while "low" and "high" return 200; gemini-2.5-flash
+ * accepts all of them, since 2.5 takes a numeric budget instead. The probe pick
+ * for google is a Gemini 3 model, so every Gemini probe failed on its effort
+ * field. (Antigravity serves both families and needs no field at all — see
+ * EFFORT_OMITTED below.)
+ *
+ * `qwen-payg` validates the enum the same way Anthropic does, and says so:
+ * `400 InvalidParameter "Invalid value 'minimal' for output_config.effort.
+ * Supported values are: low, medium, high, xhigh, max."` (measured 2026-09-20 on
+ * dashscope-intl with qwen3.8-max-0902). Its sibling products do not: the Token
+ * Plan host accepts "minimal" on the same round of measurements, so this is one
+ * product's host, not a vendor-wide rule.
  */
-const MINIMAL_EFFORT_UNSUPPORTED = new Set(["native-anthropic", "anthropic"]);
+const MINIMAL_EFFORT_UNSUPPORTED = new Set([
+  "native-anthropic",
+  "anthropic",
+  "google",
+  "qwen-payg",
+]);
 
-function effortForProvider(provider: string): string {
+/**
+ * Providers where NO effort value is valid for every model they serve, so the
+ * probe sends none and lets each model use its default.
+ *
+ * Antigravity serves Gemini 2.5, Gemini 3 and Claude behind one request shape,
+ * and the probe knows only the provider, never the model family. Measured
+ * 2026-09-19 with the 512-token probe cap:
+ *   - "minimal" → `thinkingBudget: 0` on Gemini 2.5, which Antigravity rejects:
+ *     `400 INVALID_ARGUMENT` on gemini-2.5-flash and gemini-2.5-flash-lite.
+ *   - "low" → a 1024-token budget, which Claude rejects because it is not below
+ *     the cap: "`max_tokens` must be greater than `thinking.budget_tokens`".
+ *   - no field → 200 on all of them.
+ * Claude Code never sends "minimal" and sends a far larger max_tokens, so user
+ * sessions reach neither failure through this path.
+ */
+const EFFORT_OMITTED = new Set(["antigravity"]);
+
+function effortForProvider(provider: string): string | undefined {
+  if (EFFORT_OMITTED.has(provider)) return undefined;
   return MINIMAL_EFFORT_UNSUPPORTED.has(provider) ? "low" : "minimal";
 }
 
@@ -138,6 +176,7 @@ export async function probeLink(
   }
 
   const startedAt = Date.now();
+  const probeEffort = effortForProvider(link.provider);
   let response: Response;
 
   try {
@@ -174,7 +213,7 @@ export async function probeLink(
         // omitting the field both return 200. So EVERY native-anthropic probe
         // failed on the payload before the model id was even considered, which
         // is why that link could never report `live`.
-        output_config: { effort: effortForProvider(link.provider) },
+        ...(probeEffort ? { output_config: { effort: probeEffort } } : {}),
         stream: true,
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -363,10 +402,27 @@ export function classifyHttpError(status: number, body: string, latencyMs: numbe
         errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
       };
     }
+    // Nor is it an auth failure when the provider accepted the credential and
+    // denied THIS MODEL. Alibaba's Model Studio answers
+    // `403 {"code":"Model.AccessDenied","message":"Model access denied."}` while
+    // the same key lists 169 models on the same host (measured 2026-09-19), so
+    // the credential is proven good by the provider itself. Reported as
+    // `auth-failed` it both blamed a working key and STOPPED Test All on the
+    // first candidate: the loop retries `error`, never `auth-failed`, so an
+    // account that may call some models but not the catalog's pick never got a
+    // second try. `error` keeps the failure without the false cause.
+    if (/model[^"]{0,24}access[ _-]?denied|access[ _-]?denied[^"]{0,24}model/i.test(body)) {
+      return {
+        state: "error",
+        latencyMs,
+        httpStatus: authStatus,
+        errorMessage: extractErrorMessage(body) || `HTTP ${authStatus}`,
+      };
+    }
     // Nor is it an auth failure when the provider handed back a link to act on.
     // Measured: Zen Go answers a model the account has not opted into with
     // `403 RegionError … requires explicit opt in: <url>` — the credential is
-    // fine, the model IS in its live roster, and the fix is a click. Reporting
+    // fine, the model IS in its dynamic models catalog, and the fix is a click. Reporting
     // `auth-failed` there points the user at a working key. `error` keeps the
     // failure semantics (it is in `isFailureState`) without the false cause.
     if (hasActionableLink(body)) {

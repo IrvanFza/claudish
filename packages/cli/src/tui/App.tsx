@@ -33,7 +33,6 @@ import {
   setEndpoint,
   setKeychainEnabled,
 } from "../profile-config.js";
-import { DEFAULT_ROUTING_RULES } from "../providers/default-routing-rules.js";
 import { ensureEndpointsRegistered } from "../providers/endpoint-registration.js";
 import {
   deleteKeychainSecret,
@@ -136,6 +135,7 @@ import {
   maskKey,
   providerAuthCapabilities,
   providerAuthSource,
+  providerCredentialNote,
   providerIsReady,
   providerIsReadyForDisplay,
 } from "./providers.js";
@@ -436,11 +436,11 @@ export function App({ requestLogin }: AppProps = {}) {
     // is sorting — calling it again inside the comparator would make every
     // `indexOf` return -1 and collapse the catalog order the sort exists to
     // preserve.
-    const roster = getProviderDefs();
-    return [...roster].sort((a, b) => {
+    const providerDefs = getProviderDefs();
+    return [...providerDefs].sort((a, b) => {
       const aReady = providerIsReadyForDisplay(a, config, localLiveness);
       const bReady = providerIsReadyForDisplay(b, config, localLiveness);
-      if (aReady === bReady) return roster.indexOf(a) - roster.indexOf(b);
+      if (aReady === bReady) return providerDefs.indexOf(a) - providerDefs.indexOf(b);
       return aReady ? -1 : 1;
     });
   }, [config, localLiveness]);
@@ -628,47 +628,39 @@ export function App({ requestLogin }: AppProps = {}) {
     process.env.CLAUDISH_STATS === "0" || process.env.CLAUDISH_STATS === "false";
   const statsEnabled = !statsDisabledByEnv && config.stats?.enabled === true;
 
-  // Merged routing rules: built-in defaults + global config + project-local
-  // config rendered as a flat list with NO shadowing. If a pattern exists at
-  // multiple layers (e.g. a global override AND a project rule for `gpt-*`),
-  // BOTH rows are visible — the user can edit/delete each independently.
+  // The USER's routing rules — global config + project-local config — rendered
+  // as a flat list with NO shadowing. If a pattern exists at both layers (e.g.
+  // a global rule AND a project rule for `gpt-*`), BOTH rows are visible and
+  // the user can edit/delete each independently.
+  //
+  // There is no third "built-in defaults" layer to show. `DEFAULT_ROUTING_RULES`
+  // was deleted when routing began gathering candidates from the cloud models
+  // catalog, so there is no shipped table these rules could override; a model
+  // with no user rule is routed from the catalog, which is per-model data this
+  // table cannot enumerate. The catch-all header above shows the one thing that
+  // remains global: the fallback hop in force.
   //
   // The runtime routing engine (loadRoutingRules + matchRoutingRule) still
-  // applies precedence (project beats global beats default), but the TUI
-  // shows the data as it exists on disk, not the runtime resolution.
+  // applies precedence (project beats global), but the TUI shows the data as it
+  // exists on disk, not the runtime resolution.
   //
   // Catch-all `*` is rendered separately above the table and excluded here.
   //
-  // Sort order: defaults first (alphabetical), then global, then project.
-  // `loadLocalConfig()` is called inside the memo so a `refreshConfig()`
-  // after a project save triggers re-derivation.
+  // Sort order: global, then project. `loadLocalConfig()` is called inside the
+  // memo so a `refreshConfig()` after a project save triggers re-derivation.
   // biome-ignore lint/correctness/useExhaustiveDependencies: deps deliberately tuned to control re-derivation
   const mergedRules: MergedRule[] = useMemo(() => {
     const out: MergedRule[] = [];
     const localCfg = loadLocalConfig();
 
-    for (const [pat, chain] of Object.entries(DEFAULT_ROUTING_RULES)) {
-      if (pat === "*") continue;
-      out.push({ kind: "default", pattern: pat, chain, overridesDefault: false });
-    }
     for (const [pat, chain] of Object.entries(config.routing ?? {})) {
       if (pat === "*") continue;
-      out.push({
-        kind: "global",
-        pattern: pat,
-        chain,
-        overridesDefault: pat in DEFAULT_ROUTING_RULES,
-      });
+      out.push({ kind: "global", pattern: pat, chain });
     }
     if (localCfg?.routing) {
       for (const [pat, chain] of Object.entries(localCfg.routing)) {
         if (pat === "*") continue;
-        out.push({
-          kind: "project",
-          pattern: pat,
-          chain,
-          overridesDefault: pat in DEFAULT_ROUTING_RULES,
-        });
+        out.push({ kind: "project", pattern: pat, chain });
       }
     }
     return out;
@@ -961,7 +953,7 @@ export function App({ requestLogin }: AppProps = {}) {
           setKeychainEnabled(true);
           refreshKeychainVars();
           // Every provider whose key just changed has a stale authority memo,
-          // and the endpoint roster may now include vendors that were gated out
+          // and the endpoint list may now include vendors that were gated out
           // for lack of a local credential.
           credentials.invalidate();
           invalidateProbeProxyHandlers();
@@ -2487,12 +2479,12 @@ export function App({ requestLogin }: AppProps = {}) {
           setChainOrder([...rule.chain]);
           setChainCursor(0);
           setStatusMsg(null);
-          // Default scope to the rule's current scope (or "global" for defaults
-          // — matches the typical case where users write personal overrides).
+          // Default scope to the rule's current scope. Every row is now a user
+          // rule, so there is no third case to fold into "global".
           const initialScope: RoutingScope = rule.kind === "project" ? "project" : "global";
           setRoutingScope(initialScope);
           setRoutingScopeCursor(initialScope === "global" ? 0 : 1);
-          setEditingExistingScope(rule.kind === "default" ? null : rule.kind);
+          setEditingExistingScope(rule.kind);
           setEditingExistingPattern(rule.pattern);
           setRoutingScopeReturnsToEdit(true);
           setMode("pick_routing_scope");
@@ -2504,11 +2496,7 @@ export function App({ requestLogin }: AppProps = {}) {
         } else {
           const idx = Math.min(providerIndex, mergedRules.length - 1);
           const rule = mergedRules[idx]!;
-          if (rule.kind === "default") {
-            setStatusMsg(
-              `Built-in default '${rule.pattern}' cannot be deleted. Press e to override.`
-            );
-          } else if (rule.kind === "project") {
+          if (rule.kind === "project") {
             const local = loadLocalConfig();
             if (local?.routing && local.routing[rule.pattern] !== undefined) {
               delete local.routing[rule.pattern];
@@ -2725,6 +2713,7 @@ export function App({ requestLogin }: AppProps = {}) {
             isKcKey={isKcKey}
             hasKcKey={hasKcKey}
             keySaveTarget={keychainSupported ? "macOS Keychain" : "config.json"}
+            credentialNote={providerCredentialNote(selectedProvider)}
             cfgKeyMask={cfgKeyMask}
             envKeyMask={envKeyMask}
             activeEndpoint={activeEndpoint}

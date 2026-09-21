@@ -1,5 +1,5 @@
 /**
- * The three builtin roster fetchers that are not an HTTP GET.
+ * The three builtin dynamic models catalog fetchers that are not an HTTP GET.
  *
  * They live HERE, behind `registerModelDiscoveryFetcher`, rather than as
  * `if (descriptor.format === …)` branches inside `model-discovery.ts`. The
@@ -22,20 +22,20 @@ import type { DiscoveredModel } from "./model-discovery.js";
 import { registerModelDiscoveryFetcher } from "./model-discovery.js";
 
 /**
- * Devin's roster is capability ∩ entitlement over two protobuf rpcs.
+ * Devin's dynamic models catalog is capability ∩ entitlement over two protobuf rpcs.
  *
  * Carries the full variant metadata, not just id/name/window: the picker folds
  * ~170 uids into ~42 rows and needs the group label, the cost multiplier, the
  * promo and the vendor's own default flag to do it.
  */
-async function fetchDevinRoster(): Promise<DiscoveredModel[]> {
+async function fetchDevinModelsCatalog(): Promise<DiscoveredModel[]> {
   const { getServedDevinModels } = await import("./devin/devin-models.js");
   const served = await getServedDevinModels();
   if (served.length === 0) return [];
 
-  const { devinRosterEntry } = await import("./model-resolvers/devin.js");
+  const { devinModelsCatalogEntry } = await import("./model-resolvers/devin.js");
   return served.map((model) => {
-    const { wireId, ...rest } = devinRosterEntry(model);
+    const { wireId, ...rest } = devinModelsCatalogEntry(model);
     return { id: wireId, ...rest };
   });
 }
@@ -50,8 +50,9 @@ async function fetchDevinRoster(): Promise<DiscoveredModel[]> {
  * no images, `recommended: false`. They answer HTTP 200, which is precisely what
  * made a wrong-host problem look like a rate limit for an entire session.
  *
- * Prefix-matched, because the ids carry build numbers that rot on each roster
- * roll. This is the ONLY guess left in the filter; everything else is declared.
+ * Prefix-matched, because the ids carry build numbers that rot on each roll of
+ * the dynamic models catalog. This is the ONLY guess left in the filter; everything
+ * else is declared.
  */
 function isUndeclaredEditorInternal(id: string): boolean {
   return id.startsWith("tab_");
@@ -66,7 +67,7 @@ function isUndeclaredEditorInternal(id: string): boolean {
  * in the catalog. `resolveDiscoveredContextLength` already prefers a discovered
  * window over the catalog; this is what gives it one to prefer.
  */
-async function fetchAntigravityRoster(): Promise<DiscoveredModel[]> {
+async function fetchAntigravityModelsCatalog(): Promise<DiscoveredModel[]> {
   const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
   const { setupAntigravityUser, getServedAntigravityModels } = await import(
     "../auth/antigravity-user.js"
@@ -97,7 +98,7 @@ async function fetchAntigravityRoster(): Promise<DiscoveredModel[]> {
 }
 
 /** Ollama's daemon speaks its own listing shape and carries capability data no OpenAI list has. */
-async function fetchOllamaRoster(): Promise<DiscoveredModel[]> {
+async function fetchOllamaModelsCatalog(): Promise<DiscoveredModel[]> {
   const { fetchOllamaModels } = await import("./ollama-discovery.js");
   const installed = await fetchOllamaModels({ enrichCapabilities: false });
   return installed.map((model) => ({
@@ -107,6 +108,6 @@ async function fetchOllamaRoster(): Promise<DiscoveredModel[]> {
   }));
 }
 
-registerModelDiscoveryFetcher("devin-connect", fetchDevinRoster);
-registerModelDiscoveryFetcher("antigravity", fetchAntigravityRoster);
-registerModelDiscoveryFetcher("ollama-tags", fetchOllamaRoster);
+registerModelDiscoveryFetcher("devin-connect", fetchDevinModelsCatalog);
+registerModelDiscoveryFetcher("antigravity", fetchAntigravityModelsCatalog);
+registerModelDiscoveryFetcher("ollama-tags", fetchOllamaModelsCatalog);
