@@ -21,11 +21,13 @@
  *
  * **What an unknown price means.** claudish reads the discriminator
  * `pricing.type` and only `pricing.type` — there is no alias and no fallback
- * to any other field name. Unknown therefore means one of two concrete things:
+ * to any other field name. Unknown therefore means one of three concrete things:
  * the catalog published `type: "unavailable"` for that connection (467 of them
- * on generation `g-20260921062451697-f490edba`), or the connection carries no
- * pricing object at all. Unknown is a sizeable minority of any real list, so
- * every caller must render and sort it, never assume it away.
+ * on generation `g-20260921062451697-f490edba`), the connection carries no
+ * pricing object at all, or it quotes a metered price of exactly zero, which is
+ * missing data rather than a price ({@link isUnmeasuredZero}). Measured on that
+ * generation, 644 of 1,734 mapped connections read as unknown, so every caller
+ * must render and sort it — it is a sizeable minority, never a rare case.
  *
  * Absent-means-unknown is a rule, never an inference: without the
  * discriminator this module does not know how to read the rest of the object,
@@ -73,6 +75,28 @@ function sumRates(input: number | undefined, output: number | undefined): number
   return inputRate + outputRate;
 }
 
+/**
+ * A summed rate of exactly zero under `flat` or `tiered` is MISSING DATA, not free.
+ *
+ * The contract has a way to say free, and 30 connections use it: `type: "free"`.
+ * A metered gateway that quotes `flat` with `input: 0, output: 0` is quoting a
+ * price nobody measured. Measured on generation `g-20260921062451697-f490edba`:
+ * 167 connections do exactly that, and 163 of them are `together-ai/gateway`, on
+ * models Together AI plainly charges for (`glm-5.3-fp8`, `minimax-h3`, `flux-3`).
+ *
+ * Reading those as free would put them FIRST in every price comparison, so
+ * routing would prefer a gateway on a number that does not exist — the one
+ * ordering error that costs a user money rather than merely a better option. An
+ * unknown price sorts last instead, which is recoverable: the connection is still
+ * reachable, just not preferred on a fabricated zero.
+ *
+ * Asymmetric on purpose. A zero on ONE side is kept: free input with paid output
+ * is a real tariff several gateways publish. Only zero on BOTH sides is rejected.
+ */
+function isUnmeasuredZero(perMillionTokens: number): boolean {
+  return perMillionTokens === 0;
+}
+
 /** Strip the trailing zeros a fixed-precision render leaves behind: `"0.0060"` → `"0.006"`. */
 function trimTrailingZeros(text: string): string {
   if (!text.includes(".") || text.includes("e")) return text;
@@ -105,6 +129,7 @@ function perMillionLabel(perMillionTokens: number): string {
  * | `"tiered"`          | `tiers[0].input + tiers[0].output`   | `"$0.16/M (first tier)"` |
  * | `"free"`            | `0`                                  | `"free"`               |
  * | `"unavailable"`     | —                                    | `"unknown"`            |
+ * | `"flat"`/`"tiered"` summing to exactly 0 | —                | `"unknown"` (see {@link isUnmeasuredZero}) |
  * | absent / unrecognised / no pricing object | —              | `"unknown"`            |
  *
  * No branch here is speculative: on generation `g-20260921062451697-f490edba`
@@ -123,7 +148,7 @@ export function connectionPrice(pricing: AggregatorEntry["pricing"]): Connection
   switch (pricing.type) {
     case "flat": {
       const perMillionTokens = sumRates(pricing.input, pricing.output);
-      if (perMillionTokens === null) return unknownPrice();
+      if (perMillionTokens === null || isUnmeasuredZero(perMillionTokens)) return unknownPrice();
       return { known: true, perMillionTokens, label: perMillionLabel(perMillionTokens) };
     }
 
@@ -132,7 +157,7 @@ export function connectionPrice(pricing: AggregatorEntry["pricing"]): Connection
       const perMillionTokens =
         (firstTier ? sumRates(firstTier.input, firstTier.output) : null) ??
         sumRates(pricing.input, pricing.output);
-      if (perMillionTokens === null) return unknownPrice();
+      if (perMillionTokens === null || isUnmeasuredZero(perMillionTokens)) return unknownPrice();
       return {
         known: true,
         perMillionTokens,
