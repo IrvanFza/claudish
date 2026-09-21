@@ -2,6 +2,88 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.0.0] - 2026-09-21
+
+### Bug Fixes
+
+- redact key-shaped text from a credential failure line([`0c5920f`](https://github.com/MadAppGang/claudish/commit/0c5920f5d60feda513316f5ece99110ffe1ab8cc))
+- a metered price of zero is missing data, not free([`9bedcf7`](https://github.com/MadAppGang/claudish/commit/9bedcf7ba84b91012d4dd1818ae8df8e7c71e6ab))
+- offer the newest model, not the alphabetically first *(discovery)* ([`b4110d3`](https://github.com/MadAppGang/claudish/commit/b4110d3a05a2a34478f430ba5cf432ce51db68d5))
+- say which auth problem a local server has, and keep walking on a denied model *(probe)* ([`aac36ee`](https://github.com/MadAppGang/claudish/commit/aac36ee54f204ee1169845f6a5c1060d90f7207b))
+- drop the effort knob when thinking is disabled *(deepseek)* ([`19cdaa6`](https://github.com/MadAppGang/claudish/commit/19cdaa6fd0583e99361fe6f00a9d80eb7e211573))
+- a probe pick for Poe, retries for a slow list, and a 403 that is not the key *(probe)* ([`1512d66`](https://github.com/MadAppGang/claudish/commit/1512d665cc49bf00b345fe258f793c1d8776c617))
+- Gemini's effort, a parameter mistaken for a model, and Mistral's list *(probe)* ([`7d89795`](https://github.com/MadAppGang/claudish/commit/7d89795c91bd5e106acf6d191fc94bfa99f5f74d))
+- send metered keys to the international host by default *(minimax)* ([`0177ca9`](https://github.com/MadAppGang/claudish/commit/0177ca9b4531d701ef94ed9b889b7c637a2f813a))
+- name qwen-coding and qwen-payg in every hand-written table *(alibaba)* ([`8691eed`](https://github.com/MadAppGang/claudish/commit/8691eedcdcf8ea27281e2753411989fbe66fa782))
+- an incomplete model list cannot deny, a missing base URL is a failure *(discovery)* ([`28fc06d`](https://github.com/MadAppGang/claudish/commit/28fc06d8c741afecd71522dc7229eb70150c9469))
+- name an unsupported model and a wrong-plan key in the hint *(errors)* ([`fa09cb7`](https://github.com/MadAppGang/claudish/commit/fa09cb7eb85bf455b77e439a9d4cffbd70b5aec1))
+- read readiness once per candidate and say when a subscription credential failed *(routing)* ([`4362311`](https://github.com/MadAppGang/claudish/commit/4362311272dc374d683e2650c144b181581d90fa))
+- print the dropped-subscription notice with one prefix *(routing)* ([`eceab30`](https://github.com/MadAppGang/claudish/commit/eceab3067a4c102a830d352b4bc546b90bdbe393))
+- keep a Claude model's thinking budget below max_tokens *(gemini)* ([`5fc423c`](https://github.com/MadAppGang/claudish/commit/5fc423c1039df411c125f3a2eec4376eabfab7ba))
+- Antigravity picks its probe model from the account's own list *(probe)* ([`4128e07`](https://github.com/MadAppGang/claudish/commit/4128e07f331c140ddfd16e9b6d2a4294efd6fb82))
+- give the v3 cache its own file, and the OpenRouter list another *(catalog)* ([`af02ca3`](https://github.com/MadAppGang/claudish/commit/af02ca359203c80a5d9e68619efa88212a8075ea))
+- decide chat capability from the catalog's videoOutput *(catalog)* ([`492b0e4`](https://github.com/MadAppGang/claudish/commit/492b0e4c33c9a6f3af47e67dbb9e57352a2d5686))
+- send the exact wire id, and fetch route variants *(catalog)* ([`30f70d4`](https://github.com/MadAppGang/claudish/commit/30f70d4df701681ad5d99f26821b2fa672ef0b9b))
+
+### Documentation
+
+- the backend feedback doc now carries the full route census([`b4ac4ae`](https://github.com/MadAppGang/claudish/commit/b4ac4ae6e5e3161eb3fdb7e5f7d17c8d0e31c296))
+- retire roster, and rebuild a safety argument on its new premise([`e95b8a5`](https://github.com/MadAppGang/claudish/commit/e95b8a51a5520efba5e95262a2512b975671abba))
+- note that Phase 2 landed behind its gate([`d0c0da8`](https://github.com/MadAppGang/claudish/commit/d0c0da88f1443c1d5b34cf1120a0ecdfa643e513))
+- the routing index no longer points at a deleted table([`7727f99`](https://github.com/MadAppGang/claudish/commit/7727f997e9850ff5d122e3b8f502220fb29dbb28))
+- name the routing redesign's three new concepts in the thesaurus([`e030823`](https://github.com/MadAppGang/claudish/commit/e0308236466a2f22898bfc1de1a08ad5402900ad))
+- revision 3 of the remaining-work plan([`1a6817c`](https://github.com/MadAppGang/claudish/commit/1a6817cc45bc3f1a2fdccdffe09784dc87e0edfc))
+- revision 2 of the remaining-work plan([`1d468b8`](https://github.com/MadAppGang/claudish/commit/1d468b8ae59341c1303e5ff511e485aeffb96005))
+- the reply to send to models-index([`d9c1791`](https://github.com/MadAppGang/claudish/commit/d9c1791da9e1721f8c33bd89cd6c2cda2c43d56d))
+- the discriminator is called type, and ask the backend to rename shape([`18b4bf3`](https://github.com/MadAppGang/claudish/commit/18b4bf3741f67b718e43ad5a18c6fe7dcb85bbe3))
+- validate the backend delivery on generation g-20260920154425586([`fdf237a`](https://github.com/MadAppGang/claudish/commit/fdf237a31638f6062caa516f88d81e7f529acb53))
+- fold Jack's answers into the backend reply and the work plan([`b41efe8`](https://github.com/MadAppGang/claudish/commit/b41efe87d4a21165d5fa2770d72fd6cb587d737c))
+- record Jack's decisions on Vertex, routing and the fallback([`2e5cd1d`](https://github.com/MadAppGang/claudish/commit/2e5cd1dd4491b46cdd75bbdef2a992a1c197eac8))
+- the remaining claudish work, with decisions and open questions([`f24a841`](https://github.com/MadAppGang/claudish/commit/f24a8413ed30403315caf73af7194a93f723a073))
+- evaluate the Vertex ADC work, and name the real blocker *(plan)* ([`12154e4`](https://github.com/MadAppGang/claudish/commit/12154e40e69eba58a9e5ec98f977091afd97d3a8))
+- answer the backend's re-review of the task list([`fd075e0`](https://github.com/MadAppGang/claudish/commit/fd075e0e7d56231fc6952ea81920cd655c4da83e))
+- Ollama Cloud keeps one route, classified metered *(plan)* ([`a9effb0`](https://github.com/MadAppGang/claudish/commit/a9effb0ef5509912a27af1bc2980051197c150c4))
+- six validated tasks for models-index([`7df52b8`](https://github.com/MadAppGang/claudish/commit/7df52b8d775cba884f3296ce3ca3bfa7e0812f2f))
+- the routing redesign is decided *(plan)* ([`d60c064`](https://github.com/MadAppGang/claudish/commit/d60c06421b3c8d2b442178649da7f6d100a51cd2))
+- MiniMax metered is a claudish host bug; PAYG and oMLX findings *(plan)* ([`3f50158`](https://github.com/MadAppGang/claudish/commit/3f50158fa5baa61c1e7fd634aa83bfd86e290078))
+- Test All with every key set, and moving Vertex to ADC *(plan)* ([`4ad7ff2`](https://github.com/MadAppGang/claudish/commit/4ad7ff294f4aa23719dcfc273a861330c93625bc))
+- record the ports from the old Alibaba branch, and why group D stays out([`70f2e07`](https://github.com/MadAppGang/claudish/commit/70f2e076a4e3659dfb6c845e7b8bcf55a198c7c9))
+- carry the Alibaba billing-products and black-box reports *(reports)* ([`9d0e2fa`](https://github.com/MadAppGang/claudish/commit/9d0e2faf6e75b84f276037e39dcbf69ce81ad610))
+- record the Alibaba measurements and which catalog may deny *(architecture)* ([`ab7d0f5`](https://github.com/MadAppGang/claudish/commit/ab7d0f55cf63707a59a14df7323b53883115fa3d))
+- document the three Alibaba products and fix the qwen* row *(settings)* ([`cc55c1b`](https://github.com/MadAppGang/claudish/commit/cc55c1baac32e9530cb180d7c80c93f982091ddf))
+- record the reader-gap fixes and their live evidence([`0e048a7`](https://github.com/MadAppGang/claudish/commit/0e048a7b30e58fd83ff11cd0f8b7780eb07a2a46))
+- ask the backend for input and output modalities on every projection([`f16ab83`](https://github.com/MadAppGang/claudish/commit/f16ab837083e3878e9335cc671a45d0121ccaff1))
+- a project thesaurus in CLAUDE.md, with the words never to write([`774eafc`](https://github.com/MadAppGang/claudish/commit/774eafc52565e3854daa58d265b9130a89b89685))
+- give every agent one vocabulary, and retire "roster"([`0b6cc3c`](https://github.com/MadAppGang/claudish/commit/0b6cc3cd21e4c2810290bb2f67f4b9ec46d68873))
+- validate PR #266 and the 1.2.90 backend against live v3([`b30c4b5`](https://github.com/MadAppGang/claudish/commit/b30c4b531c1fc41c62cfc1d4b305df6ac3f1df82))
+- measure claudish's catalog functions against the live v3([`330abd2`](https://github.com/MadAppGang/claudish/commit/330abd2982757c94935013024bb4bbe1187f08b4))
+- verify the shared Alibaba contract live and request retiring "roster"([`5a5d19d`](https://github.com/MadAppGang/claudish/commit/5a5d19d4fbb5b86e237064e483b3f5769be3a176))
+- take the Alibaba identities from the backend contract, with no aliases([`843dd5a`](https://github.com/MadAppGang/claudish/commit/843dd5a1cd8eca6bfef6f35d6feee2ed6ee247e6))
+- reconcile the qwen-token-plan work and flag the Alibaba contract conflict([`fc1a52e`](https://github.com/MadAppGang/claudish/commit/fc1a52e1ef540a5eeef6810d4a2cadbf78d79a91))
+- plan the catalog v3 reader([`1856c4a`](https://github.com/MadAppGang/claudish/commit/1856c4ad0b066483080c542a7a9d7b185cef08a0))
+- rename the Token Plan key and deprecate QWEN_CLOUD_PLAN_API_KEY([`d89633b`](https://github.com/MadAppGang/claudish/commit/d89633b9037aaf4fea099be4107fd1f51656f649))
+- record the v3 reader decisions and the requests to the backend([`63168b5`](https://github.com/MadAppGang/claudish/commit/63168b571f866832c223e6c49e1fc7cdf8c435cd))
+- verify the models-index v3 reader handoff against the live catalog([`d0d2f2c`](https://github.com/MadAppGang/claudish/commit/d0d2f2ce900815f659559e5a05b5a93166479c67))
+- update CHANGELOG.md for v9.7.1([`b6201e9`](https://github.com/MadAppGang/claudish/commit/b6201e91f79af9e426f92ac988b3fdd331cd7c39))
+
+### New Features
+
+- routing gathers candidates from the catalog; Vertex discovers its own models([`af98f4f`](https://github.com/MadAppGang/claudish/commit/af98f4f232ab4c2e173c506c62f78d95b8d700fb))
+- gather routing candidates from the catalog (not wired in)([`4f4f765`](https://github.com/MadAppGang/claudish/commit/4f4f765b4c4608f70310b70213ffe8224c1ed180))
+- Vertex AI runs on Application Default Credentials; Express is deleted([`ae78527`](https://github.com/MadAppGang/claudish/commit/ae785275889fc49cca6bb3fe05705cde0ce6b638))
+- the catalog decides chat capability and carries comparable prices([`7fce457`](https://github.com/MadAppGang/claudish/commit/7fce457ab72390174b92a45b7a32aa94591398cc))
+- validate an Alibaba PAYG key outside claudish *(scripts)* ([`11e8b48`](https://github.com/MadAppGang/claudish/commit/11e8b48aa5f4223b7c54da529bb8911f7400cb50))
+- tell a credential that failed apart from one that is absent *(credentials)* ([`7127287`](https://github.com/MadAppGang/claudish/commit/712728762ccae4ad5b36abb554b3bdefae8adea5))
+- consume catalog v3 and separate Alibaba products([`9a1206e`](https://github.com/MadAppGang/claudish/commit/9a1206e5695248b7e03e1fc0bdbb539148179890))
+
+### Other Changes
+
+- release 10.0.0([`0716ba9`](https://github.com/MadAppGang/claudish/commit/0716ba935784ec60d530c08b40f2f02821b45c6f))
+
+### Refactoring
+
+- retire "roster" for the thesaurus terms([`ab1fc09`](https://github.com/MadAppGang/claudish/commit/ab1fc0953ed4761913d803593345d1ff7998db47))
+
 ## [9.7.1] - 2026-09-18
 
 ### Bug Fixes
