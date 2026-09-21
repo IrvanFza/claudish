@@ -43,6 +43,55 @@ export type TransportType =
 
 export type TokenStrategy = "delta-aware" | "accumulate-both" | undefined;
 
+/**
+ * WHICH KIND of way-to-call-a-model a provider is — the one routing fact the
+ * cloud models catalog cannot publish.
+ *
+ * Everything else routing needs about a connection is in the catalog: the wire
+ * id, the price, the context window, the vendor, and (since v3) the route
+ * binding that names the transport. What the catalog does NOT say is how
+ * claudish should PREFER one connection over another, because that depends on
+ * how the user pays claudish's providers, not on what the model is. This field
+ * is that statement, declared once per provider, and `route-candidates.ts`
+ * orders by it.
+ *
+ * The five values, and the line between the two flat-rate ones:
+ *
+ *  - `subscription` — flat-rate, and the catalog publishes the plan's MEMBERSHIP
+ *    (`subscriptionPlanIds[]`), so a candidate can be gathered from the catalog
+ *    alone: `kimi-coding`, `glm-coding`, `qwen-token-plan`, `opencode-zen-go`.
+ *  - `dynamic-subscription` — flat-rate, but the ACCOUNT's own list decides what
+ *    it serves, so the catalog publishes no connection for it at all and a
+ *    candidate can only come from a namespace claim plus the account's dynamic
+ *    models catalog: `antigravity`, `grok-subscription`, `devin`,
+ *    `sakana-subscription`. Measured on generation
+ *    `g-20260921062451697-f490edba`: all four appear in the probe map as
+ *    `client_model_selection_required` and publish zero `aggregators[]` rows.
+ *  - `native` — the vendor's own metered endpoint (`openai`, `google`, `kimi`,
+ *    `z-ai`, `qwen-payg`, …). Billed per token by the company that made the model.
+ *  - `gateway` — a metered service reselling many vendors (`openrouter`, `poe`,
+ *    `vertex`, `ollamacloud`, `litellm`, `opencode-zen`), plus every custom and
+ *    bundled endpoint, which claudish cannot classify more precisely than "a
+ *    metered endpoint someone else operates".
+ *  - `fallback` — the last-resort hop. A POSITION, never a property: whichever
+ *    provider `defaultProvider` names occupies it, so NO definition declares it
+ *    and a provider that would otherwise be a `gateway` does not become one
+ *    here.
+ *
+ * NOT a billing oracle, and must not be used as one. `SUBSCRIPTION_PROVIDERS`
+ * (handlers/shared/remote-provider-types.ts) still decides whether a user is
+ * quoted a per-token price, and the two tables deliberately disagree on
+ * `openai-codex` and `native-anthropic`: both are CREDENTIAL-decided — a metered
+ * key reaches the same provider name — so naming their flat-rate ROUTE here says
+ * nothing about who pays for a given request. See `ai-docs/architecture/` and
+ * CLAUDE.md's Invariants: a provider wrongly called flat-rate accrues $0 against
+ * real spend, which is the one error this field must not be allowed to cause.
+ *
+ * Unrelated to `PredefinedEndpointEvidenceSchema.tier` ("live" | "probe"), which
+ * records how a bundled row was VERIFIED. Different object, different question.
+ */
+export type RouteTier = "subscription" | "dynamic-subscription" | "native" | "gateway" | "fallback";
+
 export interface ProviderCapabilities {
   supportsTools?: boolean;
   supportsVision?: boolean;
@@ -120,6 +169,23 @@ export interface ProviderDefinition {
    * is a stronger guarantee than any test: you cannot merge code that forgot.
    */
   createHandler: LazyHandlerFactory | NoHandler;
+  /**
+   * WHICH KIND of route this is — see {@link RouteTier}. Read at routing time by
+   * `route-candidates.ts`; a provider with no tier can never become a gathered
+   * candidate, which is the safe direction (it is skipped, never guessed at).
+   *
+   * Declared optional HERE and REQUIRED on every table that feeds routing:
+   * `BUILTIN_PROVIDERS` and the custom-endpoint builder are both typed
+   * {@link TieredProviderDefinition}, so adding a provider to either without a
+   * tier does not compile — the same compiler-enforced completeness
+   * `createHandler` gets, and for the same reason (a half-added provider
+   * silently answering from somewhere else is this project's worst failure
+   * class). The optionality exists only because four TEST files construct
+   * `ProviderDefinition` literals for unrelated features, and a test's fixture
+   * has no routing tier to declare. Promote it to required here once those
+   * literals carry one.
+   */
+  tier?: RouteTier;
   /** Canonical provider name (lowercase, unique key) */
   name: string;
   /** Human-readable display name (proper capitalization) */
@@ -238,6 +304,17 @@ export interface ProviderDefinition {
   description?: string;
 }
 
+/**
+ * A definition that MUST state its routing tier.
+ *
+ * Every table a routing decision reads is typed with this rather than with
+ * `ProviderDefinition`, so "forgot the tier" is a compile error at the two
+ * places a real provider is born — `BUILTIN_PROVIDERS` below and
+ * `buildProviderDefinition` in custom-endpoints-loader.ts — instead of a silent
+ * absence that drops the provider from every gathered chain.
+ */
+export type TieredProviderDefinition = ProviderDefinition & { tier: RouteTier };
+
 // ---------------------------------------------------------------------------
 // Built-in provider definitions
 // ---------------------------------------------------------------------------
@@ -289,10 +366,11 @@ export function runtimeHandler(name: string): LazyHandlerFactory {
   };
 }
 
-export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
+export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
   // ── Google Gemini (direct API) ─────────────────────────────────────
   {
     createHandler: geminiHandler,
+    tier: "native",
     name: "google",
     displayName: "Gemini",
     transport: "gemini",
@@ -321,6 +399,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // token (the `agy` keychain item), NOT a GEMINI_API_KEY.
   {
     createHandler: antigravityHandler,
+    tier: "dynamic-subscription",
     name: "antigravity",
     displayName: "Antigravity",
     transport: "antigravity",
@@ -354,6 +433,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // subscription serving several vendors' models over a Connect-protobuf rpc.
   {
     createHandler: devinHandler,
+    tier: "dynamic-subscription",
     name: "devin",
     displayName: "Devin",
     transport: "devin",
@@ -415,6 +495,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── OpenAI (direct API) ────────────────────────────────────────────
   {
     createHandler: openaiHandler,
+    tier: "native",
     name: "openai",
     displayName: "OpenAI",
     transport: "openai",
@@ -442,6 +523,14 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── OpenAI Codex (Responses API — ChatGPT Plus/Pro subscription) ────
   {
     createHandler: openaiCodexHandler,
+    // The ROUTE is the ChatGPT plan, and the catalog publishes its membership
+    // (`openai/codex-subscription`), so this is where routing should prefer it.
+    // It is NOT a billing statement: `openai-codex` is CREDENTIAL-decided
+    // (`CREDENTIAL_DECIDED_PROVIDERS`) because an `OPENAI_CODEX_API_KEY` reaches
+    // the same name against api.openai.com and bills the developer — measured,
+    // `"payer": "developer"`. So this provider must still never be derived into
+    // `SUBSCRIPTION_PROVIDERS`; the name check there short-circuits the probe.
+    tier: "subscription",
     name: "openai-codex",
     displayName: "OpenAI Codex",
     transport: "openai",
@@ -469,6 +558,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "dedicated-handler",
       "Served by OpenRouterHandler, which predates this table. proxy-server returns null here on purpose so the request falls through to it."
     ),
+    tier: "gateway",
     name: "openrouter",
     displayName: "OpenRouter",
     transport: "openrouter",
@@ -492,6 +582,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── xAI / Grok (OpenAI-compatible) ──────────────────────────────────
   {
     createHandler: openaiHandler,
+    tier: "native",
     name: "x-ai",
     displayName: "xAI",
     transport: "openai",
@@ -521,6 +612,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // Full protocol write-up: ai-docs/reports/grok-subscription/protocol-spec.md
   {
     createHandler: grokSubscriptionHandler,
+    tier: "dynamic-subscription",
     name: "grok-subscription",
     displayName: "Grok Build (subscription)",
     transport: "grok-subscription",
@@ -569,6 +661,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── MiniMax (Anthropic-compatible) ─────────────────────────────────
   {
     createHandler: anthropicCompatHandler,
+    tier: "native",
     name: "minimax",
     displayName: "MiniMax",
     transport: "anthropic",
@@ -611,6 +704,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── MiniMax Coding Plan ────────────────────────────────────────────
   {
     createHandler: anthropicCompatHandler,
+    tier: "subscription",
     name: "minimax-coding",
     displayName: "MiniMax Coding",
     transport: "anthropic",
@@ -632,6 +726,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Kimi Coding Plan (must be before Kimi — kimi-for-coding$ is more specific than kimi-*)
   {
     createHandler: anthropicCompatHandler,
+    tier: "subscription",
     name: "kimi-coding",
     displayName: "Kimi Coding",
     transport: "kimi-coding",
@@ -660,6 +755,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Kimi / Moonshot (Anthropic-compatible) ─────────────────────────
   {
     createHandler: anthropicCompatHandler,
+    tier: "native",
     name: "kimi",
     displayName: "Kimi",
     transport: "anthropic",
@@ -689,6 +785,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── GLM / Zhipu (OpenAI-compatible) ────────────────────────────────
   {
     createHandler: glmHandler,
+    tier: "native",
     name: "glm",
     displayName: "GLM",
     transport: "openai",
@@ -721,6 +818,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── GLM Coding Plan ────────────────────────────────────────────────
   {
     createHandler: glmHandler,
+    tier: "subscription",
     name: "glm-coding",
     displayName: "GLM Coding",
     transport: "openai",
@@ -742,6 +840,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Z.AI (Anthropic-compatible GLM API) ────────────────────────────
   {
     createHandler: anthropicCompatHandler,
+    tier: "native",
     name: "z-ai",
     displayName: "Z.AI",
     transport: "anthropic",
@@ -764,6 +863,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── OllamaCloud ────────────────────────────────────────────────────
   {
     createHandler: ollamaCloudHandler,
+    tier: "gateway",
     name: "ollamacloud",
     displayName: "OllamaCloud",
     transport: "ollamacloud",
@@ -790,6 +890,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── OpenCode Zen ───────────────────────────────────────────────────
   {
     createHandler: openCodeZenHandler,
+    tier: "gateway",
     name: "opencode-zen",
     displayName: "OpenCode Zen",
     transport: "openai",
@@ -830,6 +931,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── OpenCode Zen Go (lite plan) ────────────────────────────────────
   {
     createHandler: openCodeZenHandler,
+    tier: "subscription",
     name: "opencode-zen-go",
     displayName: "OpenCode Zen Go",
     transport: "openai",
@@ -891,6 +993,15 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Vertex AI ──────────────────────────────────────────────────────
   {
     createHandler: vertexHandler,
+    // Account-SELECTED but METERED: which publishers a project may call is a GCP
+    // fact the catalog cannot know (it sits in the probe map as
+    // `client_model_selection_required`, beside the flat-rate four), yet every
+    // call is billed per token. `dynamic-subscription` would say the opposite
+    // about money, so the tier follows the BILLING and the selection stays a
+    // fact about entitlement, settled by the availability filter. Consequence,
+    // stated so it is not mistaken for an oversight: Vertex gets no namespace
+    // claim, so a model only Vertex serves stays reachable by `v@model`.
+    tier: "gateway",
     name: "vertex",
     displayName: "Vertex AI",
     transport: "vertex",
@@ -923,6 +1034,9 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── LiteLLM ────────────────────────────────────────────────────────
   {
     createHandler: litellmHandler,
+    // A proxy in front of many vendors, whose own URL the user supplies: a
+    // gateway in every sense the tier means, even when the instance is theirs.
+    tier: "gateway",
     name: "litellm",
     displayName: "LiteLLM",
     transport: "litellm",
@@ -945,6 +1059,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Poe ────────────────────────────────────────────────────────────
   {
     createHandler: poeHandler,
+    tier: "gateway",
     name: "poe",
     displayName: "Poe",
     transport: "poe",
@@ -966,11 +1081,29 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   },
 
   // ── Ollama (local) ─────────────────────────────────────────────────
+  //
+  // THE FOUR LOCAL PROVIDERS ARE `native`, and the tier is inert for them.
+  //
+  // Inert first, because that is what makes the choice cheap: a local server is
+  // bound to no catalog route (`ollama/cloud` belongs to `ollamacloud`, not to
+  // this entry), so no catalog connection can ever name one, and only a
+  // `dynamic-subscription` may claim a namespace — so no local provider can be
+  // gathered as a remote candidate at all. Local models reach a request the way
+  // they always have: an explicit `ollama@llama3.2`, or the local-provider path.
+  //
+  // `native` among the four remaining values because the request goes to the
+  // endpoint that runs the model, with no reseller and no plan in between —
+  // which is what `native` means minus the metering. `gateway` would be false
+  // (nothing is resold, nothing is billed) and `subscription` would be worse: it
+  // claims a plan with a published membership, and would sort a local server
+  // ahead of a subscription the user actually pays for if the tier ever stopped
+  // being inert.
   {
     createHandler: noHandler(
       "local",
       "Built by the local-provider path; never reaches direct-api."
     ),
+    tier: "native",
     name: "ollama",
     displayName: "Ollama",
     transport: "local",
@@ -1002,6 +1135,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "local",
       "Built by the local-provider path; never reaches direct-api."
     ),
+    tier: "native",
     name: "lmstudio",
     displayName: "LM Studio",
     transport: "local",
@@ -1035,6 +1169,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "local",
       "Built by the local-provider path; never reaches direct-api."
     ),
+    tier: "native",
     name: "vllm",
     displayName: "vLLM",
     transport: "local",
@@ -1061,6 +1196,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "local",
       "Built by the local-provider path; never reaches direct-api."
     ),
+    tier: "native",
     name: "mlx",
     displayName: "MLX",
     transport: "local",
@@ -1083,6 +1219,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── DeepSeek (OpenAI-compatible direct API) ─────────────────────────
   {
     createHandler: openaiHandler,
+    tier: "native",
     name: "deepseek",
     displayName: "DeepSeek",
     transport: "openai",
@@ -1115,6 +1252,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // pinned id still reaches the alias, and no per-provider code is needed here.
   {
     createHandler: openaiHandler,
+    tier: "native",
     name: "mistralai",
     displayName: "Mistral",
     transport: "openai",
@@ -1152,6 +1290,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Sakana Fugu (OpenAI-compatible direct API / token plan) ────────
   {
     createHandler: openaiHandler,
+    tier: "native",
     name: "sakana",
     displayName: "Sakana Fugu",
     transport: "openai",
@@ -1188,6 +1327,10 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // distinction lives in the key, set at creation in the console.)
   {
     createHandler: openaiHandler,
+    // Flat-rate, but `sakana/fugu-subscription` publishes no connection — it sits
+    // in the probe map as `client_model_selection_required`, so what the plan
+    // serves is settled by this key's own `/v1/models`, not by the catalog.
+    tier: "dynamic-subscription",
     name: "sakana-subscription",
     displayName: "Sakana Fugu Subscription",
     transport: "openai",
@@ -1215,6 +1358,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // Alibaba Token Plan: subscription credits on its own host and credential.
   {
     createHandler: anthropicCompatHandler,
+    tier: "subscription",
     name: "qwen-token-plan",
     displayName: "Alibaba Token Plan",
     transport: "anthropic",
@@ -1238,6 +1382,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // Alibaba Coding Plan: request-based subscription on its own host and credential.
   {
     createHandler: anthropicCompatHandler,
+    tier: "subscription",
     name: "qwen-coding",
     displayName: "Alibaba Coding Plan",
     transport: "anthropic",
@@ -1260,6 +1405,7 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // Alibaba PAYG: token-metered access on its own host and credential.
   {
     createHandler: anthropicCompatHandler,
+    tier: "native",
     name: "qwen-payg",
     displayName: "Alibaba PAYG",
     transport: "anthropic",
@@ -1282,6 +1428,12 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
   {
     createHandler: openaiHandler,
+    // The vendor's own namespace, so `native` — but unreachable as a gathered
+    // candidate either way: it shares `qwen/dashscope-direct` with `qwen-payg`,
+    // which `providerForCatalogRoute` returns first (earlier key), and it holds
+    // no credential of its own for the credential filter to find. This entry
+    // exists so a bare `qwen*` name has a provider to be steered FROM.
+    tier: "native",
     name: "qwen",
     displayName: "Qwen",
     transport: "openai",
@@ -1303,6 +1455,17 @@ export const BUILTIN_PROVIDERS: ProviderDefinition[] = [
       "virtual",
       "No baseUrl. Exists only so nativeModelPatterns can steer a bare claude-* name to the native path."
     ),
+    // The route IS the Claude Code subscription — the catalog's
+    // `anthropic/claude-code-subscription` profile — so `subscription` is the
+    // only honest tier for it. Two things it does NOT mean, both of which this
+    // project has been bitten by: it is not a billing statement (an explicit
+    // ANTHROPIC_API_KEY reaches this same name and is metered, which is why
+    // deriving `SUBSCRIPTION_PROVIDERS` from tier must exclude it alongside
+    // `openai-codex`), and it is not a claim that this provider is routable —
+    // `nativeRouteFor()` must intercept a bare Claude name BEFORE `route()`,
+    // because there is no credential store here for the credential filter to
+    // consult and the chain would degrade to OpenRouter.
+    tier: "subscription",
     name: "native-anthropic",
     displayName: "Anthropic (Native)",
     transport: "anthropic",
