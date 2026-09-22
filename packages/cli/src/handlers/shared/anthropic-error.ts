@@ -148,13 +148,54 @@ export function extractUpstreamStatus(body: string): number | undefined {
 }
 
 /**
+ * The concatenated `data:` payload of an SSE frame, or undefined for anything
+ * else. Exported because the probe needs the same reading.
+ *
+ * A provider may answer an ERROR as a stream rather than a document — the
+ * request asked for `stream: true`, so some providers answer in kind. Alibaba
+ * Model Studio does exactly this for a denied model:
+ *
+ *   event:error
+ *   data:{"code":"AccessDenied","message":"Model access denied.","request_id":"…"}
+ *
+ * The whole frame is not JSON, so every JSON ladder below it fails and the frame
+ * survives verbatim into a user-facing sentence — three lines of wire protocol
+ * where "Model access denied." belonged. Multiple `data:` lines concatenate,
+ * per the SSE specification.
+ */
+export function sseDataPayload(body: string): string | undefined {
+  if (!/(^|\n)\s*(event|data):/.test(body)) return undefined;
+  const data = body
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .join("");
+  return data.length > 0 ? data : undefined;
+}
+
+/**
  * Pull the most useful human-readable message out of an arbitrary provider
  * error body (already JSON-parsed, or a raw string). Mirrors the extraction
  * ladder in ensureAnthropicErrorFormat but usable standalone.
  */
 export function extractProviderMessage(body: any): string {
   if (body == null) return "";
-  if (typeof body === "string") return body;
+  if (typeof body === "string") {
+    // A streamed error is still a document once the frame is opened. Only the
+    // payload is re-entered, so a frame that carries no recognisable message
+    // falls back to the frame itself rather than to nothing.
+    const payload = sseDataPayload(body);
+    if (payload) {
+      try {
+        const inner = extractProviderMessage(JSON.parse(payload));
+        if (inner) return inner;
+      } catch {
+        return payload;
+      }
+      return payload;
+    }
+    return body;
+  }
   const candidates = [
     body?.error?.message,
     body?.message,

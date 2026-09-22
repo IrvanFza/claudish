@@ -346,6 +346,15 @@ describe("namespace claims and availability", () => {
 });
 
 describe("fallback placement and no-catalog behavior", () => {
+  test("does not display the qwen steering placeholder as a dashscope hop", () => {
+    const providers = buildCatalogChain("qwen3.8-max", "", cachePath).routes.map(
+      ({ provider }) => provider
+    );
+
+    expect(providers).toContain("qwen-payg");
+    expect(providers).not.toContain("qwen");
+  });
+
   test("appends the fallback last and does not duplicate an existing candidate", () => {
     const missingModel = buildCatalogChain("swe-1.7", undefined, cachePath);
     expect(missingModel.routes.map(({ provider }) => provider)).toEqual(["devin", "openrouter"]);

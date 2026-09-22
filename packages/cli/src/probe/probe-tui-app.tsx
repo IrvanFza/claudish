@@ -183,6 +183,8 @@ const TIMELINE_BAR_FULL = 24; // B
 const TIMELINE_BAR_NARROW = 12; // B when <80 cols
 const TOK_BAR_FULL = 14; // T
 const TOTAL_COL = 7; // right-aligned "14.34s"
+/** The live row's leading `"    MM:SS  "` — 4 indent + 5 clock + 2 gap. */
+const ELAPSED_COL = 11;
 // Each stage number is right-aligned to STAGE_NUM_W so the inner net/srv/str
 // columns line up across rows. W=6 fits the realistic worst case "21.05s".
 const STAGE_NUM_W = 6;
@@ -202,6 +204,16 @@ interface ProbeLayout {
   showBreakdown: boolean;
   /** Whether to fall back to today's single latency pill (<60 cols). */
   pillFallback: boolean;
+  /**
+   * The terminal width this layout was derived from.
+   *
+   * Carried because the pill fallback renders a failure reason with NO column to
+   * clip against — it has no timeline slot, which is where every other layout
+   * puts the reason and where the clipping happens. Without a width, a long
+   * provider message wrapped across as many rows as it needed, over the rows
+   * already drawn.
+   */
+  width: number;
 }
 
 /**
@@ -214,7 +226,7 @@ interface ProbeLayout {
  */
 function deriveLayout(width: number): ProbeLayout {
   if (width < 60) {
-    return { barWidth: 0, tokWidth: 0, showBreakdown: false, pillFallback: true };
+    return { barWidth: 0, tokWidth: 0, showBreakdown: false, pillFallback: true, width };
   }
   if (width < 80) {
     return {
@@ -222,6 +234,7 @@ function deriveLayout(width: number): ProbeLayout {
       tokWidth: 0,
       showBreakdown: false,
       pillFallback: false,
+      width,
     };
   }
   if (width < 100) {
@@ -230,6 +243,7 @@ function deriveLayout(width: number): ProbeLayout {
       tokWidth: 0,
       showBreakdown: true,
       pillFallback: false,
+      width,
     };
   }
   return {
@@ -237,6 +251,7 @@ function deriveLayout(width: number): ProbeLayout {
     tokWidth: TOK_BAR_FULL,
     showBreakdown: true,
     pillFallback: false,
+    width,
   };
 }
 
@@ -293,9 +308,37 @@ function padEndSafe(s: string, n: number): string {
   return s + " ".repeat(n - s.length);
 }
 
+/**
+ * Clip a failure reason to what is left of the terminal, ending in an ellipsis
+ * so a cut reads as a cut. Never pads: the reason is the last thing on its row.
+ */
+function clipReason(s: string, width: number): string {
+  const room = Math.max(8, width - 2);
+  return s.length <= room ? s : `${s.slice(0, room - 1)}…`;
+}
+
+/**
+ * Make provider text safe to paint on ONE row: no escape sequences, no control
+ * characters, no line breaks.
+ *
+ * The newline half is not cosmetic. Every caller is rendering an error message
+ * into a fixed-width slot, and `padEndSafe` clips by CHARACTER COUNT — so a `\n`
+ * that lands inside the clip survives it, ends the row where the terminal says
+ * it ends rather than where the layout says, and pushes the remaining columns
+ * onto the line below, over whatever is already there. `probe-live.ts` now
+ * flattens its messages at the source; this is the second wall, because the
+ * string also reaches here from provider text that never passed through there.
+ */
 function stripAnsi(text: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
-  return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+  return (
+    text
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences require control chars
+      .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+      // Whitespace RUNS, not just newlines: a collapsed frame otherwise leaves a
+      // gap the width of its indentation in the middle of the sentence.
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 // ── Banner ─────────────────────────────────────────────────────────
@@ -443,20 +486,45 @@ function ProgressBar({
     return (
       <text>
         {prefix}
-        {renderNonLiveStatus(link, /* hasSlot */ false)}
+        {renderNonLiveStatus(link, /* hasSlot */ false, layout.width)}
       </text>
     );
   }
 
-  // \u2014\u2014 Non-live rows: blank both bars to a track, keep alignment \u2014\u2014
-  // The TIMELINE slot carries the failed reason, so the status is a bare \u2717.
+  // \u2014\u2014 FAILED row: the reason gets the WHOLE rest of the line \u2014\u2014
+  //
+  // A failed row draws no timeline bar, no breakdown and no tok/s bar, so every
+  // column after the provider name is dead space. It used to be spent on
+  // alignment anyway: the reason was padded into the `barWidth` slot (24 cols)
+  // so a trailing \u2717 could line up with the live rows above. At 24 columns
+  // "\u2717 error \u00b7 403 \u00b7 1151ms \u2014 Model access denied." clips to
+  // "\u2717 error \u00b7 403 \u00b7 1151ms \u2014", which ends on a dash promising a sentence that
+  // was thrown away \u2014 the one line on the row the reader needed.
+  //
+  // So the marker goes (the reason already starts with \u2717; a second one said
+  // nothing) and the reason runs to the edge of the terminal.
+  if (link.status === "failed") {
+    const used = ELAPSED_COL + maxNameLen + 2;
+    return (
+      <text>
+        {prefix}
+        <span fg={C.red}>
+          {clipReason(`\u2717 ${stripAnsi(link.error || "failed")}`, layout.width - used)}
+        </span>
+      </text>
+    );
+  }
+
+  // \u2014\u2014 Other non-live rows (probing / waiting): blank both bars to a track \u2014\u2014
+  // These DO keep the aligned slot: the animated bar is positional feedback, and
+  // it only reads as progress when it sits where the finished bars will sit.
   if (link.status !== "live" || !link.timing) {
     return (
       <text>
         {prefix}
         {renderTimelineSlot(link, animFrame, layout.barWidth)}
         <span fg={C.dim}>{"  "}</span>
-        {renderNonLiveStatus(link, /* hasSlot */ true)}
+        {renderNonLiveStatus(link, /* hasSlot */ true, layout.width)}
       </text>
     );
   }
@@ -559,10 +627,11 @@ function renderTimelineSlot(link: ProbeLinkState, animFrame: number, barWidth: n
  * `hasSlot` = true when a TIMELINE slot is also rendered for this row (the
  * normal layout): in that case the failed REASON already lives in the slot, so
  * the status is a bare red `\u2717` marker \u2014 no duplicate error text. When `hasSlot`
- * is false (the <60-col pill fallback, no slot), the status carries the full
- * reason itself.
+ * is false (the <60-col pill fallback, no slot), the status carries the reason
+ * itself \u2014 CLIPPED to the terminal, because there is no column to clip it to.
+ * Unclipped, a 400-character provider message wrapped across every row below it.
  */
-function renderNonLiveStatus(link: ProbeLinkState, hasSlot: boolean) {
+function renderNonLiveStatus(link: ProbeLinkState, hasSlot: boolean, width: number) {
   switch (link.status) {
     case "probing": {
       const elapsedMs = link.startTime ? Date.now() - link.startTime : 0;
@@ -572,7 +641,7 @@ function renderNonLiveStatus(link: ProbeLinkState, hasSlot: boolean) {
       return hasSlot ? (
         <span fg={C.red}>{"\u2717"}</span>
       ) : (
-        <span fg={C.red}>{`\u2717 ${stripAnsi(link.error || "failed")}`}</span>
+        <span fg={C.red}>{clipReason(`\u2717 ${stripAnsi(link.error || "failed")}`, width)}</span>
       );
     default:
       return <span fg={C.dim}>{"\u23F3 waiting\u2026"}</span>;
@@ -799,12 +868,18 @@ function DetailLinkRow({
   );
 
   if (!isLive || !probe?.timing) {
-    // Failed / missing — keep the provider column aligned, then ✗ + dim reason.
+    // Failed / missing — keep the provider column aligned, then ✗ + dim reason,
+    // CLIPPED to what is left of the terminal. `describeProbeState` returns the
+    // provider's own sentence and a provider is free to make it 400 characters
+    // long; unclipped it wrapped over the rows below instead of ending.
+    const used = 2 + 1 + 1 + provW + 2 + 3;
     return (
       <text>
         {lead}
         <span fg={C.red}>{"✗  "}</span>
-        <span fg={C.red}>{shortFailureReason(probe, link.hasCredentials)}</span>
+        <span fg={C.red}>
+          {clipReason(shortFailureReason(probe, link.hasCredentials), layout.width - used)}
+        </span>
       </text>
     );
   }

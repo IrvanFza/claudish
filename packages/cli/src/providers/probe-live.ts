@@ -12,7 +12,7 @@
  * not a silent failover to something else.
  */
 
-import { extractUpstreamStatus } from "../handlers/shared/anthropic-error.js";
+import { extractUpstreamStatus, sseDataPayload } from "../handlers/shared/anthropic-error.js";
 import {
   hasActionableLink,
   hasModelUnsupportedWording,
@@ -577,19 +577,45 @@ function truncateKeepingLink(text: string, max = 400): string {
   return `${prose}... ${url}`;
 }
 
-function extractErrorMessage(body: string): string | undefined {
-  if (!body) return undefined;
+/**
+ * ONE LINE, always. Every consumer of a probe error message renders it on a
+ * single row, and a newline is the one character none of them can survive: the
+ * TUI clips by character count, so a `\n` inside the clip ends the row early and
+ * everything after it paints over the row below. `truncateKeepingLink` bounds
+ * LENGTH, which is a different promise and was mistaken for this one.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** The message a JSON error document carries, under any of the shapes seen. */
+function messageFromJson(text: string): string | undefined {
   try {
-    const parsed = JSON.parse(body);
+    const parsed = JSON.parse(text);
     const msg =
       parsed?.error?.message || parsed?.error?.error?.message || parsed?.message || parsed?.detail;
-    if (typeof msg === "string" && msg.length > 0) {
-      return truncateKeepingLink(msg);
-    }
+    return typeof msg === "string" && msg.length > 0 ? msg : undefined;
   } catch {
-    // not JSON, fall through
+    return undefined;
   }
-  const trimmed = body.trim();
+}
+
+function extractErrorMessage(body: string): string | undefined {
+  if (!body) return undefined;
+
+  const direct = messageFromJson(body);
+  if (direct) return truncateKeepingLink(oneLine(direct));
+
+  // Not a JSON document. It may still be an SSE frame carrying one.
+  const payload = sseDataPayload(body);
+  if (payload) {
+    const streamed = messageFromJson(payload);
+    if (streamed) return truncateKeepingLink(oneLine(streamed));
+    // A `data:` payload that is not JSON is still better than the whole frame.
+    return truncateKeepingLink(oneLine(payload));
+  }
+
+  const trimmed = oneLine(body);
   if (!trimmed) return undefined;
   return truncateKeepingLink(trimmed);
 }
@@ -868,7 +894,29 @@ function isContentEvent(parsed: any, eventType: string): boolean {
  * a bucket, not a diagnosis; the body is the diagnosis.
  */
 function withDetail(base: string, message?: string): string {
-  return message ? `${base} — ${message}` : base;
+  return message ? `${base} — ${stripRedundantHead(message)}` : base;
+}
+
+/**
+ * Drop the `"<Provider> error (HTTP <status>): "` head claudish put on its own
+ * message, because `base` has just said both of those things.
+ *
+ * The head is composed by `composeErrorMessage` for the proxy's stderr line and
+ * for the body it returns to Claude Code, where naming the provider and the code
+ * is the whole point — nothing else on that line does. A probe row is the
+ * opposite situation: the provider is the row's own left column and the status is
+ * the first thing `base` prints, so the head repeats 30 columns of what the
+ * reader can already see, and 30 columns is what the row has left for the part
+ * that says what to DO. Measured on `--probe qwen3.8-max` at 130 columns: the
+ * summary row ended at "…accepted the credential but c", cutting the sentence
+ * exactly where it turns actionable.
+ *
+ * Anchored to the full composed shape, not to " error" or the provider name: a
+ * provider's own prose has to match `(HTTP <3 digits>): ` to be touched, and no
+ * upstream message observed does.
+ */
+function stripRedundantHead(message: string): string {
+  return message.replace(/^.{1,40}? error \(HTTP \d{3}\): /, "");
 }
 
 export function describeProbeState(result: ProbeResult): string {
