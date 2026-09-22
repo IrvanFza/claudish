@@ -588,34 +588,66 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** The message a JSON error document carries, under any of the shapes seen. */
+/**
+ * The message a JSON error document carries, under any of the shapes seen.
+ *
+ * `error.provider_message` is read FIRST and it is the whole point of this
+ * order: it is the upstream's own sentence, while `error.message` beside it is
+ * claudish's composed one — the recovery hint, then the provider's text after an
+ * em dash. A probe row clips, so composing put the guess where the reader looks
+ * and the evidence where they never get to. "Model access denied." is three
+ * words and says what happened; "The provider accepted the credential but denied
+ * access to this model — check model access or activation for this account in
+ * the provider's console, not the key." is 150 characters of inference about it.
+ *
+ * The hint is not thrown away — `probe-results-printer` still word-wraps the
+ * full composed `message` in the Details box, which has the room for both.
+ */
 function messageFromJson(text: string): string | undefined {
   try {
     const parsed = JSON.parse(text);
     const msg =
-      parsed?.error?.message || parsed?.error?.error?.message || parsed?.message || parsed?.detail;
+      parsed?.error?.provider_message ||
+      parsed?.error?.message ||
+      parsed?.error?.error?.message ||
+      parsed?.message ||
+      parsed?.detail;
     return typeof msg === "string" && msg.length > 0 ? msg : undefined;
   } catch {
     return undefined;
   }
 }
 
+/**
+ * Open an SSE frame if that is what this text is, otherwise hand it back.
+ *
+ * Applied to the EXTRACTED message and not only to the raw body, because the
+ * frame arrives both ways and the JSON ladder hides the second one. A provider
+ * answering a stream request with an error may send the frame as the body —
+ * caught by parsing the body — but claudish also re-wraps a raw upstream body
+ * into `{error:{message: <that body>}}` (`composed-handler.ts`, the auth-retry
+ * return). That parses as perfectly good JSON, so `messageFromJson` succeeded
+ * and returned a whole wire frame wearing a message field. Measured against
+ * dashscope-intl: the row read
+ *   `event:error data:{"code":"InvalidParameter","message":"Model access
+ *    denied.","request_id":"0d6a48d4-…"}`
+ * where "Model access denied." was the entire content.
+ */
+function unwrapFrame(text: string): string {
+  const payload = sseDataPayload(text);
+  if (!payload) return text;
+  return messageFromJson(payload) ?? payload;
+}
+
 function extractErrorMessage(body: string): string | undefined {
   if (!body) return undefined;
 
   const direct = messageFromJson(body);
-  if (direct) return truncateKeepingLink(oneLine(direct));
+  if (direct) return truncateKeepingLink(oneLine(unwrapFrame(direct)));
 
   // Not a JSON document. It may still be an SSE frame carrying one.
-  const payload = sseDataPayload(body);
-  if (payload) {
-    const streamed = messageFromJson(payload);
-    if (streamed) return truncateKeepingLink(oneLine(streamed));
-    // A `data:` payload that is not JSON is still better than the whole frame.
-    return truncateKeepingLink(oneLine(payload));
-  }
-
-  const trimmed = oneLine(body);
+  const unwrapped = unwrapFrame(body);
+  const trimmed = oneLine(unwrapped);
   if (!trimmed) return undefined;
   return truncateKeepingLink(trimmed);
 }

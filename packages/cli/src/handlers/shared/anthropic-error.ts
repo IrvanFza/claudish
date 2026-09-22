@@ -28,6 +28,23 @@ export interface AnthropicErrorEnvelope {
      * instead of the proxy's 400. Extra JSON fields are ignored by Claude Code.
      */
     upstream_status?: number;
+    /**
+     * The UPSTREAM'S OWN WORDS, unedited — no hint, no provider name, no status.
+     *
+     * `message` is a composed sentence: claudish's recovery hint first, then the
+     * provider's text after an em dash. That order is right for Claude Code,
+     * which shows one line and needs the advice in it, and wrong for anything
+     * that has to fit the failure into a column. The probe row clips, so it was
+     * showing 100% of claudish's guess and 0% of the provider's fact — Alibaba
+     * said "Model access denied." and the row said "The provider accepted the
+     * credential but denied access to this model — check model access or…".
+     *
+     * A guess displacing the evidence is the wrong trade at any width, so the
+     * evidence travels separately and the probe leads with it. Same precedent as
+     * `upstream_status`: machine-readable, and extra JSON fields are ignored by
+     * Claude Code.
+     */
+    provider_message?: string;
   };
 }
 
@@ -108,11 +125,17 @@ export function wrapAnthropicError(
   status: number,
   message: string,
   errorType?: string,
-  upstreamStatus?: number
+  upstreamStatus?: number,
+  providerMessage?: string
 ): AnthropicErrorEnvelope {
   const type = (errorType as AnthropicErrorType) || statusToErrorType(status);
   const error: AnthropicErrorEnvelope["error"] = { type, message: sanitizeErrorMessage(message) };
   if (upstreamStatus !== undefined) error.upstream_status = upstreamStatus;
+  // Flattened to one line here rather than at each caller: the field exists to
+  // be rendered in a single row, and a provider may answer with a multi-line SSE
+  // frame. Sanitised like `message`, because it is provider text either way.
+  const oneLine = (providerMessage ?? "").replace(/\s+/g, " ").trim();
+  if (oneLine) error.provider_message = sanitizeErrorMessage(oneLine);
   return { type: "error", error };
 }
 
@@ -164,13 +187,28 @@ export function extractUpstreamStatus(body: string): number | undefined {
  * per the SSE specification.
  */
 export function sseDataPayload(body: string): string | undefined {
-  if (!/(^|\n)\s*(event|data):/.test(body)) return undefined;
-  const data = body
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice("data:".length).trim())
-    .join("");
-  return data.length > 0 ? data : undefined;
+  if (!/(^|\s)(event|data):/.test(body)) return undefined;
+
+  // Shape 1: a real frame, still carrying its line breaks. Multiple `data:`
+  // lines concatenate, per the specification.
+  const lines = body.split(/\r?\n/).filter((line) => line.startsWith("data:"));
+  if (lines.length > 0) {
+    const joined = lines.map((line) => line.slice("data:".length).trim()).join("");
+    if (joined.length > 0) return joined;
+  }
+
+  // Shape 2: the SAME frame after its newlines became spaces. `sanitizeErrorMessage`
+  // does that to every message the proxy returns — deliberately, so a provider
+  // cannot corrupt a client's terminal — and it runs BEFORE the probe reads the
+  // text. So the probe never sees shape 1 on a proxied error, only
+  // `event:error data:{…}` on one line, where no line starts with `data:` and
+  // shape 1 finds nothing. Everything after the first `data:` is the payload;
+  // a frame carrying several data fields has already lost its boundaries by
+  // this point, and one JSON object is the case that occurs.
+  const at = body.search(/(^|\s)data:/);
+  if (at === -1) return undefined;
+  const payload = body.slice(body.indexOf("data:", at) + "data:".length).trim();
+  return payload.length > 0 ? payload : undefined;
 }
 
 /**
@@ -204,7 +242,11 @@ export function extractProviderMessage(body: any): string {
     body?.detail,
   ];
   for (const c of candidates) {
-    if (typeof c === "string" && c.length > 0) return c;
+    // Re-entered through the string arm, not returned directly: a message field
+    // can itself hold a whole SSE frame. claudish re-wraps a raw upstream body
+    // as `{error:{message: <that body>}}` on the auth-retry return, which is
+    // valid JSON, so this ladder succeeded and handed back wire protocol.
+    if (typeof c === "string" && c.length > 0) return extractProviderMessage(c);
     // FastAPI validation errors use `detail: [{ msg, loc, ... }]`.
     if (Array.isArray(c)) {
       const first = c.find((e) => typeof e?.msg === "string" && e.msg.length > 0);

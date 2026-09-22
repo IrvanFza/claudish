@@ -1043,7 +1043,16 @@ export class ComposedHandler implements ModelHandler {
           // machine consumers (probe classification) can tell a remapped
           // auth failure from a genuine 400.
           return c.json(
-            wrapAnthropicError(400, surfaced, "invalid_request_error", response.status),
+            wrapAnthropicError(
+              400,
+              surfaced,
+              "invalid_request_error",
+              response.status,
+              // The upstream's own sentence, kept whole and separate. `surfaced`
+              // leads with claudish's hint, which is correct for Claude Code and
+              // useless to a probe row that clips.
+              providerMsg
+            ),
             400 as any
           );
         }
@@ -1098,7 +1107,13 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        return c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+        // `settled.message` is the upstream's own text; `surfaced` wraps it in
+        // claudish's retry narration. Both travel, so a probe row can lead with
+        // the provider's words.
+        return c.json(
+          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+          503 as any
+        );
       }
       response = settled.response;
     }
@@ -1157,8 +1172,20 @@ export class ComposedHandler implements ModelHandler {
           // Stats must never crash claudish
         }
         return isTerminal
-          ? c.json(wrapAnthropicError(400, surfaced, "invalid_request_error"), 400 as any)
-          : c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+          ? c.json(
+              wrapAnthropicError(
+                400,
+                surfaced,
+                "invalid_request_error",
+                undefined,
+                settled.message
+              ),
+              400 as any
+            )
+          : c.json(
+              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+              503 as any
+            );
       }
       response = settled.response;
     }
