@@ -595,17 +595,15 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     // endpoint's own default is a better answer than a level we invented.
     if (!effort) return request;
 
-    if (effort === "none" || effort === "minimal") {
-      // `mandatory` means the model cannot run with reasoning off, so a
-      // `disabled` here is a request the provider must reject. Honour the
-      // intent as far as the model allows: the lowest level it advertises.
-      if (reasoning?.mandatory) {
-        return this.enableAnthropicEffort(request, effort, reasoning, "mandatory reasoning");
-      }
+    if (this.meansReasoningOff(effort, reasoning)) {
       request.thinking = { type: "disabled" };
       log(`[${this.getName()}] effort ${effort} -> thinking.type: disabled for ${this.modelId}`);
       return request;
     }
+    // `none`/`minimal` that survived {@link meansReasoningOff} is a request for
+    // the LEAST thinking this model offers, not for none: a mandatory model, or
+    // `minimal` where a depth control exists. Both fall through to the
+    // control-driven dispatch below, which clamps to the advertised ladder.
 
     // ── Control-driven dispatch ─────────────────────────────────────────────
     //
@@ -761,6 +759,43 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * in the models-index catalog; do NOT hardcode a per-model override here, or
    * claudish stops reflecting the catalog it is supposed to be driven by.
    */
+  /**
+   * Does this effort level mean "send the OFF switch" for THIS model?
+   *
+   * One rule, shared by every wire, because the same mistake was made on four of
+   * them independently: `effort === "none" || effort === "minimal"` → emit the
+   * provider's disable value. That collapses two of claudish's seven levels into
+   * one, and it is wrong twice over.
+   *
+   * **`minimal` is not `none`.** claudish publishes both. `none` means do not
+   * reason; `minimal` means reason as little as possible. Where the model has a
+   * depth control, "as little as possible" is its lowest rung — that is what the
+   * word asks for, and {@link clampToAdvertisedEffort} already computes it.
+   * Sending the off-switch instead throws away the distinction the two level
+   * names exist to express.
+   *
+   * **Some models cannot be switched off at all.** The catalog says so with
+   * `mandatory: true`, and the provider enforces it. Measured on Z.AI 2026-09-21:
+   * `{"thinking":{"type":"disabled"}}` for glm-5.3 → `400 code 1210 "This model
+   * always engages in thinking and cannot be disabled"`, while the same request
+   * with the switch on and `reasoning_effort: "low"` → 200. The catalog publishes
+   * `mandatory: true` for glm-5.3 and glm-5.3-flash, so this never needed a guess.
+   *
+   * The remaining case is a model with an on/off switch and no depth control and
+   * no mandate. There "as little as possible" and "none" really are the same
+   * request, because the wire has no third value to send — so both disable, and
+   * behaviour for those models is unchanged.
+   */
+  protected meansReasoningOff(
+    effort: EffortLevel,
+    reasoning: ReasoningCapability | undefined
+  ): boolean {
+    if (effort !== "none" && effort !== "minimal") return false;
+    if (reasoning?.mandatory) return false;
+    if (effort === "minimal" && (reasoning?.efforts?.length ?? 0) > 0) return false;
+    return true;
+  }
+
   protected clampToAdvertisedEffort(
     requested: EffortLevel,
     reasoning: ReasoningCapability
