@@ -158,7 +158,8 @@ export function routingProvidersForRoute(route: CatalogRouteBinding | undefined)
  *
  * Routing names come first, so the first answer is a provider whenever one is
  * bound: `kimi` before `moonshotai`, `opencode-zen` before `zen`. `anthropic` is
- * the only name on `anthropic/direct-api`.
+ * the only name on `anthropic/direct-api`. The probe map (`probe-catalog.ts`)
+ * keys a route's probe pick under every name this returns.
  */
 export function catalogReadProvidersForRoute(route: CatalogRouteBinding | undefined): string[] {
   return [
@@ -169,9 +170,9 @@ export function catalogReadProvidersForRoute(route: CatalogRouteBinding | undefi
 
 /**
  * One name per route, for a read that wants exactly one: the first name
- * {@link catalogReadProvidersForRoute} returns. Readers: the probe map
- * (`probe-catalog.ts`), the aggregator slug set (`model-catalog.ts`) and the
- * recommended-models list (`model-loader.ts`).
+ * {@link catalogReadProvidersForRoute} returns. Readers: the aggregator slug set
+ * (`model-catalog.ts`) and the recommended-models list (`model-loader.ts`). The
+ * probe map (`probe-catalog.ts`) keys every name instead.
  */
 export function providerForCatalogRoute(
   route: CatalogRouteBinding | undefined
