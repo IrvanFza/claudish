@@ -31,6 +31,7 @@ import {
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
+const keychainGuardAtFileLoad = process.env.CLAUDISH_DISABLE_KEYCHAIN;
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
 function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
@@ -571,6 +572,8 @@ const ENV_KEYS_TO_CLEAR = [
 const savedEnv: Record<string, string | undefined> = {};
 
 describe("route()", () => {
+  let previousKeychainGuard: string | undefined;
+
   // CredentialAuthority memoizes provider resolution process-wide, so another
   // test module's top-level credential probe can prewarm real credentials.
   // Invalidate before and after each test to isolate host and fake keys.
@@ -579,6 +582,7 @@ describe("route()", () => {
     // These tests predate the keychain source and originally disabled only
     // op://, leaving host keychain entries able to satisfy "no credentials"
     // assertions. Disable both external stores with the mock-free env flags.
+    previousKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
     process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
@@ -591,7 +595,11 @@ describe("route()", () => {
   });
 
   afterEach(() => {
-    delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    if (previousKeychainGuard === undefined) {
+      delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    } else {
+      process.env.CLAUDISH_DISABLE_KEYCHAIN = previousKeychainGuard;
+    }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
     // Restore env vars (preserves the host's actual config for other tests).
@@ -979,10 +987,13 @@ describe("route()", () => {
 // ---------------------------------------------------------------------------
 
 describe("route() with defaultProvider", () => {
+  let previousKeychainGuard: string | undefined;
+
   // CredentialAuthority memoizes provider resolution process-wide, so another
   // test module's top-level credential probe can prewarm real credentials.
   // Invalidate before and after each test to isolate host and fake keys.
   beforeEach(() => {
+    previousKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
     process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
     process.env.CLAUDISH_DISABLE_OP = "1";
     __resetSniffForTests();
@@ -994,7 +1005,11 @@ describe("route() with defaultProvider", () => {
   });
 
   afterEach(() => {
-    delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    if (previousKeychainGuard === undefined) {
+      delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    } else {
+      process.env.CLAUDISH_DISABLE_KEYCHAIN = previousKeychainGuard;
+    }
     delete process.env.CLAUDISH_DISABLE_OP;
     __resetSniffForTests();
     for (const key of ENV_KEYS_TO_CLEAR) {
@@ -1326,4 +1341,8 @@ describe("route() model-availability filtering", () => {
     expect(fetchCalls).toEqual([credentialed]);
     expect(fetchCalls).not.toContain(noCredential);
   });
+});
+
+test("no test leaves the keychain guard changed", () => {
+  expect(process.env.CLAUDISH_DISABLE_KEYCHAIN).toBe(keychainGuardAtFileLoad);
 });
