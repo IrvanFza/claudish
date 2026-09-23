@@ -241,6 +241,18 @@ describe("pinSpecFor routing gate", () => {
     expect(router).not.toHaveBeenCalled();
   });
 
+  it("routes a bare non-Claude name", async () => {
+    const router = mock(async (spec: string) => ({
+      kind: "ok" as const,
+      primary: { provider: "openrouter", modelSpec: spec, displayName: "OpenRouter" },
+      fallbacks: [],
+    }));
+
+    expect(await pinSpecFor("o4-mini", router)).toBe("or@o4-mini");
+    expect(router).toHaveBeenCalledTimes(1);
+    expect(router).toHaveBeenCalledWith("o4-mini");
+  });
+
   it("returns null without throwing when the router finds no route", async () => {
     const router = mock(async () => ({
       kind: "no-route" as const,
@@ -393,27 +405,27 @@ describe("pre-route target characterization", () => {
     },
     {
       target: "o4-mini",
-      nativeRoute: native("o4-mini"),
+      nativeRoute: null,
       parsed: {
-        provider: "native-anthropic",
+        provider: "auto-route",
         model: "o4-mini",
         original: "o4-mini",
         isLegacySyntax: false,
         isExplicitProvider: false,
       },
-      callsRouter: false,
+      callsRouter: true,
     },
     {
       target: "no-such-model-xyz",
-      nativeRoute: native("no-such-model-xyz"),
+      nativeRoute: null,
       parsed: {
-        provider: "native-anthropic",
+        provider: "auto-route",
         model: "no-such-model-xyz",
         original: "no-such-model-xyz",
         isLegacySyntax: false,
         isExplicitProvider: false,
       },
-      callsRouter: false,
+      callsRouter: true,
     },
     {
       target: "kimi-k3",
@@ -510,8 +522,8 @@ describe("proxyRouteDecision consistency", () => {
     { target: "anthropic/claude-opus-5", type: "explicit" },
     { target: "poe:x", type: "poe" },
     { target: "kc@kimi-k3", type: "explicit" },
-    { target: "o4-mini", type: "native" },
-    { target: "no-such-model-xyz", type: "native" },
+    { target: "o4-mini", type: "bare" },
+    { target: "no-such-model-xyz", type: "bare" },
     { target: "kimi-k3", type: "bare" },
     { target: "openai/gpt-5", type: "bare" },
     { target: "foo/bar", type: "bare" },

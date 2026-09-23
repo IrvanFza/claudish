@@ -18,7 +18,8 @@
  * - local: ollama@, lmstudio@, vllm@, mlx@, http://... - No API key needed
  * - direct-api: google@, openai@, minimax@, kimi@, glm@, z-ai@, x-ai@, zen@ - Provider-specific key
  * - openrouter: openrouter@ or unspecified provider for models with "/" - OPENROUTER_API_KEY
- * - native-anthropic: No "/" in model ID (e.g., claude-3-opus-20240229) - Claude Code native auth
+ * - native-anthropic: a name Claude Code owns (claude-3-opus-20240229, opus) - Claude Code native auth
+ * - auto-route: any other bare name with no "/" (o4-mini) - route() picks the provider per request
  *
  * Legacy syntax (deprecated but supported):
  * - g/, gemini/, oai/, mmax/, etc. prefixes still work with deprecation warnings
@@ -26,6 +27,7 @@
 
 import { credentials } from "../auth/credentials/authority.js";
 import {
+  AUTO_ROUTE_PROVIDER,
   type ParsedModel,
   getLegacySyntaxWarning,
   isLocalProviderName,
@@ -50,6 +52,7 @@ export type ProviderCategory =
   | "direct-api"
   | "openrouter"
   | "native-anthropic"
+  | "auto-route"
   | "unknown";
 
 /**
@@ -164,7 +167,8 @@ const PROVIDER_DISPLAY_NAMES = new Proxy<Record<string, string>>(
  * Legacy syntax: prefix/model (with deprecation warnings)
  *
  * Resolution order:
- * 1. Parse model spec using new unified parser
+ * 1. Parse model spec using new unified parser; a bare name the parser left to
+ *    routing (`auto-route`) is answered here, before any provider lookup
  * 2. Check for local providers (no API key needed)
  * 3. Check for native Anthropic models
  * 4. Check for explicit OpenRouter routing
@@ -204,6 +208,26 @@ export function resolveModelProvider(modelId: string | undefined): ProviderResol
     deprecationWarning: deprecationWarning || undefined,
     concurrency: parsed.concurrency,
   });
+
+  // 0. A bare name the parser attributed to nobody. `route()` picks its provider
+  // on the first request, so there is no provider here to name, look up or ask
+  // for a key: AUTO_ROUTE_PROVIDER is not a provider name, and it is answered
+  // before any lookup that takes one (a custom endpoint could carry the name).
+  // A null `requiredApiKeyEnvVar` is what keeps it out of
+  // getMissingKeyResolutions and away from the credential authority.
+  if (parsed.provider === AUTO_ROUTE_PROVIDER) {
+    return addCommonFields({
+      category: "auto-route",
+      catalogName: null,
+      providerName: "unresolved (routed on the first request)",
+      modelName: parsed.model,
+      fullModelId: modelId,
+      requiredApiKeyEnvVar: null,
+      apiKeyAvailable: true,
+      apiKeyDescription: null,
+      apiKeyUrl: null,
+    });
+  }
 
   // 1. Check for local providers (no API key needed)
   if (isLocalProviderName(parsed.provider)) {
@@ -510,7 +534,8 @@ export function getMissingKeyError(resolution: ProviderResolution): string {
       parsed &&
       !parsed.isExplicitProvider &&
       parsed.provider !== "unknown" &&
-      parsed.provider !== "native-anthropic"
+      parsed.provider !== "native-anthropic" &&
+      parsed.provider !== AUTO_ROUTE_PROVIDER
     ) {
       const hint = buildCredentialHint(parsed.model, [parsed.provider]);
       if (hint) {

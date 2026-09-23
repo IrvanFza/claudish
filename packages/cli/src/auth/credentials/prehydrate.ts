@@ -239,13 +239,15 @@ async function pinRoutes(
  *     STRIPS the `:3` off `ollama@llama3.2:3` (`model` comes back `"llama3.2"`),
  *     so a spec rebuilt from parsed parts would silently lose it. The early-out,
  *     NOT lossless round-tripping, is the guarantee.
- *   - **native-anthropic** (`opus`, `sonnet`, `claude-*`, and any unrecognised
- *     bare name with no `/`) — the child never routes these. `route()` would
- *     nonetheless answer `ok` for them, because `defaultProvider` is appended to
- *     EVERY bare-name chain, so an unguarded pin would spawn
- *     `--model or@opus` and send a native model through OpenRouter. `team`
- *     screens these out upstream in `setupSession`, but `create_session` does
- *     not.
+ *   - **native-anthropic** (Claude Code's own names: `opus`, `sonnet`,
+ *     `opusplan`, `claude-*`; see `isClaudeCodeModelName`) — the child never
+ *     routes these. `route()` would nonetheless answer `ok` for them, because
+ *     `defaultProvider` is appended to EVERY bare-name chain, so an unguarded pin
+ *     would spawn `--model or@opus` and send a native model through OpenRouter.
+ *     Both `team` and `create_session` run these as native slots (see "Native
+ *     Model Slots" in team-orchestrator.ts), so this check is what keeps them
+ *     bare. Any other bare name with no `/` (`o4-mini`, a typo) is `bare`: the
+ *     child routes it, so the parent pins its chain like any other.
  *   - **`poe:` models** — same gate, same reason.
  */
 function isRoutablyPinnable(model: string): boolean {

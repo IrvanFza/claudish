@@ -73,9 +73,17 @@ const PROVIDER_HINT_MAP: Record<string, ProviderHintInfo> = {
  * @param modelName    Bare model name the user asked for.
  * @param providers    Canonical provider names that would have been tried but
  *                     lacked credentials. Order is preserved in the output.
+ * @param options.suggestOpenRouter  `false` drops the `or@<model>` line. For a
+ *                     caller that knows the catalog denies OpenRouter the model,
+ *                     where that line would send the user to a hop nobody
+ *                     published. Defaults to `true`.
  * @returns Hint string, or null if no provider in the chain has a known hint.
  */
-export function buildCredentialHint(modelName: string, providers: string[]): string | null {
+export function buildCredentialHint(
+  modelName: string,
+  providers: string[],
+  options: { suggestOpenRouter?: boolean } = {}
+): string | null {
   const seen = new Set<string>();
   const lines: string[] = [`No credentials found for "${modelName}". Options:`];
   let hasOption = false;
@@ -101,9 +109,10 @@ export function buildCredentialHint(modelName: string, providers: string[]): str
     }
   }
 
-  // Always suggest OpenRouter as the catch-all unless OpenRouter itself was
-  // already in the failed chain (which means OPENROUTER_API_KEY is missing).
-  if (!seen.has("openrouter")) {
+  // Suggest OpenRouter as the catch-all unless OpenRouter itself was already in
+  // the failed chain (which means OPENROUTER_API_KEY is missing), or the caller
+  // knows the catalog denies OpenRouter this model.
+  if (!seen.has("openrouter") && options.suggestOpenRouter !== false) {
     lines.push(`  Use:  claudish --model or@${modelName}  (route via OpenRouter)`);
     hasOption = true;
   }

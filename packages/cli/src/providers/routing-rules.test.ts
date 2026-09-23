@@ -1408,7 +1408,6 @@ describe("route() no-route plan characterization", () => {
         reason: 'A routing rule matched "blocked-by-rule" and named no provider.',
         hint:
           'No credentials found for "blocked-by-rule". Options:\n' +
-          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
           "  Use:  claudish --model or@blocked-by-rule  (route via OpenRouter)",
       });
     } finally {
@@ -1431,7 +1430,6 @@ describe("route() no-route plan characterization", () => {
         reason: 'A routing rule matched "membership-excluded" and named no provider.',
         hint:
           'No credentials found for "membership-excluded". Options:\n' +
-          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
           "  Use:  claudish --model or@membership-excluded  (route via OpenRouter)",
       });
     } finally {
@@ -1456,18 +1454,40 @@ describe("route() no-route plan characterization", () => {
   });
 
   test.each([
-    ["claude-opus-not-published", "Claude name"],
-    ["o4-mini", "non-Claude name"],
-  ])("pins a readable catalog with no entry for a %s", async (model) => {
+    [
+      "claude-opus-not-published",
+      "Claude name",
+      'No credentials found for "claude-opus-not-published". Options:\n' +
+        "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
+        "  Use:  claudish --model or@claude-opus-not-published  (route via OpenRouter)",
+    ],
+    [
+      "o4-mini",
+      "non-Claude name",
+      'No credentials found for "o4-mini". Options:\n' +
+        "  Use:  claudish --model or@o4-mini  (route via OpenRouter)",
+    ],
+  ])("pins a readable catalog with no entry for a %s", async (model, _label, hint) => {
     const fixture = makeTempCatalog({ modelId: "catalog-marker" });
     try {
       expect(await route(model, {}, "", fixture.path)).toEqual({
         kind: "no-route",
         reason: `No provider in the catalog serves "${model}".`,
-        hint:
-          `No credentials found for "${model}". Options:\n` +
-          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
-          `  Use:  claudish --model or@${model}  (route via OpenRouter)`,
+        hint,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("omits the OpenRouter suggestion when the catalog denies that connection", async () => {
+    const model = "catalog-denies-openrouter";
+    const fixture = makeTempCatalog({ modelId: model });
+    try {
+      expect(await route(model, {}, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: `No provider in the catalog serves "${model}".`,
+        hint: undefined,
       });
     } finally {
       fixture.cleanup();

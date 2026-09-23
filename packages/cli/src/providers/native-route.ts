@@ -2,7 +2,8 @@
  * The native-passthrough answer that `route()` cannot give, and the proxy's
  * pre-route decision that produces it.
  *
- * A bare Claude name (`claude-opus-5`, `opus`, `internal`) is served by the
+ * A bare name Claude Code owns (`claude-opus-5`, `opus`, `opusplan`,
+ * `sonnet[1m]`, `internal`; see `isClaudeCodeModelName`) is served by the
  * proxy's native branch on the harness's own Claude Code auth. `native-anthropic`
  * has no credential store — on purpose, it is not a remote provider — so
  * `route()`'s credential filter drops it and the chain degrades to OpenRouter.
@@ -11,6 +12,12 @@
  * for a bare name must ask the same question first, or it reports a
  * subscription model as "no route" / "OpenRouter, metered" — which is what the
  * MCP `preflight` tool and the TUI route probe did.
+ *
+ * Only Claude Code's names are native, plus `""` and `@model`, which are not
+ * model names and which the harness rejects. Any other bare name with no `/`
+ * (`o4-mini`, a typo) is `bare`: `parseModelSpec` gives it `AUTO_ROUTE_PROVIDER`,
+ * and `route()` decides it like every other bare name. The native passthrough
+ * serves none of them, so it used to answer each with an Anthropic 404.
  *
  * Explicit specs are never native: `anthropic@claude-opus-5` names a vendor,
  * and `dv@claude-opus-5-high` is Devin re-serving a Claude id under its own
@@ -30,8 +37,9 @@ export interface NativeRoute {
    * True when `model` is a Claude Code tier alias (`opus`, `internal`, …). Those
    * are selectors, not API model ids: the native handler forwards the request's
    * model verbatim and Anthropic rejects an alias, so a probe must SKIP them and
-   * send only concrete names. Everything else — including a typo, which the
-   * proxy really does route natively — must be probed, never declared live.
+   * send only concrete names. Everything else — including a `claude-` typo,
+   * which the proxy really does send natively — must be probed, never declared
+   * live.
    */
   isTierAlias: boolean;
 }

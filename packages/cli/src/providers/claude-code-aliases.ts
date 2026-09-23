@@ -4,22 +4,25 @@
  *
  * ## Why this distinction has to exist
  *
- * `parseModelSpec` sends every unrecognised bare name to `native-anthropic`
- * ("No '/' - treat as native Anthropic model"), so two very different things
- * arrive at that route:
+ * `parseModelSpec` sends Claude Code's own names to `native-anthropic`: every
+ * `claude-` id, and every name {@link isClaudeCodeModelName} accepts. Any other
+ * bare name with no `/` goes to `route()` instead (`AUTO_ROUTE_PROVIDER`). Two
+ * very different things still arrive at the native route:
  *
  *   - `opus`, `sonnet`, `haiku`, `internal`, `default` — Claude Code's own tier
  *     selectors. The API rejects them ("not a valid model ID"), but the ROUTE is
  *     healthy, so probing them verbatim would report a failure that does not
  *     exist. These need a concrete id substituted.
- *   - `swe-1.7`, `some-typo-model` — names nothing serves. At runtime
- *     `native-handler.ts` forwards `payload.model` VERBATIM and Anthropic answers
- *     404, so substituting a working id here makes `--probe` report `live` for a
- *     model that cannot serve a single request.
+ *   - a concrete `claude-` id, including one that does not exist
+ *     (`claude-opus-9`). At runtime `native-handler.ts` forwards `payload.model`
+ *     VERBATIM and Anthropic answers for it, 404 included, so substituting a
+ *     working id here makes `--probe` report `live` for a model that cannot
+ *     serve a single request.
  *
- * The probe used to substitute for BOTH, which is how `swe-1.7` came to "probe
- * byte-identically to a nonsense string": the substitution erased the difference
- * between them before the request was ever sent.
+ * The probe used to substitute for every name, which is how `swe-1.7` came to
+ * "probe byte-identically to a nonsense string" back when the parser still sent
+ * both natively: the substitution erased the difference between them before the
+ * request was ever sent.
  *
  * So the rule is: substitute for a KNOWN alias, pass everything else through and
  * let the API answer honestly.

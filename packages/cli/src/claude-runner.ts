@@ -62,9 +62,12 @@ function releaseTerminalIsolation(): void {
 }
 
 /**
- * Check if any resolved model mapping targets a native Anthropic model (claude-*).
- * When true, placeholder auth tokens must NOT be set — Claude Code needs its real
- * subscription credentials so NativeHandler can forward them to api.anthropic.com.
+ * Check if any resolved model mapping targets a native Anthropic model: a name
+ * Claude Code owns (`claude-*`, `opus`, `opusplan`, `sonnet[1m]`, …), which the
+ * parser attributes to native-anthropic. When true, placeholder auth tokens must
+ * NOT be set — Claude Code needs its real subscription credentials so
+ * NativeHandler can forward them to api.anthropic.com. Any other bare name
+ * (`o4-mini`) is routed by the proxy, so it does not count.
  */
 function hasNativeAnthropicMapping(config: ClaudishConfig): boolean {
   const models = [

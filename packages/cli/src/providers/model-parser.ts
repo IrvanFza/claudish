@@ -45,10 +45,29 @@
  */
 
 /**
+ * The parser's answer for a bare name it cannot attribute to anyone: no `/`, no
+ * native pattern matched, and not a name Claude Code owns (`o4-mini`,
+ * `no-such-model-xyz`). It is NOT a claudish provider, and nothing may look it up
+ * as one: `route()` decides which provider serves the name, from the user's rules
+ * and the cloud models catalog.
+ *
+ * Why not `"unknown"`: that value already means "a `vendor/` with no known vendor"
+ * (`foo/bar`) to `getMissingKeyError` and the advisor label, and it keeps that
+ * meaning. `auto-route` is the code's existing word for "routing chooses" (the
+ * stats invocation mode), and no provider or provider shortcut carries the name.
+ */
+export const AUTO_ROUTE_PROVIDER = "auto-route";
+
+/**
  * Parsed model specification
  */
 export interface ParsedModel {
-  /** Normalized provider name (lowercase) */
+  /**
+   * Normalized provider name (lowercase). For a name with no explicit provider
+   * this may also be one of the parser's own values, none of them a provider:
+   * `custom-url`, `unknown` (a `vendor/` with no known vendor), or
+   * {@link AUTO_ROUTE_PROVIDER} (a bare name `route()` decides).
+   */
   provider: string;
   /** Model name/ID (without provider prefix) */
   model: string;
@@ -66,6 +85,7 @@ export interface ParsedModel {
  * Provider shortcut mappings — derived from BUILTIN_PROVIDERS.
  * Re-exported for backward compatibility.
  */
+import { isClaudeCodeModelName } from "./claude-code-aliases.js";
 import {
   getLegacyPrefixPatterns as _getLegacyPrefixPatterns,
   getNativeModelPatterns as _getNativeModelPatterns,
@@ -256,14 +276,31 @@ export function parseModelSpec(modelSpec: string): ParsedModel {
     };
   }
 
-  // No "/" - treat as native Anthropic model
+  // No "/" and no pattern matched. Claude Code's own names (`opus`, `opusplan`,
+  // `sonnet[1m]`, `best`) are served on its own auth by the native passthrough.
+  // `""` and `@model` are not model names at all: they keep the native answer
+  // they always had, and the harness rejects them. Every other bare name
+  // (`o4-mini`, a typo) is routed: the native passthrough serves none of them,
+  // so sending one there only ever earned an Anthropic 404.
   return {
-    provider: "native-anthropic",
+    provider: lastResortProvider(modelSpec),
     model: modelSpec,
     original,
     isLegacySyntax: false,
     isExplicitProvider: false,
   };
+}
+
+/**
+ * The provider for a bare name no `/` and no pattern claimed: native-anthropic
+ * for Claude Code's names and for `""` / `@model`, else {@link AUTO_ROUTE_PROVIDER}.
+ * Trimmed, as `isClaudeCodeModelName` is, so a whitespace-only value counts as
+ * empty.
+ */
+function lastResortProvider(modelSpec: string): string {
+  const name = modelSpec.trim();
+  const isNative = name === "" || name.startsWith("@") || isClaudeCodeModelName(name);
+  return isNative ? "native-anthropic" : AUTO_ROUTE_PROVIDER;
 }
 
 /**

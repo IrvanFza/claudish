@@ -10,7 +10,7 @@ import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
 import { providerServesModel } from "./model-availability.js";
-import { PROVIDER_SHORTCUTS } from "./model-parser.js";
+import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { getProviderByName } from "./provider-definitions.js";
 import { catalogDeniesProvider, gatherRouteCandidates } from "./route-candidates.js";
@@ -449,6 +449,63 @@ export function buildCatalogChain(
   return { routes, catalogReadable: gathering.catalogReadable };
 }
 
+/** Why a bare name's chain is empty before any credential is read. */
+type EmptyChainCause = "rule-empty" | "catalog-empty";
+
+/**
+ * The no-route plan for a bare name whose chain is empty before any credential
+ * is read. Two very different causes, and a user reading the message needs to
+ * know which: their OWN rule named nothing (they asked for this), or the catalog
+ * publishes no way to call the model (nobody serves it).
+ */
+function emptyChainNoRoute(
+  model: string,
+  nativeProvider: string,
+  cause: EmptyChainCause,
+  cachePath?: string
+): RoutePlan {
+  return {
+    kind: "no-route",
+    reason:
+      cause === "rule-empty"
+        ? `A routing rule matched "${model}" and named no provider.`
+        : `No provider in the catalog serves "${model}".`,
+    hint: emptyChainHint(model, nativeProvider, cause, cachePath),
+  };
+}
+
+/**
+ * The hint for a bare name whose chain is empty before any credential is read:
+ * a user rule that named no provider, or a catalog that gathered none.
+ *
+ * `nativeProvider` is the provider the parser attributed the name to, and its
+ * credential line is offered when it IS one. `AUTO_ROUTE_PROVIDER` says the
+ * parser attributed the name to nobody, so there is no credential to name. Before
+ * it existed those names parsed as `native-anthropic`, and the hint told the user
+ * to set ANTHROPIC_API_KEY for a model Anthropic does not serve.
+ *
+ * When the CATALOG gathered nothing for such a name, the `or@<model>` line is
+ * also dropped if the catalog denies OpenRouter the model (`catalogDeniesProvider`,
+ * the test that withholds the fallback append): it would send the user to a hop
+ * nobody published. Not for a matched user rule, whose empty chain is the user's
+ * own statement, and not for a name the parser attributes to a provider: that
+ * one keeps the line whatever the catalog says, the same flaw, left to a
+ * separate fix.
+ */
+function emptyChainHint(
+  model: string,
+  nativeProvider: string,
+  cause: EmptyChainCause,
+  cachePath?: string
+): string | undefined {
+  if (nativeProvider !== AUTO_ROUTE_PROVIDER) {
+    return buildCredentialHint(model, [nativeProvider]) ?? undefined;
+  }
+  const suggestOpenRouter =
+    cause === "rule-empty" || !catalogDeniesProvider("openrouter", model, cachePath);
+  return buildCredentialHint(model, [], { suggestOpenRouter }) ?? undefined;
+}
+
 /**
  * Path 2: a bare model name.
  *
@@ -508,17 +565,12 @@ async function routeBare(
   }
 
   if (candidates.length === 0) {
-    // Two very different causes, and a user reading the message needs to know
-    // which: their OWN rule named nothing (they asked for this), or the catalog
-    // publishes no way to call the model (nobody serves it).
-    return {
-      kind: "no-route",
-      reason:
-        matched !== null
-          ? `A routing rule matched "${model}" and named no provider.`
-          : `No provider in the catalog serves "${model}".`,
-      hint: buildCredentialHint(model, [nativeProvider]) ?? undefined,
-    };
+    return emptyChainNoRoute(
+      model,
+      nativeProvider,
+      matched !== null ? "rule-empty" : "catalog-empty",
+      cachePath
+    );
   }
 
   const credentialed: Route[] = [];
