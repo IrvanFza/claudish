@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { parseModelChain, parseModelSpec } from "../../providers/model-parser.js";
+import { nativeRouteFor } from "../../providers/native-route.js";
 import type { Route } from "../../providers/routing-rules.js";
 import { __resetSniffForTests } from "./op-source.js";
 import {
@@ -257,5 +258,239 @@ describe("pinSpecFor routing gate", () => {
 
     await expect(pinSpecFor("x-ai/grok-4.20", router)).resolves.toBeNull();
     expect(router).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("pre-route target characterization", () => {
+  const native = (modelSpec: string, isTierAlias = false) => ({
+    provider: "native-anthropic" as const,
+    modelSpec,
+    displayName: "Anthropic (Native)",
+    isTierAlias,
+  });
+
+  const rows = [
+    {
+      target: "opus",
+      nativeRoute: native("opus", true),
+      parsed: {
+        provider: "native-anthropic",
+        model: "opus",
+        original: "opus",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "opus[1m]",
+      nativeRoute: native("opus[1m]"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "opus[1m]",
+        original: "opus[1m]",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "opusplan",
+      nativeRoute: native("opusplan"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "opusplan",
+        original: "opusplan",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "best",
+      nativeRoute: native("best"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "best",
+        original: "best",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "internal",
+      nativeRoute: native("opus", true),
+      parsed: {
+        provider: "native-anthropic",
+        model: "internal",
+        original: "internal",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "claude-opus-4-6[1m]",
+      nativeRoute: native("claude-opus-4-6[1m]"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "claude-opus-4-6[1m]",
+        original: "claude-opus-4-6[1m]",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "claude-haiku-4-5-20251001",
+      nativeRoute: native("claude-haiku-4-5-20251001"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "claude-haiku-4-5-20251001",
+        original: "claude-haiku-4-5-20251001",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "anthropic/claude-opus-5",
+      nativeRoute: null,
+      parsed: {
+        provider: "native-anthropic",
+        model: "claude-opus-5",
+        original: "anthropic/claude-opus-5",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "poe:x",
+      nativeRoute: null,
+      parsed: {
+        provider: "poe",
+        model: "poe:x",
+        original: "poe:x",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "kc@kimi-k3",
+      nativeRoute: null,
+      parsed: {
+        provider: "kimi-coding",
+        model: "kimi-k3",
+        original: "kc@kimi-k3",
+        concurrency: undefined,
+        isLegacySyntax: false,
+        isExplicitProvider: true,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "o4-mini",
+      nativeRoute: native("o4-mini"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "o4-mini",
+        original: "o4-mini",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "no-such-model-xyz",
+      nativeRoute: native("no-such-model-xyz"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "no-such-model-xyz",
+        original: "no-such-model-xyz",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "kimi-k3",
+      nativeRoute: null,
+      parsed: {
+        provider: "kimi",
+        model: "kimi-k3",
+        original: "kimi-k3",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: true,
+    },
+    {
+      target: "openai/gpt-5",
+      nativeRoute: null,
+      parsed: {
+        provider: "openai",
+        model: "gpt-5",
+        original: "openai/gpt-5",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: true,
+    },
+    {
+      target: "foo/bar",
+      nativeRoute: null,
+      parsed: {
+        provider: "unknown",
+        model: "foo/bar",
+        original: "foo/bar",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: true,
+    },
+    {
+      target: "",
+      nativeRoute: native(""),
+      parsed: {
+        provider: "native-anthropic",
+        model: "",
+        original: "",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+    {
+      target: "@model",
+      nativeRoute: native("@model"),
+      parsed: {
+        provider: "native-anthropic",
+        model: "@model",
+        original: "@model",
+        isLegacySyntax: false,
+        isExplicitProvider: false,
+      },
+      callsRouter: false,
+    },
+  ];
+
+  it.each(rows)("pins today's pre-route decision for $target", async (row) => {
+    const router = mock(async () => ({
+      kind: "no-route" as const,
+      reason: "characterization router",
+    }));
+
+    expect(nativeRouteFor(row.target)).toEqual(row.nativeRoute);
+    expect(parseModelSpec(row.target)).toEqual(row.parsed);
+    expect(await pinSpecFor(row.target, router)).toBeNull();
+    if (row.callsRouter) {
+      expect(router).toHaveBeenCalledTimes(1);
+      expect(router).toHaveBeenCalledWith(row.target);
+    } else {
+      expect(router).not.toHaveBeenCalled();
+    }
   });
 });

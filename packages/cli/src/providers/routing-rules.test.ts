@@ -15,11 +15,18 @@ import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
+import { getLogFilePath, initLogger, setDiagOutput } from "../logger.js";
 import type { RoutingRules } from "../profile-config.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { invalidateModelDiscovery } from "./model-discovery.js";
+import { ensureEndpointsRegistered } from "./endpoint-registration.js";
+import {
+  getModelDiscoveryFetcher,
+  invalidateModelDiscovery,
+  registerModelDiscoveryFetcher,
+} from "./model-discovery.js";
+import "./model-discovery-builtins.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
   buildRoutingChain,
@@ -1340,6 +1347,348 @@ describe("route() model-availability filtering", () => {
     // guaranteed-failing discovery round-trip.
     expect(fetchCalls).toEqual([credentialed]);
     expect(fetchCalls).not.toContain(noCredential);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 1 routing characterization — plans and billing notices
+// ---------------------------------------------------------------------------
+
+describe("route() no-route plan characterization", () => {
+  const realIsAvailable = credentials.isAvailable;
+  const realDescribeReadiness = credentials.describeReadiness;
+  const antigravityFetcher = getModelDiscoveryFetcher("antigravity");
+
+  let readiness = new Map<string, "present" | "absent" | "failed">();
+  let previousKeychainGuard: string | undefined;
+
+  beforeEach(() => {
+    previousKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+    // buildCatalogChain normally registers endpoints by reading global config.
+    // Supplying an empty config here latches the same registry without touching
+    // the developer's HOME; every route call below also supplies rules and a
+    // cachePath explicitly.
+    ensureEndpointsRegistered({
+      config: { version: "1.0.0", defaultProfile: "default", profiles: {} },
+    });
+    readiness = new Map();
+    credentials.isAvailable = async (provider: string) => readiness.get(provider) === "present";
+    credentials.describeReadiness = async (provider: string) => ({
+      readiness: readiness.get(provider) ?? "absent",
+    });
+    registerModelDiscoveryFetcher("antigravity", async () => ({
+      kind: "models",
+      models: [{ id: "some-other-model" }],
+    }));
+    invalidateModelDiscovery("antigravity");
+  });
+
+  afterEach(() => {
+    if (previousKeychainGuard === undefined) {
+      delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    } else {
+      process.env.CLAUDISH_DISABLE_KEYCHAIN = previousKeychainGuard;
+    }
+    credentials.isAvailable = realIsAvailable;
+    credentials.describeReadiness = realDescribeReadiness;
+    if (antigravityFetcher) {
+      registerModelDiscoveryFetcher("antigravity", antigravityFetcher);
+    }
+    invalidateModelDiscovery("antigravity");
+    setDiagOutput(null);
+    initLogger(false, "info", true);
+  });
+
+  test("pins a matched empty rule", async () => {
+    const fixture = makeTempCatalog({ modelId: "catalog-marker" });
+    try {
+      expect(await route("blocked-by-rule", { "blocked-by-rule": [] }, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: 'A routing rule matched "blocked-by-rule" and named no provider.',
+        hint:
+          'No credentials found for "blocked-by-rule". Options:\n' +
+          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
+          "  Use:  claudish --model or@blocked-by-rule  (route via OpenRouter)",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins a rule whose only entry is excluded by subscription membership", async () => {
+    const fixture = makeTempCatalog({ modelId: "membership-excluded" }, ["kimi-coding"]);
+    try {
+      expect(
+        await route(
+          "membership-excluded",
+          { "membership-excluded": ["kimi-coding"] },
+          "",
+          fixture.path
+        )
+      ).toEqual({
+        kind: "no-route",
+        reason: 'A routing rule matched "membership-excluded" and named no provider.',
+        hint:
+          'No credentials found for "membership-excluded". Options:\n' +
+          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
+          "  Use:  claudish --model or@membership-excluded  (route via OpenRouter)",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins an unreadable catalog", async () => {
+    const fixture = makeTempCatalog({ modelId: "catalog-marker" });
+    const missingPath = join(fixture.path, "missing", "all-models.json");
+    try {
+      expect(await route("catalog-unreadable", {}, "", missingPath)).toEqual({
+        kind: "no-route",
+        reason: 'No model catalog available, so "catalog-unreadable" cannot be routed by name.',
+        hint:
+          "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
+          "explicitly (e.g. `openrouter@catalog-unreadable`).",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test.each([
+    ["claude-opus-not-published", "Claude name"],
+    ["o4-mini", "non-Claude name"],
+  ])("pins a readable catalog with no entry for a %s", async (model) => {
+    const fixture = makeTempCatalog({ modelId: "catalog-marker" });
+    try {
+      expect(await route(model, {}, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: `No provider in the catalog serves "${model}".`,
+        hint:
+          `No credentials found for "${model}". Options:\n` +
+          "  Set:  export ANTHROPIC_API_KEY=your-key  (for native-anthropic)\n" +
+          `  Use:  claudish --model or@${model}  (route via OpenRouter)`,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins the tried providers when every candidate lacks credentials", async () => {
+    const fixture = makeTempCatalog({ modelId: "no-credential-model" });
+    try {
+      expect(
+        await route(
+          "no-credential-model",
+          { "no-credential-model": ["openai", "openrouter"] },
+          "",
+          fixture.path
+        )
+      ).toEqual({
+        kind: "no-route",
+        reason:
+          'No credentialed providers in chain for "no-credential-model" (tried: openai, openrouter).',
+        hint:
+          'No credentials found for "no-credential-model". Options:\n' +
+          "  Set:  export OPENAI_API_KEY=your-key  (for openai)\n" +
+          "  Set:  export OPENROUTER_API_KEY=your-key  (for openrouter)",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins the checked providers when every credentialed candidate is not served", async () => {
+    const model = "gemini-characterization-target";
+    const fixture = makeTempCatalog({ modelId: model });
+    readiness.set("antigravity", "present");
+    try {
+      expect(await route(model, { [model]: [`antigravity@${model}`] }, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: `No provider serves "${model}" (checked: antigravity).`,
+        hint:
+          `No credentials found for "${model}". Options:\n` +
+          "  Run:  claudish login antigravity  (authenticate via OAuth)\n" +
+          `  Use:  claudish --model or@${model}  (route via OpenRouter)`,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins an explicit spec with no credential", async () => {
+    const fixture = makeTempCatalog({ modelId: "gpt-5" });
+    try {
+      expect(await route("openai@gpt-5", {}, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: 'No credentials configured for "openai".',
+        hint:
+          'No credentials found for "gpt-5". Options:\n' +
+          "  Set:  export OPENAI_API_KEY=your-key  (for openai)\n" +
+          "  Use:  claudish --model or@gpt-5  (route via OpenRouter)",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("pins an explicit spec that its provider does not serve", async () => {
+    const model = "gemini-explicit-characterization";
+    const fixture = makeTempCatalog({ modelId: model });
+    readiness.set("antigravity", "present");
+    try {
+      expect(await route(`antigravity@${model}`, {}, "", fixture.path)).toEqual({
+        kind: "no-route",
+        reason: `Antigravity does not serve "${model}".`,
+        hint:
+          `Check the model id, or use a bare \`${model}\` to let claudish pick a provider ` +
+          "that carries it.",
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
+describe("route() metered-billing notice characterization", () => {
+  const realIsAvailable = credentials.isAvailable;
+  const realDescribeReadiness = credentials.describeReadiness;
+  const antigravityFetcher = getModelDiscoveryFetcher("antigravity");
+
+  let readiness = new Map<string, "present" | "absent" | "failed">();
+  let previousKeychainGuard: string | undefined;
+
+  beforeEach(() => {
+    previousKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+    ensureEndpointsRegistered({
+      config: { version: "1.0.0", defaultProfile: "default", profiles: {} },
+    });
+    readiness = new Map();
+    credentials.isAvailable = async (provider: string) => readiness.get(provider) === "present";
+    credentials.describeReadiness = async (provider: string) => ({
+      readiness: readiness.get(provider) ?? "absent",
+    });
+    registerModelDiscoveryFetcher("antigravity", async () => ({
+      kind: "models",
+      models: [{ id: "some-other-model" }],
+    }));
+    invalidateModelDiscovery("antigravity");
+  });
+
+  afterEach(() => {
+    if (previousKeychainGuard === undefined) {
+      delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    } else {
+      process.env.CLAUDISH_DISABLE_KEYCHAIN = previousKeychainGuard;
+    }
+    credentials.isAvailable = realIsAvailable;
+    credentials.describeReadiness = realDescribeReadiness;
+    if (antigravityFetcher) {
+      registerModelDiscoveryFetcher("antigravity", antigravityFetcher);
+    }
+    invalidateModelDiscovery("antigravity");
+    setDiagOutput(null);
+    initLogger(false, "info", true);
+  });
+
+  async function captureDiag<T>(run: () => Promise<T>): Promise<{ value: T; messages: string[] }> {
+    const messages: string[] = [];
+    setDiagOutput({
+      write(message: string) {
+        messages.push(message);
+      },
+      cleanup() {},
+    });
+    try {
+      return { value: await run(), messages };
+    } finally {
+      setDiagOutput(null);
+    }
+  }
+
+  test("prints the metered notice and debug skip when a subscription does not serve the model", async () => {
+    const model = "gemini-notice-target";
+    const fixture = makeTempCatalog({ modelId: model });
+    readiness.set("antigravity", "present");
+    readiness.set("openai", "present");
+    initLogger(true, "debug", true);
+    const logPath = getLogFilePath();
+    if (!logPath) throw new Error("debug logger did not expose its path");
+    try {
+      const captured = await captureDiag(() =>
+        route(model, { [model]: [`antigravity@${model}`, `openai@${model}`] }, "", fixture.path)
+      );
+      expect(captured.value).toEqual({
+        kind: "ok",
+        primary: { provider: "openai", modelSpec: `oai@${model}`, displayName: "OpenAI" },
+        fallbacks: [],
+      });
+      expect(captured.messages).toEqual([
+        `antigravity does not serve ${model} — using OpenAI, which bills per token.`,
+      ]);
+
+      await Bun.sleep(150);
+      expect(readFileSync(logPath, "utf8")).toContain(
+        `[routing] ${model}: skipped antigravity — does not serve this model`
+      );
+    } finally {
+      initLogger(false, "info", true);
+      rmSync(logPath, { force: true });
+      fixture.cleanup();
+    }
+  });
+
+  test("prints the metered notice when a subscription credential is unreadable", async () => {
+    const model = "credential-notice-target";
+    const fixture = makeTempCatalog({ modelId: model });
+    readiness.set("antigravity", "failed");
+    readiness.set("openai", "present");
+    try {
+      const captured = await captureDiag(() =>
+        route(model, { [model]: [`antigravity@${model}`, `openai@${model}`] }, "", fixture.path)
+      );
+      expect(captured.value).toEqual({
+        kind: "ok",
+        primary: { provider: "openai", modelSpec: `oai@${model}`, displayName: "OpenAI" },
+        fallbacks: [],
+      });
+      expect(captured.messages).toEqual([
+        'antigravity: the credential could not be READ (not "no key") — ' +
+          "using OpenAI, which bills per token.",
+      ]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test("prints no notice when the first kept hop is a subscription", async () => {
+    const model = "subscription-kept-target";
+    const fixture = makeTempCatalog({ modelId: model });
+    readiness.set("antigravity", "present");
+    readiness.set("minimax-coding", "present");
+    try {
+      const captured = await captureDiag(() =>
+        route(
+          model,
+          { [model]: [`antigravity@${model}`, `minimax-coding@${model}`] },
+          "",
+          fixture.path
+        )
+      );
+      expect(captured.value).toEqual({
+        kind: "ok",
+        primary: {
+          provider: "minimax-coding",
+          modelSpec: `mmc@${model}`,
+          displayName: "MiniMax Coding",
+        },
+        fallbacks: [],
+      });
+      expect(captured.messages).toEqual([]);
+    } finally {
+      fixture.cleanup();
+    }
   });
 });
 
