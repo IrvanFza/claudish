@@ -59,8 +59,8 @@ function classifyStartupKind(): string {
 }
 process.on("exit", () => {
   const argv = process.argv.slice(2);
-  const first = argv.find((a) => !a.startsWith("-"));
-  const longRunningServer = argv.includes("--mcp") || first === "serve";
+  const longRunningServer =
+    argv.includes("--mcp") || argv.find((a) => !a.startsWith("-")) === "serve";
   if (longRunningServer) return;
   finalizeStartupTrace(classifyStartupKind(), { quiet: true });
 });
