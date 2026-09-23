@@ -141,8 +141,15 @@ export function usePickerModels(
 
   // The ready set is re-derived per render by `usePickerProviders`, so it cannot
   // be a memo dependency directly — a new Set every frame would rebuild the whole
-  // list every frame. Its SIGNATURE can.
+  // list every frame. Its SIGNATURE can: a string compares by value, so the set
+  // rebuilt from it keeps its identity until the membership actually changes.
+  // (Depending on `signature` AND `ready` together, as this once did, rebuilt the
+  // list every frame anyway — `ready` alone defeated the signature.)
   const signature = useMemo(() => [...ready].sort().join(","), [ready]);
+  const stableReady = useMemo(
+    () => new Set(signature === "" ? [] : signature.split(",")),
+    [signature]
+  );
 
   return useMemo(() => {
     if (phase !== "ready") return { rows: [], counts: new Map(), phase };
@@ -174,14 +181,13 @@ export function usePickerModels(
       // dialog shows it beside `needs OPENAI_API_KEY`, and "0 models" there would
       // read as "this provider has nothing" rather than "you have no key".
       counts.set(choice.value, merged.length);
-      if (ready.has(choice.value)) rows.push(...merged);
+      if (stableReady.has(choice.value)) rows.push(...merged);
     }
     // Newest first, across providers. The same comparator the classic picker
     // uses, so two lists of the same models cannot disagree about their order.
     rows.sort((a, b) => compareByReleaseDateDesc(a.model, b.model));
     return { rows, counts, phase };
-    // biome-ignore lint/correctness/useExhaustiveDependencies: `signature` is the stable projection of `ready`; depending on the Set itself rebuilds every frame
-  }, [source, providerList, phase, signature, ready, liveRows]);
+  }, [source, providerList, phase, stableReady, liveRows]);
 }
 
 /** No dynamic models catalogs yet — a shared empty map, so the memo's identity is stable. */
