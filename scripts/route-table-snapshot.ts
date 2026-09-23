@@ -20,6 +20,14 @@
  * the design names that removal: a provider that used to serve a model and no longer
  * appears is a user whose key stopped working, with no error to read.
  *
+ * `diff --strict` is the gate for a change meant to move NOTHING, such as a refactor.
+ * The plain diff fails only on removals: a gained hop, a new order and a different
+ * catalog generation are printed for review, and a no-route row whose reason changed is
+ * not compared at all. Under `--strict` any difference fails the run, including those,
+ * a kind change, a changed header field and a column a later capture adds. A generation
+ * mismatch is an error there, not a warning, because a diff across two generations
+ * cannot tell the code change from the catalog change.
+ *
  * Environment-dependent by design. It calls the real `route()`, so it sees this
  * machine's credentials and `defaultProvider`. Both snapshots must come from the
  * same machine with the same configuration, which is why each file records them.
@@ -59,7 +67,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
   if (!cache || cache.entries.length === 0) {
     console.error(
       `No cloud models catalog cache at ${join(homedir(), ".claudish", "cloud-models-catalog-v3.json")}.\n` +
-        "Refresh it first — an empty catalog captures an empty table, which would make any diff look clean.",
+        "Refresh it first — an empty catalog captures an empty table, which would make any diff look clean."
     );
     process.exit(1);
   }
@@ -92,7 +100,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
             reason: `threw: ${error instanceof Error ? error.message : String(error)}`,
           };
         }
-      }),
+      })
     );
     rows.push(...settled);
     done += batch.length;
@@ -112,7 +120,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
 
   const routed = rows.filter((row) => row.kind === "ok").length;
   console.log(
-    `Wrote ${outPath}: ${rows.length} models, ${routed} routed, ${rows.length - routed} with no route, generation ${snapshot.catalogGenerationId}.`,
+    `Wrote ${outPath}: ${rows.length} models, ${routed} routed, ${rows.length - routed} with no route, generation ${snapshot.catalogGenerationId}.`
   );
 }
 
@@ -120,101 +128,249 @@ function loadSnapshot(path: string): Snapshot {
   return JSON.parse(readFileSync(path, "utf-8")) as Snapshot;
 }
 
-function diff(beforePath: string, afterPath: string): void {
-  const before = loadSnapshot(beforePath);
-  const after = loadSnapshot(afterPath);
+/** Every difference between two tables, one list per class. */
+interface TableDiff {
+  /** A provider that used to serve this model no longer appears. */
+  lost: string[];
+  /** A new provider appears. */
+  gained: string[];
+  /** Same providers, different order. */
+  reordered: string[];
+  becameNoRoute: string[];
+  becameRouted: string[];
+  /** The model is absent from the after snapshot. */
+  disappeared: string[];
+  appeared: string[];
+  /** Still no-route, but it tells the user something different. Read by `--strict` only. */
+  noRouteTextChanged: string[];
+  /** Any other column, including one a later capture adds. Read by `--strict` only. */
+  otherFieldChanged: string[];
+}
 
-  if (before.catalogGenerationId !== after.catalogGenerationId) {
-    console.warn(
-      `WARNING: different catalog generations (${before.catalogGenerationId} vs ${after.catalogGenerationId}).\n` +
-        "Differences below mix the code change with a catalog change and cannot be attributed to either.\n",
+/** Header keys that describe the capture run, not the table. `rows` is compared row by row. */
+const HEADER_KEYS_NOT_COMPARED = new Set(["capturedAt", "rows"]);
+
+/**
+ * What a no-route row tells the user. `capture` records only `reason` today; `hint` is
+ * compared whenever a snapshot carries it.
+ */
+const NO_ROUTE_TEXT_KEYS = new Set(["reason", "hint"]);
+
+/** Two JSON values compared by content. `undefined` stands for a key the file does not carry. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function showValue(value: unknown): string {
+  return value === undefined ? "(absent)" : JSON.stringify(value);
+}
+
+/** Each key either object carries, `include` permitting, whose value differs: `key: before => after`. */
+function changedFields(before: object, after: object, include: (key: string) => boolean): string[] {
+  const beforeFields = Object.fromEntries(Object.entries(before));
+  const afterFields = Object.fromEntries(Object.entries(after));
+  const keys = new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)]);
+  return [...keys]
+    .filter((key) => include(key) && !sameValue(beforeFields[key], afterFields[key]))
+    .map((key) => `${key}: ${showValue(beforeFields[key])} => ${showValue(afterFields[key])}`);
+}
+
+function compareChains(
+  modelId: string,
+  beforeChain: string[],
+  afterChain: string[],
+  result: TableDiff
+): void {
+  const beforeSet = new Set(beforeChain);
+  const afterSet = new Set(afterChain);
+  const missing = beforeChain.filter((hop) => !afterSet.has(hop));
+  const extra = afterChain.filter((hop) => !beforeSet.has(hop));
+  if (missing.length > 0) {
+    result.lost.push(`${modelId}: lost ${missing.join(", ")}  (was ${beforeChain.join(" -> ")})`);
+  }
+  if (extra.length > 0) {
+    result.gained.push(`${modelId}: gained ${extra.join(", ")}`);
+  }
+  if (
+    missing.length === 0 &&
+    extra.length === 0 &&
+    beforeChain.join("|") !== afterChain.join("|")
+  ) {
+    result.reordered.push(
+      `${modelId}: ${beforeChain.join(" -> ")}  =>  ${afterChain.join(" -> ")}`
     );
   }
-  if (before.defaultProvider !== after.defaultProvider) {
-    console.warn(
-      `WARNING: defaultProvider differs (${before.defaultProvider ?? "(none)"} vs ${after.defaultProvider ?? "(none)"}). The fallback hop will differ for every model.\n`,
-    );
-  }
+}
 
+/** Records the kind, chain and no-route text classes; returns the row keys they account for. */
+function classifyRow(
+  modelId: string,
+  beforeRow: RouteRow,
+  afterRow: RouteRow,
+  result: TableDiff
+): Set<string> {
+  // A kind flip changes the chain, reason and hint by definition; its class line says so.
+  const flipKeys = ["modelId", "kind", "chain", ...NO_ROUTE_TEXT_KEYS];
+  if (beforeRow.kind === "ok" && afterRow.kind === "no-route") {
+    result.becameNoRoute.push(
+      `${modelId}: had ${beforeRow.chain.join(" -> ")}; now ${afterRow.reason ?? "no reason"}`
+    );
+    return new Set(flipKeys);
+  }
+  if (beforeRow.kind === "no-route" && afterRow.kind === "ok") {
+    result.becameRouted.push(`${modelId}: now ${afterRow.chain.join(" -> ")}`);
+    return new Set(flipKeys);
+  }
+  compareChains(modelId, beforeRow.chain, afterRow.chain, result);
+  if (beforeRow.kind !== "no-route" || afterRow.kind !== "no-route") {
+    // `kind` stays unclassified, so a kind other than `ok`/`no-route` still shows as a change.
+    return new Set(["modelId", "chain"]);
+  }
+  const text = changedFields(beforeRow, afterRow, (key) => NO_ROUTE_TEXT_KEYS.has(key));
+  result.noRouteTextChanged.push(...text.map((field) => `${modelId}: ${field}`));
+  return new Set(["modelId", "chain", ...NO_ROUTE_TEXT_KEYS]);
+}
+
+function compareRow(
+  modelId: string,
+  beforeRow: RouteRow,
+  afterRow: RouteRow,
+  result: TableDiff
+): void {
+  const classified = classifyRow(modelId, beforeRow, afterRow, result);
+  // Every key no class accounts for, so a column a later capture adds is compared too.
+  const other = changedFields(beforeRow, afterRow, (key) => !classified.has(key));
+  result.otherFieldChanged.push(...other.map((field) => `${modelId}: ${field}`));
+}
+
+function compareTables(before: Snapshot, after: Snapshot): TableDiff {
   const beforeRows = new Map(before.rows.map((row) => [row.modelId, row]));
   const afterRows = new Map(after.rows.map((row) => [row.modelId, row]));
-
-  const lost: string[] = []; // a provider that used to serve this model no longer appears
-  const gained: string[] = []; // a new provider appears
-  const reordered: string[] = []; // same providers, different order
-  const becameNoRoute: string[] = [];
-  const becameRouted: string[] = [];
-  const disappeared: string[] = []; // model absent from the after snapshot
-  const appeared: string[] = [];
+  const result: TableDiff = {
+    lost: [],
+    gained: [],
+    reordered: [],
+    becameNoRoute: [],
+    becameRouted: [],
+    disappeared: [],
+    appeared: [],
+    noRouteTextChanged: [],
+    otherFieldChanged: [],
+  };
 
   for (const [modelId, beforeRow] of beforeRows) {
     const afterRow = afterRows.get(modelId);
-    if (!afterRow) {
-      disappeared.push(modelId);
-      continue;
-    }
-    if (beforeRow.kind === "ok" && afterRow.kind === "no-route") {
-      becameNoRoute.push(`${modelId}: had ${beforeRow.chain.join(" -> ")}; now ${afterRow.reason ?? "no reason"}`);
-      continue;
-    }
-    if (beforeRow.kind === "no-route" && afterRow.kind === "ok") {
-      becameRouted.push(`${modelId}: now ${afterRow.chain.join(" -> ")}`);
-      continue;
-    }
-    const beforeSet = new Set(beforeRow.chain);
-    const afterSet = new Set(afterRow.chain);
-    const missing = beforeRow.chain.filter((hop) => !afterSet.has(hop));
-    const extra = afterRow.chain.filter((hop) => !beforeSet.has(hop));
-    if (missing.length > 0) {
-      lost.push(`${modelId}: lost ${missing.join(", ")}  (was ${beforeRow.chain.join(" -> ")})`);
-    }
-    if (extra.length > 0) {
-      gained.push(`${modelId}: gained ${extra.join(", ")}`);
-    }
-    if (missing.length === 0 && extra.length === 0 && beforeRow.chain.join("|") !== afterRow.chain.join("|")) {
-      reordered.push(`${modelId}: ${beforeRow.chain.join(" -> ")}  =>  ${afterRow.chain.join(" -> ")}`);
-    }
+    if (afterRow) compareRow(modelId, beforeRow, afterRow, result);
+    else result.disappeared.push(modelId);
   }
   for (const modelId of afterRows.keys()) {
-    if (!beforeRows.has(modelId)) appeared.push(modelId);
+    if (!beforeRows.has(modelId)) result.appeared.push(modelId);
   }
-
-  const section = (title: string, lines: string[], verdict: "must-be-empty" | "review"): void => {
-    const mark = lines.length === 0 ? "none" : `${lines.length}`;
-    console.log(`\n## ${title} — ${mark}${verdict === "must-be-empty" && lines.length > 0 ? "  <-- MUST be named by the design" : ""}`);
-    for (const line of lines.slice(0, 40)) console.log(`  ${line}`);
-    if (lines.length > 40) console.log(`  … ${lines.length - 40} more`);
-  };
-
-  console.log(
-    `Route table: ${before.rows.length} models before, ${after.rows.length} after, generation ${after.catalogGenerationId}.`,
-  );
-  section("Routes LOST", lost, "must-be-empty");
-  section("Became no-route", becameNoRoute, "must-be-empty");
-  section("Models disappeared from the table", disappeared, "must-be-empty");
-  section("Routes GAINED", gained, "review");
-  section("Became routed", becameRouted, "review");
-  section("Order changed, same providers", reordered, "review");
-  section("Models appeared in the table", appeared, "review");
-
-  const blocking = lost.length + becameNoRoute.length + disappeared.length;
-  console.log(
-    `\nVerdict: ${blocking === 0 ? "no route was removed" : `${blocking} removals to justify or fix`}.`,
-  );
-  process.exit(blocking === 0 ? 0 : 1);
+  return result;
 }
 
-const [command, a, b] = process.argv.slice(2);
+/** Model ids one snapshot lists twice. The row map keeps only the last, so the rest would go unread. */
+function duplicateRows(label: string, snapshot: Snapshot): string[] {
+  const counts = new Map<string, number>();
+  for (const row of snapshot.rows) counts.set(row.modelId, (counts.get(row.modelId) ?? 0) + 1);
+  return [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([modelId, count]) => `${label}: ${modelId} listed ${count} times`);
+}
+
+/** Plain: a warning to read past. Strict: an error, and the header section counts it. */
+function reportSetupMismatch(before: Snapshot, after: Snapshot, strict: boolean): void {
+  const report = (message: string): void => {
+    if (strict) console.error(`ERROR: ${message}`);
+    else console.warn(`WARNING: ${message}`);
+  };
+  if (before.catalogGenerationId !== after.catalogGenerationId) {
+    report(
+      `different catalog generations (${before.catalogGenerationId} vs ${after.catalogGenerationId}).\n` +
+        "Differences below mix the code change with a catalog change and cannot be attributed to either.\n" +
+        (strict ? "--strict fails on this alone: capture both snapshots on one generation.\n" : "")
+    );
+  }
+  if (before.defaultProvider !== after.defaultProvider) {
+    report(
+      `defaultProvider differs (${before.defaultProvider ?? "(none)"} vs ${after.defaultProvider ?? "(none)"}). The fallback hop will differ for every model.\n`
+    );
+  }
+}
+
+function section(title: string, lines: string[], verdict: "must-be-empty" | "review"): void {
+  const mark = lines.length === 0 ? "none" : `${lines.length}`;
+  console.log(
+    `\n## ${title} — ${mark}${verdict === "must-be-empty" && lines.length > 0 ? "  <-- MUST be named by the design" : ""}`
+  );
+  for (const line of lines.slice(0, 40)) console.log(`  ${line}`);
+  if (lines.length > 40) console.log(`  … ${lines.length - 40} more`);
+}
+
+function diff(beforePath: string, afterPath: string, strict: boolean): void {
+  const before = loadSnapshot(beforePath);
+  const after = loadSnapshot(afterPath);
+  reportSetupMismatch(before, after, strict);
+
+  const table = compareTables(before, after);
+  // Under --strict nothing is for review: the change was meant to move nothing.
+  const review = strict ? "must-be-empty" : "review";
+  const header = strict
+    ? changedFields(before, after, (key) => !HEADER_KEYS_NOT_COMPARED.has(key))
+    : [];
+  const duplicates = strict
+    ? [...duplicateRows("before", before), ...duplicateRows("after", after)]
+    : [];
+
+  console.log(
+    `Route table: ${before.rows.length} models before, ${after.rows.length} after, generation ${after.catalogGenerationId}.`
+  );
+  if (strict) {
+    section("Snapshot header changed", header, "must-be-empty");
+    section("Model listed twice in one snapshot", duplicates, "must-be-empty");
+  }
+  section("Routes LOST", table.lost, "must-be-empty");
+  section("Became no-route", table.becameNoRoute, "must-be-empty");
+  section("Models disappeared from the table", table.disappeared, "must-be-empty");
+  section("Routes GAINED", table.gained, review);
+  section("Became routed", table.becameRouted, review);
+  section("Order changed, same providers", table.reordered, review);
+  section("Models appeared in the table", table.appeared, review);
+
+  if (!strict) {
+    const blocking = table.lost.length + table.becameNoRoute.length + table.disappeared.length;
+    console.log(
+      `\nVerdict: ${blocking === 0 ? "no route was removed" : `${blocking} removals to justify or fix`}.`
+    );
+    process.exit(blocking === 0 ? 0 : 1);
+  }
+
+  section("No-route reason or hint changed", table.noRouteTextChanged, "must-be-empty");
+  section("Other row fields changed", table.otherFieldChanged, "must-be-empty");
+  const differences =
+    header.length +
+    duplicates.length +
+    Object.values(table).reduce((sum, lines) => sum + lines.length, 0);
+  console.log(
+    `\nVerdict (strict): ${differences === 0 ? "no difference" : `${differences} difference${differences === 1 ? "" : "s"}, each to be named by the design or fixed`}.`
+  );
+  process.exit(differences === 0 ? 0 : 1);
+}
+
+const args = process.argv.slice(2);
+const flags = args.filter((arg) => arg.startsWith("--"));
+const [command, a, b] = args.filter((arg) => !arg.startsWith("--"));
 if (command === "capture" && a) {
-  const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
+  const limitArg = flags.find((arg) => arg.startsWith("--limit="));
   await capture(a, limitArg ? Number(limitArg.split("=")[1]) : undefined);
-} else if (command === "diff" && a && b) {
-  diff(a, b);
+} else if (command === "diff" && a && b && flags.every((flag) => flag === "--strict")) {
+  // An unknown flag is refused, not ignored: a mistyped --strict must not run the plain gate and pass.
+  diff(a, b, flags.includes("--strict"));
 } else {
   console.error(
     "usage:\n" +
       "  bun run scripts/route-table-snapshot.ts capture <out.json> [--limit=N]\n" +
-      "  bun run scripts/route-table-snapshot.ts diff <before.json> <after.json>",
+      "  bun run scripts/route-table-snapshot.ts diff [--strict] <before.json> <after.json>"
   );
   process.exit(2);
 }
