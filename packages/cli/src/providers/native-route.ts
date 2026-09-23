@@ -1,13 +1,14 @@
 /**
- * The native-passthrough answer that `route()` cannot give.
+ * The native-passthrough answer that `route()` cannot give, and the proxy's
+ * pre-route decision that produces it.
  *
  * A bare Claude name (`claude-opus-5`, `opus`, `internal`) is served by the
  * proxy's native branch on the harness's own Claude Code auth. `native-anthropic`
  * has no credential store — on purpose, it is not a remote provider — so
  * `route()`'s credential filter drops it and the chain degrades to OpenRouter.
- * The proxy avoids that by checking `parsed.provider !== "native-anthropic"`
- * BEFORE it ever routes (proxy-server.ts). Every other caller that consults
- * `route()` for a bare name must make the same check first, or it reports a
+ * The proxy avoids that by asking {@link proxyRouteDecision} BEFORE it ever
+ * routes (proxy-server.ts step 2c). Every other caller that consults `route()`
+ * for a bare name must ask the same question first, or it reports a
  * subscription model as "no route" / "OpenRouter, metered" — which is what the
  * MCP `preflight` tool and the TUI route probe did.
  *
@@ -36,23 +37,93 @@ export interface NativeRoute {
 }
 
 /**
- * Non-null only for a BARE name (no `@`, no `/`) that `parseModelSpec` attributes
- * to native-anthropic — the same condition the proxy's native branch applies.
+ * What the proxy does with a target before `route()` could see it.
+ *
+ * Only `bare` reaches `route()`. The other three are served without a routing
+ * chain, by the proxy steps that follow its gate.
  */
-export function nativeRouteFor(model: string): NativeRoute | null {
-  // Mirror proxy-server.ts's native branch EXACTLY:
-  //   const isNative = !target.includes("/") && !hasExplicitProvider;
-  // A slash-qualified id (`anthropic/claude-opus-5`) matches native-anthropic's
-  // `/^anthropic\//i` pattern in parseModelSpec, but the proxy does not serve it
-  // natively — it goes to OpenRouter, metered. Reporting it native here would be
-  // the same lie this helper exists to remove, in the other direction.
-  if (model.includes("/")) return null;
-  const parsed = parseModelSpec(model);
-  if (parsed.isExplicitProvider || parsed.provider !== "native-anthropic") return null;
+export type ProxyRouteDecision =
+  /** Served on Claude Code's own auth by the native passthrough. */
+  | { type: "native"; route: NativeRoute }
+  /**
+   * No routing chain. `spec` is the target verbatim, the string the proxy carries
+   * past its gate. `via: "vendor-qualified-id"` is `anthropic/<id>`: it matches
+   * native-anthropic's `/^anthropic\//i` pattern, yet the proxy never serves it
+   * natively (its native branch refuses any `/`), so it reaches the OpenRouter
+   * handler with the id unchanged.
+   */
+  | {
+      type: "explicit";
+      provider: string;
+      model: string;
+      spec: string;
+      via: "model-spec" | "vendor-qualified-id";
+    }
+  /** `poe:<id>`, served by the Poe handler. `model` is the id without the prefix. */
+  | { type: "poe"; model: string }
+  /** `route()` decides. `model` is the parsed name: a known `vendor/` is stripped. */
+  | { type: "bare"; model: string };
+
+/** The prefix the proxy's `isPoeModel` tests, case-sensitively, as it always has. */
+const POE_PREFIX = "poe:";
+
+/**
+ * The proxy's gate (proxy-server.ts step 2c) as one function. The proxy, the
+ * native test below, prehydrate's pin and `--probe` all read this, so none of
+ * them can disagree with the proxy about which names reach `route()`.
+ *
+ * The checks run in the order the proxy applies them: an explicit spec (which
+ * covers `provider@model`, a URL and a legacy prefix), then `poe:`, then a name
+ * the parser attributes to native-anthropic, then everything else.
+ */
+export function proxyRouteDecision(target: string): ProxyRouteDecision {
+  const parsed = parseModelSpec(target);
+  if (parsed.isExplicitProvider) {
+    return {
+      type: "explicit",
+      provider: parsed.provider,
+      model: parsed.model,
+      spec: target,
+      via: "model-spec",
+    };
+  }
+  if (target.startsWith(POE_PREFIX)) {
+    return { type: "poe", model: target.slice(POE_PREFIX.length) };
+  }
+  if (parsed.provider === "native-anthropic") {
+    // A slash-qualified id (`anthropic/claude-opus-5`) matches native-anthropic's
+    // `/^anthropic\//i` pattern in parseModelSpec, but the proxy does not serve it
+    // natively — its native branch is `!target.includes("/") && !hasExplicitProvider`,
+    // so it goes to OpenRouter, metered. Calling it native would be the same lie
+    // the native test exists to remove, in the other direction.
+    if (target.includes("/")) {
+      return {
+        type: "explicit",
+        provider: "openrouter",
+        model: target,
+        spec: target,
+        via: "vendor-qualified-id",
+      };
+    }
+    return { type: "native", route: nativeRouteOf(target) };
+  }
+  return { type: "bare", model: parsed.model };
+}
+
+function nativeRouteOf(model: string): NativeRoute {
   return {
     provider: "native-anthropic",
     modelSpec: normalizeNativeModelSpec(model),
     displayName: getProviderByName("native-anthropic")?.displayName ?? "Anthropic (Native)",
     isTierAlias: claudeCodeTierAlias(model) !== null,
   };
+}
+
+/**
+ * Non-null only for a BARE name (no `@`, no `/`) that `parseModelSpec` attributes
+ * to native-anthropic — the proxy's `native` decision.
+ */
+export function nativeRouteFor(model: string): NativeRoute | null {
+  const decision = proxyRouteDecision(model);
+  return decision.type === "native" ? decision.route : null;
 }

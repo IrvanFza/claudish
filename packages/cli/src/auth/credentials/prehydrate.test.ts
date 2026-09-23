@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { parseModelChain, parseModelSpec } from "../../providers/model-parser.js";
-import { nativeRouteFor } from "../../providers/native-route.js";
+import { nativeRouteFor, proxyRouteDecision } from "../../providers/native-route.js";
 import type { Route } from "../../providers/routing-rules.js";
 import { __resetSniffForTests } from "./op-source.js";
 import {
@@ -492,5 +492,63 @@ describe("pre-route target characterization", () => {
     } else {
       expect(router).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("proxyRouteDecision consistency", () => {
+  const rows: Array<{
+    target: string;
+    type: ReturnType<typeof proxyRouteDecision>["type"];
+  }> = [
+    { target: "opus", type: "native" },
+    { target: "opus[1m]", type: "native" },
+    { target: "opusplan", type: "native" },
+    { target: "best", type: "native" },
+    { target: "internal", type: "native" },
+    { target: "claude-opus-4-6[1m]", type: "native" },
+    { target: "claude-haiku-4-5-20251001", type: "native" },
+    { target: "anthropic/claude-opus-5", type: "explicit" },
+    { target: "poe:x", type: "poe" },
+    { target: "kc@kimi-k3", type: "explicit" },
+    { target: "o4-mini", type: "native" },
+    { target: "no-such-model-xyz", type: "native" },
+    { target: "kimi-k3", type: "bare" },
+    { target: "openai/gpt-5", type: "bare" },
+    { target: "foo/bar", type: "bare" },
+    { target: "", type: "native" },
+    { target: "@model", type: "native" },
+  ];
+
+  it.each(rows)("classifies $target as $type", ({ target, type }) => {
+    expect(proxyRouteDecision(target).type).toBe(type);
+  });
+
+  it.each(rows)("keeps nativeRouteFor consistent for $target", ({ target }) => {
+    const decision = proxyRouteDecision(target);
+    expect(nativeRouteFor(target) !== null).toBe(decision.type === "native");
+  });
+
+  it.each(rows)("calls pinSpecFor's router exactly when $target is bare", async ({ target }) => {
+    const router = mock(async () => ({
+      kind: "no-route" as const,
+      reason: "decision consistency router",
+    }));
+    const decision = proxyRouteDecision(target);
+
+    await pinSpecFor(target, router);
+
+    expect(router).toHaveBeenCalledTimes(decision.type === "bare" ? 1 : 0);
+    if (decision.type === "bare") expect(router).toHaveBeenCalledWith(target);
+  });
+
+  it("keeps anthropic/<id> explicit when the parser attributes it to native-anthropic", () => {
+    expect(proxyRouteDecision("anthropic/claude-opus-5")).toEqual({
+      type: "explicit",
+      provider: "openrouter",
+      model: "anthropic/claude-opus-5",
+      spec: "anthropic/claude-opus-5",
+      via: "vendor-qualified-id",
+    });
+    expect(nativeRouteFor("anthropic/claude-opus-5")).toBeNull();
   });
 });

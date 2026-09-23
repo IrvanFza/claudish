@@ -58,6 +58,7 @@ import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
 import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
+import { proxyRouteDecision } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
 import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
@@ -1449,8 +1450,19 @@ async function probeModelRouting(
   /** Build chain + credential data for a single model (shared by both paths) */
   function buildModelChain(modelInput: string) {
     const parsed = parseModelSpec(modelInput);
+    // The proxy's own pre-route decision picks the branch below.
+    //
+    // A vendor-qualified `anthropic/<id>` takes the native branch, as it always
+    // has in `--probe`, although the proxy sends it to OpenRouter with the id
+    // unchanged (its `vendor-qualified-id` decision). That is a known divergence
+    // from the proxy, kept so that reading the decision changes no probe output.
+    const decision = proxyRouteDecision(modelInput);
+    const isDirectSpec = decision.type === "explicit" && decision.via === "model-spec";
+    const isNativeBranch =
+      decision.type === "native" ||
+      (decision.type === "explicit" && decision.via === "vendor-qualified-id");
     const chain = (() => {
-      if (parsed.isExplicitProvider) {
+      if (isDirectSpec) {
         return {
           routes: [] as FallbackRoute[],
           source: "direct" as const,
@@ -1465,9 +1477,7 @@ async function probeModelRouting(
       // the "*" catch-all → openrouter (which produced the wrong "no live
       // route"). We pin the default Opus model so the probe sends a real
       // request through the passthrough like any other link.
-      // NOTE: mirrors the upstream proxy precedence; a later routing worktree
-      // may fold this into a shared helper.
-      if (parsed.provider === "native-anthropic") {
+      if (isNativeBranch) {
         // Substitute a concrete id ONLY for a Claude Code TIER ALIAS.
         //
         // `parseModelSpec` sends every unrecognised bare name here, so this

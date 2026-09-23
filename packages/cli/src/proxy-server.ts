@@ -40,6 +40,7 @@ import {
   getCustomEndpointResult,
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { proxyRouteDecision } from "./providers/native-route.js";
 import { describeMissingCredential } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
@@ -787,13 +788,11 @@ export async function createProxyServer(
     // When no explicit provider@ prefix is given, consult the routing engine
     // (defaults + user overrides merged in loadRoutingRules), filter to
     // credentialed providers, and wrap them in a FallbackHandler.
+    // `proxyRouteDecision` IS this gate: only a `bare` target is routed. Every
+    // other decision falls through to steps 3-7 below.
     {
-      const parsedForFallback = parseModelSpec(target);
-      if (
-        !parsedForFallback.isExplicitProvider &&
-        parsedForFallback.provider !== "native-anthropic" &&
-        !isPoeModel(target)
-      ) {
+      const decision = proxyRouteDecision(target);
+      if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
         if (fallbackHandlerCache.has(cacheKey)) {
           return fallbackHandlerCache.get(cacheKey)!;
@@ -802,7 +801,7 @@ export async function createProxyServer(
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
 
-        const plan = await route(parsedForFallback.model, effectiveRoutingRules);
+        const plan = await route(decision.model, effectiveRoutingRules);
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
@@ -826,7 +825,7 @@ export async function createProxyServer(
 
             if (!options.quiet && candidates.length > 1) {
               logStderr(
-                `[Route] ${candidates.length} providers for ${parsedForFallback.model}: ${candidates.map((c) => c.name).join(" → ")}`
+                `[Route] ${candidates.length} providers for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`
               );
             }
             return resultHandler;

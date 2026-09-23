@@ -100,7 +100,8 @@ import { loadConfig } from "../../profile-config.js";
 import { PROVIDER_TO_PREFIX } from "../../providers/auto-route.js";
 import { ensureCatalogReady } from "../../providers/catalog-client.js";
 import { ensureEndpointsRegistered } from "../../providers/endpoint-registration.js";
-import { MODEL_CHAIN_SEPARATOR, parseModelSpec } from "../../providers/model-parser.js";
+import { MODEL_CHAIN_SEPARATOR } from "../../providers/model-parser.js";
+import { proxyRouteDecision } from "../../providers/native-route.js";
 import { getOpFailures } from "../../providers/onepassword.js";
 import { validateApiKeysForModels } from "../../providers/provider-resolver.js";
 import type { Route, RoutePlan } from "../../providers/routing-rules.js";
@@ -227,9 +228,10 @@ async function pinRoutes(
 /**
  * Would the CHILD route this name at all?
  *
- * This mirrors the child's own gate (`proxy-server.ts` step 2c) exactly. Pinning
- * a name the child would not have routed does not just waste a `route()` call —
- * it CHANGES the child's behaviour, which the pin must never do:
+ * This asks the child's own gate (`proxy-server.ts` step 2c), `proxyRouteDecision`,
+ * so the two cannot drift: only a `bare` decision is routed. Pinning a name the
+ * child would not have routed does not just waste a `route()` call — it CHANGES
+ * the child's behaviour, which the pin must never do:
  *
  *   - **explicit spec** (`gc@glm-5`, `or@x/y`, `ollama@llama3.2:3`, a URL) —
  *     nothing to decide, the child already skips routing. Unconditional and
@@ -244,13 +246,10 @@ async function pinRoutes(
  *     `--model or@opus` and send a native model through OpenRouter. `team`
  *     screens these out upstream in `setupSession`, but `create_session` does
  *     not.
- *   - **`poe:` models** — same gate, same reason (`isPoeModel` in
- *     proxy-server.ts is a local closure; the test is just the prefix).
+ *   - **`poe:` models** — same gate, same reason.
  */
 function isRoutablyPinnable(model: string): boolean {
-  if (model.startsWith("poe:")) return false;
-  const parsed = parseModelSpec(model);
-  return !parsed.isExplicitProvider && parsed.provider !== "native-anthropic";
+  return proxyRouteDecision(model).type === "bare";
 }
 
 /**
