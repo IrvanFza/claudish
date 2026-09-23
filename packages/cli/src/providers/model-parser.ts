@@ -3,45 +3,32 @@
  *
  * New syntax: provider@model[:concurrency]
  * Examples:
- *   openrouter@google/gemini-3-pro-preview  - Explicit OpenRouter
- *   google@gemini-3-pro-preview             - Direct Google API
- *   g@gemini-3-pro-preview                  - Direct Google API (shortcut)
- *   ollama@llama3.2:3                       - Ollama with concurrency 3
- *   ollama@llama3.2:0                       - Ollama with no limits
- *   openai/gpt-5.3                          - Legacy syntax (auto-detected)
+ *   openrouter@<vendor>/<model>  - Explicit OpenRouter
+ *   google@<model>               - Direct Google API
+ *   g@<model>                    - Direct Google API (shortcut)
+ *   ollama@<model>:3             - Ollama with concurrency 3
+ *   ollama@<model>:0             - Ollama with no limits
+ *   oc/<model>                   - Legacy prefix syntax (explicit, deprecated)
  *
- * Provider shortcuts (case-insensitive):
- *   g, gemini     -> google (direct Gemini API)
- *   oai           -> openai (direct OpenAI API)
- *   or            -> openrouter
- *   mm, mmax      -> minimax
- *   kimi, moon    -> kimi/moonshot
- *   glm, zhipu    -> glm/zhipu
- *   z-ai, zai     -> z-ai (z.ai)
- *   x-ai, grok    -> x-ai (xAI / Grok)
- *   oc            -> ollamacloud
- *   zen           -> opencode-zen
- *   v, vertex     -> vertex
- *   ag, antigravity -> antigravity (shared OAuth token)
- *   go            -> antigravity (DEPRECATED alias — prints a notice)
+ * Provider shortcuts (case-insensitive) are each definition's `shortcuts` in
+ * BUILTIN_PROVIDERS ({@link PROVIDER_SHORTCUTS}); `claudish --help` lists them.
  *
- * Local provider shortcuts:
- *   ollama        -> ollama (local)
- *   lms, lmstudio -> lmstudio (local)
- *   vllm          -> vllm (local)
- *   mlx           -> mlx (local)
- *
- * Native model detection (when no provider prefix):
- *   google/*, gemini-*     -> google (direct)
- *   openai/*, gpt-*, o1-*  -> openai (direct)
- *   minimax/*              -> minimax (direct)
- *   moonshot/*, kimi-*     -> kimi (direct)
- *   zhipu/*, glm-*         -> glm (direct)
- *   deepseek/*, deepseek-*  -> auto-routed (no direct API, falls to OpenRouter)
- *   x-ai/*, grok-*         -> x-ai (direct with XAI_API_KEY, else OpenRouter)
- *   qwen/*,  qwen*         -> auto-routed (no direct API, falls to OpenRouter)
- *   anthropic/*            -> native-anthropic
- *   (anything else with /) -> openrouter
+ * A name with no provider is not ROUTED here. The parser's answer only decides
+ * whether it reaches `route()`, which calculates the chain from the user's rules
+ * and the cloud models catalog; `proxyRouteDecision` (native-route.ts) is that
+ * gate. What each form parses to:
+ *   URL, `provider@model`, legacy prefix -> that provider, explicit: no chain
+ *   a `nativeModelPatterns` match        -> that provider, a known `vendor/`
+ *                                           stripped (`openai/<id>` → `<id>`);
+ *                                           not explicit, so still routed
+ *   `anthropic/<id>`                     -> native-anthropic; the proxy sends the
+ *                                           id to OpenRouter verbatim
+ *   `poe:<id>`                           -> poe; the proxy's Poe step serves it
+ *   an unknown `vendor/`                 -> `unknown`; routed
+ *   Claude Code's own names (`opus`, `claude-*`), `""`, `@model`
+ *                                        -> native-anthropic: Claude Code's own
+ *                                           auth, never routed
+ *   anything else (`o4-mini`)            -> {@link AUTO_ROUTE_PROVIDER}; routed
  */
 
 /**
