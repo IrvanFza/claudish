@@ -141,13 +141,18 @@ const OWNER_PROVIDER_SLUGS = new Set<string>([
  *
  * Used only when the slim cache is empty (first run, before the first fetch),
  * where an empty set would make `modelsByVendor()` return nothing for everyone.
+ *
+ * Each seed is a claudish provider name, the spelling `modelsByVendor()` is asked
+ * in and the one the derived set holds. `together`, not the catalog's `routeId`
+ * `together-ai`: no caller asks for `together-ai`, so that seed matched nothing
+ * and a cold `modelsByVendor("together")` fell through to the owner query.
  */
 const AGGREGATOR_SLUG_SEED = new Set<string>([
   "openrouter",
   "opencode-zen",
   "opencode-zen-go",
   "fireworks",
-  "together-ai",
+  "together",
 ]);
 
 /**
@@ -191,8 +196,9 @@ function aggregatorProviderSlugs(
 /**
  * Local-only / undocumented-catalog vendors. These have no Firebase catalog
  * by design; the picker shows a free-text input instead of a model list.
+ * claudish provider names only: LM Studio is `lmstudio`.
  */
-const NO_CATALOG_VENDOR_SLUGS = new Set<string>(["litellm", "ollama", "lmstudio", "lm-studio"]);
+const NO_CATALOG_VENDOR_SLUGS = new Set<string>(["litellm", "ollama", "lmstudio"]);
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
