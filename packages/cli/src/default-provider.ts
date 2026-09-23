@@ -145,11 +145,3 @@ export function planDefaultProviderFlag(argv: string[]): DefaultProviderFlagPlan
   }
   return value === undefined ? { kind: "none" } : { kind: "apply", value, argv: rest };
 }
-
-/**
- * Legacy stub — LiteLLM auto-promotion was removed in commit 5; the hint never
- * fires anymore. Kept as a no-op for callers that still import it.
- */
-export function buildLegacyHint(_resolved: ResolvedDefaultProvider): string | null {
-  return null;
-}

@@ -5,14 +5,12 @@ import {
   readFileSync,
   readdirSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
 import { ENV } from "./config.js";
-import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
 import { setStderrQuiet } from "./logger.js";
 import {
   FIREBASE_SLUG_TO_PROVIDER_NAME,
@@ -852,29 +850,6 @@ export async function parseArgs(args: string[]): Promise<ClaudishConfig> {
       config.modelSubagent = profileModels.subagent;
     }
   }
-
-  // Phase 1 (LiteLLM-demotion refactor): emit a one-shot stderr hint when legacy
-  // LITELLM auto-promotion kicks in. Routing does not read this: it resolves the
-  // default provider itself, and `--default-provider` reaches it through the env
-  // variable index.ts exports.
-  try {
-    const resolved = resolveDefaultProvider({ config: loadConfig(), env: process.env });
-
-    if (resolved.legacyAutoPromoted && !config.quiet) {
-      const markerFile = join(homedir(), ".claudish", ".legacy-litellm-hint-shown");
-      if (!existsSync(markerFile)) {
-        const hint = buildLegacyHint(resolved);
-        if (hint) {
-          console.error(hint);
-        }
-        try {
-          // Touch the marker so we don't show it again. Best-effort — failure is OK.
-          mkdirSync(dirname(markerFile), { recursive: true });
-          writeFileSync(markerFile, new Date().toISOString(), "utf-8");
-        } catch {}
-      }
-    }
-  } catch {}
 
   // proOnUltracode precedence: CLI flag > CLAUDISH_PRO_ON_ULTRACODE env >
   // project ./.claudish.json > global config.json > false. Opt-in, default OFF
