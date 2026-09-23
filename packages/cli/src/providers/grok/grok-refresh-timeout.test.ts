@@ -15,10 +15,16 @@
  *   REQ-T5 2 concurrent calls = exactly 1 POST            -> "REQ-T5 ..."
  *
  * The hung host is a real `Bun.serve` on an ephemeral port, so the real client and its real
- * timeout are exercised: no fetch double, no module mock. These tests genuinely wait out the
- * ceiling (about 20 s per call), so each carries its own generous per-test timeout.
+ * timeout are exercised: no fetch double, no module mock. The timeout is really waited out,
+ * so to keep the file near 60 s the waits are SHARED, never shortened:
+ *   - T1, T2, T3 and T4 assert on ONE timed-out refresh (`firstTimedOutRefresh`). Whichever of
+ *     them runs first starts it; the rest reuse its recorded outcome. Each test awaits it
+ *     itself, so any one of them run alone (`-t`) still performs the call, and a refresh that
+ *     never settles fails every one of them with "Received: pending" rather than passing.
+ *   - T4 adds exactly one more call on the same host, so its host sees 2 POSTs in total.
+ *   - T5 uses its own host and its own concurrent pair, so its request count is its own.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,11 +36,13 @@ const OIDC_SCOPE = "https://auth.x.ai::TEST-CLIENT-ID";
 
 /** "About TOKEN_REFRESH_TIMEOUT_MS" with the generous slack the spec allows: < 30 s. */
 const SETTLE_LIMIT_MS = TOKEN_REFRESH_TIMEOUT_MS + 10_000;
-/** Per-test budgets, well above the ceiling so the in-test deadline reports first. */
+/** Per-test budgets, well above the in-test deadline so the deadline reports first. */
 const ONE_CALL_BUDGET_MS = 60_000;
 const TWO_CALL_BUDGET_MS = 90_000;
 
 const TOKEN_POST = { method: "POST", path: "/oauth2/token" } as const;
+
+type TokenRequest = { method: string; path: string };
 
 type Settled =
   | { state: "rejected"; error: unknown; elapsedMs: number }
@@ -75,15 +83,22 @@ function rejectionOf(outcome: Settled): unknown {
   return outcome.error;
 }
 
-let grokHome: string;
-let tokenHost: ReturnType<typeof Bun.serve>;
-let tokenRequests: Array<{ method: string; path: string }>;
-let issuer: string;
-let tokenEndpoint: string;
+interface HungTokenHost {
+  tokenEndpoint: string;
+  /** Every request the host has received, in arrival order. */
+  requests: TokenRequest[];
+  close(): Promise<void>;
+}
 
-beforeEach(() => {
-  tokenRequests = [];
-  tokenHost = Bun.serve({
+/**
+ * Start a token host that accepts every request and never answers it, and point a fresh
+ * Grok home at it: the only credential is expired and names this host as its issuer.
+ */
+function openHungTokenHost(): HungTokenHost {
+  const requests: TokenRequest[] = [];
+  // Resolvers of the handler promises the host is still holding open, one per request.
+  const pendingAnswers: Array<(response: Response) => void> = [];
+  const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     // Bun's server closes a connection whose handler has not answered within `idleTimeout`
@@ -92,14 +107,17 @@ beforeEach(() => {
     // for as long as the client is willing to wait — the half-open socket from the spec.
     idleTimeout: 0,
     fetch(req) {
-      tokenRequests.push({ method: req.method, path: new URL(req.url).pathname });
-      return new Promise<Response>(() => {});
+      requests.push({ method: req.method, path: new URL(req.url).pathname });
+      // Never answered while the test runs; the resolver is kept only so close() can
+      // release the handler.
+      return new Promise<Response>((resolve) => {
+        pendingAnswers.push(resolve);
+      });
     },
   });
-  issuer = `http://127.0.0.1:${tokenHost.port}`;
-  tokenEndpoint = `${issuer}/oauth2/token`;
+  const issuer = `http://127.0.0.1:${server.port}`;
 
-  grokHome = mkdtempSync(join(tmpdir(), "claudish-grok-refresh-timeout-"));
+  const grokHome = mkdtempSync(join(tmpdir(), "claudish-grok-refresh-timeout-"));
   setGrokHomeForTesting(grokHome);
   writeFileSync(
     join(grokHome, "auth.json"),
@@ -118,29 +136,65 @@ beforeEach(() => {
       2
     )}\n`
   );
-});
 
-afterEach(async () => {
-  setGrokHomeForTesting(null);
-  await tokenHost.stop(true);
-  rmSync(grokHome, { recursive: true, force: true });
-});
+  return {
+    tokenEndpoint: `${issuer}/oauth2/token`,
+    requests,
+    async close() {
+      setGrokHomeForTesting(null);
+      // Settle every handler the host still holds BEFORE stopping it. On Bun 1.3.10,
+      // `stop(true)` waits for in-flight handlers even after the client has aborted, so a
+      // never-settling handler hangs this teardown until its hook times out (Bun 1.4.0 does
+      // not wait). The client gave up long ago, so nobody receives this answer.
+      for (const answer of pendingAnswers.splice(0)) {
+        answer(new Response(null, { status: 503 }));
+      }
+      await server.stop(true);
+      rmSync(grokHome, { recursive: true, force: true });
+    },
+  };
+}
 
-describe("Grok token refresh against a token host that accepts and never answers", () => {
+describe("the Grok token refresh ceiling", () => {
   test("REQ-0: the refresh ceiling TOKEN_REFRESH_TIMEOUT_MS is 20000 ms", () => {
     expect(TOKEN_REFRESH_TIMEOUT_MS).toBe(20_000);
   });
+});
+
+describe("one refresh against a token host that accepts and never answers", () => {
+  let host: HungTokenHost;
+  let firstRefresh: Promise<{ outcome: Settled; requestsWhenSettled: TokenRequest[] }> | undefined;
+
+  beforeAll(() => {
+    host = openHungTokenHost();
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  /**
+   * The ONE timed-out refresh T1-T4 share. Started by whichever test asks first; the request
+   * log is snapshotted when it settles, so a later call (T4's) cannot change what T1 sees.
+   */
+  function firstTimedOutRefresh() {
+    firstRefresh ??= settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS).then((outcome) => ({
+      outcome,
+      requestsWhenSettled: [...host.requests],
+    }));
+    return firstRefresh;
+  }
 
   test(
     "REQ-T1: resolveGrokAccessToken rejects instead of hanging, within about the refresh ceiling",
     async () => {
-      const outcome = await settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS);
+      const { outcome, requestsWhenSettled } = await firstTimedOutRefresh();
 
       // A hung refresh holds the single-flight latch, so every later request would join it.
       expect(outcome.state).toBe("rejected");
       expect(outcome.elapsedMs).toBeLessThan(SETTLE_LIMIT_MS);
       // The rejection came from the hung token host, not from a precondition failing first.
-      expect(tokenRequests).toEqual([TOKEN_POST]);
+      expect(requestsWhenSettled).toEqual([TOKEN_POST]);
     },
     ONE_CALL_BUDGET_MS
   );
@@ -148,7 +202,7 @@ describe("Grok token refresh against a token host that accepts and never answers
   test(
     "REQ-T2: the timed-out refresh is classified as a connection failure of kind unreachable",
     async () => {
-      const error = rejectionOf(await settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS));
+      const error = rejectionOf((await firstTimedOutRefresh()).outcome);
 
       // Unclassified, this error would escape into the fallback chain (metered billing).
       expect(classifyConnectionError(error)).toEqual({
@@ -162,10 +216,10 @@ describe("Grok token refresh against a token host that accepts and never answers
   test(
     "REQ-T3: the timed-out refresh names the token endpoint as claudishEndpoint",
     async () => {
-      const error = rejectionOf(await settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS));
+      const error = rejectionOf((await firstTimedOutRefresh()).outcome);
 
       // The user must be told about the AUTH host that went silent, not the inference host.
-      expect((error as { claudishEndpoint?: unknown }).claudishEndpoint).toBe(tokenEndpoint);
+      expect((error as { claudishEndpoint?: unknown }).claudishEndpoint).toBe(host.tokenEndpoint);
     },
     ONE_CALL_BUDGET_MS
   );
@@ -173,18 +227,30 @@ describe("Grok token refresh against a token host that accepts and never answers
   test(
     "REQ-T4: after a timed-out refresh the latch is released, so the next call makes a new request",
     async () => {
-      const first = await settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS);
-      expect(first.state).toBe("rejected");
-      expect(tokenRequests).toEqual([TOKEN_POST]);
+      const first = await firstTimedOutRefresh();
+      expect(first.outcome.state).toBe("rejected");
+      expect(first.requestsWhenSettled).toEqual([TOKEN_POST]);
 
       const second = await settleWithin(resolveGrokAccessToken(), SETTLE_LIMIT_MS);
 
       // A latch left holding the dead promise would answer the second call with no request.
       expect(second.state).toBe("rejected");
-      expect(tokenRequests).toEqual([TOKEN_POST, TOKEN_POST]);
+      expect(host.requests).toEqual([TOKEN_POST, TOKEN_POST]);
     },
     TWO_CALL_BUDGET_MS
   );
+});
+
+describe("two concurrent refreshes against a token host that accepts and never answers", () => {
+  let host: HungTokenHost;
+
+  beforeAll(() => {
+    host = openHungTokenHost();
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
 
   test(
     "REQ-T5: two concurrent calls against the hung host send exactly one refresh request",
@@ -199,7 +265,7 @@ describe("Grok token refresh against a token host that accepts and never answers
 
       expect(outcomes.map((o) => o.state)).toEqual(["rejected", "rejected"]);
       // The server rotates the refresh token; a second concurrent refresh breaks the session.
-      expect(tokenRequests).toEqual([TOKEN_POST]);
+      expect(host.requests).toEqual([TOKEN_POST]);
     },
     ONE_CALL_BUDGET_MS
   );
