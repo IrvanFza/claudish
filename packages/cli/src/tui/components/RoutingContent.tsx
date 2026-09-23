@@ -7,7 +7,69 @@ import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
 import { providerIsReady } from "../providers.js";
 import { A, C } from "../theme.js";
-import type { MergedRule, Mode, ProbeEntry, ProbeMode } from "../types.js";
+import type {
+  DroppedOutcome,
+  MergedRule,
+  Mode,
+  ProbeEntry,
+  ProbeMode,
+  ProbeSummary,
+} from "../types.js";
+
+/**
+ * What a dropped row says removed it. Total over the dropped outcomes, so a new
+ * outcome cannot render as nothing.
+ */
+const DROPPED_TEXT: Record<DroppedOutcome, string> = {
+  "no-credential": "no credential",
+  "credential-unreadable": "credential could not be read",
+  "not-served": "the account does not serve it",
+  "excluded-by-membership": "not in the plan's membership",
+};
+
+/**
+ * How a probe row's status reads: its glyph, its text, and its colour, read from
+ * `C` at render time (the palette changes when the theme is detected).
+ */
+function rowStatusView(entry: ProbeEntry): { icon: string; color: string; text: string } {
+  switch (entry.status) {
+    case "unverified":
+      return { icon: "◐", color: C.cyan, text: "native — not probed" };
+    case "success":
+      return {
+        icon: "●",
+        color: C.green,
+        text: entry.ms !== undefined ? `${entry.ms}ms` : "success",
+      };
+    case "failed":
+      return { icon: "✗", color: C.red, text: entry.error ?? "failed" };
+    case "testing":
+      return { icon: "◌", color: C.yellow, text: "testing..." };
+    case "dropped":
+      return {
+        icon: "○",
+        // A subscription the user holds whose key could not be read is a
+        // warning: the request lands on a different hop.
+        color: entry.outcome === "credential-unreadable" ? C.yellow : C.dim,
+        text: entry.outcome ? `dropped · ${DROPPED_TEXT[entry.outcome]}` : "dropped",
+      };
+    case "skipped":
+      return { icon: "·", color: C.dim, text: "not reached" };
+    case "no_key":
+      return { icon: "○", color: C.dim, text: "not configured, skipping" };
+    case "pending":
+      return { icon: "○", color: C.dim, text: "waiting" };
+  }
+}
+
+/** A no-route hint, one line per row; the hint is multi-line text. */
+function hintLines(hint: string | undefined): { id: string; text: string }[] {
+  if (!hint) return [];
+  return hint
+    .split("\n")
+    .filter((text) => text.trim().length > 0)
+    .map((text, n) => ({ id: `hint-${n}`, text }));
+}
 
 // Format a chain as inline text: "kimi → openrouter"
 function chainStr(chain: string[]): string {
@@ -52,6 +114,8 @@ interface RoutingContentProps {
   probeMode: ProbeMode;
   probeModel: string;
   probeResults: ProbeEntry[];
+  /** The decision as a whole, from the same explainRoute call as the rows. */
+  probeSummary: ProbeSummary | null;
   mode: Mode;
   routingPattern: string;
   chainSelected: Set<string>;
@@ -79,6 +143,7 @@ export function RoutingContent({
   probeMode,
   probeModel,
   probeResults,
+  probeSummary,
   mode,
   routingPattern,
   chainSelected,
@@ -168,11 +233,16 @@ export function RoutingContent({
         <text> </text>
         <text>
           <span fg={C.fgMuted}>
-            {"The probe resolves the fallback chain and tests each provider's"}
+            {"The probe shows the routing chain a request would use, then tests"}
           </span>
         </text>
         <text>
-          <span fg={C.fgMuted}>{"API key in order, stopping at the first success."}</span>
+          <span fg={C.fgMuted}>
+            {"each kept hop in order, stopping at the first success. Dropped"}
+          </span>
+        </text>
+        <text>
+          <span fg={C.fgMuted}>{"candidates are listed with the reason, never tested."}</span>
         </text>
       </box>
     );
@@ -225,79 +295,44 @@ export function RoutingContent({
           </text>
         </box>
         <text> </text>
-        {/* Route source */}
+        {/* Where the chain came from: describeRouteExplanation, the line
+            --probe prints for the same decision. */}
         <text>
-          <span fg={C.fgMuted}>
-            {probeResults[0]?.reason ?? `Chain (${probeResults.length} providers):`}
-          </span>
+          <span fg={C.fgMuted}>{probeSummary?.line ?? ""}</span>
         </text>
+        {probeSummary?.warnings.map((warning) => (
+          <text key={`warning:${warning}`}>
+            <span fg={C.yellow}>{`! ${warning}`}</span>
+          </text>
+        ))}
+        {probeSummary?.notes.map((note) => (
+          <text key={`note:${note}`}>
+            <span fg={C.dim}>{note}</span>
+          </text>
+        ))}
         <text> </text>
-        {/* Chain entries — 2 lines each */}
+        {/* Chain entries — 2 lines each, dropped candidates in place */}
         {probeResults.map((entry, idx) => {
-          const isNoKey = entry.status === "no_key";
+          const isDropped = entry.status === "dropped";
           const isNotReached = entry.status === "skipped";
           const isSelected = entry.status === "success" && probeMode === "done";
-
-          const statusIcon =
-            entry.status === "unverified"
-              ? "◐"
-              : entry.status === "success"
-                ? "●"
-                : entry.status === "failed"
-                  ? "✗"
-                  : entry.status === "testing"
-                    ? "◌"
-                    : isNoKey
-                      ? "○"
-                      : isNotReached
-                        ? "·"
-                        : "○";
-
-          const statusColor =
-            entry.status === "unverified"
-              ? C.cyan
-              : entry.status === "success"
-                ? C.green
-                : entry.status === "failed"
-                  ? C.red
-                  : entry.status === "testing"
-                    ? C.yellow
-                    : C.dim;
-
+          const status = rowStatusView(entry);
           const nameCol = entry.displayName.padEnd(18).substring(0, 18);
-
-          const statusText =
-            entry.status === "unverified"
-              ? "native — not probed"
-              : entry.status === "success"
-                ? entry.ms !== undefined
-                  ? `${entry.ms}ms`
-                  : "success"
-                : entry.status === "failed"
-                  ? (entry.error ?? "failed")
-                  : entry.status === "testing"
-                    ? "testing..."
-                    : isNoKey
-                      ? "not configured, skipping"
-                      : isNotReached
-                        ? "not reached"
-                        : "waiting";
-
           const reason = PROVIDER_REASONS[entry.provider] ?? entry.provider;
 
           return (
-            <box key={entry.provider} flexDirection="column">
+            <box key={`${idx}:${entry.provider}`} flexDirection="column">
               <text>
                 <span fg={C.dim}>{`${idx + 1}. `}</span>
                 <span
-                  fg={isNoKey ? C.dim : isSelected ? C.strong : isNotReached ? C.dim : C.fgMuted}
+                  fg={isDropped || isNotReached ? C.dim : isSelected ? C.strong : C.fgMuted}
                   attributes={A.boldIf(isSelected)}
                 >
                   {nameCol}
                 </span>
                 <span fg={C.dim}>{"  "}</span>
-                <span fg={statusColor} attributes={A.boldIf(entry.status === "success")}>
-                  {statusIcon} {statusText}
+                <span fg={status.color} attributes={A.boldIf(entry.status === "success")}>
+                  {status.icon} {status.text}
                 </span>
                 {isSelected && (
                   <span fg={C.green} attributes={A.bold}>
@@ -307,7 +342,7 @@ export function RoutingContent({
               </text>
               <text>
                 <span fg={C.dim}>{"    ↳ "}</span>
-                <span fg={isNoKey ? C.dim : C.fgMuted}>{reason}</span>
+                <span fg={isDropped ? C.dim : C.fgMuted}>{reason}</span>
               </text>
             </box>
           );
@@ -317,7 +352,14 @@ export function RoutingContent({
           <>
             <text> </text>
             <text>
-              {allFailed ? (
+              {probeSummary?.noRoute ? (
+                <>
+                  <span fg={C.red} attributes={A.bold}>
+                    {"Result: "}
+                  </span>
+                  <span fg={C.red}>{`✗ No route — ${probeSummary.noRoute.reason}`}</span>
+                </>
+              ) : allFailed ? (
                 <>
                   <span fg={C.red} attributes={A.bold}>
                     {"Result: "}
@@ -346,6 +388,11 @@ export function RoutingContent({
                 </>
               )}
             </text>
+            {hintLines(probeSummary?.noRoute?.hint).map((line) => (
+              <text key={line.id}>
+                <span fg={C.dim}>{`  ${line.text}`}</span>
+              </text>
+            ))}
           </>
         )}
       </box>

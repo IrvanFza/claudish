@@ -549,10 +549,12 @@ export function App({ requestLogin }: AppProps = {}) {
     });
   }, []);
 
-  // Route probe wizard — owns probeMode/probeModel/probeResults internally.
-  // The keyboard handler delegates to verb methods (startInput, submit, etc.).
-  const probe = useRouteProbe(config);
-  const { probeMode, probeModel, probeResults } = probe;
+  // Route probe wizard — owns probeMode/probeModel/probeResults/probeSummary
+  // internally. The keyboard handler delegates to verb methods (startInput,
+  // submit, etc.). It reads the rules and the default provider through
+  // explainRoute, from disk, as a request would.
+  const probe = useRouteProbe();
+  const { probeMode, probeModel, probeResults, probeSummary } = probe;
 
   // Profile editor wizard — owns editProfileName/Value, profileScope,
   // suggestions/suggestionIndex, providerPickerIndex, and the
@@ -2757,6 +2759,7 @@ export function App({ requestLogin }: AppProps = {}) {
             probeMode={probeMode}
             probeModel={probeModel}
             probeResults={probeResults}
+            probeSummary={probeSummary}
             mode={mode}
             routingPattern={routingPattern}
             chainSelected={chainSelected}
