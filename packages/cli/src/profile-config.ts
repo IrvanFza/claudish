@@ -72,7 +72,10 @@ export type RoutingEntry = string;
 /**
  * Custom routing rules: maps a model name pattern to an ordered list of routing
  * destinations to try. Patterns can be exact names, globs ("kimi-*"), or "*"
- * catch-all. Local .claudish.json rules replace global rules entirely.
+ * catch-all. A project .claudish.json rule overrides the global rule with the
+ * same pattern, and every other global rule still applies (`loadRoutingRules`
+ * merges the two per pattern). The merged rules are then matched as one set —
+ * exact, then the longest glob, then "*" — whichever file each came from.
  */
 export type RoutingRules = Record<string, RoutingEntry[]>;
 
@@ -125,8 +128,9 @@ export interface ClaudishProfileConfig {
   /** Anonymous usage stats consent state. Absent = never configured (defaults to disabled). */
   stats?: StatsConsent;
   /**
-   * Custom routing rules. Local .claudish.json rules replace global rules entirely.
-   * Maps model name patterns (exact, glob, or "*") to ordered lists of routing entries.
+   * Custom routing rules. Maps model name patterns (exact, glob, or "*") to ordered
+   * lists of routing entries. A project .claudish.json rule overrides the global
+   * rule with the same pattern; the other global rules still apply.
    */
   routing?: RoutingRules;
   /** API keys stored in config (NOT env files). Env vars take precedence at runtime. */
