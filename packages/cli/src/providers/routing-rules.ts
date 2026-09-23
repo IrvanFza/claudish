@@ -387,7 +387,8 @@ export const DEFAULT_FALLBACK_PROVIDER = "openrouter";
  * fallback hop.
  *
  * Read per call, like the rules. `route()` without overrides and `--probe`'s
- * chain both read it here, so the two cannot name different fallback hops.
+ * chain both read it here, so the two cannot name different fallback hops. The
+ * `--default-provider` flag arrives through the env variable (index.ts exports it).
  */
 export function effectiveDefaultProvider(): string {
   return resolveDefaultProvider({ config: loadConfig(), env: process.env }).provider;

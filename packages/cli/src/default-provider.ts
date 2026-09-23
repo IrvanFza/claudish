@@ -4,6 +4,7 @@
  *
  * No imports from cli.ts or proxy-server.ts (otherwise we get import cycles).
  * Reads from a passed-in config object, env vars, and an optional CLI flag.
+ * Also `planDefaultProviderFlag`, the argv scan index.ts applies before parseArgs.
  *
  * LiteLLM auto-promotion was removed in commit 5 of the model-catalog and
  * routing redesign. Users who relied on `LITELLM_BASE_URL` + `LITELLM_API_KEY`
@@ -54,7 +55,9 @@ export interface ResolveOptions {
  * So an env `""` beats a config `x`, and a flag `x` beats an env `""`.
  *
  * An empty `cliFlag` is different: it means the caller parsed no flag, and it
- * falls through.
+ * falls through. The CLI no longer passes the flag here: index.ts exports it to
+ * CLAUDISH_DEFAULT_PROVIDER (`planDefaultProviderFlag`), which is also how an
+ * explicit `--default-provider ""` arrives.
  */
 export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultProvider {
   const env = opts.env ?? process.env;
@@ -80,6 +83,67 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
   }
 
   return { provider: "openrouter", source: "hardcoded", legacyAutoPromoted: false };
+}
+
+/**
+ * What a `--default-provider` scan of argv decided. A plan rather than an effect,
+ * like `planConfigOverride`: index.ts applies it (strips argv, exports the value).
+ */
+export type DefaultProviderFlagPlan =
+  | { kind: "none" }
+  | { kind: "error"; message: string }
+  | {
+      kind: "apply";
+      /** The flag's value. `""` is kept: it disables the fallback hop. */
+      value: string;
+      /** argv with every occurrence of the flag and its value removed. */
+      argv: string[];
+    };
+
+const DEFAULT_PROVIDER_FLAG = "--default-provider";
+
+/**
+ * Find `--default-provider <name>` (or `--default-provider=<name>`) in argv, before
+ * `parseArgs` sees it.
+ *
+ * Why before: `--probe` runs and exits INSIDE `parseArgs`'s argv loop, so a flag
+ * read there, or after it, never reached `--probe` in either argv order. Scanning
+ * first gives every path the same answer.
+ *
+ * - Every occurrence is removed; the last one wins, as `parseArgs` did.
+ * - `""` is a value, not a missing one: `--default-provider ""` disables the fallback.
+ * - A missing value, or a following token that is itself a flag, is an error, so a
+ *   dangling flag never swallows the next option or leaks to Claude Code.
+ * - Scanning stops at `--`. What follows it belongs to Claude Code, as in `parseArgs`.
+ */
+export function planDefaultProviderFlag(argv: string[]): DefaultProviderFlagPlan {
+  const rest: string[] = [];
+  let value: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--") {
+      rest.push(...argv.slice(i));
+      break;
+    }
+    if (arg === DEFAULT_PROVIDER_FLAG) {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        return {
+          kind: "error",
+          message: `${DEFAULT_PROVIDER_FLAG} requires a provider name ("" for no fallback provider)`,
+        };
+      }
+      value = next;
+      i++;
+      continue;
+    }
+    if (arg.startsWith(`${DEFAULT_PROVIDER_FLAG}=`)) {
+      value = arg.slice(DEFAULT_PROVIDER_FLAG.length + 1);
+      continue;
+    }
+    rest.push(arg);
+  }
+  return value === undefined ? { kind: "none" } : { kind: "apply", value, argv: rest };
 }
 
 /**

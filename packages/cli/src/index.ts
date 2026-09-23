@@ -268,9 +268,40 @@ async function applyConfigOverride(): Promise<void> {
   process.env.CLAUDISH_CONFIG = plan.path;
 }
 
+// `--default-provider <name>`: strip it from argv and export it as
+// CLAUDISH_DEFAULT_PROVIDER before parseArgs and every subcommand dispatch. The env
+// variable is the ONE place the flag lives after this: route(), the proxy, `--probe`
+// and every child claudish (team, channel sessions) read it through
+// `resolveDefaultProvider`. `--probe` is why this cannot wait for parseArgs: it
+// runs and exits inside parseArgs's argv loop, so a flag read there or after it
+// never reached it, in either argv order.
+//
+// Runs AFTER the two explicit 1Password flags, which overwrite env
+// unconditionally: an --op-env or --op value for CLAUDISH_DEFAULT_PROVIDER must
+// not beat the flag the user typed.
+async function applyDefaultProviderFlag(): Promise<void> {
+  const { planDefaultProviderFlag } = await import("./default-provider.js");
+  const plan = planDefaultProviderFlag(process.argv.slice(2));
+  if (plan.kind === "none") return;
+  if (plan.kind === "error") {
+    console.error(`[claudish] ${plan.message}`);
+    process.exit(1);
+  }
+
+  process.argv = [...process.argv.slice(0, 2), ...plan.argv];
+  // An in-process env write reaches children only because they INHERIT process.env:
+  // every claudish child today is spawned through node:child_process, with
+  // `...process.env` or default inheritance. `Bun.spawn`/`Bun.spawnSync` without an
+  // `env` option DROP in-process writes (measured on Bun 1.4.0), so a future spawn
+  // written that way silently loses this flag. Pass `env: process.env` there.
+  // `""` is exported as-is: it disables the fallback hop.
+  process.env.CLAUDISH_DEFAULT_PROVIDER = plan.value;
+}
+
 await traceSpan("startup:config-override", () => applyConfigOverride());
 await traceSpan("startup:op-env-flags", () => applyOpEnvironment());
 await traceSpan("startup:op-import-flag", () => applyOpImport());
+await traceSpan("startup:default-provider-flag", () => applyDefaultProviderFlag());
 
 // Check for MCP mode before loading heavy dependencies
 const isMcpMode = process.argv.includes("--mcp");

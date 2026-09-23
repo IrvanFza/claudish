@@ -583,7 +583,7 @@ export async function createProxyServer(
   // them. Passing rules alone makes route() read NO default provider (its guard
   // keeps this machine's setting out of tests), so before this every bare name the
   // proxy routed fell back to `openrouter`, whatever `defaultProvider` said —
-  // `""` included.
+  // `""` included. `--default-provider` reaches this through the env variable.
   const effectiveFallbackProvider = effectiveDefaultProvider();
 
   // Cache fallback handlers by target model string.
