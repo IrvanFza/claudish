@@ -81,15 +81,23 @@ export const MIN_ATTEMPT_SLOT_MS = 3_000;
  * catch's.
  *
  * Both sit in the same request and share one `deadlineAt`. If auth recovery
- * consumes the whole of it and then SUCCEEDS, the flow proceeds to the primary
- * fetch — which is byte-identical to today's expression and therefore
- * unclamped — and a maximal connect hang lands the response write a full
- * connect timeout past the deadline. Reserving the unclamped attempt's own
- * worst case out of the auth path's budget restores the margin the derivation
- * assumed, and costs one function rather than an edit to the healthy path.
+ * spends all of it and then SUCCEEDS, the primary fetch that follows gets no
+ * real attempt, even with the network back. So part of the budget is reserved
+ * for it. (The reservation was first justified as stopping the primary fetch
+ * from outliving the deadline; the request ceiling — `deadlineClamp` — now does
+ * that on its own, and what is left is the fetch's right to a real attempt.)
+ *
+ * THE RESERVE IS CAPPED AT HALF THE BUDGET. A flat 45 s reserve against a
+ * budget derived from `API_TIMEOUT_MS` left the auth path nothing at all once
+ * the budget fell to 45 s (`API_TIMEOUT_MS` = 75 000) and a deadline in the
+ * PAST below that — so a token refresh against a stopped server skipped
+ * recovery as "no budget" and answered at once, silently. Capped at half, the
+ * default is unchanged (half of 270 s is well above 45 s) and a short budget is
+ * split between the two paths instead of given entirely to one.
  */
 export function refreshDeadlineAt(deadlineAt: number): number {
-  return deadlineAt - PER_ATTEMPT_CONNECT_CAP_MS;
+  const reserve = Math.min(PER_ATTEMPT_CONNECT_CAP_MS, resolveTier1DeadlineMs() / 2);
+  return deadlineAt - reserve;
 }
 
 /**
