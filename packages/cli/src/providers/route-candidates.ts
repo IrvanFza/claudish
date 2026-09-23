@@ -1,12 +1,13 @@
 /**
  * Every way claudish could call one model, gathered from the catalog and ordered.
  *
- * This is the replacement for the FIRST step of `routeBare` — the 24-entry
+ * This is the replacement for the FIRST step of the bare-name path
+ * (`explainBareName`) — the 24-entry
  * hand-written table in `default-routing-rules.ts`, which named providers per
  * model family and had to be edited whenever a vendor, a plan or a gateway
  * changed. That file is now DELETED and this module is wired in:
- * `routeBare` calls `buildCatalogChain`, which calls
- * {@link gatherRouteCandidates} for every bare name no USER rule matches.
+ * `explainBareName` calls `explainCatalogChain` (also behind `buildCatalogChain`),
+ * which calls {@link gatherRouteCandidates} for every bare name no USER rule matches.
  *
  * WHAT THIS MODULE IS NOT. It does not decide whether a candidate can be USED.
  * Two filters already own that question and neither is duplicated here:

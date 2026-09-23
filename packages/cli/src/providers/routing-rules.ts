@@ -9,12 +9,18 @@ import { loadConfig, loadLocalConfig } from "../profile-config.js";
 import type { RoutingEntry, RoutingRules } from "../profile-config.js";
 import { DISPLAY_NAMES, PROVIDER_TO_PREFIX } from "./auto-route.js";
 import { resolveExternalId } from "./catalog-client.js";
+import type { ConnectionPrice } from "./connection-price.js";
 import { ensureEndpointsRegistered } from "./endpoint-registration.js";
 import { providerServesModel } from "./model-availability.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
-import { getProviderByName } from "./provider-definitions.js";
-import { catalogDeniesProvider, gatherRouteCandidates } from "./route-candidates.js";
+import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
+import { type RouteTier, getProviderByName } from "./provider-definitions.js";
+import {
+  type RouteCandidate,
+  catalogDeniesProvider,
+  gatherRouteCandidates,
+} from "./route-candidates.js";
 import { buildCredentialHint } from "./routing-hints.js";
 
 export interface RoutingRuleSources {
@@ -35,7 +41,7 @@ export interface RoutingRuleSources {
  * bare name are now GATHERED from the cloud models catalog
  * (`route-candidates.ts`), which publishes every tier — subscriptions, native
  * APIs and gateways — for every model, and which the table could only
- * approximate by hand. So the result here is frequently `{}`, and `routeBare`
+ * approximate by hand. So the result here is frequently `{}`, and `explainBareName`
  * treats "no rule matched" as "ask the catalog" rather than as an error.
  *
  * What a user rule now MEANS is therefore stronger than it was: a match is used
@@ -48,13 +54,24 @@ export interface RoutingRuleSources {
  * The recommended-model projection is not a routing-rule override.
  */
 export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
-  const local = sources ? sources.localRules : (loadLocalConfig()?.routing ?? {});
-  const global_ = sources ? sources.globalRules : (loadConfig().routing ?? {});
+  const { localRules: local, globalRules: global_ } = sources ?? loadRoutingRuleSources();
 
   validateRoutingRules(local);
   validateRoutingRules(global_);
 
   return { ...global_, ...local };
+}
+
+/**
+ * The two rule tables `loadRoutingRules` merges, read from this machine's config
+ * and kept apart: global (`~/.claudish/config.json`, or the `--config` file) and
+ * project (`./.claudish.json`). A caller that must say WHICH file a matched rule
+ * came from (`explainRoute`) reads them here and merges them itself.
+ */
+export function loadRoutingRuleSources(): RoutingRuleSources {
+  const localRules = loadLocalConfig()?.routing ?? {};
+  const globalRules = loadConfig().routing ?? {};
+  return { globalRules, localRules };
 }
 
 /**
@@ -185,13 +202,43 @@ export function matchRoutingRuleKey(modelName: string, rules: RoutingRules): str
  * Convert routing entries to Route objects.
  * Plain name "provider" uses originalModelName.
  * Explicit "provider@model" uses the specified model.
+ *
+ * An entry whose subscription plan does not include the model is dropped (see
+ * {@link resolveRoutingEntries}, which keeps it, marked, for `explainRoute`).
  */
 export function buildRoutingChain(
   entries: RoutingEntry[],
   originalModelName: string,
   cachePath?: string
 ): Route[] {
-  const routes: Route[] = [];
+  return resolveRoutingEntries(entries, originalModelName, cachePath)
+    .filter((resolved) => !resolved.excludedByMembership)
+    .map((resolved) => resolved.route);
+}
+
+/** One routing entry turned into a route, or kept only to say why it was not. */
+interface ResolvedEntry {
+  route: Route;
+  /**
+   * The entry's subscription plan publishes a membership that does not include
+   * the model. `route` then carries the name it would have been asked by, since
+   * no wire id was resolved for it.
+   */
+  excludedByMembership: boolean;
+}
+
+/**
+ * {@link buildRoutingChain}'s loop, keeping the entries plan membership excludes
+ * instead of skipping them. `buildRoutingChain` drops those; `explainRoute`
+ * reports them as `excluded-by-membership`. One loop, so the chain a request
+ * uses and the chain a display explains cannot drift apart.
+ */
+function resolveRoutingEntries(
+  entries: RoutingEntry[],
+  originalModelName: string,
+  cachePath?: string
+): ResolvedEntry[] {
+  const resolved: ResolvedEntry[] = [];
 
   for (const entry of entries) {
     const atIdx = entry.indexOf("@");
@@ -218,7 +265,10 @@ export function buildRoutingChain(
     let wireIdResolved = false;
     if (atIdx === -1) {
       const routing = resolveSubscriptionRouting(modelName, provider, cachePath);
-      if (routing.kind === "not-served") continue;
+      if (routing.kind === "not-served") {
+        resolved.push({ route: routeFor(provider, modelName), excludedByMembership: true });
+        continue;
+      }
       if (routing.kind === "serves") {
         modelName = routing.externalId;
         // Already the plan's wire id — do NOT resolve again below, or the
@@ -236,10 +286,10 @@ export function buildRoutingChain(
       modelName = resolveExternalId(modelName, provider, cachePath) ?? modelName;
     }
 
-    routes.push(routeFor(provider, modelName));
+    resolved.push({ route: routeFor(provider, modelName), excludedByMembership: false });
   }
 
-  return routes;
+  return resolved;
 }
 
 /**
@@ -326,31 +376,239 @@ export async function hasCredentialsForProvider(provider: string): Promise<boole
   return credentials.isAvailable(provider);
 }
 
+// ---------------------------------------------------------------------------
+// explainRoute() — the routing decision, every candidate, and why
+// ---------------------------------------------------------------------------
+
+/** Which config file a user rule came from. */
+export type RuleScope = "global" | "project";
+
+/**
+ * What became of one route candidate. `kept` is a hop of the routing chain;
+ * every other value names the step that removed the candidate.
+ */
+export type CandidateOutcome =
+  /** Passed the credential and availability filters: a hop of the routing chain. */
+  | "kept"
+  /** The credential filter found no credential. */
+  | "no-credential"
+  /** A SUBSCRIPTION's credential exists but could not be read (1Password, Keychain). */
+  | "credential-unreadable"
+  /** The account's dynamic models catalog denies the model. */
+  | "not-served"
+  /** The subscription plan's published membership does not include the model. */
+  | "excluded-by-membership";
+
+/** One route candidate, where the chain placed it, and what became of it. */
+export interface ExplainedCandidate {
+  /** claudish provider. */
+  provider: string;
+  displayName: string;
+  /** Exactly the `Route.modelSpec` a kept candidate becomes. */
+  modelSpec: string;
+  /**
+   * The wire id this candidate sends. For `excluded-by-membership`, the name it
+   * would have been asked by: no wire id is resolved for a plan that excludes it.
+   */
+  wireId: string;
+  /**
+   * `fallback` is the fallback hop's POSITION, appended after the catalog's own
+   * candidates. It is independent of `outcome`: an uncredentialed fallback is
+   * `no-credential` and is dropped like any other candidate.
+   */
+  position: "candidate" | "fallback";
+  /** The definition's tier; absent for a name no definition carries. */
+  tier?: RouteTier;
+  /** Catalog-gathered candidates only: the model's own vendor's route. */
+  isVendorOwn?: boolean;
+  /** Catalog-gathered candidates only. */
+  price?: ConnectionPrice;
+  /** Catalog-gathered candidates only, when the catalog publishes one. */
+  contextWindow?: number;
+  outcome: CandidateOutcome;
+  /**
+   * Kept candidates whose availability was checked: `serves` when the account
+   * confirmed the model, `unknown` when nothing denied it.
+   */
+  availability?: "serves" | "unknown";
+}
+
+/** Why a target has no route. */
+export type NoRouteCause =
+  /** A user rule matched and nothing survived plan membership, a matched `[]` included. */
+  | "rule-empty"
+  /** No cloud models catalog could be read and no namespace claim applies. */
+  | "catalog-unreadable"
+  /** The catalog was read and gathered nothing, and no fallback hop survived. */
+  | "catalog-empty"
+  /** Every remaining candidate lacked a credential, or its credential could not be read. */
+  | "no-credential"
+  /** The account's dynamic models catalog denied every credentialed candidate. */
+  | "not-served"
+  /** An explicit spec's provider has no credential. */
+  | "explicit-no-credential"
+  /** An explicit spec's plan membership excludes the model, so no route could be built. */
+  | "explicit-unbuildable"
+  /** An explicit spec's provider does not serve the model. */
+  | "explicit-not-served";
+
+/**
+ * The decision. It mirrors `RoutePlan.kind` field for field, which is what makes
+ * {@link toRoutePlan} a 1:1 map: `hint` is present, possibly as `undefined`,
+ * exactly where `route()` has always set it.
+ */
+export type RouteOutcome =
+  | { kind: "ok" }
+  | { kind: "no-route"; cause: NoRouteCause; reason: string; hint?: string };
+
+/**
+ * Why the fallback hop was not appended to a catalog-gathered chain. The first
+ * condition that holds, in the order `buildCatalogChain` tests them.
+ */
+export type FallbackWithheld =
+  /** `defaultProvider` is `""`. */
+  | "disabled"
+  /** No cloud models catalog: claudish never invents a hop without one. */
+  | "catalog-unreadable"
+  /** The catalog already gathered that provider. */
+  | "already-gathered"
+  /** The fallback's route is backend-owned and the catalog maps it no connection to this model. */
+  | "catalog-denies";
+
+/**
+ * Something the user should know about a decision that still routed. `route()`
+ * prints the two billing notices to stderr. `explainRoute` never writes; a
+ * display shows these instead.
+ */
+export type RouteWarning =
+  | {
+      type: "subscription-not-served";
+      providers: string[];
+      /** The claudish provider the request lands on. */
+      usedInstead: string;
+      message: string;
+    }
+  | {
+      type: "subscription-credential-unreadable";
+      providers: string[];
+      /** The claudish provider the request lands on. */
+      usedInstead: string;
+      message: string;
+    };
+
+/** The routing decision for one target, with every candidate and why. */
+export interface RouteExplanation {
+  /** The target as passed. */
+  requestedModel: string;
+  /**
+   * The name rules and the catalog were asked about: a known `vendor/` stripped,
+   * `normalizeGlmSlug` applied. For an explicit target, the model part of the
+   * spec (`anthropic/<id>` verbatim); for a native target, the target.
+   */
+  routedModel: string;
+  /** Where the chain came from. ORIGIN only: `outcome` says whether it routed. */
+  source: "native" | "explicit" | "user-rule" | "catalog";
+  /** Explicit only: how the target named its provider. */
+  via?: "model-spec" | "vendor-qualified-id" | "poe";
+  /** User rule only: the rule key as stored, a matched `[]` included. */
+  matchedPattern?: string;
+  /** User rule only, when `explainRoute` loaded the rules itself. */
+  ruleScope?: RuleScope;
+  /** Catalog only: whether the cloud models catalog could be read and had the name. */
+  catalog?: "found" | "absent" | "unreadable";
+  /** Chain order. A dropped candidate stays where the chain placed it. `[]` for native. */
+  candidates: ExplainedCandidate[];
+  /** Catalog only, when the fallback hop was not appended. */
+  fallbackWithheld?: FallbackWithheld;
+  outcome: RouteOutcome;
+  warnings: RouteWarning[];
+  /** Native only: what the native passthrough sends, on Claude Code's own auth. */
+  native?: NativeRoute;
+}
+
+export interface ExplainRouteOptions {
+  /** Absent: the global and project rules are loaded here, so `ruleScope` is known. */
+  rules?: RoutingRules;
+  /**
+   * Absent: `route()`'s rule. With `rules` passed none is read, so the fallback
+   * hop takes `openrouter`; otherwise `effectiveDefaultProvider()`.
+   */
+  defaultProvider?: string;
+  cachePath?: string;
+}
+
+/** A route as an explained candidate. `gathered` is the catalog candidate it came from, if any. */
+function explainCandidate(
+  route: Route,
+  position: ExplainedCandidate["position"],
+  outcome: CandidateOutcome,
+  gathered?: RouteCandidate
+): ExplainedCandidate {
+  const tier = gathered ? gathered.tier : getProviderByName(route.provider)?.tier;
+  return {
+    provider: route.provider,
+    displayName: route.displayName,
+    modelSpec: route.modelSpec,
+    wireId: wireIdOf(route),
+    position,
+    ...(tier !== undefined ? { tier } : {}),
+    ...(gathered ? { isVendorOwn: gathered.isVendorOwn, price: gathered.price } : {}),
+    ...(gathered?.contextWindow !== undefined ? { contextWindow: gathered.contextWindow } : {}),
+    outcome,
+  };
+}
+
+/** The outcome of a resolved routing entry before any credential is read. */
+function entryOutcome(resolved: ResolvedEntry): CandidateOutcome {
+  return resolved.excludedByMembership ? "excluded-by-membership" : "kept";
+}
+
 /**
  * Path 1: an explicit "provider@model" spec. Probe ONLY that provider's
  * credentials; never fall back silently.
- *
  */
-async function routeExplicit(
+async function explainExplicitSpec(
+  requestedModel: string,
   modelSpec: string,
   model: string,
   provider: string,
   cachePath?: string
-): Promise<RoutePlan> {
-  if (!(await hasCredentialsForProvider(provider))) {
-    return {
+): Promise<RouteExplanation> {
+  const credentialed = await hasCredentialsForProvider(provider);
+
+  // The one candidate is built whatever the credential says, so a display can
+  // name what the spec asks for. Built AFTER the credential read, the order
+  // route() has always used; building it is a catalog lookup and nothing else.
+  const [resolved] = resolveRoutingEntries([modelSpec], model, cachePath);
+  const candidate = explainCandidate(resolved.route, "candidate", entryOutcome(resolved));
+  const explanation: RouteExplanation = {
+    requestedModel,
+    routedModel: model,
+    source: "explicit",
+    via: "model-spec",
+    candidates: [candidate],
+    outcome: { kind: "ok" },
+    warnings: [],
+  };
+
+  if (!credentialed) {
+    candidate.outcome = "no-credential";
+    explanation.outcome = {
       kind: "no-route",
+      cause: "explicit-no-credential",
       reason: `No credentials configured for "${provider}".`,
       hint: buildCredentialHint(model, [provider]) ?? undefined,
     };
+    return explanation;
   }
 
-  const built = buildRoutingChain([modelSpec], model, cachePath)[0];
-  if (!built) {
-    return {
+  if (resolved.excludedByMembership) {
+    explanation.outcome = {
       kind: "no-route",
+      cause: "explicit-unbuildable",
       reason: `Could not build a route for "${modelSpec}".`,
     };
+    return explanation;
   }
 
   // An explicit address is NEVER silently dropped — the user named this vendor,
@@ -361,17 +619,22 @@ async function routeExplicit(
   // Without this the request still fails, just later and less clearly: OpenCode
   // Zen Go answers for a model it does not carry with HTTP 401, which reads as a
   // credential problem and sends the user to check a key that works.
-  if ((await providerServesModel(built.provider, wireIdOf(built))) === "not-served") {
-    return {
+  const availability = await providerServesModel(candidate.provider, candidate.wireId);
+  if (availability === "not-served") {
+    candidate.outcome = "not-served";
+    explanation.outcome = {
       kind: "no-route",
-      reason: `${built.displayName} does not serve "${model}".`,
+      cause: "explicit-not-served",
+      reason: `${candidate.displayName} does not serve "${model}".`,
       hint:
         `Check the model id, or use a bare \`${model}\` to let claudish pick a provider ` +
         "that carries it.",
     };
+    return explanation;
   }
 
-  return { kind: "ok", primary: built, fallbacks: [] };
+  candidate.availability = availability;
+  return explanation;
 }
 
 /**
@@ -433,8 +696,8 @@ export interface CatalogChain {
 /**
  * Steps 2 and 3 of the bare-name path: gather from the catalog, then append the
  * fallback hop. No credential or availability filtering — those belong to
- * `routeBare`, which owns them, and duplicating either here would create the
- * second oracle `route-candidates.ts` exists to avoid.
+ * `explainBareName`, which owns them, and duplicating either here would create
+ * the second oracle `route-candidates.ts` exists to avoid.
  *
  * Exported because `--probe` reconstructs the chain it is about to test rather
  * than calling `route()` (it needs per-hop credential provenance that a
@@ -449,6 +712,28 @@ export function buildCatalogChain(
   defaultProvider?: string,
   cachePath?: string
 ): CatalogChain {
+  const chain = explainCatalogChain(model, defaultProvider, cachePath);
+  return {
+    routes: chain.candidates
+      .filter((candidate) => candidate.outcome !== "excluded-by-membership")
+      .map(routeOf),
+    catalogReadable: chain.catalog !== "unreadable",
+  };
+}
+
+/** {@link buildCatalogChain}'s two steps, with every candidate kept and the fallback's fate. */
+interface CatalogChainExplanation {
+  /** Gathered candidates, then the fallback hop; plan-excluded ones marked, not dropped. */
+  candidates: ExplainedCandidate[];
+  catalog: "found" | "absent" | "unreadable";
+  fallbackWithheld?: FallbackWithheld;
+}
+
+function explainCatalogChain(
+  model: string,
+  defaultProvider: string | undefined,
+  cachePath: string | undefined
+): CatalogChainExplanation {
   // Bundled endpoints (`together`, `fireworks`) have no provider DEFINITION
   // until this has run, and `gatherFromConnections` drops a connection whose
   // provider it cannot resolve — silently, because that is also what a provider
@@ -463,48 +748,60 @@ export function buildCatalogChain(
   ensureEndpointsRegistered();
 
   const gathering = gatherRouteCandidates(model, cachePath);
-  const routes = gathering.candidates.map((candidate) =>
-    routeFor(candidate.provider, candidate.wireId)
+  const candidates = gathering.candidates.map((candidate) =>
+    explainCandidate(routeFor(candidate.provider, candidate.wireId), "candidate", "kept", candidate)
   );
+  const catalog = !gathering.catalogReadable
+    ? "unreadable"
+    : gathering.catalogMiss
+      ? "absent"
+      : "found";
 
   const fallback = fallbackProviderFor(defaultProvider);
-  if (
-    fallback &&
+  let fallbackWithheld: FallbackWithheld | undefined;
+  if (!fallback) {
+    fallbackWithheld = "disabled";
+  } else if (!gathering.catalogReadable) {
     // NEVER invent a hop with no catalog: `openrouter@<name>` for a name nobody
     // published is a metered request billed for its own 404, and a name the
     // backend has since RENAMED looks identical.
-    gathering.catalogReadable &&
-    !routes.some((route) => route.provider === fallback) &&
-    !catalogDeniesProvider(fallback, model, cachePath)
-  ) {
-    // Through `buildRoutingChain`, not `routeFor`: the fallback is named by
+    fallbackWithheld = "catalog-unreadable";
+  } else if (candidates.some((candidate) => candidate.provider === fallback)) {
+    fallbackWithheld = "already-gathered";
+  } else if (catalogDeniesProvider(fallback, model, cachePath)) {
+    fallbackWithheld = "catalog-denies";
+  } else {
+    // Through `resolveRoutingEntries`, not `routeFor`: the fallback is named by
     // PROVIDER only, so its wire id still has to be resolved, and that
     // resolution (subscription plan ids, then the catalog's `aggregators[]`)
-    // lives there. It legitimately yields nothing when a subscription's plan
-    // does not include the model.
-    routes.push(...buildRoutingChain([fallback], model, cachePath));
+    // lives there. It legitimately yields nothing routable when a
+    // subscription's plan does not include the model.
+    for (const resolved of resolveRoutingEntries([fallback], model, cachePath)) {
+      candidates.push(explainCandidate(resolved.route, "fallback", entryOutcome(resolved)));
+    }
   }
 
-  return { routes, catalogReadable: gathering.catalogReadable };
+  return { candidates, catalog, ...(fallbackWithheld ? { fallbackWithheld } : {}) };
 }
 
 /** Why a bare name's chain is empty before any credential is read. */
 type EmptyChainCause = "rule-empty" | "catalog-empty";
 
 /**
- * The no-route plan for a bare name whose chain is empty before any credential
- * is read. Two very different causes, and a user reading the message needs to
- * know which: their OWN rule named nothing (they asked for this), or the catalog
- * publishes no way to call the model (nobody serves it).
+ * The no-route outcome for a bare name whose chain is empty before any
+ * credential is read. Two very different causes, and a user reading the message
+ * needs to know which: their OWN rule named nothing (they asked for this), or
+ * the catalog publishes no way to call the model (nobody serves it).
  */
-function emptyChainNoRoute(
+function emptyChainOutcome(
   model: string,
   nativeProvider: string,
   cause: EmptyChainCause,
   cachePath?: string
-): RoutePlan {
+): RouteOutcome {
   return {
     kind: "no-route",
+    cause,
     reason:
       cause === "rule-empty"
         ? `A routing rule matched "${model}" and named no provider.`
@@ -545,10 +842,16 @@ function emptyChainHint(
   return buildCredentialHint(model, [], { suggestOpenRouter }) ?? undefined;
 }
 
+/** `route()`'s inputs for a bare name, resolved only once a name is known to be bare. */
+interface BareRouting {
+  rules: RoutingRules;
+  defaultProvider: string | undefined;
+  /** Where a matched rule key came from, when the caller read the two rule files itself. */
+  scopeOf?: (ruleKey: string) => RuleScope;
+}
+
 /**
  * Path 2: a bare model name.
- *
- * ── STEP 1 IS THE ONLY THING THIS PHASE CHANGED ────────────────────────────
  *
  *   1. a user rule matches?  → that chain, VERBATIM. Never merged, reordered or
  *                              appended to, including by the fallback. A match
@@ -558,61 +861,103 @@ function emptyChainHint(
  *                              and orders them by tier, vendor, price, window.
  *   3. append the fallback   → last, deduped, disableable, and NOT appended when
  *                              the catalog positively denies it.
- *   4. credential filter     → unchanged, below.
- *   5. availability filter   → unchanged, below.
- *   6. primary + fallbacks.
+ *   4. credential filter     → {@link applyCandidateFilters}.
+ *   5. availability filter   → {@link applyCandidateFilters}.
+ *   6. primary + fallbacks   → {@link toRoutePlan}.
  *
  * Steps 4 and 5 are deliberately NOT duplicated by step 2 — see the header of
  * `route-candidates.ts`. A gathered candidate is a claim about what the catalog
  * publishes, never a claim that this user can call it.
  */
-async function routeBare(
+async function explainBareName(
+  requestedModel: string,
   model: string,
   nativeProvider: string,
-  rules: RoutingRules,
-  defaultProvider?: string,
+  routing: BareRouting,
   cachePath?: string
-): Promise<RoutePlan> {
+): Promise<RouteExplanation> {
   // `null` and `[]` are DIFFERENT answers and the old `?? []` conflated them.
   // `[]` is a user rule that matched and named no provider — strict no-route,
   // and the one thing that must not then collect a fallback.
-  const matched = matchRoutingRule(model, rules);
+  const matchedKey = matchRoutingRuleKey(model, routing.rules);
+  const matched = matchedKey === null ? null : routing.rules[matchedKey];
 
-  let candidates: Route[];
-  if (matched !== null) {
-    candidates = buildRoutingChain(matched, model, cachePath);
+  let explanation: RouteExplanation;
+  if (matchedKey !== null && matched !== null) {
+    explanation = {
+      requestedModel,
+      routedModel: model,
+      source: "user-rule",
+      matchedPattern: matchedKey,
+      ...(routing.scopeOf ? { ruleScope: routing.scopeOf(matchedKey) } : {}),
+      candidates: resolveRoutingEntries(matched, model, cachePath).map((resolved) =>
+        explainCandidate(resolved.route, "candidate", entryOutcome(resolved))
+      ),
+      outcome: { kind: "ok" },
+      warnings: [],
+    };
   } else {
-    const gathered = buildCatalogChain(model, defaultProvider, cachePath);
-
-    // NO CATALOG MEANS LOCAL ONLY. With nothing readable, claudish knows no
-    // provider serves this name and must say so rather than guess. A namespace
-    // claim still counts — that is claudish's own statement about a plan the
-    // user holds, not an inference from a catalog it could not read — so the
-    // check is on an EMPTY result, not on `catalogReadable` alone. Local
-    // providers and explicit `provider@model` specs are unaffected: neither
-    // comes through here.
-    if (!gathered.catalogReadable && gathered.routes.length === 0) {
-      return {
-        kind: "no-route",
-        reason: `No model catalog available, so "${model}" cannot be routed by name.`,
-        hint:
-          "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
-          `explicitly (e.g. \`openrouter@${model}\`).`,
-      };
-    }
-    candidates = gathered.routes;
+    const chain = explainCatalogChain(model, routing.defaultProvider, cachePath);
+    explanation = {
+      requestedModel,
+      routedModel: model,
+      source: "catalog",
+      catalog: chain.catalog,
+      candidates: chain.candidates,
+      ...(chain.fallbackWithheld ? { fallbackWithheld: chain.fallbackWithheld } : {}),
+      outcome: { kind: "ok" },
+      warnings: [],
+    };
   }
 
-  if (candidates.length === 0) {
-    return emptyChainNoRoute(
+  const remaining = explanation.candidates.filter(
+    (candidate) => candidate.outcome !== "excluded-by-membership"
+  );
+
+  // NO CATALOG MEANS LOCAL ONLY. With nothing readable, claudish knows no
+  // provider serves this name and must say so rather than guess. A namespace
+  // claim still counts — that is claudish's own statement about a plan the
+  // user holds, not an inference from a catalog it could not read — so the
+  // check is on an EMPTY result, not on the catalog being unreadable alone.
+  // Local providers and explicit `provider@model` specs are unaffected: neither
+  // comes through here.
+  if (explanation.catalog === "unreadable" && remaining.length === 0) {
+    explanation.outcome = {
+      kind: "no-route",
+      cause: "catalog-unreadable",
+      reason: `No model catalog available, so "${model}" cannot be routed by name.`,
+      hint:
+        "Run `claudish --models-refresh` to fetch the catalog, or name the provider " +
+        `explicitly (e.g. \`openrouter@${model}\`).`,
+    };
+    return explanation;
+  }
+
+  if (remaining.length === 0) {
+    explanation.outcome = emptyChainOutcome(
       model,
       nativeProvider,
-      matched !== null ? "rule-empty" : "catalog-empty",
+      explanation.source === "user-rule" ? "rule-empty" : "catalog-empty",
       cachePath
     );
+    return explanation;
   }
 
-  const credentialed: Route[] = [];
+  await applyCandidateFilters(explanation, remaining);
+  return explanation;
+}
+
+/**
+ * Steps 4 and 5 of the bare-name path, recorded on each candidate: the
+ * credential filter, then the availability filter. Sets the outcome and the two
+ * billing warnings. Prints nothing; `route()` prints from the explanation.
+ */
+async function applyCandidateFilters(
+  explanation: RouteExplanation,
+  candidates: ExplainedCandidate[]
+): Promise<void> {
+  const model = explanation.routedModel;
+  const credentialed: ExplainedCandidate[] = [];
   const skipped: string[] = [];
   const skippedFailed: string[] = [];
 
@@ -655,18 +1000,25 @@ async function routeBare(
     // window, a locked Mac, a disabled or denied Keychain backend, and a stale
     // `.env` shadowing the op:// chain. Each one used to route a paid
     // subscription onto a metered provider with NOTHING printed.
-    if (verdict.readiness === "failed") skippedFailed.push(candidate.provider);
+    if (verdict.readiness === "failed") {
+      skippedFailed.push(candidate.provider);
+      candidate.outcome = "credential-unreadable";
+    } else {
+      candidate.outcome = "no-credential";
+    }
   });
 
   if (credentialed.length === 0) {
-    return {
+    explanation.outcome = {
       kind: "no-route",
+      cause: "no-credential",
       reason:
         skipped.length > 0
           ? `No credentialed providers in chain for "${model}" (tried: ${skipped.join(", ")}).`
           : `No providers available for "${model}".`,
       hint: buildCredentialHint(model, skipped) ?? undefined,
     };
+    return;
   }
 
   // AVAILABILITY filter — drop a candidate only when a source positively says
@@ -684,15 +1036,18 @@ async function routeBare(
   // neither source covers, which is almost entirely the SUBSCRIPTION providers,
   // and would move users off plans they pay for onto metered hops.
   const availability = await Promise.all(
-    credentialed.map((candidate) => providerServesModel(candidate.provider, wireIdOf(candidate)))
+    credentialed.map((candidate) => providerServesModel(candidate.provider, candidate.wireId))
   );
-  const serving: Route[] = [];
+  const serving: ExplainedCandidate[] = [];
   const notServing: string[] = [];
   credentialed.forEach((candidate, i) => {
-    if (availability[i] === "not-served") {
+    const verdict = availability[i];
+    if (verdict === "not-served") {
       notServing.push(candidate.provider);
+      candidate.outcome = "not-served";
     } else {
       serving.push(candidate);
+      candidate.availability = verdict;
     }
   });
 
@@ -700,45 +1055,49 @@ async function routeBare(
     // Every credentialed provider positively denied carrying this model. That is
     // strong evidence — "unknown" never lands here — so a clear no-route beats
     // sending a request that each of them would reject in turn.
-    return {
+    explanation.outcome = {
       kind: "no-route",
+      cause: "not-served",
       reason: `No provider serves "${model}" (checked: ${notServing.join(", ")}).`,
       hint: buildCredentialHint(model, notServing) ?? undefined,
     };
+    return;
   }
 
+  // Warn only when the skip changes how the user is billed. A subscription
+  // provider dropped in favour of a metered one is a cost change they did not
+  // choose — claudish assembled this chain — which is the same reason
+  // fallback-handler announces advancing past a spent plan. Every other skip is
+  // routine and goes only to the debug log (`emitRouteNotices`).
   if (notServing.length > 0) {
-    log(`[routing] ${model}: skipped ${notServing.join(", ")} — does not serve this model`);
-    // Say it OUT LOUD only when the skip changes how the user is billed. A
-    // subscription provider dropped in favour of a metered one is a cost change
-    // they did not choose — claudish assembled this chain — which is the same
-    // reason fallback-handler announces advancing past a spent plan. Every other
-    // skip is routine and stays in the debug log.
     const droppedSubscription = notServing.filter((p) => isSubscriptionProvider(p));
     if (droppedSubscription.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
-      logStderr(
-        // No "[claudish]" here: logStderr adds the prefix itself.
-        `${droppedSubscription.join(", ")} does not serve ${model} — ` +
-          `using ${serving[0].displayName}, which bills per token.`
-      );
+      explanation.warnings.push({
+        type: "subscription-not-served",
+        providers: droppedSubscription,
+        usedInstead: serving[0].provider,
+        message:
+          `${droppedSubscription.join(", ")} does not serve ${model} — ` +
+          `using ${serving[0].displayName}, which bills per token.`,
+      });
     }
   }
 
-  // A subscription dropped because its credential FAILED gets its own notice,
+  // A subscription dropped because its credential FAILED gets its own warning,
   // never folded into "does not serve": the remedy differs (unlock the keychain
   // or 1Password, not "pick another model"), and "no key" would tell the user
   // to buy a subscription they already hold. Same billing condition as above —
-  // said out loud only when the request lands on a metered provider.
+  // raised only when the request lands on a metered provider.
   if (skippedFailed.length > 0 && !isSubscriptionProvider(serving[0].provider)) {
-    logStderr(
-      // No "[claudish]" here: logStderr adds the prefix itself.
-      `${skippedFailed.join(", ")}: the credential could not be READ (not "no key") — ` +
-        `using ${serving[0].displayName}, which bills per token.`
-    );
+    explanation.warnings.push({
+      type: "subscription-credential-unreadable",
+      providers: skippedFailed,
+      usedInstead: serving[0].provider,
+      message:
+        `${skippedFailed.join(", ")}: the credential could not be READ (not "no key") — ` +
+        `using ${serving[0].displayName}, which bills per token.`,
+    });
   }
-
-  const [primary, ...fallbacks] = serving;
-  return { kind: "ok", primary, fallbacks };
 }
 
 /**
@@ -757,24 +1116,6 @@ function wireIdOf(route: Route): string {
 }
 
 /**
- * Resolve a model name to a provider chain.
- *
- * Two paths:
- *   1. Explicit prefix (`provider@model`): the caller named the vendor. We
- *      probe ONLY that vendor's credentials; missing credentials → no-route
- *      with a credential hint. **No silent fallback** — `defaultProvider` is
- *      not consulted because the user named a specific vendor.
- *   2. Bare name: a matching USER rule wins verbatim; otherwise the chain is
- *      gathered from the cloud models catalog and the fallback hop is appended
- *      last. Then the credential and availability filters. Empty filtered chain
- *      → no-route with hints. See `routeBare`.
- *
- * Rules and the default provider are loaded fresh each call (via `loadRoutingRules()`
- * and `effectiveDefaultProvider()`, which reads CLAUDISH_DEFAULT_PROVIDER and then
- * the config) unless overrides are supplied. Tests should pass overrides to avoid
- * disk and environment lookups.
- */
-/**
  * Rewrite a dash-slugified GLM version to its canonical dotted form
  * (`glm-5-2` → `glm-5.2`), so a client that slugifies dots still finds the
  * catalog entry instead of missing it and falling through to the fallback hop.
@@ -788,7 +1129,7 @@ function wireIdOf(route: Route): string {
  * small as the problem it solves.
  *
  * To be precise about why that is a choice and not a load-bearing guard:
- * routeExplicit forwards the ORIGINAL `modelSpec` to buildRoutingChain, which
+ * the explicit path forwards the ORIGINAL `modelSpec` to buildRoutingChain, which
  * re-parses it and takes the model from the entry itself, ignoring the `model`
  * argument for any entry containing "@". So normalizing the explicit path would
  * currently be a no-op rather than a bug. Restricting it here means that stays
@@ -813,39 +1154,332 @@ export function normalizeGlmSlug(model: string): string {
   );
 }
 
+/**
+ * Resolve a model name to a provider chain.
+ *
+ * Two paths:
+ *   1. Explicit prefix (`provider@model`): the caller named the vendor. We
+ *      probe ONLY that vendor's credentials; missing credentials → no-route
+ *      with a credential hint. **No silent fallback** — `defaultProvider` is
+ *      not consulted because the user named a specific vendor.
+ *   2. Bare name: a matching USER rule wins verbatim; otherwise the chain is
+ *      gathered from the cloud models catalog and the fallback hop is appended
+ *      last. Then the credential and availability filters. Empty filtered chain
+ *      → no-route with hints. See `explainBareName`.
+ *
+ * Rules and the default provider are loaded fresh each call (via `loadRoutingRules()`
+ * and `effectiveDefaultProvider()`, which reads CLAUDISH_DEFAULT_PROVIDER and then
+ * the config) unless overrides are supplied. Tests should pass overrides to avoid
+ * disk and environment lookups.
+ *
+ * DERIVED from the explanation. `explainRoutePlan` makes the decision; this
+ * prints the notices a request's user must see and returns the kept candidates.
+ * `explainRoute` runs the same function, so a display cannot show a chain this
+ * does not use.
+ */
 export async function route(
   modelSpec: string,
   rulesOverride?: RoutingRules,
   defaultProviderOverride?: string,
   cachePath?: string
 ): Promise<RoutePlan> {
+  const explanation = await explainRoutePlan(
+    modelSpec,
+    () => {
+      const rules = rulesOverride ?? loadRoutingRules();
+      // When tests pass an explicit `rulesOverride`, treat the rule set as the
+      // authoritative source of truth and read the default provider from neither the
+      // environment nor the config file — either would leak this machine's setting
+      // into unit tests. A caller that passes rules and wants a fallback
+      // passes it as the third argument. Callers with no overrides
+      // get `effectiveDefaultProvider()`: the env variable, then the config.
+      const defaultProvider =
+        defaultProviderOverride !== undefined
+          ? defaultProviderOverride
+          : rulesOverride !== undefined
+            ? undefined
+            : effectiveDefaultProvider();
+      return { rules, defaultProvider };
+    },
+    cachePath
+  );
+  emitRouteNotices(explanation);
+  return toRoutePlan(explanation);
+}
+
+/**
+ * The decision `route()` returns, explained. `route()` and `explainRoute` both
+ * call this, which is what keeps the chain a display shows and the chain a
+ * request uses the same.
+ *
+ * An explicit spec is decided BEFORE `bareRouting` runs, so it never loads the
+ * rules or reads the default provider, exactly as `route()` never has.
+ */
+async function explainRoutePlan(
+  modelSpec: string,
+  bareRouting: () => BareRouting,
+  cachePath: string | undefined,
+  requestedModel: string = modelSpec
+): Promise<RouteExplanation> {
   const parsed = parseModelSpec(modelSpec);
 
   if (parsed.isExplicitProvider) {
     // Not normalized here — see normalizeGlmSlug's note on explicit specs.
-    return routeExplicit(modelSpec, parsed.model, parsed.provider, cachePath);
+    return explainExplicitSpec(requestedModel, modelSpec, parsed.model, parsed.provider, cachePath);
   }
 
-  const rules = rulesOverride ?? loadRoutingRules();
-  // When tests pass an explicit `rulesOverride`, treat the rule set as the
-  // authoritative source of truth and read the default provider from neither the
-  // environment nor the config file — either would leak this machine's setting
-  // into unit tests. A caller that passes rules and wants a fallback
-  // passes it as the third argument. Callers with no overrides
-  // get `effectiveDefaultProvider()`: the env variable, then the config.
-  const defaultProvider =
-    defaultProviderOverride !== undefined
-      ? defaultProviderOverride
-      : rulesOverride !== undefined
-        ? undefined
-        : effectiveDefaultProvider();
-  return routeBare(
+  return explainBareName(
+    requestedModel,
     normalizeGlmSlug(parsed.model),
     parsed.provider,
-    rules,
-    defaultProvider,
+    bareRouting(),
     cachePath
   );
 }
 
-// route() is now async; routeBare returns a Promise which is awaited by the caller.
+/**
+ * The routing decision for `target`, without making it: the provider a request
+ * would use, every candidate the chain considered and what removed it, and why.
+ * For `--probe` and the config TUI.
+ *
+ * It starts where the proxy starts, at `proxyRouteDecision`. A `native` target is
+ * answered there (no candidates: Claude Code's own auth serves it). `poe:<id>` and
+ * `anthropic/<id>` are the explicit targets the proxy serves without `route()`.
+ * A `bare` target and a `provider@model` spec run the function `route()` runs,
+ * `explainRoutePlan`, with the target the proxy hands `route()` (a bare target's
+ * parsed model), so the chain shown is the chain a request uses.
+ *
+ * Never writes to stderr: the billing notices `route()` prints are on `warnings`.
+ */
+export async function explainRoute(
+  target: string,
+  opts: ExplainRouteOptions = {}
+): Promise<RouteExplanation> {
+  const decision = proxyRouteDecision(target);
+
+  if (decision.type === "native") {
+    return {
+      requestedModel: target,
+      routedModel: target,
+      source: "native",
+      candidates: [],
+      outcome: { kind: "ok" },
+      warnings: [],
+      native: decision.route,
+    };
+  }
+  if (decision.type === "poe") {
+    return explainUnroutedExplicit(target, "poe", "poe", decision.model);
+  }
+  if (decision.type === "explicit" && decision.via === "vendor-qualified-id") {
+    return explainUnroutedExplicit(
+      target,
+      "vendor-qualified-id",
+      decision.provider,
+      decision.model
+    );
+  }
+
+  const routeTarget = decision.type === "explicit" ? decision.spec : decision.model;
+  return explainRoutePlan(routeTarget, () => bareRoutingFor(opts), opts.cachePath, target);
+}
+
+/**
+ * The two explicit targets the proxy serves without `route()`: `poe:<id>` (its Poe
+ * step) and `anthropic/<id>` (OpenRouter, the id sent verbatim). One candidate,
+ * with the credential check the proxy applies and nothing else: the proxy runs no
+ * availability check for either, so neither does this.
+ *
+ * Known gap, deferred: with no Poe credential the proxy's Poe step declines and
+ * the request falls through to the native handler, while this says
+ * `no-credential`.
+ */
+async function explainUnroutedExplicit(
+  requestedModel: string,
+  via: "poe" | "vendor-qualified-id",
+  provider: string,
+  wireId: string
+): Promise<RouteExplanation> {
+  // `credentials.isAvailable`, the gate the proxy's Poe step uses too.
+  const credentialed = await hasCredentialsForProvider(provider);
+  const tier = getProviderByName(provider)?.tier;
+  return {
+    requestedModel,
+    routedModel: wireId,
+    source: "explicit",
+    via,
+    candidates: [
+      {
+        provider,
+        displayName: DISPLAY_NAMES[provider] ?? provider,
+        // The target itself: the proxy carries it verbatim past its gate.
+        modelSpec: requestedModel,
+        wireId,
+        position: "candidate",
+        ...(tier !== undefined ? { tier } : {}),
+        outcome: credentialed ? "kept" : "no-credential",
+      },
+    ],
+    outcome: credentialed
+      ? { kind: "ok" }
+      : {
+          kind: "no-route",
+          cause: "explicit-no-credential",
+          reason: `No credentials configured for "${provider}".`,
+          hint: buildCredentialHint(wireId, [provider]) ?? undefined,
+        },
+    warnings: [],
+  };
+}
+
+/**
+ * `route()`'s inputs for a bare name, as `explainRoute` resolves them. With no
+ * `rules` passed it reads both rule files itself, which is what lets it name a
+ * matched rule's scope; they merge exactly as `loadRoutingRules` merges them.
+ */
+function bareRoutingFor(opts: ExplainRouteOptions): BareRouting {
+  if (opts.rules !== undefined) {
+    // route()'s guard: rules passed and no default provider named reads none.
+    return { rules: opts.rules, defaultProvider: opts.defaultProvider };
+  }
+  const sources = loadRoutingRuleSources();
+  return {
+    rules: loadRoutingRules(sources),
+    defaultProvider:
+      opts.defaultProvider !== undefined ? opts.defaultProvider : effectiveDefaultProvider(),
+    // The project file overwrites the global one key by key, so a key the project
+    // file holds is the project's rule.
+    scopeOf: (ruleKey) => (Object.hasOwn(sources.localRules, ruleKey) ? "project" : "global"),
+  };
+}
+
+/**
+ * The `RoutePlan` an explanation stands for: every `kept` candidate in chain
+ * order, whatever its position, or the no-route verbatim. An uncredentialed
+ * fallback is not kept, so it never becomes a handler that answers 401.
+ *
+ * Throws for a native explanation: `RoutePlan` has no native case, and
+ * `route()` never produces one.
+ */
+export function toRoutePlan(explanation: RouteExplanation): RoutePlan {
+  const { outcome } = explanation;
+  if (outcome.kind === "no-route") {
+    // `hint` is copied only where it is present (present as `undefined`
+    // included), so the plan is the object route() has always returned.
+    return "hint" in outcome
+      ? { kind: "no-route", reason: outcome.reason, hint: outcome.hint }
+      : { kind: "no-route", reason: outcome.reason };
+  }
+  const [primary, ...fallbacks] = explanation.candidates
+    .filter((candidate) => candidate.outcome === "kept")
+    .map(routeOf);
+  if (!primary) {
+    throw new Error(
+      `toRoutePlan: "${explanation.requestedModel}" (${explanation.source}) has no kept candidate, so it has no RoutePlan.`
+    );
+  }
+  return { kind: "ok", primary, fallbacks };
+}
+
+function routeOf(candidate: ExplainedCandidate): Route {
+  return {
+    provider: candidate.provider,
+    modelSpec: candidate.modelSpec,
+    displayName: candidate.displayName,
+  };
+}
+
+/**
+ * What `route()` writes for a decision, in the order it always has: the
+ * `[routing] … skipped` debug line, then each billing warning through
+ * `logStderr`. Only for a decision that routed; a no-route writes nothing.
+ */
+function emitRouteNotices(explanation: RouteExplanation): void {
+  if (explanation.outcome.kind !== "ok") return;
+  const notServing = explanation.candidates
+    .filter((candidate) => candidate.outcome === "not-served")
+    .map((candidate) => candidate.provider);
+  if (notServing.length > 0) {
+    log(
+      `[routing] ${explanation.routedModel}: skipped ${notServing.join(", ")} — does not serve this model`
+    );
+  }
+  for (const warning of explanation.warnings) {
+    // No "[claudish]" in the message: logStderr adds the prefix itself.
+    logStderr(warning.message);
+  }
+}
+
+/**
+ * The label a display shows for a hop's tier. Strings only: a display picks the
+ * colour from `C.*` at render time, never from a module-level constant.
+ */
+export const TIER_LABEL: Record<RouteTier, string> = {
+  subscription: "subscription",
+  "dynamic-subscription": "subscription · account decides models",
+  native: "native API",
+  gateway: "gateway",
+  fallback: "fallback",
+};
+
+/** A hop's label: the fallback POSITION overrides the tier of whichever provider holds it. */
+function hopLabel(candidate: ExplainedCandidate): string {
+  if (candidate.position === "fallback") return TIER_LABEL.fallback;
+  return candidate.tier ? TIER_LABEL[candidate.tier] : "unregistered provider";
+}
+
+/**
+ * One line saying where a routing decision came from. `--probe` and the config
+ * TUI both show it, so the same decision is never worded two ways.
+ */
+export function describeRouteExplanation(explanation: RouteExplanation): string {
+  const line = describeOrigin(explanation);
+  // Only where routing chose the provider: an explicit spec names the model
+  // part of what the user typed, which is no news.
+  const routed = explanation.source === "user-rule" || explanation.source === "catalog";
+  return routed && explanation.requestedModel !== explanation.routedModel
+    ? `${line} · asked as ${explanation.routedModel}`
+    : line;
+}
+
+function describeOrigin(explanation: RouteExplanation): string {
+  switch (explanation.source) {
+    case "native":
+      return "native · Claude Code's own auth · not probed";
+    case "explicit": {
+      const name = explanation.candidates[0]?.displayName ?? explanation.routedModel;
+      return explanation.via === "vendor-qualified-id"
+        ? `explicit · ${name} · vendor-qualified id sent verbatim`
+        : `explicit · ${name}`;
+    }
+    case "user-rule": {
+      const scope = explanation.ruleScope ? ` (${explanation.ruleScope})` : "";
+      return `user rule "${explanation.matchedPattern}"${scope}`;
+    }
+    case "catalog":
+      return describeCatalogOrigin(explanation);
+  }
+}
+
+function describeCatalogOrigin(explanation: RouteExplanation): string {
+  if (explanation.catalog === "unreadable") {
+    return "no cloud models catalog · run claudish --models-refresh";
+  }
+  if (explanation.catalog === "absent") {
+    const head = `catalog has no entry for "${explanation.routedModel}"`;
+    if (explanation.fallbackWithheld)
+      return `${head} · no fallback (${explanation.fallbackWithheld})`;
+    if (explanation.candidates.every((candidate) => candidate.position === "fallback")) {
+      return `${head} · fallback only`;
+    }
+    // A namespace claim gathered something the catalog does not list.
+    return `${head} · ${firstHopPhrase(explanation)}`;
+  }
+  return `catalog · ${firstHopPhrase(explanation)}`;
+}
+
+function firstHopPhrase(explanation: RouteExplanation): string {
+  if (explanation.outcome.kind === "no-route") return `no route (${explanation.outcome.cause})`;
+  const first = explanation.candidates.find((candidate) => candidate.outcome === "kept");
+  return first ? `${hopLabel(first)} first` : "no route";
+}

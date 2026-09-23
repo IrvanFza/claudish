@@ -64,7 +64,10 @@ DELETED, together with `mergeRoutingRules`, `retainKnownCatalogRoutingRules` and
 `validateDefaultRoutingRules`. `loadRoutingRules()` now returns the user's own global and
 project rules and nothing else.
 
-`routeBare` (`providers/routing-rules.ts`) has six steps, and only the first changed:
+`explainBareName` (`providers/routing-rules.ts`) has six steps, and only the first changed.
+`route()` and `explainRoute` both run it (through `explainRoutePlan`), so the chain `--probe` or
+the config TUI explains is the chain a request uses; `route()` only adds the two billing notices
+on stderr and keeps the `kept` candidates as its plan.
 
 1. **A user rule matches?** Use that chain **verbatim** — never merged, reordered or appended
    to, including by the fallback hop. `[]` is a match: the user said "no route".
@@ -103,7 +106,7 @@ so the filter and the transport answer the same question. Until 2026-09-23 it co
 string, answered "not-served" for every canonical id Devin carries, and "not-served" is the one
 verdict allowed to remove a candidate: a bare `swe-1.7` lost its Devin hop and went to the
 OpenRouter fallback ("swe-1.7 is not a valid model ID"), and the explicit `devin@swe-1.7` was
-refused outright, since `routeExplicit` runs the same check. A provider with no registered
+refused outright, since the explicit path (`explainExplicitSpec`) runs the same check. A provider with no registered
 resolver gets its id back unchanged, so this costs every other provider nothing. A new
 knob-encoding provider needs a resolver entry, or the filter will deny it by spelling.
 

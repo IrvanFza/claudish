@@ -434,7 +434,7 @@ export type RouteOracle = (spec: string) => Promise<RoutePlan>;
  * verdict, never creates one. So every path `resolveModelProvider` already gets
  * right (local transports, native Anthropic, custom endpoints, unknown providers)
  * is untouched, and explicit `provider@model` specs stay strict for free —
- * `routeExplicit` probes only the pinned provider and never falls back, so a
+ * `route()`'s explicit path probes only the pinned provider and never falls back, so a
  * pinned provider without credentials still returns `no-route` and still fails.
  *
  * Mutates the resolutions in place, mirroring the authority pass above.
