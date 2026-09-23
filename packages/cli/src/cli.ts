@@ -29,7 +29,7 @@ import {
   searchModels,
 } from "./model-loader.js";
 import { parseModelParams } from "./model-params.js";
-import { compareByReleaseDateDesc } from "./model-selector.js";
+import { compareByReleaseDateDesc, isPickableProvider } from "./model-selector.js";
 import {
   type CredentialLookup,
   type ProbeChainLink,
@@ -59,13 +59,18 @@ import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
 import { type ProbeResult, describeProbeState, probeLink } from "./providers/probe-live.js";
 import { type ProbeTarget, describeDropped, probeTargets } from "./providers/probe-runner.js";
-import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
+import {
+  BUILTIN_PROVIDERS,
+  type ProviderDefinition,
+  getProviderByName,
+} from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import {
   type RouteExplanation,
   type RouteWarning,
   type RuleScope,
+  TIER_LABEL,
   explainRoute,
 } from "./providers/routing-rules.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
@@ -1891,6 +1896,39 @@ async function probeModelRouting(
   }
 }
 
+/** One row of `--help`'s provider shortcut table. */
+export interface ProviderShortcutRow {
+  /** Every shortcut the provider answers to before `@`. */
+  shortcuts: string[];
+  displayName: string;
+  /** `local`, or the tier label routing gives the provider's hops. */
+  kind: string;
+}
+
+/**
+ * `--help`'s provider shortcut table, derived from the definitions: every
+ * pickable built-in provider (`isPickableProvider`: it has shortcuts) with all of
+ * its shortcuts, remote providers first, then local ones. A hand-written table
+ * here missed seven providers and carried model ids that went stale.
+ *
+ * No model ids: which models a provider serves is the cloud models catalog's and
+ * the account's to say, never a help screen's.
+ */
+export function providerShortcutRows(
+  providers: readonly ProviderDefinition[] = BUILTIN_PROVIDERS
+): ProviderShortcutRow[] {
+  const pickable = providers.filter(isPickableProvider);
+  const ordered = [
+    ...pickable.filter((def) => !def.isLocal),
+    ...pickable.filter((def) => def.isLocal),
+  ];
+  return ordered.map((def) => ({
+    shortcuts: [...def.shortcuts],
+    displayName: def.displayName,
+    kind: def.isLocal ? "local" : def.tier ? TIER_LABEL[def.tier] : "",
+  }));
+}
+
 /**
  * Print help message
  */
@@ -1913,6 +1951,18 @@ function printHelp(): void {
   // Section header helper — a colored, underlined title with a leading rule mark.
   const h = (title: string) => bold(cyan(`▌ ${title}`));
 
+  // Padded before colouring: an escape sequence has no width on screen.
+  const shortcutRows = providerShortcutRows();
+  const shortcutsOf = (row: ProviderShortcutRow) => row.shortcuts.join(", ");
+  const shortcutWidth = Math.max(...shortcutRows.map((row) => shortcutsOf(row).length));
+  const nameWidth = Math.max(...shortcutRows.map((row) => row.displayName.length));
+  const shortcutTable = shortcutRows
+    .map(
+      (row) =>
+        `    ${magenta(shortcutsOf(row).padEnd(shortcutWidth))} ${dim("->")} ${row.displayName.padEnd(nameWidth)}  ${dim(row.kind)}`
+    )
+    .join("\n");
+
   console.log(`
 ${bold("claudish")} ${dim("·")} Run Claude Code with any AI model
 ${dim("OpenRouter · Gemini · OpenAI · xAI · MiniMax · Kimi · GLM · Z.AI · Sakana · Poe · LiteLLM · Local")}
@@ -1931,32 +1981,8 @@ ${h("MODEL ROUTING")}
     ${magenta("ollama@llama3.2:3")}                ${dim("Local Ollama, 3 concurrent requests")}
     ${magenta("ollama@llama3.2:0")}                ${dim("Local Ollama, no limits")}
 
-  ${bold("Provider shortcuts:")}
-    ${magenta("g, gemini")}      ${dim("->")} Google Gemini       ${dim("google@gemini-3-pro")}
-    ${magenta("oai")}            ${dim("->")} OpenAI Direct       ${dim("oai@gpt-5.3")}
-    ${magenta("cx, codex")}      ${dim("->")} OpenAI Codex        ${dim("cx@gpt-5.3 (Responses API)")}
-    ${magenta("or")}             ${dim("->")} OpenRouter          ${dim("or@openai/gpt-5.3")}
-    ${magenta("x-ai, xai, grok")} ${dim("->")} xAI / Grok         ${dim("x-ai@grok-3")}
-    ${magenta("mm, mmax")}       ${dim("->")} MiniMax Direct      ${dim("mm@MiniMax-M2.1")}
-    ${magenta("mmc")}            ${dim("->")} MiniMax Coding      ${dim("mmc@MiniMax-M2.1")}
-    ${magenta("kimi, moon")}     ${dim("->")} Kimi Direct         ${dim("kimi@kimi-k2-thinking-turbo")}
-    ${magenta("kc")}             ${dim("->")} Kimi Coding         ${dim("kc@kimi-k2-thinking-turbo")}
-    ${magenta("glm, zhipu")}     ${dim("->")} GLM Direct          ${dim("glm@glm-4.7")}
-    ${magenta("gc")}             ${dim("->")} GLM Coding          ${dim("gc@glm-4.7")}
-    ${magenta("z-ai, zai")}      ${dim("->")} Z.AI Direct         ${dim("z-ai@glm-4.7")}
-    ${magenta("oc, llama, lc, meta")} ${dim("->")} OllamaCloud    ${dim("oc@llama-3.1")}
-    ${magenta("zen")}            ${dim("->")} OpenCode Zen        ${dim("zen@grok-code")}
-    ${magenta("zengo, zgo")}     ${dim("->")} OpenCode Zen Go     ${dim("zengo@grok-code")}
-    ${magenta("v, vertex")}      ${dim("->")} Vertex AI           ${dim("v@gemini-2.5-flash")}
-    ${magenta("poe")}            ${dim("->")} Poe                 ${dim("poe@GPT-4o")}
-    ${magenta("litellm, ll")}    ${dim("->")} LiteLLM             ${dim("ll@gpt-4o (needs LITELLM_BASE_URL)")}
-    ${magenta("ds")}             ${dim("->")} DeepSeek            ${dim("ds@deepseek-chat")}
-    ${magenta("sakana, fugu")}   ${dim("->")} Sakana Fugu         ${dim("fugu@fugu-ultra")}
-    ${magenta("sc")}             ${dim("->")} Sakana Subscription ${dim("sc@fugu-ultra")}
-    ${magenta("ollama")}         ${dim("->")} Ollama (local)      ${dim("ollama@llama3.2")}
-    ${magenta("lms, lmstudio")}  ${dim("->")} LM Studio (local)   ${dim("lms@qwen")}
-    ${magenta("vllm")}           ${dim("->")} vLLM (local)        ${dim("vllm@model")}
-    ${magenta("mlx")}            ${dim("->")} MLX (local)         ${dim("mlx@model")}
+  ${bold("Provider shortcuts:")} ${dim("(<shortcut>@<model>)")}
+${shortcutTable}
 
   ${bold("Native auto-detection")} ${dim("(when no provider specified):")}
     ${yellow("google/*, gemini-*")}      ${dim("->")} Google API
