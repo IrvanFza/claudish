@@ -2,7 +2,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 /** @jsxImportSource @opentui/react */
 import { useEffect, useRef } from "react";
 import type { ClaudishProfileConfig } from "../../profile-config.js";
-import { DEFAULT_FALLBACK_PROVIDER } from "../../providers/routing-rules.js";
+import { DEFAULT_FALLBACK_PROVIDER, TIER_LABEL } from "../../providers/routing-rules.js";
 import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
 import { providerIsReady } from "../providers.js";
@@ -76,38 +76,56 @@ function chainStr(chain: string[]): string {
   return chain.join(" → ");
 }
 
+/** The native passthrough's hop label: it has no tier; Claude Code's own auth serves it. */
+const NATIVE_HOP_LABEL = "Claude Code's own auth";
+
 /**
- * Reasons shown beneath each probe entry.
+ * A probe row's hop label: `TIER_LABEL` for the tier of the provider holding
+ * the hop, or "fallback" for the fallback POSITION whichever provider holds it,
+ * the rule `describeRouteExplanation` applies to the first hop.
  *
- * Exported for the drift test only. A provider missing from here renders its
- * bare uid (`entry.provider`) as its own explanation — which is not an error and
- * not visibly wrong, so the three Alibaba rows would silently read
- * "qwen-token-plan / qwen-coding / qwen-payg" instead of naming the three
- * products the user is choosing between. Nothing is DERIVED from this map; it
- * only labels. The Alibaba labels equal each definition's `displayName`, and
- * `qwen-coding-plan.test.ts` holds them to it.
+ * Derived, never a per-provider table. The map this replaces (19 hand-written
+ * reasons) labelled OpenRouter "Fallback" wherever it stood in a chain, and any
+ * provider it did not list read as its bare uid; a tier label is right for a
+ * provider added tomorrow with no edit here.
  */
-export const PROVIDER_REASONS: Record<string, string> = {
-  litellm: "LiteLLM proxy",
-  "opencode-zen": "Free tier (OpenCode Zen)",
-  "opencode-zen-go": "Zen Go plan",
-  kimi: "Native Kimi API",
-  "kimi-coding": "Kimi Coding Plan",
-  minimax: "Native MiniMax API",
-  "minimax-coding": "MiniMax Coding Plan",
-  glm: "Native GLM API",
-  "glm-coding": "GLM Coding Plan",
-  "qwen-token-plan": "Alibaba Token Plan",
-  "qwen-coding": "Alibaba Coding Plan",
-  "qwen-payg": "Alibaba PAYG",
-  google: "Direct Gemini API",
-  openai: "Direct OpenAI API",
-  "openai-codex": "OpenAI Codex (Responses API)",
-  zai: "Z.AI API",
-  ollamacloud: "Cloud Ollama",
-  vertex: "Vertex AI (ADC)",
-  openrouter: "Fallback: 580+ models",
-};
+export function hopLabel(entry: Pick<ProbeEntry, "status" | "tier" | "position">): string {
+  if (entry.status === "unverified") return NATIVE_HOP_LABEL;
+  if (entry.position === "fallback") return TIER_LABEL.fallback;
+  return entry.tier ? TIER_LABEL[entry.tier] : "unregistered provider";
+}
+
+/**
+ * The text of a probe row's second line: the provider's display name, which the
+ * first line truncates (the three Alibaba products are the definitions' own
+ * names: "Alibaba Coding Plan", "Alibaba Token Plan", "Alibaba PAYG"), then its
+ * hop label.
+ */
+export function probeRowLabel(
+  entry: Pick<ProbeEntry, "displayName" | "status" | "tier" | "position">
+): string {
+  return `${entry.displayName} · ${hopLabel(entry)}`;
+}
+
+/** The hop label's colour, read from `C` at render time, never snapshotted. */
+function hopLabelColor(entry: ProbeEntry): string {
+  if (entry.status === "dropped") return C.dim;
+  if (entry.status === "unverified") return C.cyan;
+  if (entry.position === "fallback") return C.yellow;
+  switch (entry.tier) {
+    case "subscription":
+    case "dynamic-subscription":
+      return C.green;
+    case "native":
+      return C.cyan;
+    case "gateway":
+      return C.blue;
+    case "fallback":
+      return C.yellow;
+    default:
+      return C.dim;
+  }
+}
 
 interface RoutingContentProps {
   config: ClaudishProfileConfig;
@@ -318,7 +336,6 @@ export function RoutingContent({
           const isSelected = entry.status === "success" && probeMode === "done";
           const status = rowStatusView(entry);
           const nameCol = entry.displayName.padEnd(18).substring(0, 18);
-          const reason = PROVIDER_REASONS[entry.provider] ?? entry.provider;
 
           return (
             <box key={`${idx}:${entry.provider}`} flexDirection="column">
@@ -341,8 +358,11 @@ export function RoutingContent({
                 )}
               </text>
               <text>
+                {/* probeRowLabel's two parts, the label in its tier colour */}
                 <span fg={C.dim}>{"    ↳ "}</span>
-                <span fg={isDropped ? C.dim : C.fgMuted}>{reason}</span>
+                <span fg={isDropped ? C.dim : C.fgMuted}>{entry.displayName}</span>
+                <span fg={C.dim}>{" · "}</span>
+                <span fg={hopLabelColor(entry)}>{hopLabel(entry)}</span>
               </text>
             </box>
           );
