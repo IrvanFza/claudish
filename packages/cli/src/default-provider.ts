@@ -46,6 +46,15 @@ export interface ResolveOptions {
  *   3. config.json defaultProvider
  *   4. OPENROUTER_API_KEY present → "openrouter"
  *   5. hardcoded "openrouter"
+ *
+ * An explicit `""` from the env var or the config file is an ANSWER, not a gap:
+ * it returns `{ provider: "" }`, which `route()` reads as "no fallback hop"
+ * (`fallbackProviderFor`). Skipping it, as this function once did, turned the
+ * documented off switch into `openrouter` for every caller that asked here.
+ * So an env `""` beats a config `x`, and a flag `x` beats an env `""`.
+ *
+ * An empty `cliFlag` is different: it means the caller parsed no flag, and it
+ * falls through.
  */
 export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultProvider {
   const env = opts.env ?? process.env;
@@ -55,16 +64,15 @@ export function resolveDefaultProvider(opts: ResolveOptions): ResolvedDefaultPro
   }
 
   const envVal = env.CLAUDISH_DEFAULT_PROVIDER;
-  if (envVal && envVal.length > 0) {
+  if (envVal !== undefined) {
     return { provider: envVal, source: "env-var", legacyAutoPromoted: false };
   }
 
-  if (opts.config.defaultProvider && opts.config.defaultProvider.length > 0) {
-    return {
-      provider: opts.config.defaultProvider,
-      source: "config-file",
-      legacyAutoPromoted: false,
-    };
+  // `typeof`, not `!== undefined`: the config is hand-edited JSON, and a `null`
+  // there is not a provider name.
+  const configured = opts.config.defaultProvider;
+  if (typeof configured === "string") {
+    return { provider: configured, source: "config-file", legacyAutoPromoted: false };
   }
 
   if (env.OPENROUTER_API_KEY) {
