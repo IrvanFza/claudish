@@ -28,8 +28,8 @@ import {
   type RouteExplanation,
   type RouteWarning,
   type RuleScope,
-  TIER_LABEL,
   describeRouteExplanation,
+  hopLabel,
 } from "../providers/routing-rules.js";
 import type { ProbeResultLink } from "./probe-tui-app.js";
 
@@ -79,15 +79,6 @@ export interface CredentialLookup {
 /** The label a native link shows in place of a tier. */
 export const NATIVE_LINK_LABEL = "Claude Code's own auth";
 
-/**
- * A hop's label: the fallback POSITION overrides the tier of whichever provider
- * holds it. The same rule `describeRouteExplanation` words its "… first" with.
- */
-export function hopLabelOf(candidate: Pick<ExplainedCandidate, "position" | "tier">): string {
-  if (candidate.position === "fallback") return TIER_LABEL.fallback;
-  return candidate.tier ? TIER_LABEL[candidate.tier] : "unregistered provider";
-}
-
 /** The kept chain and the dropped candidates of one explanation. */
 export function probeChainFrom(
   explanation: RouteExplanation,
@@ -128,7 +119,7 @@ function keptLinkOf(candidate: ExplainedCandidate, credentials: CredentialLookup
     wireId: candidate.wireId,
     position: candidate.position,
     ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
-    label: hopLabelOf(candidate),
+    label: hopLabel(candidate),
     ...(candidate.availability ? { availability: candidate.availability } : {}),
     hasCredentials: true,
     ...(provenance ? { provenance } : {}),
@@ -147,7 +138,7 @@ function droppedLinkOf(
     wireId: candidate.wireId,
     position: candidate.position,
     ...(candidate.tier !== undefined ? { tier: candidate.tier } : {}),
-    label: hopLabelOf(candidate),
+    label: hopLabel(candidate),
     outcome,
     ...(hint ? { credentialHint: hint } : {}),
   };

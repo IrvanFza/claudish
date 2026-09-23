@@ -7,7 +7,7 @@ import {
   resolveDefaultProvider,
 } from "../../default-provider.js";
 import type { ClaudishProfileConfig, RoutingRules } from "../../profile-config.js";
-import { TIER_LABEL } from "../../providers/routing-rules.js";
+import { hopLabel as candidateHopLabel } from "../../providers/routing-rules.js";
 import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
 import { providerIsReady } from "../providers.js";
@@ -242,9 +242,10 @@ function rulesOfScope(mergedRules: MergedRule[], scope: MergedRule["kind"]): Rou
 const NATIVE_HOP_LABEL = "Claude Code's own auth";
 
 /**
- * A probe row's hop label: `TIER_LABEL` for the tier of the provider holding
- * the hop, or "fallback" for the fallback POSITION whichever provider holds it,
- * the rule `describeRouteExplanation` applies to the first hop.
+ * A probe row's hop label: the native row's own auth, else routing-rules.ts's
+ * `hopLabel` — the tier of the provider holding the hop, or "fallback" for the
+ * fallback POSITION whichever provider holds it. `--probe` labels its hops with
+ * the same function, and `describeRouteExplanation` words its "… first" with it.
  *
  * Derived, never a per-provider table. The map this replaces (19 hand-written
  * reasons) labelled OpenRouter "Fallback" wherever it stood in a chain, and any
@@ -253,8 +254,7 @@ const NATIVE_HOP_LABEL = "Claude Code's own auth";
  */
 export function hopLabel(entry: Pick<ProbeEntry, "status" | "tier" | "position">): string {
   if (entry.status === "unverified") return NATIVE_HOP_LABEL;
-  if (entry.position === "fallback") return TIER_LABEL.fallback;
-  return entry.tier ? TIER_LABEL[entry.tier] : "unregistered provider";
+  return candidateHopLabel(entry);
 }
 
 /**

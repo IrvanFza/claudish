@@ -1526,8 +1526,15 @@ export const TIER_LABEL: Record<RouteTier, string> = {
   fallback: "fallback",
 };
 
-/** A hop's label: the fallback POSITION overrides the tier of whichever provider holds it. */
-function hopLabel(candidate: ExplainedCandidate): string {
+/**
+ * A hop's label: the fallback POSITION overrides the tier of whichever provider
+ * holds it. The one copy of the rule: `describeRouteExplanation` words its
+ * "… first" with it, and `--probe` and the config TUI label their rows with it.
+ */
+export function hopLabel(candidate: {
+  position?: ExplainedCandidate["position"];
+  tier?: RouteTier;
+}): string {
   if (candidate.position === "fallback") return TIER_LABEL.fallback;
   return candidate.tier ? TIER_LABEL[candidate.tier] : "unregistered provider";
 }
