@@ -408,10 +408,6 @@ export function RoutingContent({
         </box>
         <text> </text>
         <text>
-          <span fg={C.dim}>{"Examples: kimi-k2  deepseek-r1  gemini-2.0-flash  gpt-4o"}</span>
-        </text>
-        <text> </text>
-        <text>
           <span fg={C.fgMuted}>
             {"The probe shows the routing chain a request would use, then tests"}
           </span>
