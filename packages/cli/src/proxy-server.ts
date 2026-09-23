@@ -590,7 +590,9 @@ export async function createProxyServer(
   // Problems in those rules, reported ONCE, here: before Claude Code owns the
   // terminal, and through logStderr, which the quiet flag and a diagnostics pane
   // both govern. `loadRoutingRules` prints nothing, because it also runs inside the
-  // config TUI and the `--probe` TUI (and on every `route()` call).
+  // config TUI and the `--probe` TUI (and on every `route()` call). The custom and
+  // bundled endpoints were registered above, so a rule naming one is not reported
+  // as an unknown provider.
   for (const problem of routingRuleProblems(routingRuleSources)) {
     logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
   }

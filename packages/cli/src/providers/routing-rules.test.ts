@@ -8,7 +8,7 @@ import { catalogRouteForProvider } from "./catalog-route-bindings.js";
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
@@ -37,12 +37,19 @@ import {
 import "./model-discovery-builtins.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
+  type ExplainRouteOptions,
+  type RouteExplanation,
   type RoutePlan,
   buildRoutingChain,
+  describeRouteExplanation,
+  explainRoute,
   loadRoutingRules,
   matchRoutingRule,
+  matchRoutingRuleKey,
   normalizeGlmSlug,
   route,
+  routingRuleProblems,
+  toRoutePlan,
   validateRoutingRulesAgainstProviders,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
@@ -55,6 +62,12 @@ const STAGE4_CATALOG_FIXTURE = join(
   "..",
   "test-fixtures",
   "stage4-default-provider-catalog.json"
+);
+const STAGE5_CATALOG_FIXTURE = join(
+  import.meta.dir,
+  "..",
+  "test-fixtures",
+  "stage5-explain-route-catalog.json"
 );
 function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
@@ -1834,6 +1847,741 @@ describe("route() metered-billing notice characterization", () => {
     } finally {
       fixture.cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 5 — explainRoute, derivation, and rule warnings
+// ---------------------------------------------------------------------------
+
+describe("matchRoutingRuleKey", () => {
+  const rules: RoutingRules = {
+    "GLM-5.2": ["glm"],
+    "glm-*": ["openrouter"],
+    "glm-5-*": ["z-ai"],
+    "*": ["openai"],
+  };
+
+  test("returns the stored exact key case-insensitively", () => {
+    expect(matchRoutingRuleKey("glm-5.2", rules)).toBe("GLM-5.2");
+  });
+
+  test("returns the longest matching glob", () => {
+    expect(matchRoutingRuleKey("glm-5-fast", rules)).toBe("glm-5-*");
+  });
+
+  test("returns the catch-all key when no specific rule matches", () => {
+    expect(matchRoutingRuleKey("some-other-model", rules)).toBe("*");
+  });
+
+  test("returns null when no rule matches", () => {
+    expect(matchRoutingRuleKey("some-other-model", { "glm-*": ["glm"] })).toBeNull();
+  });
+});
+
+interface Stage5SandboxResult {
+  diag: string[];
+  consoleErrors: string[];
+  problems: Array<{
+    scope: "global" | "project";
+    pattern: string;
+    problem: "multiple-wildcards" | "case-collision" | "unknown-provider";
+    entry?: string;
+    collidesWith?: string;
+  }>;
+  localRule: { matchedPattern?: string; ruleScope?: string; description: string };
+  globalRule: { matchedPattern?: string; ruleScope?: string; description: string };
+  catalogDenied: {
+    fallbackWithheld?: string;
+    providers: string[];
+  };
+  membershipFallback: Array<{ provider: string; position: string; outcome: string }>;
+}
+
+let cachedStage5SandboxResult: Stage5SandboxResult | undefined;
+
+function stage5SandboxResult(): Stage5SandboxResult {
+  if (cachedStage5SandboxResult) return cachedStage5SandboxResult;
+
+  const home = mkdtempSync(join(tmpdir(), "claudish-stage5-explain-"));
+  const configDir = join(home, ".claudish");
+  const projectDir = join(home, "project");
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(configDir, "config.json"),
+    JSON.stringify({
+      version: "1.0.0",
+      defaultProfile: "default",
+      profiles: {},
+      routing: {
+        "glm-*": ["openrouter"],
+        "a**b": ["openrouter"],
+        "Kimi-X": ["kimi"],
+        "kimi-x": ["kimi"],
+        "typo-*": ["typo-one", "sandbox-ep", "together"],
+      },
+      customEndpoints: {
+        "sandbox-ep": {
+          kind: "simple",
+          url: "https://sandbox-ep.invalid/v1",
+          format: "openai",
+          apiKey: "stage5-test-key",
+        },
+      },
+    }),
+    "utf8"
+  );
+  writeFileSync(
+    join(projectDir, ".claudish.json"),
+    JSON.stringify({ routing: { "glm-5*": ["sandbox-ep"], "x*y*z": ["glm"] } }),
+    "utf8"
+  );
+  writeFileSync(
+    join(configDir, "probe-models.json"),
+    JSON.stringify({
+      version: 3,
+      generationId: "stage5-test-generation",
+      generatedAt: "2026-09-24T00:00:00.000Z",
+      providers: { openrouter: "probe-model", openai: "probe-model" },
+      unavailable: {},
+    }),
+    "utf8"
+  );
+
+  const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
+  const authorityModuleUrl = new URL("../auth/credentials/authority.ts", import.meta.url).href;
+  const loggerModuleUrl = new URL("../logger.ts", import.meta.url).href;
+  const script = `
+    const rr = await import(${JSON.stringify(routingModuleUrl)});
+    const { credentials } = await import(${JSON.stringify(authorityModuleUrl)});
+    const { setDiagOutput } = await import(${JSON.stringify(loggerModuleUrl)});
+    credentials.isAvailable = async (provider) => provider === "sandbox-ep";
+    credentials.describeReadiness = async (provider) => ({
+      readiness: provider === "sandbox-ep" ? "present" : "absent",
+    });
+    credentials.getRequestAuth = async () => ({
+      headers: { Authorization: "Bearer stage5-offline" },
+    });
+    globalThis.fetch = async () => new Response("offline", { status: 503 });
+
+    const diag = [];
+    const consoleErrors = [];
+    const realConsoleError = console.error;
+    setDiagOutput({ write: (message) => diag.push(message), cleanup() {} });
+    console.error = (...args) => consoleErrors.push(args.map(String).join(" "));
+    let output;
+    try {
+      const first = await rr.explainRoute("typo-x", {
+        cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
+      });
+      const local = await rr.explainRoute("glm-5.3", {
+        cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
+      });
+      const global = await rr.explainRoute("glm-4.6", {
+        cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
+      });
+      const denied = await rr.explainRoute("cat-denied", {
+        rules: {},
+        cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
+      });
+      const membershipFallback = await rr.explainRoute("plan-less", {
+        rules: {},
+        defaultProvider: "kimi-coding",
+        cachePath: ${JSON.stringify(STAGE5_CATALOG_FIXTURE)},
+      });
+      output = {
+        diag,
+        consoleErrors,
+        problems: first.warnings
+          .filter((warning) => warning.type === "rule-problem")
+          .map((warning) => warning.problem),
+        localRule: {
+          matchedPattern: local.matchedPattern,
+          ruleScope: local.ruleScope,
+          description: rr.describeRouteExplanation(local),
+        },
+        globalRule: {
+          matchedPattern: global.matchedPattern,
+          ruleScope: global.ruleScope,
+          description: rr.describeRouteExplanation(global),
+        },
+        catalogDenied: {
+          fallbackWithheld: denied.fallbackWithheld,
+          providers: denied.candidates.map((candidate) => candidate.provider),
+        },
+        membershipFallback: membershipFallback.candidates.map((candidate) => ({
+          provider: candidate.provider,
+          position: candidate.position,
+          outcome: candidate.outcome,
+        })),
+      };
+    } finally {
+      console.error = realConsoleError;
+      setDiagOutput(null);
+    }
+    process.stdout.write(JSON.stringify(output));
+  `;
+  const env: Record<string, string> = {
+    HOME: home,
+    PATH: process.env.PATH ?? "",
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_DISABLE_KEYCHAIN: "1",
+    CLAUDISH_DISABLE_OP: "1",
+  };
+
+  try {
+    const result = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: projectDir,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = result.stdout.toString();
+    const stderr = result.stderr.toString();
+    if (result.exitCode !== 0) {
+      throw new Error(`Stage 5 sandbox failed (${result.exitCode}): ${stderr || stdout}`);
+    }
+    cachedStage5SandboxResult = JSON.parse(stdout) as Stage5SandboxResult;
+    return cachedStage5SandboxResult;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function stage5RuntimeProvider(name: string): ProviderDefinition {
+  return {
+    name,
+    displayName: name,
+    tier: "native",
+    transport: "openai",
+    baseUrl: `https://${name}.invalid`,
+    apiPath: "/v1/chat/completions",
+    apiKeyEnvVar: `${name.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+    apiKeyDescription: "Offline Stage 5 routing-test key",
+    apiKeyUrl: "https://example.invalid/key",
+    shortcuts: [],
+    legacyPrefixes: [],
+    createHandler: {
+      kind: "none",
+      reason: "virtual",
+      note: "Stage 5 test fixture — never builds a handler.",
+    },
+    isDirectApi: true,
+  };
+}
+
+describe("explainRoute", () => {
+  const realFetch = globalThis.fetch;
+  const realIsAvailable = credentials.isAvailable;
+  const realDescribeReadiness = credentials.describeReadiness;
+  const realGetRequestAuth = credentials.getRequestAuth;
+  const antigravityFetcher = getModelDiscoveryFetcher("antigravity");
+
+  let readiness = new Map<string, "present" | "absent" | "failed">();
+  let antigravityModels: string[] = [];
+  let liveModels = new Map<string, string[]>();
+  let previousKeychainGuard: string | undefined;
+  let previousOpGuard: string | undefined;
+
+  function setReadiness(values: Record<string, "present" | "absent" | "failed">): void {
+    readiness = new Map(Object.entries(values));
+  }
+
+  function resetDiscovery(): void {
+    invalidateModelDiscovery();
+  }
+
+  beforeEach(() => {
+    previousKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    previousOpGuard = process.env.CLAUDISH_DISABLE_OP;
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+    process.env.CLAUDISH_DISABLE_OP = "1";
+    readiness = new Map();
+    antigravityModels = [];
+    liveModels = new Map();
+    _resetCatalogClient();
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+    registerRuntimeProvider(stage5RuntimeProvider("kept-metered"));
+    registerRuntimeProvider(stage5RuntimeProvider("no-cred"));
+    registerRuntimeProvider(stage5RuntimeProvider("fallback-no-cred"));
+    credentials.isAvailable = async (provider: string) => readiness.get(provider) === "present";
+    credentials.describeReadiness = async (provider: string) => ({
+      readiness: readiness.get(provider) ?? "absent",
+    });
+    credentials.getRequestAuth = async () => ({
+      headers: { Authorization: "Bearer stage5-offline" },
+    });
+    registerModelDiscoveryFetcher("antigravity", async () => ({
+      kind: "models",
+      models: antigravityModels.map((id) => ({ id })),
+    }));
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const rawUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const ids = liveModels.get(new URL(rawUrl).hostname);
+      if (!ids) return new Response("offline", { status: 503 });
+      return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    if (previousKeychainGuard === undefined) delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    else process.env.CLAUDISH_DISABLE_KEYCHAIN = previousKeychainGuard;
+    if (previousOpGuard === undefined) delete process.env.CLAUDISH_DISABLE_OP;
+    else process.env.CLAUDISH_DISABLE_OP = previousOpGuard;
+    credentials.isAvailable = realIsAvailable;
+    credentials.describeReadiness = realDescribeReadiness;
+    credentials.getRequestAuth = realGetRequestAuth;
+    credentials.invalidate();
+    if (antigravityFetcher) {
+      registerModelDiscoveryFetcher("antigravity", antigravityFetcher);
+    }
+    globalThis.fetch = realFetch;
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+    _resetCatalogClient();
+    setDiagOutput(null);
+  });
+
+  test("records every candidate outcome in chain order", async () => {
+    setReadiness({ antigravity: "present", "minimax-coding": "failed", "kept-metered": "present" });
+    antigravityModels = ["some-other-model"];
+
+    const explanation = await explainRoute("rule-mix", {
+      rules: {
+        "rule-*": [
+          "kimi-coding",
+          "antigravity@rule-mix",
+          "minimax-coding@rule-mix",
+          "kept-metered@rule-mix",
+          "no-cred@rule-mix",
+        ],
+      },
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+
+    expect(explanation.source).toBe("user-rule");
+    expect(explanation.matchedPattern).toBe("rule-*");
+    expect(explanation.candidates.map(({ provider, outcome }) => [provider, outcome])).toEqual([
+      ["kimi-coding", "excluded-by-membership"],
+      ["antigravity", "not-served"],
+      ["minimax-coding", "credential-unreadable"],
+      ["kept-metered", "kept"],
+      ["no-cred", "no-credential"],
+    ]);
+    expect(explanation.warnings.map((warning) => warning.type)).toEqual([
+      "subscription-not-served",
+      "subscription-credential-unreadable",
+    ]);
+  });
+
+  test("records all fallback withholding values and catalog states", async () => {
+    const alreadyGathered = await explainRoute("cat-found", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const absent = await explainRoute("no-such-model-xyz", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const disabled = await explainRoute("no-such-model-xyz", {
+      rules: {},
+      defaultProvider: "",
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const unreadable = await explainRoute("whatever-x", {
+      rules: {},
+      cachePath: join(import.meta.dir, "missing-stage5-catalog.json"),
+    });
+    const catalogDenied = stage5SandboxResult().catalogDenied;
+
+    expect({
+      catalog: alreadyGathered.catalog,
+      withheld: alreadyGathered.fallbackWithheld,
+    }).toEqual({ catalog: "found", withheld: "already-gathered" });
+    expect(absent.catalog).toBe("absent");
+    expect({ catalog: disabled.catalog, withheld: disabled.fallbackWithheld }).toEqual({
+      catalog: "absent",
+      withheld: "disabled",
+    });
+    expect({ catalog: unreadable.catalog, withheld: unreadable.fallbackWithheld }).toEqual({
+      catalog: "unreadable",
+      withheld: "catalog-unreadable",
+    });
+    expect(catalogDenied).toEqual({
+      fallbackWithheld: "catalog-denies",
+      providers: ["openai"],
+    });
+  });
+
+  test("keeps membership exclusion on the fallback position", async () => {
+    expect(stage5SandboxResult().membershipFallback).toEqual([
+      {
+        provider: "kimi-coding",
+        position: "fallback",
+        outcome: "excluded-by-membership",
+      },
+    ]);
+  });
+
+  test("records every source, explicit via, rule scope, and routed model", async () => {
+    setReadiness({ openrouter: "present" });
+    const native = await explainRoute("opus", { cachePath: STAGE5_CATALOG_FIXTURE });
+    const explicit = await explainRoute("anthropic/claude-opus-5", {
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const userRule = await explainRoute("rule-mix", {
+      rules: { "rule-*": [] },
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const glm = await explainRoute("glm-5-2", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const vendorQualified = await explainRoute("openai/gpt-5", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+    const sandbox = stage5SandboxResult();
+
+    expect(native).toMatchObject({ source: "native", requestedModel: "opus", routedModel: "opus" });
+    expect(native.candidates).toEqual([]);
+    expect(describeRouteExplanation(native)).toBe("native · Claude Code's own auth · not probed");
+    expect(explicit).toMatchObject({
+      source: "explicit",
+      via: "vendor-qualified-id",
+      requestedModel: "anthropic/claude-opus-5",
+      routedModel: "anthropic/claude-opus-5",
+    });
+    expect(describeRouteExplanation(explicit)).toBe(
+      "explicit · OpenRouter · vendor-qualified id sent verbatim"
+    );
+    expect(userRule).toMatchObject({ source: "user-rule", matchedPattern: "rule-*" });
+    expect(glm).toMatchObject({
+      source: "catalog",
+      requestedModel: "glm-5-2",
+      routedModel: "glm-5.2",
+      catalog: "found",
+    });
+    expect(vendorQualified).toMatchObject({
+      source: "catalog",
+      requestedModel: "openai/gpt-5",
+      routedModel: "gpt-5",
+      catalog: "found",
+    });
+    expect(sandbox.localRule).toEqual({
+      matchedPattern: "glm-5*",
+      ruleScope: "project",
+      description: 'user rule "glm-5*" (project)',
+    });
+    expect(sandbox.globalRule).toEqual({
+      matchedPattern: "glm-*",
+      ruleScope: "global",
+      description: 'user rule "glm-*" (global)',
+    });
+  });
+
+  test("records every reachable no-route cause", async () => {
+    const causes = new Set<string>();
+    const record = (explanation: RouteExplanation): void => {
+      expect(explanation.outcome.kind).toBe("no-route");
+      if (explanation.outcome.kind === "no-route") causes.add(explanation.outcome.cause);
+    };
+
+    record(
+      await explainRoute("blocked", {
+        rules: { blocked: [] },
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+    record(
+      await explainRoute("whatever-x", {
+        rules: {},
+        cachePath: join(import.meta.dir, "missing-stage5-catalog.json"),
+      })
+    );
+    record(
+      await explainRoute("no-such-model-xyz", {
+        rules: {},
+        defaultProvider: "",
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+    record(
+      await explainRoute("no-such-model-xyz", {
+        rules: {},
+        defaultProvider: "fallback-no-cred",
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+
+    setReadiness({ antigravity: "present" });
+    antigravityModels = ["some-other-model"];
+    resetDiscovery();
+    record(
+      await explainRoute("bare-not-served", {
+        rules: { "bare-not-served": ["antigravity@bare-not-served"] },
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+
+    setReadiness({});
+    resetDiscovery();
+    record(
+      await explainRoute("openai@gpt-5", {
+        rules: {},
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+
+    setReadiness({ antigravity: "present" });
+    antigravityModels = ["some-other-model"];
+    resetDiscovery();
+    record(
+      await explainRoute("antigravity@explicit-not-served", {
+        rules: {},
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      })
+    );
+
+    expect(causes).toEqual(
+      new Set([
+        "rule-empty",
+        "catalog-unreadable",
+        "catalog-empty",
+        "no-credential",
+        "not-served",
+        "explicit-no-credential",
+        "explicit-not-served",
+      ])
+    );
+  });
+
+  test("an explicit provider@model pins its wire id instead of applying membership", async () => {
+    setReadiness({ "kimi-coding": "present" });
+    const explanation = await explainRoute("kimi-coding@plan-less", {
+      rules: {},
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    });
+
+    // `explicit-unbuildable` cannot be reached through provider@model: the `@`
+    // path deliberately bypasses plan membership because the user pinned a wire
+    // id. Membership exclusion only runs for an @-less routing entry.
+    expect(explanation.candidates[0]).toMatchObject({
+      provider: "kimi-coding",
+      wireId: "plan-less",
+      outcome: "kept",
+    });
+    expect(explanation.outcome).toEqual({ kind: "ok" });
+  });
+
+  test("drops an uncredentialed fallback and never returns it as a route", async () => {
+    const opts: ExplainRouteOptions = {
+      rules: {},
+      defaultProvider: "fallback-no-cred",
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    };
+    const explanation = await explainRoute("no-such-model-xyz", opts);
+    const plan = await route("no-such-model-xyz", opts.rules, opts.defaultProvider, opts.cachePath);
+
+    expect(explanation.candidates).toHaveLength(1);
+    expect(explanation.candidates[0]).toMatchObject({
+      provider: "fallback-no-cred",
+      position: "fallback",
+      outcome: "no-credential",
+    });
+    expect(explanation.outcome).toMatchObject({ kind: "no-route", cause: "no-credential" });
+    expect(toRoutePlan(explanation)).toEqual(plan);
+    expect(plan.kind).toBe("no-route");
+  });
+
+  test("filters a non-kept fallback even when another candidate routes", async () => {
+    setReadiness({ openai: "present" });
+    liveModels.set("api.openai.com", ["cat-denied"]);
+    const opts: ExplainRouteOptions = {
+      rules: {},
+      defaultProvider: "fallback-no-cred",
+      cachePath: STAGE5_CATALOG_FIXTURE,
+    };
+    const explanation = await explainRoute("cat-denied", opts);
+    resetDiscovery();
+    const plan = await route("cat-denied", opts.rules, opts.defaultProvider, opts.cachePath);
+
+    expect(
+      explanation.candidates.map(({ provider, position, outcome }) => ({
+        provider,
+        position,
+        outcome,
+      }))
+    ).toEqual([
+      { provider: "openai", position: "candidate", outcome: "kept" },
+      { provider: "fallback-no-cred", position: "fallback", outcome: "no-credential" },
+    ]);
+    expect(toRoutePlan(explanation)).toEqual(plan);
+    expect(plan).toEqual({
+      kind: "ok",
+      primary: { provider: "openai", modelSpec: "oai@cat-denied", displayName: "OpenAI" },
+      fallbacks: [],
+    });
+  });
+
+  test("derives route() from explanations over representative targets", async () => {
+    const cases: Array<{
+      target: string;
+      opts: ExplainRouteOptions;
+      ready?: Record<string, "present" | "absent" | "failed">;
+      antigravity?: string[];
+    }> = [
+      {
+        target: "rule-mix",
+        opts: {
+          rules: { "rule-mix": ["minimax-coding@rule-mix", "kept-metered@rule-mix"] },
+          cachePath: STAGE5_CATALOG_FIXTURE,
+        },
+        ready: { "minimax-coding": "failed", "kept-metered": "present" },
+      },
+      {
+        target: "no-such-model-xyz",
+        opts: {
+          rules: {},
+          defaultProvider: "fallback-no-cred",
+          cachePath: STAGE5_CATALOG_FIXTURE,
+        },
+      },
+      {
+        target: "cat-found",
+        opts: { rules: {}, cachePath: STAGE5_CATALOG_FIXTURE },
+      },
+      {
+        target: "openai@gpt-5",
+        opts: { rules: {}, cachePath: STAGE5_CATALOG_FIXTURE },
+      },
+      {
+        target: "antigravity@explicit-not-served",
+        opts: { rules: {}, cachePath: STAGE5_CATALOG_FIXTURE },
+        ready: { antigravity: "present" },
+        antigravity: ["some-other-model"],
+      },
+      {
+        target: "glm-5-2",
+        opts: { rules: {}, cachePath: STAGE5_CATALOG_FIXTURE },
+      },
+    ];
+
+    for (const testCase of cases) {
+      setReadiness(testCase.ready ?? {});
+      antigravityModels = testCase.antigravity ?? [];
+      resetDiscovery();
+      const explanation = await explainRoute(testCase.target, testCase.opts);
+      resetDiscovery();
+      const notices: string[] = [];
+      setDiagOutput({ write: (message) => notices.push(message), cleanup() {} });
+      let plan: RoutePlan;
+      try {
+        plan = await route(
+          testCase.target,
+          testCase.opts.rules,
+          testCase.opts.defaultProvider,
+          testCase.opts.cachePath
+        );
+      } finally {
+        setDiagOutput(null);
+      }
+      expect(toRoutePlan(explanation)).toEqual(plan);
+    }
+  });
+
+  test("never writes diagnostics or console errors", async () => {
+    setReadiness({ "minimax-coding": "failed", "kept-metered": "present" });
+    const diagnostics: string[] = [];
+    setDiagOutput({ write: (message) => diagnostics.push(message), cleanup() {} });
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await explainRoute("rule-mix", {
+        rules: { "rule-mix": ["minimax-coding@rule-mix", "kept-metered@rule-mix"] },
+        cachePath: STAGE5_CATALOG_FIXTURE,
+      });
+      expect(diagnostics).toEqual([]);
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      setDiagOutput(null);
+    }
+  });
+});
+
+describe("routing rule warnings", () => {
+  test("loadRoutingRules does not print a multiple-wildcard problem", () => {
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(loadRoutingRules({ globalRules: { "a**b": ["openrouter"] }, localRules: {} })).toEqual(
+        { "a**b": ["openrouter"] }
+      );
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  test("returns wildcard and case-collision problems with their scopes", () => {
+    expect(
+      routingRuleProblems({
+        globalRules: { "a**b": [], "Kimi-X": [], "kimi-x": [] },
+        localRules: { "x*y*z": [] },
+      })
+    ).toEqual([
+      { scope: "global", pattern: "a**b", problem: "multiple-wildcards" },
+      {
+        scope: "global",
+        pattern: "kimi-x",
+        problem: "case-collision",
+        collidesWith: "Kimi-X",
+      },
+      { scope: "project", pattern: "x*y*z", problem: "multiple-wildcards" },
+    ]);
+  });
+
+  test("reports unknown providers but exempts bundled and registered custom endpoints", () => {
+    const direct = routingRuleProblems({
+      globalRules: { "typo-*": ["typo-one", "together"] },
+      localRules: {},
+    });
+    expect(direct.filter((problem) => problem.problem === "unknown-provider")).toEqual([
+      {
+        scope: "global",
+        pattern: "typo-*",
+        problem: "unknown-provider",
+        entry: "typo-one",
+      },
+    ]);
+
+    const sandbox = stage5SandboxResult();
+    expect(sandbox.diag).toEqual([]);
+    expect(sandbox.consoleErrors).toEqual([]);
+    expect(sandbox.problems).toEqual([
+      { scope: "global", pattern: "a**b", problem: "multiple-wildcards" },
+      {
+        scope: "global",
+        pattern: "kimi-x",
+        problem: "case-collision",
+        collidesWith: "Kimi-X",
+      },
+      {
+        scope: "global",
+        pattern: "typo-*",
+        problem: "unknown-provider",
+        entry: "typo-one",
+      },
+      { scope: "project", pattern: "x*y*z", problem: "multiple-wildcards" },
+    ]);
+    expect(sandbox.problems.some((problem) => problem.entry === "sandbox-ep")).toBe(false);
+    expect(sandbox.problems.some((problem) => problem.entry === "together")).toBe(false);
   });
 });
 

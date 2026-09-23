@@ -15,6 +15,7 @@ import { providerServesModel } from "./model-availability.js";
 import { AUTO_ROUTE_PROVIDER, PROVIDER_SHORTCUTS } from "./model-parser.js";
 import { parseModelSpec } from "./model-parser.js";
 import { type NativeRoute, proxyRouteDecision } from "./native-route.js";
+import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import { type RouteTier, getProviderByName } from "./provider-definitions.js";
 import {
   type RouteCandidate,
@@ -76,39 +77,29 @@ export function loadRoutingRuleSources(): RoutingRuleSources {
 }
 
 /**
- * Validate that every provider name a routing rules table references exists in
- * `provider-definitions.ts`. Walks each entry, strips the optional `@model`
- * suffix, resolves shortcuts (e.g. `or` → `openrouter`), and looks each
- * canonical provider up.
+ * Validate that every provider name a routing rules table references exists.
+ * The `unknown-provider` problems of {@link routingRuleProblems}, thrown.
  *
  * Throws, so it is for a caller that wants a typo to be loud — a config
  * validator or a test — never the request path. `loadRoutingRules` deliberately
  * does not call it: a user whose hand-written rule names a provider claudish
- * dropped should get a degraded chain and a warning, not a crash on every
- * request.
+ * dropped should get a degraded chain and a warning (`routingRuleProblems`), not
+ * a crash on every request.
  *
  * Its subject used to be the shipped table, which is gone. What remains to
  * check is the USER's rules, which is the only table left.
  */
 export function validateRoutingRulesAgainstProviders(rules: RoutingRules): void {
-  const unknown: Array<{ rule: string; entry: string; provider: string }> = [];
-
-  for (const ruleKey of Object.keys(rules)) {
-    const entries = rules[ruleKey] ?? [];
-    for (const entry of entries) {
-      const atIdx = entry.indexOf("@");
-      const providerRaw = atIdx === -1 ? entry : entry.slice(0, atIdx);
-      const canonical = PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
-      if (!getProviderByName(canonical)) {
-        unknown.push({ rule: ruleKey, entry, provider: canonical });
-      }
-    }
-  }
+  // The scope is not part of the message; the table is checked as one file.
+  const unknown = ruleTableProblems(rules, "global").filter(
+    (problem) => problem.problem === "unknown-provider"
+  );
 
   if (unknown.length > 0) {
-    const lines = unknown.map(
-      (u) => `  rule "${u.rule}" → entry "${u.entry}" → unknown provider "${u.provider}"`
-    );
+    const lines = unknown.map((u) => {
+      const entry = u.entry ?? "";
+      return `  rule "${u.pattern}" → entry "${entry}" → unknown provider "${ruleEntryProvider(entry)}"`;
+    });
     throw new Error(`[claudish] routing rules reference unknown providers:\n${lines.join("\n")}`);
   }
 }
@@ -119,14 +110,22 @@ export interface RoutingRuleProblem {
   scope: RuleScope;
   /** The rule key as stored. */
   pattern: string;
-  problem: "multiple-wildcards" | "case-collision";
+  problem: "multiple-wildcards" | "case-collision" | "unknown-provider";
+  /** `unknown-provider` only: the rule entry, as written, that names no provider. */
+  entry?: string;
   /** `case-collision` only: the earlier key in the same file this one collides with. */
   collidesWith?: string;
 }
 
 /**
- * Every problem in the user's two rule files. Pure: it reads nothing and prints
+ * Every problem in the user's two rule files. It reads no file and prints
  * nothing, so a TUI can show the result and the proxy can print it once.
+ *
+ * `unknown-provider` asks the provider registry, so the CALLER registers the
+ * custom and bundled endpoints first (`ensureEndpointsRegistered`); without that
+ * every custom endpoint a rule names reads as a typo. A bundled endpoint is known
+ * by its catalog row, since registration skips one whose key is absent: that rule
+ * entry is `no-credential` when routed, not a typo.
  *
  * Each file is checked on its own, as the rules have always been: a key that
  * collides only with a key in the OTHER file is not reported.
@@ -161,8 +160,32 @@ function ruleTableProblems(rules: RoutingRules, scope: RuleScope): RoutingRulePr
     } else {
       seenLower.set(lower, key);
     }
+    for (const entry of rules[key] ?? []) {
+      if (!isKnownProvider(ruleEntryProvider(entry))) {
+        problems.push({ scope, pattern: key, problem: "unknown-provider", entry });
+      }
+    }
   }
   return problems;
+}
+
+/**
+ * The claudish provider a rule entry names: the part before an optional
+ * `@<wire id>`, with a shortcut (`or`) resolved, exactly as `buildRoutingChain`
+ * resolves it.
+ */
+function ruleEntryProvider(entry: RoutingEntry): string {
+  const atIdx = entry.indexOf("@");
+  const providerRaw = atIdx === -1 ? entry : entry.slice(0, atIdx);
+  return PROVIDER_SHORTCUTS[providerRaw.toLowerCase()] ?? providerRaw.toLowerCase();
+}
+
+/** A built-in provider, a registered endpoint, or a bundled endpoint's catalog row. */
+function isKnownProvider(provider: string): boolean {
+  return (
+    getProviderByName(provider) !== undefined ||
+    PREDEFINED_ENDPOINTS.some((row) => row.name.toLowerCase() === provider)
+  );
 }
 
 /** One line for a rule problem, without a "[claudish]" prefix (logStderr adds it). */
@@ -179,6 +202,13 @@ export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string 
         "differ only in case. Matching ignores case, so one silently shadows the other: " +
         "pick one casing and remove the duplicate."
       );
+    case "unknown-provider": {
+      const entry = problem.entry ?? "";
+      return (
+        `routing rule "${problem.pattern}" (${problem.scope}) names "${entry}", but no ` +
+        `provider "${ruleEntryProvider(entry)}" exists, so that entry never routes.`
+      );
+    }
   }
 }
 
@@ -1410,8 +1440,18 @@ function bareRoutingFor(opts: ExplainRouteOptions): BareRouting {
     // The project file overwrites the global one key by key, so a key the project
     // file holds is the project's rule.
     scopeOf: (ruleKey) => (Object.hasOwn(sources.localRules, ruleKey) ? "project" : "global"),
-    ruleProblems: routingRuleProblems(sources),
+    ruleProblems: ruleProblemsAfterRegistration(sources),
   };
+}
+
+/**
+ * {@link routingRuleProblems} once the custom and bundled endpoints are
+ * registered, so a rule naming one is not reported as unknown. Latched, so
+ * free after the first call.
+ */
+function ruleProblemsAfterRegistration(sources: RoutingRuleSources): RoutingRuleProblem[] {
+  ensureEndpointsRegistered();
+  return routingRuleProblems(sources);
 }
 
 /**
