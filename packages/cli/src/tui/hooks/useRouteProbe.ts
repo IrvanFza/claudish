@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { NATIVE_NOT_PROBED } from "../../providers/native-route.js";
 import { describeProbeState } from "../../providers/probe-live.js";
 import { INTERACTIVE_PROBE_TIMEOUT_MS, probeProviderRoute } from "../../providers/probe-runner.js";
 import {
@@ -9,14 +10,6 @@ import {
 } from "../../providers/routing-rules.js";
 import { ensureProbeProxy } from "../probe-proxy.js";
 import type { ProbeEntry, ProbeMode, ProbeSummary } from "../types.js";
-
-/**
- * Why a native row is never probed here: the native handler authenticates with
- * the inbound Claude Code header, which this probe cannot supply, so a request
- * would fail for a healthy model and a typo alike (see providers/native-route.ts).
- */
-const NATIVE_NOT_PROBED_NOTE =
-  "Not probed: served on Claude Code's own auth, which this process cannot forward.";
 
 /**
  * Why a catalog-gathered chain has no fallback hop, when the catalog HAS the
@@ -56,7 +49,9 @@ export function probeRowsFrom(explanation: RouteExplanation): ProbeView {
   };
 
   if (explanation.source === "native") {
-    summary.notes.push(NATIVE_NOT_PROBED_NOTE);
+    // Why a native row is never probed, in the words `--probe` and the MCP
+    // preflight use (native-route.ts).
+    summary.notes.push(NATIVE_NOT_PROBED);
     const native = explanation.native;
     const rows: ProbeEntry[] = native
       ? [
