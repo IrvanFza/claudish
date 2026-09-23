@@ -296,3 +296,23 @@ publishes no capability field at all, which no backend work reaches: a plain Ope
 are in that bucket, and their models are reachable only by explicit `provider@model` until either
 the catalog describes them or the endpoint starts publishing. LiteLLM's `/model/info` does
 publish a `mode` field; reading it is not yet implemented and would shrink that bucket.
+
+### The rule claudish applies, and three rows it trusts that look wrong
+
+Decided 2026-09-23 and shipped in claudish v10.1.1: a chat model has `"text"` among its
+`inputModalities` AND among its `outputModalities`; other modalities on either side never exclude
+it. An absent, `null` or `[]` input list is read as unknown and denies nothing (your contract).
+So your published modalities are now the whole decision for every catalog row — there is no name
+rule behind them any more — and a wrong row is shown or hidden exactly as published.
+
+Measured on generation `g-20260923031256925-3d26cd04`, three generator models publish
+`in: ["text"]`, `out: ["text"]` and are therefore offered as chat models:
+
+| modelId | published | looks like |
+|---|---|---|
+| `flux-dev-finetuner` | `in: [text]`, `out: [text]` | an image-model fine-tuning job |
+| `flux-fill` | `in: [text]`, `out: [text]` | image inpainting (`out` should include `image`) |
+| `seedance-2.5-el` | `in: [text]`, `out: [text]` | a Seedance video variant (`videoOutput` unset) |
+
+Please check these three. claudish logs them once per process (`[Models] … the catalog publishes
+as chat, from a generator family`) rather than filtering them itself.
