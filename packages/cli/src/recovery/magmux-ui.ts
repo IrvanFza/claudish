@@ -1,167 +1,162 @@
 /**
- * The recovery UI manager — the single owner of the socket, the pane, the
- * `paneOpen` fact, the cross-process lock and the lease.
+ * The recovery banner — drawn by magmux itself, over the pane claudish's Claude
+ * Code already occupies.
  *
- * THE POST-`bye` SUPPRESSION IS NOT OWNED HERE, and that is a correction. It
- * used to be `state.suppressUntilPerf`, read only by `ensureRecoveryUi`, so
- * `[q] give up` stopped the BANNER while the next request against the same
- * dead target still held its socket for the full derived deadline with the
- * reason legible nowhere. The fact now lives in `recovery/settings.ts` where
- * `shouldSkipTier1` can read it too: one number, suppressing the hold and the
- * surface together.
+ * WHY magmux's `overlay`, AND NOT A PANE OF OURS. The first version opened a
+ * pane with `open_pane` and closed it with `close_pane`. Opening a stacked pane
+ * shrinks Claude Code's pane; closing it grows the pane back, and Claude Code
+ * 2.1.272 does not survive the grow: six rows of its bottom chrome collapse
+ * onto one line and the input box is destroyed, and nothing done from outside —
+ * Escape, a keystroke, Ctrl-L, SIGWINCH, a shrink-then-grow cycle — repairs it
+ * (`ai-docs/reports/network-recovery-pane-close-wedges-host-tui-20260915.md`).
+ * magmux resizes correctly; the reflow itself is the trigger. `overlay` draws a
+ * styled box OVER a pane and changes no layout, so there is no reflow to
+ * survive. It also retired the pane process, the NDJSON socket we served it
+ * from, that socket's wire protocol and the cross-process lock that let only
+ * one claudish in a grid own the single pane: magmux is the renderer now, and
+ * every claudish draws on its own pane.
  *
- * OWNERSHIP IS PROCESS-SCOPED; ONLY EPISODES ARE EPISODE-SCOPED. There is ONE
- * pane and it multiplexes every episode, so "a pane exists" is a property of
- * this module and never of an episode. An earlier design hung `paneOpened` on
- * each episode, which meant the second concurrent episode could never be leased
- * — only the first one ever received an `open_pane` reply — and that closing
- * one episode tore down a socket a different episode's renderer was reading.
- * `releaseEpisodeUi` therefore emits one episode's `closed` frame and NOTHING
- * else; the socket and the pane come down only when no episode is live at all.
+ * THE LEASE, RESTATED FOR A RENDERER WE DO NOT OWN. A retryable 503 is allowed
+ * only while the reason is legible on screen, so:
  *
- * THE LEASE IS THE WHOLE POINT OF THIS FILE. It is not a latch, not a config
- * read and not "a client connected":
+ *   uiLeaseValid(id)  ⇔  we hold a magmux control connection and know our pane
+ *                     ∧  magmux ACKNOWLEDGED an overlay write painting THIS
+ *                        episode within UI_LEASE_MS
  *
- *   uiLeaseValid(id)  ⇔  paneOpen (WE opened it, and hold the reply)
- *                     ∧  some client heartbeated `ack` naming THIS episode
- *                        within UI_LEASE_MS
+ * magmux replies only to a message that carries an `id`, and a reply means it
+ * accepted the text for a pane it is drawing. If magmux dies, the writes stop
+ * being acknowledged, the lease lapses on its own, and the proxy answers the
+ * inline 400 at exhaustion. No path has to remember to revoke anything.
  *
- * Both clauses are load-bearing. `paneOpen` is what a forged same-uid client
- * cannot manufacture, so it cannot talk the proxy into the one forbidden state
- * (a retryable status with no banner on screen). The heartbeat window is what
- * makes the lease self-clearing on EOF, on a killed pane, on a frozen renderer
- * and on `[q]`, with no cleanup path anyone has to remember.
+ * THE BANNER IS RE-ASSERTED EVERY TICK, NEVER WRITTEN ONCE. magmux writes the
+ * same overlay from its own Claude Code state tracker — `CtrlError` paints
+ * "✗ …" over whatever is there (`magmux/mux/mux.go`) — so a banner written once
+ * can be replaced mid-outage. The countdown needs one write per second anyway,
+ * and the same write restores ours within a second of being overwritten.
  *
- * AND THE HEARTBEAT IS THE RENDERER'S, NOT OURS. The pane sends `ack` on its
- * own 1 Hz timer for as long as it is painting an episode, whether or not a
- * frame arrived. Renewing from frame receipts would tie the renderer's apparent
- * liveness to OUR emission cadence — and we have nothing to say for the 20–75 s
- * an unreachable connect takes (measured: `192.0.2.1` = 75 005 ms). The lease
- * would then read false at exhaustion for precisely the failure class this
- * feature exists for, with a live painted banner on screen, and every
- * loopback-only test would still pass.
- *
- * NOTHING HERE CHANGES A STATUS IN THIS PHASE. The lease is computed and
- * logged; the 503-vs-400 flip is the next one. Shipping the flip before the
- * banner exists recreates the buried-reason bug the feature is meant to kill.
+ * NO KEYS. An overlay is drawn by magmux; it is not a process and cannot read
+ * `[r] try now` or `[q] give up`. Esc in Claude Code still aborts the held
+ * request — a client disconnect ends its waiter — and the ladder retries on its
+ * own. Driving the status line and forwarding keys are requested of magmux in
+ * its `ai-docs/feature-request-status-line.md`.
  */
 
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { type Socket, connect as netConnect } from "node:net";
-import { basename, join } from "node:path";
+import { promisify } from "node:util";
 import { log } from "../logger.js";
 import { recoveryClock } from "./clock.js";
 import {
   type RecoveryOutcome,
   type RecoveryUiHooks,
-  attemptsSoFar,
-  episodeIsLive,
-  giveUpAll,
   markPaneRequested,
   registerRecoveryUi,
   renderableEpisodeFrame,
-  tryNow,
 } from "./coordinator.js";
-import { noteRecoveryGaveUp, recoveryGiveUpActive, resetRecoveryGiveUp } from "./settings.js";
-import {
-  type RecoverySocketServer,
-  cleanupRecoverySocket,
-  createRecoverySocketDir,
-  recoverySocketPathIn,
-  startRecoverySocketServer,
-} from "./socket-server.js";
-import {
-  PANE_LINGER_MS,
-  RECOVERY_PROTOCOL_VERSION,
-  type RecoveryCommand,
-  UI_LEASE_MS,
-} from "./types.js";
+import { FRAME_TICK_MS, type RecoveryEpisodeFrame, UI_LEASE_MS } from "./types.js";
 
-/** After `[q]`, do not re-open a pane for this long. */
-export const UI_SUPPRESS_AFTER_BYE_MS = 60_000;
+const execFileAsync = promisify(execFile);
+
+/** How long the "recovered" banner stays up before the overlay is cleared. */
+export const OUTCOME_LINGER_MS = 4_000;
+
+/**
+ * Wrap width for the reason sentence. magmux clamps the box to the pane and
+ * CLIPS a line that is too wide rather than wrapping it, so the text has to
+ * arrive already wrapped.
+ */
+const OVERLAY_WRAP_COLS = 60;
+
+/** A control request that gets no reply in this long is treated as refused. */
+const CONTROL_TIMEOUT_MS = 3_000;
 
 // ─── The control endpoint ────────────────────────────────────────────────────
 
 let explicitControlSock: string | null = null;
 
 /**
- * The magmux control socket, handed in by the launch wrapper.
+ * Where to send `overlay`, and whether claudish launched this magmux itself.
  *
- * AN EXPLICIT INPUT, NOT AN ENV LOOKUP, and that is the only thing that makes
- * this work at all: claudish is magmux's PARENT, and `MAGMUX_SOCK` is exported
- * DOWNWARD, so the parent can never learn a pid-derived path. The wrapper
- * generates `--id claudish-<pid>`, which fixes the path before magmux starts,
- * and hands it here.
+ * The launch wrapper hands its socket in EXPLICITLY: claudish is magmux's
+ * parent and `MAGMUX_SOCK` is exported downward only, so the parent can never
+ * discover a pid-derived path. The wrapper fixes the path with `--id` before
+ * magmux starts. Failing that, an ambient `MAGMUX_SOCK` means this claudish is
+ * running INSIDE someone else's magmux — `team --grid`, or a user's own pane.
+ *
+ * It answers a launch-order question and gates only the banner. It must never
+ * gate whether a retry happens.
  */
-export function setMagmuxControlSocket(sock: string | null): void {
-  explicitControlSock = sock;
-}
-
-/**
- * Where can this process send `open_pane` right now?
- *
- * Order: the path the wrapper handed us, then an ambient `MAGMUX_SOCK` (the
- * already-inside-a-pane case, e.g. `team --grid --mode interactive`), then null.
- *
- * IT ANSWERS A LAUNCH-ORDER QUESTION, NOT A USER PREFERENCE, and only this
- * module may read it. Null means "this process cannot open a pane" — true in
- * `-p`, in `serve`, in the MCP server, in every unwrapped launch and in the
- * whole test suite. It must never gate whether a RETRY happens: keying the
- * retry ladder on it made recovery skip universally in every phase before the
- * wrapper existed, twice, and both times the same rule decided the tests.
- */
-export function resolveMagmuxControl(): { sock: string } | null {
-  if (explicitControlSock && existsSync(explicitControlSock)) return { sock: explicitControlSock };
+function resolveControlEndpoint(): { sock: string; wrapped: boolean } | null {
+  if (explicitControlSock && existsSync(explicitControlSock)) {
+    return { sock: explicitControlSock, wrapped: true };
+  }
   const ambient = process.env.MAGMUX_SOCK;
-  if (ambient && existsSync(ambient)) return { sock: ambient };
+  if (ambient && existsSync(ambient)) return { sock: ambient, wrapped: false };
   return null;
 }
 
-// ─── Manager state ───────────────────────────────────────────────────────────
+// ─── State ───────────────────────────────────────────────────────────────────
 
-interface ManagerState {
-  server: RecoverySocketServer | null;
-  socketPath: string | null;
+interface UiState {
   control: Socket | null;
-  /** True only once magmux has REPLIED to our `open_pane`. */
-  paneOpen: boolean;
-  /** magmux's own index for our pane. Read from the reply — never assumed. */
-  paneIndex: number | null;
-  /** episodeId → PROCESS ms of the last heartbeat naming it. */
+  connecting: Promise<boolean> | null;
+  /** The magmux pane Claude Code runs in. Null until found. */
+  targetPane: number | null;
+  /** episodeId → PROCESS ms of the last ACKNOWLEDGED overlay write painting it. */
   leases: Map<string, number>;
-  /** Guards the async open against re-entry. */
-  opening: boolean;
-  lockPath: string | null;
+  /** The last frame magmux acknowledged, kept to draw the outcome after close. */
+  lastFrame: RecoveryEpisodeFrame | null;
+  tickTimer: unknown | null;
   lingerTimer: unknown | null;
+  /** Guards against a slow magmux stacking one paint on another. */
+  painting: boolean;
+  /** Whether the last paint was acknowledged, so a failure logs once, not per tick. */
+  lastPaintOk: boolean | null;
+  /** An unreachable magmux is logged once, not once per tick. */
+  unavailableLogged: boolean;
+  /**
+   * Ambient magmux only: our pane was looked for and is not there. Pane
+   * topology does not change under a running claudish, so the ancestry walk is
+   * not repeated every tick.
+   */
+  paneNotFound: boolean;
   nextControlId: number;
 }
 
-const state: ManagerState = {
-  server: null,
-  socketPath: null,
+const state: UiState = {
   control: null,
-  paneOpen: false,
-  paneIndex: null,
+  connecting: null,
+  targetPane: null,
   leases: new Map(),
-  opening: false,
-  lockPath: null,
+  lastFrame: null,
+  tickTimer: null,
   lingerTimer: null,
+  painting: false,
+  lastPaintOk: null,
+  unavailableLogged: false,
+  paneNotFound: false,
   nextControlId: 1,
 };
+
+function noteUnavailable(message: string): void {
+  if (state.unavailableLogged) return;
+  state.unavailableLogged = true;
+  log(message);
+}
 
 let installed = false;
 
 // ─── The lease ───────────────────────────────────────────────────────────────
 
 /**
- * Is a renderer painting this episode right now?
+ * Is this episode's reason on screen right now?
  *
- * Read LIVE at the moment a status is chosen. Never cached: by the time a
- * caller destructures a boolean off a result object, the pane it describes may
- * have been killed.
+ * Read LIVE when a status is chosen, never cached: a boolean destructured off a
+ * result object can describe a magmux that has since exited.
  */
 export function uiLeaseValid(episodeId: string): boolean {
-  if (!state.paneOpen) return false;
+  if (!state.control || state.targetPane === null) return false;
   const last = state.leases.get(episodeId);
   if (last === undefined) return false;
   return recoveryClock().now() - last <= UI_LEASE_MS;
@@ -169,13 +164,15 @@ export function uiLeaseValid(episodeId: string): boolean {
 
 /** Diagnostics for the log and for tests. Never used to decide anything. */
 export function describeLease(episodeId: string): {
-  paneOpen: boolean;
+  connected: boolean;
+  targetPane: number | null;
   lastAckAgoMs: number | null;
   valid: boolean;
 } {
   const last = state.leases.get(episodeId);
   return {
-    paneOpen: state.paneOpen,
+    connected: state.control !== null,
+    targetPane: state.targetPane,
     lastAckAgoMs: last === undefined ? null : Math.round(recoveryClock().now() - last),
     valid: uiLeaseValid(episodeId),
   };
@@ -199,7 +196,7 @@ async function connectControl(sock: string): Promise<Socket | null> {
 function request(
   socket: Socket,
   msg: Record<string, unknown>,
-  timeoutMs = 3_000
+  timeoutMs = CONTROL_TIMEOUT_MS
 ): Promise<Record<string, unknown> | null> {
   const id = state.nextControlId++;
   return new Promise((resolve) => {
@@ -239,342 +236,383 @@ function request(
   });
 }
 
-// ─── The cross-process single-pane lock ──────────────────────────────────────
+/** Forget the connection. Every lease goes with it, at once. */
+function dropConnection(): void {
+  state.control = null;
+  state.targetPane = null;
+  state.leases.clear();
+}
 
 /**
- * ONE recovery pane per magmux, not N.
+ * This process and its ancestors, nearest first.
  *
- * `team --grid --mode interactive` launches one claudish per pane and magmux
- * exports the same `MAGMUX_SOCK` to all of them, so one outage hits N processes
- * at once and a merely process-level singleton would open N panes into one
- * grid. The losers still run the ladder — they retry and they recover — they
- * just never open a pane, hold no lease, and answer the inline error at
- * exhaustion. That is honest: one banner names one slot's provider, and every
- * slot still recovers.
+ * In an ambient magmux the pane's process is whatever magmux started — usually
+ * a login shell or the `claudish` launcher — and this proxy runs somewhere
+ * beneath it. Asynchronous on purpose: it runs inside the proxy while requests
+ * are being served.
  */
-function acquirePaneLock(controlSock: string): string | null {
-  const lockPath = join("/tmp", `claudish-recovery-${basename(controlSock)}.lock`);
-  for (let attempt = 0; attempt < 2; attempt++) {
+async function ancestorPids(maxDepth = 6): Promise<Set<number>> {
+  const out = new Set<number>([process.pid]);
+  let pid = process.ppid;
+  for (let i = 0; i < maxDepth && pid > 1; i++) {
+    out.add(pid);
     try {
-      const fd = openSync(lockPath, "wx", 0o600);
-      writeSync(fd, String(process.pid));
-      closeSync(fd);
-      return lockPath;
+      const { stdout } = await execFileAsync("ps", ["-o", "ppid=", "-p", String(pid)], {
+        timeout: 1_000,
+      });
+      const next = Number(stdout.trim());
+      if (!Number.isFinite(next) || next <= 1) break;
+      pid = next;
     } catch {
-      // Held — by a live peer, or by debris from one that was SIGKILLed.
-      try {
-        const owner = Number(readFileSync(lockPath, "utf-8").trim());
-        if (Number.isFinite(owner) && owner > 0) {
-          try {
-            process.kill(owner, 0);
-            return null; // a live peer owns the banner
-          } catch {
-            unlinkSync(lockPath); // the owner is gone; the lock is debris
-            continue;
-          }
-        }
-        unlinkSync(lockPath);
-      } catch {
-        return null;
-      }
+      break;
     }
+  }
+  return out;
+}
+
+/**
+ * Which pane is ours, in a magmux claudish did not launch.
+ *
+ * magmux exports `MAGMUX_SOCK` and `MAGMUX_THEME` to its panes and nothing that
+ * names the pane, so it is found by process ancestry against `list`. Null when
+ * nothing matches: the banner is then unavailable, and recovery still retries
+ * and still answers the inline error at exhaustion.
+ */
+async function findOwnPane(socket: Socket): Promise<number | null> {
+  const reply = await request(socket, { type: "list" });
+  const result = reply?.result as { panes?: unknown } | unknown[] | undefined;
+  const panes = Array.isArray(result)
+    ? result
+    : Array.isArray((result as { panes?: unknown })?.panes)
+      ? ((result as { panes: unknown[] }).panes as unknown[])
+      : [];
+  const ancestors = await ancestorPids();
+  for (const p of panes) {
+    const pane = (p as { pane?: unknown }).pane;
+    const pid = (p as { pid?: unknown }).pid;
+    if (typeof pane === "number" && typeof pid === "number" && ancestors.has(pid)) return pane;
   }
   return null;
 }
 
-function releasePaneLock(): void {
-  if (!state.lockPath) return;
-  try {
-    if (existsSync(state.lockPath)) {
-      const owner = Number(readFileSync(state.lockPath, "utf-8").trim());
-      if (owner === process.pid) unlinkSync(state.lockPath);
+/** Connect once and find our pane. Concurrent callers share one attempt. */
+function ensureConnected(): Promise<boolean> {
+  if (state.control && state.targetPane !== null) return Promise.resolve(true);
+  if (state.paneNotFound) return Promise.resolve(false);
+  if (state.connecting) return state.connecting;
+  state.connecting = (async () => {
+    const endpoint = resolveControlEndpoint();
+    if (!endpoint) {
+      noteUnavailable(
+        "[Recovery] no magmux control endpoint — no banner; recovery continues without one"
+      );
+      return false;
     }
-  } catch {
-    /* best effort */
-  }
-  state.lockPath = null;
+    const socket = await connectControl(endpoint.sock);
+    if (!socket) {
+      noteUnavailable(`[Recovery] could not reach magmux at ${endpoint.sock} — no banner`);
+      return false;
+    }
+    // Bound to THIS socket: a late `close` from a replaced connection must not
+    // tear down its successor and every lease with it.
+    const onGone = () => {
+      if (state.control === socket) dropConnection();
+    };
+    socket.on("error", onGone);
+    socket.on("close", onGone);
+    state.control = socket;
+    // A magmux claudish launched has exactly one `-e` pane, and magmux numbers
+    // `-e` panes 0..N-1 in argument order, so Claude Code is pane 0.
+    const pane = endpoint.wrapped ? 0 : await findOwnPane(socket);
+    if (pane === null) {
+      state.paneNotFound = true;
+      log("[Recovery] this claudish's pane was not found in magmux — no banner");
+      try {
+        socket.end();
+      } catch {
+        /* already gone */
+      }
+      dropConnection();
+      return false;
+    }
+    state.targetPane = pane;
+    state.unavailableLogged = false;
+    log(
+      `[Recovery] banner will draw on magmux pane ${pane} ` +
+        `(${endpoint.wrapped ? "magmux launched by claudish" : "ambient magmux"})`
+    );
+    return true;
+  })().finally(() => {
+    state.connecting = null;
+  });
+  return state.connecting;
 }
 
-// ─── The pane command line ───────────────────────────────────────────────────
+// ─── The banner text ─────────────────────────────────────────────────────────
+
+/** `9s`, `1m 26s`, `2h 5m`. */
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** Word-wrap one sentence to `cols`, never splitting a word. */
+function wrap(text: string, cols: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > cols) {
+      out.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+const KIND_WORD: Record<RecoveryEpisodeFrame["kind"], string> = {
+  refused: "refused",
+  dns: "not found",
+  unreachable: "unreachable",
+};
 
 /**
- * How to run `claudish recovery-pane` from wherever this build lives.
+ * The outage banner.
  *
- * Built from `process.argv` rather than from the name `claudish`, because the
- * process that must start is THIS build: a global install mid-update, a `bun
- * run src/index.ts` in a worktree and an npm-installed bundle are three
- * different files, and a pane from a different build is the version-skew case
- * the protocol has to print a notice for. `claudish` on PATH stays as the
- * fallback for a packaging shape neither argv entry describes.
+ * THE FIRST LINE MUST STAND ALONE. On a pane too small for the box, magmux
+ * falls back to a one-line pill that shows only the first line.
  */
-export function recoveryPaneCommandLine(socketPath: string): string {
-  const script = process.argv[1];
-  const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-  if (script && (script.endsWith(".ts") || script.endsWith(".js") || script.endsWith(".cjs"))) {
-    return `${q(process.execPath)} ${q(script)} recovery-pane --socket ${q(socketPath)}`;
+export function bannerText(frame: RecoveryEpisodeFrame, nowMs: number): string {
+  const lines: string[] = [`✗ NETWORK · ${frame.providerDisplayName} ${KIND_WORD[frame.kind]}`];
+  lines.push(...wrap(frame.reason, OVERLAY_WRAP_COLS));
+  lines.push(`${frame.host} · ${frame.code ?? frame.kind}${frame.loopback ? " · local" : ""}`);
+  const elapsed = formatElapsed(nowMs - frame.startedAtMs);
+  if (frame.state === "handoff") {
+    lines.push(`handed back to Claude Code · waiting for its retry · ${elapsed} in recovery`);
+  } else if (frame.nextAttemptAtMs === null) {
+    lines.push(`connecting to ${frame.host}… · attempt ${frame.attempts} · ${elapsed} in recovery`);
+  } else {
+    const secs = Math.max(0, Math.ceil((frame.nextAttemptAtMs - nowMs) / 1000));
+    lines.push(`next attempt in ${secs}s · attempt ${frame.attempts} · ${elapsed} in recovery`);
   }
-  return `claudish recovery-pane --socket ${q(socketPath)}`;
+  const held = `${frame.waiters} request${frame.waiters === 1 ? "" : "s"} held`;
+  const more =
+    frame.otherEpisodes > 0
+      ? ` · +${frame.otherEpisodes} more outage${frame.otherEpisodes === 1 ? "" : "s"}`
+      : "";
+  lines.push(`${held}${more}`);
+  lines.push("Esc in Claude Code stops the turn");
+  return lines.join("\n");
 }
 
-// ─── Opening and closing the pane ────────────────────────────────────────────
+/** The banner shown for a moment after the connection comes back. */
+export function recoveredText(frame: RecoveryEpisodeFrame, nowMs: number): string {
+  return [
+    `✓ NETWORK · ${frame.providerDisplayName} recovered`,
+    `${frame.attempts} attempt${frame.attempts === 1 ? "" : "s"} over ${formatElapsed(nowMs - frame.startedAtMs)}`,
+  ].join("\n");
+}
 
-function onCommand(cmd: RecoveryCommand): void {
-  switch (cmd.type) {
-    case "hello":
-      log(`[Recovery] pane connected (pid ${cmd.pid}, protocol ${cmd.protocol})`);
-      break;
-    case "ack": {
-      // THE LEASE RENEWAL. Only here, and only from a renderer that painted.
-      const first = !state.leases.has(cmd.episodeId);
-      state.leases.set(cmd.episodeId, recoveryClock().now());
+// ─── Painting ────────────────────────────────────────────────────────────────
+
+/** Paint one outage frame. Only an acknowledged write renews a lease. */
+async function paint(frame: RecoveryEpisodeFrame): Promise<void> {
+  if (state.painting) return;
+  state.painting = true;
+  try {
+    if (!(await ensureConnected())) return;
+    const socket = state.control;
+    const pane = state.targetPane;
+    if (!socket || pane === null) return;
+    const reply = await request(socket, {
+      type: "overlay",
+      pane,
+      text: bannerText(frame, Date.now()),
+      style: "error",
+    });
+    const ok = reply?.ok === true;
+    if (ok) {
+      const first = !state.leases.has(frame.episodeId);
+      state.leases.set(frame.episodeId, recoveryClock().now());
+      state.lastFrame = frame;
       if (first) {
         log(
-          `[Recovery] pane is painting episode ${cmd.episodeId} — lease granted ` +
-            `(paneOpen=${state.paneOpen})`
+          `[Recovery] banner painted for episode ${frame.episodeId} on magmux pane ${pane} ` +
+            "— lease granted"
         );
       }
-      break;
+      // Decoration. Its reply grants nothing, so nothing waits on it.
+      void request(socket, { type: "tint", pane, color: "red" });
+    } else if (state.lastPaintOk !== false) {
+      log(`[Recovery] magmux did not acknowledge the banner: ${JSON.stringify(reply)}`);
     }
-    case "retry_now":
-      if (episodeIsLive(cmd.episodeId)) {
-        const n = attemptsSoFar(cmd.episodeId) + 1;
-        log(`[Recovery] attempt ${n} (manual) for episode ${cmd.episodeId}`);
-        tryNow(cmd.episodeId);
-      }
-      break;
-    case "bye":
-      log(`[Recovery] pane said bye (${cmd.reason}) — giving up on every live episode`);
-      // ONE fact, two readers. `giveUpAll()` ends the episodes alive at this
-      // instant; this ends the ones that do not exist yet. Without it the next
-      // request against the same dead target opened a new episode, found the
-      // pane suppressed, and held its socket for the full deadline with the
-      // reason legible nowhere — the forbidden state, reached from the key
-      // whose whole purpose is to avoid it. The hold and the surface are
-      // suppressed together, for the same window, from the same number.
-      noteRecoveryGaveUp(recoveryClock().now() + UI_SUPPRESS_AFTER_BYE_MS);
-      giveUpAll();
-      // The pane the user just closed must not reappear two seconds later, and
-      // closing it is ALSO what revokes every lease: `teardown()` drops
-      // `paneOpen`, and without that clause no heartbeat can grant anything.
-      // One revocation path, not two — a second one is a second thing to
-      // forget, and the superseded design's bug was exactly a revocation path
-      // that existed on paper and cleared nothing.
-      void closePane();
-      break;
+    state.lastPaintOk = ok;
+  } finally {
+    state.painting = false;
   }
 }
 
-async function openPane(): Promise<void> {
-  const control = resolveMagmuxControl();
-  if (!control) {
-    log("[Recovery] no magmux control endpoint — no pane, recovery continues without a banner");
-    return;
-  }
-  const lock = acquirePaneLock(control.sock);
-  if (!lock) {
-    log("[Recovery] another claudish already owns the recovery pane for this magmux");
-    return;
-  }
-  state.lockPath = lock;
-
-  const dir = createRecoverySocketDir();
-  const socketPath = recoverySocketPathIn(dir);
-  state.socketPath = socketPath;
-  state.server = await startRecoverySocketServer({
-    socketPath,
-    snapshot: () => renderableEpisodeFrame(),
-    onCommand,
-    onDisconnect: () => {
-      // EOF revokes nothing by itself — the lease expires on its own within
-      // UI_LEASE_MS, and having exactly one expiry path means there is no
-      // second one to forget. The retry loop is not the pane's business.
-      log("[Recovery] pane disconnected");
-    },
-  });
-
-  const socket = await connectControl(control.sock);
-  if (!socket) {
-    log(`[Recovery] could not reach magmux at ${control.sock}`);
-    await teardown();
-    return;
-  }
-  state.control = socket;
-  socket.on("error", () => {
-    state.paneOpen = false;
-  });
-  socket.on("close", () => {
-    state.paneOpen = false;
-  });
-
-  const reply = await request(socket, {
-    type: "open_pane",
-    cmd: recoveryPaneCommandLine(socketPath),
-    cwd: process.cwd(),
-    split: "vertical",
-  });
-  if (!reply || reply.ok !== true) {
-    log(`[Recovery] magmux refused open_pane: ${JSON.stringify(reply)}`);
-    await teardown();
-    return;
-  }
-  const result = reply.result as { pane?: number } | undefined;
-  // Read the index back. magmux's own control panel occupies an index, so the
-  // first pane an agent opens is NOT necessarily 1 — measured: 2.
-  state.paneIndex = typeof result?.pane === "number" ? result.pane : null;
-  state.paneOpen = true;
-  log(`[Recovery] recovery pane opened (magmux pane ${state.paneIndex}) at ${socketPath}`);
+/** Replace the overlay outright. Grants no lease. */
+async function writeOverlay(text: string, style: string, tint: string): Promise<void> {
+  const socket = state.control;
+  const pane = state.targetPane;
+  if (!socket || pane === null) return;
+  await request(socket, { type: "overlay", pane, text, style });
+  await request(socket, { type: "tint", pane, color: tint });
 }
 
-async function closePane(): Promise<void> {
-  if (state.control && state.paneIndex !== null) {
-    await request(state.control, { type: "close_pane", pane: state.paneIndex, force: true }, 1_000);
-  }
-  await teardown();
+function clearOverlay(): Promise<void> {
+  return writeOverlay("", "", "reset");
 }
 
-async function teardown(): Promise<void> {
-  state.paneOpen = false;
-  state.paneIndex = null;
-  state.leases.clear();
+function stopTick(): void {
+  if (state.tickTimer !== null) {
+    recoveryClock().clearTimeout(state.tickTimer);
+    state.tickTimer = null;
+  }
+}
+
+function cancelLinger(): void {
+  if (state.lingerTimer !== null) {
+    recoveryClock().clearTimeout(state.lingerTimer);
+    state.lingerTimer = null;
+  }
+}
+
+/**
+ * Paint now, then once per `FRAME_TICK_MS` for as long as any outage is live.
+ *
+ * The tick is independent of the ladder on purpose. A connect against an
+ * unreachable host takes up to 75 s with nothing new to say, and the lease has
+ * to stay fresh across it — renewing only on ladder events would let it lapse
+ * at exhaustion, for exactly the failure class this feature exists for.
+ */
+function startTick(): void {
+  if (state.tickTimer !== null) return;
+  const clock = recoveryClock();
+  const loop = () => {
+    state.tickTimer = null;
+    const frame = renderableEpisodeFrame();
+    if (!frame) return;
+    void paint(frame);
+    const t = clock.setTimeout(loop, FRAME_TICK_MS);
+    clock.unref?.(t);
+    state.tickTimer = t;
+  };
+  loop();
+}
+
+// ─── The hooks ───────────────────────────────────────────────────────────────
+
+function onEpisodeOpened(episodeId: string): void {
+  // Asking and being told no is still asking: the coordinator's grace rule
+  // measures from this, so it is recorded even when there is no magmux.
+  markPaneRequested(episodeId);
+  cancelLinger();
+  startTick();
+}
+
+/**
+ * One episode ended. The coordinator has already removed it from the live set,
+ * so `renderableEpisodeFrame()` here answers "is another outage still live?".
+ */
+function onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void {
+  state.leases.delete(episodeId);
+  if (renderableEpisodeFrame() !== null) return; // the tick keeps drawing the other one
+  stopTick();
+  const last = state.lastFrame?.episodeId === episodeId ? state.lastFrame : null;
+  state.lastFrame = null;
+  if (outcome !== "recovered" || !last) {
+    // Esc in Claude Code, shutdown, an expired hand-off: nothing is being held
+    // any more, so there is nothing to explain.
+    void clearOverlay();
+    return;
+  }
+  void writeOverlay(recoveredText(last, Date.now()), "success", "green");
+  cancelLinger();
+  const clock = recoveryClock();
+  const timer = clock.setTimeout(() => {
+    state.lingerTimer = null;
+    if (renderableEpisodeFrame() !== null) return; // a new outage owns the overlay
+    void clearOverlay();
+  }, OUTCOME_LINGER_MS);
+  clock.unref?.(timer);
+  state.lingerTimer = timer;
+}
+
+const hooks: RecoveryUiHooks = {
+  onEpisodeOpened,
+  onEpisodeClosed,
+  leaseValid: (episodeId) => uiLeaseValid(episodeId),
+};
+
+/**
+ * Install the banner into the coordinator.
+ *
+ * Called only from `claude-runner.ts`, for an interactive launch that has a
+ * magmux to draw on. Every other entry point — `-p`, `--stdin`, `serve`, the
+ * MCP server, the test suite — leaves it uninstalled, so none of them can hold
+ * a lease, without any of them having to opt out.
+ */
+export function installRecoveryUi(controlSock: string | null): void {
+  explicitControlSock = controlSock;
+  if (installed) return;
+  installed = true;
+  registerRecoveryUi(hooks);
+}
+
+/** Take the banner down and uninstall. Claude Code's exit, proxy shutdown, tests. */
+export async function shutdownRecoveryUi(): Promise<void> {
+  stopTick();
+  cancelLinger();
+  if (state.control && state.targetPane !== null) {
+    // Short: at Claude Code's exit magmux is usually exiting too.
+    const socket = state.control;
+    const pane = state.targetPane;
+    await request(socket, { type: "overlay", pane, text: "", style: "" }, 500);
+    await request(socket, { type: "tint", pane, color: "reset" }, 500);
+  }
   if (state.control) {
     try {
       state.control.end();
     } catch {
       /* already gone */
     }
-    state.control = null;
   }
-  if (state.server) {
-    await state.server.close();
-    state.server = null;
-  } else if (state.socketPath) {
-    cleanupRecoverySocket(state.socketPath);
-  }
-  state.socketPath = null;
-  releasePaneLock();
-}
-
-// ─── The hooks ───────────────────────────────────────────────────────────────
-
-/**
- * Ask for a surface for this episode. Idempotent, and never awaited by the
- * retry loop — a pane that takes 200 ms to appear must not delay the first
- * retry by 200 ms.
- */
-export function ensureRecoveryUi(episodeId: string): void {
-  // Asking and being told no is still asking: the timestamp is what a later
-  // phase's grace rule measures from, and it must be set even when the answer
-  // is an immediate no.
-  markPaneRequested(episodeId);
-  if (state.lingerTimer !== null) {
-    recoveryClock().clearTimeout(state.lingerTimer);
-    state.lingerTimer = null;
-  }
-  if (state.paneOpen || state.opening) return;
-  if (recoveryGiveUpActive()) {
-    log("[Recovery] pane suppressed — the user pressed [q] less than a minute ago");
-    return;
-  }
-  state.opening = true;
-  void openPane()
-    .catch((err) => {
-      log(`[Recovery] pane could not be opened: ${String(err)}`);
-    })
-    .finally(() => {
-      state.opening = false;
-    });
-}
-
-/**
- * One episode ended. Tell the renderer, and NOTHING else — a concurrent
- * episode may still be painting through the same socket and the same pane.
- */
-export function releaseEpisodeUi(episodeId: string, outcome: RecoveryOutcome): void {
-  state.leases.delete(episodeId);
-  state.server?.broadcast({
-    v: RECOVERY_PROTOCOL_VERSION,
-    type: "closed",
-    episodeId,
-    outcome,
-  });
-  if (renderableEpisodeFrame() !== null) return; // something else is still live
-  // Nothing left to paint. Linger, so the pane does not flap open and shut on
-  // every client-retry cycle, and so the last thing that happened stays
-  // readable for someone who looked away.
-  if (state.lingerTimer !== null) recoveryClock().clearTimeout(state.lingerTimer);
-  const clock = recoveryClock();
-  const timer = clock.setTimeout(() => {
-    state.lingerTimer = null;
-    if (renderableEpisodeFrame() !== null) return;
-    void closePane();
-  }, PANE_LINGER_MS);
-  clock.unref?.(timer);
-  state.lingerTimer = timer;
-}
-
-const hooks: RecoveryUiHooks = {
-  onEpisodeOpened: (episodeId) => ensureRecoveryUi(episodeId),
-  onEpisodeClosed: (episodeId, outcome) => releaseEpisodeUi(episodeId, outcome),
-  leaseValid: (episodeId) => uiLeaseValid(episodeId),
-};
-
-/**
- * Install the recovery UI into the coordinator.
- *
- * Called from exactly one place — the magmux launch wrapper, once it knows the
- * control socket. Every other entry point leaves it uninstalled, so `-p`,
- * `--stdin`, `serve`, the MCP server and the test suite cannot open a pane and
- * cannot hold a lease, without any of them having to opt out.
- */
-export function installRecoveryUi(controlSock: string | null): void {
-  setMagmuxControlSocket(controlSock);
-  if (installed) return;
-  installed = true;
-  registerRecoveryUi(hooks);
-  process.on("exit", () => {
-    releasePaneLock();
-    if (state.socketPath) cleanupRecoverySocket(state.socketPath);
-  });
-}
-
-/** Tear everything down. Proxy shutdown, and tests. */
-export async function shutdownRecoveryUi(): Promise<void> {
-  if (state.lingerTimer !== null) {
-    recoveryClock().clearTimeout(state.lingerTimer);
-    state.lingerTimer = null;
-  }
-  await closePane();
+  dropConnection();
+  state.lastFrame = null;
+  state.lastPaintOk = null;
+  state.unavailableLogged = false;
+  state.paneNotFound = false;
   registerRecoveryUi(null);
   installed = false;
-  resetRecoveryGiveUp();
   explicitControlSock = null;
 }
 
-/** Tests only: the manager is process state shared with every sibling test. */
-export function __setPaneOpenForTests(open: boolean, socketPath?: string): void {
-  state.paneOpen = open;
-  if (socketPath !== undefined) state.socketPath = socketPath;
-}
-
-/** Tests only: feed a command as though a pane had sent it. */
-export function __handleCommandForTests(cmd: RecoveryCommand): void {
-  onCommand(cmd);
-}
-
-/** Tests only: forget every lease and every suppression. */
+/** Tests only: the banner is process state shared with every sibling test. */
 export function __resetUiStateForTests(): void {
-  state.leases.clear();
-  state.paneOpen = false;
-  state.paneIndex = null;
-  resetRecoveryGiveUp();
-  state.opening = false;
-  state.socketPath = null;
-  state.server = null;
-  state.control = null;
-  if (state.lingerTimer !== null) {
-    recoveryClock().clearTimeout(state.lingerTimer);
-    state.lingerTimer = null;
+  stopTick();
+  cancelLinger();
+  if (state.control) {
+    try {
+      state.control.destroy();
+    } catch {
+      /* already gone */
+    }
   }
-  releasePaneLock();
+  dropConnection();
+  state.connecting = null;
+  state.lastFrame = null;
+  state.painting = false;
+  state.lastPaintOk = null;
+  state.unavailableLogged = false;
+  state.paneNotFound = false;
+  registerRecoveryUi(null);
+  installed = false;
   explicitControlSock = null;
 }

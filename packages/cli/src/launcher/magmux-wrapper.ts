@@ -237,9 +237,7 @@ export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
   //
   // `mkdtempSync` gives an unguessable name AND fails rather than adopting, and
   // `wx` is `O_CREAT | O_EXCL`, so the file cannot pre-exist as a symlink to
-  // somewhere else. The same rule the rest of this change already follows:
-  // `socket-server.ts` uses `randomBytes(12)` for its directory and `O_EXCL`
-  // for the pane lock.
+  // somewhere else.
   const tmpRoot = input.tmpRoot ?? "/tmp";
   mkdirSync(tmpRoot, { recursive: true });
   const scriptDir = mkdtempSync(join(tmpRoot, "claudish-launch-"));
@@ -312,8 +310,8 @@ export function planMagmuxWrap(input: MagmuxWrapInput): MagmuxWrapPlan | null {
   // A file holding the session's `ANTHROPIC_API_KEY` must not outlive the
   // process on a SIGTERM or a crash-out — `watch()`'s `proc.exit` hook only
   // covers the ordinary path, and claudish is not always the one that dies
-  // last. Same discipline as `socket-server.ts`'s socket unlink; the listener
-  // removes itself in `cleanup` so a long-lived host cannot accumulate them.
+  // last. The listener removes itself in `cleanup` so a long-lived host
+  // cannot accumulate them.
   process.on("exit", cleanup);
 
   return {

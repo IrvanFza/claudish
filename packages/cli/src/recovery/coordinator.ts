@@ -31,11 +31,7 @@ import { randomUUID } from "node:crypto";
 import { type ConnectionErrorKind, isLoopback } from "../handlers/shared/connection-error.js";
 import { log, logRecovery } from "../logger.js";
 import { recoveryClock } from "./clock.js";
-import {
-  RECOVERY_PROTOCOL_VERSION,
-  type RecoveryEpisodeFrame,
-  type RecoveryFrameState,
-} from "./types.js";
+import type { RecoveryEpisodeFrame, RecoveryFrameState } from "./types.js";
 
 export type RecoveryState = "attempting" | "waiting" | "recovered" | "handoff" | "abandoned";
 
@@ -164,16 +160,16 @@ export function describeEpisode(episodeId: string): Readonly<Record<string, unkn
  * What the UI manager (`magmux-ui.ts`) plugs into the coordinator.
  *
  * A REGISTRATION SEAM RATHER THAN AN IMPORT, and not for testability. The UI
- * manager reads episode state (to build a frame) and drives the ladder (`[r]`,
- * `[q]`), so it must import this module; a direct import back the other way is
- * a cycle. More importantly it keeps the dependency HONEST in the other
- * direction: nothing is installed in `-p`, in `serve`, in the MCP server or in
- * the test suite, so those paths cannot open a pane, cannot hold a lease, and
- * behave exactly as they did before this phase — by construction rather than by
- * a flag someone has to remember to check.
+ * manager reads episode state to build the banner, so it must import this
+ * module; a direct import back the other way is a cycle. More importantly it
+ * keeps the dependency HONEST in the other direction: nothing is installed in
+ * `-p`, in `serve`, in the MCP server or in the test suite, so those paths
+ * cannot draw a banner, cannot hold a lease, and behave exactly as they did
+ * before this feature — by construction rather than by a flag someone has to
+ * remember to check.
  */
 export interface RecoveryUiHooks {
-  /** A new episode exists. The manager decides whether to ask for a pane. */
+  /** A new episode exists. The manager starts drawing the banner. */
   onEpisodeOpened(episodeId: string): void;
   /** An episode reached a terminal state. */
   onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void;
@@ -210,7 +206,7 @@ export function uiLeaseValid(episodeId: string): boolean {
   }
 }
 
-/** Record that a pane was ASKED for. Asking and being told no is still asking. */
+/** Record that a banner was ASKED for. Asking and being told no is still asking. */
 export function markPaneRequested(episodeId: string): void {
   const ep = byId.get(episodeId);
   if (!ep || ep.paneRequestedAtPerf !== null) return;
@@ -227,7 +223,7 @@ function liveEpisodes(): Episode[] {
 }
 
 /**
- * The episode a renderer should paint, as a wire frame — or null.
+ * The episode the banner should draw, as a frame — or null.
  *
  * Concurrent episodes are ORDINARY: the main loop's provider and the small
  * title model's provider can be unreachable at the same moment. Which one wins
@@ -237,9 +233,9 @@ function liveEpisodes(): Episode[] {
  * reason is legible" demands.
  *
  * THE UNIT CONVERSION HAPPENS HERE AND NOWHERE ELSE. Intervals inside this
- * module are process ms; everything on the wire is epoch ms, because the pane
- * is a different process with a different `performance.now()` origin and would
- * render a process-ms instant as an arbitrary number with no error anywhere.
+ * module are process ms; every instant in a frame is epoch ms, so the banner's
+ * countdown is computed against `Date.now()` in one unit, with no second
+ * conversion site to drift.
  */
 export function renderableEpisodeFrame(): RecoveryEpisodeFrame | null {
   const live = liveEpisodes();
@@ -251,7 +247,6 @@ export function renderableEpisodeFrame(): RecoveryEpisodeFrame | null {
   const nextAttemptAtMs =
     ep.nextAttemptAtPerf === null ? null : epochNow + (ep.nextAttemptAtPerf - perfNow);
   return {
-    v: RECOVERY_PROTOCOL_VERSION,
     type: "episode",
     episodeId: ep.episodeId,
     state: ep.state as RecoveryFrameState,
@@ -271,23 +266,6 @@ export function renderableEpisodeFrame(): RecoveryEpisodeFrame | null {
     waiters: ep.waiters.size,
     otherEpisodes: live.length - 1,
   };
-}
-
-/** How many attempts this episode has made. For the manual-retry log line. */
-export function attemptsSoFar(episodeId: string): number {
-  return byId.get(episodeId)?.attempts ?? 0;
-}
-
-/** Is this episode still live? Used by the UI manager's lease check. */
-export function episodeIsLive(episodeId: string): boolean {
-  const ep = byId.get(episodeId);
-  if (!ep) return false;
-  return ep.state === "attempting" || ep.state === "waiting" || ep.state === "handoff";
-}
-
-/** `[q] give up` — the user said stop, so every live episode stops. */
-export function giveUpAll(): void {
-  for (const ep of liveEpisodes()) giveUp(ep.episodeId);
 }
 
 export interface EpisodeHandle {
@@ -687,28 +665,15 @@ export function noteTargetReachable(providerName: string, endpoint: string): voi
 }
 
 /**
- * Collapse the wait for an episode and attempt now. The pane's `[r] try now`
- * key routes here in a later phase; nothing calls it in this one, and it is
- * exported now so the ladder never grows a second wake path later.
- */
-export function tryNow(episodeId: string): void {
-  const ep = byId.get(episodeId);
-  if (!ep || ep.attemptTimer === null) return;
-  clearAttemptTimer(ep);
-  ep.state = "attempting";
-  ep.round++;
-  for (const w of [...ep.waiters]) w.wake?.({ kind: "attempt" });
-}
-
-/**
- * `[q] give up` for ONE episode: every waiter answers today's inline error and
- * the episode is over.
+ * End ONE episode now: every waiter answers today's inline error.
  *
  * `gaveUp` latches before the close so a waiter that has not parked yet — one
- * between attempts at the instant the key was pressed — still reads the answer
- * rather than parking on a timer that no longer exists. The user said stop, so
- * stop, and say why inline: this is the missing half of an affordance the
- * superseded design labelled "give up" and gave no effect at all.
+ * between attempts at that instant — still reads the answer rather than
+ * parking on a timer that no longer exists.
+ *
+ * No key reaches this since the banner became magmux's overlay, which cannot
+ * read keystrokes. It stays because it is the one clean way to end an episode
+ * with waiters on it, and the tests end episodes through it.
  */
 export function giveUp(episodeId: string): void {
   const ep = byId.get(episodeId);

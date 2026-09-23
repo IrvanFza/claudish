@@ -52,12 +52,7 @@ function classifyStartupKind(): string {
     "quota",
     "usage",
   ]);
-  if (
-    (first && management.has(first)) ||
-    argv.includes("--mcp") ||
-    first === "serve" ||
-    first === "recovery-pane"
-  ) {
+  if ((first && management.has(first)) || argv.includes("--mcp") || first === "serve") {
     return "other";
   }
   return "run";
@@ -65,12 +60,7 @@ function classifyStartupKind(): string {
 process.on("exit", () => {
   const argv = process.argv.slice(2);
   const first = argv.find((a) => !a.startsWith("-"));
-  // `recovery-pane` joins the long-running exclusions for the same reason
-  // `serve` and `--mcp` are there: it lives for as long as the outage does, so
-  // an at-exit total is its lifetime rather than anyone's startup, and it would
-  // pollute the metrics with a number that measures a network failure.
-  const longRunningServer =
-    argv.includes("--mcp") || first === "serve" || first === "recovery-pane";
+  const longRunningServer = argv.includes("--mcp") || first === "serve";
   if (longRunningServer) return;
   finalizeStartupTrace(classifyStartupKind(), { quiet: true });
 });
@@ -328,11 +318,6 @@ const isStatsCommand = firstPositional === "stats";
 const isConfigCommand = firstPositional === "config";
 // Serve subcommand: claudish serve --port <n> --models <path> (Claude Desktop redirect gateway)
 const isServeCommand = firstPositional === "serve";
-// Recovery pane: claudish recovery-pane --socket <path>. Launched BY claudish
-// into a magmux pane, never by a user — but it must be routed here all the
-// same, because an unrouted subcommand does not error: it falls through to the
-// default path and becomes a catalog search for the literal string.
-const isRecoveryPaneCommand = firstPositional === "recovery-pane";
 // Providers subcommand: claudish providers --json (credential presence, no key material)
 const isProvidersCommand = firstPositional === "providers";
 // Keychain subcommand: claudish keychain status|list|import|set|rm|enable|disable
@@ -385,17 +370,6 @@ if (isMcpMode) {
   import("./serve-command.js").then((m) =>
     m.serveCommand(args.slice(serveArgIndex + 1)).catch((e) => {
       console.error(`[claudish serve] ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    })
-  );
-} else if (isRecoveryPaneCommand) {
-  // The network-recovery banner. Its own process, its own PTY, its own stdin —
-  // which is the entire reason the recovery UI is a pane: keys typed into it
-  // reach THIS process rather than the Claude Code session beside it.
-  const paneArgIndex = args.indexOf("recovery-pane");
-  import("./recovery/pane-app.js").then((m) =>
-    m.recoveryPaneCommand(args.slice(paneArgIndex + 1)).catch((e) => {
-      console.error(`[claudish recovery-pane] ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     })
   );

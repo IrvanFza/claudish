@@ -24,20 +24,13 @@ import { probeLink } from "../providers/probe-live.js";
 import type { ProviderTransport } from "../providers/transport/types.js";
 import { resetRecoveryClock, setRecoveryClock } from "../recovery/clock.js";
 import { closeAllEpisodes, episodeCount } from "../recovery/coordinator.js";
-import { UI_SUPPRESS_AFTER_BYE_MS, __handleCommandForTests } from "../recovery/magmux-ui.js";
-import {
-  recoveryGiveUpActive,
-  resetRecoveryFlagOverrides,
-  resetRecoveryGiveUp,
-  setRecoveryFlagOverrides,
-} from "../recovery/settings.js";
+import { resetRecoveryFlagOverrides, setRecoveryFlagOverrides } from "../recovery/settings.js";
 import {
   capturedRecoveryLines,
   startLogCapture,
   stopLogCapture,
 } from "../recovery/test-helpers/capture-log.js";
 import { FakeClock } from "../recovery/test-helpers/fake-clock.js";
-import { RECOVERY_PROTOCOL_VERSION } from "../recovery/types.js";
 import { ComposedHandler } from "./composed-handler.js";
 import { classifyConnectionError, markOwnTimeout } from "./shared/connection-error.js";
 
@@ -61,9 +54,6 @@ afterEach(() => {
   closeAllEpisodes();
   resetRecoveryClock();
   resetRecoveryFlagOverrides();
-  // PROCESS state, shared with every sibling test file in this Bun process. A
-  // give-up left set would skip the ladder in tests that never pressed a key.
-  resetRecoveryGiveUp();
 });
 
 let seq = 0;
@@ -489,71 +479,5 @@ describe("a transport's own request timeout is NOT a connection failure", () => 
     } finally {
       hung.stop(true);
     }
-  });
-});
-
-// ───────────────────────────────────────────────────────────────────────────
-// `[q] give up`
-// ───────────────────────────────────────────────────────────────────────────
-
-describe("[q] give up stops the HOLD, not only the banner", () => {
-  /**
-   * `bye` suppressed the pane for 60 s and gave up on the episodes alive at
-   * that instant — and nothing else. The next request against the same dead
-   * target opened a NEW episode, found the pane suppressed, got no pane and no
-   * lease, and then held its socket for the full ~4.5-minute deadline with the
-   * reason legible NOWHERE before answering 400.
-   *
-   * Claude Code issues concurrent requests during an outage — the main loop,
-   * the title model, subagents — so a request arriving inside the suppression
-   * window is the EXPECTED case. Before this feature existed those requests
-   * failed in milliseconds.
-   */
-  test("a request arriving after the key does not hang — it fails fast, as it used to", async () => {
-    // The real command, through the real handler the socket server calls.
-    __handleCommandForTests({
-      v: RECOVERY_PROTOCOL_VERSION,
-      type: "bye",
-      reason: "user_quit",
-    });
-
-    const handler = new ComposedHandler(
-      deadTransport(deadPort),
-      "dead-model",
-      "dead-model",
-      8080,
-      {}
-    );
-    const req = new Request("http://127.0.0.1:8080/v1/messages", { method: "POST" });
-    const { c, captured } = contextFor(req);
-
-    const started = performance.now();
-    await handler.handle(c, PAYLOAD);
-    const elapsed = performance.now() - started;
-
-    expect(elapsed).toBeLessThan(1_000);
-    expect(captured.status).toBe(400);
-    expect(captured.body?.error?.type).toBe("connection_error");
-    // No episode: the hold is what the user asked to stop.
-    expect(episodeCount()).toBe(0);
-    expect((await capturedRecoveryLines()).some((l) => l.includes("skipped (gave-up)"))).toBe(true);
-  });
-
-  test("and the suppression expires with the banner's, not before or after it", async () => {
-    const clock = new FakeClock(0);
-    setRecoveryClock(clock);
-    __handleCommandForTests({
-      v: RECOVERY_PROTOCOL_VERSION,
-      type: "bye",
-      reason: "user_quit",
-    });
-    expect(recoveryGiveUpActive()).toBe(true);
-
-    // One number, read by the hold and by the surface. A minute later the
-    // ladder is available again — the key is a pause, not an off switch.
-    await clock.advance(UI_SUPPRESS_AFTER_BYE_MS - 1);
-    expect(recoveryGiveUpActive()).toBe(true);
-    await clock.advance(2);
-    expect(recoveryGiveUpActive()).toBe(false);
   });
 });

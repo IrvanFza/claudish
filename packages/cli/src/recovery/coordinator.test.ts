@@ -33,7 +33,6 @@ import {
   giveUp,
   joinEpisode,
   noteTargetReachable,
-  tryNow,
   uiLeaseValid,
 } from "./coordinator.js";
 import type { WaitOutcome } from "./coordinator.js";
@@ -576,22 +575,7 @@ describe("a successful attempt", () => {
   });
 });
 
-describe("the wake paths that later phases drive", () => {
-  test("tryNow collapses the wait and advances the round", async () => {
-    useFakeClock();
-    const h = joinEpisode(seed());
-    const parked = h.waitForNextAttempt(never(), 60_000);
-    await drain();
-    expect(clock.pending()).toBe(1);
-
-    tryNow(h.episodeId);
-    expect((await parked).kind).toBe("attempt");
-    // Woken at t=0, not at t=60 000.
-    expect(clock.now()).toBe(0);
-    expect(clock.pending()).toBe(0);
-    h.leave();
-  });
-
+describe("ending an episode from outside the ladder", () => {
   test("giveUp wakes every waiter with gave_up and latches", async () => {
     useFakeClock();
     const s = seed();

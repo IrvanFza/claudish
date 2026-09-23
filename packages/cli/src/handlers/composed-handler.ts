@@ -52,7 +52,7 @@ import {
   noteTargetReachable,
   uiLeaseValid,
 } from "../recovery/coordinator.js";
-import { recoveryGiveUpActive, resolveRecoveryEnabled } from "../recovery/settings.js";
+import { resolveRecoveryEnabled } from "../recovery/settings.js";
 import {
   type OpenAIImageBlock,
   type VisionProxyAuthHeaders,
@@ -677,12 +677,6 @@ export class ComposedHandler implements ModelHandler {
     // The CI / scripted-`-p` master switch. Off restores today's behaviour
     // everywhere, byte for byte.
     if (!resolveRecoveryEnabled()) return "recovery-disabled";
-    // The user pressed `[q] give up`. It has to be read HERE and not only in
-    // the UI manager: suppressing the banner alone left the NEXT request —
-    // and during an outage Claude Code always has one — holding its socket for
-    // the full deadline with the reason legible nowhere. The key says stop, so
-    // the hold stops too, for the same window the surface does.
-    if (recoveryGiveUpActive()) return "gave-up";
     // Attempt 1 already spent the budget. A guard, not a hope.
     if (recoveryClock().now() + MIN_ATTEMPT_SLOT_MS > deadlineAt) return "no-budget";
     return null;

@@ -257,9 +257,6 @@ describe("the script's directory is unguessable and cannot be pre-created", () =
    * another uid could pre-create (or symlink) that path and have it adopted
    * without a word, then read the session's secrets or swap the script between
    * the write and the `exec`. CWE-377 / CWE-59.
-   *
-   * The rest of this change already knew the rule: `socket-server.ts` uses
-   * `randomBytes(12)` for its directory and `O_EXCL` for the pane lock.
    */
   test("the path does not contain the pid, and two plans never collide", () => {
     const root = scratch();
