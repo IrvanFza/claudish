@@ -1574,19 +1574,49 @@ function describeOrigin(explanation: RouteExplanation): string {
 
 function describeCatalogOrigin(explanation: RouteExplanation): string {
   if (explanation.catalog === "unreadable") {
-    return "no cloud models catalog · run claudish --models-refresh";
+    const refresh = "run claudish --models-refresh";
+    // A namespace claim is claudish's own statement, so it gathers with no
+    // catalog: say what became of it rather than implying nothing routes.
+    return explanation.candidates.length > 0
+      ? `no cloud models catalog · ${firstHopPhrase(explanation)} · ${refresh}`
+      : `no cloud models catalog · ${refresh}`;
   }
-  if (explanation.catalog === "absent") {
-    const head = `catalog has no entry for "${explanation.routedModel}"`;
-    if (explanation.fallbackWithheld)
-      return `${head} · no fallback (${explanation.fallbackWithheld})`;
-    if (explanation.candidates.every((candidate) => candidate.position === "fallback")) {
-      return `${head} · fallback only`;
-    }
-    // A namespace claim gathered something the catalog does not list.
-    return `${head} · ${firstHopPhrase(explanation)}`;
-  }
+  if (explanation.catalog === "absent") return describeAbsentEntry(explanation);
   return `catalog · ${firstHopPhrase(explanation)}`;
+}
+
+/**
+ * What became of a lone fallback hop the filters dropped. The line names the
+ * outcome the candidate has, so a dropped hop is never described as the route.
+ */
+const DROPPED_FALLBACK_PHRASE: Record<Exclude<CandidateOutcome, "kept">, string> = {
+  "no-credential": "has no credential",
+  "credential-unreadable": "has a credential that could not be read",
+  "not-served": "does not serve it",
+  "excluded-by-membership": "is outside its plan's membership",
+};
+
+/**
+ * A readable catalog with no entry for the name. The only candidates are a
+ * namespace claim's and the fallback hop, and each gets words for its outcome.
+ */
+function describeAbsentEntry(explanation: RouteExplanation): string {
+  const head = `catalog has no entry for "${explanation.routedModel}"`;
+  const withheld = explanation.fallbackWithheld;
+  if (explanation.candidates.some((candidate) => candidate.position === "candidate")) {
+    // A namespace claim gathered something the catalog does not list.
+    // `already-gathered` is not news here: the fallback's provider is that claim.
+    const noFallback =
+      withheld && withheld !== "already-gathered" ? ` · no fallback (${withheld})` : "";
+    return `${head} · ${firstHopPhrase(explanation)}${noFallback}`;
+  }
+  if (withheld) return `${head} · no fallback (${withheld})`;
+  const fallback = explanation.candidates.find((candidate) => candidate.position === "fallback");
+  // The appended fallback always resolves to one candidate; this guards the words.
+  if (!fallback) return `${head} · ${firstHopPhrase(explanation)}`;
+  return fallback.outcome === "kept"
+    ? `${head} · fallback only`
+    : `${head} · fallback ${fallback.displayName} ${DROPPED_FALLBACK_PHRASE[fallback.outcome]}`;
 }
 
 function firstHopPhrase(explanation: RouteExplanation): string {
