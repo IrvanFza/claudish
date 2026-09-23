@@ -138,16 +138,49 @@ catalog maps is tried first.
 
 Set it via:
 
-- **Config file**: `"defaultProvider": "openrouter"` in `~/.claudish/config.json`
+- **Config file**: `"defaultProvider": "openrouter"` in `~/.claudish/config.json`, or in the file
+  `--config` names
 - **Env var**: `CLAUDISH_DEFAULT_PROVIDER=openrouter`
 - **CLI flag**: `claudish --default-provider openrouter "task"`
 
-**Precedence** (highest to lowest):
+**Precedence** (highest to lowest), decided by one resolver, `resolveDefaultProvider`
+(`default-provider.ts`):
 1. CLI flag `--default-provider`
 2. `CLAUDISH_DEFAULT_PROVIDER` env var
-3. `defaultProvider` in config file
+3. `defaultProvider` in the config file
 4. `OPENROUTER_API_KEY` present → `"openrouter"`
 5. Hardcoded `"openrouter"`
+
+Steps 4 and 5 route identically. They differ only in the `source` the route-table gate records.
+
+**An empty value is an answer, not a gap.** `""` at step 1, 2 or 3 disables the fallback hop and
+stops the search there, so `CLAUDISH_DEFAULT_PROVIDER=` beats a config `x`, and a flag `x` beats
+an empty env var. Until 2026-09-24 the resolver skipped `""` and answered `openrouter`, so the
+documented off switch did not work from the env var at all.
+
+**Not read: a project `.claudish.json`.** `loadLocalConfig` keeps a `defaultProvider` key in the
+project file, but no routing path reads it: only the global config (or the `--config` file) is
+step 3. Supporting a project value would need a project source in the resolver, a scope in the
+config TUI's Routing header and its own interaction with `--config`, which nothing asks for yet.
+
+**How the flag travels.** `index.ts` strips `--default-provider` from argv and exports its value
+as `CLAUDISH_DEFAULT_PROVIDER` before `parseArgs` and before any subcommand runs
+(`planDefaultProviderFlag`). After that the env var is the flag's only carrier: `route()`, the
+proxy, `--probe` and every child claudish (team, channel sessions) read it there. It cannot be read
+any later, for two reasons: `--probe` runs and exits inside `parseArgs`'s argv loop, and a child
+process inherits env, not argv. `--default-provider ""` exports an empty value, which disables
+the hop. The export runs after `--op-env` and `--op`, which overwrite env unconditionally, so the
+flag still beats a value they hydrate. Children see it only because every claudish child is
+spawned through `node:child_process`, which inherits `process.env`: `Bun.spawn` without an `env`
+option drops in-process env writes.
+
+**Who reads it.** `route(model)` with no overrides asks the resolver on every call
+(`effectiveDefaultProvider`), and so does `--probe`'s chain, so the two cannot name different
+fallback hops. The proxy resolves it once at start and passes it as `route()`'s third argument. It
+has to: the proxy also passes its routing rules, and `route(model, rules)` with no third argument
+reads NO default provider, a guard that keeps the machine's setting out of unit tests. Until
+2026-09-24 the proxy passed only the rules, so its bare-name routing fell back to `openrouter`
+whatever `defaultProvider` said, `""` included.
 
 **Example config**:
 ```json
@@ -157,7 +190,8 @@ Set it via:
 }
 ```
 
-Valid values: any built-in provider name (`"openrouter"`, `"openai"`, `"google"`, `"litellm"`, etc.) or a custom endpoint name defined in `customEndpoints`.
+Valid values: any claudish provider name or shortcut (`"openrouter"`, `"or"`, `"openai"`,
+`"litellm"`, etc.), a custom endpoint name defined in `customEndpoints`, or `""` for none.
 
 **How it interacts with routing rules**: it applies ONLY to the catalog-gathered path. A bare
 name that matched a user rule gets that chain verbatim with no fallback appended — which is what
@@ -170,7 +204,7 @@ whole chain is credential-filtered. Explicit `provider@model` specs are unaffect
 | Setting | Fallback hop |
 |---|---|
 | unset (`undefined`) | `openrouter` — "no preference" is not "disabled" |
-| `""` (explicit empty string) | none |
+| `""` (explicit empty string), from the flag, the env var or the config file | none |
 | a matching user rule, e.g. `routing["*"] = []` | none — the rule is verbatim |
 
 **It is not appended when the catalog positively denies it.** The catalog draws the line itself:
@@ -189,7 +223,7 @@ partial by nature — `openai-codex` appears on 5 rows of 1,123). The route-owne
 what makes the narrower question answerable, and only the fallback APPEND asks it: the
 difference is inventing a hop nobody published versus dropping one something else put there.
 
-**No more LiteLLM auto-promotion** (removed in commit 5 of the model-catalog and routing redesign): Setting `LITELLM_BASE_URL` + `LITELLM_API_KEY` no longer makes LiteLLM the default. Users who want LiteLLM as the catch-all must set `defaultProvider: "litellm"` explicitly.
+**No more LiteLLM auto-promotion** (removed in commit 5 of the model-catalog and routing redesign): Setting `LITELLM_BASE_URL` + `LITELLM_API_KEY` no longer makes LiteLLM the default. Users who want LiteLLM as the catch-all must set `defaultProvider: "litellm"` explicitly. The one-shot stderr hint that announced the promotion, and the `DefaultProviderSchema` that listed LiteLLM as a built-in name, are gone as well.
 
 ## Vendor Prefix Auto-Resolution (ModelCatalogResolver)
 

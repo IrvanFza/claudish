@@ -196,10 +196,20 @@ export interface ClaudishProfileConfig {
   debug?: boolean;
 
   /**
-   * Default provider for bare model names. One of the builtin names
-   * (openrouter, litellm, openai, anthropic, google) or a key from `customEndpoints`.
-   * Precedence: --default-provider flag > CLAUDISH_DEFAULT_PROVIDER env > this field.
-   * Phase 2 wires this into the routing fallback chain.
+   * The provider in the FALLBACK position: the last hop of a bare name's
+   * catalog-gathered chain. A claudish provider name or shortcut, or a
+   * `customEndpoints` key. Not used for an explicit `provider@model` spec, nor when
+   * a user routing rule matches (that chain is used verbatim).
+   *
+   *   - unset: `openrouter`.
+   *   - `""`: no fallback hop. A name the catalog does not serve gets no route.
+   *
+   * Precedence (`resolveDefaultProvider`): `--default-provider` flag >
+   * CLAUDISH_DEFAULT_PROVIDER env > this field. An empty flag or env value is an
+   * answer too: it disables the hop and overrides this field.
+   *
+   * Read from the global config (or the `--config` file) only. A `defaultProvider`
+   * in a project `.claudish.json` is kept on disk, but no routing path reads it.
    */
   defaultProvider?: string;
 

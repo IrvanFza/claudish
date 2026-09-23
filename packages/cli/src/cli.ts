@@ -2343,14 +2343,16 @@ ${h("MODEL ROUTING")}
     ${yellow("anthropic/*, claude-*")}   ${dim("->")} Native Anthropic
     ${yellow("(unknown vendor/)")}       ${dim("->")} Error (use openrouter@vendor/model)
 
-  ${dim("A defaultProvider (config / --default-provider) catches bare names that match no rule.")}
+  ${dim("A defaultProvider (--default-provider / CLAUDISH_DEFAULT_PROVIDER / config) is the last hop for")}
+  ${dim('bare names that match no rule. "" disables it.')}
 
 ${h("OPTIONS")}
   ${green("-i, --interactive")}        Run in interactive mode (default when no prompt given)
   ${green("-m, --model")} ${yellow("<model>")}      Model to use (required for single-shot mode)
   ${green("--profile")} ${yellow("<name>")}         Use named profile for model mapping (default profile if omitted)
-  ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (builtin or customEndpoints key)
-                           ${dim("Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json")}
+  ${green("--default-provider")} ${yellow("<name>")} Fallback provider for bare model names (claudish provider or customEndpoints key)
+                           ${dim('"" disables it. Precedence: this flag > CLAUDISH_DEFAULT_PROVIDER env > config.json')}
+                           ${dim("(the global config or the --config file; a project .claudish.json is not read)")}
   ${green("--anthropic-api-billing")}  Use your real ANTHROPIC_API_KEY for native Claude models
                            ${dim("(metered API billing). Default: the key is hidden so Claude Code")}
                            ${dim("uses your claude.ai subscription. Env: CLAUDISH_ANTHROPIC_API_BILLING")}
@@ -2540,7 +2542,7 @@ ${h("ENVIRONMENT VARIABLES")}
 
   ${bold("Claudish settings:")}
   ${blue("CLAUDISH_MODEL")}                  Default model ${dim("(default: openai/gpt-5.3)")}
-  ${blue("CLAUDISH_DEFAULT_PROVIDER")}       Fallback provider for bare names ${dim("(see --default-provider)")}
+  ${blue("CLAUDISH_DEFAULT_PROVIDER")}       Fallback provider for bare names; empty disables it ${dim("(see --default-provider)")}
   ${blue("CLAUDISH_PORT")}                   Default proxy port
   ${blue("CLAUDISH_CONTEXT_WINDOW")}         Override context window size
   ${blue("CLAUDISH_DIAG_MODE")}              Diagnostic output: auto / logfile / off
