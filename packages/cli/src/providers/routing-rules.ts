@@ -133,13 +133,37 @@ function validateRoutingRules(rules: RoutingRules): void {
  * NOTE: only the rule LOOKUP is lowered. The original `modelName` casing is
  * preserved when the route is built and sent to provider APIs (some are
  * case-sensitive on their own model IDs).
+ *
+ * The chain of the key {@link matchRoutingRuleKey} returns, so the two cannot
+ * disagree about which rule a name matches.
  */
 export function matchRoutingRule(modelName: string, rules: RoutingRules): RoutingEntry[] | null {
+  const key = matchRoutingRuleKey(modelName, rules);
+  // Catch-all included: its chain may be an empty array, which the caller treats
+  // as "no route".
+  return key === null ? null : rules[key];
+}
+
+/**
+ * The rule KEY a model name matches, spelled exactly as it is stored in
+ * `rules`, or `null` when no rule matches.
+ *
+ * Priority, as {@link matchRoutingRule} applies it: an exact key compared
+ * case-insensitively (the stored spelling is returned, not the model name), then
+ * the longest matching glob, then `"*"`.
+ *
+ * A display needs the key, not the chain: two rules can name the same chain, and
+ * "which rule decided this" is the question a user asks when a model goes
+ * somewhere they did not expect. Returning the stored key also lets a caller
+ * that knows where each key came from (global or project config) name the
+ * scope.
+ */
+export function matchRoutingRuleKey(modelName: string, rules: RoutingRules): string | null {
   const lowered = modelName.toLowerCase();
 
   // 1. Exact match (case-insensitive over rule keys)
-  for (const [key, entries] of Object.entries(rules)) {
-    if (!key.includes("*") && key.toLowerCase() === lowered) return entries;
+  for (const key of Object.keys(rules)) {
+    if (!key.includes("*") && key.toLowerCase() === lowered) return key;
   }
 
   // 2. Glob patterns (sorted longest-first = most specific)
@@ -148,11 +172,11 @@ export function matchRoutingRule(modelName: string, rules: RoutingRules): Routin
     .sort((a, b) => b.length - a.length);
 
   for (const pattern of globKeys) {
-    if (globMatch(pattern, modelName)) return rules[pattern];
+    if (globMatch(pattern, modelName)) return pattern;
   }
 
-  // 3. Catch-all (may be an empty array — caller treats that as "no route")
-  if (rules["*"] !== undefined) return rules["*"];
+  // 3. Catch-all
+  if (rules["*"] !== undefined) return "*";
 
   return null;
 }
