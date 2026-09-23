@@ -17,6 +17,7 @@ import {
 } from "../handlers/shared/remote-provider-types.js";
 import { setConfigFileOverride } from "../profile-config.js";
 import { API_KEY_MAP } from "./api-key-map.js";
+import { CATALOG_ROUTE_BINDINGS } from "./catalog-route-bindings.js";
 import {
   BUILTIN_PROVIDERS,
   getApiKeyEnvVars,
@@ -199,8 +200,40 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
       "native-anthropic",
       "ollama",
       "openrouter",
+      "qwen", // Steering placeholder; qwen-payg serves dashscope.
       "vllm",
     ]);
+  });
+
+  test("catalog bindings exclude the qwen steering placeholder but retain native passthrough", () => {
+    let resolvedBuiltinBindings = 0;
+
+    for (const providerName of Object.keys(CATALOG_ROUTE_BINDINGS)) {
+      const provider = getProviderByName(providerName);
+      if (!provider) continue;
+
+      resolvedBuiltinBindings += 1;
+      expect(provider.tier).toBeDefined();
+    }
+
+    // The loop must exercise real bindings, not pass vacuously on an empty or
+    // wholly unresolved table.
+    expect(resolvedBuiltinBindings).toBeGreaterThan(0);
+
+    // qwen only steers bare names; qwen-payg owns dashscope and its credentials.
+    expect(CATALOG_ROUTE_BINDINGS.qwen).toBeUndefined();
+    expect(CATALOG_ROUTE_BINDINGS["qwen-payg"]).toEqual({
+      routeId: "qwen",
+      routeProfileId: "dashscope-direct",
+    });
+
+    // A no-handler marker is not itself grounds for removing a binding: this
+    // route is executed by the proxy's native passthrough.
+    expect(getProviderByName("native-anthropic")?.tier).toBe("subscription");
+    expect(CATALOG_ROUTE_BINDINGS["native-anthropic"]).toEqual({
+      routeId: "anthropic",
+      routeProfileId: "claude-code-subscription",
+    });
   });
 
   test("recent subscription providers have real handler factories", () => {

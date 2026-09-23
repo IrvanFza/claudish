@@ -25,6 +25,7 @@ let tempDir = "";
 let cachePath = "";
 
 beforeEach(() => {
+  // The classifier memoizes its catalog projection across files; drop it so this fixture is read.
   _clearChatCapabilityIndex();
   tempDir = mkdtempSync(join(tmpdir(), "claudish-chat-capability-"));
   cachePath = join(tempDir, "cloud-models-catalog-v3.json");
@@ -45,9 +46,6 @@ afterEach(() => {
 });
 
 describe("chat capability from the catalog", () => {
-  // Mutation targets: probe-discovery.ts:150, :181 and :195. Removing the catalog
-  // videoOutput denial breaks Omni; treating videoInput as output breaks 3.8 Flash;
-  // requiring literal "chat" instead of anything but "not-chat" breaks unknowns.
   test("video output is not chat", () => {
     expect(classifyChatCapability("gemini-omni-1.1-flash", cachePath)).toBe("not-chat");
   });
@@ -56,14 +54,17 @@ describe("chat capability from the catalog", () => {
     expect(classifyChatCapability("gemini-3.8-flash", cachePath)).not.toBe("not-chat");
   });
 
-  test("the video-name fallback applies to names absent from the catalog", () => {
-    expect(classifyChatCapability("unpublished-model-t2v", cachePath)).toBe("not-chat");
+  test("does not guess capability from non-chat-looking names", () => {
+    for (const name of ["nomic-embed-text", "whisper-large", "dall-e-3", "sora-2-lookalike"]) {
+      expect(classifyChatCapability(name, cachePath)).toBe("unknown");
+    }
   });
 
   test.each(["unpublished-model-t2v", "unpublished-chat-model"])(
     "isChatCapable is the boolean projection for %s",
     (name) => {
-      expect(isChatCapable(name)).toBe(classifyChatCapability(name) !== "not-chat");
+      expect(isChatCapable(name)).toBe(classifyChatCapability(name) === "chat");
+      expect(isChatCapable(name)).toBeFalse();
     }
   );
 });

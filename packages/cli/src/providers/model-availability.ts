@@ -45,7 +45,12 @@ import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
  */
 
 import { getCatalogEntries } from "./catalog-client.js";
-import { discoverProviderModels, getDiscoveryFailure } from "./model-discovery.js";
+import {
+  type DiscoveredModel,
+  discoverProviderModels,
+  getDiscoveryFailure,
+} from "./model-discovery.js";
+import { expandSelection } from "./model-resolvers/registry.js";
 import { getProviderByName } from "./provider-definitions.js";
 
 /**
@@ -60,6 +65,39 @@ export type ModelAvailability = "serves" | "not-served" | "unknown";
 function modelsCatalogHas(ids: string[], wireId: string): boolean {
   const needle = wireId.trim().toLowerCase();
   return ids.some((id) => id.trim().toLowerCase() === needle);
+}
+
+/**
+ * The id this provider would ACTUALLY SEND for `wireId`, found by the same
+ * resolver its transport uses.
+ *
+ * A provider that encodes knobs into its model ids never lists the bare
+ * canonical id. Devin's dynamic models catalog holds `swe-1-7`,
+ * `swe-1-7-medium` and `swe-1-7-lightning`, never `swe-1.7`, and its transport
+ * maps the requested name onto one of them through `expandSelection` at request
+ * time. This check used to compare the raw requested string instead, so it
+ * answered "not-served" for every canonical id Devin carries, and "not-served"
+ * is the one verdict allowed to REMOVE a candidate. Measured 2026-09-23 on a
+ * 247-uid Devin catalog: `swe-1.7`, `swe-2`, `swe-1.6`, `glm-5.3` and
+ * `kimi-k3` all read as not served, while the resolver maps them to
+ * `swe-1-7-medium`, `swe-2-high`, `swe-1-6`, `glm-5-3-max` and `kimi-k3-high`.
+ * A bare `swe-1.7` therefore lost its Devin hop and went to the OpenRouter
+ * fallback, which answered "swe-1.7 is not a valid model ID", while the explicit
+ * pin `devin@swe-1.7` worked.
+ *
+ * No effort is passed, so the resolver picks the family default. That is enough
+ * to answer "is anything in this family served"; the transport resolves again
+ * with the request's real effort when it sends. For a provider with no
+ * resolver, `expandSelection` returns `wireId` unchanged, so their answer is
+ * exactly what it was.
+ */
+function resolveAgainstModelsCatalog(
+  provider: string,
+  wireId: string,
+  models: DiscoveredModel[]
+): string {
+  const entries = models.map(({ id, ...rest }) => ({ wireId: id, ...rest }));
+  return expandSelection(provider, wireId, entries);
 }
 
 /**
@@ -84,7 +122,7 @@ export async function providerServesModel(
     if (models.length > 0) {
       return modelsCatalogHas(
         models.map((m) => m.id),
-        wireId
+        resolveAgainstModelsCatalog(provider, wireId, models)
       )
         ? "serves"
         : "not-served";

@@ -80,7 +80,12 @@ async function fetchDevinModelsCatalog(): Promise<FetcherResult> {
       endpoint,
       models: served.map((model) => {
         const { wireId, ...rest } = devinModelsCatalogEntry(model);
-        return { id: wireId, ...rest };
+        // `chat` is Devin's statement, not ours. This list is the set of models
+        // Devin's own agent can drive — capability ∩ entitlement, already filtered
+        // to configs with a context window — so every uid in it answers chat turns.
+        // Its uids are knob-encoded (`swe-1-7-medium`) and the cloud catalog never
+        // lists them verbatim, so judged by id alone 244 of 247 read as unknown.
+        return { id: wireId, ...rest, reported: "chat" as const };
       }),
     };
   } catch (err: unknown) {
@@ -160,9 +165,19 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
         // than the row rendering a fabricated 0 as "N/A".
         // Every id here is a tuned variant (`-high`, `-tiered`) the catalog does not
         // carry; see `ignoreCatalogReleaseDate` for the ordering this protects.
+        // `chat` is the backend's statement: everything it declares non-selectable —
+        // internal flags, per-feature role bindings, retired ids — was removed above,
+        // and so were the undeclared editor-completion models. What remains is the
+        // set it offers for chat. Judged by id alone, 14 of 21 read as unknown,
+        // because these tuned variants are ids the cloud catalog does not carry.
         return m?.contextWindow
-          ? { id, contextWindow: m.contextWindow, ignoreCatalogReleaseDate: true }
-          : { id, ignoreCatalogReleaseDate: true };
+          ? {
+              id,
+              contextWindow: m.contextWindow,
+              ignoreCatalogReleaseDate: true,
+              reported: "chat" as const,
+            }
+          : { id, ignoreCatalogReleaseDate: true, reported: "chat" as const };
       }),
     };
   } catch (err: unknown) {
@@ -185,12 +200,15 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
  */
 async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
   const { fetchOllamaModels, ollamaBaseUrl } = await import("./ollama-discovery.js");
+  const { ollamaReported } = await import("./transport/probe-discovery.js");
   const endpoint = `${ollamaBaseUrl()}/api/tags`;
   try {
-    const installed = await fetchOllamaModels({
-      enrichCapabilities: false,
-      throwOnError: true,
-    });
+    // `enrichCapabilities` is left at its default. It used to be `false`, which
+    // cost nothing while an undescribed model still counted as chat — and hid
+    // every model from a daemon that lists `capabilities` only in `/api/show`
+    // once it stopped. A current daemon lists them inline, so the per-model
+    // `/api/show` fallback never fires there.
+    const installed = await fetchOllamaModels({ throwOnError: true });
     return {
       kind: "models",
       endpoint,
@@ -198,6 +216,12 @@ async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
         id: model.name,
         displayName: model.name,
         supportsTools: model.supportsTools,
+        // The daemon's own `capabilities`, read from `/api/tags`: `completion` means
+        // chat, `embedding` means not. This row used to carry only name, display name
+        // and a tools flag, so the capability data was fetched and then dropped here,
+        // and 18 of 19 local builds — none of which the cloud catalog lists — read as
+        // unknown. A daemon too old to report the field leaves it unset.
+        reported: ollamaReported(model),
       })),
     };
   } catch (err: unknown) {

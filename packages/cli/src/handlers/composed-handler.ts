@@ -942,9 +942,19 @@ export class ComposedHandler implements ModelHandler {
         const providerMsg = extractProviderMessage(parsedErrorBody ?? errorText);
         // Richer stderr line: provider + status + hint + the real upstream message,
         // so the cause is findable in scrollback even when Claude Code only shows
-        // its own "API error · Retrying" banner. Bounded to one tidy line.
-        const msgTail = providerMsg
-          ? ` (${providerMsg.length > 200 ? `${providerMsg.slice(0, 200)}…` : providerMsg})`
+        // its own "API error · Retrying" banner.
+        //
+        // "One tidy line" used to be bounded by LENGTH alone, which is a different
+        // promise: `extractProviderMessage` returns a non-JSON body verbatim, and a
+        // provider may answer an error as an SSE frame rather than a document —
+        // Alibaba Model Studio answers a denied model with `event:error\ndata:{…}`.
+        // 200 characters of that is still three lines, and three lines written into
+        // a terminal a TUI is painting tears the frame. Collapsing whitespace FIRST
+        // is what makes the sentence true; the slice then bounds what is already
+        // one line.
+        const oneLineMsg = providerMsg.replace(/\s+/g, " ").trim();
+        const msgTail = oneLineMsg
+          ? ` (${oneLineMsg.length > 200 ? `${oneLineMsg.slice(0, 200)}…` : oneLineMsg})`
           : "";
         logStderr(
           `Error [${this.provider.displayName}]: HTTP ${response.status}. ${hint}${msgTail}`
@@ -1033,7 +1043,16 @@ export class ComposedHandler implements ModelHandler {
           // machine consumers (probe classification) can tell a remapped
           // auth failure from a genuine 400.
           return c.json(
-            wrapAnthropicError(400, surfaced, "invalid_request_error", response.status),
+            wrapAnthropicError(
+              400,
+              surfaced,
+              "invalid_request_error",
+              response.status,
+              // The upstream's own sentence, kept whole and separate. `surfaced`
+              // leads with claudish's hint, which is correct for Claude Code and
+              // useless to a probe row that clips.
+              providerMsg
+            ),
             400 as any
           );
         }
@@ -1088,7 +1107,13 @@ export class ComposedHandler implements ModelHandler {
         } catch {
           // Stats must never crash claudish
         }
-        return c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+        // `settled.message` is the upstream's own text; `surfaced` wraps it in
+        // claudish's retry narration. Both travel, so a probe row can lead with
+        // the provider's words.
+        return c.json(
+          wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+          503 as any
+        );
       }
       response = settled.response;
     }
@@ -1147,8 +1172,20 @@ export class ComposedHandler implements ModelHandler {
           // Stats must never crash claudish
         }
         return isTerminal
-          ? c.json(wrapAnthropicError(400, surfaced, "invalid_request_error"), 400 as any)
-          : c.json(wrapAnthropicError(503, surfaced, "overloaded_error"), 503 as any);
+          ? c.json(
+              wrapAnthropicError(
+                400,
+                surfaced,
+                "invalid_request_error",
+                undefined,
+                settled.message
+              ),
+              400 as any
+            )
+          : c.json(
+              wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
+              503 as any
+            );
       }
       response = settled.response;
     }

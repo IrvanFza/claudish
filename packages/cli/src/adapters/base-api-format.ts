@@ -595,17 +595,15 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     // endpoint's own default is a better answer than a level we invented.
     if (!effort) return request;
 
-    if (effort === "none" || effort === "minimal") {
-      // `mandatory` means the model cannot run with reasoning off, so a
-      // `disabled` here is a request the provider must reject. Honour the
-      // intent as far as the model allows: the lowest level it advertises.
-      if (reasoning?.mandatory) {
-        return this.enableAnthropicEffort(request, effort, reasoning, "mandatory reasoning");
-      }
+    if (this.meansReasoningOff(effort, reasoning)) {
       request.thinking = { type: "disabled" };
       log(`[${this.getName()}] effort ${effort} -> thinking.type: disabled for ${this.modelId}`);
       return request;
     }
+    // `none`/`minimal` that survived {@link meansReasoningOff} is a request for
+    // the LEAST thinking this model offers, not for none: a mandatory model, or
+    // `minimal` where a depth control exists. Both fall through to the
+    // control-driven dispatch below, which clamps to the advertised ladder.
 
     // ── Control-driven dispatch ─────────────────────────────────────────────
     //
@@ -761,6 +759,53 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
    * in the models-index catalog; do NOT hardcode a per-model override here, or
    * claudish stops reflecting the catalog it is supposed to be driven by.
    */
+  /**
+   * Does this effort level mean "send the OFF switch" for THIS model?
+   *
+   * One rule, shared by every wire, because the same mistake was made on four of
+   * them independently: `effort === "none" || effort === "minimal"` → emit the
+   * provider's disable value. That collapses two of claudish's seven levels into
+   * one, and it is wrong twice over.
+   *
+   * **`minimal` is not `none`.** claudish publishes both. `none` means do not
+   * reason; `minimal` means reason as little as possible. Where the model has a
+   * depth control, "as little as possible" is its lowest rung — that is what the
+   * word asks for, and {@link clampToAdvertisedEffort} already computes it.
+   * Sending the off-switch instead throws away the distinction the two level
+   * names exist to express.
+   *
+   * **Some models cannot be switched off at all.** The catalog says so with
+   * `mandatory: true`, and the provider enforces it. Measured on Z.AI 2026-09-21:
+   * `{"thinking":{"type":"disabled"}}` for glm-5.3 → `400 code 1210 "This model
+   * always engages in thinking and cannot be disabled"`, while the same request
+   * with the switch on and `reasoning_effort: "low"` → 200. The catalog publishes
+   * `mandatory: true` for glm-5.3 and glm-5.3-flash, so this never needed a guess.
+   *
+   * The remaining case is a model with an on/off switch and no depth control and
+   * no mandate. There "as little as possible" and "none" really are the same
+   * request, because the wire has no third value to send — so both disable, and
+   * behaviour for those models is unchanged.
+   */
+  protected meansReasoningOff(
+    effort: EffortLevel,
+    reasoning: ReasoningCapability | undefined
+  ): boolean {
+    if (effort !== "none" && effort !== "minimal") return false;
+    if (reasoning?.mandatory) return false;
+    if (effort === "none") return true;
+    // `minimal` is off only where "as little as possible" IS off: the model has
+    // no depth control at all, or the lowest rung it advertises is `none`. The
+    // second case was missed: `sakana-namazu` advertises `["high","none"]` under
+    // a toggle control, and `minimal` fell through and sent reasoning ON at full
+    // depth although its floor is off.
+    const advertised = (reasoning?.efforts ?? []).filter(isEffortLevel);
+    if (advertised.length === 0) return true;
+    const lowest = advertised.reduce((a, b) =>
+      EFFORT_ORDER.indexOf(a) <= EFFORT_ORDER.indexOf(b) ? a : b
+    );
+    return lowest === "none";
+  }
+
   protected clampToAdvertisedEffort(
     requested: EffortLevel,
     reasoning: ReasoningCapability
@@ -769,11 +814,17 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
     // escape hatch, and it can produce a 400: the clamp is what normally keeps
     // a level the model does not advertise off the wire. Asking for it anyway
     // is the user's explicit choice.
-    // `--effort` pins the level VERBATIM — skip the clamp entirely. This is an
-    // escape hatch, and it can produce a 400: the clamp is what normally keeps
-    // a level the model does not advertise off the wire. Asking for it anyway
-    // is the user's explicit choice.
-    if (this.pinnedEffort) return this.pinnedEffort;
+    //
+    // Except `none` and `minimal`. Those two are DIRECTIONS — "off" and "the
+    // least there is" — and `meansReasoningOff` has already decided they reach
+    // this clamp only where the model cannot honour them literally. Sent
+    // verbatim they mean the opposite: GLM-5.2 runs any value other than `high`
+    // at Max, so a pinned `--effort minimal` bought maximum reasoning. Before
+    // `meansReasoningOff` existed, a pinned minimal never got here — it became
+    // the off switch first. Caught in release review for v10.0.2.
+    if (this.pinnedEffort && this.pinnedEffort !== "none" && this.pinnedEffort !== "minimal") {
+      return this.pinnedEffort;
+    }
     const advertised = (reasoning.efforts ?? []).filter(isEffortLevel);
     if (advertised.length === 0) {
       return isEffortLevel(reasoning.defaultEffort) ? reasoning.defaultEffort : undefined;
@@ -841,6 +892,16 @@ export abstract class BaseAPIFormat implements APIFormat, ModelDialect {
         return 38912;
       case "max":
         return undefined; // omit → model max
+      case "none":
+      case "minimal":
+        // The FLOOR, not the default. These two levels only reach a budget when
+        // the model cannot switch reasoning off (`mandatory`) or when `minimal`
+        // has a depth control to turn down, and in both cases the request is for
+        // the least thinking available. They used to fall to `default`'s 8192 —
+        // four times `low`'s 2048 — so asking for less bought more. Measured on
+        // the DashScope wire for qwen3.8-flash-next and qwen3.8-max-0902, caught
+        // in release review for v10.0.2.
+        return MIN_THINKING_BUDGET;
       default:
         return 8192;
     }
