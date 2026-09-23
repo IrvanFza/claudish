@@ -34,9 +34,9 @@ import {
 import {
   type DiscoveredModel,
   type DiscoveryFailure,
-  type RosterOutcome,
+  type ModelsCatalogOutcome,
   describeDiscoveryFailure,
-  discoverProviderRoster,
+  discoverProviderModelsCatalog,
   getDiscoveryFailure,
   rankDiscoveredModels,
   toModelsCatalogEntry,
@@ -1501,7 +1501,7 @@ function describeOffer(offer: ModelOffer | undefined): string | undefined {
 }
 
 /**
- * Which list the user is about to be shown instead of the live roster.
+ * Which list the user is about to be shown instead of the dynamic models catalog.
  *
  * The caller that writes the notice is not always the caller that knows this.
  * `warnDiscoveryFailure` runs at the point discovery fails, BEFORE the
@@ -1552,7 +1552,9 @@ export function formatDiscoveryFailureNotice(
 
   if (fallback === "manual-entry") lines.push("  Falling back to manual model entry.\n\n");
   else if (fallback === "catalog") {
-    lines.push(`  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`);
+    lines.push(
+      `  Showing ${displayName}'s cloud-catalog entries below — not its live model list.\n\n`
+    );
   }
   return lines;
 }
@@ -1596,9 +1598,9 @@ export function warnDiscoveryFailure(
 }
 
 /**
- * Roster → picker rows, as an injectable step.
+ * Dynamic models catalog → picker rows, as an injectable step.
  *
- * A seam, not a design: `collapseModelsCatalog` folding a non-empty roster to `[]` is
+ * A seam, not a design: `collapseModelsCatalog` folding a non-empty dynamic models catalog to `[]` is
  * the one state behind `PickerDiscoveryOutcome.collapsed-empty`, and the single
  * shipped resolver cannot produce it (every entry lands in a group and every
  * group yields a choice), so the variant is otherwise untestable. The
@@ -1606,15 +1608,15 @@ export function warnDiscoveryFailure(
  * test files and is banned here. Replace the property in a test and restore it;
  * the same shape the discovery tests already use on `credentials.getRequestAuth`.
  */
-export const _rosterCollapse = { collapse: collapseModelsCatalog };
+export const _modelsCatalogCollapse = { collapse: collapseModelsCatalog };
 
 /**
  * What one discovery provider's model list actually is — all five states that
  * used to be the same empty array, plus the one where nothing was attempted.
  *
  * `buildDiscoveredModelRows` returned `[]` for a rejected API key, an
- * unreachable endpoint, a genuinely empty roster, a roster where nothing was
- * chat-capable, and a roster that collapsed to nothing — and its caller fell
+ * unreachable endpoint, a genuinely empty dynamic models catalog, a dynamic models catalog where nothing was
+ * chat-capable, and a dynamic models catalog that collapsed to nothing — and its caller fell
  * through to the cloud catalog for all of them, silently. The user's report was
  * *"it just shows fewer model names, like the provider does not have any
  * models"*: information destroyed at a return statement, which no amount of UI
@@ -1639,17 +1641,17 @@ export type PickerDiscoveryOutcome =
   | { kind: "rows"; rows: [ModelInfo, ...ModelInfo[]]; servedCount: number; chatCount: number }
   | { kind: "all-filtered"; servedCount: number; sampleIds: string[]; fallbackRows: ModelInfo[] }
   | { kind: "collapsed-empty"; servedCount: number; chatCount: number; fallbackRows: ModelInfo[] }
-  | { kind: "empty-roster"; failure: DiscoveryFailure; fallbackRows: ModelInfo[] }
+  | { kind: "empty-models-catalog"; failure: DiscoveryFailure; fallbackRows: ModelInfo[] }
   | { kind: "failed"; failure: DiscoveryFailure; notice: string[]; fallbackRows: ModelInfo[] }
   | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
 
 /**
  * One discovery provider's list, with the reason when there isn't one.
  *
- * Starts both legs at once — the live roster and the cloud-catalog fallback —
+ * Starts both legs at once — the dynamic models catalog and the cloud-catalog fallback —
  * and returns one settled answer, so a view has one state and one affordance per
  * provider instead of two spinners to reconcile. The catalog leg costs a lookup
- * a healthy roster does not need; that is cheaper than doubling the wait on the
+ * a healthy dynamic models catalog does not need; that is cheaper than doubling the wait on the
  * failure path, and `catalog.modelsByVendor` caches.
  */
 export async function buildDiscoveredModelOutcome(
@@ -1657,36 +1659,39 @@ export async function buildDiscoveredModelOutcome(
   displayName: string,
   catalog: CatalogClient
 ): Promise<PickerDiscoveryOutcome> {
-  const [rosterResult, fallbackResult] = await Promise.allSettled([
-    discoverProviderRoster(provider),
+  const [modelsCatalogResult, fallbackResult] = await Promise.allSettled([
+    discoverProviderModelsCatalog(provider),
     loadModelsForPickerProvider(provider, catalog),
   ]);
 
   const fallbackRows = fallbackResult.status === "fulfilled" ? fallbackResult.value : [];
-  // `discoverProviderRoster` never rejects by contract, but a contract is not a
+  // `discoverProviderModelsCatalog` never rejects by contract, but a contract is not a
   // type: honour it rather than asserting it, so a future regression there shows
   // up as a named failure instead of an unhandled rejection behind a renderer.
-  const roster: RosterOutcome =
-    rosterResult.status === "fulfilled"
-      ? rosterResult.value
+  const modelsCatalog: ModelsCatalogOutcome =
+    modelsCatalogResult.status === "fulfilled"
+      ? modelsCatalogResult.value
       : {
           kind: "failed",
           failure: {
             kind: "unreachable",
             provider,
-            detail: String((rosterResult.reason as Error)?.message ?? rosterResult.reason),
+            detail: String(
+              (modelsCatalogResult.reason as Error)?.message ?? modelsCatalogResult.reason
+            ),
           },
         };
 
-  if (roster.kind === "unsupported") return { kind: "unsupported", reason: roster.reason };
+  if (modelsCatalog.kind === "unsupported")
+    return { kind: "unsupported", reason: modelsCatalog.reason };
 
-  if (roster.kind === "failed") {
-    const { failure } = roster;
-    // `empty-roster` is its own variant rather than a `failed` with a kind to
+  if (modelsCatalog.kind === "failed") {
+    const { failure } = modelsCatalog;
+    // `empty-models-catalog` is its own variant rather than a `failed` with a kind to
     // switch on, because it is not an error: the endpoint answered. It renders
     // in the NOTICE tier, visibly distinct from a rejected key.
     if (failure.kind === "empty-models-catalog") {
-      return { kind: "empty-roster", failure, fallbackRows };
+      return { kind: "empty-models-catalog", failure, fallbackRows };
     }
     const def = getProviderByName(provider);
     const notice = formatDiscoveryFailureNotice(
@@ -1701,7 +1706,7 @@ export async function buildDiscoveredModelOutcome(
     return { kind: "failed", failure, notice, fallbackRows };
   }
 
-  const served = rankDiscoveredModels(roster.models);
+  const served = rankDiscoveredModels(modelsCatalog.models);
   const servedCount = served.length;
   const discovered = served.filter((m) => isChatCapable(m.id));
   const chatCount = discovered.length;
@@ -1732,7 +1737,7 @@ export async function buildDiscoveredModelOutcome(
 }
 
 /**
- * The picker rows for a provider's live roster, or `[]` for any of the six
+ * The picker rows for a provider's dynamic models catalog, or `[]` for any of the six
  * reasons there isn't one.
  *
  * A wrapper over {@link buildDiscoveredModelOutcome} since the outcome type
@@ -1779,7 +1784,7 @@ function buildRowsFromDiscovered(
   // where 167 served uids are ~39 real choices multiplied out by reasoning tier
   // and speed premium. The chosen id is always a real wire id, so it still
   // round-trips through buildExplicitModelSpec and argv unchanged.
-  const choices = _rosterCollapse.collapse(provider, discovered.map(toModelsCatalogEntry));
+  const choices = _modelsCatalogCollapse.collapse(provider, discovered.map(toModelsCatalogEntry));
   const discoveredById = new Map(discovered.map((m) => [m.id, m]));
 
   // The live endpoint decides WHICH models appear (entitlement) and overrides

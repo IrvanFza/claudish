@@ -16,7 +16,7 @@
  *
  *   · `error`  — an actionable failure: a rejected key, a discovery that failed.
  *                `tokens.error` on a `C.bgError` wash.
- *   · `notice` — expected but notable: an empty roster, a list filtered to
+ *   · `notice` — expected but notable: an empty dynamic models catalog, a list filtered to
  *                nothing. `tokens.warn`, and NO error wash. A user whose
  *                provider legitimately lists no models has not hit an error, and
  *                painting one teaches them to ignore the red.

@@ -1,5 +1,5 @@
 /**
- * `discoverProviderRoster` — the discriminated outcome behind the empty array.
+ * `discoverProviderModelsCatalog` — the discriminated outcome behind the empty array.
  *
  * `discoverProviderModels` answers `[]` for six structurally different things,
  * and its callers could not tell them apart. These tests pin which outcome each
@@ -11,7 +11,7 @@
  * are replaced directly rather than through `mock.module()`, which bleeds into
  * sibling Bun test files.
  *
- * Run: bun test packages/cli/src/providers/model-discovery-roster.test.ts
+ * Run: bun test packages/cli/src/providers/model-discovery-models-catalog.test.ts
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -21,7 +21,7 @@ import {
   type FetcherResult,
   type ModelDiscoveryDescriptor,
   discoverProviderModels,
-  discoverProviderRoster,
+  discoverProviderModelsCatalog,
   getDiscoveryFailure,
   invalidateModelDiscovery,
   registerModelDiscoveryFetcher,
@@ -43,13 +43,13 @@ function defineProvider(
 ): ProviderDefinition {
   return {
     name,
-    displayName: `Roster Test (${name})`,
+    displayName: `Models Catalog Test (${name})`,
     transport: "openai",
-    baseUrl: "https://roster-test.invalid",
+    baseUrl: "https://models-catalog-test.invalid",
     apiPath: "/v1/chat/completions",
-    apiKeyEnvVar: "ROSTER_TEST_API_KEY",
+    apiKeyEnvVar: "MODELS_CATALOG_TEST_API_KEY",
     apiKeyDescription: "Offline test key",
-    apiKeyUrl: "https://roster-test.invalid/key",
+    apiKeyUrl: "https://models-catalog-test.invalid/key",
     shortcuts: [],
     legacyPrefixes: [],
     modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
@@ -88,11 +88,11 @@ afterEach(() => {
   credentials.getRequestAuth = realGetRequestAuth;
 });
 
-describe("discoverProviderRoster — the GET half", () => {
-  test("a non-empty roster is `served`, and `served.models` is never empty", async () => {
+describe("discoverProviderModelsCatalog — the GET half", () => {
+  test("a non-empty dynamic models catalog is `served`, and `served.models` is never empty", async () => {
     stubResponse(JSON.stringify({ data: [{ id: "k3", context_length: 1_048_576 }] }));
 
-    const outcome = await discoverProviderRoster("kimi-coding");
+    const outcome = await discoverProviderModelsCatalog("kimi-coding");
 
     expect(outcome.kind).toBe("served");
     if (outcome.kind !== "served") throw new Error("unreachable");
@@ -109,7 +109,7 @@ describe("discoverProviderRoster — the GET half", () => {
   ] as const)("HTTP %i is failed{%s}", async (status, kind) => {
     stubResponse(JSON.stringify({ error: "rejected" }), status);
 
-    const outcome = await discoverProviderRoster("kimi-coding");
+    const outcome = await discoverProviderModelsCatalog("kimi-coding");
 
     expect(outcome).toMatchObject({
       kind: "failed",
@@ -122,7 +122,7 @@ describe("discoverProviderRoster — the GET half", () => {
       throw new Error("Offline");
     }) as unknown as typeof fetch;
 
-    expect(await discoverProviderRoster("kimi-coding")).toMatchObject({
+    expect(await discoverProviderModelsCatalog("kimi-coding")).toMatchObject({
       kind: "failed",
       failure: { kind: "unreachable", provider: "kimi-coding", detail: "Offline" },
     });
@@ -133,16 +133,16 @@ describe("discoverProviderRoster — the GET half", () => {
       async () => new Response("{not-json", { status: 200 })
     ) as unknown as typeof fetch;
 
-    expect(await discoverProviderRoster("kimi-coding")).toMatchObject({
+    expect(await discoverProviderModelsCatalog("kimi-coding")).toMatchObject({
       kind: "failed",
       failure: { kind: "malformed", provider: "kimi-coding" },
     });
   });
 
-  test("an empty data array is failed{empty-roster}, not `served` with []", async () => {
+  test("an empty data array is failed{empty-models-catalog}, not `served` with []", async () => {
     stubResponse(JSON.stringify({ data: [] }));
 
-    const outcome = await discoverProviderRoster("kimi-coding");
+    const outcome = await discoverProviderModelsCatalog("kimi-coding");
 
     expect(outcome).toMatchObject({
       kind: "failed",
@@ -158,7 +158,7 @@ describe("discoverProviderRoster — the GET half", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     credentials.getRequestAuth = mock(async () => ({ headers: { authorization: "   " } }));
 
-    expect(await discoverProviderRoster("kimi-coding")).toMatchObject({
+    expect(await discoverProviderModelsCatalog("kimi-coding")).toMatchObject({
       kind: "failed",
       failure: { kind: "no-credentials", provider: "kimi-coding" },
     });
@@ -166,14 +166,14 @@ describe("discoverProviderRoster — the GET half", () => {
   });
 });
 
-describe("discoverProviderRoster — `unsupported` is not a failure", () => {
+describe("discoverProviderModelsCatalog — `unsupported` is not a failure", () => {
   test.each(["openrouter", "not-a-real-provider"])(
     "%s declares no discovery, so nothing is attempted or recorded",
     async (provider) => {
       const fetchMock = mock(async () => new Response("should not be called"));
       globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-      expect(await discoverProviderRoster(provider)).toEqual({
+      expect(await discoverProviderModelsCatalog(provider)).toEqual({
         kind: "unsupported",
         reason: "no-descriptor",
       });
@@ -188,13 +188,13 @@ describe("discoverProviderRoster — `unsupported` is not a failure", () => {
     // Not `unsupported`: the provider DID declare discovery, so this is a setup
     // fault the user can fix — reporting it silently read as "the plan lists no
     // models". With no override variables to name, the detail names the field.
-    const provider = defineProvider("roster-no-base-url-test", {
+    const provider = defineProvider("models-catalog-no-base-url-test", {
       baseUrl: "",
       baseUrlEnvVars: [],
     });
     registerRuntimeProvider(provider);
 
-    expect(await discoverProviderRoster(provider.name)).toEqual({
+    expect(await discoverProviderModelsCatalog(provider.name)).toEqual({
       kind: "failed",
       failure: {
         kind: "unreachable",
@@ -205,16 +205,16 @@ describe("discoverProviderRoster — `unsupported` is not a failure", () => {
     expect(getDiscoveryFailure(provider.name)?.kind).toBe("unreachable");
   });
 
-  test("a declared format nothing claims is unsupported{no-fetcher}, not an empty roster", async () => {
+  test("a declared format nothing claims is unsupported{no-fetcher}, not an empty dynamic models catalog", async () => {
     // This is a PACKAGING bug — a definition opted into a format whose owner was
-    // never bundled. It used to be recorded as `empty-roster`, i.e. as a claim
+    // never bundled. It used to be recorded as `empty-models-catalog`, i.e. as a claim
     // about the user's subscription.
-    const provider = defineProvider("roster-unclaimed-format-test", {
-      modelDiscovery: { path: "", format: testFormat("roster-unclaimed-format") },
+    const provider = defineProvider("models-catalog-unclaimed-format-test", {
+      modelDiscovery: { path: "", format: testFormat("models-catalog-unclaimed-format") },
     });
     registerRuntimeProvider(provider);
 
-    expect(await discoverProviderRoster(provider.name)).toEqual({
+    expect(await discoverProviderModelsCatalog(provider.name)).toEqual({
       kind: "unsupported",
       reason: "no-fetcher",
     });
@@ -222,9 +222,9 @@ describe("discoverProviderRoster — `unsupported` is not a failure", () => {
   });
 });
 
-describe("discoverProviderRoster — the fetcher half can finally classify", () => {
-  test("a fetcher reporting failure surfaces as failed with ITS kind, not empty-roster", async () => {
-    const format = testFormat("roster-failing-fetcher");
+describe("discoverProviderModelsCatalog — the fetcher half can finally classify", () => {
+  test("a fetcher reporting failure surfaces as failed with ITS kind, not empty-models-catalog", async () => {
+    const format = testFormat("models-catalog-failing-fetcher");
     registerModelDiscoveryFetcher(format, async (): Promise<FetcherResult> => {
       return {
         kind: "failed",
@@ -235,12 +235,12 @@ describe("discoverProviderRoster — the fetcher half can finally classify", () 
         },
       };
     });
-    const provider = defineProvider("roster-failing-fetcher-test", {
+    const provider = defineProvider("models-catalog-failing-fetcher-test", {
       modelDiscovery: { path: "", format },
     });
     registerRuntimeProvider(provider);
 
-    const outcome = await discoverProviderRoster(provider.name);
+    const outcome = await discoverProviderModelsCatalog(provider.name);
 
     expect(outcome).toMatchObject({
       kind: "failed",
@@ -257,38 +257,38 @@ describe("discoverProviderRoster — the fetcher half can finally classify", () 
   });
 
   test("a fetcher reporting no-credentials earns the credential kind", async () => {
-    const format = testFormat("roster-logged-out-fetcher");
+    const format = testFormat("models-catalog-logged-out-fetcher");
     registerModelDiscoveryFetcher(format, async () => ({
       kind: "failed" as const,
       failure: { kind: "no-credentials" as const, detail: "no OAuth token" },
     }));
     registerRuntimeProvider(
-      defineProvider("roster-logged-out-test", { modelDiscovery: { path: "", format } })
+      defineProvider("models-catalog-logged-out-test", { modelDiscovery: { path: "", format } })
     );
 
-    expect(await discoverProviderRoster("roster-logged-out-test")).toMatchObject({
+    expect(await discoverProviderModelsCatalog("models-catalog-logged-out-test")).toMatchObject({
       kind: "failed",
-      failure: { kind: "no-credentials", provider: "roster-logged-out-test" },
+      failure: { kind: "no-credentials", provider: "models-catalog-logged-out-test" },
     });
   });
 
-  test("a reachable-but-empty fetcher gives empty-roster WITH the endpoint it asked", async () => {
-    const format = testFormat("roster-empty-fetcher");
+  test("a reachable-but-empty fetcher gives empty-models-catalog WITH the endpoint it asked", async () => {
+    const format = testFormat("models-catalog-empty-fetcher");
     registerModelDiscoveryFetcher(format, async () => ({
       kind: "models" as const,
       models: [],
       endpoint: "http://localhost:11434/api/tags",
     }));
     registerRuntimeProvider(
-      defineProvider("roster-empty-fetcher-test", { modelDiscovery: { path: "", format } })
+      defineProvider("models-catalog-empty-fetcher-test", { modelDiscovery: { path: "", format } })
     );
 
-    expect(await discoverProviderRoster("roster-empty-fetcher-test")).toEqual({
+    expect(await discoverProviderModelsCatalog("models-catalog-empty-fetcher-test")).toEqual({
       kind: "failed",
       failure: {
         kind: "empty-models-catalog",
-        provider: "roster-empty-fetcher-test",
-        // Before `FetcherResult`, this half recorded empty-roster with NO
+        provider: "models-catalog-empty-fetcher-test",
+        // Before `FetcherResult`, this half recorded empty-models-catalog with NO
         // endpoint, so any copy naming one rendered the literal `undefined`.
         endpoint: "http://localhost:11434/api/tags",
       },
@@ -296,39 +296,43 @@ describe("discoverProviderRoster — the fetcher half can finally classify", () 
   });
 
   test("a fetcher returning models is served", async () => {
-    const format = testFormat("roster-serving-fetcher");
+    const format = testFormat("models-catalog-serving-fetcher");
     registerModelDiscoveryFetcher(format, async () => ({
       kind: "models" as const,
       models: [{ id: "llama3.2", supportsTools: true }],
       endpoint: "http://localhost:11434/api/tags",
     }));
     registerRuntimeProvider(
-      defineProvider("roster-serving-fetcher-test", { modelDiscovery: { path: "", format } })
+      defineProvider("models-catalog-serving-fetcher-test", {
+        modelDiscovery: { path: "", format },
+      })
     );
 
-    expect(await discoverProviderRoster("roster-serving-fetcher-test")).toEqual({
+    expect(await discoverProviderModelsCatalog("models-catalog-serving-fetcher-test")).toEqual({
       kind: "served",
       models: [{ id: "llama3.2", supportsTools: true }],
     });
   });
 
   test("NEVER REJECTS: a throwing fetcher resolves to failed{unreachable}", async () => {
-    const format = testFormat("roster-throwing-fetcher");
+    const format = testFormat("models-catalog-throwing-fetcher");
     registerModelDiscoveryFetcher(format, async () => {
       throw new Error("protobuf decode blew up");
     });
     registerRuntimeProvider(
-      defineProvider("roster-throwing-test", { modelDiscovery: { path: "", format } })
+      defineProvider("models-catalog-throwing-test", { modelDiscovery: { path: "", format } })
     );
 
     // `.resolves` is the assertion, not a convenience: before the wrapping try,
     // this rejection propagated out of the picker and, behind a live renderer
     // with no stderr, would leave a progress indicator running forever.
-    await expect(discoverProviderRoster("roster-throwing-test")).resolves.toMatchObject({
+    await expect(
+      discoverProviderModelsCatalog("models-catalog-throwing-test")
+    ).resolves.toMatchObject({
       kind: "failed",
       failure: {
         kind: "unreachable",
-        provider: "roster-throwing-test",
+        provider: "models-catalog-throwing-test",
         detail: "protobuf decode blew up",
       },
     });
@@ -339,7 +343,7 @@ describe("discoverProviderModels stays the fail-soft wrapper", () => {
   test.each([
     ["served", JSON.stringify({ data: [{ id: "k3" }] }), 200, ["k3"]],
     ["failed", JSON.stringify({ error: "nope" }), 401, []],
-    ["empty-roster", JSON.stringify({ data: [] }), 200, []],
+    ["empty-models-catalog", JSON.stringify({ data: [] }), 200, []],
   ] as const)("%s → the models or []", async (_label, body, status, ids) => {
     stubResponse(body, status);
 
@@ -357,7 +361,7 @@ describe("discoverProviderModels stays the fail-soft wrapper", () => {
       return new Response(JSON.stringify({ data: [{ id: `model-${calls}` }] }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const first = await discoverProviderRoster("kimi-coding");
+    const first = await discoverProviderModelsCatalog("kimi-coding");
     const second = await discoverProviderModels("kimi-coding");
 
     expect(calls).toBe(1);

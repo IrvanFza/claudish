@@ -2,7 +2,7 @@
  * useProviderDiscovery — one settled outcome per discovery provider, and the elapsed
  * clock the in-flight indicator is drawn from.
  *
- * NO REJECTION BRANCH, BY CONTRACT. `discoverProviderRoster` never rejects — every
+ * NO REJECTION BRANCH, BY CONTRACT. `discoverProviderModelsCatalog` never rejects — every
  * throw inside it is mapped to `failed{kind:"unreachable"}` — and
  * `buildDiscoveredModelOutcome` inherits that guarantee through `Promise.allSettled`.
  * That contract is what lets this hook be small; it is also pinned by a unit test
@@ -72,7 +72,7 @@ export function useProviderDiscovery(
     (name: string): void => {
       const cache = inflight.current;
       if (cache.has(name)) return;
-      const request = source.discoverRoster(name);
+      const request = source.discoverModelsCatalog(name);
       cache.set(name, request);
       setStarted((prev) => (prev[name] === undefined ? { ...prev, [name]: Date.now() } : prev));
       void request.then(
@@ -134,11 +134,11 @@ export function useProviderDiscovery(
 }
 
 /**
- * The rosters ALREADY IN HAND, as the cross-provider list wants them.
+ * The dynamic models catalogs ALREADY IN HAND, as the cross-provider list wants them.
  *
- * THIS IS WHAT REPLACED THE STARTUP FAN-OUT. An earlier build fired one roster
+ * THIS IS WHAT REPLACED THE STARTUP FAN-OUT. An earlier build fired one dynamic models catalog
  * request per credentialled provider the moment the picker opened — thirteen
- * requests, a `live rosters 0/11 providers` meter, and the owner's verdict was
+ * requests, a `0/11 providers` discovery meter, and the owner's verdict was
  * *"why we prefetching? we should not, as we show on demand"*. Every one of those
  * requests is now made for a provider the user actually opened, by the hook above.
  * This function spends no network at all: it re-reads the outcomes that are
@@ -147,7 +147,7 @@ export function useProviderDiscovery(
  *
  * ONLY `rows`. A failure's `fallbackRows` are the catalog's, which the flat list
  * already holds under the same provider — merging them would double that
- * provider's rows and launder a fallback into a live roster at the same time.
+ * provider's rows and launder a fallback into a dynamic models catalog at the same time.
  */
 export function rowsFromOutcomes(
   seen: ReadonlyMap<string, PickerDiscoveryOutcome>

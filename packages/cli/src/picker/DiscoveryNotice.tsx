@@ -16,7 +16,7 @@
  * neutral, not red":
  *
  *   · `failed`                                   → ERROR  (red on `C.bgError`)
- *   · `empty-roster` / `all-filtered` / `collapsed-empty` → NOTICE (`tokens.warn`)
+ *   · `empty-models-catalog` / `all-filtered` / `collapsed-empty` → NOTICE (`tokens.warn`)
  *   · `rows` / `unsupported`                     → nothing at all
  *
  * `unsupported` rendering nothing is the load-bearing half of that last row: ~25
@@ -38,7 +38,7 @@ export interface NoticeContent {
   /** A chip at the head of row one, e.g. `HTTP 401`. */
   badge?: string;
   /**
-   * The dialog's right-hand status — `live roster unavailable`, `empty roster`.
+   * The dialog's right-hand status — `live model list unavailable`, `empty model list`.
    *
    * It is the FIRST of the three encodings of one fact, and it is the loudest,
    * because a title in a border is read before anything inside it. The others are
@@ -69,12 +69,13 @@ function oneRow(line: string): string {
 }
 
 /**
- * The provenance sentence — the line that says the list below is NOT the live
- * roster, AND that being in the list does not mean it will run.
+ * The provenance sentence — the line that says the list below is NOT the
+ * provider's dynamic models catalog, AND that being in the list does not mean it
+ * will run.
  *
  * IT IS TWO CLAIMS, AND THE SECOND ONE IS THE ONE THAT WAS MISSING. The stderr
  * wording says where the rows came from ("cloud-catalog entries … not its live
- * roster"), which is a statement about provenance. What it never said is the
+ * model list"), which is a statement about provenance. What it never said is the
  * CONSEQUENCE: discovery failed because the credential was rejected, so nothing
  * has confirmed that this account can call any of these models. A reader who is
  * told only "these are catalog entries" reasonably concludes the list is merely
@@ -82,13 +83,13 @@ function oneRow(line: string): string {
  * the count, the provenance and the risk in that order.
  *
  * This is the third of the three encodings of the same fact — the dialog title
- * (`live roster unavailable`), the per-row `catalog` mark, and this — and all
+ * (`live model list unavailable`), the per-row `catalog` mark, and this — and all
  * three derive from ONE value, the outcome variant, so they cannot disagree.
  */
 function provenance(displayName: string, rows: number): string {
   const n = rows === 1 ? "row" : "rows";
   return (
-    `The ${rows} ${n} below are catalog entries, not ${displayName}'s live roster — ` +
+    `The ${rows} ${n} below are catalog entries, not ${displayName}'s live model list — ` +
     "they do not confirm access, so launching one may still fail."
   );
 }
@@ -112,8 +113,8 @@ export function discoveryNoticeContent(
       return null;
     case "failed":
       return failedContent(outcome, displayName);
-    case "empty-roster":
-      return emptyRosterContent(outcome, displayName);
+    case "empty-models-catalog":
+      return emptyModelsCatalogContent(outcome, displayName);
     case "all-filtered":
       return allFilteredContent(outcome, displayName);
     case "collapsed-empty":
@@ -127,7 +128,7 @@ function nextStep(rows: number, displayName: string): string {
 }
 
 type Failed = Extract<PickerDiscoveryOutcome, { kind: "failed" }>;
-type EmptyRoster = Extract<PickerDiscoveryOutcome, { kind: "empty-roster" }>;
+type EmptyModelsCatalog = Extract<PickerDiscoveryOutcome, { kind: "empty-models-catalog" }>;
 type AllFiltered = Extract<PickerDiscoveryOutcome, { kind: "all-filtered" }>;
 type Collapsed = Extract<PickerDiscoveryOutcome, { kind: "collapsed-empty" }>;
 
@@ -150,7 +151,7 @@ function failedContent({ failure, notice, fallbackRows }: Failed, name: string):
     // file exists to avoid, so the shorter one gives way here — and the stderr path
     // keeps it verbatim, which is the whole reason the formatter and the sink are
     // separate.
-    if (/^Showing .* not its live roster\.$/.test(line)) continue;
+    if (/^Showing .* not its live model list\.$/.test(line)) continue;
     if (line === "Falling back to manual model entry.") continue;
     // De-duplicate the status: it is the badge now, and spending nine columns of a
     // 78-column headline saying it twice costs the end of the sentence.
@@ -162,9 +163,9 @@ function failedContent({ failure, notice, fallbackRows }: Failed, name: string):
     lines,
     ...(badge === undefined ? {} : { badge }),
     // The dialog RIGHT-hand status. "unavailable" rather than "failed": the
-    // provider is not broken, claudish could not read its roster, and the two read
+    // provider is not broken, claudish could not read its dynamic models catalog, and the two read
     // very differently to someone deciding whether to trust the rows below.
-    title: "live roster unavailable",
+    title: "live model list unavailable",
   };
 }
 
@@ -174,7 +175,10 @@ function failedContent({ failure, notice, fallbackRows }: Failed, name: string):
  * ignore red. It stays visibly distinct from a rejected key in BOTH tier and copy,
  * which is what V7 asks for.
  */
-function emptyRosterContent({ failure, fallbackRows }: EmptyRoster, name: string): NoticeContent {
+function emptyModelsCatalogContent(
+  { failure, fallbackRows }: EmptyModelsCatalog,
+  name: string
+): NoticeContent {
   const at = failure.endpoint ? ` — the endpoint answered at ${failure.endpoint}` : "";
   return {
     severity: "notice",
@@ -182,7 +186,7 @@ function emptyRosterContent({ failure, fallbackRows }: EmptyRoster, name: string
       `${name}'s model list is empty${at} and listed nothing.`,
       nextStep(fallbackRows.length, name),
     ],
-    title: "empty roster",
+    title: "empty model list",
   };
 }
 

@@ -144,7 +144,7 @@ describe("deriveProviderRowLayout", () => {
   });
 
   test("the name is CAPPED at the longest name there is — the surplus goes right", () => {
-    // `Grok Build (subscription)` is 25 cells, the longest in the roster, so a name
+    // `Grok Build (subscription)` is 25 cells, the longest in the provider list, so a name
     // column wider than 26 is dead air between a provider and the shortcut that
     // qualifies it. Past the cap the extra columns go to the right-aligned tail,
     // which is where a count belongs.

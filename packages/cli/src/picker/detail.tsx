@@ -53,7 +53,7 @@
  * are affordances, not prose.
  *
  * CAPABILITIES ARE EXCEPTION-ONLY AND THEY LIVE HERE, NOT ON EVERY ROW. The
- * previous build printed `[TRV]` on all 21 rows of a roster where every model had
+ * previous build printed `[TRV]` on all 21 rows of a dynamic models catalog where every model had
  * all three — a column with no variance, in the place a reader is scanning names.
  * On the selected row they are worth three words; on forty rows they are noise.
  */

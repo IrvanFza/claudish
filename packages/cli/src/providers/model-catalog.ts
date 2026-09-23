@@ -409,7 +409,7 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
     servedByVendor(vendorSlug: string): CatalogModel[] {
       const slug = vendorSlug.toLowerCase();
       // Local-only vendors are absent from the catalog BY DESIGN, so an empty
-      // answer here is a fact, not a miss. Their rosters come from their own
+      // answer here is a fact, not a miss. Their dynamic models catalogs come from their own
       // daemons through `modelDiscovery`.
       if (NO_CATALOG_VENDOR_SLUGS.has(slug)) return [];
       const { entries } = readSlimCacheWithFreshness(_readSlimCache);

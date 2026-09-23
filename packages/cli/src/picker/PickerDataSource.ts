@@ -7,7 +7,7 @@
  * OTHERWISE. The whole feature is about what the picker shows when discovery
  * FAILS, serves nothing, or is still in flight — and of those, only "unauthorized"
  * is reproducible against a live provider (a bogus key, a real 401). An empty
- * roster, a roster where nothing is chat-capable, a network timeout and the
+ * dynamic models catalog, a dynamic models catalog where nothing is chat-capable, a network timeout and the
  * in-flight frames themselves are not reachable from outside, and the warm catalog
  * path settles faster than a screenshot can catch. So the loaders are a parameter,
  * a scriptable fake drives the capture runs, and the production impl is the
@@ -19,7 +19,7 @@
  *
  * EVERY MEMBER'S SYNC/ASYNC SHAPE IS PART OF THE CONTRACT.
  *
- *   · `providerRoster`, `displayName`, `notEnabledLocalProviders`,
+ *   · `providerList`, `displayName`, `notEnabledLocalProviders`,
  *     `discoveryShape` are SYNCHRONOUS because the first frame must be complete
  *     before any await, and because the in-flight indicator's SHAPE has to be
  *     chosen before the fetch it describes begins.
@@ -56,7 +56,7 @@ import { getAllProviders, getProviderByName } from "../providers/provider-defini
 export type BillingMode = "sub" | "local" | "metered";
 
 /**
- * Which in-flight indicator a roster discovery earns (§4.3), decided
+ * Which in-flight indicator discovering one provider's models earns (§4.3), decided
  * synchronously from the provider's discovery format.
  *
  * `deadline` is the GET half, the only path that sees `FETCH_TIMEOUT_MS` — so an
@@ -84,14 +84,14 @@ export interface PickerProviderChoice {
   billing: BillingMode;
   /** The env var to name in a credential notice. Empty for OAuth-only providers. */
   envVar: string;
-  /** Does this provider list its own live roster? Decides whether `p` runs discovery. */
+  /** Does this provider list its own dynamic models catalog? Decides whether `p` runs discovery. */
   hasDiscovery: boolean;
   discoveryShape: DiscoveryShape;
 }
 
 export interface PickerDataSource {
   /** Sync, so frame one is never blank: derived from the provider definitions. */
-  providerRoster(): PickerProviderChoice[];
+  providerList(): PickerProviderChoice[];
   /** Built-in local providers present in the catalog but not enabled in config. */
   notEnabledLocalProviders(): string[];
   /** The provider's editorial display name, for dialog titles and notices. */
@@ -103,7 +103,7 @@ export interface PickerDataSource {
   /** What this provider SERVES, from the local served-by index. Sync. */
   servedModels(provider: string): ModelInfo[];
   /** One settled outcome per discovery provider, `fallbackRows` included. */
-  discoverRoster(provider: string): Promise<PickerDiscoveryOutcome>;
+  discoverModelsCatalog(provider: string): Promise<PickerDiscoveryOutcome>;
   /**
    * One editorial sentence per model, for the detail pane. Resolves late and is
    * never awaited before a first paint; the slim catalog carries no description.
@@ -175,12 +175,12 @@ export function createPickerDataSource(): PickerDataSource {
   const catalog = createCatalogClient();
   // Resolved once per open. `buildProviderChoices()` is pure and derived — never a
   // membership table (`routing.md:139`) — so calling it twice would be free but
-  // would also let the roster and the notices disagree about ordering.
+  // would also let the dynamic models catalog and the notices disagree about ordering.
   const choices = buildProviderChoices().filter((c) => c.value !== "skip" && c.value !== "custom");
   const names = new Map(choices.map((c) => [c.value, c.name]));
 
   return {
-    providerRoster(): PickerProviderChoice[] {
+    providerList(): PickerProviderChoice[] {
       return choices.map((c) => ({
         value: c.value,
         label: c.name,
@@ -228,7 +228,7 @@ export function createPickerDataSource(): PickerDataSource {
       return servedModelsForProvider(provider, catalog);
     },
 
-    discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
+    discoverModelsCatalog(provider: string): Promise<PickerDiscoveryOutcome> {
       return buildDiscoveredModelOutcome(provider, names.get(provider) ?? provider, catalog);
     },
 

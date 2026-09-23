@@ -67,7 +67,7 @@ const model = (over: Partial<ModelInfo> = {}): ModelInfo => ({
 });
 
 interface FakeOpts {
-  roster?: PickerProviderChoice[];
+  providerList?: PickerProviderChoice[];
   ready?: Record<string, boolean>;
   outcome?: PickerDiscoveryOutcome;
   /** Per-provider discovery outcomes. Falls back to `outcome`. */
@@ -91,15 +91,15 @@ interface Calls {
 }
 
 function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
-  const roster = opts.roster ?? [provider()];
+  const providerList = opts.providerList ?? [provider()];
   const never = new Promise<never>(() => {});
   const descriptions = opts.descriptions ?? {};
   const calls: Calls = { catalog: 0, descriptions: 0, discover: [] };
   return {
     calls,
-    providerRoster: () => roster,
+    providerList: () => providerList,
     notEnabledLocalProviders: () => opts.notEnabledLocal ?? [],
-    displayName: (p) => roster.find((r) => r.value === p)?.label ?? p,
+    displayName: (p) => providerList.find((r) => r.value === p)?.label ?? p,
     async *probeCredentials(names) {
       if (opts.hang) await never;
       for (const n of names) yield [n, opts.ready?.[n] ?? true] as [string, boolean];
@@ -109,7 +109,7 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
       return opts.hang ? never : Promise.resolve();
     },
     servedModels: (p) => opts.byProvider?.[p] ?? opts.served ?? [model()],
-    discoverRoster: (p): Promise<PickerDiscoveryOutcome> => {
+    discoverModelsCatalog: (p): Promise<PickerDiscoveryOutcome> => {
       calls.discover.push(p);
       return opts.hang
         ? never
@@ -243,12 +243,12 @@ describe("the dialog", () => {
   test("has EXACTLY ONE cursor — the direct answer to “unclear what is happening”", async () => {
     // Two panes each held a cursor and only a border colour said which one the arrow
     // keys drove. One list, one `▶` — on the landing screen and inside a list alike.
-    const roster = ["openrouter", "kimi", "google"].map((v) =>
+    const providerList = ["openrouter", "kimi", "google"].map((v) =>
       provider({ value: v, label: v, shortcut: `${v}@`, hasDiscovery: false })
     );
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster, served: [model({ id: "a" }), model({ id: "b" })] })}
+        source={fakeSource({ providerList, served: [model({ id: "a" }), model({ id: "b" })] })}
         onDone={() => {}}
       />
     );
@@ -269,7 +269,7 @@ describe("the dialog", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [provider({ hasDiscovery: false })],
+          providerList: [provider({ hasDiscovery: false })],
           served: [
             model({ id: "a", contextLength: 1_000_000, context: "1M" }),
             model({ id: "b", contextLength: 8_000, context: "8K" }),
@@ -315,7 +315,7 @@ describe("the dialog", () => {
   test("the key hints are present and unclipped at 80×24, in BOTH lists", async () => {
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster: [provider({ hasDiscovery: false })] })}
+        source={fakeSource({ providerList: [provider({ hasDiscovery: false })] })}
         onDone={() => {}}
       />
     );
@@ -354,7 +354,7 @@ describe("the dialog", () => {
     // anyone adds will cost the same.
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster: [provider({ hasDiscovery: true })], served: [model()] })}
+        source={fakeSource({ providerList: [provider({ hasDiscovery: true })], served: [model()] })}
         onDone={() => {}}
       />
     );
@@ -426,7 +426,7 @@ describe("the dialog", () => {
 // ── the chips: a fill is invisible to a character frame ──────────────────────────
 
 describe("the billing and prefix CHIPS", () => {
-  const roster = [
+  const providerList = [
     provider({ value: "cx", label: "OpenAI Codex", shortcut: "cx@", billing: "sub" }),
     provider({ value: "or", label: "OpenRouter", shortcut: "or@", billing: "metered" }),
   ];
@@ -439,7 +439,7 @@ describe("the billing and prefix CHIPS", () => {
     // marks a STATE; a prefix is an identifier with no states, so there is nothing
     // in that column for a fill to mark. (The billing cell beside it is the opposite
     // case and is chipped — see the two tests below.)
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
@@ -467,7 +467,7 @@ describe("the billing and prefix CHIPS", () => {
     // reddish is the hue the `HTTP 401` badge and the discovery banner already own,
     // so a cost chip that picked one of those up would paint a failure on every
     // healthy metered row. Hence both assertions, on the spans.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
@@ -501,7 +501,7 @@ describe("the billing and prefix CHIPS", () => {
     // "you already pay for this" or "something went wrong". It was `tokens.warn` —
     // `C.orange`, the hue this dialog spends on a failure — under a label that means
     // the opposite of a failure.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const chips = labelled(d.recapture().frame, "SUB");
@@ -528,7 +528,7 @@ describe("the billing and prefix CHIPS", () => {
     // price cell is 9 columns and the billing cell 7, so a fill sized to the cell
     // would paint two different widths and, in a column of one repeated word, one
     // unbroken rectangle. The surplus is a plain filler span outside `bg`.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
@@ -572,7 +572,7 @@ describe("the billing and prefix CHIPS", () => {
     // `captureCharFrame` reads ` esc  quit ` under every one of those builds. Only
     // the FILLS say whether it is a pill, and only their ADJACENCY says whether it is
     // one object or two — which is why this asserts the two segments touch.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       const f = d.recapture().frame;
@@ -599,7 +599,7 @@ describe("the billing and prefix CHIPS", () => {
     }
   });
 
-  test("NO CHIP COLUMN FUSES: a flat-rate roster prints words, not a green slab", async () => {
+  test("NO CHIP COLUMN FUSES: a flat-rate provider's models print words, not a green slab", async () => {
     // A scoped subscription provider answers `SUB` for EVERY row, so a chipped price
     // column there is the rectangle by construction — and no amount of correct
     // padding prevents it, because the padding is not what makes the fills identical.
@@ -608,7 +608,7 @@ describe("the billing and prefix CHIPS", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [
+          providerList: [
             provider({
               value: "kimi-coding",
               label: "Kimi Coding",
@@ -646,7 +646,9 @@ describe("the billing and prefix CHIPS", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          providerList: [
+            provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false }),
+          ],
           byProvider: { openrouter: [model({ id: "gpt-6-astra" })] },
         })}
         onDone={() => {}}
@@ -679,7 +681,7 @@ describe("the billing and prefix CHIPS", () => {
 // ── the landing screen, and everything it does NOT do ────────────────────────────
 
 describe("the picker opens on the PROVIDER list", () => {
-  const roster = [
+  const providerList = [
     provider({
       value: "openrouter",
       label: "OpenRouter",
@@ -696,7 +698,10 @@ describe("the picker opens on the PROVIDER list", () => {
     // resolve all models".
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster, byProvider: { openrouter: [model({ id: "glm-5.3" })] } })}
+        source={fakeSource({
+          providerList,
+          byProvider: { openrouter: [model({ id: "glm-5.3" })] },
+        })}
         onDone={() => {}}
       />
     );
@@ -711,17 +716,18 @@ describe("the picker opens on the PROVIDER list", () => {
     }
   });
 
-  test("FETCHES NOTHING before the user asks — no catalog, no roster, no descriptions", async () => {
+  test("FETCHES NOTHING before the user asks — no catalog, no dynamic models catalog, no descriptions", async () => {
     // "why we prefetching? we should not, as we show on demand". The build this
-    // replaces warmed the cloud catalog AND fanned out one roster request per
+    // replaces warmed the cloud catalog AND fanned out one dynamic models catalog request per
     // credentialled provider, on a screen that could show neither.
-    const source = fakeSource({ roster });
+    const source = fakeSource({ providerList });
     const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
     try {
       expect(source.calls).toEqual({ catalog: 0, descriptions: 0, discover: [] });
       // …and the screen does not claim to be doing any of it.
       expect(joined(d.text)).not.toContain("cloud catalog");
-      expect(joined(d.text)).not.toContain("live rosters");
+      // No per-provider discovery meter — the rejected `0/11 providers` fan-out.
+      expect(joined(d.text)).not.toMatch(/\d+\/\d+ providers/);
     } finally {
       d.destroy();
     }
@@ -740,7 +746,7 @@ describe("the picker opens on the PROVIDER list", () => {
     // state, which is the only state a screenshot was ever taken of.
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster, ready: { openrouter: true, "kimi-coding": false } })}
+        source={fakeSource({ providerList, ready: { openrouter: true, "kimi-coding": false } })}
         onDone={() => {}}
       />
     );
@@ -766,7 +772,7 @@ describe("the picker opens on the PROVIDER list", () => {
   test("NO model count is printed for a provider nothing has counted yet", async () => {
     // "we could not show number of models for some of them". A `0`, a `—` or a guess
     // in that column is a claim; silence is not.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       const row = d.text.find((l) => l.includes("OpenRouter")) ?? "";
       expect(row).toContain("OpenRouter");
@@ -781,7 +787,7 @@ describe("the picker opens on the PROVIDER list", () => {
     let got: string | null | undefined;
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster })}
+        source={fakeSource({ providerList })}
         onDone={(spec) => {
           got = spec;
         }}
@@ -804,7 +810,7 @@ describe("`k` reveals BOTH kinds of unavailable provider, each with its own reas
   // missing a CREDENTIAL from a local one that is merely not ENABLED. The distinction
   // is real (one sends you to find an API key, the other to a config flag), so it had
   // to land somewhere: it is now each row's own tail.
-  const roster = [
+  const providerList = [
     provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
     provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
     provider({
@@ -821,7 +827,7 @@ describe("`k` reveals BOTH kinds of unavailable provider, each with its own reas
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          providerList,
           ready: { openrouter: true, "kimi-coding": false, ollama: false },
           notEnabledLocal: ["ollama"],
         })}
@@ -845,7 +851,7 @@ describe("`k` reveals BOTH kinds of unavailable provider, each with its own reas
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          providerList,
           ready: { openrouter: true, "kimi-coding": false, ollama: false },
           notEnabledLocal: ["ollama"],
         })}
@@ -879,14 +885,14 @@ describe("the PROVIDER list filters as you type", () => {
   // deliberate omission — 17 named rows do not need narrowing — and the point of this
   // block is that what was added is the SAME interaction as the model list, not a
   // second one to learn.
-  const roster = [
+  const providerList = [
     provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
     provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
     provider({ value: "google", label: "Google Gemini", shortcut: "go@", hasDiscovery: false }),
   ];
 
   test("typing NARROWS the list, and the count on the right follows it", async () => {
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       expect(joined(d.recapture().text)).toContain("OpenRouter");
@@ -908,7 +914,7 @@ describe("the PROVIDER list filters as you type", () => {
   test("the SHORTCUT matches too, because `kc@` is what the row shows beside the name", async () => {
     // Two vocabularies reach the same row — what it is called and how it is routed —
     // and a user who knows the prefix should not have to remember the display name.
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       // `/` first, because `kc@` starts with one of the three command letters — which
@@ -932,7 +938,7 @@ describe("the PROVIDER list filters as you type", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          providerList,
           ready: { openrouter: true, "kimi-coding": true, google: false },
         })}
         onDone={() => {}}
@@ -960,7 +966,7 @@ describe("the PROVIDER list filters as you type", () => {
     let got: string | null | undefined;
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster })}
+        source={fakeSource({ providerList })}
         onDone={(spec) => {
           got = spec;
         }}
@@ -988,7 +994,7 @@ describe("the PROVIDER list filters as you type", () => {
   });
 
   test("a filter that matches nothing SAYS SO, and says how to get out", async () => {
-    const d = await draw(<ModelPicker source={fakeSource({ roster })} onDone={() => {}} />);
+    const d = await draw(<ModelPicker source={fakeSource({ providerList })} onDone={() => {}} />);
     try {
       await d.until(providerListPainted);
       await d.press(["z", "z"]);
@@ -1006,7 +1012,10 @@ describe("the PROVIDER list filters as you type", () => {
     // A leaked filter would open a provider onto `no model matches “kimi”`.
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster, byProvider: { "kimi-coding": [model({ id: "kimi-k3" })] } })}
+        source={fakeSource({
+          providerList,
+          byProvider: { "kimi-coding": [model({ id: "kimi-k3" })] },
+        })}
         onDone={() => {}}
       />
     );
@@ -1030,14 +1039,14 @@ describe("the PROVIDER list filters as you type", () => {
 // ── entering a provider is what fetches it ───────────────────────────────────────
 
 describe("entering a provider loads THAT provider, on demand", () => {
-  const roster = [
+  const providerList = [
     provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
     provider({ value: "devin", label: "Devin", shortcut: "dv@", hasDiscovery: true }),
   ];
 
   test("`⏎` asks the provider under the cursor, and ONLY that one", async () => {
     const source = fakeSource({
-      roster,
+      providerList,
       byProvider: { openrouter: [model({ id: "glm-5.3" })], devin: [] },
       outcomes: {
         devin: { kind: "rows", rows: [model({ id: "devin-1" })], servedCount: 1, chatCount: 1 },
@@ -1063,7 +1072,9 @@ describe("entering a provider loads THAT provider, on demand", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          providerList: [
+            provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false }),
+          ],
           byProvider: {
             openrouter: [model({ id: "gpt-6-astra" }), model({ id: "gpt-6-astra" })],
           },
@@ -1092,7 +1103,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     let got: string | null | undefined = undefined;
     const d = await draw(
       <ModelPicker
-        source={fakeSource({ roster })}
+        source={fakeSource({ providerList })}
         onDone={(spec) => {
           got = spec;
         }}
@@ -1122,7 +1133,9 @@ describe("entering a provider loads THAT provider, on demand", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          providerList: [
+            provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false }),
+          ],
           byProvider: { openrouter: [model({ id: "gpt-6" })] },
         })}
         onDone={(spec) => {
@@ -1148,7 +1161,9 @@ describe("entering a provider loads THAT provider, on demand", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+          providerList: [
+            provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false }),
+          ],
           byProvider: {
             openrouter: [model({ id: "glm-5.3-flash" }), model({ id: "kimi-k3" })],
           },
@@ -1175,7 +1190,7 @@ describe("entering a provider loads THAT provider, on demand", () => {
     // working.
     const source = (): PickerDataSource =>
       fakeSource({
-        roster: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
+        providerList: [provider({ value: "openrouter", label: "OpenRouter", hasDiscovery: false })],
         byProvider: { openrouter: [model({ id: "codex-2" }), model({ id: "kimi-k3" })] },
       });
     const d = await draw(<ModelPicker source={source()} onDone={() => {}} />);
@@ -1209,14 +1224,14 @@ describe("entering a provider loads THAT provider, on demand", () => {
 // ── the cross-provider list, which is no longer the default ──────────────────────
 
 describe("`a` opens the cross-provider list", () => {
-  const roster = [
+  const providerList = [
     provider({ value: "openrouter", label: "OpenRouter", shortcut: "or@", hasDiscovery: false }),
     provider({ value: "kimi-coding", label: "Kimi Coding", shortcut: "kc@", hasDiscovery: false }),
   ];
 
   test("it is ONE cached catalog fetch, not a fan-out across providers", async () => {
     const source = fakeSource({
-      roster,
+      providerList,
       byProvider: {
         openrouter: [model({ id: "glm-5.3-flash" })],
         "kimi-coding": [model({ id: "kimi-k3" })],
@@ -1230,7 +1245,7 @@ describe("`a` opens the cross-provider list", () => {
       expect(all).toContain("all models");
       expect(all).toContain("glm-5.3-flash");
       expect(all).toContain("kimi-k3");
-      // ONE warm. And not a single roster request: no provider was opened.
+      // ONE warm. And not a single dynamic models catalog request: no provider was opened.
       expect(source.calls.catalog).toBe(1);
       expect(source.calls.discover).toEqual([]);
     } finally {
@@ -1245,7 +1260,7 @@ describe("`a` opens the cross-provider list", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          providerList,
           byProvider: {
             openrouter: [model({ id: "gpt-6-astra" })],
             "kimi-coding": [model({ id: "gpt-6-astra" })],
@@ -1272,7 +1287,7 @@ describe("`a` opens the cross-provider list", () => {
     const d = await draw(
       <ModelPicker
         source={fakeSource({
-          roster,
+          providerList,
           ready: { openrouter: true, "kimi-coding": false },
           byProvider: {
             openrouter: [model({ id: "glm-5.3-flash" })],
@@ -1295,11 +1310,11 @@ describe("`a` opens the cross-provider list", () => {
     }
   });
 
-  test("A ROSTER ALREADY OPENED IS MERGED IN — and one not opened costs no request", async () => {
+  test("A DYNAMIC MODELS CATALOG ALREADY OPENED IS MERGED IN — and one not opened costs no request", async () => {
     // The `gemini` report — "why i search gemini i see only open router models, no
     // models from antigravity and devin and subscriptions" — was first answered by
-    // fetching every roster at startup, which the owner then rejected as
-    // prefetching. This is the answer that survives both: a roster fetched because
+    // fetching every dynamic models catalog at startup, which the owner then rejected as
+    // prefetching. This is the answer that survives both: a dynamic models catalog fetched because
     // he OPENED that provider improves this list for free, and a provider he never
     // opened is simply not represented here.
     const withDiscovery = [
@@ -1314,7 +1329,7 @@ describe("`a` opens the cross-provider list", () => {
       }),
     ];
     const source = fakeSource({
-      roster: withDiscovery,
+      providerList: withDiscovery,
       byProvider: {
         openrouter: [model({ id: "gemini-3.8-flash" })],
         // No catalog entries whatsoever — the real Antigravity's situation.
@@ -1349,7 +1364,7 @@ describe("`a` opens the cross-provider list", () => {
       expect(all).toContain("gemini-3.8-flash-tiered");
       expect(all).toContain("OpenRouter");
       expect(all).toContain("Antigravity");
-      // Exactly one roster request, and it was the one he opened.
+      // Exactly one dynamic models catalog request, and it was the one he opened.
       expect(source.calls.discover).toEqual(["antigravity"]);
     } finally {
       d.destroy();
@@ -1372,7 +1387,7 @@ describe("a fallback list says it is a fallback — and that it may not work", (
       "\n⚠ Kimi / Moonshot could not list its models: the API key was rejected (HTTP 401)\n",
       "  Check MOONSHOT_API_KEY (a value in your shell overrides stored credentials).\n",
       "  Get a key: https://platform.moonshot.cn/\n",
-      "  Showing Kimi / Moonshot's cloud-catalog entries below — not its live roster.\n\n",
+      "  Showing Kimi / Moonshot's cloud-catalog entries below — not its live model list.\n\n",
     ],
     fallbackRows: [model(), model({ id: "kimi-k2.6" })],
   };
@@ -1400,13 +1415,13 @@ describe("a fallback list says it is a fallback — and that it may not work", (
     const d = await scoped(failed);
     try {
       const all = joined(d.text);
-      expect(all).toContain("live roster unavailable");
+      expect(all).toContain("live model list unavailable");
       expect(all).toContain("catalog");
       // The sentence WRAPS across two rows, so it is matched against the frame with
       // its border glyphs and line breaks flattened away. A substring test over raw
       // rows would fail on the wrap and say nothing about whether a reader can read
       // it.
-      expect(flat(d.text)).toContain("not Kimi / Moonshot's live roster");
+      expect(flat(d.text)).toContain("not Kimi / Moonshot's live model list");
     } finally {
       d.destroy();
     }
@@ -1446,7 +1461,7 @@ describe("a fallback list says it is a fallback — and that it may not work", (
     }
   });
 
-  test("a LIVE roster carries no mark — which is what makes the mark a signal", async () => {
+  test("a dynamic models catalog carries no mark — which is what makes the mark a signal", async () => {
     const d = await scoped({
       kind: "rows",
       rows: [model()],
@@ -1472,15 +1487,19 @@ describe("a fallback list says it is a fallback — and that it may not work", (
     }
   });
 
-  test("`empty-roster` renders in the NOTICE tier, without the error wash", async () => {
+  test("`empty-models-catalog` renders in the NOTICE tier, without the error wash", async () => {
     // `captureCharFrame` is blind to this: the two tiers differ in COLOUR as well as in
     // words, and the colour is the half a reader sees first.
     const failedFrame = await scoped(failed);
     const failedBgs = bgs(failedFrame.frame);
     failedFrame.destroy();
     const emptyFrame = await scoped({
-      kind: "empty-roster",
-      failure: { kind: "empty-models-catalog", provider: "kimi", endpoint: "https://api.test/v1/models" },
+      kind: "empty-models-catalog",
+      failure: {
+        kind: "empty-models-catalog",
+        provider: "kimi",
+        endpoint: "https://api.test/v1/models",
+      },
       fallbackRows: [model()],
     });
     try {
@@ -1497,8 +1516,8 @@ describe("a fallback list says it is a fallback — and that it may not work", (
 
 describe("the loading states", () => {
   test("startup names the ONE thing it is doing, and claims no other", async () => {
-    // The screen the owner rejected said `cloud catalog fetching…` and `live rosters
-    // 0/11 providers` before he had asked for either. Startup now probes credentials
+    // The screen the owner rejected said `cloud catalog fetching…` beside a `0/11 providers`
+    // discovery meter, before he had asked for either. Startup now probes credentials
     // and nothing else, and the screen says so.
     const d = await draw(
       <ModelPicker source={fakeSource({ hang: true })} onDone={() => {}} />,
@@ -1511,7 +1530,8 @@ describe("the loading states", () => {
       expect(all).toContain("credentials");
       expect(all).toContain("checking");
       expect(all).not.toContain("cloud catalog");
-      expect(all).not.toContain("live rosters");
+      // No per-provider discovery meter — the rejected `0/11 providers` fan-out.
+      expect(all).not.toMatch(/\d+\/\d+ providers/);
     } finally {
       d.destroy();
     }
@@ -1523,8 +1543,8 @@ describe("the loading states", () => {
     const d = await draw(
       <ModelPicker
         source={{
-          ...fakeSource({ roster: [provider({ label: "Kimi / Moonshot" })] }),
-          discoverRoster: () => new Promise<never>(() => {}),
+          ...fakeSource({ providerList: [provider({ label: "Kimi / Moonshot" })] }),
+          discoverModelsCatalog: () => new Promise<never>(() => {}),
         }}
         onDone={() => {}}
       />

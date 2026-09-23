@@ -74,7 +74,7 @@ describe("rankProbeCandidates", () => {
     expect(ranked).toEqual(["claude-haiku-4", "gpt-4o-mini"]);
   });
 
-  test("drops the REALTIME/VOICE family — observed leaking into the Codex roster", () => {
+  test("drops the REALTIME/VOICE family — observed leaking into the Codex dynamic models catalog", () => {
     // All five were on screen in a live provider-scoped list, offered as launchable
     // coding models. The selected row's own catalog sentence disqualified it: "a
     // distilled reasoning model for faster, lower-cost realtime VOICE interactions...
@@ -102,7 +102,7 @@ describe("rankProbeCandidates", () => {
   test("`live` IS A BOUNDED TOKEN — a substring would eat four plausible ids", () => {
     // `-` is a non-word character, so `\blive\b` matches `gpt-live-1` and does NOT
     // match any of these. A bare `/live/` would drop all four, and each of them is a
-    // shape a real roster produces: a benchmark-tuned fine-tune, a deployment slug,
+    // shape a real dynamic models catalog produces: a benchmark-tuned fine-tune, a deployment slug,
     // a vendor codename, a probe endpoint.
     for (const id of [
       "livecodebench-qwen-32b",

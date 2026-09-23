@@ -28,7 +28,7 @@
  * `OpenCode Zen Go` share a twelve-character prefix). `providerColumn` therefore
  * derives the width from the names actually on screen and widens until every one
  * of them is distinct; `MIN_PROVIDER_CELLS` is set from the whole 31-provider
- * roster, at which no pair collides.
+ * list, at which no pair collides.
  *
  * THE DIALOG IS CENTRED AND CONTENT-SIZED. It renders in `main-screen` mode, but
  * `CliRendererConfig` at `@opentui/core@0.1.107` carries no `height` key — the
@@ -42,7 +42,7 @@
 /**
  * The provider name column, and the bound that makes it collision-proof.
  *
- * MEASURED over the whole 31-provider roster: at 14 columns every display name
+ * MEASURED over all 31 providers: at 14 columns every display name
  * truncates to a distinct string, and at 12 `OpenCode Zen` and `OpenCode Zen Go`
  * collide. 14 is therefore the floor, not a taste. The cap keeps one long
  * subscription name (`Grok Build (subscription)`, 25) from eating the model id.
@@ -188,7 +188,7 @@ export const GAPS = {
  * THE INVARIANT IS UNIQUENESS, NOT WIDTH: no two providers may render the same
  * string. The search starts at what the row can afford (`providerCellsFor`) and
  * WIDENS until every truncated name is distinct — and if even the cap collides
- * (it does not for today's roster; a user's custom endpoints can make it), the
+ * (it does not for today's provider list; a user's custom endpoints can make it), the
  * colliding names fall back to their routing shortcut, which is unique by
  * construction because it is the shortest prefix that parses back to exactly one
  * provider.
@@ -278,7 +278,7 @@ const PROVIDER_GLYPH_CELLS = 2;
 /**
  * `zengo@` AS A WORD, so 8 + 1 separator.
  *
- * Longest shortcut in the roster is `mistral@` at 8 — `native-anthropic@` is longer
+ * Longest shortcut in the provider list is `mistral@` at 8 — `native-anthropic@` is longer
  * and is not on this list, having no credential store. It was briefly 10, sized for
  * a CHIP's `displayWidth(label) + 2` fill, and the chip is gone: 17 filled prefixes
  * in a column fused into one grey band (`rows.tsx` header). Text needs only its own
@@ -302,7 +302,7 @@ const PROVIDER_BILLING_CELLS = 7;
 /**
  * 25, DOWN FROM 26 — and the header's claim above needs the correction it implies.
  *
- * "Sized for the env var" was already aspirational: MEASURED over the roster, the
+ * "Sized for the env var" was already aspirational: MEASURED over the provider list, the
  * longest is `needs SAKANA_SUBSCRIPTION_API_KEY` at 33 cells, so 26 truncated it too.
  * What 25 buys is the one cell the billing chip's fill needs without touching the
  * NAME, which at 80 columns sits exactly on its 26-cell cap — and `needs
@@ -315,7 +315,7 @@ const MIN_PROVIDER_NAME_CELLS = 6;
 /**
  * The widest a provider NAME column is ever drawn, whatever the terminal gives it.
  *
- * MEASURED over the whole roster: `Grok Build (subscription)` is 25 cells and
+ * MEASURED over the whole provider list: `Grok Build (subscription)` is 25 cells and
  * nothing is longer, so 26 fits every name whole. Past that the cell is dead air,
  * and at 92 columns it was 46 — twenty blank cells between `OpenRouter` and the
  * `or@` that qualifies it, which reads as two unrelated columns rather than one

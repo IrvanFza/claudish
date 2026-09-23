@@ -7,11 +7,11 @@
  * never walks into this directory and the shipped binary carries no fixture data.
  *
  * IT WRAPS THE PRODUCTION SOURCE AND OVERRIDES ONLY THE SHAPE OF AN ANSWER — never
- * the data. The roster is still derived from the provider definitions, every model row
+ * the data. The provider list is still derived from the provider definitions, every model row
  * is still the real catalog's, every price and context window is still whatever the
- * backend says. What a scenario forges is the OUTCOME VARIANT (an empty roster, a
- * timeout, a roster where nothing is chat-capable), the readiness answers, and
- * latency. That keeps the "never hardcode rosters, context windows or pricing" rule
+ * backend says. What a scenario forges is the OUTCOME VARIANT (an empty dynamic models catalog, a
+ * timeout, a dynamic models catalog where nothing is chat-capable), the readiness answers, and
+ * latency. That keeps the "never hardcode a provider's models, context windows or pricing" rule
  * intact inside a capture harness, which matters because a screenshot of invented
  * prices proves nothing about the layout of real ones.
  *
@@ -20,8 +20,8 @@
  *
  *   · `loading`  the credential sweep held mid-`done/total` — the landing screen's
  *                only in-flight state, and on a real machine it is over in a second.
- *   · `discovering` credentials settle normally and the ROSTER never comes back.
- *                This is the per-provider wait, which exists only because a roster
+ *   · `discovering` credentials settle normally and the DYNAMIC MODELS CATALOG never comes back.
+ *                This is the per-provider wait, which exists only because a dynamic models catalog
  *                is now fetched when the user OPENS that provider.
  *   · `empty`    a provider that answers correctly with nothing chat-capable.
  *   · `filtered` a provider that serves only embeddings or wildcard routes.
@@ -68,14 +68,14 @@ export function createFixtureDataSource(name: string): PickerDataSource {
   const real = createPickerDataSource();
   const forced = FORCED_OUTCOME.has(scenario);
   // `loading` claims discovery too — not to forge an outcome (it has none; it never
-  // settles) but so that a scoped provider exercises the ROSTER indicator, whose
+  // settles) but so that a scoped provider exercises the DYNAMIC MODELS CATALOG indicator, whose
   // deadline shape is otherwise unreachable in a capture.
   const claimsDiscovery = forced || scenario === "loading" || scenario === "discovering";
 
   return {
-    providerRoster(): PickerProviderChoice[] {
+    providerList(): PickerProviderChoice[] {
       return real
-        .providerRoster()
+        .providerList()
         .map((r) =>
           claimsDiscovery ? { ...r, hasDiscovery: true, discoveryShape: "deadline" as const } : r
         );
@@ -87,7 +87,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
     async *probeCredentials(names: string[]): AsyncIterable<[string, boolean]> {
       // EVERY PROVIDER READY, and that is a forgery with a purpose: a capture runs with
       // credential sources disabled so it cannot raise a 1Password or Keychain prompt on
-      // the user's desktop, which leaves the real roster three rows long and says nothing
+      // the user's desktop, which leaves the real provider list three rows long and says nothing
       // about how the list looks for a configured user.
       for (const n of names) {
         if (scenario === "loading") await sleep(600);
@@ -110,23 +110,23 @@ export function createFixtureDataSource(name: string): PickerDataSource {
       return scenario === "loading" ? NEVER : real.descriptions();
     },
 
-    async discoverRoster(provider: string): Promise<PickerDiscoveryOutcome> {
+    async discoverModelsCatalog(provider: string): Promise<PickerDiscoveryOutcome> {
       // `discovering` is the whole point of that scenario: the credential sweep
-      // finishes, the provider list is on screen and usable, and the roster the
+      // finishes, the provider list is on screen and usable, and the dynamic models catalog the
       // user just asked for never lands. It is the only way to photograph the
       // per-provider wait, which against a real provider is over in a second.
       if (scenario === "loading" || scenario === "discovering") return NEVER;
-      if (!forced) return real.discoverRoster(provider);
+      if (!forced) return real.discoverModelsCatalog(provider);
 
       // The fallback list is the REAL vendor catalog for this provider, because the
       // defect being rendered is precisely that an unmarked fallback list reads as a
-      // healthy short roster — and that only shows on real rows.
+      // healthy short dynamic models catalog — and that only shows on real rows.
       const fallbackRows = real.servedModels(provider);
       const displayName = real.displayName(provider);
 
       if (scenario === "empty") {
         return {
-          kind: "empty-roster",
+          kind: "empty-models-catalog",
           failure: {
             kind: "empty-models-catalog",
             provider,
@@ -155,7 +155,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
           notice: [
             `\n⚠ ${displayName} could not list its models: the model list was unreachable at https://api.example.test/v1/models — The operation was aborted due to timeout\n`,
             fallbackRows.length > 0
-              ? `  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`
+              ? `  Showing ${displayName}'s cloud-catalog entries below — not its live model list.\n\n`
               : "  Falling back to manual model entry.\n\n",
           ],
           fallbackRows,
@@ -176,7 +176,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
           "  Check EXAMPLE_API_KEY (a value in your shell overrides stored credentials).\n",
           "  Get a key: https://platform.example.test/keys\n",
           fallbackRows.length > 0
-            ? `  Showing ${displayName}'s cloud-catalog entries below — not its live roster.\n\n`
+            ? `  Showing ${displayName}'s cloud-catalog entries below — not its live model list.\n\n`
             : "  Falling back to manual model entry.\n\n",
         ],
         fallbackRows,

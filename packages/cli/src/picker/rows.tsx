@@ -43,7 +43,7 @@
  *   `$$$`             QUIET chip, rose        metered — this one costs you per token
  *   `FREE` / `SUB`    SIGNAL chip, green      no per-token charge — the SAME claim
  *   `local`           SIGNAL chip, green      no charge either, by another mechanism
- *   `catalog`         warn text               NOT the live roster — `DiscoveryNotice`
+ *   `catalog`         warn text               NOT the dynamic models catalog — `DiscoveryNotice`
  *   `N/A`             dead text               the catalog does not say
  *   selection         accent + `C.bgHighlight`, and a `▶` so it survives greyscale
  *
@@ -57,7 +57,7 @@
  * of two fills.
  *
  * WHICH MEANS THE BANDING RISK IS REAL AND IS ANSWERED BY THE PAIR, NOT BY A GAP.
- * `$$$` and `SUB`/`local` partition the roster, so this is a fill on all 17 rows —
+ * `$$$` and `SUB`/`local` partition the provider list, so this is a fill on all 17 rows —
  * exactly the shape that fused into one grey band when the PREFIX was chipped. What
  * failed there was that all 17 fills were the SAME colour; here they alternate, and
  * the two fills are held apart by measurement rather than by hope: ΔE76 44.9 on the
@@ -173,7 +173,7 @@ export const CHIP_FILL_CELLS =
   Math.max(...CHIP_COLUMN_LABELS.map((label) => displayWidth(label))) + 2;
 
 /** Where a list came from — the one value that drives every provenance encoding. */
-export type ListOrigin = "roster" | "catalog";
+export type ListOrigin = "discovered" | "catalog";
 
 /**
  * What the price column prints.
@@ -225,7 +225,7 @@ export function priceFg(label: string): string {
  *
  * `null` is the cross-provider list. A scoped provider FIXES the column when it
  * bills flat-rate or runs locally — `resolveProviderDisplayPrice` answers `SUB` for
- * every row of a subscription roster — and a column of one repeated fill is the
+ * every row a subscription provider lists — and a column of one repeated fill is the
  * rectangle the skill measured.
  */
 export function priceVaries(scopeBilling: BillingMode | null): boolean {
@@ -302,9 +302,9 @@ export function billingLabel(mode: BillingMode): { text: string; fg: string; bg:
  * "0 models" reads as "this provider has nothing" about a provider nothing has asked.
  *
  * AND IT SAYS WHAT THE USER GETS, NOT HOW CLAUDISH FETCHES IT. The words were
- * `asks its own roster`, which the owner read on a live run and rejected. "Roster" is
- * this codebase's word for a provider's model list and appears nowhere else in the
- * UI, so the row described an implementation detail of the thing the reader was
+ * `asks its own` followed by this codebase's since-retired internal word for a
+ * provider's model list, which the owner read on a live run and rejected. That word
+ * appeared nowhere else in the UI, so the row described an implementation detail of the thing the reader was
  * trying to choose between. His replacement, verbatim: *"subscription models"*.
  *
  * TWO PHRASINGS, BECAUSE ONE WOULD BE FALSE FOR HALF THE SET. Every provider that
@@ -439,7 +439,7 @@ export interface ModelRowProps {
   price: string;
   layout: RowLayout;
   cursor: boolean;
-  /** `catalog` marks a row that is NOT from the provider's live roster. */
+  /** `catalog` marks a row that is NOT from the provider's dynamic models catalog. */
   origin: ListOrigin;
   /**
    * Draw a discrete price label as a CHIP rather than as coloured text.
@@ -515,13 +515,13 @@ export interface ProviderRowProps {
    *
    * `null` PRINTS NOTHING — not `0`, not `—`, not a guess. The owner's rule,
    * verbatim: *"we could not show number of models for some of them"*. This
-   * column is now only filled for a provider whose roster the user has already
+   * column is now only filled for a provider whose dynamic models catalog the user has already
    * opened, or whose count is already in hand from a catalog the user asked for;
    * everything else is silent, because a wrong count is worse than no count and
    * an em dash still occupies the place where a number goes.
    */
   count: number | null;
-  /** Does this provider list its own roster? Decides what a known `0` means. */
+  /** Does this provider list its own dynamic models catalog? Decides what a known `0` means. */
   hasDiscovery: boolean;
   /** Why it is not selectable — an env var name, or empty. */
   note: string;
@@ -538,7 +538,7 @@ export interface ProviderRowProps {
  * verdict was *"we should not show the full list of models, we should show a list
  * of providers by default and only when we go inside we load and resolve all
  * models"*. So this row is the first thing the picker draws, and entering one is
- * what makes that provider's roster be fetched at all.
+ * what makes that provider's dynamic models catalog be fetched at all.
  *
  * IT IS A DIALOG, NOT A RAIL. The rejected build put a 19-column provider rail
  * permanently beside the model list, which gave the screen two cursors with only a

@@ -72,7 +72,7 @@ export interface PickerModelsState {
  *
  * EXPORTED BECAUSE THERE ARE TWO LISTS AND THEY MUST NOT DIFFER. The flat list is
  * built from the served-by index; a scoped list may instead be a live discovery
- * roster or its catalog fallback. If those paths built rows differently, a fallback
+ * dynamic models catalog or its catalog fallback. If those paths built rows differently, a fallback
  * list would be distinguishable by ACCIDENT — a different price string, a different
  * spec spelling — rather than by the three deliberate provenance encodings, and a
  * reader would learn to read the accident instead of the mark.
@@ -92,13 +92,13 @@ export function toPickerRow(choice: PickerProviderChoice, model: ModelInfo): Pic
 
 export function usePickerModels(
   source: PickerDataSource,
-  roster: PickerProviderChoice[],
+  providerList: PickerProviderChoice[],
   /** Providers whose credential probe came back true. */
   ready: ReadonlySet<string>,
   /**
-   * LIVE roster rows for the providers the user has already OPENED this session
+   * dynamic models catalog rows for the providers the user has already OPENED this session
    * (`rowsFromOutcomes`). Empty until he opens one, and that is the design: a
-   * roster is fetched because he asked for that provider, and once it is in hand
+   * dynamic models catalog is fetched because he asked for that provider, and once it is in hand
    * it costs nothing to let it improve the cross-provider list too.
    */
   liveRows: ReadonlyMap<string, ModelInfo[]> = EMPTY_LIVE,
@@ -148,20 +148,20 @@ export function usePickerModels(
     if (phase !== "ready") return { rows: [], counts: new Map(), phase };
     const counts = new Map<string, number>();
     const rows: PickerRow[] = [];
-    for (const choice of roster) {
+    for (const choice of providerList) {
       let cached = cache.current.get(choice.value);
       if (cached === undefined) {
         cached = source.servedModels(choice.value).map((m) => toPickerRow(choice, m));
         cache.current.set(choice.value, cached);
       }
-      // THE LIVE ROSTER WINS AND THE CATALOG ROWS STAY, deduped by
+      // THE DYNAMIC MODELS CATALOG WINS AND THE CATALOG ROWS STAY, deduped by
       // `(provider, modelId)`.
       //
       // The same model id under two DIFFERENT providers is two rows on purpose —
       // that is the whole value of a cross-provider list, and the reason
       // `gpt-6-astra` is worth seeing at $30.00 on `or@` beside `SUB` on `cx@`.
       // This loop is per provider, so the dedupe below can only ever collapse the
-      // OVERLAP between one provider's live roster and its catalog entries. The
+      // OVERLAP between one provider's dynamic models catalog and its catalog entries. The
       // live entry wins because it is what this account can actually call: the
       // endpoint answered for THESE credentials, where the catalog answers for
       // everyone.
@@ -181,10 +181,10 @@ export function usePickerModels(
     rows.sort((a, b) => compareByReleaseDateDesc(a.model, b.model));
     return { rows, counts, phase };
     // biome-ignore lint/correctness/useExhaustiveDependencies: `signature` is the stable projection of `ready`; depending on the Set itself rebuilds every frame
-  }, [source, roster, phase, signature, ready, liveRows]);
+  }, [source, providerList, phase, signature, ready, liveRows]);
 }
 
-/** No live rosters yet — a shared empty map, so the memo's identity is stable. */
+/** No dynamic models catalogs yet — a shared empty map, so the memo's identity is stable. */
 const EMPTY_LIVE: ReadonlyMap<string, ModelInfo[]> = new Map();
 
 /**

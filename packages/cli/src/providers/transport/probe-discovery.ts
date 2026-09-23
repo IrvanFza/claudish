@@ -73,13 +73,13 @@ const NON_CHAT_PATTERNS = [
   /\bspeech\b/i,
   // Speech-to-text. `gemini-3.5-transcribe` is the case `toPickerRows` named as
   // getting through, and `mai-transcribe-*` / `gpt-transcribe` are the observed
-  // leaks. No chat model in any served roster carries the word.
+  // leaks. No chat model in any served dynamic models catalog carries the word.
   /\btranscribe\b/i,
   /\btranscription\b/i,
   // Text-to-speech under a name that does not say `tts`: `mai-voice-2`,
   // `mai-voice-2-flash`.
   /\bvoice\b/i,
-  // REALTIME / LIVE / TRANSLATE — observed leaking into the OpenAI Codex roster as
+  // REALTIME / LIVE / TRANSLATE — observed leaking into the OpenAI Codex dynamic models catalog as
   // `gpt-live-1`, `gpt-realtime-2`, `gpt-realtime-2.1`, `gpt-realtime-2.1-mini` and
   // `gpt-realtime-translate`, all five offered as launchable coding models. The
   // selected row's own catalog sentence disqualified it: "a distilled reasoning

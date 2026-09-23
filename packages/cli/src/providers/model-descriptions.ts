@@ -54,7 +54,7 @@ interface DescriptionCache {
 
 /**
  * The index the picker reads. Lookup is case-insensitive on the id, because a
- * row's id comes from the slim catalog and an alias from a live roster, and the
+ * row's id comes from the slim catalog and an alias from a dynamic models catalog, and the
  * two do not agree about case (`GLM-4.6` vs `glm-4.6`).
  */
 export interface DescriptionIndex {

@@ -17,8 +17,8 @@
  * Design rules:
  * - **Fail-soft, but not fail-silent.** `discoverProviderModels` returns an
  *   empty list on every failure path — discovery is an enhancement and must
- *   never block a launch or a picker. `discoverProviderRoster` is the same work
- *   reported as a {@link RosterOutcome}, for the one caller that has to explain
+ *   never block a launch or a picker. `discoverProviderModelsCatalog` is the same work
+ *   reported as a {@link ModelsCatalogOutcome}, for the one caller that has to explain
  *   the emptiness instead of absorbing it. Neither ever rejects.
  * - **Nothing hardcoded.** The endpoint is derived from the provider's own
  *   baseUrl (+ env overrides); model ids and windows come from the response.
@@ -156,14 +156,14 @@ export interface ModelDiscoveryDescriptor {
  * - `failed` carries any of the seven kinds. `provider` is filled in by the
  *   caller, which is the only place that knows it.
  *
- * Throwing is still fine: {@link discoverProviderRoster} maps a rejection to
+ * Throwing is still fine: {@link discoverProviderModelsCatalog} maps a rejection to
  * `unreachable` and never rejects itself.
  */
 export type FetcherResult =
   | { kind: "models"; models: DiscoveredModel[]; endpoint?: string }
   | { kind: "failed"; failure: Omit<DiscoveryFailure, "provider"> };
 
-/** A roster fetcher for a format this module does not know how to speak. */
+/** A dynamic models catalog fetcher for a format this module does not know how to speak. */
 export type ModelDiscoveryFetcher = (providerName: string) => Promise<FetcherResult>;
 
 const _fetchers = new Map<string, ModelDiscoveryFetcher>();
@@ -255,7 +255,7 @@ export interface DiscoveryFailure {
  *
  * Three variants, because there are three different things to say:
  *
- * - `served` — a roster. **Non-empty by construction**: every path that ends up
+ * - `served` — a dynamic models catalog. **Non-empty by construction**: every path that ends up
  *   with zero models records a failure instead, so there is no `served` with
  *   `[]` to guard against downstream.
  * - `failed` — one of the seven {@link DiscoveryFailureKind}s, with the failure
@@ -267,12 +267,12 @@ export interface DiscoveryFailure {
  *   providers declare no `modelDiscovery`; for them the cloud catalog is the
  *   normal, correct answer and a notice would be noise on the majority case.
  *   `no-fetcher` is the exception that IS a bug — a declared format nothing
- *   claims is a packaging mistake, not a roster fact — which is why it is here
+ *   claims is a packaging mistake, not a dynamic models catalog fact — which is why it is here
  *   rather than folded into `empty-models-catalog` as it used to be. A declared
  *   descriptor whose base URL does not resolve is NOT here: that is a setup
  *   fault the user can fix, so it is `failed{unreachable}` naming the variable.
  */
-export type RosterOutcome =
+export type ModelsCatalogOutcome =
   | { kind: "served"; models: DiscoveredModel[] }
   | { kind: "failed"; failure: DiscoveryFailure }
   | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
@@ -295,7 +295,7 @@ const _failures = new Map<string, DiscoveryFailure>();
  * where it is — the recorded-failure side effect and the returned value are the
  * same fact, written once.
  */
-function recordFailure(failure: DiscoveryFailure): RosterOutcome {
+function recordFailure(failure: DiscoveryFailure): ModelsCatalogOutcome {
   _failures.set(failure.provider, failure);
   log(`[model-discovery:${failure.provider}] ${describeDiscoveryFailure(failure)}`);
   return { kind: "failed", failure };
@@ -541,7 +541,10 @@ function describeIncompleteness(body: unknown, parsed: ParsedModelsList): string
  * Never rejects: the dynamic import and the fetcher call are both inside the
  * `try`, and both can throw.
  */
-async function discoverViaFetcher(providerName: string, format: string): Promise<RosterOutcome> {
+async function discoverViaFetcher(
+  providerName: string,
+  format: string
+): Promise<ModelsCatalogOutcome> {
   let result: FetcherResult;
   try {
     let fetcher = getModelDiscoveryFetcher(format);
@@ -589,7 +592,7 @@ async function discoverViaFetcher(providerName: string, format: string): Promise
 
 /**
  * List the models this provider serves for the CURRENT credentials, as a
- * discriminated outcome — see {@link RosterOutcome}.
+ * discriminated outcome — see {@link ModelsCatalogOutcome}.
  *
  * **This function NEVER REJECTS.** Every `await` is inside a `try`, including
  * the dynamic import of the builtin fetcher bundle and the fetcher call itself,
@@ -600,7 +603,9 @@ async function discoverViaFetcher(providerName: string, format: string): Promise
  * running against a promise that never settles. Callers may therefore have no
  * rejection branch, and a Tier-1 test registers a throwing fetcher to pin it.
  */
-export async function discoverProviderRoster(providerName: string): Promise<RosterOutcome> {
+export async function discoverProviderModelsCatalog(
+  providerName: string
+): Promise<ModelsCatalogOutcome> {
   const cached = _cache.get(providerName);
   if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
 
@@ -773,11 +778,11 @@ export async function discoverProviderRoster(providerName: string): Promise<Rost
  * The fail-soft shape every non-picker caller wants (the launcher, the status
  * line, `discoverContextWindow`): discovery is an enhancement and must never
  * block a launch. A caller that needs to TELL the user why there is nothing —
- * i.e. the picker — calls {@link discoverProviderRoster} instead and keeps the
+ * i.e. the picker — calls {@link discoverProviderModelsCatalog} instead and keeps the
  * distinction. Both share one cache, so asking twice costs one request.
  */
 export async function discoverProviderModels(providerName: string): Promise<DiscoveredModel[]> {
-  const outcome = await discoverProviderRoster(providerName);
+  const outcome = await discoverProviderModelsCatalog(providerName);
   return outcome.kind === "served" ? outcome.models : [];
 }
 

@@ -48,7 +48,7 @@ interface FetchOllamaOptions {
    * Default `false`, so every existing caller is byte-identical. Opt in only
    * when you can report the difference: "the daemon is not running" and "the
    * daemon is running and nothing is pulled" are the same `[]` otherwise, and
-   * model discovery used to record both as `empty-roster` — telling the user
+   * model discovery used to record both as `empty-models-catalog` — telling the user
    * their local provider serves no models when in fact nothing answered.
    */
   throwOnError?: boolean;

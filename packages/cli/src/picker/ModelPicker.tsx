@@ -36,8 +36,8 @@
  *
  * THE DEFAULT SCREEN IS THE PROVIDER LIST, AND NOTHING IS FETCHED BEFORE IT. An
  * intermediate build landed on a flat 574-row cross-provider list and warmed the
- * cloud catalog AND every credentialled provider's live roster to fill it — a
- * `cloud catalog fetching… / live rosters 0/11 providers` screen the user had to
+ * cloud catalog AND every credentialled provider's dynamic models catalog to fill it — a
+ * `cloud catalog fetching…` screen with a `0/11 providers` discovery meter that the user had to
  * watch before he could do anything. The owner's three corrections, verbatim:
  * *"why we prefetching? we should not, as we show on demand"*, *"we should not
  * show the full list of models, we should show a list of providers by default and
@@ -45,13 +45,13 @@
  * show unsetted providers, just active"*. So:
  *
  *   · Startup does ONE thing: probe credentials, streaming each answer into the
- *     provider list as it settles. No catalog, no roster, no description index.
- *   · `⏎` on a provider fetches THAT provider's roster and shows it. The failure
+ *     provider list as it settles. No catalog, no dynamic models catalog, no description index.
+ *   · `⏎` on a provider fetches THAT provider's dynamic models catalog and shows it. The failure
  *     UX improves for free — a red panel now answers a request the user made.
  *   · `a` opens the cross-provider list, built from the ONE cached catalog fetch,
- *     enriched by whatever rosters he has already opened and by nothing else.
+ *     enriched by whatever dynamic models catalogs he has already opened and by nothing else.
  *
- * NO AWAIT IS EVER SILENT, STRUCTURALLY RATHER THAN BY DILIGENCE. The roster is
+ * NO AWAIT IS EVER SILENT, STRUCTURALLY RATHER THAN BY DILIGENCE. The provider list is
  * derived synchronously, so the first frame is complete before any effect runs;
  * every loader is an effect; and every in-flight task draws an affordance whose
  * SHAPE is chosen by what the caller can actually measure. Nothing invents a
@@ -107,7 +107,7 @@ import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./row
  * WHICH AFFORDANCE EACH IN-FLIGHT TASK EARNS — the honesty contract, as one pure
  * function so it can be asserted without a renderer.
  *
- * The credential sweep is the only task with a real denominator: the roster is
+ * The credential sweep is the only task with a real denominator: the provider list is
  * derived synchronously, so `done/total` is work done over work TOTAL. The GET half
  * of discovery has a published DEADLINE and gets an elapsed-vs-deadline bar whose
  * label says `deadline`, because a deadline is not progress. Everything else gets an
@@ -118,7 +118,7 @@ import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./row
  * drawing a label for a phase that never runs is the same lie as an invented
  * denominator.
  *
- * AND THERE IS NO `live rosters` TASK ANY MORE. It had the most defensible meter in
+ * AND THERE IS NO PER-PROVIDER DISCOVERY TASK ANY MORE. It had the most defensible meter in
  * the file — a real `done/total` over the providers about to be asked — and it was
  * still wrong, because the work it measured was work nobody had asked for. A
  * truthful bar for an unwanted fan-out is a truthful answer to the wrong question.
@@ -126,7 +126,7 @@ import { ColumnHeader, HintRow, ModelRow, ProviderRow, priceVaries } from "./row
 export function buildLoadTasks(input: {
   creds: { done: number; total: number } | null;
   catalog: boolean;
-  roster: { displayName: string; shape: DiscoveryShape; elapsed: number } | null;
+  modelsCatalog: { displayName: string; shape: DiscoveryShape; elapsed: number } | null;
 }): LoadTask[] {
   const tasks: LoadTask[] = [];
   if (input.creds) {
@@ -139,18 +139,18 @@ export function buildLoadTasks(input: {
     });
   }
   if (input.catalog) tasks.push({ id: "catalog", label: "cloud catalog", value: "fetching…" });
-  if (input.roster) {
-    const { displayName, shape, elapsed } = input.roster;
+  if (input.modelsCatalog) {
+    const { displayName, shape, elapsed } = input.modelsCatalog;
     const secs = `${(elapsed / 1000).toFixed(1)}s`;
     tasks.push(
       shape === "deadline"
         ? {
-            id: "roster",
+            id: "discovery",
             label: displayName,
             pct: Math.min(100, (100 * elapsed) / DISCOVERY_DEADLINE_MS),
             value: `${secs} / ${(DISCOVERY_DEADLINE_MS / 1000).toFixed(1)}s deadline`,
           }
-        : { id: "roster", label: displayName, value: `discovering…  ${secs}` }
+        : { id: "discovery", label: displayName, value: `discovering…  ${secs}` }
     );
   }
   return tasks;
@@ -209,7 +209,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   /** `null` = the cross-provider list; a name = scoped to that provider. */
   const [scope, setScope] = useState<string | null>(null);
 
-  const scopedChoice = providers.roster.find((r) => r.value === scope) ?? null;
+  const scopedChoice = providers.providerList.find((r) => r.value === scope) ?? null;
   const scopedName = scope === null ? "" : source.displayName(scope);
   const hasDiscovery = scopedChoice?.hasDiscovery === true;
   /**
@@ -224,14 +224,14 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     hasDiscovery,
     onDiscoveryFailure
   );
-  /** Rosters the user has already opened. No fetch — see `rowsFromOutcomes`. */
+  /** Dynamic models catalogs the user has already opened. No fetch — see `rowsFromOutcomes`. */
   const liveRows = useMemo(() => rowsFromOutcomes(discovery.seen), [discovery.seen]);
 
   /**
    * THE CATALOG IS FETCHED FOR THE VIEWS THAT READ IT, AND FOR NO OTHER.
    *
    * The cross-provider list is built from it, and so is a provider that does not
-   * list its own roster. A discovery provider needs nothing from it — its rows come
+   * list its own dynamic models catalog. A discovery provider needs nothing from it — its rows come
    * from its own endpoint — unless discovery comes back `unsupported`, at which
    * point the catalog IS the list and the warm starts then.
    */
@@ -240,7 +240,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
     (scope === null || !hasDiscovery || discovery.outcome?.kind === "unsupported");
   const catalog = usePickerModels(
     source,
-    providers.roster,
+    providers.providerList,
     providers.readySet,
     liveRows,
     wantCatalog
@@ -285,7 +285,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
    * not show number of models for some of them"*.
    *
    * Two sources, both already in hand and neither of them a fetch this map causes.
-   * A roster the user opened is the truest answer for that provider, so it wins;
+   * A dynamic models catalog the user opened is the truest answer for that provider, so it wins;
    * the catalog answers for the rest, but ONLY once the user has asked for a view
    * that warmed it. A provider in neither set gets `null`, which `ProviderRow`
    * prints as nothing at all.
@@ -306,21 +306,21 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   // banner's provenance sentence — so they cannot disagree with each other.
   //
   // The UNSCOPED list is catalog-derived too, and is deliberately NOT marked. A
-  // mark means "the live roster was asked for and could not be had"; nothing asked
-  // for a live roster here, so marking every row would spend the loudest signal in
+  // mark means "the dynamic models catalog was asked for and could not be had"; nothing asked
+  // for a dynamic models catalog here, so marking every row would spend the loudest signal in
   // the feature on the ordinary case and teach the reader to ignore it.
   // ONE ROW PER MODEL INSIDE A PROVIDER, N ROWS ACROSS PROVIDERS. The owner stated
   // the rule: *"if model has more than one provider that going to be two lines in
   // 'all models' list. and if we enter to provider catalog, not all models — then
   // the model will be just one"*. The flat list's identity is `(provider, modelId)`
   // and `usePickerModels` applies it; every scoped branch below goes through
-  // `dedupeByModelId`, so a live roster overlapping the catalog for the SAME
+  // `dedupeByModelId`, so a dynamic models catalog overlapping the catalog for the SAME
   // provider cannot show the same model twice.
   const list = useMemo((): { rows: RowView[]; fallback: boolean; loading: boolean } => {
     if (scope === null) {
       return { rows: catalog.rows, fallback: false, loading: catalog.phase !== "ready" };
     }
-    // A DISCOVERED ROSTER AND A CATALOG LIST GO THROUGH THE SAME ROW BUILDER, so a
+    // A DYNAMIC MODELS CATALOG AND A CATALOG LIST GO THROUGH THE SAME ROW BUILDER, so a
     // fallback list cannot be distinguishable by accident — a different price
     // string or a different spec spelling — instead of by the three deliberate
     // provenance encodings.
@@ -337,26 +337,26 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
 
   /**
    * The provider cell for every provider on screen — collision-proof by
-   * construction, and computed from the ROSTER rather than from the rows so the
-   * column does not change width as rosters merge in behind the cursor.
+   * construction, and computed from the PROVIDER LIST rather than from the rows so the
+   * column does not change width as dynamic models catalogs merge in behind the cursor.
    */
   // The column budget depends only on the TERMINAL, never on the banner — a
   // banner takes rows, not columns — so it is derived from a base layout here and
   // stays put while a notice appears and disappears above the list.
   const providerCells = providerCellsFor(deriveDialogLayout(width, height).inner, list.fallback);
   const column = useMemo(
-    () => providerColumn(providers.roster, truncate, providerCells),
-    [providers.roster, providerCells]
+    () => providerColumn(providers.providerList, truncate, providerCells),
+    [providers.providerList, providerCells]
   );
   /** Provider → its WHOLE display name, for the filter and the detail line. */
   const labels = useMemo(
-    () => new Map(providers.roster.map((r) => [r.value, r.label])),
-    [providers.roster]
+    () => new Map(providers.providerList.map((r) => [r.value, r.label])),
+    [providers.providerList]
   );
   /** Provider → what it IS: how it bills, and the credential it wants. */
   const facts = useMemo(
-    () => new Map<string, ProviderFacts>(providers.roster.map((r) => [r.value, factsOf(r)])),
-    [providers.roster]
+    () => new Map<string, ProviderFacts>(providers.providerList.map((r) => [r.value, factsOf(r)])),
+    [providers.providerList]
   );
 
   const shown = useMemo(() => {
@@ -386,7 +386,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   const tasks = buildLoadTasks({
     creds: providers.probing ? { done: providers.done, total: providers.total } : null,
     catalog: catalog.phase === "loading",
-    roster:
+    modelsCatalog:
       discovery.busy && scope !== null
         ? {
             displayName: scopedName,
@@ -438,7 +438,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
   });
 
   // The cursor can outlive the list it indexed — a filter keystroke, or a scope
-  // whose roster came back shorter than the last one's.
+  // whose dynamic models catalog came back shorter than the last one's.
   useEffect(() => {
     setCursor((c) => Math.max(0, Math.min(c, Math.max(0, shown.length - 1))));
   }, [shown.length]);
@@ -533,7 +533,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         return;
       }
       if (name === "return" || name === "enter") {
-        // ENTERING A PROVIDER IS WHAT FETCHES ITS ROSTER. Nothing before this
+        // ENTERING A PROVIDER IS WHAT FETCHES ITS DYNAMIC MODELS CATALOG. Nothing before this
         // keystroke asked that endpoint anything.
         const chosen = providerRows[providerCursor];
         if (chosen) {
@@ -796,7 +796,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
               one counted summary, and it costs no rows at all when nothing is hidden.
               At 80×24 those two rows were 2 of the 13 the dialog has. */}
           {/* THE ONE METER IN THE PICKER, on the one screen that waits for anything.
-              It is `done/total` over a roster derived synchronously — real progress
+              It is `done/total` over a provider list derived synchronously — real progress
               over countable work — and it disappears, leaving its row, when the last
               probe settles. */}
           {settled ? (
@@ -966,7 +966,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
                 price={r.price}
                 layout={rowLayout}
                 cursor={top + i === cursor}
-                origin={list.fallback ? "catalog" : "roster"}
+                origin={list.fallback ? "catalog" : "discovered"}
                 chip={chipPrices}
               />
             ))
@@ -976,7 +976,7 @@ export function ModelPicker({ source, onDone, onDiscoveryFailure }: ModelPickerP
         {/* ONE status row, ALWAYS rendered — see `CHROME_ROWS`. It carries the
             scroll position when the list overflows, then whatever is still in
             flight, then nothing. There is no aggregate failure line any more:
-            with the fan-out gone, the only roster that can fail is one the user
+            with the fan-out gone, the only dynamic models catalog that can fail is one the user
             opened, and that one gets the banner above this list. */}
         <HintRow
           text={statusRow(cursor, shown.length, window.length, tasks)}
@@ -1092,7 +1092,7 @@ export function descriptionOf(
  *
  * Exported so the title's arithmetic can be asserted: `N models · M routes` is
  * only honest if the two numbers are computed differently, and a regression that
- * made them equal would be invisible on a screenshot of a roster where no model
+ * made them equal would be invisible on a screenshot of a dynamic models catalog where no model
  * happens to be served twice.
  */
 export function countModels(rows: readonly { model: ModelInfo }[]): number {
@@ -1126,7 +1126,7 @@ export function unavailableNote(
   return provider.envVar === "" ? "needs sign-in" : `needs ${provider.envVar}`;
 }
 
-/** A roster entry as the facts the detail line prints. Derived, never a table. */
+/** A provider-list entry as the facts the detail line prints. Derived, never a table. */
 function factsOf(choice: PickerProviderChoice): ProviderFacts {
   return {
     label: choice.label,
@@ -1144,10 +1144,10 @@ const MAX_BANNER_ROWS = 5;
  * longer than the window, then what is still loading, then nothing.
  *
  * IT NO LONGER CARRIES AN AGGREGATE FAILURE COUNT, because there is no longer an
- * aggregate. That line existed for the startup fan-out — thirteen rosters in
+ * aggregate. That line existed for the startup fan-out — thirteen dynamic models catalogs in
  * flight at once, where a banner per failure would have pushed the list off the
- * screen and a banner for the first would have spoken for the rest. With rosters
- * fetched one at a time, on request, the only roster that can fail is the one the
+ * screen and a banner for the first would have spoken for the rest. With dynamic models catalogs
+ * fetched one at a time, on request, the only dynamic models catalog that can fail is the one the
  * user just opened, and it gets the full banner above its own list.
  *
  * Pure so the priority can be asserted. The scroll position wins over the pending

@@ -5,7 +5,7 @@
  *
  * The defect these pin: `buildDiscoveredModelRows` returned `[]` for five
  * distinguishable states — a rejected key, an unreachable endpoint, a genuinely
- * empty roster, a roster where nothing was chat-capable, and a roster that
+ * empty dynamic models catalog, a dynamic models catalog where nothing was chat-capable, and a dynamic models catalog that
  * collapsed to nothing — and the caller fell through to the cloud catalog for
  * all of them in silence. The user saw "fewer model names, like the provider
  * does not have any models". So every test here is a state that used to be
@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 
 import { credentials } from "./auth/credentials/authority.js";
 import {
-  _rosterCollapse,
+  _modelsCatalogCollapse,
   buildDiscoveredModelOutcome,
   buildDiscoveredModelRows,
   formatDiscoveryFailureNotice,
@@ -51,7 +51,7 @@ const KEY_URL = "https://picker-outcome.invalid/key";
 
 const realFetch = globalThis.fetch;
 const realGetRequestAuth = credentials.getRequestAuth;
-const realCollapse = _rosterCollapse.collapse;
+const realCollapse = _modelsCatalogCollapse.collapse;
 
 function defineProvider(overrides: Partial<ProviderDefinition> = {}): ProviderDefinition {
   return {
@@ -130,11 +130,11 @@ afterEach(() => {
   clearRuntimeRegistry();
   globalThis.fetch = realFetch;
   credentials.getRequestAuth = realGetRequestAuth;
-  _rosterCollapse.collapse = realCollapse;
+  _modelsCatalogCollapse.collapse = realCollapse;
 });
 
 describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
-  test("STATE A · a healthy roster is `rows`, non-empty, with servedCount === chatCount", async () => {
+  test("STATE A · a healthy dynamic models catalog is `rows`, non-empty, with servedCount === chatCount", async () => {
     serves(["alpha-chat", "beta-chat", "gamma-chat"]);
 
     const outcome = await buildDiscoveredModelOutcome(
@@ -151,7 +151,7 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     expect(outcome.chatCount).toBe(3);
   });
 
-  test("a PARTIALLY filtered roster keeps the two counts apart — the fact discarded today", async () => {
+  test("a PARTIALLY filtered dynamic models catalog keeps the two counts apart — the fact discarded today", async () => {
     serves(["alpha-chat", "text-embedding-3-large", "whisper-1"]);
 
     const outcome = await buildDiscoveredModelOutcome(
@@ -193,7 +193,7 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     ]);
   });
 
-  test("STATE C · a genuinely empty roster is its own variant, carrying the failure", async () => {
+  test("STATE C · a genuinely empty dynamic models catalog is its own variant, carrying the failure", async () => {
     serves([]);
 
     const outcome = await buildDiscoveredModelOutcome(
@@ -202,14 +202,14 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
       stubCatalog(CATALOG_ROWS)
     );
 
-    expect(outcome.kind).toBe("empty-roster");
-    if (outcome.kind !== "empty-roster") throw new Error("unreachable");
+    expect(outcome.kind).toBe("empty-models-catalog");
+    if (outcome.kind !== "empty-models-catalog") throw new Error("unreachable");
     expect(outcome.failure.kind).toBe("empty-models-catalog");
     expect(outcome.failure.endpoint).toContain("/v1/models");
     expect(outcome.fallbackRows.length).toBe(2);
   });
 
-  test("STATE D · a rejected key is `failed` — a DIFFERENT variant from empty-roster", async () => {
+  test("STATE D · a rejected key is `failed` — a DIFFERENT variant from empty-models-catalog", async () => {
     rejectsWith(401);
 
     const outcome = await buildDiscoveredModelOutcome(
@@ -224,7 +224,7 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     expect(outcome.failure.status).toBe(401);
     // The whole point of the split: a 401 and an empty list are not the same
     // thing, and the type no longer lets a renderer treat them as one.
-    expect(outcome.kind).not.toBe("empty-roster");
+    expect(outcome.kind).not.toBe("empty-models-catalog");
     expect(outcome.notice.join("")).toContain(DISPLAY_NAME);
     expect(outcome.notice.join("")).toContain(ENV_VAR);
     expect(outcome.fallbackRows.map((r) => r.id).sort()).toEqual([
@@ -233,12 +233,12 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     ]);
   });
 
-  test("STATE E · a roster that collapses to nothing is collapsed-empty, never rows:[]", async () => {
+  test("STATE E · a dynamic models catalog that collapses to nothing is collapsed-empty, never rows:[]", async () => {
     // Unreachable through the one shipped resolver (every entry lands in a group
     // and every group yields a choice), and modelled anyway: `{kind:"rows",
     // rows: []}` would be an empty panel with no explanation — the exact defect
     // class this type exists to remove, reintroduced inside it.
-    _rosterCollapse.collapse = () => [];
+    _modelsCatalogCollapse.collapse = () => [];
     serves(["alpha-chat", "beta-chat"]);
 
     const outcome = await buildDiscoveredModelOutcome(
@@ -305,7 +305,7 @@ describe("buildDiscoveredModelOutcome — the fallback leg", () => {
 
     if (outcome.kind !== "failed") throw new Error("unreachable");
     const notice = outcome.notice.join("");
-    expect(notice).toContain("cloud-catalog entries below — not its live roster.");
+    expect(notice).toContain("cloud-catalog entries below — not its live model list.");
     expect(notice).not.toContain("Falling back to manual model entry.");
   });
 
@@ -405,7 +405,7 @@ describe("formatDiscoveryFailureNotice", () => {
 
     expect(lines("manual-entry")).toContain("Falling back to manual model entry.");
     expect(lines("catalog")).toContain(
-      `Showing ${DISPLAY_NAME}'s cloud-catalog entries below — not its live roster.`
+      `Showing ${DISPLAY_NAME}'s cloud-catalog entries below — not its live model list.`
     );
     // "unknown" means nothing has decided yet, so it claims nothing.
     expect(lines("unknown")).not.toContain("Falling back");
@@ -455,7 +455,7 @@ describe("no rendered notice interpolates `undefined`", () => {
   const KINDS = Object.keys(EVERY_KIND) as DiscoveryFailureKind[];
 
   test("every kind × endpoint × status × detail × fallback", () => {
-    // The `empty-roster` records on the fetcher half carried no endpoint for
+    // The `empty-models-catalog` records on the fetcher half carried no endpoint for
     // years, so any copy that names one renders the literal string `undefined`
     // to the user. Exhaustive rather than representative, because the optional
     // fields are independent and a single missed guard is invisible in review.

@@ -53,7 +53,7 @@ async function fetchDevinModelsCatalog(): Promise<FetcherResult> {
     const { readDevinApiKey, readDevinServerUrl } = await import("./devin/devin-credentials.js");
     endpoint = readDevinServerUrl();
     // A logged-out account is a CREDENTIAL problem, and it is the kind that
-    // earns a "how to fix it" line. Reporting it as an empty roster says the
+    // earns a "how to fix it" line. Reporting it as an empty dynamic models catalog says the
     // subscription serves no models, which is a claim about Devin rather than
     // about this machine.
     if (!readDevinApiKey()) {
@@ -128,7 +128,7 @@ async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
     endpoint = `${antigravityHost()}/v1internal:fetchAvailableModels`;
     const token = await getValidAntigravityAccessToken();
     // No token is exactly "logged out", which is one of the two kinds that earns
-    // the env-var / key-URL guidance. It used to read as an empty roster, i.e.
+    // the env-var / key-URL guidance. It used to read as an empty dynamic models catalog, i.e.
     // "your subscription serves nothing".
     if (!token) {
       return {

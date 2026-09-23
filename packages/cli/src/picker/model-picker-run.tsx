@@ -70,7 +70,7 @@ export interface ModelPickerOutcome {
  *
  * DEV-ONLY, AND REACHED BY DYNAMIC IMPORT BEHIND THE ENV CHECK, so
  * `bun build --compile` never walks into `picker/fixtures/` and the shipped binary
- * carries no fixture data. The states it forces — a timeout, an empty roster, a roster
+ * carries no fixture data. The states it forces — a timeout, an empty dynamic models catalog, a dynamic models catalog
  * where nothing is chat-capable, and the in-flight frames themselves — are not
  * reachable against a live provider, and they are the states this feature exists to
  * render. A capture of the happy path alone would validate nothing.
@@ -87,10 +87,10 @@ export async function runModelPicker(
 ): Promise<ModelPickerOutcome> {
   // Before the first render, exactly as `tui/index.tsx:38` does it: the rail is built
   // from `getAllProviders()`, so a custom or predefined endpoint must already be in the
-  // roster or it is simply not there to pick. Re-entry calls this again — idempotent by
+  // provider list or it is simply not there to pick. Re-entry calls this again — idempotent by
   // design. It is synchronous, and it runs before `createCliRenderer`, so it costs no
   // frame. (`claudish profile edit` reaches `selectModel` WITHOUT passing through
-  // `index.ts:590`, so without this line that path enumerates an unregistered roster.)
+  // `index.ts:590`, so without this line that path enumerates a provider list missing them.)
   ensureEndpointsRegistered();
 
   const source = await resolveDataSource();

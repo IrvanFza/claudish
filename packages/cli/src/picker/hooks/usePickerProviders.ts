@@ -1,9 +1,9 @@
 /**
- * usePickerProviders — the provider roster, and the credential probe that fills it
+ * usePickerProviders — the provider list, and the credential probe that fills it
  * in.
  *
  * `done/total` FROM THIS HOOK IS THE ONE DETERMINATE BAR IN THE PICKER, and it
- * earns the bar because both numbers are real: the roster is derived
+ * earns the bar because both numbers are real: the provider list is derived
  * synchronously from the provider definitions, so `total` is known before the
  * first probe starts, and `done` is work actually completed. Nothing else the
  * picker waits on has a denominator, and nothing else gets a meter.
@@ -15,7 +15,7 @@
  *
  * MEMBERSHIP IN THE STEADY STATE IS IDENTICAL TO TODAY'S. The old picker filtered
  * unready providers out entirely (`getProviderChoices`), which made the first
- * frame wait for every probe. This mounts the UNFILTERED roster: a provider with
+ * frame wait for every probe. This mounts the UNFILTERED provider list: a provider with
  * no credential contributes no MODEL rows (they would fail later at
  * `validateApiKeysForModels`, after the picker has closed) but it keeps its place
  * in the `p` dialog, with the env var it wants — so the absence is EXPLAINED
@@ -35,8 +35,8 @@ export interface ProviderState extends PickerProviderChoice {
 }
 
 export interface PickerProvidersState {
-  /** The roster as handed over — stable identity, for downstream memos. */
-  roster: PickerProviderChoice[];
+  /** The provider list as handed over — stable identity, for downstream memos. */
+  providerList: PickerProviderChoice[];
   /** Every pickable provider, in picker order, readiness included. */
   rows: ProviderState[];
   /** Ready providers — the ones that contribute model rows. */
@@ -56,17 +56,17 @@ export interface PickerProvidersState {
 }
 
 export function usePickerProviders(source: PickerDataSource): PickerProvidersState {
-  // The roster is resolved ONCE. `providerRoster()` is pure and derived, so calling
+  // The provider list is resolved ONCE. `providerList()` is pure and derived, so calling
   // it per render would be correct and still wrong: the rows would be new objects
   // every frame and every memo downstream would miss.
-  const roster = useMemo(() => source.providerRoster(), [source]);
+  const providerList = useMemo(() => source.providerList(), [source]);
   const notEnabledLocal = useMemo(() => source.notEnabledLocalProviders(), [source]);
   const [readiness, setReadiness] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let live = true;
     void (async () => {
-      for await (const [name, ok] of source.probeCredentials(roster.map((r) => r.value))) {
+      for await (const [name, ok] of source.probeCredentials(providerList.map((r) => r.value))) {
         if (!live) return;
         // One `setState` per settled probe, deliberately: ~30 of them over a second
         // or two is nowhere near the frame rate at which the mutable-store-plus-poll
@@ -81,9 +81,9 @@ export function usePickerProviders(source: PickerDataSource): PickerProvidersSta
       // `isAvailable` has no side effect worth draining.
       live = false;
     };
-  }, [source, roster]);
+  }, [source, providerList]);
 
-  const rows: ProviderState[] = roster.map((r) => {
+  const rows: ProviderState[] = providerList.map((r) => {
     const settled = readiness[r.value];
     return { ...r, readiness: settled === undefined ? "pending" : settled ? "ready" : "missing" };
   });
@@ -92,14 +92,14 @@ export function usePickerProviders(source: PickerDataSource): PickerProvidersSta
   const readyRows = rows.filter((r) => r.readiness === "ready");
 
   return {
-    roster,
+    providerList,
     rows,
     ready: readyRows,
     readySet: new Set(readyRows.map((r) => r.value)),
     missing: rows.filter((r) => r.readiness === "missing"),
     done,
-    total: roster.length,
-    probing: done < roster.length,
+    total: providerList.length,
+    probing: done < providerList.length,
     notEnabledLocal,
   };
 }

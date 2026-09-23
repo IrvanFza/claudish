@@ -276,13 +276,13 @@ export interface LoadTask {
  * THE SHAPE OF EACH ROW IS THE HONESTY CONTRACT, and it is chosen by what the
  * caller can measure, not by what looks busiest:
  *
- *   · The credential sweep has a real denominator — the roster is derived
+ *   · The credential sweep has a real denominator — the provider list is derived
  *     synchronously, so `done/total` is work done over work TOTAL. It gets the
  *     one determinate meter in the whole picker, and it EARNS it: a bounded value
  *     with real variance over time is the one thing a gradient bar is for.
  *   · The catalog warm races a 5 s wait against an 8 s refresh. Two numbers, so no
  *     single denominator a bar could honestly be drawn against — shimmer.
- *   · A roster discovery gets a deadline bar ONLY on the GET half, whose
+ *   · Discovering one provider's models gets a deadline bar ONLY on the GET half, whose
  *     `FETCH_TIMEOUT_MS` is published, and the label says `deadline` because a
  *     deadline is not progress. The three fetcher providers publish nothing, so
  *     they get elapsed and a shimmer. Inventing 5 000 ms for Devin would be a

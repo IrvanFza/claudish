@@ -187,17 +187,22 @@ describe("providerCountText — the tail says what you GET, never how it is fetc
     expect(providerCountText({ count: null, hasDiscovery: true, billing: "sub" })).toBe("");
   });
 
-  test("`asks its own roster` is gone — a subscription provider says `subscription models`", () => {
-    // The owner read the shipped row on a live run: `asks its own roster` describes
+  test("the rejected fetch-describing copy is gone — a subscription provider says `subscription models`", () => {
+    // The owner read the shipped row on a live run: the old copy described
     // claudish's fetch, not the user's plan. His replacement, verbatim: *"subscription
     // models"*. This is the case he was looking at — Grok Build, Devin, Antigravity,
-    // OpenCode Zen Go: flat-rate, no catalog entries, a roster of their own.
+    // OpenCode Zen Go: flat-rate, no catalog entries, a dynamic models catalog of their own.
     expect(providerCountText({ count: 0, hasDiscovery: true, billing: "sub" })).toBe(
       "subscription models"
     );
-    for (const billing of ["sub", "metered", "local"] as const) {
-      expect(providerCountText({ count: 0, hasDiscovery: true, billing })).not.toContain("roster");
-    }
+    // Exact copy for the other two billing kinds too. Stronger than asserting the
+    // old wording is absent, which any OTHER wrong wording would also pass.
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "metered" })).toBe(
+      "lists its own models"
+    );
+    expect(providerCountText({ count: 0, hasDiscovery: true, billing: "local" })).toBe(
+      "lists its own models"
+    );
   });
 
   test("and a NON-subscription provider gets its own words, because the other would be false", () => {
@@ -244,7 +249,7 @@ describe("providerCountText — the tail says what you GET, never how it is fetc
 describe("priceVaries — which view earns chips", () => {
   test("a flat-rate or local provider FIXES the column, so it gets no chips", () => {
     // `resolveProviderDisplayPrice` answers `SUB` for every row of a subscription
-    // roster. 49 identical fills stacked with no gap between rows is the failure the
+    // dynamic models catalog. 49 identical fills stacked with no gap between rows is the failure the
     // skill MEASURED — chips fusing into one solid rectangle with the labels
     // floating in it — and no amount of correct padding prevents it, because the
     // padding is not what makes them identical.
@@ -457,7 +462,7 @@ describe("row identity depends on the VIEW", () => {
   });
 
   test("ALL MODELS: the same model TWICE under ONE provider is still one row", () => {
-    // A provider's live roster and its catalog entries overlap, and that overlap
+    // A provider's dynamic models catalog and its catalog entries overlap, and that overlap
     // is not two routes — it is one route described twice.
     const kept = dedupeByProviderModel([
       row("kimi", "kimi-k3", "kimi@kimi-k3"),
@@ -467,7 +472,7 @@ describe("row identity depends on the VIEW", () => {
     expect(kept.map((r) => r.model.id)).toEqual(["kimi-k3", "kimi-k2.6"]);
   });
 
-  test("PROVIDER CATALOG: one row per model id, roster and catalog collapsed", () => {
+  test("PROVIDER CATALOG: one row per model id, dynamic models catalog and catalog collapsed", () => {
     // "and if we enter to provider catalog, not all models - then the model will
     // be just one". One route is in scope, so a second row would mean nothing —
     // even when the two sources spell the spec differently.
@@ -477,7 +482,7 @@ describe("row identity depends on the VIEW", () => {
       row("kimi", "kimi-k2.6", "kimi@kimi-k2.6"),
     ]);
     expect(kept.length).toBe(2);
-    // The FIRST wins, and the caller puts the live roster first — what the
+    // The FIRST wins, and the caller puts the dynamic models catalog first — what the
     // endpoint answered for THESE credentials beats what the catalog says.
     expect(kept[0]?.spec).toBe("kimi@kimi-k3");
   });
@@ -535,7 +540,11 @@ describe("discoveryNoticeContent", () => {
   test("`failed` is the ERROR tier; the three empty states are the NOTICE tier", () => {
     const rows: PickerDiscoveryOutcome[] = [
       { kind: "failed", failure: failure(), notice: ["⚠ x failed"], fallbackRows: [] },
-      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
+      {
+        kind: "empty-models-catalog",
+        failure: failure({ kind: "empty-models-catalog" }),
+        fallbackRows: [],
+      },
       { kind: "all-filtered", servedCount: 3, sampleIds: ["e"], fallbackRows: [] },
       { kind: "collapsed-empty", servedCount: 3, chatCount: 3, fallbackRows: [] },
     ];
@@ -559,9 +568,13 @@ describe("discoveryNoticeContent", () => {
     ).toBeNull();
   });
 
-  test("`empty-roster` and `all-filtered` say DIFFERENT things", () => {
+  test("`empty-models-catalog` and `all-filtered` say DIFFERENT things", () => {
     const empty = discoveryNoticeContent(
-      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
+      {
+        kind: "empty-models-catalog",
+        failure: failure({ kind: "empty-models-catalog" }),
+        fallbackRows: [],
+      },
       "Kimi"
     );
     const filtered = discoveryNoticeContent(
@@ -591,7 +604,7 @@ describe("discoveryNoticeContent", () => {
         failure: failure({ status: 401 }),
         notice: [
           "\n⚠ Kimi could not list its models: the API key was rejected (HTTP 401)\n",
-          "  Showing Kimi's cloud-catalog entries below — not its live roster.\n\n",
+          "  Showing Kimi's cloud-catalog entries below — not its live model list.\n\n",
         ],
         fallbackRows: [model(), model({ id: "b" }), model({ id: "c" }), model({ id: "d" })],
       },
@@ -599,7 +612,7 @@ describe("discoveryNoticeContent", () => {
     );
     const joined = c?.lines.join(" ") ?? "";
     expect(joined).toContain("The 4 rows below");
-    expect(joined).toContain("not Kimi's live roster");
+    expect(joined).toContain("not Kimi's live model list");
     expect(joined).toContain("may still fail");
     // The formatter's own shorter sentence is REPLACED, not printed beside it.
     expect(joined).not.toContain("Showing Kimi's cloud-catalog entries");
@@ -607,7 +620,11 @@ describe("discoveryNoticeContent", () => {
 
   test("no fallback list gets a next step instead of a provenance sentence", () => {
     const without = discoveryNoticeContent(
-      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
+      {
+        kind: "empty-models-catalog",
+        failure: failure({ kind: "empty-models-catalog" }),
+        fallbackRows: [],
+      },
       "Kimi"
     );
     expect(without?.lines.join(" ")).toContain("Press c");
@@ -619,7 +636,7 @@ describe("discoveryNoticeContent", () => {
       { kind: "failed", failure: failure(), notice: ["⚠ x"], fallbackRows: [model()] },
       "Kimi"
     );
-    expect(c?.title).toBe("live roster unavailable");
+    expect(c?.title).toBe("live model list unavailable");
   });
 
   test("the HTTP status becomes a badge and leaves the headline once", () => {
@@ -649,7 +666,7 @@ describe("discoveryNoticeContent", () => {
         });
         variants.push({ kind: "failed", failure: f, notice: ["⚠ x"], fallbackRows: [] });
         variants.push({
-          kind: "empty-roster",
+          kind: "empty-models-catalog",
           failure: { ...f, kind: "empty-models-catalog" },
           fallbackRows: [],
         });
@@ -671,7 +688,7 @@ describe("wrapWords / noticeRows", () => {
 
   test("no wrapped row exceeds the width", () => {
     const long =
-      "The 4 rows below are catalog entries, not Kimi / Moonshot's live roster — they do not confirm access, so launching one may still fail.";
+      "The 4 rows below are catalog entries, not Kimi / Moonshot's live model list — they do not confirm access, so launching one may still fail.";
     for (const w of [30, 48, 70]) {
       for (const line of wrapWords(long, w)) expect(line.length).toBeLessThanOrEqual(w);
     }
@@ -717,7 +734,7 @@ describe("mergeCredentialLines", () => {
       "⚠ Kimi could not list its models: the API key was rejected",
       "Check MOONSHOT_API_KEY (a value in your shell overrides stored credentials).",
       "Get a key: https://platform.moonshot.cn/",
-      "Showing Kimi's cloud-catalog entries below — not its live roster.",
+      "Showing Kimi's cloud-catalog entries below — not its live model list.",
     ];
     const merged = mergeCredentialLines(lines, 78);
     expect(merged.length).toBe(3);
