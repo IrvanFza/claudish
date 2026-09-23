@@ -39,6 +39,7 @@ import {
   resolveProviderDisplayPrice,
   resolveProviderExternalId,
 } from "../../model-selector.js";
+import { useMounted } from "../../tui/hooks/useMounted.js";
 import type { PickerDataSource, PickerProviderChoice } from "../PickerDataSource.js";
 import { priceLabel } from "../rows.js";
 
@@ -118,26 +119,28 @@ export function usePickerModels(
   const cache = useRef(new Map<string, PickerRow[]>());
   /** The warm is asked for ONCE per picker open, however often `enabled` flips. */
   const warmed = useRef(false);
+  const mounted = useMounted();
 
   useEffect(() => {
     if (!enabled || warmed.current) return;
     warmed.current = true;
-    let live = true;
     setPhase("loading");
     void (async () => {
       // Bounded, and documented never to throw. A cold cache is the only case
       // this actually waits for; a warm one returns on the first line.
       await source.ensureCatalog();
-      if (!live) return;
+      // RECORDED WHENEVER IT LANDS, not only while the model view is showing.
+      // The warm is asked for once, so a result dropped because the user stepped
+      // back mid-fetch (`a`, `esc`, `a` on a cold cache) was never asked for
+      // again, and `cloud catalog fetching…` stayed on screen for the rest of the
+      // run with the catalog already on disk. Only an UNMOUNT discards it.
+      if (!mounted.current) return;
       // The warm may have REPLACED the slim cache on disk, so anything derived
       // from it before now is stale by construction.
       cache.current.clear();
       setPhase("ready");
     })();
-    return () => {
-      live = false;
-    };
-  }, [source, enabled]);
+  }, [source, enabled, mounted]);
 
   // The ready set is re-derived per render by `usePickerProviders`, so it cannot
   // be a memo dependency directly — a new Set every frame would rebuild the whole

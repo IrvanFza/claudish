@@ -79,6 +79,8 @@ interface FakeOpts {
   descriptions?: Record<string, string>;
   /** Built-in local providers the profile config has not opted into. */
   notEnabledLocal?: string[];
+  /** Delay the catalog and description loads without leaving them pending forever. */
+  loadDelayMs?: number;
   /** Never settles — the in-flight states. */
   hang?: boolean;
 }
@@ -106,7 +108,11 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
     },
     ensureCatalog: (): Promise<void> => {
       calls.catalog++;
-      return opts.hang ? never : Promise.resolve();
+      return opts.hang
+        ? never
+        : opts.loadDelayMs === undefined
+          ? Promise.resolve()
+          : new Promise((resolve) => setTimeout(resolve, opts.loadDelayMs));
     },
     servedModels: (p) => opts.byProvider?.[p] ?? opts.served ?? [model()],
     discoverModelsCatalog: (p): Promise<PickerDiscoveryOutcome> => {
@@ -120,12 +126,15 @@ function fakeSource(opts: FakeOpts = {}): PickerDataSource & { calls: Calls } {
     },
     descriptions: (): Promise<DescriptionIndex> => {
       calls.descriptions++;
+      const index = {
+        get: (id: string) => descriptions[id],
+        size: Object.keys(descriptions).length,
+      };
       return opts.hang
         ? never
-        : Promise.resolve({
-            get: (id: string) => descriptions[id],
-            size: Object.keys(descriptions).length,
-          });
+        : opts.loadDelayMs === undefined
+          ? Promise.resolve(index)
+          : new Promise((resolve) => setTimeout(() => resolve(index), opts.loadDelayMs));
     },
   };
 }
@@ -1515,6 +1524,30 @@ describe("a fallback list says it is a fallback — and that it may not work", (
 // ── what the screen says while it is waiting ─────────────────────────────────────
 
 describe("the loading states", () => {
+  test("leaving the model view mid-load does not strand it — `a`, `esc`, `a` reaches the list", async () => {
+    // Both one-shot loads used to discard their result when Escape disabled the model
+    // view, leaving the second visit stuck on `fetching` with no request left to make.
+    const source = fakeSource({
+      loadDelayMs: 300,
+      served: [model({ id: "a" })],
+      descriptions: { a: "A sentence about model a." },
+    });
+    const d = await draw(<ModelPicker source={source} onDone={() => {}} />);
+    try {
+      await d.press(["a"]);
+      await d.press(["ESCAPE"]);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await d.press(["a"]);
+      await d.until(listPainted);
+      const frame = d.recapture().text;
+      expect(joined(frame)).not.toContain("fetching");
+      expect(source.calls.catalog).toBe(1);
+      expect(flat(frame)).toContain("A sentence about model a.");
+    } finally {
+      d.destroy();
+    }
+  });
+
   test("startup names the ONE thing it is doing, and claims no other", async () => {
     // The screen the owner rejected said `cloud catalog fetching…` beside a `0/11 providers`
     // discovery meter, before he had asked for either. Startup now probes credentials

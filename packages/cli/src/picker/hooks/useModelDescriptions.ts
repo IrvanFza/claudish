@@ -19,6 +19,7 @@ import {
   type DescriptionIndex,
   emptyDescriptionIndex,
 } from "../../providers/model-descriptions.js";
+import { useMounted } from "../../tui/hooks/useMounted.js";
 import type { PickerDataSource } from "../PickerDataSource.js";
 
 export function useModelDescriptions(
@@ -35,24 +36,24 @@ export function useModelDescriptions(
   const [index, setIndex] = useState<DescriptionIndex>(emptyDescriptionIndex);
   /** Asked for ONCE per picker open, however often `enabled` flips. */
   const asked = useRef(false);
+  const mounted = useMounted();
 
   useEffect(() => {
     if (!enabled || asked.current) return;
     asked.current = true;
-    let live = true;
     void source.descriptions().then(
       (loaded) => {
-        if (live) setIndex(loaded);
+        // Kept whenever it lands. It is asked for once, so dropping it because
+        // the user left the model view mid-fetch left every description blank
+        // for the rest of the run. Only an unmount discards it.
+        if (mounted.current) setIndex(loaded);
       },
       () => {
         // Documented never to reject; guarded anyway. A missing sentence must
         // never be able to take the picker down.
       }
     );
-    return () => {
-      live = false;
-    };
-  }, [source, enabled]);
+  }, [source, enabled, mounted]);
 
   return index;
 }
