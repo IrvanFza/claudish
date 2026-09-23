@@ -49,7 +49,7 @@ import {
   getProviderByName,
 } from "./providers/provider-definitions.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
-import { isChatCapable } from "./providers/transport/probe-discovery.js";
+import { isReportedChatCapable } from "./providers/transport/probe-discovery.js";
 
 /**
  * Model data structure
@@ -1335,8 +1335,12 @@ export async function buildDiscoveredModelRows(
   displayName: string,
   catalog: CatalogClient
 ): Promise<ModelInfo[]> {
+  // `m.reported` carries the provider's own chat/not-chat statement. Judging the
+  // bare `m.id` alone discarded it, and once `unknown` stopped counting as chat
+  // that emptied the picker for every provider whose ids the cloud catalog does
+  // not list verbatim: Ollama 19 → 1, Devin 247 → 3, Antigravity 21 → 7.
   const discovered = rankDiscoveredModels(await discoverProviderModels(provider)).filter((m) =>
-    isChatCapable(m.id)
+    isReportedChatCapable(m.id, m.reported)
   );
   if (discovered.length === 0) return [];
 

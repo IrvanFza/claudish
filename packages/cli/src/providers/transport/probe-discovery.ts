@@ -58,7 +58,7 @@ export type ReportedCapability = "chat" | "not-chat" | undefined;
  * means it answers chat turns; `embedding` means it does not. An empty or
  * missing array is a silence, never a denial — older daemons omit the field.
  */
-function ollamaReported(row: { capabilities?: unknown }): ReportedCapability {
+export function ollamaReported(row: { capabilities?: unknown }): ReportedCapability {
   const caps = Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [];
   if (caps.includes("completion")) return "chat";
   if (caps.includes("embedding")) return "not-chat";

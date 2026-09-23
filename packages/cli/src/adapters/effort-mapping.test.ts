@@ -435,6 +435,20 @@ describe("Qwen enable_thinking + thinking_budget", () => {
     );
   });
 
+  test("a laddered optional model maps minimal to the 1024-token floor below low", () => {
+    const minimal = stubbedQwenPrep("qwen3-laddered", OPTIONAL_REASONING_LADDER, {
+      output_config: { effort: "minimal" },
+    });
+    const low = stubbedQwenPrep("qwen3-laddered", OPTIONAL_REASONING_LADDER, {
+      output_config: { effort: "low" },
+    });
+
+    expect(minimal.enable_thinking).toBe(true);
+    expect(minimal.thinking_budget).toBe(1024);
+    expect(low.thinking_budget).toBe(2048);
+    expect(minimal.thinking_budget).toBeLessThan(low.thinking_budget);
+  });
+
   test("max omits the budget (model max)", () => {
     const out = qwenPrep("qwen3-max", { output_config: { effort: "max" } });
     expect(out.enable_thinking).toBe(true);
@@ -626,6 +640,27 @@ describe("GLM-5.2 catalog-driven reasoning_effort", () => {
     expect(out.reasoning_effort).toBe("max");
   });
 
+  test("a pinned minimal is clamped to GLM-5.2's advertised high floor", () => {
+    const format = new StubbedGLM("glm-5.2", CATALOG["glm-5.2"]);
+    format.setEffortOverride("minimal");
+
+    const out = format.prepareRequest({}, { output_config: { effort: "max" } });
+
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.reasoning_effort).toBe("high");
+    expect(out.reasoning_effort).not.toBe("minimal");
+  });
+
+  test("a pinned depth level remains a verbatim escape hatch", () => {
+    const format = new StubbedGLM("glm-5.2", CATALOG["glm-5.2"]);
+    format.setEffortOverride("xhigh");
+
+    const out = format.prepareRequest({}, { output_config: { effort: "minimal" } });
+
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.reasoning_effort).toBe("xhigh");
+  });
+
   test("glm-5.2-fast has the same effort mapping as glm-5.2", () => {
     for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
       const regular = stubbedGlmPrep("glm-5.2", CATALOG["glm-5.2"], {
@@ -694,6 +729,39 @@ describe("shared reasoning-off rule on the GLM wire", () => {
     expect(minimal.thinking).toEqual({ type: "disabled" });
     // The matching toggle results are deliberate, not a collapse of minimal into none.
     expect(minimal.thinking).not.toEqual(ladderMinimal.thinking);
+  });
+
+  test("an Anthropic toggle whose lowest advertised rung is none turns minimal off", () => {
+    const out = stubbedGlmPrep(
+      "sakana-namazu",
+      {
+        supported: true,
+        control: "toggle",
+        mandatory: false,
+        efforts: ["high", "none"],
+      },
+      { output_config: { effort: "minimal" } },
+      {},
+      "anthropic-sse"
+    );
+
+    expect(out.thinking).toEqual({ type: "disabled" });
+  });
+
+  test("an Anthropic mandatory ladder never emits the off switch for none or minimal", () => {
+    for (const effort of ["none", "minimal"] as const) {
+      const out = stubbedGlmPrep(
+        "glm-5.3",
+        MANDATORY_REASONING_LADDER,
+        { output_config: { effort } },
+        {},
+        "anthropic-sse"
+      );
+
+      expect(out.thinking).toEqual({ type: "enabled" });
+      expect(out.thinking).not.toEqual({ type: "disabled" });
+      expect(out.output_config?.effort).toBe("low");
+    }
   });
 });
 

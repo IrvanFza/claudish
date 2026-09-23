@@ -19,6 +19,7 @@ import {
 } from "./handlers/shared/remote-provider-types.js";
 import {
   type ModelInfo,
+  buildDiscoveredModelRows,
   buildExplicitModelSpec,
   buildProviderChoices,
   getProviderFilterAliases,
@@ -30,13 +31,21 @@ import {
 } from "./model-selector.js";
 import { createCatalogClient } from "./providers/model-catalog.js";
 import {
+  type DiscoveredModel,
   type DiscoveryFailureKind,
   discoverProviderModels,
   getDiscoveryFailure,
   invalidateModelDiscovery,
+  registerModelDiscoveryFetcher,
 } from "./providers/model-discovery.js";
 import { parseModelSpec } from "./providers/model-parser.js";
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
+import { clearRuntimeRegistry, registerRuntimeProvider } from "./providers/runtime-providers.js";
+import {
+  _clearChatCapabilityIndex,
+  ollamaReported,
+} from "./providers/transport/probe-discovery.js";
+import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
 
 // ─── pickerProviderToFirebaseSlug ────────────────────────────────────────────
 
@@ -163,6 +172,148 @@ describe("warnDiscoveryFailure", () => {
       expect(output.stdoutCalls).toBe(0);
     }
   );
+});
+
+describe("provider-reported chat capability in discovered model callers", () => {
+  const provider = "reported-capability-test";
+  const format = "reported-capability-test-format";
+  let discovered: DiscoveredModel[] = [];
+
+  const catalog = createCatalogClient({
+    getModelsByProvider: async () => {
+      throw new Error("local discovered rows must not query the cloud catalog");
+    },
+    readSlimCache: () => null,
+  });
+
+  beforeEach(() => {
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+    _clearChatCapabilityIndex();
+    discovered = [];
+
+    const localTemplate = getProviderByName("ollama")!;
+    registerRuntimeProvider({
+      ...localTemplate,
+      name: provider,
+      displayName: "Reported Capability Test",
+      shortcuts: [],
+      legacyPrefixes: [],
+      modelDiscovery: {
+        path: "",
+        format: format as "ollama-tags",
+      },
+    });
+    registerModelDiscoveryFetcher(format, async () => discovered);
+  });
+
+  afterEach(() => {
+    invalidateModelDiscovery();
+    clearRuntimeRegistry();
+    _clearChatCapabilityIndex();
+  });
+
+  test("buildDiscoveredModelRows keeps catalog-unknown rows reported as chat", async () => {
+    discovered = [
+      { id: "swe-1-7-medium", reported: "chat" },
+      { id: "gemini-3.6-flash-high", reported: "chat" },
+      { id: "llama3.2:3b-q4_K_M", reported: "chat" },
+    ];
+
+    const rows = await buildDiscoveredModelRows(provider, "Reported Capability Test", catalog);
+
+    expect(rows.map((row) => row.id).sort()).toEqual(
+      ["swe-1-7-medium", "gemini-3.6-flash-high", "llama3.2:3b-q4_K_M"].sort()
+    );
+  });
+
+  test("buildDiscoveredModelRows drops a row reported as not-chat", async () => {
+    discovered = [{ id: "nomic-embed-text:latest", reported: "not-chat" }];
+
+    expect(await buildDiscoveredModelRows(provider, "Reported Capability Test", catalog)).toEqual(
+      []
+    );
+  });
+
+  test("buildDiscoveredModelRows still drops a catalog-unknown row with no report", async () => {
+    discovered = [{ id: "granite3.2-vision:2b-instruct-q4_K_M" }];
+
+    expect(await buildDiscoveredModelRows(provider, "Reported Capability Test", catalog)).toEqual(
+      []
+    );
+  });
+
+  test("discoverProviderProbeModel picks from catalog-unknown rows reported as chat", async () => {
+    discovered = [
+      { id: "swe-1-7-medium", reported: "chat" },
+      { id: "gemini-3.6-flash-high", reported: "chat" },
+      { id: "llama3.2:3b-q4_K_M", reported: "chat" },
+    ];
+
+    const outcome = await discoverProviderProbeModel(provider, "Reported Capability Test");
+
+    expect(outcome.model).not.toBeNull();
+    expect(discovered.map((row) => row.id)).toContain(outcome.model!);
+    expect(outcome.reason).toBeUndefined();
+  });
+
+  test("discoverProviderProbeModel still rejects a catalog-unknown row with no report", async () => {
+    discovered = [{ id: "granite3.2-vision:2b-instruct-q4_K_M" }];
+
+    expect(await discoverProviderProbeModel(provider, "Reported Capability Test")).toEqual({
+      model: null,
+      reason: "no chat-capable model among the 1 listed by Reported Capability Test",
+    });
+  });
+});
+
+describe("Ollama discovery capability reports", () => {
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    invalidateModelDiscovery("ollama");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    invalidateModelDiscovery("ollama");
+  });
+
+  test("the Ollama fetcher carries completion reports and preserves an absent capability", async () => {
+    globalThis.fetch = mock(
+      async () =>
+        new Response(
+          JSON.stringify({
+            models: [
+              { name: "llama3.2:3b-q4_K_M", capabilities: ["completion", "tools"] },
+              { name: "granite3.2-vision:2b-instruct-q4_K_M" },
+            ],
+          }),
+          { status: 200 }
+        )
+    ) as unknown as typeof fetch;
+
+    expect(await discoverProviderModels("ollama")).toEqual([
+      {
+        id: "llama3.2:3b-q4_K_M",
+        displayName: "llama3.2:3b-q4_K_M",
+        supportsTools: true,
+        reported: "chat",
+      },
+      {
+        id: "granite3.2-vision:2b-instruct-q4_K_M",
+        displayName: "granite3.2-vision:2b-instruct-q4_K_M",
+        supportsTools: false,
+        reported: undefined,
+      },
+    ]);
+  });
+
+  test("ollamaReported maps completion, embedding, and silence", () => {
+    expect(ollamaReported({ capabilities: ["completion", "tools"] })).toBe("chat");
+    expect(ollamaReported({ capabilities: ["embedding"] })).toBe("not-chat");
+    expect(ollamaReported({})).toBeUndefined();
+  });
 });
 
 describe("buildExplicitModelSpec", () => {

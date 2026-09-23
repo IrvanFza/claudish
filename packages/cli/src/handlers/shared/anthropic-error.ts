@@ -187,7 +187,14 @@ export function extractUpstreamStatus(body: string): number | undefined {
  * per the SSE specification.
  */
 export function sseDataPayload(body: string): string | undefined {
-  if (!/(^|\s)(event|data):/.test(body)) return undefined;
+  // Anchored to the START of the text. An SSE frame begins with its field name;
+  // an ordinary error sentence merely CONTAINS " data:", and the unanchored
+  // detector sliced such a sentence at that point: `"Missing key in request data:
+  // messages"` came back as `"messages"`, and `"Invalid content block: data: URLs
+  // are not supported"` lost everything before "URLs". That cut-down text is what
+  // Claude Code shows, so the reader got a fragment instead of the provider's
+  // sentence. Caught in release review for v10.0.2.
+  if (!/^\s*(event|data):/.test(body)) return undefined;
 
   // Shape 1: a real frame, still carrying its line breaks. Multiple `data:`
   // lines concatenate, per the specification.

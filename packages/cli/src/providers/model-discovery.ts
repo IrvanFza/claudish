@@ -29,6 +29,7 @@ import { VERSION } from "../version.js";
 import { compareByReleaseDateDesc } from "./model-ordering.js";
 import type { ModelOffer, ModelsCatalogAxis, ModelsCatalogEntry } from "./model-resolvers/types.js";
 import { getProviderByName } from "./provider-definitions.js";
+import type { ReportedCapability } from "./transport/probe-discovery.js";
 
 /** A model as reported by the provider's own live endpoint. */
 export interface DiscoveredModel {
@@ -72,6 +73,21 @@ export interface DiscoveredModel {
    * "newest first".
    */
   ignoreCatalogReleaseDate?: boolean;
+  /**
+   * What the PROVIDER said about whether this model answers chat turns, when it
+   * said anything. Set by the discovery fetcher that holds the evidence, and read
+   * by every caller that filters a dynamic models catalog for chat models.
+   *
+   * It exists because those callers used to strip each row to its bare `id`
+   * before judging it, and a bare id judged alone is `"unknown"` for exactly the
+   * ids a provider invents: Ollama's local `name:tag` builds, Devin's
+   * knob-encoded uids (`swe-1-7-medium`), Antigravity's tuned variants
+   * (`gemini-3.6-flash-high`). Once `unknown` stopped counting as chat, those
+   * rows vanished from the picker — measured 2026-09-23: Ollama 19 → 1,
+   * Devin 247 → 3, Antigravity 21 → 7 — although every one of those providers had
+   * stated what its models were. `undefined` is a silence and stays one.
+   */
+  reported?: ReportedCapability;
   /**
    * Variant metadata, for providers that encode knobs INTO their model ids.
    *

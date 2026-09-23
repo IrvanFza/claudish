@@ -289,16 +289,46 @@ describe("ensureAnthropicErrorFormat", () => {
 });
 
 describe("extractProviderMessage", () => {
-  it("unwraps a nested SSE frame while preserving an ordinary string", () => {
+  it("preserves an ordinary string", () => {
     expect(extractProviderMessage("plain error")).toBe("plain error");
-    expect(
-      extractProviderMessage({
+  });
+
+  it.each([
+    [
+      "multi-line",
+      'event:error\ndata:{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}',
+    ],
+    [
+      "flattened",
+      'event:error data:{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}',
+    ],
+    [
+      "flattened inside error.message",
+      {
         error: {
           message:
             'event:error data:{"code":"AccessDenied","message":"Model access denied.","request_id":"x"}',
         },
+      },
+    ],
+  ])("unwraps a real %s SSE frame", (_shape, body) => {
+    expect(extractProviderMessage(body)).toBe("Model access denied.");
+  });
+
+  it("does not truncate a FastAPI detail sentence containing data:", () => {
+    expect(extractProviderMessage({ detail: "Missing key in request data: messages" })).toBe(
+      "Missing key in request data: messages"
+    );
+  });
+
+  it("does not truncate a nested error message containing a data: URL reference", () => {
+    expect(
+      extractProviderMessage({
+        error: {
+          message: "Invalid content block: data: URLs are not supported for this model",
+        },
       })
-    ).toBe("Model access denied.");
+    ).toBe("Invalid content block: data: URLs are not supported for this model");
   });
 
   it("pulls error.message from OpenAI-style bodies", () => {
