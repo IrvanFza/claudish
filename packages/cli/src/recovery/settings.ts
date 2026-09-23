@@ -300,3 +300,48 @@ export function retryWatchdogEnv(opts: { paneEligible: boolean }): Record<string
   // have already drifted once.
   return recoverySurfaceAllowed() ? { CLAUDE_CODE_RETRY_WATCHDOG: "1" } : {};
 }
+
+/** Set alongside the watchdog to record that CLAUDISH set it, not the user. */
+export const RETRY_WATCHDOG_OWNER_ENV = "CLAUDISH_SET_RETRY_WATCHDOG";
+
+/**
+ * Apply the watchdog decision to the environment Claude Code will receive.
+ *
+ * ── WHY `retryWatchdogEnv` RETURNING `{}` WAS NOT ENOUGH ────────────────────
+ *
+ * The child environment starts as a copy of claudish's own. A wrapped session
+ * exports the watchdog to Claude Code, every process Claude Code starts
+ * inherits it, and a NESTED claudish — `claudish -p` run from the Bash tool, or
+ * the child `claudish` the MCP server spawns for `team` and `run_prompt` —
+ * copied it straight through, because failing all three gates only meant
+ * adding nothing. A headless nested run then looped ~300 times on every 503
+ * with no banner anywhere: the exact cost the gates exist to refuse.
+ *
+ * So a failed gate now REMOVES a watchdog that a parent claudish exported.
+ * It cannot remove every inherited one: a user who set the variable in their
+ * own shell chose it, and that is theirs to keep. The owner marker is what
+ * tells the two apart — an inherited watchdog WITH the marker is a claudish's,
+ * and one without is the user's.
+ *
+ * The marker is set only when claudish INTRODUCES the watchdog. Stamped on top
+ * of a value the user already set, it would claim the user's choice as
+ * claudish's, and a deeper nested launch whose gates fail would then delete
+ * it. A user's watchdog therefore stays unmarked all the way down the tree.
+ */
+export function applyRetryWatchdog(
+  env: Record<string, string | undefined>,
+  opts: { paneEligible: boolean }
+): void {
+  const grant = retryWatchdogEnv(opts);
+  if (grant.CLAUDE_CODE_RETRY_WATCHDOG) {
+    const usersOwn =
+      env.CLAUDE_CODE_RETRY_WATCHDOG !== undefined && env[RETRY_WATCHDOG_OWNER_ENV] !== "1";
+    Object.assign(env, grant);
+    if (!usersOwn) env[RETRY_WATCHDOG_OWNER_ENV] = "1";
+    return;
+  }
+  if (env[RETRY_WATCHDOG_OWNER_ENV] === "1") {
+    delete env.CLAUDE_CODE_RETRY_WATCHDOG;
+    delete env[RETRY_WATCHDOG_OWNER_ENV];
+  }
+}

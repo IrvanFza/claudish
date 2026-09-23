@@ -27,7 +27,7 @@ import { parseModelSpec } from "./providers/model-parser.js";
 import { getProviderByName } from "./providers/provider-definitions.js";
 import { route } from "./providers/routing-rules.js";
 import { installRecoveryUi, shutdownRecoveryUi } from "./recovery/magmux-ui.js";
-import { recoverySurfaceAllowed, retryWatchdogEnv } from "./recovery/settings.js";
+import { applyRetryWatchdog, recoverySurfaceAllowed } from "./recovery/settings.js";
 import { setClaudeCodeRunning } from "./telemetry.js";
 import { beginTerminalIsolation } from "./terminal-isolation.js";
 import { getThemeMode } from "./theme/theme-mode.js";
@@ -1648,8 +1648,10 @@ export async function runClaudeWithProxy(
   // derived deadline and then hands the retry back as a 503; how far recovery
   // actually reaches is decided by Claude Code's willingness to re-ask, which
   // this sets. The arithmetic, the accepted cost, the side effect on claudish's
-  // OTHER 503s and all three gates are stated at `retryWatchdogEnv()`.
-  Object.assign(env, retryWatchdogEnv({ paneEligible: paneCapability.kind !== "none" }));
+  // OTHER 503s and all three gates are stated at `retryWatchdogEnv()`; why a
+  // failed gate also REMOVES one a parent claudish exported is at
+  // `applyRetryWatchdog()`.
+  applyRetryWatchdog(env, { paneEligible: paneCapability.kind !== "none" });
 
   // Provider display name, best-effort and FREE. Only an explicit `provider@model`
   // spec names its provider without routing, and route() would touch credentials /
