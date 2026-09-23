@@ -67,6 +67,7 @@ import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import {
   buildCatalogChain,
   buildRoutingChain,
+  effectiveDefaultProvider,
   hasCredentialsForProvider,
   loadRoutingRules,
   matchRoutingRule,
@@ -1560,9 +1561,10 @@ async function probeModelRouting(
       // would be the second copy of a routing decision, and the two would
       // disagree the first time either changed. `--probe` still owns the
       // credential-provenance display below, which is why it builds a chain at
-      // all instead of calling `route()`.
+      // all instead of calling `route()`. The fallback hop is `route()`'s too:
+      // `effectiveDefaultProvider()` reads the env variable before the config.
       return {
-        routes: buildCatalogChain(parsed.model, loadConfig().defaultProvider)
+        routes: buildCatalogChain(parsed.model, effectiveDefaultProvider())
           .routes as FallbackRoute[],
         source: "auto-chain" as const,
         matchedPattern: undefined,

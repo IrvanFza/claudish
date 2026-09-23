@@ -9,7 +9,15 @@ import { catalogRouteForProvider } from "./catalog-route-bindings.js";
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +37,7 @@ import {
 import "./model-discovery-builtins.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
+  type RoutePlan,
   buildRoutingChain,
   loadRoutingRules,
   matchRoutingRule,
@@ -41,6 +50,12 @@ import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-provide
 const keychainGuardAtFileLoad = process.env.CLAUDISH_DISABLE_KEYCHAIN;
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
+const STAGE4_CATALOG_FIXTURE = join(
+  import.meta.dir,
+  "..",
+  "test-fixtures",
+  "stage4-default-provider-catalog.json"
+);
 function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
   return _resetCatalogClient;
@@ -127,6 +142,61 @@ function makeTempCatalog(
   };
   writeAllModelsCache(cache, path);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function routeInSandbox(defaultProvider: string): RoutePlan {
+  const home = mkdtempSync(join(tmpdir(), "claudish-default-provider-route-"));
+  const configDir = join(home, ".claudish");
+  mkdirSync(configDir, { recursive: true });
+  copyFileSync(STAGE4_CATALOG_FIXTURE, join(configDir, "cloud-models-catalog-v3.json"));
+  writeFileSync(
+    join(configDir, "config.json"),
+    JSON.stringify({
+      version: "1.0.0",
+      defaultProfile: "default",
+      profiles: {},
+      customEndpoints: {
+        x: {
+          kind: "simple",
+          url: "https://stage4-x.invalid/v1",
+          format: "openai",
+          apiKey: "stage4-test-key",
+        },
+      },
+    }),
+    "utf8"
+  );
+
+  const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
+  const script = `
+    const { route } = await import(${JSON.stringify(routingModuleUrl)});
+    const plan = await route("no-such-model-xyz");
+    process.stdout.write(JSON.stringify(plan));
+  `;
+  const env: Record<string, string> = {
+    HOME: home,
+    PATH: process.env.PATH ?? "",
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    CLAUDISH_DEFAULT_PROVIDER: defaultProvider,
+    CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_DISABLE_KEYCHAIN: "1",
+    CLAUDISH_DISABLE_OP: "1",
+  };
+
+  try {
+    const result = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: join(import.meta.dir, "../../../.."),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = result.stdout.toString();
+    const stderr = result.stderr.toString();
+    expect(result.exitCode, stderr || stdout).toBe(0);
+    return JSON.parse(stdout) as RoutePlan;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1166,61 @@ describe("route() with defaultProvider", () => {
   test("defaultProvider with no credentials → still no-route if rest of chain also lacks creds", async () => {
     const plan = await route("gpt-5", { "gpt-*": ["openai"] }, "xai");
     expect(plan.kind).toBe("no-route");
+  });
+});
+
+describe("route() reads the resolved defaultProvider only without overrides", () => {
+  test("an env provider registered by sandbox config is the fallback position", () => {
+    const plan = routeInSandbox("x");
+    expect(plan.kind).toBe("ok");
+    if (plan.kind !== "ok") return;
+    expect([plan.primary.provider, ...plan.fallbacks.map((entry) => entry.provider)]).toEqual([
+      "x",
+    ]);
+  });
+
+  test("an empty env value produces the catalog-empty no-route", () => {
+    expect(routeInSandbox("")).toEqual({
+      kind: "no-route",
+      reason: 'No provider in the catalog serves "no-such-model-xyz".',
+      hint:
+        'No credentials found for "no-such-model-xyz". Options:\n' +
+        "  Use:  claudish --model or@no-such-model-xyz  (route via OpenRouter)",
+    });
+  });
+
+  test("rules passed without a third argument keep the openrouter guard", async () => {
+    const priorDefault = process.env.CLAUDISH_DEFAULT_PROVIDER;
+    const priorOpenRouter = process.env.OPENROUTER_API_KEY;
+    const priorKeychainGuard = process.env.CLAUDISH_DISABLE_KEYCHAIN;
+    const priorOpGuard = process.env.CLAUDISH_DISABLE_OP;
+    process.env.CLAUDISH_DEFAULT_PROVIDER = "x";
+    process.env.OPENROUTER_API_KEY = "stage4-openrouter-test-key";
+    process.env.CLAUDISH_DISABLE_KEYCHAIN = "1";
+    process.env.CLAUDISH_DISABLE_OP = "1";
+    credentials.invalidate();
+    ensureEndpointsRegistered({
+      config: { version: "1.0.0", defaultProfile: "default", profiles: {} },
+      force: true,
+    });
+
+    try {
+      const plan = await route("no-such-model-xyz", {}, undefined, STAGE4_CATALOG_FIXTURE);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("openrouter");
+      expect(plan.fallbacks).toEqual([]);
+    } finally {
+      if (priorDefault === undefined) delete process.env.CLAUDISH_DEFAULT_PROVIDER;
+      else process.env.CLAUDISH_DEFAULT_PROVIDER = priorDefault;
+      if (priorOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = priorOpenRouter;
+      if (priorKeychainGuard === undefined) delete process.env.CLAUDISH_DISABLE_KEYCHAIN;
+      else process.env.CLAUDISH_DISABLE_KEYCHAIN = priorKeychainGuard;
+      if (priorOpGuard === undefined) delete process.env.CLAUDISH_DISABLE_OP;
+      else process.env.CLAUDISH_DISABLE_OP = priorOpGuard;
+      credentials.invalidate();
+    }
   });
 });
 

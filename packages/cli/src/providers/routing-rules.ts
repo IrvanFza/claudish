@@ -1,6 +1,7 @@
 import { resolveSubscriptionRouting } from "../adapters/model-catalog.js";
 import { credentials } from "../auth/credentials/authority.js";
 import type { ReadinessResult } from "../auth/credentials/types.js";
+import { resolveDefaultProvider } from "../default-provider.js";
 import { isSubscriptionProvider } from "../handlers/shared/remote-provider-types.js";
 import { log, logStderr } from "../logger.js";
 import type { RecommendedModelsDoc } from "../model-loader.js";
@@ -379,6 +380,19 @@ function fallbackProviderFor(defaultProvider: string | undefined): string | null
  */
 export const DEFAULT_FALLBACK_PROVIDER = "openrouter";
 
+/**
+ * The `defaultProvider` this process routes with when no caller named one:
+ * `CLAUDISH_DEFAULT_PROVIDER`, then `defaultProvider` in the config file, then
+ * `openrouter` (`resolveDefaultProvider`). May be `""`, which disables the
+ * fallback hop.
+ *
+ * Read per call, like the rules. `route()` without overrides and `--probe`'s
+ * chain both read it here, so the two cannot name different fallback hops.
+ */
+export function effectiveDefaultProvider(): string {
+  return resolveDefaultProvider({ config: loadConfig(), env: process.env }).provider;
+}
+
 /** A chain assembled from the catalog, plus whether a catalog could be read. */
 export interface CatalogChain {
   routes: Route[];
@@ -731,8 +745,9 @@ function wireIdOf(route: Route): string {
  *      → no-route with hints. See `routeBare`.
  *
  * Rules and the default provider are loaded fresh each call (via `loadRoutingRules()`
- * and `loadConfig()`) unless overrides are supplied. Tests should pass overrides
- * to avoid disk lookups.
+ * and `effectiveDefaultProvider()`, which reads CLAUDISH_DEFAULT_PROVIDER and then
+ * the config) unless overrides are supplied. Tests should pass overrides to avoid
+ * disk and environment lookups.
  */
 /**
  * Rewrite a dash-slugified GLM version to its canonical dotted form
@@ -788,15 +803,17 @@ export async function route(
 
   const rules = rulesOverride ?? loadRoutingRules();
   // When tests pass an explicit `rulesOverride`, treat the rule set as the
-  // authoritative source of truth and do not read `loadConfig().defaultProvider`
-  // off disk — that would leak the host machine's config into unit tests.
-  // Production callers (via `loadRoutingRules()`) get the disk-loaded default.
+  // authoritative source of truth and read the default provider from neither the
+  // environment nor the config file — either would leak this machine's setting
+  // into unit tests. A caller that passes rules and wants a fallback
+  // passes it as the third argument. Callers with no overrides
+  // get `effectiveDefaultProvider()`: the env variable, then the config.
   const defaultProvider =
     defaultProviderOverride !== undefined
       ? defaultProviderOverride
       : rulesOverride !== undefined
         ? undefined
-        : loadConfig().defaultProvider;
+        : effectiveDefaultProvider();
   return routeBare(
     normalizeGlmSlug(parsed.model),
     parsed.provider,
