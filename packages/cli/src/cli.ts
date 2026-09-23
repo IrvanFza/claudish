@@ -1984,21 +1984,12 @@ ${h("MODEL ROUTING")}
   ${bold("Provider shortcuts:")} ${dim("(<shortcut>@<model>)")}
 ${shortcutTable}
 
-  ${bold("Native auto-detection")} ${dim("(when no provider specified):")}
-    ${yellow("google/*, gemini-*")}      ${dim("->")} Google API
-    ${yellow("openai/*, gpt-*, o1-*")}   ${dim("->")} OpenAI API
-    ${yellow("x-ai/*, grok-*")}          ${dim("->")} xAI
-    ${yellow("meta-llama/*, llama-*")}   ${dim("->")} OllamaCloud
-    ${yellow("minimax/*, abab-*")}       ${dim("->")} MiniMax API
-    ${yellow("moonshot/*, kimi-*")}      ${dim("->")} Kimi API
-    ${yellow("zhipu/*, glm-*")}          ${dim("->")} GLM API
-    ${yellow("sakana/*, fugu-*")}        ${dim("->")} Sakana Fugu
-    ${yellow("poe:*")}                   ${dim("->")} Poe
-    ${yellow("anthropic/*, claude-*")}   ${dim("->")} Native Anthropic
-    ${yellow("(unknown vendor/)")}       ${dim("->")} Error (use openrouter@vendor/model)
+  ${bold("Bare names")} are routed from the cloud models catalog: subscriptions first, then the vendor's own
+  API, then gateways, then the fallback. ${green("claudish --probe")} ${yellow("<model>")} shows the chain a request uses.
 
   ${dim("A defaultProvider (--default-provider / CLAUDISH_DEFAULT_PROVIDER / config) is the last hop for")}
   ${dim('bare names that match no rule. "" disables it.')}
+  ${dim("Claude Code's own names (opus, sonnet, claude-*) are served on Claude Code's own auth.")}
 
 ${h("OPTIONS")}
   ${green("-i, --interactive")}        Run in interactive mode (default when no prompt given)
@@ -2057,9 +2048,9 @@ ${h("MODEL DISCOVERY")}
   ${green("-s, --models-search")} ${yellow("<query>")}             Fuzzy search: id, brand synonyms (chatgpt,
                                           ${dim("claude, grok), gateways (zen, oc, codex), caps")}
   ${green("--models-top")}                          Curated recommended models (flagship + fast)
-  ${green("--probe")} ${yellow("<models...>")}                    Probe each provider in the fallback chain with
+  ${green("--probe")} ${yellow("<models...>")}                    Show each model's routing chain and send each hop
                                           ${dim("a real 1-token request (may incur tiny cost)")}
-  ${green("--no-probe")}                            Skip live requests, show static chain only
+  ${green("--no-probe")}                            Show the routing chain without the 1-token requests
   ${green("--probe-timeout")} ${yellow("<secs>")}                 Per-link timeout for live probes (default: 40)
   ${green("--models-refresh")}                      Force refresh the slim model catalog from Firebase
   ${green("--models-skip-update")}                  Skip the launcher catalog warm step (offline)
