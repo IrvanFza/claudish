@@ -30,11 +30,13 @@ Deliberately **not** adopted:
 
 ## What shipped
 
-16 of 17 items. Item 15 (Responses reasoning replay) was **deferred**: `buildPayload` runs at
-`composed-handler.ts:470` while credentials resolve at `:594`, so the credential fingerprint
-cannot exist at that layer, and `conversationKey()` returns a process-wide `randomBytes(16)`
-with no session id — so under `serve` a foreign reasoning blob would have **validated**. The
-design claimed a silent drop; the real behaviour would have been a silent accept.
+16 of 17 items. Item 15 (Responses reasoning replay) was **deferred**: `buildPayload` ran at
+`composed-handler.ts:470` while credentials resolved at `:594` (v9.4.0 line numbers; `:497` and
+`:621` today), so the credential fingerprint cannot exist at that layer. And when a request
+carries no Claude Code session id — an older client, or a direct API consumer through `serve` —
+`conversationKey()` falls back to one process-wide `randomBytes(16)` key, so every conversation in
+that process shares it and a foreign reasoning blob would have **validated**. The design claimed a
+silent drop; the real behaviour would have been a silent accept.
 
 Three defects were proven by running code before any fix existed:
 
@@ -45,10 +47,12 @@ Three defects were proven by running code before any fix existed:
 
 ## Money: why item 6 cannot change a bill today
 
-No pricing source in the tree carries a cache-read rate — `SlimModelEntry` has no pricing
-field at all, and `ModelPricing` has exactly `inputCostPer1M` / `outputCostPer1M`. So the
-cache discount is written as a **subtraction** whose rate defaults to `inputCostPer1M`, making
-the term provably zero until a rate appears.
+The cloud models catalog does publish a cache-read price: each connection's `pricing.cachedRead`
+(typed at `model-loader.ts:135`; the v3 fixture rows carry real values such as `0.3`). claudish
+never reads it. Item 6 added `ModelPricing.cacheReadCostPer1M` as an optional field, and
+`getModelPricing` sets it on no path. So the cache discount is written as a **subtraction** whose
+rate defaults to `inputCostPer1M`, making the term provably zero until `getModelPricing` maps
+`cachedRead` into it. The gap is claudish wiring, not a missing backend field.
 
 `min(cacheReadTokens, billedInputTokens)` is load-bearing: `updateWithDelta` charges only
 context *growth*, so without the clamp the discount exceeds the charge and `sessionTotalCost`
@@ -74,7 +78,7 @@ invisible to the automated gate:
 
 ### Stale written records beat fresh reading, twice
 
-The design counted emit sites from a **comment** at `openai-sse.ts:211` rather than the file.
+The design counted emit sites from a **comment** at `openai-sse.ts:211` (v9.4.0) rather than the file.
 Real counts: 10 starts, 17 stops, 7 tool starts. Separately, the recorded "2 known test
 failures" baseline was obsolete — those tests had been gated behind `test.skipIf`.
 
@@ -84,7 +88,8 @@ It assumed one conversation per log. With two overlapping upstream requests it i
 them, producing a fixture carrying a foreign `finish_reason: "stop"` that would have made the
 item-1 regression test pass **with or without** the fix. Caught by hand; fixed in v9.6.1 by
 keying on upstream response id. **Any fixture previously mined from a busy log is suspect.**
-Anthropic streams remain inseparable — their deltas carry no id.
+Anthropic streams separate by the `message.id` on `message_start`, but two that overlap cannot be
+told apart: every later event is anonymous, so it joins the most recent stream.
 
 ### The local test suite spends real money
 
@@ -133,10 +138,13 @@ Claude Code never sends those shapes. Two instruments closed the gap:
    how `tool_choice:{"type":"any"}`, a 65-char tool name, `source.type:"url"` images, adjacent
    user messages and reversed tool results were all proven.
 2. **A mock OpenAI-compatible upstream** — replay streams no provider produces on demand, and
-   **record the exact outbound body**. That recording settled a question inference could not:
-   claudish emits `stop: ['ZZZ']` and `top_p: 0.5`, so the Grok subscription proxy is what
-   ignores `stop` (or rejects it, with `GrokModelDialect.recoverFromRejection` stripping and
-   retrying — indistinguishable from the client).
+   **record the exact outbound body**. The recording showed claudish sending `stop: ['ZZZ']` and
+   `top_p: 0.5` to an OpenAI-compatible custom endpoint. That the `gk@` path sends them too is
+   read from the code, not measured: `gk@` builds its body with `OpenAIAPIFormat`, which makes the
+   same `applyOpenAISamplingParams` call (`openai-api-format.ts:343`). So the Grok subscription
+   proxy is what ignores `stop`, or rejects it and the retry strips it; the client cannot tell
+   which. `GROK_PROXY_URL` redirects the real `gk@` path, so pointing it at the mock would measure
+   it.
 
 ### Which providers emit which shapes — measured, not assumed
 
@@ -172,7 +180,8 @@ Claude Code never sends those shapes. Two instruments closed the gap:
 - **Item 5's end-to-end ordering** (`reasoning_content` after text through `openai-sse.ts`).
   Measured: no capture in the tree has that ordering. Becomes covered free the moment one
   lands — `block-nesting.test.ts` discovers captures by content.
-- **Item 6's discounted branch** — unreachable until a pricing source supplies
-  `cacheReadCostPer1M`.
+- **Item 6's discounted branch** — unreachable until `getModelPricing` maps the catalog's
+  `cachedRead` into `cacheReadCostPer1M`. The catalog already publishes the rate, so this is a
+  claudish code change, not a wait on the backend.
 
-Both are honest gaps under the real-captures-only rule, not oversights.
+Item 5 is a gap under the real-captures-only rule. Item 6 is a wiring gap in claudish.
