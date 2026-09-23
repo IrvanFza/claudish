@@ -204,7 +204,7 @@ describe("provider-reported chat capability in discovered model callers", () => 
         format: format as "ollama-tags",
       },
     });
-    registerModelDiscoveryFetcher(format, async () => discovered);
+    registerModelDiscoveryFetcher(format, async () => ({ kind: "models", models: discovered }));
   });
 
   afterEach(() => {

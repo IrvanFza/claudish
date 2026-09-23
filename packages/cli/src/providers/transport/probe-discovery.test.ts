@@ -7,6 +7,9 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DiskCacheV3, SlimModelEntry } from "../all-models-cache.js";
 import * as __realAllModelsCache from "../all-models-cache.js";
 
@@ -31,6 +34,64 @@ const catalogFixture: DiskCacheV3 = {
   plans: [],
 };
 
+const modalityFixtureDir = mkdtempSync(join(tmpdir(), "claudish-probe-discovery-"));
+const modalityFixturePath = join(modalityFixtureDir, "cloud-models-catalog-v3.json");
+__realAllModelsCacheExports.writeAllModelsCache(
+  {
+    version: 3,
+    lastUpdated: "2026-09-23T00:00:00.000Z",
+    catalogGenerationId: "probe-discovery-modality-test",
+    entries: [
+      {
+        modelId: "claude-opus-5",
+        aliases: [],
+        inputModalities: ["file", "image", "text"],
+        outputModalities: ["text"],
+      },
+      {
+        modelId: "gpt-realtime-2",
+        aliases: [],
+        inputModalities: ["audio", "image", "text"],
+        outputModalities: ["audio", "text"],
+      },
+      {
+        modelId: "gemini-3.5-transcribe",
+        aliases: [],
+        inputModalities: ["audio"],
+        outputModalities: ["text"],
+      },
+      {
+        modelId: "gpt-realtime-translate",
+        aliases: [],
+        inputModalities: ["audio"],
+        outputModalities: ["audio", "text"],
+      },
+      { modelId: "inkling", aliases: [], outputModalities: ["text"] },
+      {
+        modelId: "mistral-medium-2604",
+        aliases: [],
+        inputModalities: null,
+        outputModalities: ["text"],
+      },
+      {
+        modelId: "o3-mini-high",
+        aliases: [],
+        inputModalities: [],
+        outputModalities: ["text"],
+      },
+      {
+        modelId: "gpt-image-2.5-flare",
+        aliases: [],
+        inputModalities: ["text"],
+        outputModalities: ["image"],
+      },
+    ],
+    models: [],
+    plans: [],
+  },
+  modalityFixturePath
+);
+
 // OpenAI-compatible listings carry no capability field, so these tests supply
 // the catalog evidence that admission uses instead of reading the user's cache.
 mock.module("../all-models-cache.js", () => ({
@@ -41,15 +102,18 @@ mock.module("../all-models-cache.js", () => ({
 
 afterAll(() => {
   mock.module("../all-models-cache.js", () => __realAllModelsCacheExports);
+  rmSync(modalityFixtureDir, { recursive: true, force: true });
 });
 
 import {
   _clearChatCapabilityIndex,
   _clearProbeDiscoveryCache,
+  classifyChatCapability,
   discoverViaLMStudio,
   discoverViaOllama,
   discoverViaOpenAIModels,
   invalidateProbeDiscovery,
+  isChatCapable,
   isReportedChatCapable,
   rankProbeCandidates,
 } from "./probe-discovery.js";
@@ -99,6 +163,13 @@ describe("rankProbeCandidates", () => {
     expect(rankProbeCandidates(admitted)).toEqual(["chat-model"]);
   });
 
+  test("isChatCapable requires positive catalog evidence", () => {
+    expect({ known: isChatCapable("gpt-4o"), unknown: isChatCapable("catalog-unknown") }).toEqual({
+      known: true,
+      unknown: false,
+    });
+  });
+
   test("drops wildcard route patterns", () => {
     const ranked = rankProbeCandidates(["gemini/*", "gem-mad/*", "gpt-4o-mini"]);
     expect(ranked).toEqual(["gpt-4o-mini"]);
@@ -123,6 +194,36 @@ describe("rankProbeCandidates", () => {
       "anthropic/claude-haiku",
     ]);
     expect(ranked.slice(0, 2)).toEqual(["anthropic/claude-haiku", "openai/gpt-4o-mini"]);
+  });
+});
+
+describe("catalog modality evidence", () => {
+  test("classifies Claude file/image/text input plus text output as chat", () => {
+    expect(classifyChatCapability("claude-opus-5", modalityFixturePath)).toBe("chat");
+  });
+
+  test("classifies realtime audio/image/text input plus audio/text output as chat", () => {
+    expect(classifyChatCapability("gpt-realtime-2", modalityFixturePath)).toBe("chat");
+  });
+
+  test("classifies transcribe audio-only input plus text output as not-chat", () => {
+    expect(classifyChatCapability("gemini-3.5-transcribe", modalityFixturePath)).toBe("not-chat");
+  });
+
+  test("classifies realtime translation audio-only input plus audio/text output as not-chat", () => {
+    expect(classifyChatCapability("gpt-realtime-translate", modalityFixturePath)).toBe("not-chat");
+  });
+
+  test("treats absent, null, and empty input lists as silence when text output is published", () => {
+    expect(
+      ["inkling", "mistral-medium-2604", "o3-mini-high"].map((id) =>
+        classifyChatCapability(id, modalityFixturePath)
+      )
+    ).toEqual(["chat", "chat", "chat"]);
+  });
+
+  test("classifies text input plus image-only output as not-chat", () => {
+    expect(classifyChatCapability("gpt-image-2.5-flare", modalityFixturePath)).toBe("not-chat");
   });
 });
 

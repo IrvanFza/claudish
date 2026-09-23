@@ -97,7 +97,10 @@ function stubModelsCatalog(...ids: string[]): void {
 }
 
 function stubDevinModelsCatalog(): void {
-  registerModelDiscoveryFetcher("devin-connect", async () => devinModelsCatalog);
+  registerModelDiscoveryFetcher("devin-connect", async () => ({
+    kind: "models",
+    models: devinModelsCatalog,
+  }));
 }
 
 beforeEach(() => {

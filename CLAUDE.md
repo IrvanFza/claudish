@@ -25,6 +25,9 @@ lives in `ROADMAP.md`.
   children finish, idle time as information, why `outputSize` reads 0 on a RUNNING slot and
   what to read instead, and why `keepUnrecognizedJson` is an option
   rather than one rule for both the channel and `team`
+- `picker.md` — the OpenTUI model picker: a dialog, not a dashboard; the provider list first
+  with nothing prefetched; why an empty list must say WHY; the no-terminal gate; capture and
+  compiled-binary traps. Read before editing `picker/` or `selectModel`
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
 
 Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing site: `docs/`.
@@ -52,7 +55,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | route variant | effort model, model preset | a preset entry of a base model (`routeVariant`, e.g. `kimi-k3-256k`, context=256k) |
 | connection | aggregator row, provider row | one mapped way to call a model: an `aggregators[]` entry with `routeStatus: "mapped"` |
 | input modality, output modality | capability (for what goes in or out) | what a model accepts and produces: text, image, audio, video, file |
-| chat model | text model, LLM | takes text in and gives only text out; video input alone never excludes one |
+| chat model | text model, LLM | text among its input modalities AND among its output modalities; other modalities on either side never exclude one (`in: [file,image,text]` is a chat model, `in: [audio]` is not) |
 | type | shape, kind, variant (for a discriminator) | the field that says how to read the rest of an object: `pricing.type` is `flat`, `tiered`, `free` or `unavailable`. The catalog spelled it `shape` until the cutover on generation `g-20260921062451697-f490edba`; claudish reads `type` only, with no alias |
 | route candidate | option, hop (before filtering), chain entry | one `(provider, wire id)` pair gathered for a model, BEFORE the credential and availability filters. A candidate is a proposal; a hop is what survived |
 | tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price |

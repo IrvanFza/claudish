@@ -998,6 +998,19 @@ export async function getProviderList(): Promise<ProviderListEntry[]> {
 /** Fetch every active model for a provider from one pinned generation. */
 export async function getModelsByProvider(provider: string, pageSize = 200): Promise<ModelDoc[]> {
   const base = `${FIREBASE_BASE_URL}?provider=${encodeURIComponent(provider)}&status=active&limit=${pageSize}`;
+  return fetchPinnedModelDocs(base, "provider catalog");
+}
+
+/**
+ * Every row of one cursor-paginated `queryModels` read, pinned to ONE generation.
+ *
+ * Shared by {@link getModelsByProvider} and {@link getAllModelDocs} because the
+ * checks are the subtle part and must not drift between two copies: the total
+ * may not change mid-read, a cursor may not repeat, and the rows collected must
+ * match the total with no id twice. `label` only names the read in the errors.
+ */
+async function fetchPinnedModelDocs(base: string, label: string): Promise<ModelDoc[]> {
+  const Label = label.charAt(0).toUpperCase() + label.slice(1);
   const models: ModelDoc[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
@@ -1012,12 +1025,12 @@ export async function getModelsByProvider(provider: string, pageSize = 200): Pro
       nextCursor?: string;
     }>(url.toString(), SEARCH_FETCH_TIMEOUT_MS, generationId);
     if (!Array.isArray(envelope.data.models) || !Number.isSafeInteger(envelope.data.total)) {
-      throw new Error("Incomplete provider catalog response");
+      throw new Error(`Incomplete ${label} response`);
     }
     generationId = envelope.generationId;
     expectedTotal ??= envelope.data.total;
     if (envelope.data.total !== expectedTotal)
-      throw new Error("Provider catalog total changed during pagination");
+      throw new Error(`${Label} total changed during pagination`);
     models.push(...envelope.data.models);
     const nextCursor = envelope.data.nextCursor;
     if (!nextCursor) {
@@ -1025,15 +1038,39 @@ export async function getModelsByProvider(provider: string, pageSize = 200): Pro
         models.length !== expectedTotal ||
         new Set(models.map((model) => model.modelId)).size !== models.length
       ) {
-        throw new Error("Incomplete provider catalog snapshot");
+        throw new Error(`Incomplete ${label} snapshot`);
       }
       return models;
     }
-    if (seenCursors.has(nextCursor)) throw new Error("Provider catalog cursor repeated");
+    if (seenCursors.has(nextCursor)) throw new Error(`${Label} cursor repeated`);
     seenCursors.add(nextCursor);
     cursor = nextCursor;
   }
-  throw new Error("Provider catalog exceeded the pagination limit");
+  throw new Error(`${Label} exceeded the pagination limit`);
+}
+
+/**
+ * Every active model the cloud models catalog knows, in as few pages as it allows.
+ *
+ * WHY A BULK READ RATHER THAN N QUERIES. The picker needs one editorial fact per
+ * model — the description — for every row it can draw. The slim catalog
+ * (`?catalog=slim`, the file behind `all-models.json`) deliberately carries none:
+ * `model-catalog.ts:servedByVendor` says so in its own doc comment. Asking per
+ * model, or per provider, is the fan-out this picker already measured at
+ * 10 018 ms.
+ *
+ * A v3 read like every other query here: the contract `Accept` header, cursor
+ * pages pinned to one generation (via {@link fetchPinnedModelDocs}). A bare
+ * `fetch` with no `Accept` is refused outright — measured 2026-09-18, HTTP 426
+ * `catalog_client_upgrade_required`. MEASURED 2026-09-23 against the live v3
+ * endpoint with this exact query: the rich projection serves at most 200 rows a
+ * page (`limit=1000` returned 200 of 1267, plus a `nextCursor`), so this is about
+ * seven pages. The caller caches the projection it needs on disk under the
+ * shared TTL, so this runs at most once a day and never blocks a first paint.
+ */
+export async function getAllModelDocs(pageSize = 200): Promise<ModelDoc[]> {
+  const base = `${FIREBASE_BASE_URL}?status=active&limit=${pageSize}`;
+  return fetchPinnedModelDocs(base, "model catalog");
 }
 
 // ─── Model loaders for cli.ts --model flag validation ────────────────────────

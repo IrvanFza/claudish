@@ -19,6 +19,7 @@ import {
   recordKeychainHydratedVar,
 } from "../auth/credentials/keychain-source.js";
 import { invalidateOpResolutionCache } from "../auth/credentials/op-source.js";
+import { log } from "../logger.js";
 import {
   disableLocalProvider,
   enableLocalProvider,
@@ -104,13 +105,7 @@ import { VERSION as PKG_VERSION } from "../version.js";
 import { Footer } from "./components/Footer.js";
 import { OnepasswordContent, type OpExpansion } from "./components/OnepasswordContent.js";
 import { OnepasswordDetail } from "./components/OnepasswordDetail.js";
-import {
-  OnepasswordModal,
-  buildFieldOptions,
-  fuzzyFilterByTitle,
-  fuzzyMatch,
-  isOpModalMode,
-} from "./components/OnepasswordModal.js";
+import { OnepasswordModal } from "./components/OnepasswordModal.js";
 import { PrivacyContent } from "./components/PrivacyContent.js";
 import { PrivacyDetail } from "./components/PrivacyDetail.js";
 import { ProfileDetail } from "./components/ProfileDetail.js";
@@ -123,6 +118,12 @@ import { TabBar } from "./components/TabBar.js";
 import { DETAIL_H, FOOTER_H, HEADER_H, TABS_H, getChainProviders } from "./constants.js";
 import { useProfileWizard } from "./hooks/useProfileWizard.js";
 import { useRouteProbe } from "./hooks/useRouteProbe.js";
+import {
+  buildFieldOptions,
+  fuzzyFilterByTitle,
+  fuzzyMatch,
+  isOpModalMode,
+} from "./onepassword-fields.js";
 import {
   ensureProbeProxy,
   invalidateProbeProxyHandlers,
@@ -1103,13 +1104,20 @@ export function App({ requestLogin }: AppProps = {}) {
           // The entry IS saved; the live resolve just couldn't run. Surface a
           // warning (and log the detail to stderr) without rolling back.
           const msg = testErr instanceof Error ? testErr.message : String(testErr);
-          console.error(`[claudish] 1Password add: saved but live resolve failed: ${msg}`);
+          // `log()`, NOT `console.error`: this runs while the config TUI's renderer owns
+          // the screen, and anything written there leaves cells OpenTUI cannot
+          // invalidate — ghost characters that survive every redraw, with no exception
+          // and nothing on stderr to explain them. The user already gets the message in
+          // the status strip below; the detail belongs in the debug log.
+          // (Found by `picker/no-terminal-writes.test.ts`, which exists for this class.)
+          log(`[claudish] 1Password add: saved but live resolve failed: ${msg}`);
           setStatusMsg(`1Password ${kindWord} saved (${scope}) — live resolve failed: ${msg}`);
         }
       } catch (err: unknown) {
         // A genuine PERSIST failure (config write) — the rare real error.
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[claudish] 1Password add failed to persist: ${msg}`);
+        // Same reason as above: the renderer owns the terminal until it is destroyed.
+        log(`[claudish] 1Password add failed to persist: ${msg}`);
         setStatusMsg(`1Password add failed: ${msg}`);
         setMode("browse");
         resetOpWizard();

@@ -324,7 +324,10 @@ describe("namespace claims and availability", () => {
     if (!originalFetcher) throw new Error("Antigravity discovery fetcher was not registered");
 
     try {
-      registerModelDiscoveryFetcher("antigravity", async () => [{ id: "gemini-2.5-flash" }]);
+      registerModelDiscoveryFetcher("antigravity", async () => ({
+        kind: "models",
+        models: [{ id: "gemini-2.5-flash" }],
+      }));
       invalidateModelDiscovery("antigravity");
       credentials.isAvailable = async (provider: string) => provider === "antigravity";
       credentials.describeReadiness = async (provider: string) => ({

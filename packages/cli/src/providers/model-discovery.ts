@@ -15,8 +15,11 @@
  * and grandfathered, but the endpoint always reports what the key can do now.
  *
  * Design rules:
- * - **Fail-soft.** Every failure path returns an empty list. Discovery is an
- *   enhancement; it must never block a launch or a picker.
+ * - **Fail-soft, but not fail-silent.** `discoverProviderModels` returns an
+ *   empty list on every failure path — discovery is an enhancement and must
+ *   never block a launch or a picker. `discoverProviderModelsCatalog` is the same work
+ *   reported as a {@link ModelsCatalogOutcome}, for the one caller that has to explain
+ *   the emptiness instead of absorbing it. Neither ever rejects.
  * - **Nothing hardcoded.** The endpoint is derived from the provider's own
  *   baseUrl (+ env overrides); model ids and windows come from the response.
  * - **Cached.** One network call per provider per TTL, shared process-wide —
@@ -150,12 +153,34 @@ export interface ModelDiscoveryDescriptor {
 }
 
 /**
- * A dynamic models catalog fetcher for a format this module does not know how to speak.
+ * What a registered fetcher answers with.
  *
- * Returning `[]` means "asked, got nothing" — the caller records an
- * `empty-models-catalog` failure. Throwing is also fine; the caller converts it.
+ * It used to be a bare `DiscoveredModel[]`, and that shape could not express
+ * failure: `[]` was the only thing a fetcher could say, so the caller recorded
+ * `empty-models-catalog` for it — the one kind that means "the endpoint answered
+ * correctly and has nothing to offer". Every fetcher on this path swallows its
+ * own errors on the way in (`fetchOllamaModels` is documented "never throws";
+ * `getServedDevinModels` and `getServedAntigravityModels` both degrade to an
+ * empty list), so a STOPPED Ollama daemon and a logged-out Antigravity account
+ * both arrived as "the endpoint answered and listed nothing" about an endpoint
+ * that never answered. That is the same information loss the discriminated
+ * outcome below exists to remove, one layer further in.
+ *
+ * - `models` with a non-empty list is a served dynamic models catalog.
+ * - `models` with `[]` is a genuinely empty one — and `endpoint` is what makes
+ *   it sayable: the notice can finally name the URL that answered.
+ * - `failed` carries any of the seven kinds. `provider` is filled in by the
+ *   caller, which is the only place that knows it.
+ *
+ * Throwing is still fine: {@link discoverProviderModelsCatalog} maps a rejection to
+ * `unreachable` and never rejects itself.
  */
-export type ModelDiscoveryFetcher = (providerName: string) => Promise<DiscoveredModel[]>;
+export type FetcherResult =
+  | { kind: "models"; models: DiscoveredModel[]; endpoint?: string }
+  | { kind: "failed"; failure: Omit<DiscoveryFailure, "provider"> };
+
+/** A dynamic models catalog fetcher for a format this module does not know how to speak. */
+export type ModelDiscoveryFetcher = (providerName: string) => Promise<FetcherResult>;
 
 const _fetchers = new Map<string, ModelDiscoveryFetcher>();
 
@@ -235,6 +260,40 @@ export interface DiscoveryFailure {
 }
 
 /**
+ * Why a discovery attempt produced what it produced — the whole answer, in one
+ * value, handed to the caller rather than left in module state to be re-read.
+ *
+ * `discoverProviderModels` answers `[]` to all of "this provider declares no
+ * discovery", "its endpoint rejected your key", "it was unreachable", "it
+ * answered with garbage" and "it answered correctly with nothing", and no
+ * caller can tell them apart. The picker rendered every one of them as "here
+ * are fewer models", which is the complaint this type exists to answer.
+ *
+ * Three variants, because there are three different things to say:
+ *
+ * - `served` — a dynamic models catalog. **Non-empty by construction**: every path that ends up
+ *   with zero models records a failure instead, so there is no `served` with
+ *   `[]` to guard against downstream.
+ * - `failed` — one of the seven {@link DiscoveryFailureKind}s, with the failure
+ *   captured AT THE CALL. Read it from here, never from
+ *   {@link getDiscoveryFailure} afterwards: that map is module-global and its
+ *   entry is deleted by the next successful call for the same provider, so a
+ *   re-read races every concurrent caller.
+ * - `unsupported` — nothing was attempted, and nothing is wrong. ~25 pickable
+ *   providers declare no `modelDiscovery`; for them the cloud catalog is the
+ *   normal, correct answer and a notice would be noise on the majority case.
+ *   `no-fetcher` is the exception that IS a bug — a declared format nothing
+ *   claims is a packaging mistake, not a dynamic models catalog fact — which is why it is here
+ *   rather than folded into `empty-models-catalog` as it used to be. A declared
+ *   descriptor whose base URL does not resolve is NOT here: that is a setup
+ *   fault the user can fix, so it is `failed{unreachable}` naming the variable.
+ */
+export type ModelsCatalogOutcome =
+  | { kind: "served"; models: DiscoveredModel[] }
+  | { kind: "failed"; failure: DiscoveryFailure }
+  | { kind: "unsupported"; reason: "no-descriptor" | "no-fetcher" };
+
+/**
  * Last failure per provider.
  *
  * Deliberately NOT part of the `_cache` entry: successes are cached for a TTL
@@ -245,10 +304,17 @@ export interface DiscoveryFailure {
  */
 const _failures = new Map<string, DiscoveryFailure>();
 
-function recordFailure(failure: DiscoveryFailure): DiscoveredModel[] {
+/**
+ * Record a failure and hand it back as the outcome.
+ *
+ * Returns the outcome rather than `[]` so that every call site can stay exactly
+ * where it is — the recorded-failure side effect and the returned value are the
+ * same fact, written once.
+ */
+function recordFailure(failure: DiscoveryFailure): ModelsCatalogOutcome {
   _failures.set(failure.provider, failure);
   log(`[model-discovery:${failure.provider}] ${describeDiscoveryFailure(failure)}`);
-  return [];
+  return { kind: "failed", failure };
 }
 
 /**
@@ -293,13 +359,21 @@ export function describeDiscoveryFailure(failure: DiscoveryFailure): string {
   const { kind, endpoint, status, detail } = failure;
   const at = endpoint ? ` at ${endpoint}` : "";
   const because = detail ? ` — ${detail}` : "";
+  // Every optional field is guarded, `status` included. The GET path always has
+  // one for these two kinds, but a registered fetcher may now report either
+  // without it, and an interpolated `undefined` in a user-facing sentence is
+  // worse than a shorter sentence. Pinned by a test that asserts no rendered
+  // notice contains the substring.
+  const http = status === undefined ? "" : ` (HTTP ${status})`;
   switch (kind) {
     case "no-credentials":
       return `no usable credentials${because}`;
     case "unauthorized":
-      return `the API key was rejected (HTTP ${status})${at}${because}`;
+      return `the API key was rejected${http}${at}${because}`;
     case "http-error":
-      return `the model list returned HTTP ${status}${at}${because}`;
+      return status === undefined
+        ? `the model list returned an error${at}${because}`
+        : `the model list returned HTTP ${status}${at}${because}`;
     case "unreachable":
       return `the model list was unreachable${at}${because}`;
     case "malformed":
@@ -470,56 +544,101 @@ function describeIncompleteness(body: unknown, parsed: ParsedModelsList): string
 }
 
 /**
- * List the models this provider serves for the CURRENT credentials.
+ * The non-GET half: a format this module cannot speak itself, served by a
+ * registered fetcher.
  *
- * Returns [] when the provider declares no `modelDiscovery`, has no usable
- * credentials, or the endpoint is unreachable/malformed/incomplete — callers
- * fall back to the cloud models catalog. Every one of those except "declares no
- * `modelDiscovery`" records a reason for `getDiscoveryFailure`, so `[]` is
- * never silently read as "the plan lists nothing".
+ * Devin's dynamic models catalog is two protobuf rpcs (capability ∩
+ * entitlement); Antigravity's is an OAuth POST; Ollama's is its daemon's own
+ * listing shape. The imports are DYNAMIC to keep the codec and the OAuth path
+ * off the cold-start path, and this module deliberately knows NONE of them by
+ * name — the builtin bundle is imported on first miss, which inverts the
+ * dependency so that adding provider #4 means editing provider #4.
+ *
+ * Never rejects: the dynamic import and the fetcher call are both inside the
+ * `try`, and both can throw.
  */
-export async function discoverProviderModels(providerName: string): Promise<DiscoveredModel[]> {
+async function discoverViaFetcher(
+  providerName: string,
+  format: string
+): Promise<ModelsCatalogOutcome> {
+  let result: FetcherResult;
+  try {
+    let fetcher = getModelDiscoveryFetcher(format);
+    if (!fetcher) {
+      await import("./model-discovery-builtins.js");
+      fetcher = getModelDiscoveryFetcher(format);
+    }
+    if (!fetcher) {
+      // A declared format nothing claims. This is a PACKAGING bug — a
+      // definition opted into a format whose owner was never bundled — not a
+      // statement about the user's dynamic models catalog, so it is
+      // `unsupported`, not the `empty-models-catalog` it used to be recorded as.
+      // It renders nothing and is caught by a build-integrity test rather than
+      // shown to the user.
+      log(`[model-discovery:${providerName}] no fetcher claims format "${format}"`);
+      return { kind: "unsupported", reason: "no-fetcher" };
+    }
+    result = await fetcher(providerName);
+  } catch (e: unknown) {
+    return recordFailure({
+      kind: "unreachable",
+      provider: providerName,
+      detail: oneLine((e as Error)?.message ?? String(e)),
+    });
+  }
+
+  if (result.kind === "failed") {
+    return recordFailure({ ...result.failure, provider: providerName });
+  }
+  const models = result.models;
+  if (models.length === 0) {
+    // A reachable endpoint that listed nothing — and now it can say WHERE,
+    // because the fetcher reports the URL it asked.
+    return recordFailure({
+      kind: "empty-models-catalog",
+      provider: providerName,
+      endpoint: result.endpoint,
+    });
+  }
+  _failures.delete(providerName);
+  log(`[model-discovery:${providerName}] discovered ${models.length} models`);
+  _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
+  return { kind: "served", models };
+}
+
+/**
+ * List the models this provider serves for the CURRENT credentials, as a
+ * discriminated outcome — see {@link ModelsCatalogOutcome}.
+ *
+ * **This function NEVER REJECTS.** Every `await` is inside a `try`, including
+ * the dynamic import of the builtin fetcher bundle and the fetcher call itself,
+ * and a throw becomes `failed{kind:"unreachable"}`. Two of those awaits used to
+ * be bare: Devin speaks protobuf rpcs and Antigravity does an OAuth POST, so a
+ * rejection propagated out of the picker. A line-oriented prompt survives that;
+ * a live renderer with no stderr does not — it leaves a progress indicator
+ * running against a promise that never settles. Callers may therefore have no
+ * rejection branch, and a Tier-1 test registers a throwing fetcher to pin it.
+ */
+export async function discoverProviderModelsCatalog(
+  providerName: string
+): Promise<ModelsCatalogOutcome> {
   const cached = _cache.get(providerName);
-  if (cached && cached.expiresAt > Date.now()) return cached.models;
+  if (cached && cached.expiresAt > Date.now()) return { kind: "served", models: cached.models };
 
   const def = getProviderByName(providerName);
   const descriptor = def?.modelDiscovery;
-  if (!def || !descriptor) return [];
+  if (!def || !descriptor) return { kind: "unsupported", reason: "no-descriptor" };
 
-  // Devin's dynamic models catalog is not a GET — it is two protobuf rpcs (capability ∩
-  // entitlement), owned by the module that speaks that wire. The import is
-  // DYNAMIC to keep the codec off the cold-start path and out of a static
-  // cycle. (If a third such provider ever appears, replace this branch with a
-  // `registerModelDiscoveryFetcher(name, fn)` seam — not worth it for one.)
-  // Formats this module cannot speak itself are served by registered fetchers.
-  // It deliberately knows NONE of them by name: the builtin bundle is imported
-  // on first miss, which both inverts the dependency and keeps the protobuf
-  // codec and the Antigravity OAuth path off the cold-start path.
   if (descriptor.format !== "openai-models-list") {
-    let fetcher = getModelDiscoveryFetcher(descriptor.format);
-    if (!fetcher) {
-      await import("./model-discovery-builtins.js");
-      fetcher = getModelDiscoveryFetcher(descriptor.format);
-    }
-    if (!fetcher) {
-      // A declared format nothing claims. Report it as an empty dynamic models
-      // catalog rather than falling through to the GET path, which would hit a bogus URL.
-      return recordFailure({ kind: "empty-models-catalog", provider: providerName });
-    }
-    const models = await fetcher(providerName);
-    if (models.length === 0) {
-      return recordFailure({ kind: "empty-models-catalog", provider: providerName });
-    }
-    _failures.delete(providerName);
-    log(`[model-discovery:${providerName}] discovered ${models.length} models`);
-    _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
-    return models;
+    return await discoverViaFetcher(providerName, descriptor.format);
   }
 
   const baseUrl = resolveBaseUrl(providerName);
   if (!baseUrl) {
     // This used to return [] with nothing recorded, i.e. "this plan lists no
-    // models" — a configuration fault reported as an entitlement fact.
+    // models" — a configuration fault reported as an entitlement fact. It is a
+    // `failed` outcome, not `unsupported`: the provider DID declare discovery,
+    // so the user has something to fix, and the notice names where to fix it.
     const overrides = (def.baseUrlEnvVars ?? []).join(", ");
     return recordFailure({
       kind: "unreachable",
@@ -660,7 +779,27 @@ export async function discoverProviderModels(providerName: string): Promise<Disc
       models.map((m) => `${m.id}(${m.contextWindow ?? "?"})`).join(", ")
   );
   _cache.set(providerName, { models, expiresAt: Date.now() + CACHE_TTL_MS });
-  return models;
+  return { kind: "served", models };
+}
+
+/**
+ * List the models this provider serves for the CURRENT credentials.
+ *
+ * Returns [] when the provider declares no `modelDiscovery`, has no usable
+ * credentials, or the endpoint is unreachable/malformed/incomplete — callers
+ * fall back to the cloud models catalog. Every one of those except "declares no
+ * `modelDiscovery`" records a reason for `getDiscoveryFailure`, so `[]` is
+ * never silently read as "the plan lists nothing".
+ *
+ * The fail-soft shape every non-picker caller wants (the launcher, the status
+ * line, `discoverContextWindow`): discovery is an enhancement and must never
+ * block a launch. A caller that needs to TELL the user why there is nothing —
+ * i.e. the picker — calls {@link discoverProviderModelsCatalog} instead and keeps the
+ * distinction. Both share one cache, so asking twice costs one request.
+ */
+export async function discoverProviderModels(providerName: string): Promise<DiscoveredModel[]> {
+  const outcome = await discoverProviderModelsCatalog(providerName);
+  return outcome.kind === "served" ? outcome.models : [];
 }
 
 /**

@@ -107,6 +107,8 @@ interface CatalogCapabilityIndex {
   textOutput: Set<string>;
   /** Ids whose published output modalities EXCLUDE `"text"`: they produce something else only. */
   nonTextOutput: Set<string>;
+  /** Ids whose published input modalities EXCLUDE `"text"`: nothing typed reaches them. */
+  nonTextInput: Set<string>;
   /** Ids the catalog declares video GENERATORS (`videoOutput: true`). */
   videoOutput: Set<string>;
   /** Ids with ANY published `videoOutput`, `false` included: a statement, not a silence. */
@@ -138,11 +140,8 @@ function catalogKey(name: string): string {
  *
  * Unknown arrives as an absent field; `null` and `[]` read as unknown too, because
  * no model produces nothing — such a row joins neither set and is left to the
- * `videoOutput` boolean and the name rules. The test is "includes text", never
+ * `videoOutput` boolean; with neither, it stays unknown. The test is "includes text", never
  * "equals text": `["audio", "text"]` speaks AND writes, so it can answer a chat turn.
- *
- * An INPUT modality is never filed here, in either direction: a model that accepts
- * video, audio or images is still a chat model.
  */
 function indexOutputModality(
   index: CatalogCapabilityIndex,
@@ -154,6 +153,31 @@ function indexOutputModality(
   for (const k of keys) target.add(k);
 }
 
+/**
+ * File a catalog row's keys when its published INPUT modalities leave out text.
+ *
+ * A chat model takes text in and gives text out; other modalities on either side
+ * never exclude one, so `["file","image","text"]` (every Claude model) is a chat
+ * model. What this catches is the other case: `gemini-3.5-transcribe` publishes
+ * `in: ["audio"]`, `out: ["text"]` — it writes text, but nothing typed reaches it.
+ * Measured on the live catalog: 13 rows publish text output with no text input,
+ * all ASR, captioning or live-translation models.
+ *
+ * Only a PUBLISHED list denies. An absent, `null` or `[]` input list is a silence
+ * (models-index contract: null is unknown, never "not a chat model"), and it
+ * leaves the output evidence standing — `inkling`, `mistral-medium-2604` and
+ * `o3-mini-high` are the three rows it keeps.
+ */
+function indexInputModality(
+  index: CatalogCapabilityIndex,
+  keys: string[],
+  modalities: string[] | null | undefined
+): void {
+  if (!Array.isArray(modalities) || modalities.length === 0) return;
+  if (modalities.includes("text")) return;
+  for (const k of keys) index.nonTextInput.add(k);
+}
+
 function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
   const key = cachePath ?? "";
   const hit = _catalogChatIndex.get(key);
@@ -163,6 +187,7 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
     chat: new Set(),
     textOutput: new Set(),
     nonTextOutput: new Set(),
+    nonTextInput: new Set(),
     videoOutput: new Set(),
     videoOutputKnown: new Set(),
     known: new Set(),
@@ -174,6 +199,7 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
     // still contributes its published output modality — and where the two disagree
     // the modality list wins, being the more specific statement.
     indexOutputModality(index, keys, entry.outputModalities);
+    indexInputModality(index, keys, entry.inputModalities);
     // `videoOutput` is read in both directions; `videoInput` is never read as a
     // denial, because a model that reads video is still a chat model.
     if (entry.videoOutput !== undefined) {
@@ -225,9 +251,9 @@ function catalogCapabilityIndex(cachePath?: string): CatalogCapabilityIndex {
  * catalog describes a canonical model, the provider describes the build it will
  * actually serve.
  *
- * Order: wildcard route, the provider's own statement, non-text output, text
- * output, `videoOutput: true`, the chat-shaped capability flags, then
- * `"unknown"` — which is now a refusal, not a pass.
+ * Order: wildcard route, the provider's own statement, non-text output, an input
+ * list without text, text output, `videoOutput: true`, the chat-shaped capability
+ * flags, then `"unknown"` — which is now a refusal, not a pass.
  *
  * @param cachePath Override the catalog cache path. Tests only.
  * @param reported  The provider's own capability for this model, when its
@@ -247,6 +273,7 @@ export function classifyChatCapability(
   const key = catalogKey(name);
 
   if (index.nonTextOutput.has(key)) return "not-chat";
+  if (index.nonTextInput.has(key)) return "not-chat";
   if (index.textOutput.has(key)) return "chat";
   if (index.videoOutput.has(key)) return "not-chat";
   if (index.chat.has(key)) return "chat";
