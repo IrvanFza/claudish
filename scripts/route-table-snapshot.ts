@@ -46,13 +46,20 @@
  * the decision says; the proxy asks `route()` only when the decision is `bare`.
  *
  * Environment-dependent by design. It calls the real `route()`, so it sees this
- * machine's credentials and `defaultProvider`. Both snapshots must come from the
+ * machine's credentials and default provider. Both snapshots must come from the
  * same machine with the same configuration, which is why each file records them.
+ * The header's `defaultProvider` is `{ provider, source }` as `route()` resolves it
+ * (CLAUDISH_DEFAULT_PROVIDER, then the config file, then `openrouter`), read before
+ * the first route is resolved. `--strict` fails when the two differ, source included.
  */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  type ResolvedDefaultProvider,
+  resolveDefaultProvider,
+} from "../packages/cli/src/default-provider.js";
 import { loadConfig } from "../packages/cli/src/profile-config.js";
 import { readAllModelsCache } from "../packages/cli/src/providers/all-models-cache.js";
 import {
@@ -76,13 +83,38 @@ interface RouteRow {
   reason?: string;
 }
 
+/** The fallback position `route()` fills for this capture, and where that value came from. */
+type CapturedDefaultProvider = Pick<ResolvedDefaultProvider, "provider" | "source">;
+
 interface Snapshot {
   capturedAt: string;
   catalogGenerationId: string;
-  /** Recorded because the chain is credential-filtered: a different machine gives a different table. */
-  defaultProvider: string | undefined;
+  /**
+   * Recorded because the fallback hop decides the last position of every gathered
+   * chain. Snapshots captured before the resolver was recorded carry the config
+   * file's raw value, or nothing.
+   */
+  defaultProvider: CapturedDefaultProvider | string | undefined;
   entryCount: number;
   rows: RouteRow[];
+}
+
+/**
+ * Read the default provider the way `route()` does (`effectiveDefaultProvider`),
+ * keeping its source. Called BEFORE any route is resolved: resolving a credential
+ * can write a key into `process.env`, and `OPENROUTER_API_KEY` appearing there
+ * mid-capture would turn a `hardcoded` source into `openrouter-key`.
+ */
+function captureDefaultProvider(): CapturedDefaultProvider {
+  const { provider, source } = resolveDefaultProvider({ config: loadConfig(), env: process.env });
+  return { provider, source };
+}
+
+/** A header value for a message: `openrouter (hardcoded)`, `"" (env-var)`, or a legacy string. */
+function describeDefaultProvider(value: Snapshot["defaultProvider"]): string {
+  if (value === undefined) return "(none)";
+  if (typeof value === "string") return value === "" ? '""' : value;
+  return `${value.provider === "" ? '""' : value.provider} (${value.source})`;
 }
 
 /** How many routes to resolve at once. `route()` can touch discovery, so it is not free. */
@@ -98,6 +130,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
     process.exit(1);
   }
 
+  const defaultProvider = captureDefaultProvider();
   const modelIds = cache.entries.map((entry) => entry.modelId);
   const ids = limit ? modelIds.slice(0, limit) : modelIds;
   const rows: RouteRow[] = [];
@@ -141,7 +174,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
   const snapshot: Snapshot = {
     capturedAt: new Date().toISOString(),
     catalogGenerationId: cache.catalogGenerationId,
-    defaultProvider: loadConfig().defaultProvider,
+    defaultProvider,
     entryCount: cache.entries.length,
     rows,
   };
@@ -151,6 +184,7 @@ async function capture(outPath: string, limit?: number): Promise<void> {
   console.log(
     `Wrote ${outPath}: ${rows.length} models, ${routed} routed, ${rows.length - routed} with no route, generation ${snapshot.catalogGenerationId}.`
   );
+  console.log(`Default provider: ${describeDefaultProvider(defaultProvider)}.`);
   const decisions = new Map<string, number>();
   for (const row of rows) {
     const decision = row.decision ?? "(none)";
@@ -328,9 +362,10 @@ function reportSetupMismatch(before: Snapshot, after: Snapshot, strict: boolean)
         (strict ? "--strict fails on this alone: capture both snapshots on one generation.\n" : "")
     );
   }
-  if (before.defaultProvider !== after.defaultProvider) {
+  // By content: the header value is an object, and two parsed objects are never `===`.
+  if (!sameValue(before.defaultProvider, after.defaultProvider)) {
     report(
-      `defaultProvider differs (${before.defaultProvider ?? "(none)"} vs ${after.defaultProvider ?? "(none)"}). The fallback hop will differ for every model.\n`
+      `defaultProvider differs (${describeDefaultProvider(before.defaultProvider)} vs ${describeDefaultProvider(after.defaultProvider)}). The fallback hop may differ for every model.\n`
     );
   }
 }
