@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 import {
   type ProbeModelsResponse,
+  describeProbeCatalogFailure,
   fetchProbeModels,
   isCacheFresh,
   readProbeModelsCache,
@@ -29,7 +30,8 @@ function makeTmpPath(): { path: string; cleanup: () => void } {
 }
 
 const SAMPLE: ProbeModelsResponse = {
-  version: 1,
+  version: 3,
+  generationId: "test-generation",
   generatedAt: "2026-05-25T13:24:22.364Z",
   providers: {
     xai: "grok-build-0.1",
@@ -37,7 +39,14 @@ const SAMPLE: ProbeModelsResponse = {
     zhipu: "glm-4.5-air",
     moonshot: "moonshot-v1-auto",
   },
+  unavailable: {},
 };
+
+const REAL_426_BODY =
+  '{"contractVersion":3,"error":{"code":"catalog_client_upgrade_required","message":"This endpoint requires catalog contract version 3","minimumContractVersion":3}}';
+
+const REAL_V3_PROBE_MODELS_BODY =
+  '{"contractVersion":3,"generationId":"g-20260918072314542-9c5a9567","generatedAt":"2026-09-18T07:23:14.542Z","data":{"routes":{"deepseek/direct-api":{"modelId":"deepseek-v4.1-flash","externalModelId":"deepseek-flash","route":{"routeId":"deepseek","routeProfileId":"direct-api"},"confidence":"api_official"}},"unavailableRoutes":{"google/antigravity-subscription":{"route":{"routeId":"google","routeProfileId":"antigravity-subscription"},"reason":"client_model_selection_required"},"poe/gateway":{"route":{"routeId":"poe","routeProfileId":"gateway"},"reason":"no_verified_probe_model"}}}}';
 
 describe("readProbeModelsCache / writeProbeModelsCache", () => {
   let tmp: ReturnType<typeof makeTmpPath>;
@@ -132,16 +141,53 @@ describe("fetchProbeModels", () => {
 
   test("returns ok with parsed response on 200", async () => {
     globalThis.fetch = mock(
-      async () => new Response(JSON.stringify(SAMPLE), { status: 200 })
+      async () => new Response(REAL_V3_PROBE_MODELS_BODY, { status: 200 })
     ) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome.kind).toBe("ok");
-    if (outcome.kind === "ok") expect(outcome.data).toEqual(SAMPLE);
+    if (outcome.kind === "ok") {
+      expect(outcome.data.providers).toEqual({ deepseek: "deepseek-flash" });
+      expect(outcome.data.unavailable).toEqual({
+        antigravity: "client_model_selection_required",
+        poe: "no_verified_probe_model",
+      });
+    }
   });
 
-  test("returns http with status on non-2xx", async () => {
+  test("returns incompatible with the server contract version on 426", async () => {
     globalThis.fetch = mock(
-      async () => new Response("", { status: 503 })
+      async () => new Response(REAL_426_BODY, { status: 426 })
+    ) as unknown as typeof fetch;
+    const outcome = await fetchProbeModels("http://stub.local", 1000);
+    expect(outcome).toEqual({ kind: "incompatible", serverContractVersion: 3 });
+  });
+
+  test("returns incompatible with an unknown server contract version on an empty 426", async () => {
+    globalThis.fetch = mock(
+      async () => new Response(null, { status: 426 })
+    ) as unknown as typeof fetch;
+    const outcome = await fetchProbeModels("http://stub.local", 1000);
+    expect(outcome).toEqual({ kind: "incompatible", serverContractVersion: null });
+  });
+
+  test("maps exact provider routes in a v3 response", async () => {
+    globalThis.fetch = mock(
+      async () => new Response(REAL_V3_PROBE_MODELS_BODY, { status: 200 })
+    ) as unknown as typeof fetch;
+    const outcome = await fetchProbeModels("http://stub.local", 1000);
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind === "ok") {
+      expect(outcome.data.providers).toEqual({ deepseek: "deepseek-flash" });
+      expect(outcome.data.unavailable).toEqual({
+        antigravity: "client_model_selection_required",
+        poe: "no_verified_probe_model",
+      });
+    }
+  });
+
+  test("returns http with status on a non-contract non-2xx response with no body", async () => {
+    globalThis.fetch = mock(
+      async () => new Response(null, { status: 503 })
     ) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome).toEqual({ kind: "http", status: 503 });
@@ -172,6 +218,36 @@ describe("fetchProbeModels", () => {
     }) as unknown as typeof fetch;
     const outcome = await fetchProbeModels("http://stub.local", 1000);
     expect(outcome).toEqual({ kind: "timeout" });
+  });
+});
+
+describe("describeProbeCatalogFailure", () => {
+  test("describes a known incompatible version without blaming connectivity", () => {
+    const message = describeProbeCatalogFailure({
+      kind: "incompatible",
+      serverContractVersion: 3,
+    });
+    expect(message).toContain("contract v3");
+    expect(message).not.toContain("could not reach");
+  });
+
+  test("describes an unknown incompatible version without blaming connectivity", () => {
+    const message = describeProbeCatalogFailure({
+      kind: "incompatible",
+      serverContractVersion: null,
+    });
+    expect(message).not.toContain("could not reach");
+  });
+
+  test("describes timeout and network failures as connectivity failures", () => {
+    expect(describeProbeCatalogFailure({ kind: "timeout" })).toContain("could not reach");
+    expect(describeProbeCatalogFailure({ kind: "network", reason: "ECONNREFUSED" })).toContain(
+      "could not reach"
+    );
+  });
+
+  test("includes the HTTP status in an HTTP failure", () => {
+    expect(describeProbeCatalogFailure({ kind: "http", status: 503 })).toContain("503");
   });
 });
 

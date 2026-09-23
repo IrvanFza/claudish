@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import {
   _clearProbeDiscoveryCache,
+  classifyChatCapability,
   discoverViaLMStudio,
   discoverViaOllama,
   discoverViaOpenAIModels,
@@ -17,6 +18,14 @@ import {
   isChatCapable,
   rankProbeCandidates,
 } from "./probe-discovery.js";
+
+/**
+ * A cloud models catalog cache path that does not exist, so a name-rule test
+ * sees only the name rules. `readAllModelsCache` answers `null` for a missing
+ * file; the classifier's memo is keyed by path, so this never collides with a
+ * test that seeds a real cache.
+ */
+const NO_CLOUD_CATALOG = "/nonexistent/claudish-test/cloud-models-catalog-v3.json";
 
 describe("rankProbeCandidates", () => {
   test("prefers small-name patterns", () => {
@@ -70,6 +79,12 @@ describe("rankProbeCandidates", () => {
     // coding models. The selected row's own catalog sentence disqualified it: "a
     // distilled reasoning model for faster, lower-cost realtime VOICE interactions...
     // audio and text inputs over WebRTC, WebSocket, or SIP".
+    //
+    // This pins the NAME FALLBACK, so the catalog is pinned EMPTY. Without a path
+    // the classifier reads the developer's real cloud models catalog cache, where
+    // these ids publish output `["audio","text"]` — and published output modality
+    // outranks every name rule — so the test passed on a clean CI machine and
+    // failed on any machine that had fetched the v3 catalog.
     for (const id of [
       "gpt-live-1",
       "gpt-realtime-2",
@@ -77,7 +92,10 @@ describe("rankProbeCandidates", () => {
       "gpt-realtime-2.1-mini",
       "gpt-realtime-translate",
     ]) {
-      expect({ id, chat: isChatCapable(id) }).toEqual({ id, chat: false });
+      expect({ id, chat: classifyChatCapability(id, NO_CLOUD_CATALOG) }).toEqual({
+        id,
+        chat: "not-chat",
+      });
     }
   });
 

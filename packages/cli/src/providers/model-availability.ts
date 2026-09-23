@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 /**
  * "Does provider P actually serve model M?" — answered from BOTH data sources.
  *
@@ -13,7 +14,7 @@
  * Neither is sufficient alone. Measured 2026-08-18: the catalog's `aggregators[]`
  * vocabulary names 18 providers while claudish routes to 23, and the 10 it never
  * mentions are almost entirely the SUBSCRIPTION providers — `glm-coding`,
- * `minimax-coding`, `qwen-cloud`, `sakana-subscription`, `devin`,
+ * `minimax-coding`, `qwen-token-plan`, `sakana-subscription`, `devin`,
  * `opencode-zen-go`. That is not a catalog defect: a plan's contents are an
  * entitlement, so they were never in scope for a field describing marketplaces.
  *
@@ -34,12 +35,12 @@
  * `deepseek-v4-pro-0813` on a bare chain reaches `opencode-zen-go` first. Zen Go
  * does not carry it and says so with **HTTP 401** — a status that reads as a
  * credential failure, and which masked the live OpenRouter hop further down the
- * same chain. Its live roster answers the question before any request is sent:
+ * same chain. Its dynamic models catalog answers the question before any request is sent:
  *
  *     Zen Go serves 26 models; 'deepseek-v4-pro-0813' is not among them
  *     (it serves the undated `deepseek-v4-pro`), while 'kimi-k3' is.
  *
- * Note the naming detail — the roster also settles what to SEND, which a
+ * Note the naming detail — the dynamic models catalog also settles what to SEND, which a
  * membership test against catalog ids alone could not.
  */
 
@@ -55,8 +56,8 @@ import { getProviderByName } from "./provider-definitions.js";
  */
 export type ModelAvailability = "serves" | "not-served" | "unknown";
 
-/** Case-insensitive membership, since rosters disagree on casing (`MiniMax-M3`). */
-function rosterHas(ids: string[], wireId: string): boolean {
+/** Case-insensitive match, since dynamic models catalogs disagree on casing (`MiniMax-M3`). */
+function modelsCatalogHas(ids: string[], wireId: string): boolean {
   const needle = wireId.trim().toLowerCase();
   return ids.some((id) => id.trim().toLowerCase() === needle);
 }
@@ -81,15 +82,15 @@ export async function providerServesModel(
   if (def?.modelDiscovery) {
     const models = await discoverProviderModels(provider);
     if (models.length > 0) {
-      return rosterHas(
+      return modelsCatalogHas(
         models.map((m) => m.id),
         wireId
       )
         ? "serves"
         : "not-served";
     }
-    // An empty roster is never a "no". `empty-roster` means the endpoint
-    // answered with nothing to offer; every other kind (unauthorized,
+    // An empty dynamic models catalog is never a "no". `empty-models-catalog`
+    // means the endpoint answered with nothing to offer; every other kind (unauthorized,
     // unreachable, malformed…) means we failed to ask. Both are `unknown` —
     // dropping a candidate because its listing endpoint was briefly down would
     // turn a transient blip into a silent provider switch.
@@ -109,7 +110,7 @@ export async function providerServesModel(
   // but one. Caught by `route()`'s own tests, which is exactly what they are
   // for.
   //
-  // A live roster is different in kind: it is COMPLETE BY CONSTRUCTION, because
+  // A dynamic models catalog is different in kind: it is COMPLETE BY CONSTRUCTION, because
   // the provider is enumerating everything the caller's key can reach. Only that
   // may deny. The catalog can still confirm, which is free and useful.
   const entries = getCatalogEntries();
@@ -120,9 +121,13 @@ export async function providerServesModel(
     (e) =>
       e.modelId.toLowerCase() === needle ||
       e.aliases.some((a) => a.toLowerCase() === needle) ||
-      (e.aggregators ?? []).some((a) => a.externalId?.toLowerCase() === needle)
+      (e.aggregators ?? []).some((a) => a.externalModelId?.toLowerCase() === needle)
   );
   if (!row) return "unknown";
 
-  return (row.aggregators ?? []).some((a) => a.provider === provider) ? "serves" : "unknown";
+  return (row.aggregators ?? []).some(
+    (a) => a.routeStatus === "mapped" && catalogRouteMatchesProvider(a.route, provider)
+  )
+    ? "serves"
+    : "unknown";
 }

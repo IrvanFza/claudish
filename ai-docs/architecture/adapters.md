@@ -60,7 +60,7 @@ inefficiency, so a shared value is not expected to fail, but it is less precise.
 `OpenCodeZenTransport` sends `User-Agent: claudish/<version>` beside the session
 id. OpenCode's docs ask a client to identify itself "rather than a generic SDK or
 HTTP-library name", and this relay enforces it: `providers/model-discovery.ts`
-records that a UA-less roster request to Zen Go answers `403 error code: 1010`,
+records that a UA-less discovery request to Zen Go answers `403 error code: 1010`,
 Cloudflare's browser-integrity block, while the identical request carrying one
 returns 200 with 26 models (measured 2026-08-18). The chat path sits behind the
 same edge and went without a UA until 2026-09-15.
@@ -203,7 +203,7 @@ that to 3/3.
 `openai-sse.ts` calls `extractToolCallsFromText` (`handlers/shared/tool-call-recovery.ts`)
 at finalization. That function scrapes tool calls out of assistant PROSE, for local models
 that cannot emit structured `tool_calls` at all. It is the only production caller, so this
-path is exactly the `openai-sse` roster: GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter, LiteLLM.
+path is exactly the `openai-sse` provider list: GLM, Kimi, Grok, DeepSeek, Qwen, OpenRouter, LiteLLM.
 
 Three properties are not obvious from the source and each one shipped as a defect
 (v7.68.0, `ai-docs/reports/grok-tool-name-mangling-20260827.md`):

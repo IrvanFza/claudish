@@ -24,8 +24,9 @@
  * the bytes back is the part that actually saves them.
  *
  * GUARDED is a list rather than one path because the convention decayed again,
- * in exactly the shape the paragraph above describes. `all-models.json` is the
- * hosted model catalog's disk cache, and `effort-mapping.test.ts` seeds a
+ * in exactly the shape the paragraph above describes. `all-models.json` was the
+ * hosted model catalog's disk cache (since contract 3 it is
+ * `cloud-models-catalog-v3.json`), and `effort-mapping.test.ts` seeded a
  * fixture into it and restores in a `finally`. That is the same save/restore
  * pattern the config files used, with the same hole: a killed or timed-out run
  * skips the restore and the two-entry fixture becomes the machine's permanent
@@ -42,14 +43,22 @@
  * no equivalent. Until it does, this guard is the backstop.
  */
 import { spawn } from "node:child_process";
-import { copyFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  copyFileSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
  * Every real file a test run must give back unchanged. `label` names it in the
  * failure, and `remedy` states the isolation the author should have used — the
- * two files have different answers, so the message cannot be generic.
+ * files have different answers, so the message cannot be generic.
  */
 const GUARDED = [
   {
@@ -58,11 +67,30 @@ const GUARDED = [
     remedy: "isolate with setConfigFileOverride(<temp path>) instead of writing the real file",
   },
   {
-    path: join(homedir(), ".claudish", "all-models.json"),
-    label: "REAL MODEL CATALOG CACHE",
+    path: join(homedir(), ".claudish", "cloud-models-catalog-v3.json"),
+    label: "REAL CLOUD MODELS CATALOG CACHE",
     remedy:
       "pass a temp path to readAllModelsCache/writeAllModelsCache, or seed in memory the way " +
       "catalog-client.ts's _setCatalogEntriesForTest does, instead of writing the real cache",
+  },
+  {
+    // The pre-v3 cache file. This build no longer writes it, but older builds on the
+    // same machine still read it, so a test that touches it breaks them.
+    path: join(homedir(), ".claudish", "all-models.json"),
+    label: "REAL PRE-V3 MODEL CATALOG CACHE",
+    remedy: "nothing in this build writes all-models.json; find the test that still names it",
+  },
+  {
+    path: join(homedir(), ".claudish", "openrouter-models.json"),
+    label: "REAL OPENROUTER MODEL LIST",
+    remedy: "run the MCP search_models path against a temp HOME instead of the real cache dir",
+  },
+  {
+    path: join(homedir(), ".claudish", "catalog-incompatible.json"),
+    label: "REAL CATALOG CONTRACT SENTINEL",
+    remedy:
+      "pass a temp path to markCatalogIncompatible/readCatalogIncompatibility, or run the " +
+      "refresh in a child process with its own HOME, instead of writing the real sentinel",
   },
 ] as const;
 
@@ -182,6 +210,15 @@ for (const g of GUARDED) {
 // it cannot put back the hermeticity. A test whose result depends on what the
 // hosted catalog said this morning is the failure that turned two DeepSeek
 // tests red mid-release.
+//
+// `CLAUDISH_CATALOG_INCOMPATIBLE_PATH` is the fourth, and it REDIRECTS rather
+// than disables. The contract sentinel is state a real build writes on every
+// launch against a newer catalog, so on a developer's machine it usually
+// EXISTS — and every default-path read in the suite then sees "this catalog is
+// unreadable". Measured 2026-09-18: 25 tests failed on that alone, and CI,
+// whose home directory never holds the file, stayed green. A fresh directory
+// per run means no run can read a sentinel an earlier run wrote either.
+const sentinelDir = mkdtempSync(join(tmpdir(), "claudish-guard-sentinel-"));
 const child = spawn(cmd[0], cmd.slice(1), {
   stdio: "inherit",
   env: {
@@ -189,6 +226,7 @@ const child = spawn(cmd[0], cmd.slice(1), {
     CLAUDISH_DISABLE_KEYCHAIN: "1",
     CLAUDISH_DISABLE_OP: "1",
     CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_CATALOG_INCOMPATIBLE_PATH: join(sentinelDir, "catalog-incompatible.json"),
   },
 });
 
@@ -246,6 +284,7 @@ function reportAndRestore(guarded: (typeof GUARDED)[number], after: Snapshot): v
 }
 
 child.on("exit", (code, signal) => {
+  rmSync(sentinelDir, { recursive: true, force: true });
   // Every guarded file is checked and restored before the first exit, so one
   // clobbered file cannot mask a second. Reporting only the first would send
   // the author to fix one test while another keeps rewriting the machine.

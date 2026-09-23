@@ -288,19 +288,16 @@ const HAS_XAI = SKIP_LIVE_E2E ? false : await hasCredential("x-ai");
 
 describe("Group B — real API routing", () => {
   test.skipIf(!HAS_OR)(
-    "B1a — defaultProvider=openrouter + gpt-5.4 bare → served by OpenRouter",
+    "B1a — catalog-gathered gpt-5.4 bare → served by credentialed OpenRouter",
     async () => {
-      // Pin routing for `gpt-*` to skip codex (commit 5: DEFAULT_ROUTING_RULES
-      // puts openai-codex first for `gpt-*`, which can fire on dev boxes that
-      // happen to have a codex OAuth file. The intent of this test is the
-      // openrouter default-provider path, so we override the gpt-* chain to
-      // exclude codex.)
+      // No user rule: the chain must come from the cloud models catalog. The
+      // gpt-5.4 row publishes OpenRouter, so defaultProvider is deduplicated
+      // rather than manufacturing a second connection.
       sandboxHome({
         version: "1.0.0",
         defaultProfile: "default",
         profiles: {},
         defaultProvider: "openrouter",
-        routing: { "gpt-*": ["openai", "openrouter"] },
       });
       captureStderr();
       const t0 = Date.now();
@@ -328,7 +325,7 @@ describe("Group B — real API routing", () => {
       // The proxy emits its `[Route] N providers for <model>: A → B` line ONLY
       // when the credential-filtered chain has MORE THAN ONE candidate
       // (proxy-server.ts: `if (!options.quiet && candidates.length > 1)`). The
-      // chain pinned above is ["openai","openrouter"], so on a machine WITHOUT
+      // gathered chain includes OpenAI and OpenRouter, so on a machine WITHOUT
       // an OpenAI credential it filters down to a single candidate and NO line
       // is emitted — which is the common case for someone holding only an
       // OpenRouter key. A bare `expect(stderr).toContain("openrouter")` therefore
@@ -401,7 +398,7 @@ describe("Group B — real API routing", () => {
   );
 
   test.skipIf(!HAS_LL)(
-    "B2 — defaultProvider=litellm + minimax-m2.5 bare → served by LiteLLM first",
+    "B2 — defaultProvider=litellm + minimax-m2.5 bare → LiteLLM remains the fallback",
     async () => {
       sandboxHome({
         version: "1.0.0",
@@ -429,10 +426,9 @@ describe("Group B — real API routing", () => {
         `[B2] model=minimax-m2.5 ok=${ok} elapsed=${elapsed}ms litellm@${llIdx} openrouter@${orIdx} textLen=${text.length}`
       );
       expect(ok).toBe(true);
-      // Proof LiteLLM came first when both are visible in stderr
-      if (llIdx >= 0 && orIdx >= 0) {
-        expect(llIdx).toBeLessThan(orIdx);
-      }
+      // `defaultProvider` is the last-resort fallback position. If both names
+      // are visible, the catalog-gathered OpenRouter connection must precede it.
+      if (llIdx >= 0 && orIdx >= 0) expect(orIdx).toBeLessThan(llIdx);
     },
     90_000
   );
@@ -564,7 +560,6 @@ describe("Group C — custom endpoint registration", () => {
   test.skipIf(!HAS_OR)(
     "C2 — invalid custom endpoint is warned but bare call still succeeds",
     async () => {
-      // Pin routing for `gpt-*` to skip codex (see B1a comment).
       sandboxHome({
         version: "1.0.0",
         defaultProfile: "default",
@@ -584,7 +579,6 @@ describe("Group C — custom endpoint registration", () => {
           },
         },
         defaultProvider: "openrouter",
-        routing: { "gpt-*": ["openai", "openrouter"] },
       });
 
       captureStderr();
@@ -682,18 +676,28 @@ describe("Group C — custom endpoint registration", () => {
 // Those are inert by construction (unmatched → ignored), so their presence is
 // NOT a claudish defect and must never fail this suite. A stale allowlist here
 // used to hard-fail CI every time models-index shipped a new provider.
+//
+// SKIPPED under CLAUDISH_SKIP_LIVE_E2E, and the group now needs that gate for a
+// second reason. These tests assert the v2 slim-catalog shape. As observed on
+// 2026-09-18 the live endpoint serves contract v3: 426 without the v3 Accept
+// header, 503 with it. The shape asserted below is therefore no longer served at
+// all. Rewrite them against v3 as part of the v3 reader work — do not delete
+// them, because the aggregator-shape coverage is still wanted.
 const ROUTABLE_FIREBASE_SLUGS = new Set(Object.values(pickerProviderToFirebaseSlug));
 
-describe("Group D — Firebase slim catalog", () => {
+describe.skipIf(SKIP_LIVE_E2E)("Group D — Firebase slim catalog", () => {
   let cachedBody: any = null;
 
   async function fetchCatalog(): Promise<any> {
     if (cachedBody) return cachedBody;
     const res = await fetch(
-      "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=100"
+      "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=active&catalog=slim&limit=100",
+      { headers: { Accept: "application/vnd.models-index.catalog+json;version=3" } }
     );
     expect(res.status).toBe(200);
-    cachedBody = await res.json();
+    const envelope = await res.json();
+    expect(envelope.contractVersion).toBe(3);
+    cachedBody = envelope.data;
     return cachedBody;
   }
 
@@ -722,10 +726,13 @@ describe("Group D — Firebase slim catalog", () => {
     const seenProviders = new Set<string>();
     for (const m of withAgg) {
       for (const agg of m.aggregators) {
-        expect(typeof agg.provider).toBe("string");
-        expect(typeof agg.externalId).toBe("string");
+        expect(typeof agg.sourceProviderId).toBe("string");
+        if (agg.routeStatus !== "mapped") continue;
+        expect(typeof agg.route?.routeId).toBe("string");
+        expect(typeof agg.route?.routeProfileId).toBe("string");
+        expect(typeof agg.externalModelId).toBe("string");
         expect(typeof agg.confidence).toBe("string");
-        seenProviders.add(agg.provider);
+        seenProviders.add(agg.sourceProviderId);
       }
     }
 

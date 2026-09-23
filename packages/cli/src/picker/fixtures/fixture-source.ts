@@ -128,7 +128,7 @@ export function createFixtureDataSource(name: string): PickerDataSource {
         return {
           kind: "empty-roster",
           failure: {
-            kind: "empty-roster",
+            kind: "empty-models-catalog",
             provider,
             endpoint: "https://api.example.test/v1/models",
           },

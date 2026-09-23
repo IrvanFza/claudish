@@ -1,3 +1,4 @@
+import { catalogRouteMatchesProvider, providerForCatalogRoute } from "./catalog-route-bindings.js";
 /**
  * CatalogClient — single entry point for all Firebase-backed model catalog
  * questions. Replaces the three independent slug maps and per-provider
@@ -64,7 +65,7 @@ export interface CatalogClient {
    *
    * For aggregator/gateway providers (e.g. "opencode-zen", "openrouter"):
    * returns models whose `aggregators[]` lists this vendor. Reads from the
-   * slim catalog cache at ~/.claudish/all-models.json (24h TTL).
+   * slim catalog cache at ~/.claudish/cloud-models-catalog-v3.json (24h TTL).
    *
    * For LiteLLM, Ollama, LM Studio: returns []. These have no Firebase
    * catalog by design — callers handle this with a free-text input prompt.
@@ -96,10 +97,10 @@ export interface CatalogClient {
    * provider has no models", which is the exact complaint this feature exists to
    * remove.
    *
-   * IT IS NOT A SECOND AUTHORITY. `aggregators[].provider` is already the
-   * served-by index — `modelsByVendor`'s own owner branch filters its rich
-   * lineage list THROUGH it (`filterToServedByProvider`) precisely because
-   * lineage is not service. This reads the same field for the same question and
+   * IT IS NOT A SECOND AUTHORITY. Each `aggregators[]` row's route binding is
+   * already the served-by index — `modelsByVendor`'s own owner branch filters its
+   * rich lineage list THROUGH it (`filterToServedByProvider`) precisely because
+   * lineage is not service. This applies the same rule to the same question and
    * skips the lineage query, so its membership is the served-by set exactly. The
    * cost is per-model richness: `description` and the owner slug are absent from
    * the slim payload, so a row's blurb is derived rather than editorial.
@@ -133,7 +134,7 @@ const OWNER_PROVIDER_SLUGS = new Set<string>([
 ]);
 
 /**
- * Cold-start seed for the aggregator set. NOT the roster — see
+ * Cold-start seed for the aggregator set. NOT the list itself — see
  * {@link aggregatorProviderSlugs}, which derives the real one from the catalog.
  *
  * Used only when the slim cache is empty (first run, before the first fetch),
@@ -172,7 +173,10 @@ function aggregatorProviderSlugs(
   const slugs = new Set<string>();
   for (const entry of cache.entries) {
     for (const agg of entry.aggregators ?? []) {
-      if (agg.provider) slugs.add(agg.provider.toLowerCase());
+      if (agg.routeStatus === "mapped") {
+        const provider = providerForCatalogRoute(agg.route!);
+        if (provider) slugs.add(provider.toLowerCase());
+      }
     }
   }
   // Union with the seed: a provider claudish knows how to reach should not
@@ -239,7 +243,7 @@ function filterToServedByProvider(
   const kept: CatalogModel[] = [];
   for (const model of models) {
     const slim = byId.get(model.modelId.toLowerCase());
-    const served = slim?.aggregators?.some((agg) => agg.provider.toLowerCase() === slug);
+    const served = slim?.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug));
     if (served) {
       kept.push({ ...model, aggregators: slim?.aggregators ?? model.aggregators });
     }
@@ -311,7 +315,7 @@ export interface CatalogClientDeps {
   getModelsByProvider?: typeof getModelsByProvider;
   getModelByIdFromFirebase?: typeof getModelByIdFromFirebase;
   searchModels?: typeof searchModelsFromFirebase;
-  /** Returns the parsed slim cache or null. Default reads ~/.claudish/all-models.json. */
+  /** Returns the parsed slim cache or null. Default reads ~/.claudish/cloud-models-catalog-v3.json. */
   readSlimCache?: () => ReturnType<typeof readAllModelsCache>;
 }
 
@@ -357,7 +361,7 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
       if (aggregatorProviderSlugs(_readSlimCache).has(slug)) {
         const { entries } = readSlimCacheWithFreshness(_readSlimCache);
         const matches = entries.filter((entry) =>
-          entry.aggregators?.some((agg) => agg.provider.toLowerCase() === slug)
+          entry.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug))
         );
         return matches.map(slimEntryToCatalogModel);
       }
@@ -411,7 +415,9 @@ export function createCatalogClient(deps: CatalogClientDeps = {}): CatalogClient
       const { entries } = readSlimCacheWithFreshness(_readSlimCache);
       const out: CatalogModel[] = [];
       for (const entry of entries) {
-        if (entry.aggregators?.some((agg) => agg.provider.toLowerCase() === slug)) {
+        // The same rule `filterToServedByProvider` applies, so the two answers
+        // cannot drift: a v3 row names who serves it by its route binding.
+        if (entry.aggregators?.some((agg) => catalogRouteMatchesProvider(agg.route, slug))) {
           out.push(slimEntryToCatalogModel(entry));
         }
       }

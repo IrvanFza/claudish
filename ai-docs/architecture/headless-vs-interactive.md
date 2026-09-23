@@ -208,9 +208,9 @@ to be asked: claudish's team children already spawn with `-y`.
   lesson `team-capture.md` records for output: exit 0 proves nothing, which is why
   `require_pattern` exists. Argument handling has the same hole.
 - **Validate at the claudish boundary when the child will not.** `agent-availability.ts` does
-  this for `--agent`: it discovers the roster live (`claude --agent <sentinel> -p`, ~0.5s, no API
-  call, no tokens), caches it PER CWD because the roster is cwd-dependent (24 names in this repo,
-  5 in `/tmp`), and fails OPEN when the roster cannot be determined — blocking every session
+  this for `--agent`: it discovers the agent names live (`claude --agent <sentinel> -p`, ~0.5s, no
+  API call, no tokens), caches them PER CWD because that list is cwd-dependent (24 names in this
+  repo, 5 in `/tmp`), and fails OPEN when the list cannot be determined — blocking every session
   because a probe broke would be a worse failure than the one it guards.
 - **Prefer magmux over `-p`** for anything where a silent behavioural difference would corrupt
   the result rather than merely degrade it.

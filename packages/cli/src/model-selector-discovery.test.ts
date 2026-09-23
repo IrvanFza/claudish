@@ -204,7 +204,7 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
 
     expect(outcome.kind).toBe("empty-roster");
     if (outcome.kind !== "empty-roster") throw new Error("unreachable");
-    expect(outcome.failure.kind).toBe("empty-roster");
+    expect(outcome.failure.kind).toBe("empty-models-catalog");
     expect(outcome.failure.endpoint).toContain("/v1/models");
     expect(outcome.fallbackRows.length).toBe(2);
   });
@@ -439,14 +439,20 @@ describe("formatDiscoveryFailureNotice", () => {
 });
 
 describe("no rendered notice interpolates `undefined`", () => {
-  const KINDS: DiscoveryFailureKind[] = [
-    "no-credentials",
-    "unauthorized",
-    "http-error",
-    "unreachable",
-    "malformed",
-    "empty-roster",
-  ];
+  // A Record, not an array, so the COMPILER enforces "every kind": adding a
+  // kind to `DiscoveryFailureKind` without listing it here fails typecheck. An
+  // array did not — `incomplete` arrived in the union and this list, which
+  // calls itself exhaustive, kept passing without it.
+  const EVERY_KIND: Record<DiscoveryFailureKind, true> = {
+    "no-credentials": true,
+    unauthorized: true,
+    "http-error": true,
+    unreachable: true,
+    malformed: true,
+    incomplete: true,
+    "empty-models-catalog": true,
+  };
+  const KINDS = Object.keys(EVERY_KIND) as DiscoveryFailureKind[];
 
   test("every kind × endpoint × status × detail × fallback", () => {
     // The `empty-roster` records on the fetcher half carried no endpoint for

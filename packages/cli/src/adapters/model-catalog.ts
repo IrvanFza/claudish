@@ -2,7 +2,7 @@
  * Model metadata catalog — Firebase slim cache is the sole source of truth.
  *
  * All model facts (contextWindow, supportsVision) come from the slim catalog
- * at ~/.claudish/all-models.json, populated at proxy startup by the OpenRouter
+ * at ~/.claudish/cloud-models-catalog-v3.json, populated at proxy startup by the OpenRouter
  * catalog resolver.
  *
  * Adapter-specific behavior (temperature ranges, tool name limits, max tool
@@ -20,6 +20,7 @@ import {
   readAllModelsCache,
   reasoningStatusOf,
 } from "../providers/all-models-cache.js";
+import { catalogRouteMatchesProvider } from "../providers/catalog-route-bindings.js";
 import { compareByReleaseDateDesc } from "../providers/model-ordering.js";
 
 export type {
@@ -40,7 +41,7 @@ export interface ModelEntry {
   /**
    * Curated release date (ISO `YYYY-MM-DD`), when Firebase has one. The
    * authoritative freshness signal — pickers prefer it over any date a provider
-   * endpoint reports, which is a roster-added timestamp, not a release.
+   * endpoint reports, which is a date-added timestamp, not a release.
    */
   releaseDate?: string;
 }
@@ -60,7 +61,7 @@ export interface ModelEntry {
  *   - modelId isn't in the cache
  *   - The entry exists but has no `contextWindow`
  *
- * @param cachePath Override cache path. Defaults to `~/.claudish/all-models.json`.
+ * @param cachePath Override cache path. Defaults to `~/.claudish/cloud-models-catalog-v3.json`.
  *                  Only tests should pass this.
  */
 export function lookupModel(modelId: string, cachePath?: string): ModelEntry | undefined {
@@ -181,8 +182,8 @@ export function lookupRouteReasoningMode(
   provider: string,
   cachePath?: string
 ): ReasoningModeCapabilities | undefined {
-  return findCacheEntry(modelId, cachePath)?.aggregators?.find(
-    (aggregator) => aggregator.provider === provider
+  return findCacheEntry(modelId, cachePath)?.aggregators?.find((aggregator) =>
+    catalogRouteMatchesProvider(aggregator.route, provider)
   )?.reasoning?.mode;
 }
 
@@ -231,7 +232,7 @@ export function lookupFamilyDefaultVariant(
  * an error and must never block a request.
  *
  * @param provider Only return variants recorded on this serving provider. A
- *   preset is an observation about ONE provider's roster, not a portable fact
+ *   preset is an observation about ONE provider's model list, not a portable fact
  *   about the model — the same parameter may not exist on another host — so a
  *   caller that cannot verify the parameter independently should pass the
  *   provider it is actually routing to.
@@ -308,131 +309,51 @@ export function lookupModelForProvider(
   const entry = findCacheEntry(modelId, cachePath);
   if (!entry) return undefined;
   return (
-    entry.aggregators?.find((a) => a.provider === provider)?.contextWindow ?? entry.contextWindow
+    entry.aggregators?.find((a) => catalogRouteMatchesProvider(a.route, provider))?.contextWindow ??
+    entry.contextWindow
   );
 }
 
-/**
- * Whether a subscription endpoint can serve a model, and under which wire id.
- *
- * - `serves`     — the plan includes this model; send `externalId` (the wire id
- *                  the endpoint accepts, e.g. `k3` for catalog `kimi-k3`).
- * - `not-served` — the provider IS a subscription plan, but this model isn't in
- *                  it. Routing should DROP the candidate: sending the model
- *                  anyway is a guaranteed rejection, and silently substituting a
- *                  different model gives the user something they didn't ask for.
- * - `unknown`    — not a subscription plan, or the model isn't in the catalog.
- *                  Caller keeps its existing behaviour.
- */
+/** A subscription route's catalog answer for one model. */
 export type SubscriptionRouting =
   | { kind: "serves"; externalId: string }
   | { kind: "not-served" }
   | { kind: "unknown" };
 
-/**
- * Resolve how a subscription provider should route a model, from catalog data
- * alone (`subscriptionPlans[]` plan IDs joined through cached `queryPlans`,
- * plus `aggregators[].externalId`).
- *
- * Nothing about which models a plan includes is hardcoded — that is exactly the
- * data that goes stale. Kimi Code shipping K3 while the CLI pinned
- * `kimi-for-coding` is the worked example.
- */
 export function resolveSubscriptionRouting(
   modelId: string,
   provider: string,
   cachePath?: string
 ): SubscriptionRouting {
-  const entry = findCacheEntry(modelId, cachePath);
-  if (!entry) return { kind: "unknown" };
-
   const cache = readAllModelsCache(cachePath);
-  const providerPlans =
-    cache?.plans?.filter((plan) => plan.routing?.providerUid === provider) ?? [];
+  const entry = findCacheEntry(modelId, cachePath);
+  if (!cache || !entry) return { kind: "unknown" };
 
-  // Legacy v2 caches predate queryPlans and stored provider UIDs directly in
-  // subscriptionPlans. Preserve their old behavior until the next refresh.
-  if (cache?.plans === undefined) {
-    if (entry.subscriptionPlans?.includes(provider)) {
-      const agg = entry.aggregators?.find((a) => a.provider === provider);
-      return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
-    }
-    return isLegacySubscriptionPlan(provider, cachePath)
-      ? { kind: "not-served" }
+  const plans = cache.plans.filter(
+    (plan) => plan.routeStatus === "supported" && catalogRouteMatchesProvider(plan.route, provider)
+  );
+  if (plans.length === 0) return { kind: "unknown" };
+
+  const memberships = entry.subscriptionPlanIds ?? [];
+  const included = plans.filter((plan) => memberships.includes(plan.id));
+  if (included.length > 0) {
+    if (included.length !== plans.length) return { kind: "unknown" };
+    const connection = entry.aggregators?.find(
+      (candidate) =>
+        candidate.routeStatus === "mapped" && catalogRouteMatchesProvider(candidate.route, provider)
+    );
+    return connection?.externalModelId
+      ? { kind: "serves", externalId: connection.externalModelId }
       : { kind: "unknown" };
   }
 
-  if (providerPlans.length === 0) return { kind: "unknown" };
-
-  const providerPlanIds = new Set(providerPlans.map((plan) => plan.id));
-  const hasMembership = entry.subscriptionPlans?.some((planId) => providerPlanIds.has(planId));
-  if (hasMembership) {
-    const agg = entry.aggregators?.find((a) => a.provider === provider);
-    // A plan membership without an aggregator entry has no wire id to send;
-    // keep the candidate as unknown rather than inventing one. The normal
-    // catalog resolver may still know the canonical provider wire ID.
-    return agg?.externalId ? { kind: "serves", externalId: agg.externalId } : { kind: "unknown" };
-  }
-
-  // queryModels and queryPlans are separate requests, so a client can briefly
-  // pair a new plan contract with an older slim snapshot. Static absence only
-  // becomes authoritative after this cache demonstrates that it contains at
-  // least one membership row for the provider's plans. Otherwise treating
-  // zero coverage as a complete empty roster would drop every candidate during
-  // a backend rollout (the exact OpenAI/Anthropic gap that motivated the join).
-  const hasPublishedProviderRoster = cache.entries.some((candidate) =>
-    candidate.subscriptionPlans?.some((planId) => providerPlanIds.has(planId))
+  // Client-selected and hybrid memberships are decided by the user's live session.
+  if (plans.some((plan) => plan.modelDiscovery !== "catalog")) return { kind: "unknown" };
+  const ids = new Set(plans.map((plan) => plan.id));
+  const hasMembership = cache.entries.some((candidate) =>
+    candidate.subscriptionPlanIds?.some((planId) => ids.has(planId))
   );
-  if (!hasPublishedProviderRoster) return { kind: "unknown" };
-
-  // Absence of evidence is evidence of absence only when the view is whole, and
-  // this one has a hole in it by construction: `providerPlans` above keeps only
-  // plans carrying a `routing.providerUid`, so a plan with no routing block is
-  // never consulted. A SIBLING plan for the same vendor can still publish a
-  // roster, which makes `hasPublishedProviderRoster` true and turns this
-  // provider's silence into a verdict about a plan nobody looked at.
-  //
-  // Measured on the live cache: `alibaba-ai-coding-plan` covers
-  // `qwen3-coder-plus` and carries NO routing block, while
-  // `alibaba-token-plan-individual` and `-team-edition` share
-  // `routing.providerUid: "qwen-cloud"` and do publish memberships. Without this
-  // guard `qwen3-coder-plus` resolved `not-served`, `qwen-cloud` was dropped,
-  // and a holder of Alibaba's $50/month coding plan was billed per token —
-  // the flat-rate-user invariant CLAUDE.md names.
-  //
-  // Deliberately narrow: it only withholds the verdict when a same-vendor plan
-  // is genuinely invisible. Where every plan for the vendor is routable — z-ai's
-  // sole `z-ai-glm-coding-plan`, for one — the view is complete and
-  // `not-served` still stands, so this does not degrade into never dropping
-  // anything. The right long-term fix is a `routing` block on every plan the
-  // backend publishes; this keeps the client honest until then.
-  const vendorsInView = new Set(
-    providerPlans.map((plan) => plan.provider).filter((v): v is string => v !== undefined)
-  );
-  const hasUnroutableSiblingPlan = (cache.plans ?? []).some(
-    (plan) =>
-      plan.provider !== undefined &&
-      vendorsInView.has(plan.provider) &&
-      plan.routing?.providerUid === undefined
-  );
-  if (hasUnroutableSiblingPlan) return { kind: "unknown" };
-
-  // Static absence is conclusive only for catalog-authoritative plans. Client
-  // and hybrid plans may expose additional account-specific models after auth.
-  return providerPlans.every(isCatalogDiscoveredPlan)
-    ? { kind: "not-served" }
-    : { kind: "unknown" };
-}
-
-function isCatalogDiscoveredPlan(plan: CachedSubscriptionPlan): boolean {
-  return plan.modelDiscovery === "catalog";
-}
-
-/** Legacy provider-UID membership detection for caches without queryPlans. */
-function isLegacySubscriptionPlan(provider: string, cachePath?: string): boolean {
-  const cache = readAllModelsCache(cachePath);
-  if (!cache) return false;
-  return cache.entries.some((e) => e.subscriptionPlans?.includes(provider));
+  return hasMembership ? { kind: "not-served" } : { kind: "unknown" };
 }
 
 /**
@@ -501,7 +422,7 @@ function findCacheEntry(modelId: string, cachePath?: string): SlimModelEntry | u
 }
 
 /**
- * The canonical catalog id a plan's exact roster id resolves to, or undefined.
+ * The canonical catalog id an exact wire id in a plan's membership resolves to, or undefined.
  *
  * Only a `described` resolution answers. `missing` and `ambiguous` are the
  * catalog stating that IT could not resolve the id, and inventing a lookup on
@@ -520,8 +441,8 @@ export function resolvePlanDescribedModelId(
 ): string | undefined {
   if (!plans) return undefined;
   for (const plan of plans) {
-    const described = plan.modelDescriptions?.[wireId];
-    if (described?.status === "described" && described.modelId) return described.modelId;
+    const inclusion = plan.inclusions?.find((item) => item.externalModelId === wireId);
+    if (inclusion?.resolution?.status === "mapped") return inclusion.resolution.modelId;
   }
   return undefined;
 }
@@ -547,7 +468,7 @@ export interface CatalogSearchMatch {
   modelId: string;
   aliases: string[];
   /** Subscription plans that include this model, verbatim from the catalog. */
-  subscriptionPlans: string[];
+  subscriptionPlanIds: string[];
   /** Set when the query matched an alias rather than the model id itself. */
   matchedAlias?: string;
 }
@@ -616,7 +537,7 @@ export function searchCatalogModels(
       match: {
         modelId: entry.modelId,
         aliases: entry.aliases ?? [],
-        subscriptionPlans: entry.subscriptionPlans ?? [],
+        subscriptionPlanIds: entry.subscriptionPlanIds ?? [],
         ...(hit.matchedAlias ? { matchedAlias: hit.matchedAlias } : {}),
       },
     };

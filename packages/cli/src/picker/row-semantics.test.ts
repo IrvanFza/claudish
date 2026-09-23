@@ -535,7 +535,7 @@ describe("discoveryNoticeContent", () => {
   test("`failed` is the ERROR tier; the three empty states are the NOTICE tier", () => {
     const rows: PickerDiscoveryOutcome[] = [
       { kind: "failed", failure: failure(), notice: ["⚠ x failed"], fallbackRows: [] },
-      { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [] },
+      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
       { kind: "all-filtered", servedCount: 3, sampleIds: ["e"], fallbackRows: [] },
       { kind: "collapsed-empty", servedCount: 3, chatCount: 3, fallbackRows: [] },
     ];
@@ -561,7 +561,7 @@ describe("discoveryNoticeContent", () => {
 
   test("`empty-roster` and `all-filtered` say DIFFERENT things", () => {
     const empty = discoveryNoticeContent(
-      { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [] },
+      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
       "Kimi"
     );
     const filtered = discoveryNoticeContent(
@@ -607,7 +607,7 @@ describe("discoveryNoticeContent", () => {
 
   test("no fallback list gets a next step instead of a provenance sentence", () => {
     const without = discoveryNoticeContent(
-      { kind: "empty-roster", failure: failure({ kind: "empty-roster" }), fallbackRows: [] },
+      { kind: "empty-roster", failure: failure({ kind: "empty-models-catalog" }), fallbackRows: [] },
       "Kimi"
     );
     expect(without?.lines.join(" ")).toContain("Press c");
@@ -650,7 +650,7 @@ describe("discoveryNoticeContent", () => {
         variants.push({ kind: "failed", failure: f, notice: ["⚠ x"], fallbackRows: [] });
         variants.push({
           kind: "empty-roster",
-          failure: { ...f, kind: "empty-roster" },
+          failure: { ...f, kind: "empty-models-catalog" },
           fallbackRows: [],
         });
       }

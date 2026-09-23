@@ -71,6 +71,10 @@ class RoutingError extends Error {
   }
 }
 
+function isTerminalRoutingFailure(e: unknown): e is Error {
+  return e instanceof RoutingError;
+}
+
 /**
  * A single slot-routing entry for `claudish serve`. Claude Desktop sends
  * `body.model = <slot>` (a Claude-recognized id it accepts into its picker);
@@ -474,7 +478,18 @@ export async function createProxyServer(
     // If resolver says use direct-api, resolve credentials via the authority.
     if (resolution.category === "direct-api") {
       const resolved = resolveRemoteProvider(resolveTarget);
-      if (!resolved) return null;
+      if (!resolved) {
+        // A KNOWN provider name that resolves to nothing has no endpoint: it
+        // declares no static baseUrl, no set `baseUrlEnvVars`, and not
+        // `buildsOwnEndpoint`. Say that here, because everything downstream of
+        // this null (OpenRouter fallback, or a 400 on an explicit spec) reads as
+        // "my key is missing" — which is how `vertex@` sent users looking for a
+        // key that was never involved.
+        log(
+          `[Proxy] No remote provider resolved for "${resolveTarget}" — no endpoint is configured for it (not a credential problem)`
+        );
+        return null;
+      }
 
       // Skip 'openrouter' provider here - it uses the existing OpenRouterHandler
       if (resolved.provider.name === "openrouter") {
@@ -557,9 +572,10 @@ export async function createProxyServer(
   // Firebase catalogs now. The OpenRouter catalog is still warmed below via
   // warmAllCatalogs() since it backs vendor-prefix resolution.
 
-  // Load effective routing rules once at startup. Returns a merged view of
-  // DEFAULT_ROUTING_RULES + global config + local config (local wins). The
-  // routing engine consults these via route() for every bare-name request.
+  // Load effective routing rules once at startup: the USER's global config +
+  // local config (local wins), and nothing else — there is no shipped table any
+  // more. The routing engine consults these via route() for every bare-name
+  // request, and falls through to the catalog-gathered chain when none matches.
   const effectiveRoutingRules = loadRoutingRules();
 
   // Cache fallback handlers by target model string.
@@ -815,9 +831,9 @@ export async function createProxyServer(
           }
         } else {
           // No routable provider for a bare model name. Routing is fully
-          // data-driven now (DEFAULT_ROUTING_RULES + user overrides) — if the
-          // chain is empty and credential filtering produces nothing, that's
-          // the user's configured outcome. Throw so the request handler
+          // data-driven now (the user's own rules, else the cloud models
+          // catalog) — if the chain is empty and credential filtering produces
+          // nothing, that is what the data says. Throw so the request handler
           // surfaces a clean error instead of silently falling through to a
           // legacy OpenRouter fallback. (Pre-commit-5 there was a hidden
           // OpenRouter step 7 that masked the no-route case.)
@@ -1088,7 +1104,7 @@ export async function createProxyServer(
       const txt = JSON.stringify(body);
       return c.json({ input_tokens: Math.ceil(txt.length / 4) });
     } catch (e) {
-      if (e instanceof RoutingError) {
+      if (isTerminalRoutingFailure(e)) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
       return c.json(wrapAnthropicError(500, String(e)), 500);
@@ -1146,7 +1162,7 @@ export async function createProxyServer(
       // Routing failures are terminal — surface as a non-retryable 400 so the
       // client shows the real reason (e.g. missing key) instead of looping on
       // "API error · Retrying". Other errors stay 500.
-      if (e instanceof RoutingError) {
+      if (isTerminalRoutingFailure(e)) {
         return c.json(wrapAnthropicError(400, e.message, "invalid_request_error"), 400);
       }
       return c.json(wrapAnthropicError(500, String(e)), 500);

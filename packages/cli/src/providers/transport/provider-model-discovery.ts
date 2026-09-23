@@ -8,7 +8,7 @@ import { getProviderByName } from "../provider-definitions.js";
 import { type DiscoveryOutcome, isChatCapable } from "./probe-discovery.js";
 
 /**
- * Pick a probe model from one provider's authenticated, account-scoped roster.
+ * Pick a probe model from one provider's authenticated, account-scoped dynamic models catalog.
  *
  * The cloud catalog can publish a useful default, but it cannot know which
  * models a subscription credential serves today. Keeping this rule shared by

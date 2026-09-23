@@ -1,8 +1,9 @@
+import { catalogRouteForProvider } from "./catalog-route-bindings.js";
 /**
  * Unit tests for providers/routing-rules.ts
  *
- * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, mergeRoutingRules,
- * and route() without hitting any real APIs or machine routing configuration.
+ * Tests matchRoutingRule, buildRoutingChain, loadRoutingRules, and route()
+ * without hitting any real APIs or machine routing configuration.
  *
  * Run: bun test packages/cli/src/providers/routing-rules.test.ts
  */
@@ -14,66 +15,25 @@ import { join } from "node:path";
 
 import { credentials } from "../auth/credentials/authority.js";
 import { __resetSniffForTests } from "../auth/credentials/op-source.js";
-import type { RecommendedModelsDoc } from "../model-loader.js";
 import type { RoutingRules } from "../profile-config.js";
-import { type DiskCacheV2, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
+import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { DISPLAY_NAMES } from "./auto-route.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { DEFAULT_ROUTING_RULES } from "./default-routing-rules.js";
 import { invalidateModelDiscovery } from "./model-discovery.js";
 import type { ProviderDefinition } from "./provider-definitions.js";
 import {
   buildRoutingChain,
   loadRoutingRules,
   matchRoutingRule,
-  mergeRoutingRules,
   normalizeGlmSlug,
-  retainKnownCatalogRoutingRules,
   route,
+  validateRoutingRulesAgainstProviders,
 } from "./routing-rules.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./runtime-providers.js";
 
 const SYNTHETIC_MODEL_ID = "acme-x1.0";
 const SYNTHETIC_MINIMAX_EXTERNAL_ID = "ACME-X1.0";
-const CATALOG_EXACT_MODEL_ID = "grok-4.6";
-
-const CATALOG_EXACT_ROUTE_DOC: RecommendedModelsDoc = {
-  version: "test",
-  lastUpdated: "2026-09-03T00:00:00.000Z",
-  models: [
-    {
-      id: CATALOG_EXACT_MODEL_ID,
-      name: "Grok 4.6",
-      description: "Synthetic catalog route used to isolate rule composition",
-      provider: "xAI",
-      category: "subscription",
-      priority: 1,
-      pricing: { input: "N/A", output: "N/A", average: "N/A" },
-      context: "N/A",
-      subscriptions: [
-        {
-          plan: "OpenCode Zen Go",
-          command: "zengo@grok-4.6",
-          routingProvider: "opencode-zen-go",
-          tier: "general",
-        },
-      ],
-    },
-  ],
-};
-
-function loadRulesWithCatalogExact(
-  globalRules: RoutingRules = {},
-  localRules: RoutingRules = {}
-): RoutingRules {
-  return loadRoutingRules({
-    globalRules,
-    localRules,
-    recommendedModels: CATALOG_EXACT_ROUTE_DOC,
-  });
-}
-
-function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
+function seedDefaultCatalog(entries: DiskCacheV3["entries"]): () => void {
   _setCatalogEntriesForTest(entries);
   return _resetCatalogClient;
 }
@@ -81,58 +41,80 @@ function seedDefaultCatalog(entries: DiskCacheV2["entries"]): () => void {
 function makeTempCatalog(
   model: {
     modelId: string;
+    aliases?: string[];
     externalId?: string;
-    subscriptionPlans?: string[];
+    subscriptionPlanIds?: string[];
   },
   /** Plan names to mark as active subscription plans in the catalog (defaults to the model's own plans). */
-  plans: string[] = model.subscriptionPlans ?? [],
-  routingProviderByPlan: Record<string, string> = {}
+  plans: string[] = model.subscriptionPlanIds ?? [],
+  routingProviderByPlan: Record<string, string> = {},
+  additionalProviders: string[] = []
 ): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "claudish-routing-test-"));
   const path = join(dir, "all-models.json");
-  const entries: DiskCacheV2["entries"] = [];
+  const entries: DiskCacheV3["entries"] = [];
 
   // Plan-owner entries: a provider is only treated as a subscription plan if
-  // some catalog entry lists it in subscriptionPlans[]. Add markers so tests can
+  // some catalog entry lists it in subscriptionPlanIds[]. Add markers so tests can
   // model the "model is not in this plan" drop path without duplicating real
   // plan members.
   for (const plan of plans) {
     entries.push({
       modelId: `${plan}-plan-marker`,
       aliases: [],
-      sources: {},
-      subscriptionPlans: [plan],
-      aggregators: [{ provider: plan, externalId: "any", confidence: "scrape_verified" as const }],
+
+      subscriptionPlanIds: [plan],
+      aggregators: [
+        {
+          sourceCollectorId: "test",
+          routeStatus: "mapped",
+          route: catalogRouteForProvider(routingProviderByPlan[plan] ?? plan),
+          sourceProviderId: plan,
+          externalModelId: "any",
+          confidence: "scrape_verified" as const,
+        },
+      ],
     });
   }
 
   entries.push({
     modelId: model.modelId,
-    aliases: [],
-    sources: {},
-    subscriptionPlans: model.subscriptionPlans ?? [],
-    aggregators:
-      model.externalId && model.subscriptionPlans
-        ? model.subscriptionPlans.map((planId) => ({
-            provider: routingProviderByPlan[planId] ?? planId,
-            externalId: model.externalId!,
+    aliases: model.aliases ?? [],
+
+    subscriptionPlanIds: model.subscriptionPlanIds ?? [],
+    aggregators: model.externalId
+      ? [
+          ...(model.subscriptionPlanIds ?? []).map((planId) => ({
+            sourceProviderId: routingProviderByPlan[planId] ?? planId,
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider(routingProviderByPlan[planId] ?? planId),
+            externalModelId: model.externalId!,
             confidence: "scrape_verified" as const,
-          }))
-        : undefined,
+          })),
+          ...additionalProviders.map((provider) => ({
+            sourceProviderId: provider,
+            sourceCollectorId: "test",
+            routeStatus: "mapped" as const,
+            route: catalogRouteForProvider(provider),
+            externalModelId: model.externalId!,
+            confidence: "api_official" as const,
+          })),
+        ]
+      : undefined,
   });
 
-  const cache: DiskCacheV2 = {
-    version: 2,
+  const cache: DiskCacheV3 = {
+    catalogGenerationId: "test-generation",
+    version: 3,
     lastUpdated: new Date().toISOString(),
     entries,
     models: [],
     plans: plans.map((plan) => ({
       id: plan,
       modelDiscovery: "catalog",
-      routing: {
-        providerUid: routingProviderByPlan[plan] ?? plan,
-        nativeModelProviders: [],
-      },
+      routeStatus: "supported",
+      route: catalogRouteForProvider(routingProviderByPlan[plan] ?? plan),
     })),
   };
   writeAllModelsCache(cache, path);
@@ -306,11 +288,14 @@ describe("buildRoutingChain", () => {
       {
         modelId: SYNTHETIC_MODEL_ID,
         aliases: [],
-        sources: {},
+
         aggregators: [
           {
-            provider: "minimax",
-            externalId: SYNTHETIC_MINIMAX_EXTERNAL_ID,
+            sourceCollectorId: "test",
+            routeStatus: "mapped",
+            route: catalogRouteForProvider("minimax"),
+            sourceProviderId: "minimax",
+            externalModelId: SYNTHETIC_MINIMAX_EXTERNAL_ID,
             confidence: "scrape_verified",
           },
         ],
@@ -427,11 +412,7 @@ describe("buildRoutingChain", () => {
 // loadRoutingRules — source composition without disk I/O
 // ---------------------------------------------------------------------------
 
-describe("loadRoutingRules merges defaults", () => {
-  // The three behavioural tests below seed `sources.recommendedModels`, but the
-  // v9.0.1 path bypassed that seam and read a homedir-derived cache path. They
-  // can therefore stay green on a cold CI checkout; this source-boundary guard
-  // survives that cold cache by forbidding model-loader runtime imports here.
+describe("loadRoutingRules composes only user rules", () => {
   test("keeps model-loader imports type-only so routing rules cannot read ambient cache state", () => {
     const source = readFileSync(join(import.meta.dir, "routing-rules.ts"), "utf8");
     const modelLoaderImports = [
@@ -446,96 +427,84 @@ describe("loadRoutingRules merges defaults", () => {
     expect(valueImports).toEqual([]);
   });
 
-  test("default glob stays reachable when the catalog has an exact model key", () => {
-    // Catalog keys are exact, so retaining one here used to bypass the broader
-    // fallback chain solely because exact matching runs before glob matching.
-    const rules = loadRulesWithCatalogExact();
-
-    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(
-      DEFAULT_ROUTING_RULES["grok-*"]
-    );
+  test("returns an empty table when the user configured no rules", () => {
+    expect(loadRoutingRules({ globalRules: {}, localRules: {} })).toEqual({});
   });
 
-  test("user glob wins when the catalog has an exact model key", () => {
+  test("honours a user glob verbatim", () => {
     const userRules: RoutingRules = { "grok-*": ["x-ai", "openrouter"] };
-
-    // Docs recommend family globs; an exact cache row must not silently make a
-    // user's supported configuration style unreachable.
-    const rules = loadRulesWithCatalogExact(userRules);
-
-    expect(matchRoutingRule(CATALOG_EXACT_MODEL_ID, rules)).toEqual(userRules["grok-*"]);
+    const rules = loadRoutingRules({ globalRules: userRules, localRules: {} });
+    expect(matchRoutingRule("grok-4.6", rules)).toEqual(userRules["grok-*"]);
   });
 
-  test("returns only rule keys supplied by defaults or user config", () => {
+  test("returns only user-supplied rule keys", () => {
     const globalRules: RoutingRules = { "team-*": ["openrouter"] };
     const localRules: RoutingRules = { "project-model": ["x-ai"] };
-
-    // Cache contents vary by machine and over time, so they cannot be allowed
-    // to expand the effective configuration's key space.
-    const rules = loadRulesWithCatalogExact(globalRules, localRules);
-    const configuredRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, globalRules, localRules);
-
-    expect(Object.keys(rules).sort()).toEqual(Object.keys(configuredRules).sort());
-  });
-
-  test("catalog routes keep known providers and cannot shadow defaults with an unknown provider", () => {
-    expect(
-      retainKnownCatalogRoutingRules({
-        "mixed-model": ["future-provider@future-wire", "openrouter@vendor/model"],
-        "future-only-model": ["future-provider@future-wire"],
-      })
-    ).toEqual({
-      "mixed-model": ["openrouter@vendor/model"],
+    expect(loadRoutingRules({ globalRules, localRules })).toEqual({
+      "team-*": ["openrouter"],
+      "project-model": ["x-ai"],
     });
   });
 
-  test("with no user rules: merge returns defaults exactly", () => {
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, {}, {});
-    expect(merged).toEqual(DEFAULT_ROUTING_RULES);
+  test("an exact key beats a glob inside the user's own rules", () => {
+    const rules = loadRoutingRules({
+      globalRules: {
+        "grok-*": ["x-ai", "openrouter"],
+        "grok-4.6": ["grok-subscription"],
+      },
+      localRules: {},
+    });
+    expect(matchRoutingRule("grok-4.6", rules)).toEqual(["grok-subscription"]);
   });
 
-  test("user rule that overrides 'claude-*' wins; defaults still cover other patterns", () => {
-    const userGlobal: RoutingRules = {
-      "claude-*": ["openrouter"],
-    };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
-    expect(merged["claude-*"]).toEqual(["openrouter"]);
-    // Defaults still apply to unrelated patterns
-    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
-    expect(merged["*"]).toEqual(DEFAULT_ROUTING_RULES["*"]);
-  });
-
-  test("user '*' = [] removes the catch-all (verify match returns empty)", () => {
-    const userGlobal: RoutingRules = {
-      "*": [],
-    };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, {});
-    expect(merged["*"]).toEqual([]);
-    // Other defaults still apply
-    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
-    // matchRoutingRule on a pattern only the catch-all would have caught
-    // returns the empty array (caller treats as "no route").
-    const m = matchRoutingRule("totally-unknown-model-xyz", merged);
-    expect(m).toEqual([]);
-  });
-
-  test("local overrides global; defaults still cover untouched patterns", () => {
+  test("local rules override global rules by exact key", () => {
     const userGlobal: RoutingRules = { "claude-*": ["openrouter"] };
     const userLocal: RoutingRules = { "claude-*": ["native-anthropic"] };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
-    // Local wins
-    expect(merged["claude-*"]).toEqual(["native-anthropic"]);
-    // Defaults still cover unrelated patterns
-    expect(merged["gpt-*"]).toEqual(DEFAULT_ROUTING_RULES["gpt-*"]);
+    const rules = loadRoutingRules({ globalRules: userGlobal, localRules: userLocal });
+    expect(rules).toEqual({ "claude-*": ["native-anthropic"] });
   });
 
-  test("local + global add new patterns without disturbing defaults", () => {
-    const userGlobal: RoutingRules = { "my-custom-*": ["openrouter"] };
-    const userLocal: RoutingRules = { "my-other-*": ["openai"] };
-    const merged = mergeRoutingRules(DEFAULT_ROUTING_RULES, userGlobal, userLocal);
-    expect(merged["my-custom-*"]).toEqual(["openrouter"]);
-    expect(merged["my-other-*"]).toEqual(["openai"]);
-    expect(merged["claude-*"]).toEqual(DEFAULT_ROUTING_RULES["claude-*"]);
+  test("preserves an explicit empty catch-all", () => {
+    const rules = loadRoutingRules({ globalRules: { "*": [] }, localRules: {} });
+    expect(matchRoutingRule("totally-unknown-model-xyz", rules)).toEqual([]);
+  });
+});
+
+describe("validateRoutingRulesAgainstProviders", () => {
+  test("throws when a rule references an unknown provider", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "fake-*": ["totally-not-a-real-provider"] })
+    ).toThrow(/unknown providers/);
+  });
+
+  test("lists every unknown provider without blaming known providers", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({
+        "a-*": ["typo-one"],
+        "b-*": ["typo-two", "openrouter"],
+      })
+    ).toThrow(/typo-one[\s\S]*typo-two/);
+    try {
+      validateRoutingRulesAgainstProviders({ "a-*": ["typo-one", "openrouter"] });
+    } catch (error) {
+      expect((error as Error).message).not.toContain('→ unknown provider "openrouter"');
+    }
+  });
+
+  test("accepts provider@wire-id rewrites", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "kimi-*": ["kimi-coding@whatever-model", "kimi"] })
+    ).not.toThrow();
+  });
+
+  test("accepts provider shortcuts", () => {
+    expect(() => validateRoutingRulesAgainstProviders({ "*": ["or"] })).not.toThrow();
+  });
+
+  test("rejects a typo in a provider@wire-id rewrite", () => {
+    expect(() =>
+      validateRoutingRulesAgainstProviders({ "kimi-*": ["typo-coding@kimi-for-coding"] })
+    ).toThrow(/typo-coding/);
   });
 });
 
@@ -582,9 +551,9 @@ const ENV_KEYS_TO_CLEAR = [
   "MOONSHOT_API_KEY",
   "KIMI_API_KEY",
   "KIMI_CODING_API_KEY",
-  "QWEN_CLOUD_PLAN_API_KEY",
+  "QWEN_TOKEN_PLAN_API_KEY",
+  "QWEN_CODING_PLAN_API_KEY",
   "DASHSCOPE_API_KEY",
-  "QWEN_API_KEY",
   "MINIMAX_API_KEY",
   "MINIMAX_CODING_API_KEY",
   "ZHIPU_API_KEY",
@@ -638,7 +607,7 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with ANTHROPIC_API_KEY → primary native-anthropic", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -653,7 +622,7 @@ describe("route()", () => {
 
   test("explicit Devin dv@glm-5-2 preserves the dash-native uid without normalization", async () => {
     process.env.WINDSURF_API_KEY = "devin-session-token$test";
-    const plan = await route("dv@glm-5-2", DEFAULT_ROUTING_RULES);
+    const plan = await route("dv@glm-5-2", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.modelSpec).toBe("dv@glm-5-2");
@@ -662,14 +631,14 @@ describe("route()", () => {
 
   test("claude-opus-4-7 with only OPENROUTER_API_KEY → primary openrouter", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
   });
 
   test("claude-opus-4-7 with no credentials → no-route, hint mentions both providers", async () => {
-    const plan = await route("claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("claude-opus-4-7", {});
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     expect(plan.hint).toBeDefined();
@@ -681,7 +650,7 @@ describe("route()", () => {
 
   test("explicit prefix native-anthropic@claude-opus-4-7 with ANTHROPIC_API_KEY → ok", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const plan = await route("native-anthropic@claude-opus-4-7", DEFAULT_ROUTING_RULES);
+    const plan = await route("native-anthropic@claude-opus-4-7", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("native-anthropic");
@@ -692,7 +661,7 @@ describe("route()", () => {
     // Even with OPENROUTER_API_KEY set, an explicit openai@ prefix must NOT
     // silently reroute to OpenRouter.
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("openai@gpt-5", DEFAULT_ROUTING_RULES);
+    const plan = await route("openai@gpt-5", {});
     expect(plan.kind).toBe("no-route");
     if (plan.kind !== "no-route") return;
     // Hint should mention the missing OpenAI key, not OpenRouter
@@ -714,53 +683,76 @@ describe("route()", () => {
     if (existsSync(codexOauth)) return;
 
     process.env.OPENAI_API_KEY = "sk-openai-test";
-    const plan = await route("gpt-5", DEFAULT_ROUTING_RULES);
+    const plan = await route("gpt-5", {});
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
   });
 
-  test("gpt-5 (bare) with OPENAI_CODEX_API_KEY → primary openai-codex", async () => {
-    // Assert rule composition with an empty catalog (an absent cache file),
-    // not Codex model support: live Codex returns 400 with "The 'gpt-5' model
-    // is not supported when using Codex with a ChatGPT account".
-    //
-    // In a dev environment where codex-oauth.json exists, codex is genuinely
-    // credentialed regardless of the fake env key. Skip the strict assertion
-    // there, matching the sibling credential test. openai-codex declares no
-    // modelDiscovery, so only the catalog cache, not live discovery, is a factor.
-    const codexOauth = join(homedir(), ".claudish", "codex-oauth.json");
-    if (existsSync(codexOauth)) return;
-
+  test("gpt-5 (bare) with OPENAI_CODEX_API_KEY and no catalog → no-route", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudish-routing-empty-catalog-test-"));
     const cachePath = join(dir, "all-models.json");
     try {
       process.env.OPENAI_CODEX_API_KEY = "sk-codex-test";
-      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
-      expect(plan.kind).toBe("ok");
-      if (plan.kind !== "ok") return;
-      expect(plan.primary.provider).toBe("openai-codex");
+      const plan = await route("gpt-5", {}, undefined, cachePath);
+      expect(plan.kind).toBe("no-route");
+      if (plan.kind !== "no-route") return;
+      expect(plan.reason).toContain("No model catalog available");
+      expect(plan.hint).toContain("claudish --models-refresh");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("qwen3.7-plus prefers qwen-cloud over qwen-payg when both credentials are present", async () => {
-    process.env.QWEN_CLOUD_PLAN_API_KEY = "qwen-plan-test";
+  test("qwen3.7-plus prefers qwen-token-plan over qwen-payg when both credentials are present", async () => {
+    process.env.QWEN_TOKEN_PLAN_API_KEY = "qwen-plan-test";
     process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
-    const { path, cleanup } = makeTempCatalog({
-      modelId: "qwen3.7-plus",
-      externalId: "qwen3.7-plus",
-      subscriptionPlans: ["qwen-cloud"],
-    });
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "qwen3.7-plus",
+        externalId: "qwen3.7-plus",
+        subscriptionPlanIds: ["qwen-token-plan"],
+      },
+      undefined,
+      {},
+      ["qwen-payg"]
+    );
     try {
-      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("qwen3.7-plus", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
-      expect(plan.primary.provider).toBe("qwen-cloud");
-      expect(plan.primary.modelSpec).toBe("qc@qwen3.7-plus");
+      expect(plan.primary.provider).toBe("qwen-token-plan");
+      expect(plan.primary.modelSpec).toBe("qtoken@qwen3.7-plus");
       expect(plan.fallbacks.map((fallback) => fallback.provider)).toEqual(["qwen-payg"]);
-      expect(plan.fallbacks[0]?.modelSpec).toBe("qp@qwen3.7-plus");
+      expect(plan.fallbacks[0]?.modelSpec).toBe("qpay@qwen3.7-plus");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("qwen3.7-plus prefers Coding Plan when all three Alibaba credentials are present", async () => {
+    process.env.QWEN_CODING_PLAN_API_KEY = "coding-test";
+    process.env.QWEN_TOKEN_PLAN_API_KEY = "token-test";
+    process.env.DASHSCOPE_API_KEY = "payg-test";
+    const planIds = ["alibaba-ai-coding-plan", "alibaba-token-plan-individual"];
+    const { path, cleanup } = makeTempCatalog(
+      { modelId: "qwen3.7-plus", externalId: "qwen3.7-plus", subscriptionPlanIds: planIds },
+      planIds,
+      {
+        "alibaba-ai-coding-plan": "qwen-coding",
+        "alibaba-token-plan-individual": "qwen-token-plan",
+      },
+      ["qwen-payg"]
+    );
+    try {
+      const result = await route("qwen3.7-plus", {}, undefined, path);
+      expect(result.kind).toBe("ok");
+      if (result.kind !== "ok") return;
+      expect(result.primary.modelSpec).toBe("qcode@qwen3.7-plus");
+      expect(result.fallbacks.map((candidate) => candidate.modelSpec)).toEqual([
+        "qtoken@qwen3.7-plus",
+        "qpay@qwen3.7-plus",
+      ]);
     } finally {
       cleanup();
     }
@@ -768,17 +760,22 @@ describe("route()", () => {
 
   test("qwen3.7-plus falls through to qwen-payg with only DASHSCOPE_API_KEY", async () => {
     process.env.DASHSCOPE_API_KEY = "qwen-payg-test";
-    const { path, cleanup } = makeTempCatalog({
-      modelId: "qwen3.7-plus",
-      externalId: "qwen3.7-plus",
-      subscriptionPlans: ["qwen-cloud"],
-    });
+    const { path, cleanup } = makeTempCatalog(
+      {
+        modelId: "qwen3.7-plus",
+        externalId: "qwen3.7-plus",
+        subscriptionPlanIds: ["qwen-token-plan"],
+      },
+      undefined,
+      {},
+      ["qwen-payg"]
+    );
     try {
-      const plan = await route("qwen3.7-plus", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("qwen3.7-plus", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("qwen-payg");
-      expect(plan.primary.modelSpec).toBe("qp@qwen3.7-plus");
+      expect(plan.primary.modelSpec).toBe("qpay@qwen3.7-plus");
     } finally {
       cleanup();
     }
@@ -790,13 +787,13 @@ describe("route()", () => {
       {
         modelId: "kimi-k3",
         externalId: "k3",
-        subscriptionPlans: ["kimi-code"],
+        subscriptionPlanIds: ["kimi-code"],
       },
       ["kimi-code"],
       { "kimi-code": "kimi-coding" }
     );
     try {
-      const plan = await route("kimi-k3", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("kimi-k3", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -826,15 +823,17 @@ describe("route()", () => {
     const path = join(dir, "all-models.json");
     writeAllModelsCache(
       {
-        version: 2,
+        catalogGenerationId: "test-generation",
+        version: 3,
         lastUpdated: new Date().toISOString(),
-        entries: [{ modelId: "gpt-rollout-model", aliases: [], sources: {} }],
+        entries: [{ modelId: "gpt-rollout-model", aliases: [] }],
         models: [],
         plans: [
           {
             id: "openai-codex",
             modelDiscovery: "catalog",
-            routing: { providerUid: "openai-codex", nativeModelProviders: ["openai"] },
+            routeStatus: "supported",
+            route: catalogRouteForProvider("openai-codex"),
           },
         ],
       },
@@ -854,15 +853,17 @@ describe("route()", () => {
     const path = join(dir, "all-models.json");
     writeAllModelsCache(
       {
-        version: 2,
+        catalogGenerationId: "test-generation",
+        version: 3,
         lastUpdated: new Date().toISOString(),
-        entries: [{ modelId: "grok-account-model", aliases: [], sources: {} }],
+        entries: [{ modelId: "grok-account-model", aliases: [] }],
         models: [],
         plans: [
           {
             id: "xai-supergrok",
             modelDiscovery: "client",
-            routing: { providerUid: "grok-subscription", nativeModelProviders: ["x-ai"] },
+            routeStatus: "supported",
+            route: catalogRouteForProvider("grok-subscription"),
           },
         ],
       },
@@ -884,13 +885,14 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k3",
+        aliases: ["k3"],
         externalId: "k3",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("k3", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -905,13 +907,14 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k3-256k",
+        aliases: ["k3-256k"],
         externalId: "k3-256k",
-        subscriptionPlans: ["kimi-coding"],
+        subscriptionPlanIds: ["kimi-coding"],
       },
       ["kimi-coding"]
     );
     try {
-      const plan = await route("k3-256k", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("k3-256k", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi-coding");
@@ -927,13 +930,16 @@ describe("route()", () => {
     const { path, cleanup } = makeTempCatalog(
       {
         modelId: "kimi-k2.5",
-        // No subscriptionPlans — this model is not part of the kimi-coding plan,
+        externalId: "kimi-k2.5",
+        // No subscriptionPlanIds — this model is not part of the kimi-coding plan,
         // so the subscription candidate is dropped instead of silently substituting.
       },
-      ["kimi-coding"]
+      ["kimi-coding"],
+      {},
+      ["kimi"]
     );
     try {
-      const plan = await route("kimi-k2.5", DEFAULT_ROUTING_RULES, undefined, path);
+      const plan = await route("kimi-k2.5", {}, undefined, path);
       expect(plan.kind).toBe("ok");
       if (plan.kind !== "ok") return;
       expect(plan.primary.provider).toBe("kimi");
@@ -944,35 +950,24 @@ describe("route()", () => {
   });
 
   test("user disables catch-all with '*' = [] → no-route for unknown bare names", async () => {
-    const userRules: RoutingRules = mergeRoutingRules(DEFAULT_ROUTING_RULES, { "*": [] }, {});
+    const userRules: RoutingRules = { "*": [] };
     process.env.OPENROUTER_API_KEY = "or-test";
     const plan = await route("totally-unknown-xyz", userRules);
     expect(plan.kind).toBe("no-route");
   });
 
-  test("ok plan returns primary plus fallbacks in order", async () => {
-    // Assert rule composition with an empty catalog (an absent cache file),
-    // not Codex model support: live Codex returns 400 with "The 'gpt-5' model
-    // is not supported when using Codex with a ChatGPT account".
-    //
-    // In a dev environment where codex-oauth.json exists, codex is genuinely
-    // credentialed regardless of the fake env key. Skip the strict assertion
-    // there, matching the sibling credential test. openai-codex declares no
-    // modelDiscovery, so only the catalog cache, not live discovery, is a factor.
-    const codexOauth = join(homedir(), ".claudish", "codex-oauth.json");
-    if (existsSync(codexOauth)) return;
-
+  test("gpt-5 (bare) with all fallback credentials and no catalog → no-route", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudish-routing-empty-catalog-test-"));
     const cachePath = join(dir, "all-models.json");
     try {
       process.env.OPENAI_CODEX_API_KEY = "cx-test";
       process.env.OPENAI_API_KEY = "oai-test";
       process.env.OPENROUTER_API_KEY = "or-test";
-      const plan = await route("gpt-5", DEFAULT_ROUTING_RULES, undefined, cachePath);
-      expect(plan.kind).toBe("ok");
-      if (plan.kind !== "ok") return;
-      expect(plan.primary.provider).toBe("openai-codex");
-      expect(plan.fallbacks.map((r) => r.provider)).toEqual(["openai", "openrouter"]);
+      const plan = await route("gpt-5", {}, undefined, cachePath);
+      expect(plan.kind).toBe("no-route");
+      if (plan.kind !== "no-route") return;
+      expect(plan.reason).toContain("No model catalog available");
+      expect(plan.hint).toContain("claudish --models-refresh");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1012,14 +1007,14 @@ describe("route() with defaultProvider", () => {
     credentials.invalidate();
   });
 
-  test("defaultProvider appended after matched chain when not already present", async () => {
+  test("a matched user rule is honoured verbatim without appending defaultProvider", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
     process.env.XAI_API_KEY = "xai-test";
     const plan = await route("gpt-5", { "gpt-*": ["openai"] }, "x-ai");
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openai");
-    expect(plan.fallbacks.map((r) => r.provider)).toEqual(["x-ai"]);
+    expect(plan.fallbacks).toEqual([]);
   });
 
   test("defaultProvider deduped if already present in chain", async () => {
@@ -1034,30 +1029,33 @@ describe("route() with defaultProvider", () => {
 
   test("defaultProvider rescues unmatched model with no rule", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("totally-unknown-xyz", {}, "openrouter");
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("openrouter");
+    const { path, cleanup } = makeTempCatalog({ modelId: "catalog-readable-marker" });
+    try {
+      const plan = await route("totally-unknown-xyz", {}, "openrouter", path);
+      expect(plan.kind).toBe("ok");
+      if (plan.kind !== "ok") return;
+      expect(plan.primary.provider).toBe("openrouter");
+    } finally {
+      cleanup();
+    }
   });
 
-  test("defaultProvider rescues when matched chain has no credentialed providers", async () => {
+  test("defaultProvider does not rescue a matched user chain with no credentials", async () => {
     process.env.XAI_API_KEY = "xai-test";
     const plan = await route("deepseek-r1", { "deepseek-*": ["deepseek"] }, "x-ai");
-    expect(plan.kind).toBe("ok");
-    if (plan.kind !== "ok") return;
-    expect(plan.primary.provider).toBe("x-ai");
+    expect(plan.kind).toBe("no-route");
   });
 
-  test("defaultProvider undefined → identical behavior to omitted argument", () => {
+  test("defaultProvider undefined has the same effect as an omitted argument", async () => {
     process.env.OPENAI_API_KEY = "oai-test";
-    const planA = route("gpt-5", { "gpt-*": ["openai"] }, undefined);
-    const planB = route("gpt-5", { "gpt-*": ["openai"] });
+    const planA = await route("gpt-5", { "gpt-*": ["openai"] }, undefined);
+    const planB = await route("gpt-5", { "gpt-*": ["openai"] });
     expect(planA).toEqual(planB);
   });
 
   test("defaultProvider not consulted for explicit provider@model spec", async () => {
     process.env.OPENROUTER_API_KEY = "or-test";
-    const plan = await route("openrouter@gpt-5", DEFAULT_ROUTING_RULES, "xai");
+    const plan = await route("openrouter@gpt-5", {}, "xai");
     expect(plan.kind).toBe("ok");
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe("openrouter");
@@ -1099,16 +1097,19 @@ function routingCatalogEntry(modelId: string, providers: string[]): SlimModelEnt
   return {
     modelId,
     aliases: [],
-    sources: { test: { externalId: modelId } },
+
     aggregators: providers.map((provider) => ({
-      provider,
-      externalId: modelId,
+      sourceProviderId: provider,
+      sourceCollectorId: "test",
+      routeStatus: "mapped" as const,
+      route: catalogRouteForProvider(provider),
+      externalModelId: modelId,
       confidence: "api_official",
     })),
   };
 }
 
-function rosterProvider(name: string): ProviderDefinition {
+function modelsCatalogProvider(name: string): ProviderDefinition {
   return {
     name,
     displayName: name,
@@ -1138,16 +1139,16 @@ describe("route() model-availability filtering", () => {
   let cachePath = "";
   let cleanupCache: (() => void) | undefined;
   let credentialedProviders = new Set<string>();
-  let rosters = new Map<string, string[]>();
+  let modelsCatalogs = new Map<string, string[]>();
   let fetchCalls: string[] = [];
 
   function allowCredentials(...providers: string[]): void {
     credentialedProviders = new Set(providers);
   }
 
-  function registerRoster(name: string, ...ids: string[]): void {
-    registerRuntimeProvider(rosterProvider(name));
-    rosters.set(name, ids);
+  function registerModelsCatalog(name: string, ...ids: string[]): void {
+    registerRuntimeProvider(modelsCatalogProvider(name));
+    modelsCatalogs.set(name, ids);
   }
 
   beforeEach(() => {
@@ -1157,7 +1158,7 @@ describe("route() model-availability filtering", () => {
     clearRuntimeRegistry();
 
     credentialedProviders = new Set();
-    rosters = new Map();
+    modelsCatalogs = new Map();
     fetchCalls = [];
 
     const tempCatalog = makeTempCatalog({ modelId: AVAILABILITY_MODEL });
@@ -1173,8 +1174,8 @@ describe("route() model-availability filtering", () => {
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       const provider = new URL(rawUrl).hostname.replace(/\.invalid$/, "");
       fetchCalls.push(provider);
-      const ids = rosters.get(provider);
-      if (!ids) throw new Error(`Unexpected roster request for ${provider}`);
+      const ids = modelsCatalogs.get(provider);
+      if (!ids) throw new Error(`Unexpected discovery request for ${provider}`);
       return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -1195,7 +1196,7 @@ describe("route() model-availability filtering", () => {
 
   test("removes not-served candidates and preserves the surviving order", async () => {
     const denied = "availability-denied";
-    registerRoster(denied, "some-other-model");
+    registerModelsCatalog(denied, "some-other-model");
     allowCredentials(denied, "openai", "openrouter");
     _setCatalogEntriesForTest([routingCatalogEntry(AVAILABILITY_MODEL, ["openai", "openrouter"])]);
 
@@ -1253,8 +1254,8 @@ describe("route() model-availability filtering", () => {
   test("returns no-route naming every checked provider when all are not-served", async () => {
     const first = "availability-denied-first";
     const second = "availability-denied-second";
-    registerRoster(first, "other-first");
-    registerRoster(second, "other-second");
+    registerModelsCatalog(first, "other-first");
+    registerModelsCatalog(second, "other-second");
     allowCredentials(first, second);
 
     const plan = await route(
@@ -1273,7 +1274,7 @@ describe("route() model-availability filtering", () => {
 
   test("explicit not-served spec returns no-route without silent substitution", async () => {
     const denied = "availability-explicit-denied";
-    registerRoster(denied, "some-other-model");
+    registerModelsCatalog(denied, "some-other-model");
     allowCredentials(denied, "openai");
 
     const plan = await route(
@@ -1292,7 +1293,7 @@ describe("route() model-availability filtering", () => {
 
   test("explicit serves spec returns ok with the named provider", async () => {
     const serving = "availability-explicit-serving";
-    registerRoster(serving, AVAILABILITY_MODEL);
+    registerModelsCatalog(serving, AVAILABILITY_MODEL);
     allowCredentials(serving);
 
     const plan = await route(`${serving}@${AVAILABILITY_MODEL}`, {}, undefined, cachePath);
@@ -1306,8 +1307,8 @@ describe("route() model-availability filtering", () => {
   test("checks availability only after filtering providers without credentials", async () => {
     const noCredential = "availability-no-credential";
     const credentialed = "availability-credentialed";
-    registerRoster(noCredential, AVAILABILITY_MODEL);
-    registerRoster(credentialed, AVAILABILITY_MODEL);
+    registerModelsCatalog(noCredential, AVAILABILITY_MODEL);
+    registerModelsCatalog(credentialed, AVAILABILITY_MODEL);
     allowCredentials(credentialed);
 
     const plan = await route(
@@ -1321,7 +1322,7 @@ describe("route() model-availability filtering", () => {
     if (plan.kind !== "ok") return;
     expect(plan.primary.provider).toBe(credentialed);
     // A provider the user cannot authenticate to must never incur the
-    // guaranteed-failing roster round-trip.
+    // guaranteed-failing discovery round-trip.
     expect(fetchCalls).toEqual([credentialed]);
     expect(fetchCalls).not.toContain(noCredential);
   });

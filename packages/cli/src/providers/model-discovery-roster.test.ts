@@ -146,7 +146,7 @@ describe("discoverProviderRoster — the GET half", () => {
 
     expect(outcome).toMatchObject({
       kind: "failed",
-      failure: { kind: "empty-roster", provider: "kimi-coding" },
+      failure: { kind: "empty-models-catalog", provider: "kimi-coding" },
     });
     // The GET half has always had a URL to name, and still does.
     if (outcome.kind !== "failed") throw new Error("unreachable");
@@ -184,7 +184,10 @@ describe("discoverProviderRoster — `unsupported` is not a failure", () => {
     }
   );
 
-  test("a declared descriptor with no resolvable base URL is unsupported{no-base-url}", async () => {
+  test("a declared descriptor with no resolvable base URL is failed{unreachable}, naming where to fix it", async () => {
+    // Not `unsupported`: the provider DID declare discovery, so this is a setup
+    // fault the user can fix — reporting it silently read as "the plan lists no
+    // models". With no override variables to name, the detail names the field.
     const provider = defineProvider("roster-no-base-url-test", {
       baseUrl: "",
       baseUrlEnvVars: [],
@@ -192,10 +195,14 @@ describe("discoverProviderRoster — `unsupported` is not a failure", () => {
     registerRuntimeProvider(provider);
 
     expect(await discoverProviderRoster(provider.name)).toEqual({
-      kind: "unsupported",
-      reason: "no-base-url",
+      kind: "failed",
+      failure: {
+        kind: "unreachable",
+        provider: provider.name,
+        detail: "no base URL resolved — check the provider's baseUrl",
+      },
     });
-    expect(getDiscoveryFailure(provider.name)).toBeUndefined();
+    expect(getDiscoveryFailure(provider.name)?.kind).toBe("unreachable");
   });
 
   test("a declared format nothing claims is unsupported{no-fetcher}, not an empty roster", async () => {
@@ -279,7 +286,7 @@ describe("discoverProviderRoster — the fetcher half can finally classify", () 
     expect(await discoverProviderRoster("roster-empty-fetcher-test")).toEqual({
       kind: "failed",
       failure: {
-        kind: "empty-roster",
+        kind: "empty-models-catalog",
         provider: "roster-empty-fetcher-test",
         // Before `FetcherResult`, this half recorded empty-roster with NO
         // endpoint, so any copy naming one rendered the literal `undefined`.

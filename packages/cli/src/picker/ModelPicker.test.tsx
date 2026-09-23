@@ -1480,7 +1480,7 @@ describe("a fallback list says it is a fallback — and that it may not work", (
     failedFrame.destroy();
     const emptyFrame = await scoped({
       kind: "empty-roster",
-      failure: { kind: "empty-roster", provider: "kimi", endpoint: "https://api.test/v1/models" },
+      failure: { kind: "empty-models-catalog", provider: "kimi", endpoint: "https://api.test/v1/models" },
       fallbackRows: [model()],
     });
     try {

@@ -21,10 +21,10 @@ import { spawn } from "node:child_process";
  * both and keeps them from drifting.
  */
 
-/** A name no real agent can hold, used to make Claude Code print its roster. */
+/** A name no real agent can hold, used to make Claude Code print its agent list. */
 const PROBE_AGENT = "__claudish_agent_probe__";
 
-/** How long a discovered roster stays fresh. Plugins can be installed mid-session. */
+/** How long a discovered agent list stays fresh. Plugins can be installed mid-session. */
 const TTL_MS = 5 * 60_000;
 
 interface Entry {
@@ -33,14 +33,14 @@ interface Entry {
 }
 
 /**
- * Keyed by cwd — NOT global. The roster is resolved relative to the working
+ * Keyed by cwd — NOT global. The agent list is resolved relative to the working
  * directory: measured from this repo it is 24 names including every plugin agent,
  * and from /tmp it is 5. Caching globally would reject valid agents for one
- * directory because another had a narrower roster.
+ * directory because another had a narrower agent list.
  */
 const cache = new Map<string, Entry>();
 
-/** Extract the roster from Claude Code's rejection message. Null if absent. */
+/** Extract the agent list from Claude Code's rejection message. Null if absent. */
 export function parseAvailableAgents(output: string): string[] | null {
   const m = /Available agents:\s*(.+)/.exec(output);
   if (!m) return null;
@@ -51,7 +51,7 @@ export function parseAvailableAgents(output: string): string[] | null {
   return names.length > 0 ? names : null;
 }
 
-/** Run the probe. Resolves to null when the roster cannot be determined. */
+/** Run the probe. Resolves to null when the agent list cannot be determined. */
 async function probe(cwd: string): Promise<Set<string> | null> {
   return new Promise((resolveP) => {
     let out = "";
@@ -97,7 +97,7 @@ async function probe(cwd: string): Promise<Set<string> | null> {
   });
 }
 
-/** The roster for `cwd`, or null when it cannot be determined. Cached per cwd. */
+/** The agent list for `cwd`, or null when it cannot be determined. Cached per cwd. */
 export async function discoverAvailableAgents(cwd: string): Promise<Set<string> | null> {
   const hit = cache.get(cwd);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.agents;
@@ -106,17 +106,17 @@ export async function discoverAvailableAgents(cwd: string): Promise<Set<string> 
   return agents;
 }
 
-/** Test seam — drop cached rosters. */
+/** Test seam — drop cached agent lists. */
 export function clearAgentCache(): void {
   cache.clear();
 }
 
 /**
- * Test seam — supply the roster for `cwd` instead of probing.
+ * Test seam — supply the agent list for `cwd` instead of probing.
  *
  * Exists because the accept/reject behaviour is the whole point of this module
  * and cannot otherwise be tested without spawning a real `claude`: a suite that
- * only covers "no agent named" and "roster undeterminable" would stay green if
+ * only covers "no agent named" and "agent list undeterminable" would stay green if
  * this file became a no-op. Seeding the cache is deliberately used rather than
  * mocking the module — a Bun `mock.module` on shared infrastructure bleeds into
  * sibling test files.
@@ -128,7 +128,7 @@ export function seedAgentCacheForTest(cwd: string, agents: string[]): void {
 /**
  * Throw if `agent` is not a real agent in `cwd`.
  *
- * FAILS OPEN when the roster cannot be determined (claude not on PATH, probe
+ * FAILS OPEN when the agent list cannot be determined (claude not on PATH, probe
  * timed out, output shape changed). Blocking every session because a probe broke
  * would be a worse failure than the one this guards, and it mirrors the contract
  * `prehydrateCredentialsForSpawn` already documents: a resolution step is an

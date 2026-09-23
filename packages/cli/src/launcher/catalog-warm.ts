@@ -15,7 +15,7 @@
  * is harmless if the launcher already populated the cache.
  */
 
-import { type DiskCacheV2, readAllModelsCache } from "../providers/all-models-cache.js";
+import { type DiskCacheV3, readAllModelsCache } from "../providers/all-models-cache.js";
 import { type RefreshOutcome, refreshCatalog } from "../providers/catalog-client.js";
 import type { ClaudishConfig } from "../types.js";
 import { VERSION } from "../version.js";
@@ -32,6 +32,12 @@ export type WarmOutcome = "ok" | "warned" | "skipped" | "hard_fail";
 /**
  * Verbatim hard-fail copy from FR-4. Printed when the catalog is missing AND
  * the network refresh failed — claudish cannot route cloud models without it.
+ *
+ * "No cached copy found" is a claim about the disk, so this must never be the
+ * message for a contract mismatch: there a copy exists and is merely unreadable,
+ * the network is fine, and every line below sends the user to debug the wrong
+ * thing. `warmCatalogIfNeeded` checks the sentinel before it can reach here for
+ * exactly that reason — see the guard above `reportFetchFailure`.
  *
  * Trailing newline included so the message reads as one paragraph terminated
  * cleanly when written to stderr.
@@ -109,7 +115,7 @@ export function shouldWarmCatalog(args: {
  * silently drift past the policy.
  */
 export function classifyCatalogState(
-  cache: DiskCacheV2 | null,
+  cache: DiskCacheV3 | null,
   ttlHours: number,
   now: Date
 ): "fresh" | "stale" | "missing" {
@@ -215,11 +221,21 @@ function startSpinner(label: string, quiet = false): Spinner {
  *      - else (stale, missing, or forceUpdate=true on fresh) → call
  *        `OpenRouterCatalogResolver.refreshCatalog(8000)`:
  *          - refreshed → print indexed-count line, return "ok".
+ *          - incompatible → contract-mismatch message + return "warned".
  *          - fetch_failed:
+ *              - a sentinel is already recorded → contract-mismatch message +
+ *                return "warned" (the cache state is not what it looks like;
+ *                see the guard at the call to `reportFetchFailure`).
  *              - prior state was "stale"   → WARN + return "warned".
  *              - prior state was "missing" → hard-fail message + return "hard_fail".
  *              - prior state was "fresh"   → treat as "warned" (we still have
  *                the fresh cache; the user explicitly asked to refresh it).
+ *
+ * Only ONE branch here ever returns "hard_fail", and it means one thing: there
+ * is no catalog data on this machine at all and none can be fetched. An
+ * unreadable catalog is a different failure with a different remedy, and it
+ * never exits — routing decides that one per model name, where the explicit
+ * `provider@model` carve-out lives.
  *
  * `--quiet` suppresses the preparing/indexed lines but never WARNINGs or
  * the hard-fail error (Q2 in architecture.md §10).
@@ -273,6 +289,32 @@ export async function warmCatalogIfNeeded(
     return "ok";
   }
 
+  return reportUnusableCatalog(outcome, state, cache, now, config.quiet === true);
+}
+
+/**
+ * The refresh came back with no usable catalog. Decide which failure it was.
+ *
+ * Extracted from `warmCatalogIfNeeded` purely to hold that function at its
+ * pre-existing complexity budget; the branch ORDER is the argument, and it is
+ * "unreadable before unreachable" throughout — an unreadable catalog is the
+ * finding that survives on disk, so it outranks whatever this one refresh did or
+ * did not manage to fetch.
+ */
+function reportUnusableCatalog(
+  outcome: Exclude<RefreshOutcome, { kind: "refreshed" }>,
+  state: ReturnType<typeof classifyCatalogState>,
+  cache: DiskCacheV3 | null,
+  now: Date,
+  quiet: boolean
+): WarmOutcome {
+  if (outcome.kind === "incompatible") {
+    process.stderr.write(
+      `Model catalog contract v${outcome.serverContractVersion ?? "unknown"} is not supported by this build.\n`
+    );
+    return cache === null ? "hard_fail" : "warned";
+  }
+
   // `disabled` is not a failure and must never reach the branches below. Nobody
   // attempted a fetch, so the cache state is irrelevant: with no cache at all
   // the `missing` branch would print HARD_FAIL_MESSAGE — "cannot reach model
@@ -284,19 +326,26 @@ export async function warmCatalogIfNeeded(
   // It reaches here through `CLAUDISH_DISABLE_CATALOG_WARM=1`, which
   // `scripts/guard-real-config.ts` sets on the whole test run — and the e2e
   // suites spawn `src/index.ts` as a child, which inherits it. So on a machine
-  // with no `~/.claudish/all-models.json`, the untreated path fails those tests
+  // with no `~/.claudish/cloud-models-catalog-v3.json`, the untreated path fails those tests
   // with a network diagnosis.
   //
   // "skipped" is the accurate answer, and it is the same one
   // `--models-skip-update` already produces: a refresh nobody attempted.
   if (outcome.reason === "disabled") {
-    if (!config.quiet) {
+    if (!quiet) {
       process.stderr.write("  Catalog refresh disabled (CLAUDISH_DISABLE_CATALOG_WARM=1).\n");
     }
     return "skipped";
   }
 
-  // Fetch failed. Decide based on prior cache state.
+  return reportFetchFailure(state, cache, now);
+}
+
+function reportFetchFailure(
+  state: ReturnType<typeof classifyCatalogState>,
+  cache: DiskCacheV3 | null,
+  now: Date
+): WarmOutcome {
   if (state === "stale") {
     const ageMs = now.getTime() - Date.parse(cache!.lastUpdated);
     const ageStr = humanizeAge(ageMs);

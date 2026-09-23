@@ -51,7 +51,7 @@ import {
   readProOnUltracode,
 } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
-import { type KeyProvenance, resolveApiKeyProvenance } from "./providers/api-key-provenance.js";
+import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
 import type { FallbackRoute } from "./providers/auto-route.js";
 import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
 import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
@@ -63,7 +63,9 @@ import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import {
+  buildCatalogChain,
   buildRoutingChain,
+  hasCredentialsForProvider,
   loadRoutingRules,
   matchRoutingRule,
 } from "./providers/routing-rules.js";
@@ -97,9 +99,10 @@ export function getVersion(): string {
  * Clear writable claudish caches (pricing, LiteLLM, recommended models).
  * Called when --models-refresh flag is used.
  *
- * NOTE: We intentionally do NOT delete `all-models.json` — that file is the
- * OpenRouter catalog resolver's slim-catalog cache, sourced from Firebase.
- * Deleting it would force a cold re-warm on every --models-refresh call.
+ * NOTE: We intentionally do NOT delete `cloud-models-catalog-v3.json`, the cloud
+ * models catalog cache. Deleting it would force a cold re-warm on every
+ * --models-refresh call. `all-models.json` is not ours to delete either: older
+ * claudish builds still read it.
  */
 function clearAllModelCaches(): void {
   const cacheDir = join(homedir(), ".claudish");
@@ -1150,7 +1153,7 @@ async function printByProvider(typedSlug: string, jsonOutput: boolean): Promise<
   const providerSlug = resolved.canonical ?? typedSlug;
   let models: ModelDoc[];
   try {
-    models = await getModelsByProvider(providerSlug, 200);
+    models = await getModelsByProvider(providerSlug);
   } catch (error) {
     console.error(
       `❌ Failed to load provider catalog from Firebase: ${
@@ -1391,14 +1394,42 @@ async function probeModelRouting(
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
 
   // Snapshot user-defined routing keys so we can label matches as
-  // "custom-rules" vs "auto-chain" (default rules) in --probe output.
-  // Defaults are merged INSIDE loadRoutingRules() but are not returned
-  // from loadConfig/loadLocalConfig directly — those reads see only user
-  // overrides, which is exactly the discriminator we need here.
+  // "custom-rules" vs "auto-chain" in --probe output. Every rule
+  // `loadRoutingRules()` returns is now the user's own — there is no shipped
+  // table left to merge — so this set and that one have the same keys; the
+  // snapshot stays because the labelling reads more clearly for it.
   const userRoutingKeys = new Set<string>([
     ...Object.keys(loadConfig().routing ?? {}),
     ...Object.keys(loadLocalConfig()?.routing ?? {}),
   ]);
+
+  /**
+   * The remedy a credential-less row shows.
+   *
+   * Reads it off the PROVENANCE rather than naming providers here: a record that
+   * carries an `effectiveLabel` is one whose credential is not an environment
+   * variable at all (Vertex, whose Google Cloud project comes from the ADC file
+   * or `gcloud config`), and for those the variable name is the wrong
+   * instruction — its `effectiveSource` is the sentence that names both
+   * remedies. Everyone else keeps the bare variable name they always had.
+   */
+  function credentialHintFrom(
+    provenance: KeyProvenance | undefined,
+    envVar: string | undefined
+  ): string | undefined {
+    if (provenance?.effectiveLabel) return provenance.effectiveSource;
+    return envVar;
+  }
+
+  /** The same remedy where no provenance record has been built yet. */
+  function credentialHintFor(
+    provider: string,
+    envVar: string | undefined,
+    aliases: string[] | undefined
+  ): string | undefined {
+    if (!envVar) return undefined;
+    return credentialHintFrom(resolveCredentialProvenance(provider, envVar, aliases), envVar);
+  }
 
   /** Build chain + credential data for a single model (shared by both paths) */
   function buildModelChain(modelInput: string) {
@@ -1476,8 +1507,8 @@ async function probeModelRouting(
           matchedPattern: undefined,
         };
       }
-      // Routing rules now always include DEFAULT_ROUTING_RULES merged with
-      // user overrides — see loadRoutingRules() in providers/routing-rules.ts.
+      // Only the USER's rules now — the shipped table is gone, so most models
+      // match nothing here and are routed from the catalog instead.
       const routingRules = loadRoutingRules();
       const matched = matchRoutingRule(parsed.model, routingRules);
       if (matched) {
@@ -1491,8 +1522,6 @@ async function probeModelRouting(
           }
           return false;
         });
-        // Distinguish user overrides from shipped defaults so --probe can show
-        // "custom-rules" vs "auto-chain" exactly as before.
         const isUserKey = !!matchedPattern && userRoutingKeys.has(matchedPattern);
         return {
           routes: buildRoutingChain(matched, parsed.model),
@@ -1500,8 +1529,16 @@ async function probeModelRouting(
           matchedPattern,
         };
       }
+      // No user rule: the SAME chain `routeBare` would assemble — gathered from
+      // the cloud models catalog, with the fallback hop appended. This used to
+      // read the shipped rules table; reproducing the gathering by hand here
+      // would be the second copy of a routing decision, and the two would
+      // disagree the first time either changed. `--probe` still owns the
+      // credential-provenance display below, which is why it builds a chain at
+      // all instead of calling `route()`.
       return {
-        routes: [] as FallbackRoute[],
+        routes: buildCatalogChain(parsed.model, loadConfig().defaultProvider)
+          .routes as FallbackRoute[],
         source: "auto-chain" as const,
         matchedPattern: undefined,
       };
@@ -1533,13 +1570,13 @@ async function probeModelRouting(
       } else if (!keyInfo.envVar) {
         hasCredentials = true;
       } else {
-        provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
+        provenance = resolveCredentialProvenance(route.provider, keyInfo.envVar, keyInfo.aliases);
         hasCredentials = provenance.hasValue;
         if (!hasCredentials && keyInfo.aliases) {
           hasCredentials = keyInfo.aliases.some((a) => !!process.env[a]);
         }
         if (!hasCredentials) {
-          credentialHint = keyInfo.envVar;
+          credentialHint = credentialHintFrom(provenance, keyInfo.envVar);
         }
       }
 
@@ -1555,6 +1592,44 @@ async function probeModelRouting(
     });
 
     return { parsed, chain, chainDetails };
+  }
+
+  const probeCredentialReadiness = new Map<string, boolean>();
+  async function credentialForProbe(provider: string): Promise<boolean> {
+    if (probeCredentialReadiness.has(provider)) return probeCredentialReadiness.get(provider)!;
+    const ready =
+      provider === "native-anthropic"
+        ? !!process.env.ANTHROPIC_API_KEY
+        : await hasCredentialsForProvider(provider);
+    probeCredentialReadiness.set(provider, ready);
+    return ready;
+  }
+
+  async function prepareModelChain(
+    modelInput: string
+  ): Promise<ReturnType<typeof buildModelChain>> {
+    const result = buildModelChain(modelInput);
+    await Promise.all(
+      result.chainDetails.map(async (link) => {
+        link.hasCredentials = await credentialForProbe(link.provider);
+        const keyInfo = API_KEY_MAP[link.provider];
+        if (keyInfo?.envVar)
+          link.provenance = resolveCredentialProvenance(
+            link.provider,
+            keyInfo.envVar,
+            keyInfo.aliases
+          );
+        link.credentialHint = link.hasCredentials
+          ? undefined
+          : link.provider === "native-anthropic"
+            ? "ANTHROPIC_API_KEY (required to probe Claude Code)"
+            : getProviderByName(link.provider)?.isLocal
+              ? "enable local provider in global config"
+              : credentialHintFrom(link.provenance, keyInfo?.envVar);
+      })
+    );
+    if (result.chain.source === "direct") await credentialForProbe(result.parsed.provider);
+    return result;
   }
 
   /**
@@ -1614,17 +1689,10 @@ async function probeModelRouting(
     // empty and now MEANS empty.
     if (!providerDef && !keyInfo) return [];
 
-    let hasCredentials: boolean;
-    let provenance: KeyProvenance | undefined;
-    if (providerDef?.isLocal) {
-      hasCredentials = isLocalProviderEnabled(parsed.provider);
-    } else if (!keyInfo?.envVar) {
-      hasCredentials = true;
-    } else {
-      provenance = resolveApiKeyProvenance(keyInfo.envVar, keyInfo.aliases);
-      hasCredentials =
-        provenance.hasValue || (keyInfo.aliases?.some((a) => !!process.env[a]) ?? false);
-    }
+    const hasCredentials = probeCredentialReadiness.get(parsed.provider) ?? false;
+    const provenance = keyInfo?.envVar
+      ? resolveCredentialProvenance(parsed.provider, keyInfo.envVar, keyInfo.aliases)
+      : undefined;
 
     return [
       {
@@ -1637,7 +1705,7 @@ async function probeModelRouting(
         credentialHint: !hasCredentials
           ? providerDef?.isLocal
             ? "enable local provider in global config"
-            : keyInfo?.envVar
+            : credentialHintFrom(provenance, keyInfo?.envVar)
           : undefined,
         provenance,
         probe: directProbe,
@@ -1662,22 +1730,18 @@ async function probeModelRouting(
       // Explicit/direct model — one synthetic link from the native provider.
       const directProviderDef = getProviderByName(parsed.provider);
       const directKeyInfo = API_KEY_MAP[parsed.provider];
-      const directHasCreds = directProviderDef?.isLocal
-        ? isLocalProviderEnabled(parsed.provider)
-        : directKeyInfo?.envVar
-          ? !!process.env[directKeyInfo.envVar] ||
-            (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-          : true;
+      const directHasCreds = probeCredentialReadiness.get(parsed.provider) ?? false;
       return [
         {
           provider: parsed.provider,
           displayName: directProviderDef?.displayName ?? parsed.provider,
           modelId: parsed.model,
           hasCredentials: directHasCreds,
-          credentialHint:
-            directProviderDef?.isLocal && !directHasCreds
+          credentialHint: !directHasCreds
+            ? directProviderDef?.isLocal
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar,
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases)
+            : undefined,
           probe: directProbe,
         },
       ];
@@ -1717,7 +1781,8 @@ async function probeModelRouting(
       "minimax-coding",
       "kimi",
       "kimi-coding",
-      "qwen-cloud",
+      "qwen-token-plan",
+      "qwen-coding",
       "qwen-payg",
       "z-ai",
     ];
@@ -1813,23 +1878,18 @@ async function probeModelRouting(
       const results: ChainProbe[] = [];
 
       for (const modelInput of models) {
-        const { parsed, chain, chainDetails } = buildModelChain(modelInput);
+        const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
 
         // Direct probe
         let directProbeResult: ProbeResult | undefined;
         if (liveProxy && chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
           const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = directProviderDef?.isLocal
-            ? isLocalProviderEnabled(parsed.provider)
-            : directKeyInfo?.envVar
-              ? !!process.env[directKeyInfo.envVar] ||
-                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-              : true;
+          const directHasCreds = await credentialForProbe(parsed.provider);
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar;
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
           directProbeResult = await probeProviderRoute(
             liveProxy.url,
             {
@@ -1975,7 +2035,7 @@ async function probeModelRouting(
       chainDetails: ReturnType<typeof buildModelChain>["chainDetails"];
     }> = [];
     for (const modelInput of models) {
-      const { parsed, chain, chainDetails } = buildModelChain(modelInput);
+      const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
       modelChains.push({ modelInput, parsed, chain, chainDetails });
     }
     updateStep("Resolving routing chains", "done");
@@ -2002,16 +2062,11 @@ async function probeModelRouting(
         if (chain.source === "direct") {
           const directKeyInfo = API_KEY_MAP[parsed.provider];
           const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = directProviderDef?.isLocal
-            ? isLocalProviderEnabled(parsed.provider)
-            : directKeyInfo?.envVar
-              ? !!process.env[directKeyInfo.envVar] ||
-                (directKeyInfo.aliases?.some((a) => !!process.env[a]) ?? false)
-              : true;
+          const directHasCreds = await credentialForProbe(parsed.provider);
           const directCredentialHint =
             directProviderDef?.isLocal && !directHasCreds
               ? "enable local provider in global config"
-              : directKeyInfo?.envVar;
+              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
           allLinks.push({
             id: `${modelInput}:direct`,
             displayName: parsed.provider,
@@ -2443,8 +2498,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("OPENCODE_GO_API_KEY")}             OpenCode Zen Go plan ${dim("(zgo@, zengo@; separate plan key)")}
   ${blue("POE_API_KEY")}                     Poe ${dim("(poe@)")}
   ${blue("LITELLM_API_KEY")}                 LiteLLM ${dim("(litellm@, ll@; needs LITELLM_BASE_URL)")}
-  ${blue("VERTEX_API_KEY")}                  Vertex AI Express ${dim("(v@)")}
-  ${blue("VERTEX_PROJECT")}                  Vertex AI project ID ${dim("(OAuth mode, v@)")}
+  ${blue("VERTEX_PROJECT")}                  Vertex AI project ID ${dim("(v@; optional — ADC quota project or `gcloud config get project` is used otherwise)")}
   ${blue("VERTEX_LOCATION")}                 Vertex AI region ${dim("(default: us-central1)")}
   ${blue("ANTHROPIC_API_KEY")}               Placeholder (prevents Claude Code dialog)
   ${blue("ANTHROPIC_AUTH_TOKEN")}            Placeholder (prevents Claude Code login screen)

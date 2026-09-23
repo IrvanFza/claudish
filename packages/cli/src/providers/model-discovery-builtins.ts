@@ -1,5 +1,5 @@
 /**
- * The three builtin roster fetchers that are not an HTTP GET.
+ * The three builtin dynamic models catalog fetchers that are not an HTTP GET.
  *
  * They live HERE, behind `registerModelDiscoveryFetcher`, rather than as
  * `if (descriptor.format === …)` branches inside `model-discovery.ts`. The
@@ -34,20 +34,20 @@ function oneLine(text: string, max = 200): string {
 }
 
 /**
- * Devin's roster is capability ∩ entitlement over two protobuf rpcs.
+ * Devin's dynamic models catalog is capability ∩ entitlement over two protobuf rpcs.
  *
  * Carries the full variant metadata, not just id/name/window: the picker folds
  * ~170 uids into ~42 rows and needs the group label, the cost multiplier, the
  * promo and the vendor's own default flag to do it.
  *
  * **Honest limit on the classification.** `getServedDevinModels` catches its own
- * rpc errors and returns `rosterCache ?? []` (devin-models.ts:411-414), and
+ * rpc errors and returns `modelsCatalogCache ?? []` (devin-models.ts), and
  * `postUnary` answers `null` rather than throwing, so a failed rpc still arrives
- * here as an empty list and is reported as `empty-roster`. What this DOES
+ * here as an empty list and is reported as `empty-models-catalog`. What this DOES
  * distinguish is the two states that are knowable without touching that module:
  * no credential at all, and a throw from anywhere in the chain.
  */
-async function fetchDevinRoster(): Promise<FetcherResult> {
+async function fetchDevinModelsCatalog(): Promise<FetcherResult> {
   let endpoint: string | undefined;
   try {
     const { readDevinApiKey, readDevinServerUrl } = await import("./devin/devin-credentials.js");
@@ -74,12 +74,12 @@ async function fetchDevinRoster(): Promise<FetcherResult> {
     const served = await getServedDevinModels();
     if (served.length === 0) return { kind: "models", models: [], endpoint };
 
-    const { devinRosterEntry } = await import("./model-resolvers/devin.js");
+    const { devinModelsCatalogEntry } = await import("./model-resolvers/devin.js");
     return {
       kind: "models",
       endpoint,
       models: served.map((model) => {
-        const { wireId, ...rest } = devinRosterEntry(model);
+        const { wireId, ...rest } = devinModelsCatalogEntry(model);
         return { id: wireId, ...rest };
       }),
     };
@@ -101,8 +101,9 @@ async function fetchDevinRoster(): Promise<FetcherResult> {
  * no images, `recommended: false`. They answer HTTP 200, which is precisely what
  * made a wrong-host problem look like a rate limit for an entire session.
  *
- * Prefix-matched, because the ids carry build numbers that rot on each roster
- * roll. This is the ONLY guess left in the filter; everything else is declared.
+ * Prefix-matched, because the ids carry build numbers that rot on each roll of
+ * the dynamic models catalog. This is the ONLY guess left in the filter; everything
+ * else is declared.
  */
 function isUndeclaredEditorInternal(id: string): boolean {
   return id.startsWith("tab_");
@@ -117,7 +118,7 @@ function isUndeclaredEditorInternal(id: string): boolean {
  * in the catalog. `resolveDiscoveredContextLength` already prefers a discovered
  * window over the catalog; this is what gives it one to prefer.
  */
-async function fetchAntigravityRoster(): Promise<FetcherResult> {
+async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
   let endpoint: string | undefined;
   try {
     const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
@@ -179,10 +180,10 @@ async function fetchAntigravityRoster(): Promise<FetcherResult> {
  * "the daemon is running and nothing is pulled". `fetchOllamaModels` is
  * documented as never throwing, and every other caller still gets that; only
  * this one opts in, because only this one has somewhere to report the
- * difference. Both states used to be `empty-roster`, so a stopped daemon read as
- * "this provider has no models" — the complaint, restated.
+ * difference. Both states used to be `empty-models-catalog`, so a stopped daemon
+ * read as "this provider has no models" — the complaint, restated.
  */
-async function fetchOllamaRoster(): Promise<FetcherResult> {
+async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
   const { fetchOllamaModels, ollamaBaseUrl } = await import("./ollama-discovery.js");
   const endpoint = `${ollamaBaseUrl()}/api/tags`;
   try {
@@ -207,6 +208,6 @@ async function fetchOllamaRoster(): Promise<FetcherResult> {
   }
 }
 
-registerModelDiscoveryFetcher("devin-connect", fetchDevinRoster);
-registerModelDiscoveryFetcher("antigravity", fetchAntigravityRoster);
-registerModelDiscoveryFetcher("ollama-tags", fetchOllamaRoster);
+registerModelDiscoveryFetcher("devin-connect", fetchDevinModelsCatalog);
+registerModelDiscoveryFetcher("antigravity", fetchAntigravityModelsCatalog);
+registerModelDiscoveryFetcher("ollama-tags", fetchOllamaModelsCatalog);

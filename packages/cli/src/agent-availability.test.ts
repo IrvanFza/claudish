@@ -8,7 +8,7 @@ import {
 } from "./agent-availability.js";
 
 describe("parseAvailableAgents", () => {
-  test("extracts the roster from Claude Code's rejection message", () => {
+  test("extracts the agent list from Claude Code's rejection message", () => {
     // Real message shape, measured 2026-08-22.
     const msg =
       "--agent 'zzz-bogus' not found. Available agents: claude, code-analysis:detective, " +
@@ -23,22 +23,22 @@ describe("parseAvailableAgents", () => {
     ]);
   });
 
-  test("returns null when the roster is absent", () => {
+  test("returns null when the agent list is absent", () => {
     expect(parseAvailableAgents("some unrelated output")).toBeNull();
     expect(parseAvailableAgents("")).toBeNull();
   });
 
-  test("returns null rather than an empty roster", () => {
+  test("returns null rather than an empty agent list", () => {
     // An empty list must not be cached as "no agents exist", which would reject
     // every name. Null means "could not determine" and fails open.
     expect(parseAvailableAgents("Available agents:   ")).toBeNull();
   });
 });
 
-describe("assertAgentAvailable — with a known roster", () => {
+describe("assertAgentAvailable — with a known agent list", () => {
   const CWD = "/seeded/project";
 
-  test("accepts a name that is on the roster", async () => {
+  test("accepts a name that is on the agent list", async () => {
     clearAgentCache();
     seedAgentCacheForTest(CWD, ["dev:reviewer", "dev:architect", "general-purpose"]);
     await assertAgentAvailable("dev:reviewer", CWD);
@@ -66,7 +66,7 @@ describe("assertAgentAvailable — with a known roster", () => {
     await expect(assertAgentAvailable(" dev:reviewer ", CWD)).rejects.toThrow(/Unknown agent/);
   });
 
-  test("rosters are isolated per cwd", async () => {
+  test("agent lists are isolated per cwd", async () => {
     // Measured: this repo resolves 24 agents, /tmp resolves 5. A global cache
     // would reject an agent that is valid in the directory the child runs in.
     clearAgentCache();
@@ -78,9 +78,9 @@ describe("assertAgentAvailable — with a known roster", () => {
     );
   });
 
-  test("a seeded roster is served from cache, not re-probed", async () => {
+  test("a seeded agent list is served from cache, not re-probed", async () => {
     // The seeded cwd does not exist, so a probe would fail open and accept
-    // anything. Rejection proves the cached roster was used.
+    // anything. Rejection proves the cached agent list was used.
     clearAgentCache();
     seedAgentCacheForTest("/nonexistent-cached-dir", ["only-this-one"]);
     await expect(assertAgentAvailable("something-else", "/nonexistent-cached-dir")).rejects.toThrow(
@@ -99,10 +99,10 @@ describe("assertAgentAvailable — degenerate inputs", () => {
     await assertAgentAvailable("", "/nonexistent-dir-for-test");
   });
 
-  test("fails OPEN when the roster cannot be determined", async () => {
+  test("fails OPEN when the agent list cannot be determined", async () => {
     // Spawning in a directory that does not exist makes the probe error.
     // Blocking every session because a probe broke would be worse than the trap
-    // this guards, so an undeterminable roster must not throw.
+    // this guards, so an undeterminable agent list must not throw.
     clearAgentCache();
     await assertAgentAvailable("whatever-agent", "/nonexistent-dir-for-test-xyz");
   });
