@@ -52,7 +52,39 @@ including 12 in isolation. No failure message was captured, so whether it saw 0 
 frame caught before paint — timing) or 2 (a real defect) is unknown. If it recurs, capture the
 assertion message before touching the test.
 
-## 5. No test pins the `video` rule's removal
+## 5. Code-review findings deferred from v10.1.0
+
+A code review of the release diff (PASS: 0 critical, 1 high, 5 medium, 1 low) ran before
+tagging. The HIGH finding — a catalog or description load dropped for good when the user
+stepped back mid-fetch, leaving `fetching…` on screen for the run — was reproduced live on a
+cold cache, fixed, verified live, and pinned by a mutation-proved test. So was the medium
+"reasoning" finding: v3 `reasoning` is an object, and its mere presence flagged 469 of 1137
+non-reasoning entries as reasoning models. The rest shipped as they are:
+
+- **A retry can be overwritten by the request it replaced.** `useProviderDiscovery.ts` —
+  `retry` starts a new request, but the old one's `.then` still writes its outcome and
+  re-queues its diagnostic. A slow failing first request can replace a fast successful retry
+  with `live model list unavailable`. Reproduced by the reviewer with a fake source. Fix: tag
+  each request and ignore stale ones.
+- **"All models" shows duplicates, and rows a subscription does not include.** Live rows
+  (wire id `k3`) and catalog rows (canonical id `kimi-k3`) are deduped by model id, so both
+  survive and launch the same `kc@k3` — repeated React keys and an inflated count. Catalog
+  rows also stay after the provider's own endpoint has answered, and subscription providers
+  map to their metered sibling's catalog slug. Fix direction: dedupe on `spec`; drop a
+  provider's catalog rows once its dynamic models catalog has landed.
+- **Opening a provider with no credential says it has no models.** After `k`, `⏎` on a
+  provider marked `needs OPENAI_API_KEY` shows `0 models · no catalog entries` — the founding
+  complaint in miniature. Say "no credential — set OPENAI_API_KEY", or refuse `⏎` there.
+- **A successful discovery now waits for the catalog query too.** `buildDiscoveredModelOutcome`
+  awaits both legs, so a 300 ms discovery waits ~1.1 s typically and up to the catalog's 10 s
+  page timeout on a slow network (inferred latency; the structure was read).
+- **Low:** `esc` from the custom-spec dialog always returns to the model list;
+  `runModelPicker` ignores its options, so `profile edit` loses its "Select new model for
+  Opus:" prompt; OpenTUI's default console mode captures `console.*`, which may swallow a
+  1Password or Keychain warning raised during the credential sweep (inferred, not traced);
+  `DISCOVERY_DEADLINE_MS` is a hand-kept copy of `FETCH_TIMEOUT_MS`.
+
+## 6. No test pins the `video` rule's removal
 
 During the v10 merge, a `\bvideo\b` rule this branch had added to `NON_CHAT_PATTERNS` was
 removed: it ran before the `videoOutputKnown` guard and would have excluded a model that only
