@@ -70,7 +70,7 @@ import {
   type CatalogRouteBinding,
   catalogRouteForProvider,
   catalogRouteMatchesProvider,
-  providersForCatalogRoute,
+  routingProvidersForRoute,
 } from "./catalog-route-bindings.js";
 import {
   type ConnectionPrice,
@@ -194,8 +194,9 @@ function gatherFromConnections(
 
     // EVERY provider bound to this route, not just the first. One endpoint can
     // wear several claudish names, each owning a different key silo, and the
-    // user's credential may be in any of them — see `providersForCatalogRoute`.
-    const bound = providersForCatalogRoute(connection.route);
+    // user's credential may be in any of them — see `routingProvidersForRoute`.
+    // The routing table only: a lookup-only name is never a candidate.
+    const bound = routingProvidersForRoute(connection.route);
     const routable = bound.filter((name) => getProviderByName(name)?.tier !== undefined);
     if (routable.length === 0) {
       unmappedRoutes.add(routeLabel(connection.route));
@@ -436,12 +437,13 @@ export function catalogDeniesProvider(
   if (!entry) return false;
 
   // `catalogRouteMatchesProvider`, NOT `providerForCatalogRoute(...) === provider`.
-  // The reverse lookup returns the FIRST provider bound to a route pair, and
-  // four pairs have two claudish names each (`kimi`/`moonshotai`,
-  // `opencode-zen`/`zen`, `qwen-payg`/`qwen`). Comparing its answer would have
-  // declared `moonshotai` denied on every model `kimi` serves — a real denial
-  // built out of an alias. Comparing BINDINGS is what `externalIdFor` and
-  // `model-availability.ts` already do, for this reason.
+  // The reverse lookup returns ONE name per route pair, and a pair can carry
+  // several. In the routing table only `z-ai`/`glm` share one (two key silos on
+  // one endpoint); the reads add `kimi`/`moonshotai` and `opencode-zen`/`zen`
+  // through the lookup-only names. Comparing its answer would declare `glm`
+  // denied on every model `z-ai` serves, a denial built out of a second key
+  // silo. Comparing BINDINGS is what `externalIdFor` and `model-availability.ts`
+  // already do, for this reason.
   return !(entry.aggregators ?? []).some(
     (connection) =>
       connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider)

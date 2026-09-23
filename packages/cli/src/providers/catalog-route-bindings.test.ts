@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DiskCacheV3, writeAllModelsCache } from "./all-models-cache.js";
 import { resolveExternalId } from "./catalog-client.js";
-import { catalogRouteForProvider, providerForCatalogRoute } from "./catalog-route-bindings.js";
+import {
+  CATALOG_ROUTE_BINDINGS,
+  LOOKUP_ONLY_ROUTE_BINDINGS,
+  catalogRouteForProvider,
+  catalogRouteMatchesProvider,
+  providerForCatalogRoute,
+  routingProvidersForRoute,
+} from "./catalog-route-bindings.js";
+import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
+import { BUILTIN_PROVIDERS } from "./provider-definitions.js";
 
 const subscriptionBindings = [
   ["native-anthropic", "anthropic", "claude-code-subscription"],
@@ -47,6 +56,56 @@ describe("v3 route bindings", () => {
     expect(
       providerForCatalogRoute({ routeId: "qwen", routeProfileId: "unrecognised" })
     ).toBeUndefined();
+  });
+
+  test("lookup-only names are exact, non-routable names", () => {
+    const lookupNames = Object.keys(LOOKUP_ONLY_ROUTE_BINDINGS);
+    const providerNames = new Set([
+      ...BUILTIN_PROVIDERS.map((provider) => provider.name),
+      ...PREDEFINED_ENDPOINTS.map((endpoint) => endpoint.name),
+    ]);
+
+    expect(lookupNames).toEqual(["anthropic", "moonshotai", "zen"]);
+    expect(lookupNames.filter((name) => providerNames.has(name))).toEqual([]);
+    expect(lookupNames.filter((name) => name in CATALOG_ROUTE_BINDINGS)).toEqual([]);
+  });
+
+  test("catalog reads retain literal lookup routes without creating route candidates", () => {
+    expect(catalogRouteForProvider("anthropic")).toEqual({
+      routeId: "anthropic",
+      routeProfileId: "direct-api",
+    });
+    expect(catalogRouteForProvider("moonshotai")).toEqual({
+      routeId: "moonshotai",
+      routeProfileId: "direct-api",
+    });
+    expect(catalogRouteForProvider("zen")).toEqual({
+      routeId: "opencode",
+      routeProfileId: "zen",
+    });
+
+    expect(
+      catalogRouteMatchesProvider(
+        { routeId: "anthropic", routeProfileId: "direct-api" },
+        "anthropic"
+      )
+    ).toBe(true);
+    expect(
+      catalogRouteMatchesProvider(
+        { routeId: "anthropic", routeProfileId: "claude-code-subscription" },
+        "anthropic"
+      )
+    ).toBe(false);
+
+    expect(
+      routingProvidersForRoute({ routeId: "anthropic", routeProfileId: "direct-api" })
+    ).toEqual([]);
+    expect(
+      routingProvidersForRoute({ routeId: "moonshotai", routeProfileId: "direct-api" })
+    ).toEqual(["kimi"]);
+    expect(routingProvidersForRoute({ routeId: "opencode", routeProfileId: "zen" })).toEqual([
+      "opencode-zen",
+    ]);
   });
 });
 

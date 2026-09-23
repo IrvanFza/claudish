@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { credentials } from "../auth/credentials/authority.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { providersForCatalogRoute } from "./catalog-route-bindings.js";
+import { routingProvidersForRoute } from "./catalog-route-bindings.js";
 import {
   getModelDiscoveryFetcher,
   invalidateModelDiscovery,
@@ -245,7 +245,7 @@ describe("catalog route candidate gathering and order", () => {
 
   test("gathers every provider bound to z-ai/direct-api", () => {
     const binding = { routeId: "z-ai", routeProfileId: "direct-api" };
-    expect(providersForCatalogRoute(binding)).toEqual(["z-ai", "glm"]);
+    expect(routingProvidersForRoute(binding)).toEqual(["z-ai", "glm"]);
 
     const direct = gatherRouteCandidates("glm-4.7", cachePath).candidates.filter(
       ({ wireId }) => wireId === "glm-4.7"

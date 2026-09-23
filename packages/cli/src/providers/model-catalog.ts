@@ -116,9 +116,11 @@ export interface CatalogClient {
  * slug is in this set we prefer `getModelsByProvider()` which returns the
  * full ModelDoc shape.
  *
- * Note: a slug can be BOTH an owner and an aggregator (e.g. "anthropic" owns
- * Claude models AND appears in some `aggregators[]` lists). The owner path
- * wins because it returns more complete data.
+ * Note: a slug can be BOTH an owner and a name bound to a route. "anthropic"
+ * owns Claude models AND names Anthropic's native API route
+ * (`anthropic/direct-api`, a lookup-only binding in `catalog-route-bindings.ts`:
+ * no claudish provider calls it). The owner path wins because it returns more
+ * complete data.
  */
 const OWNER_PROVIDER_SLUGS = new Set<string>([
   "anthropic",

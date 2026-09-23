@@ -4,18 +4,32 @@ export interface CatalogRouteBinding {
 }
 
 /**
- * Transport bindings between Claudish providers and catalog v3 routes.
- * Model membership and wire IDs remain catalog data; this table only identifies
- * the transport adapter that can execute each canonical route.
+ * Route bindings between claudish's names and catalog v3 routes, split by job.
+ *
+ * Model membership and wire ids remain catalog data. These tables only say which
+ * name stands for which `(routeId, routeProfileId)` pair, and there are two jobs:
+ *
+ *   - {@link CATALOG_ROUTE_BINDINGS}, the ROUTING table. Every key is a claudish
+ *     provider, built-in or a bundled catalog row (`together`, `fireworks`), that
+ *     owns one endpoint and one credential silo. The candidate gatherer reads it
+ *     through {@link routingProvidersForRoute}, so every key here can become a
+ *     route candidate.
+ *   - {@link LOOKUP_ONLY_ROUTE_BINDINGS}, names that catalog READS ask about and
+ *     that no claudish provider answers to. They are never route candidates.
+ *
+ * The split exists because the gatherer returns every name bound to a route. A
+ * read-only name in the routing table was a candidate by accident of spelling:
+ * a custom endpoint a user named `anthropic` would have been gathered for every
+ * model Anthropic's native API serves. The reads still see both tables
+ * ({@link catalogRouteForProvider}, {@link catalogReadProvidersForRoute}), so each
+ * of them answers exactly as before the split.
  */
 export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding>> = {
   "native-anthropic": { routeId: "anthropic", routeProfileId: "claude-code-subscription" },
-  anthropic: { routeId: "anthropic", routeProfileId: "direct-api" },
   "openai-codex": { routeId: "openai", routeProfileId: "codex-subscription" },
   openai: { routeId: "openai", routeProfileId: "direct-api" },
   "kimi-coding": { routeId: "moonshotai", routeProfileId: "kimi-code-subscription" },
   kimi: { routeId: "moonshotai", routeProfileId: "direct-api" },
-  moonshotai: { routeId: "moonshotai", routeProfileId: "direct-api" },
   "glm-coding": { routeId: "z-ai", routeProfileId: "glm-coding-subscription" },
   "z-ai": { routeId: "z-ai", routeProfileId: "direct-api" },
   // The SAME endpoint as `z-ai` (both are https://api.z.ai) under a second
@@ -42,11 +56,11 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
   // that owns neither — no baseUrl, no apiPath, no apiKeyEnvVar — and
   // `qwen-payg` is what actually calls dashscope. It was listed here while
   // `providerForCatalogRoute` returned only the FIRST provider per route, which
-  // hid it behind `qwen-payg`. v10.0.0's `providersForCatalogRoute` returns all
-  // of them (the z-ai/glm key-silo fix) and the placeholder surfaced: a
-  // `Qwen ✗ key missing` hop in `--probe qwen3.8-max`, sending the reader after
-  // a key no environment variable can hold. `route()` never yielded it, so the
-  // damage was confined to the display.
+  // hid it behind `qwen-payg`. v10.0.0 made the gatherer take all of them (the
+  // z-ai/glm key-silo fix, now `routingProvidersForRoute`) and the placeholder
+  // surfaced: a `Qwen ✗ key missing` hop in `--probe qwen3.8-max`, sending the
+  // reader after a key no environment variable can hold. `route()` never yielded
+  // it, so the damage was confined to the display.
   //
   // Not fixed by filtering placeholders out of the gatherer: `native-anthropic`
   // is a placeholder too, by the same `reason: "virtual"` marker, and it IS
@@ -56,7 +70,6 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
   // claim lived, so it is where the correction belongs.
   "opencode-zen-go": { routeId: "opencode", routeProfileId: "go-subscription" },
   "opencode-zen": { routeId: "opencode", routeProfileId: "zen" },
-  zen: { routeId: "opencode", routeProfileId: "zen" },
   ollamacloud: { routeId: "ollama", routeProfileId: "cloud" },
   openrouter: { routeId: "openrouter", routeProfileId: "gateway" },
   together: { routeId: "together-ai", routeProfileId: "gateway" },
@@ -67,39 +80,103 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
   mistralai: { routeId: "mistralai", routeProfileId: "direct-api" },
 };
 
-export function catalogRouteForProvider(provider: string): CatalogRouteBinding | undefined {
-  return CATALOG_ROUTE_BINDINGS[provider];
-}
-
-export function providerForCatalogRoute(
-  route: CatalogRouteBinding | undefined
-): string | undefined {
-  return providersForCatalogRoute(route)[0];
-}
+/**
+ * Names that catalog READS ask about and that no claudish provider answers to.
+ *
+ * {@link routingProvidersForRoute} never sees this table, so none of these names
+ * can become a route candidate. Each entry names its reader; a name whose reader
+ * goes away should go with it.
+ */
+export const LOOKUP_ONLY_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding>> = {
+  // Anthropic's native API. Its reader is the session summary's savings panel,
+  // which takes the first-party price from this route (`FIRST_PARTY` in
+  // `session/baseline-pricing.ts`). The probe map also keys this route's probe
+  // pick under this name (`probe-catalog.ts`). claudish calls Claude through
+  // `native-anthropic` or a gateway, never through this route.
+  anthropic: { routeId: "anthropic", routeProfileId: "direct-api" },
+  // The catalog's vendor slug for Kimi. Its reader is the Kimi picker list: the
+  // picker maps `kimi` to `moonshotai` (`pickerProviderToFirebaseSlug` in
+  // `model-selector.ts`) and asks `modelsByVendor("moonshotai")` and
+  // `servedByVendor("moonshotai")`. The provider that calls this route is `kimi`.
+  moonshotai: { routeId: "moonshotai", routeProfileId: "direct-api" },
+  // The shortcut spelling of `opencode-zen`, kept as a legacy picker value
+  // (`PROVIDER_MODEL_PREFIX_OVERRIDE` in `model-selector.ts`). Its reader is the
+  // picker's wire-id and price lookup (`resolveProviderAggregatorEntry`) when a
+  // caller still passes that value. `zen@<id>` itself parses to `opencode-zen`.
+  zen: { routeId: "opencode", routeProfileId: "zen" },
+};
 
 /**
- * EVERY claudish provider bound to one catalog route, in declaration order.
+ * The route a name is bound to, in either table.
  *
- * The binding table is many-to-one on purpose: one endpoint can wear several
- * claudish names because each name owns a different key silo (`glm` and `z-ai`
- * are both https://api.z.ai, under ZHIPU_API_KEY and ZAI_API_KEY), and some
- * names are legacy spellings kept so an old `provider@model` spec still parses.
- *
- * Routing must consider all of them, and {@link providerForCatalogRoute} — which
- * answers with the first — silently hid the rest: a user whose key sat in the
- * second silo lost the model by bare name, with no error, because the candidate
- * carrying their credential was never gathered. Deciding WHICH of them serves is
- * the credential filter's job; a name with no provider definition drops out on
- * its own, one layer down, since it has no tier.
+ * Every catalog read asks through this (`catalogRouteMatchesProvider`,
+ * `externalIdFor`, the availability filter, the picker), so a lookup-only name
+ * answers exactly as it did when it sat in the routing table.
  */
-export function providersForCatalogRoute(route: CatalogRouteBinding | undefined): string[] {
+export function catalogRouteForProvider(provider: string): CatalogRouteBinding | undefined {
+  return CATALOG_ROUTE_BINDINGS[provider] ?? LOOKUP_ONLY_ROUTE_BINDINGS[provider];
+}
+
+function namesBoundTo(
+  table: Readonly<Record<string, CatalogRouteBinding>>,
+  route: CatalogRouteBinding | undefined
+): string[] {
   if (!route) return [];
-  return Object.entries(CATALOG_ROUTE_BINDINGS)
+  return Object.entries(table)
     .filter(
       ([, binding]) =>
         binding.routeId === route.routeId && binding.routeProfileId === route.routeProfileId
     )
-    .map(([provider]) => provider);
+    .map(([name]) => name);
+}
+
+/**
+ * EVERY claudish provider bound to one catalog route, in declaration order. The
+ * candidate gatherer's question (`route-candidates.ts`), answered from the routing
+ * table only.
+ *
+ * The routing table is many-to-one on purpose: one endpoint can wear several
+ * claudish names because each name owns a different key silo. Today that is one
+ * pair, `z-ai` and `glm`, both https://api.z.ai, under ZAI_API_KEY and
+ * ZHIPU_API_KEY.
+ *
+ * Routing must consider all of them. {@link providerForCatalogRoute}, which
+ * answers with the first, silently hid the rest: a user whose key sat in the
+ * second silo lost the model by bare name, with no error, because the candidate
+ * carrying their credential was never gathered. Deciding WHICH of them serves is
+ * the credential filter's job. A bundled catalog row (`together`, `fireworks`)
+ * that has not registered in this process has no definition and so no tier, and
+ * the gatherer drops it one layer down.
+ */
+export function routingProvidersForRoute(route: CatalogRouteBinding | undefined): string[] {
+  return namesBoundTo(CATALOG_ROUTE_BINDINGS, route);
+}
+
+/**
+ * Every name bound to one catalog route, for a catalog READ: the routing names in
+ * declaration order, then the lookup-only names. Never a routing input.
+ *
+ * Routing names come first, so the first answer is a provider whenever one is
+ * bound: `kimi` before `moonshotai`, `opencode-zen` before `zen`. `anthropic` is
+ * the only name on `anthropic/direct-api`.
+ */
+export function catalogReadProvidersForRoute(route: CatalogRouteBinding | undefined): string[] {
+  return [
+    ...namesBoundTo(CATALOG_ROUTE_BINDINGS, route),
+    ...namesBoundTo(LOOKUP_ONLY_ROUTE_BINDINGS, route),
+  ];
+}
+
+/**
+ * One name per route, for a read that wants exactly one: the first name
+ * {@link catalogReadProvidersForRoute} returns. Readers: the probe map
+ * (`probe-catalog.ts`), the aggregator slug set (`model-catalog.ts`) and the
+ * recommended-models list (`model-loader.ts`).
+ */
+export function providerForCatalogRoute(
+  route: CatalogRouteBinding | undefined
+): string | undefined {
+  return catalogReadProvidersForRoute(route)[0];
 }
 
 export function catalogRouteMatchesProvider(

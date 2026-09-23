@@ -1482,8 +1482,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // It used to carry `openaiHandler` and a comment arguing it was unreachable
     // anyway, because `providerForCatalogRoute` returned only the FIRST provider
     // bound to `qwen/dashscope-direct` and `qwen-payg` is the earlier key. v10.0.0
-    // replaced that with `providersForCatalogRoute`, which returns ALL of them —
-    // the z-ai/glm key-silo fix — and deleted the premise. This became a gathered
+    // made the gatherer take ALL of them (now `routingProvidersForRoute`) — the
+    // z-ai/glm key-silo fix — and deleted the premise. This became a gathered
     // candidate, so `--probe qwen3.8-max` printed a `Qwen ✗ key missing` hop and
     // sent the reader looking for a key that no environment variable can hold.
     // `route()` never yielded it (the credential filter drops it), so the damage
