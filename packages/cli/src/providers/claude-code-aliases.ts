@@ -62,6 +62,44 @@ export function claudeCodeTierAlias(model: string): ClaudeTier | null {
 }
 
 /**
+ * Every alias Claude Code itself accepts as a `--model` value. A superset of the
+ * {@link TIER_ALIASES} keys, so keep every tier alias listed here too. `opusplan`
+ * (which switches tier with the mode) and `best` (whatever Claude Code rates most
+ * capable) are not in the tier table, but Claude Code owns them all the same.
+ */
+export const CLAUDE_CODE_MODEL_ALIASES = [
+  "opus",
+  "sonnet",
+  "haiku",
+  "internal",
+  "default",
+  "opusplan",
+  "best",
+] as const;
+
+/** Claude Code's 1M-context selector, appended to an alias or a `claude-` id: `sonnet[1m]`. */
+const ONE_MILLION_CONTEXT_SUFFIX = "[1m]";
+
+/**
+ * Whether Claude Code owns this bare name: one of its aliases, optionally with the
+ * `[1m]` suffix, or any `claude-` id (the suffix included). Trimmed and
+ * case-insensitive.
+ *
+ * A different question from {@link claudeCodeTierAlias}, which asks which tier to
+ * substitute: `opus[1m]`, `sonnet[1m]`, `opusplan` and `best` are Claude Code's
+ * names, and the tier table answers null for each. Not a model name at all (`""`,
+ * `@model`), `claude` with no dash, and every other vendor's id are false.
+ */
+export function isClaudeCodeModelName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (normalized.startsWith("claude-")) return true;
+  const alias = normalized.endsWith(ONE_MILLION_CONTEXT_SUFFIX)
+    ? normalized.slice(0, -ONE_MILLION_CONTEXT_SUFFIX.length)
+    : normalized;
+  return (CLAUDE_CODE_MODEL_ALIASES as readonly string[]).includes(alias);
+}
+
+/**
  * Normalize a `--model` value so a native-Anthropic SELECTOR becomes a name
  * Claude Code actually recognises.
  *
