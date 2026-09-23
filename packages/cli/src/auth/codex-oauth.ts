@@ -244,8 +244,24 @@ export class CodexOAuth {
 
     log("[CodexOAuth] Refreshing access token");
 
+    // THE FETCH ITSELF THROWING MEANS THE NETWORK, NOT THE CREDENTIAL. This used
+    // to share one `catch` with the HTTP-rejection path below, which rewrapped
+    // every failure as "OAuth credentials invalid. Please run `claudish login
+    // codex` again" with no `cause` — so an `auth.openai.com` outage told the
+    // user to log in again, and named no host. It still classified, but only by
+    // `classifyConnectionError`'s MESSAGE fallback matching Bun's text embedded
+    // after "Details:" — a wording match that covers Bun's refused and DNS
+    // phrasings and nothing else. (The billing defect was the other half:
+    // `openai-codex.ts` swallowed this throw and sent the request to the
+    // METERED `api.openai.com` path mid-outage.)
+    //
+    // `{ cause }` makes classification structural: the classifier walks the
+    // cause chain for the code, whatever the message says. `claudishEndpoint`
+    // names the host that actually failed; without it the handler reports the
+    // model host. The same shape as `grok-credentials.ts` and `vertex-oauth.ts`.
+    let response: Response;
     try {
-      const response = await fetch(OAUTH_CONFIG.tokenUrl, {
+      response = await fetch(OAUTH_CONFIG.tokenUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -256,7 +272,18 @@ export class CodexOAuth {
           client_id: OAUTH_CONFIG.clientId,
         }),
       });
+    } catch (e) {
+      log(`[CodexOAuth] Could not reach ${OAUTH_CONFIG.tokenUrl}: ${(e as Error).message}`);
+      throw Object.assign(
+        new Error(
+          `Could not reach ${OAUTH_CONFIG.tokenUrl} to refresh the Codex token: ${(e as Error).message}`,
+          { cause: e }
+        ),
+        { claudishEndpoint: OAUTH_CONFIG.tokenUrl }
+      );
+    }
 
+    try {
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Token refresh failed: ${response.status} - ${errorText}`);
@@ -287,8 +314,11 @@ export class CodexOAuth {
       return updatedCredentials.access_token;
     } catch (e: any) {
       log(`[CodexOAuth] Refresh failed: ${e.message}`);
+      // `{ cause }` here too: a connection reset while reading the response body
+      // is a network fault that arrives after the fetch resolved.
       throw new Error(
-        `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: ${e.message}`
+        `OAuth credentials invalid. Please run \`claudish login codex\` again.\n\nDetails: ${e.message}`,
+        { cause: e }
       );
     }
   }
