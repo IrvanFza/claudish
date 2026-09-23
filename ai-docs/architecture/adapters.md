@@ -251,7 +251,11 @@ Every retry hook in claudish keys off the HTTP **status** (`anthropic-compat.ts`
 - **Terminal** in-stream errors (`context_length_exceeded`, `invalid_request_error`) are NOT retried — they keep the existing inline-text treatment, which is the actionable path for them.
 - **Anything else** (any content event) → `clean`, and the consumed bytes are **replayed byte-identically** so the real parser sees an unchanged stream.
 
-This is the one place the 400-not-503 doctrine (`composed-handler.ts` ~line 461) is deliberately inverted. That rule exists because a 503 makes Claude Code show "API error · Retrying · attempt N/10" with the real reason buried — correct for **terminal** faults, where retrying is theatre. An upstream overload is the opposite: genuinely transient, and the retry banner is the appropriate behaviour because retrying is the actual remedy. Terminal → 400 inline; transient-after-our-own-retries → 503.
+This is **one of two** places the 400-not-503 doctrine (`composed-handler.ts`'s `respondConnectionError`) is deliberately inverted. That rule exists because a 503 makes Claude Code show "API error · Retrying · attempt N/10" with the real reason buried — correct for **terminal** faults, where retrying is theatre. An upstream overload is the opposite: genuinely transient, and the retry banner is the appropriate behaviour because retrying is the actual remedy. Terminal → 400 inline; transient-after-our-own-retries → 503.
+
+The second inversion is network recovery's tier-2 handoff, which earns the same 503 by a different argument — not "the banner is the remedy" but "a pane is painting the reason, so the status no longer has to carry it". See [`network-recovery.md`](network-recovery.md).
+
+> This reference was `~line 461` until v9.2.x, then really `:665-675`, and is now inside a named method. **Cite the symbol, not the line.** Three separate readers have been sent to the wrong part of this 2,000-line file by a number that was correct when it was written.
 
 **Trade-off to know:** sniffing withholds response headers until the first decisive event, capped by `DEFAULT_SNIFF_BUDGET_MS` (12s, chosen above the 0.85s–7.7s error latencies observed in the real log). On a healthy xhigh-reasoning turn that delays `message_start` by however long the model thinks before its first output item. No content is lost or reordered — the client shows a spinner either way — but time-to-first-byte is genuinely later than before. Past the budget claudish flushes and degrades gracefully to the inline-text path.
 
@@ -359,6 +363,45 @@ remap happened rather than gaining a new special case.
 The general lesson: **any code that branches on an HTTP status downstream of the
 remap is suspect.** Grep for `status ===` under `handlers/` before assuming a new
 one is safe.
+
+### The status is not always enough: `x-claudish-recovery` (network recovery, Tier 2)
+
+There is now one response `FallbackHandler` must treat specially **before it looks
+at a status or a body at all**: the 503 an exhausted tier-1 connection hold hands
+back so Claude Code will re-POST (`handlers/shared/recovery-marker.ts`).
+
+A 503 already stops the chain — `isRetryableError` has no 503 branch. That is not
+enough, twice:
+
+- **`isRetryableError`'s FIRST statement is `hasQuotaExhaustionWording(errorBody)`**,
+  status-agnostic on purpose (it exists *because* of the remap above), and its list
+  carries the bare substring `"quota"`. A 503 whose MESSAGE happened to contain that
+  word advanced the chain — and per CLAUDE.md's standing invariant, advancing off a
+  `SUBSCRIPTION_PROVIDERS` candidate onto a metered one quotes real money, during an
+  outage, for a fault no provider caused.
+- **`exhaustedChainStatus` could demote it.** With an earlier candidate already
+  failed, a non-retryable response goes to `formatCombinedError`, whose status is 503
+  only if EVERY accumulated error is transient. One earlier auth/404 turns our 503
+  into a terminal 400 and the client never re-POSTs.
+
+So the marker is a **header**, checked in two independent places: `handle()` returns
+a marked response VERBATIM before reading the body (which is what defeats the
+combining), and `isRetryableError` returns `false` on it ABOVE the quota match
+(which is what defeats the wording). The second is unreachable in the shipped call
+graph and is kept anyway, so the guarantee belongs to the decision rather than to one
+call site.
+
+**Order is the property, not presence.** Moving the marker check below the quota
+match — present, but late — is a live billing bug, and is mutation-covered as one.
+
+It cannot be forged: every non-ok exit from `ComposedHandler` is `c.json(...)`, which
+builds headers from nothing, and the only path that copies upstream headers verbatim
+(`stream-head-sniffer.ts`'s `replayResponse()`) runs after `!response.ok` has already
+returned, i.e. on a 200. **If a future edit ever returns an upstream `Response` object
+on a non-ok path, the marker must be stripped there.**
+
+Evidence, including the live chain runs and the mutation set:
+`ai-docs/reports/network-recovery-phase4-status-flip-20260911.md`.
 
 ## The catalog's endpoint contract has two halves (v9.0.7)
 

@@ -242,6 +242,49 @@ export interface ClaudishProfileConfig {
    * `readProOnUltracode()`, NOT this allowlist — see its doc comment.
    */
   proOnUltracode?: boolean;
+
+  /**
+   * Master switch for connection RECOVERY itself — the retry ladder claudish
+   * runs when it cannot even reach the provider. Default ON. Turning it off
+   * restores the immediate `connection_error` 400 everywhere.
+   *
+   * It exists for CI and scripted `-p` runs, which would otherwise hold a dead
+   * endpoint open for the whole tier-1 deadline instead of failing at once.
+   * Precedence: --recovery/--no-recovery flag > CLAUDISH_RECOVERY env >
+   * project `.claudish.json` > this field > true. The scoped read is
+   * `readRecoveryEnabled()`, NOT this allowlist — see its doc comment.
+   *
+   * An OBJECT rather than a bare boolean so a later `deadlineMs` needs no
+   * second allowlist entry, and because `{}` can then mean "no opinion" and
+   * fall through to the next scope, which a boolean cannot express.
+   */
+  recovery?: { enabled?: boolean };
+
+  /**
+   * Whether claudish may own a terminal surface on which a recovery episode's
+   * reason is legible. Default ON.
+   *
+   * What it actually decides, and the blast radius is larger than "a banner":
+   *
+   *   - whether the interactive session is WRAPPED in a magmux pane at launch
+   *     (`claude-runner.ts` → `planMagmuxWrap`);
+   *   - whether `CLAUDE_CODE_RETRY_WATCHDOG=1` is exported to Claude Code,
+   *     which moves its retry budget from ~11 attempts to ~300 for every 503
+   *     the session sees (it is one of three gates — see `retryWatchdogEnv`);
+   *   - and through those, whether an exhausted hold can ever answer a
+   *     retryable 503 rather than an inline 400, since the 503 requires a live
+   *     pane lease.
+   *
+   * It never decides whether a RETRY happens. There is no loopback carve-out
+   * and its absence is deliberate (`composed-handler.ts`'s `shouldSkipTier1`);
+   * an earlier draft of this comment described one, and it had already been
+   * deleted.
+   *
+   * Precedence: --recovery-ui/--no-recovery-ui flag > CLAUDISH_RECOVERY_UI env
+   * > project `.claudish.json` > this field > true. The scoped read is
+   * `readRecoveryUi()`, NOT this allowlist — see its doc comment.
+   */
+  recoveryUi?: { enabled?: boolean };
 }
 
 /**
@@ -360,6 +403,15 @@ export function loadConfig(): ClaudishProfileConfig {
     // then silently dropped — quietly turning the feature off with no error.
     if (config.proOnUltracode !== undefined) {
       merged.proOnUltracode = config.proOnUltracode;
+    }
+    // Same trap again, for both recovery switches. Omitted here, the field
+    // survives on disk until the first global save and is then silently
+    // dropped — turning the user's off-switch back ON with no error.
+    if (config.recovery !== undefined) {
+      merged.recovery = config.recovery;
+    }
+    if (config.recoveryUi !== undefined) {
+      merged.recoveryUi = config.recoveryUi;
     }
     return merged;
   } catch (error) {
@@ -482,6 +534,57 @@ export function readProOnUltracode(
     }
   }
   return undefined;
+}
+
+/**
+ * Read a `{ enabled?: boolean }` switch from the project file, else the global
+ * file. Shared by `readRecoveryEnabled` and `readRecoveryUi`.
+ *
+ * The nesting is what makes `{}` expressible, and `{}` means "no opinion" —
+ * a project file that carries `"recovery": {}` must fall through to the global
+ * scope rather than reading as `true`. That is why this checks
+ * `typeof parsed?.[key]?.enabled === "boolean"` and not the bare-boolean shape
+ * `readProOnUltracode` uses: the two fields have different types on purpose.
+ */
+function readNestedEnabled(
+  key: "recovery" | "recoveryUi",
+  paths: ScopedConfigPaths
+): boolean | undefined {
+  for (const pathFn of [paths.project, paths.global]) {
+    try {
+      const path = pathFn();
+      if (!existsSync(path)) continue;
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      const value = (parsed?.[key] as { enabled?: unknown } | undefined)?.enabled;
+      if (typeof value === "boolean") return value;
+    } catch {
+      // Garbled/unreadable file → skip this scope rather than fail the run.
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read `recovery.enabled` from the project file, else the global file.
+ *
+ * Deliberately a RAW per-file read rather than `loadConfig()`, for the same
+ * reason `readProOnUltracode` is: `loadConfig` merges only the GLOBAL scope, so
+ * a project `.claudish.json` setting this key would be invisible to it.
+ *
+ * Returns undefined when neither scope states a boolean — the caller then
+ * applies its own default (true).
+ */
+export function readRecoveryEnabled(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): boolean | undefined {
+  return readNestedEnabled("recovery", paths);
+}
+
+/** Read `recoveryUi.enabled` from the project file, else the global file. */
+export function readRecoveryUi(
+  paths: ScopedConfigPaths = defaultScopedConfigPaths
+): boolean | undefined {
+  return readNestedEnabled("recoveryUi", paths);
 }
 
 /**
