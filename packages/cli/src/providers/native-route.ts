@@ -72,6 +72,20 @@ export type ProxyRouteDecision =
   /** `route()` decides. `model` is the parsed name: a known `vendor/` is stripped. */
   | { type: "bare"; model: string };
 
+/**
+ * What every surface says about a native link instead of a probe result: `--probe`,
+ * the MCP preflight and the config TUI's route probe.
+ *
+ * A native link is never probed. The native handler authenticates by forwarding
+ * the INBOUND request's Claude Code header, and a synthetic request from this
+ * process carries none, so its answer is noise: "x-api-key header is required"
+ * for a healthy model and a typo alike. Substituting `ANTHROPIC_API_KEY` probes a
+ * different credential from the one a session uses. So it is a third outcome,
+ * neither live nor failed.
+ */
+export const NATIVE_NOT_PROBED =
+  "not probed — served on Claude Code's own auth, which this process cannot forward";
+
 /** The prefix the proxy's `isPoeModel` tests, case-sensitively, as it always has. */
 const POE_PREFIX = "poe:";
 

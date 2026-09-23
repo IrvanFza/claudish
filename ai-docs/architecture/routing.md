@@ -82,6 +82,26 @@ on stderr and keeps the `kept` candidates as its plan.
    provider in that provider's own spelling (see below).
 6. Primary + fallbacks.
 
+**What `--probe` shows is that explanation, not a chain of its own.** It used to rebuild one
+(`buildModelChain`): no credential filter, no availability filter, and a native test without
+`route()`'s `/` check, so it probed hops a request never used and called `anthropic/<id>`
+native. Now `chain` is the `kept` candidates in `route()`'s order (`[]` still means no route,
+and an explicit target is a one-item chain), `dropped[]` lists every other candidate with its
+outcome, and only kept candidates are probed (`probeTargets`, `providers/probe-runner.ts`).
+Three consequences to know before reading its output:
+
+- **A native name is one link, never probed** (`notProbed: "native-auth"`,
+  `NATIVE_NOT_PROBED`). The native handler forwards the inbound Claude Code header, which a
+  probe from this process does not have; substituting `ANTHROPIC_API_KEY` tested a different
+  credential from the one a session uses.
+- **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
+  account's dynamic models catalog is read for each credentialed candidate that declares
+  discovery (in memory, five minutes). `--no-probe` skips the model requests only.
+- **The parser's provider is not a routing decision.** For a bare non-Claude name it is
+  `auto-route`. It stays in `--probe --json` as `nativeProvider` and is never rendered: card
+  headings and leaderboards name the first kept hop, or the explanation line when there is
+  none.
+
 **No catalog means local only.** With no readable catalog a bare name returns a no-route naming
 `claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id
 nobody published to a metered gateway, and a RENAMED id looks identical.

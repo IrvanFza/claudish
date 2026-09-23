@@ -175,6 +175,12 @@ describe("resolveDefaultProvider precedence", () => {
 
 interface ProbeJson {
   chain: Array<{ provider: string }>;
+  dropped: Array<{
+    provider: string;
+    position: "candidate" | "fallback";
+    label: string;
+    outcome: string;
+  }>;
 }
 
 function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
@@ -223,11 +229,29 @@ function sandboxedProbe(flagBeforeProbe: boolean, provider: string): ProbeJson {
 
 describe("--default-provider pre-scan reaches --probe", () => {
   test("uses poe when the flag appears before --probe", () => {
-    expect(sandboxedProbe(true, "poe").chain.map((entry) => entry.provider)).toEqual(["poe"]);
+    const result = sandboxedProbe(true, "poe");
+    expect([...result.chain, ...result.dropped].map((entry) => entry.provider)).toEqual(["poe"]);
+    expect(result.dropped).toEqual([
+      expect.objectContaining({
+        provider: "poe",
+        position: "fallback",
+        label: "fallback",
+        outcome: "no-credential",
+      }),
+    ]);
   });
 
   test("uses poe when the flag appears after the probed model", () => {
-    expect(sandboxedProbe(false, "poe").chain.map((entry) => entry.provider)).toEqual(["poe"]);
+    const result = sandboxedProbe(false, "poe");
+    expect([...result.chain, ...result.dropped].map((entry) => entry.provider)).toEqual(["poe"]);
+    expect(result.dropped).toEqual([
+      expect.objectContaining({
+        provider: "poe",
+        position: "fallback",
+        label: "fallback",
+        outcome: "no-credential",
+      }),
+    ]);
   });
 
   test("an empty flag value produces an empty chain", () => {

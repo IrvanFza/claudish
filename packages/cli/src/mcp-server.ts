@@ -45,7 +45,7 @@ import { findAvailablePort } from "./port-manager.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { compareByReleaseDateDesc } from "./providers/model-ordering.js";
 import { isLocalProviderName } from "./providers/model-parser.js";
-import { nativeRouteFor } from "./providers/native-route.js";
+import { NATIVE_NOT_PROBED, nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
@@ -1099,7 +1099,7 @@ function defineTools(
           // auth, and that is all this process can say.
           nativeModels.push(model);
           rows.push(
-            `| \`${model}\` | ${native.displayName} | native | ${"not probed — served on Claude Code's own auth, which this process cannot forward"} | \`${native.modelSpec}\` |`
+            `| \`${model}\` | ${native.displayName} | native | ${NATIVE_NOT_PROBED} | \`${native.modelSpec}\` |`
           );
           continue;
         }

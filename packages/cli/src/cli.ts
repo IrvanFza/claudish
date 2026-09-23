@@ -31,6 +31,14 @@ import {
 import { parseModelParams } from "./model-params.js";
 import { compareByReleaseDateDesc } from "./model-selector.js";
 import {
+  type CredentialLookup,
+  type ProbeChainLink,
+  type ProbeDroppedLink,
+  probeChainFrom,
+  resultLinksFrom,
+  routingFieldsFrom,
+} from "./probe/probe-chain.js";
+import {
   type ModelResult as PrintableModelResult,
   printProbeResults,
 } from "./probe/probe-results-printer.js";
@@ -41,34 +49,24 @@ import type {
   ProbeStepState,
 } from "./probe/probe-tui-app.js";
 import { startProbeTui } from "./probe/probe-tui-runtime.js";
-import {
-  getModelMapping,
-  isLocalProviderEnabled,
-  loadConfig,
-  loadLocalConfig,
-  readProOnUltracode,
-} from "./profile-config.js";
+import { getModelMapping, loadConfig, readProOnUltracode } from "./profile-config.js";
 import { API_KEY_MAP } from "./providers/api-key-map.js";
 import { type KeyProvenance, resolveCredentialProvenance } from "./providers/api-key-provenance.js";
-import type { FallbackRoute } from "./providers/auto-route.js";
-import { latestAnthropicTierModelId } from "./providers/catalog-client.js";
-import { claudeCodeTierAlias, normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
+import { normalizeNativeModelSpec } from "./providers/claude-code-aliases.js";
 import { ensureEndpointsRegistered } from "./providers/endpoint-registration.js";
 import { parseModelChain, parseModelSpec } from "./providers/model-parser.js";
-import { proxyRouteDecision } from "./providers/native-route.js";
+import { NATIVE_NOT_PROBED } from "./providers/native-route.js";
 import { fetchOllamaModels } from "./providers/ollama-discovery.js";
-import { type ProbeResult, describeProbeState } from "./providers/probe-live.js";
-import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
+import { type ProbeResult, describeProbeState, probeLink } from "./providers/probe-live.js";
+import { type ProbeTarget, describeDropped, probeTargets } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
 import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import {
-  buildCatalogChain,
-  buildRoutingChain,
-  effectiveDefaultProvider,
-  hasCredentialsForProvider,
-  loadRoutingRules,
-  matchRoutingRule,
+  type RouteExplanation,
+  type RouteWarning,
+  type RuleScope,
+  explainRoute,
 } from "./providers/routing-rules.js";
 import { setRecoveryFlagOverrides } from "./recovery/settings.js";
 import { cliAnsi } from "./theme/ansi.js";
@@ -1339,11 +1337,18 @@ async function printVersion(): Promise<void> {
 }
 
 /**
- * Probe model routing — show the fallback chain for each model.
- * Warm caches first, then display a table of how each model would be routed.
+ * Probe model routing — show the routing chain `route()` calculates for each
+ * model, and probe its hops.
+ *
+ * The chain comes from `explainRoute`, the function `route()` itself is derived
+ * from, so `--probe` shows exactly the chain a request uses: the kept candidates
+ * in order, then the candidates the credential, availability and membership
+ * filters dropped, each with its outcome. Only kept candidates are probed
+ * (`probeTargets`). A native link is never probed: it is served on Claude Code's
+ * own auth, which this process cannot forward (`NATIVE_NOT_PROBED`).
  *
  * Two paths:
- * - JSON path (--json): runs existing batch logic unchanged, prints JSON to stdout
+ * - JSON path (--json): prints the decisions as JSON to stdout
  * - TUI path (interactive): live-updating progress bars via OpenTUI React on stderr
  */
 async function probeModelRouting(
@@ -1351,45 +1356,46 @@ async function probeModelRouting(
   jsonOutput: boolean,
   options: { live: boolean; timeoutMs: number } = { live: true, timeoutMs: 40000 }
 ): Promise<void> {
-  // Shared types for both paths
+  type Wiring = {
+    formatAdapter: string;
+    declaredStreamFormat: string;
+    modelTranslator: string;
+    contextWindow: number;
+    supportsVision: boolean;
+    transportOverride: string | null;
+    effectiveStreamFormat: string;
+  };
+
+  /** One model in `--probe --json`: the routing decision, as `explainRoute` made it. */
   interface ChainProbe {
     model: string;
+    /**
+     * The parser's provider. Not a routing decision — a bare non-Claude name
+     * reads `auto-route` here — so it is reported in JSON only and never rendered.
+     */
     nativeProvider: string;
+    /** An explicit target: `provider@model`, `poe:<id>` or `anthropic/<id>`. */
     isExplicit: boolean;
-    routingSource: "direct" | "custom-rules" | "auto-chain";
+    routingSource: RouteExplanation["source"];
+    /** `describeRouteExplanation`: the one line `--probe` and the config TUI share. */
+    routingExplanation: string;
+    via?: RouteExplanation["via"];
     matchedPattern?: string;
-    chain: Array<{
-      provider: string;
-      displayName: string;
-      modelSpec: string;
-      hasCredentials: boolean;
-      credentialHint?: string;
-      provenance?: KeyProvenance;
-      probe?: ProbeResult;
-    }>;
+    ruleScope?: RuleScope;
+    catalog?: RouteExplanation["catalog"];
+    fallbackWithheld?: RouteExplanation["fallbackWithheld"];
+    outcome: RouteExplanation["outcome"];
+    warnings: RouteWarning[];
+    /** The kept hops in `route()`'s order; a native target's one not-probed link. `[]` = no route. */
+    chain: ProbeChainLink[];
+    /** Every other candidate, in chain order, with its outcome. Never probed. */
+    dropped: ProbeDroppedLink[];
+    /** An explicit target's probe, for readers that predate its one-item chain. */
     directProbe?: ProbeResult;
-    wiring?: {
-      formatAdapter: string;
-      declaredStreamFormat: string;
-      modelTranslator: string;
-      contextWindow: number;
-      supportsVision: boolean;
-      transportOverride: string | null;
-      effectiveStreamFormat: string;
-    };
+    wiring?: Wiring;
   }
 
   type LiveProxy = { url: string; shutdown: () => Promise<void> };
-
-  // Snapshot user-defined routing keys so we can label matches as
-  // "custom-rules" vs "auto-chain" in --probe output. Every rule
-  // `loadRoutingRules()` returns is now the user's own — there is no shipped
-  // table left to merge — so this set and that one have the same keys; the
-  // snapshot stays because the labelling reads more clearly for it.
-  const userRoutingKeys = new Set<string>([
-    ...Object.keys(loadConfig().routing ?? {}),
-    ...Object.keys(loadLocalConfig()?.routing ?? {}),
-  ]);
 
   /**
    * The remedy a credential-less row shows.
@@ -1409,361 +1415,98 @@ async function probeModelRouting(
     return envVar;
   }
 
-  /** The same remedy where no provenance record has been built yet. */
-  function credentialHintFor(
-    provider: string,
-    envVar: string | undefined,
-    aliases: string[] | undefined
-  ): string | undefined {
-    if (!envVar) return undefined;
-    return credentialHintFrom(resolveCredentialProvenance(provider, envVar, aliases), envVar);
+  /**
+   * Where `--probe` reads a provider's credential remedy and key provenance. The
+   * credential DECISION is not here: `explainRoute` asked the credential
+   * authority, exactly as `route()` does, and a dropped candidate carries its
+   * verdict. This only names the key a user would set.
+   */
+  const probeCredentials: CredentialLookup = {
+    hintFor(provider) {
+      if (getProviderByName(provider)?.isLocal) return "enable local provider in global config";
+      const keyInfo = API_KEY_MAP[provider];
+      if (!keyInfo?.envVar) return undefined;
+      return credentialHintFrom(
+        resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases),
+        keyInfo.envVar
+      );
+    },
+    provenanceFor(provider) {
+      const keyInfo = API_KEY_MAP[provider];
+      return keyInfo?.envVar
+        ? resolveCredentialProvenance(provider, keyInfo.envVar, keyInfo.aliases)
+        : undefined;
+    },
+  };
+
+  /** One model's decision, its rows, and the hops a probe sends requests down. */
+  interface ModelProbe {
+    modelInput: string;
+    explanation: RouteExplanation;
+    chain: ProbeChainLink[];
+    dropped: ProbeDroppedLink[];
+    /** Each kept hop's probe target, beside the chain link its result lands on. */
+    targets: Array<{ target: ProbeTarget; link: ProbeChainLink }>;
   }
 
-  /** Build chain + credential data for a single model (shared by both paths) */
-  function buildModelChain(modelInput: string) {
-    const parsed = parseModelSpec(modelInput);
-    // The proxy's own pre-route decision picks the branch below.
-    //
-    // A vendor-qualified `anthropic/<id>` takes the native branch, as it always
-    // has in `--probe`, although the proxy sends it to OpenRouter with the id
-    // unchanged (its `vendor-qualified-id` decision). That is a known divergence
-    // from the proxy, kept so that reading the decision changes no probe output.
-    const decision = proxyRouteDecision(modelInput);
-    const isDirectSpec = decision.type === "explicit" && decision.via === "model-spec";
-    const isNativeBranch =
-      decision.type === "native" ||
-      (decision.type === "explicit" && decision.via === "vendor-qualified-id");
-    const chain = (() => {
-      if (isDirectSpec) {
-        return {
-          routes: [] as FallbackRoute[],
-          source: "direct" as const,
-          matchedPattern: undefined,
-        };
-      }
-      // Native-anthropic passthrough: a bare name with no vendor "/" and no
-      // provider "@" (e.g. "internal") resolves to native-anthropic — the
-      // default Claude Code route. The real proxy returns nativeHandler for
-      // this (proxy-server.ts) BEFORE the routing engine runs, so the probe
-      // must mirror that here rather than letting matchRoutingRule send it to
-      // the "*" catch-all → openrouter (which produced the wrong "no live
-      // route"). We pin the default Opus model so the probe sends a real
-      // request through the passthrough like any other link.
-      if (isNativeBranch) {
-        // Substitute a concrete id ONLY for a Claude Code TIER ALIAS.
-        //
-        // `parseModelSpec` sends every unrecognised bare name here, so this
-        // branch receives two different things. `opus` / `sonnet` / `internal`
-        // are Claude Code's own selectors: the API rejects them as model ids
-        // while the ROUTE is healthy, so they must be resolved to something real
-        // or the probe reports a failure that does not exist. A concrete name
-        // like `swe-1.7` or a typo is the opposite case — `native-handler.ts`
-        // forwards `payload.model` VERBATIM at runtime and Anthropic answers 404,
-        // so substituting here made `--probe` report `live` for a model that
-        // could not serve one request.
-        //
-        // That substitution is why `swe-1.7` "probed byte-identically to a
-        // nonsense string": both were rewritten to the same working id before
-        // the request went out, erasing the difference the probe exists to show.
-        // Unknown names now go through untouched and the API answers for itself.
-        const tier = claudeCodeTierAlias(parsed.model);
-        // The literal is a cold-catalog last resort (first run, no cache, no env
-        // override). It replaced `claude-opus-4-1`, which sat here under a
-        // comment asserting it was "the current Opus alias the API accepts
-        // (verified against api.anthropic.com)" and that `claude-opus-4-8` was
-        // rejected — measured 2026-08-18, that id returns 404 and 4-8 returns
-        // 200, so both halves had rotted. A verification note carries no expiry
-        // date, which is the failure the no-hardcoded-model-data rule prevents.
-        const tierEnv: Record<string, string | undefined> = {
-          opus:
-            process.env[ENV.CLAUDISH_MODEL_OPUS] || process.env[ENV.ANTHROPIC_DEFAULT_OPUS_MODEL],
-          sonnet:
-            process.env[ENV.CLAUDISH_MODEL_SONNET] ||
-            process.env[ENV.ANTHROPIC_DEFAULT_SONNET_MODEL],
-          haiku:
-            process.env[ENV.CLAUDISH_MODEL_HAIKU] || process.env[ENV.ANTHROPIC_DEFAULT_HAIKU_MODEL],
-        };
-        const opusModel = tier
-          ? tierEnv[tier] || latestAnthropicTierModelId(tier) || "claude-opus-5"
-          : parsed.model;
-        // IMPORTANT: pin a BARE model name (no `provider@`). The proxy resolves
-        // the native passthrough via `isNative` = no "/" AND no "@" — pinning
-        // `native-anthropic@...` would set hasExplicitProvider=true and DEFEAT
-        // the native branch (the request would 400 / fall to OpenRouter). So
-        // pinProbeModelSpec must keep this bare; the proxy then returns the
-        // nativeHandler (default Claude Code / Opus).
-        return {
-          routes: [
-            {
-              provider: "native-anthropic",
-              modelSpec: opusModel,
-              displayName: tier ? `Claude Code (${tier})` : "Claude Code",
-            },
-          ] as FallbackRoute[],
-          source: "auto-chain" as const,
-          matchedPattern: undefined,
-        };
-      }
-      // Only the USER's rules now — the shipped table is gone, so most models
-      // match nothing here and are routed from the catalog instead.
-      const routingRules = loadRoutingRules();
-      const matched = matchRoutingRule(parsed.model, routingRules);
-      if (matched) {
-        const matchedPattern = Object.keys(routingRules).find((k) => {
-          if (k === parsed.model) return true;
-          if (k.includes("*")) {
-            const star = k.indexOf("*");
-            const prefix = k.slice(0, star);
-            const suffix = k.slice(star + 1);
-            return parsed.model.startsWith(prefix) && parsed.model.endsWith(suffix);
-          }
-          return false;
-        });
-        const isUserKey = !!matchedPattern && userRoutingKeys.has(matchedPattern);
-        return {
-          routes: buildRoutingChain(matched, parsed.model),
-          source: isUserKey ? ("custom-rules" as const) : ("auto-chain" as const),
-          matchedPattern,
-        };
-      }
-      // No user rule: the SAME chain `routeBare` would assemble — gathered from
-      // the cloud models catalog, with the fallback hop appended. This used to
-      // read the shipped rules table; reproducing the gathering by hand here
-      // would be the second copy of a routing decision, and the two would
-      // disagree the first time either changed. `--probe` still owns the
-      // credential-provenance display below, which is why it builds a chain at
-      // all instead of calling `route()`. The fallback hop is `route()`'s too:
-      // `effectiveDefaultProvider()` reads the env variable before the config.
-      return {
-        routes: buildCatalogChain(parsed.model, effectiveDefaultProvider())
-          .routes as FallbackRoute[],
-        source: "auto-chain" as const,
-        matchedPattern: undefined,
-      };
-    })();
-
-    const chainDetails = chain.routes.map((route) => {
-      const keyInfo = API_KEY_MAP[route.provider];
-      const providerDef = getProviderByName(route.provider);
-      let hasCredentials = false;
-      let credentialHint: string | undefined;
-      let provenance: KeyProvenance | undefined;
-
-      if (route.provider === "native-anthropic") {
-        // The probe hits the Anthropic API DIRECTLY (api.anthropic.com) via the
-        // passthrough, so it needs a real ANTHROPIC_API_KEY. Without one we
-        // can't probe — surface that as a clean key-missing row (no request,
-        // no 400) telling the user what to set.
-        hasCredentials = !!process.env.ANTHROPIC_API_KEY;
-        if (!hasCredentials) {
-          credentialHint = "ANTHROPIC_API_KEY (required to probe Claude Code)";
-        }
-      } else if (providerDef?.isLocal) {
-        hasCredentials = isLocalProviderEnabled(route.provider);
-        if (!hasCredentials) {
-          credentialHint = "enable local provider in global config";
-        }
-      } else if (!keyInfo) {
-        hasCredentials = true;
-      } else if (!keyInfo.envVar) {
-        hasCredentials = true;
-      } else {
-        provenance = resolveCredentialProvenance(route.provider, keyInfo.envVar, keyInfo.aliases);
-        hasCredentials = provenance.hasValue;
-        if (!hasCredentials && keyInfo.aliases) {
-          hasCredentials = keyInfo.aliases.some((a) => !!process.env[a]);
-        }
-        if (!hasCredentials) {
-          credentialHint = credentialHintFrom(provenance, keyInfo.envVar);
-        }
-      }
-
-      return {
-        provider: route.provider,
-        displayName: route.displayName,
-        modelSpec: route.modelSpec,
-        hasCredentials,
-        credentialHint,
-        provenance,
-        probe: undefined as ProbeResult | undefined,
-      };
-    });
-
-    return { parsed, chain, chainDetails };
+  /** The routing decision for one model (shared by both paths). */
+  async function explainForProbe(modelInput: string): Promise<ModelProbe> {
+    const explanation = await explainRoute(modelInput);
+    const { chain, dropped } = probeChainFrom(explanation, probeCredentials);
+    // Both are the kept candidates in chain order, so the i-th target is the
+    // i-th link. A native target has one link and no targets.
+    const targets = probeTargets(explanation).map((target, i) => ({ target, link: chain[i] }));
+    return { modelInput, explanation, chain, dropped, targets };
   }
 
-  const probeCredentialReadiness = new Map<string, boolean>();
-  async function credentialForProbe(provider: string): Promise<boolean> {
-    if (probeCredentialReadiness.has(provider)) return probeCredentialReadiness.get(provider)!;
-    const ready =
-      provider === "native-anthropic"
-        ? !!process.env.ANTHROPIC_API_KEY
-        : await hasCredentialsForProvider(provider);
-    probeCredentialReadiness.set(provider, ready);
-    return ready;
-  }
-
-  async function prepareModelChain(
-    modelInput: string
-  ): Promise<ReturnType<typeof buildModelChain>> {
-    const result = buildModelChain(modelInput);
-    await Promise.all(
-      result.chainDetails.map(async (link) => {
-        link.hasCredentials = await credentialForProbe(link.provider);
-        const keyInfo = API_KEY_MAP[link.provider];
-        if (keyInfo?.envVar)
-          link.provenance = resolveCredentialProvenance(
-            link.provider,
-            keyInfo.envVar,
-            keyInfo.aliases
-          );
-        link.credentialHint = link.hasCredentials
-          ? undefined
-          : link.provider === "native-anthropic"
-            ? "ANTHROPIC_API_KEY (required to probe Claude Code)"
-            : getProviderByName(link.provider)?.isLocal
-              ? "enable local provider in global config"
-              : credentialHintFrom(link.provenance, keyInfo?.envVar);
+  /** One live request down one kept hop. `probeSpec` is final, so no second pinning. */
+  function probeTarget(proxyUrl: string, target: ProbeTarget): Promise<ProbeResult> {
+    return probeLink(
+      proxyUrl,
+      { provider: target.provider, modelSpec: target.probeSpec, hasCredentials: true },
+      options.timeoutMs
+    ).catch(
+      (e): ProbeResult => ({
+        state: "error",
+        latencyMs: 0,
+        errorMessage: String(e instanceof Error ? e.message : e),
       })
     );
-    if (result.chain.source === "direct") await credentialForProbe(result.parsed.provider);
-    return result;
+  }
+
+  /** The JSON record for one model. */
+  function chainProbeOf(probe: ModelProbe, wiring: Wiring | undefined): ChainProbe {
+    const exp = probe.explanation;
+    const directProbe = exp.source === "explicit" ? probe.chain[0]?.probe : undefined;
+    return {
+      model: probe.modelInput,
+      nativeProvider: parseModelSpec(probe.modelInput).provider,
+      isExplicit: exp.source === "explicit",
+      routingSource: exp.source,
+      routingExplanation: routingFieldsFrom(exp).routingExplanation,
+      ...(exp.via ? { via: exp.via } : {}),
+      ...(exp.matchedPattern !== undefined ? { matchedPattern: exp.matchedPattern } : {}),
+      ...(exp.ruleScope ? { ruleScope: exp.ruleScope } : {}),
+      ...(exp.catalog ? { catalog: exp.catalog } : {}),
+      ...(exp.fallbackWithheld ? { fallbackWithheld: exp.fallbackWithheld } : {}),
+      outcome: exp.outcome,
+      warnings: exp.warnings,
+      chain: probe.chain,
+      dropped: probe.dropped,
+      ...(directProbe ? { directProbe } : {}),
+      ...(wiring ? { wiring } : {}),
+    };
   }
 
   /**
-   * Routing-why one-liner shown on the right of each model header in the
-   * Details tab. Kept as a SINGLE function so a later routing worktree can swap
-   * the derivation in one place (the current buildModelChain has known bugs that
-   * a future worktree will reconcile — this only consumes its output).
+   * Compute wiring for the first kept hop. A native link has none to report: the
+   * native passthrough forwards the request as is, through no adapter.
    */
-  function buildRoutingExplanation(
-    parsed: ReturnType<typeof parseModelSpec>,
-    chain: ReturnType<typeof buildModelChain>["chain"]
-  ): string {
-    if (parsed.provider === "native-anthropic") {
-      return "native passthrough · default Claude Code (Opus)";
-    }
-    if (chain.source === "direct") {
-      return `explicit · ${parsed.provider} (direct)`;
-    }
-    if (chain.source === "custom-rules" && chain.matchedPattern) {
-      return `custom-rules · matched \`${chain.matchedPattern}\``;
-    }
-    if (chain.source === "auto-chain") {
-      if (chain.matchedPattern && chain.matchedPattern !== "*") {
-        return `auto-chain · default rule \`${chain.matchedPattern}\``;
-      }
-      return "auto-chain · catch-all → openrouter";
-    }
-    return chain.source;
-  }
-
-  /**
-   * The ONE chain entry an explicit `provider@model` address resolves to.
-   *
-   * `buildModelChain` returns `routes: []` for an explicit spec because there is
-   * no fallback chain to walk — it is pinned to a single provider. Emitting that
-   * raw made `--probe --json` report `chain: []` for a perfectly healthy model,
-   * with the real outcome hidden in `directProbe`. Anyone reading `chain` to
-   * decide routability concluded "dead route": `dv@swe-1.7` was filed as
-   * unroutable twice while it was serving 509-token replies.
-   *
-   * So an explicit address now yields a ONE-ITEM chain, and `[]` is reserved for
-   * its literal meaning — no provider can serve this, whether because the
-   * provider name resolves to nothing or because no fallback exists. Empty now
-   * says "no route" in both the bare and explicit cases instead of doubling as
-   * "not applicable here".
-   *
-   * Shared with `buildResultLinks` on purpose: the TUI row and the JSON chain
-   * disagreeing about the same address is the defect, not a rendering detail.
-   */
-  function buildDirectChainEntry(
-    parsed: ReturnType<typeof parseModelSpec>,
-    directProbe: ProbeResult | undefined
-  ): ReturnType<typeof buildModelChain>["chainDetails"] {
-    const providerDef = getProviderByName(parsed.provider);
-    const keyInfo = API_KEY_MAP[parsed.provider];
-    // Nothing known by this name — genuinely unroutable, so the chain stays
-    // empty and now MEANS empty.
-    if (!providerDef && !keyInfo) return [];
-
-    const hasCredentials = probeCredentialReadiness.get(parsed.provider) ?? false;
-    const provenance = keyInfo?.envVar
-      ? resolveCredentialProvenance(parsed.provider, keyInfo.envVar, keyInfo.aliases)
-      : undefined;
-
-    return [
-      {
-        provider: parsed.provider,
-        displayName: providerDef?.displayName ?? parsed.provider,
-        // The RESOLVED bare id, never the raw provider@-prefixed input, so the
-        // row never reads `provider@provider@model`.
-        modelSpec: parsed.model,
-        hasCredentials,
-        credentialHint: !hasCredentials
-          ? providerDef?.isLocal
-            ? "enable local provider in global config"
-            : credentialHintFrom(provenance, keyInfo?.envVar)
-          : undefined,
-        provenance,
-        probe: directProbe,
-      },
-    ];
-  }
-
-  /**
-   * Build the provider-comparison links the Details tab renders. For EXPLICIT /
-   * direct models buildModelChain returns an empty chain (the probe lives in
-   * directProbe), so we synthesize a single link carrying that probe — the model
-   * still renders one row and the live-count derives from the SAME array as the
-   * rows. The model id is the RESOLVED bare id (parsed.model), never the raw
-   * provider@-prefixed input, so we never render `provider@provider@model`.
-   */
-  function buildResultLinks(
-    parsed: ReturnType<typeof parseModelSpec>,
-    chainDetails: ReturnType<typeof buildModelChain>["chainDetails"],
-    directProbe: ProbeResult | undefined
-  ): ProbeModelResult["links"] {
-    if (chainDetails.length === 0) {
-      // Explicit/direct model — one synthetic link from the native provider.
-      const directProviderDef = getProviderByName(parsed.provider);
-      const directKeyInfo = API_KEY_MAP[parsed.provider];
-      const directHasCreds = probeCredentialReadiness.get(parsed.provider) ?? false;
-      return [
-        {
-          provider: parsed.provider,
-          displayName: directProviderDef?.displayName ?? parsed.provider,
-          modelId: parsed.model,
-          hasCredentials: directHasCreds,
-          credentialHint: !directHasCreds
-            ? directProviderDef?.isLocal
-              ? "enable local provider in global config"
-              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases)
-            : undefined,
-          probe: directProbe,
-        },
-      ];
-    }
-    return chainDetails.map((c) => ({
-      provider: c.provider,
-      displayName: c.displayName,
-      // Strip any redundant provider@ prefix so the row shows displayName + the
-      // resolved id only (e.g. "qwen/qwen3-coder", not "openrouter@qwen/…").
-      modelId: c.modelSpec.includes("@")
-        ? c.modelSpec.slice(c.modelSpec.indexOf("@") + 1)
-        : c.modelSpec,
-      hasCredentials: c.hasCredentials,
-      credentialHint: c.credentialHint,
-      probe: c.probe,
-    }));
-  }
-
-  /** Compute wiring for the first-ready provider in a chain */
   async function computeWiring(
-    chainDetails: ReturnType<typeof buildModelChain>["chainDetails"],
+    chain: ProbeChainLink[],
     parsedModel: string
-  ): Promise<ChainProbe["wiring"]> {
-    const firstReadyRoute = chainDetails.find((c) => c.hasCredentials);
+  ): Promise<Wiring | undefined> {
+    const firstReadyRoute = chain.find((c) => c.hasCredentials && !c.notProbed);
     if (!firstReadyRoute) return undefined;
 
     const providerName = firstReadyRoute.provider;
@@ -1841,7 +1584,7 @@ async function probeModelRouting(
     };
   }
 
-  // ── JSON path: existing batch logic, completely unchanged output ──
+  // ── JSON path: one record per model, printed to stdout ──
   if (jsonOutput) {
     const { DIM, YELLOW, RESET } = cliAnsi();
 
@@ -1876,77 +1619,21 @@ async function probeModelRouting(
       const results: ChainProbe[] = [];
 
       for (const modelInput of models) {
-        const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
+        const probe = await explainForProbe(modelInput);
 
-        // Direct probe
-        let directProbeResult: ProbeResult | undefined;
-        if (liveProxy && chain.source === "direct") {
-          const directKeyInfo = API_KEY_MAP[parsed.provider];
-          const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = await credentialForProbe(parsed.provider);
-          const directCredentialHint =
-            directProviderDef?.isLocal && !directHasCreds
-              ? "enable local provider in global config"
-              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
-          directProbeResult = await probeProviderRoute(
-            liveProxy.url,
-            {
-              provider: parsed.provider,
-              modelSpec: modelInput,
-              hasCredentials: directHasCreds,
-              credentialHint: directCredentialHint,
-            },
-            options.timeoutMs
-          ).catch((e) => ({
-            state: "error" as const,
-            latencyMs: 0,
-            errorMessage: String(e instanceof Error ? e.message : e),
-          }));
-        }
-
-        // Chain probes (batch)
+        // Kept hops only. Dropped candidates and a native link are never probed.
         if (liveProxy) {
+          const url = liveProxy.url;
           const probes = await Promise.all(
-            chainDetails.map((link) => {
-              return probeProviderRoute(
-                liveProxy!.url,
-                {
-                  provider: link.provider,
-                  modelSpec: link.modelSpec,
-                  hasCredentials: link.hasCredentials,
-                  credentialHint: link.credentialHint,
-                },
-                options.timeoutMs
-              ).catch((e) => ({
-                state: "error" as const,
-                latencyMs: 0,
-                errorMessage: String(e instanceof Error ? e.message : e),
-              }));
-            })
+            probe.targets.map(({ target }) => probeTarget(url, target))
           );
-          for (let i = 0; i < chainDetails.length; i++) {
-            chainDetails[i].probe = probes[i];
-          }
+          probe.targets.forEach(({ link }, i) => {
+            link.probe = probes[i];
+          });
         }
 
-        const wiring = await computeWiring(chainDetails, parsed.model);
-
-        results.push({
-          model: modelInput,
-          nativeProvider: parsed.provider,
-          isExplicit: parsed.isExplicitProvider,
-          routingSource: chain.source,
-          matchedPattern: chain.matchedPattern,
-          // An explicit address resolves to exactly ONE route, so report it as a
-          // one-item chain rather than `[]`. `directProbe` stays for
-          // backwards-compatible readers.
-          chain:
-            chainDetails.length > 0
-              ? chainDetails
-              : buildDirectChainEntry(parsed, directProbeResult),
-          directProbe: directProbeResult,
-          wiring,
-        });
+        const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
+        results.push(chainProbeOf(probe, wiring));
       }
 
       console.log(JSON.stringify(results, null, 2));
@@ -2013,12 +1700,7 @@ async function probeModelRouting(
 
   let liveProxy: LiveProxy | null = null;
   try {
-    // Step 1: Load routing rules
-    addStep("Loading routing rules", "running");
-    loadRoutingRules();
-    updateStep("Loading routing rules", "done");
-
-    // Step 2: Start live proxy (if enabled)
+    // Step 1: Start live proxy (if enabled)
     if (options.live) {
       addStep("Starting probe proxy", "running");
       try {
@@ -2041,134 +1723,94 @@ async function probeModelRouting(
       }
     }
 
-    // Step 4: Build chains + credential checks
+    // Step 2: The routing decision per model — explainRoute loads the rules
+    // itself, so it can name the scope of the rule that matched.
     addStep("Resolving routing chains", "running");
-    const modelChains: Array<{
-      modelInput: string;
-      parsed: ReturnType<typeof parseModelSpec>;
-      chain: ReturnType<typeof buildModelChain>["chain"];
-      chainDetails: ReturnType<typeof buildModelChain>["chainDetails"];
-    }> = [];
+    const modelProbes: ModelProbe[] = [];
     for (const modelInput of models) {
-      const { parsed, chain, chainDetails } = await prepareModelChain(modelInput);
-      modelChains.push({ modelInput, parsed, chain, chainDetails });
+      modelProbes.push(await explainForProbe(modelInput));
     }
     updateStep("Resolving routing chains", "done");
 
-    // Step 5: Live probing with progress bars
-    const directProbeResults = new Map<string, ProbeResult>();
-
-    if (liveProxy) {
-      // Collect all probe links across all models
-      const allLinks: Array<{
-        id: string;
-        displayName: string;
-        modelSpec: string;
-        provider: string;
-        pinnedSpec: string;
-        hasCredentials: boolean;
-        credentialHint?: string;
-        chainDetail: ReturnType<typeof buildModelChain>["chainDetails"][number] | null;
-        isDirect: boolean;
-        modelInput: string;
-      }> = [];
-
-      for (const { modelInput, parsed, chain, chainDetails } of modelChains) {
-        if (chain.source === "direct") {
-          const directKeyInfo = API_KEY_MAP[parsed.provider];
-          const directProviderDef = getProviderByName(parsed.provider);
-          const directHasCreds = await credentialForProbe(parsed.provider);
-          const directCredentialHint =
-            directProviderDef?.isLocal && !directHasCreds
-              ? "enable local provider in global config"
-              : credentialHintFor(parsed.provider, directKeyInfo?.envVar, directKeyInfo?.aliases);
-          allLinks.push({
-            id: `${modelInput}:direct`,
-            displayName: parsed.provider,
-            modelSpec: modelInput,
-            provider: parsed.provider,
-            pinnedSpec: modelInput,
-            hasCredentials: directHasCreds,
-            credentialHint: directCredentialHint,
-            chainDetail: null,
-            isDirect: true,
-            modelInput,
-          });
-        }
-        for (const link of chainDetails) {
-          const pinnedSpec = pinProbeModelSpec(link);
-          allLinks.push({
-            id: `${modelInput}:${link.provider}`,
-            displayName: link.displayName,
-            modelSpec: pinnedSpec,
-            provider: link.provider,
-            pinnedSpec,
-            hasCredentials: link.hasCredentials,
-            credentialHint: link.credentialHint,
-            chainDetail: link,
-            isDirect: false,
-            modelInput,
-          });
-        }
-      }
-
-      // Seed the store with waiting links
-      setLinks(
-        allLinks.map((l) => ({
-          id: l.id,
-          model: l.modelInput,
-          displayName: l.displayName,
-          modelSpec: l.modelSpec,
-          status: "waiting",
-        }))
-      );
-
-      // Fire all probes concurrently, updating per-link state as results arrive
-      const probePromises = allLinks.map(async (link) => {
-        updateLink(link.id, { status: "probing", startTime: Date.now() });
-
-        const result = await probeProviderRoute(
-          liveProxy!.url,
-          {
-            provider: link.provider,
-            modelSpec: link.modelSpec,
-            hasCredentials: link.hasCredentials,
-            credentialHint: link.credentialHint,
-          },
-          options.timeoutMs
-        ).catch(
-          (e): ProbeResult => ({
-            state: "error",
-            latencyMs: 0,
-            errorMessage: String(e instanceof Error ? e.message : e),
-          })
-        );
-
-        if (result.state === "live") {
-          updateLink(link.id, {
-            status: "live",
-            endTime: Date.now(),
-            timing: result.timing,
+    // Step 3: One row per link, per model: the kept hops (probed when a live
+    // probe runs, otherwise not probed), the native link, then the dropped
+    // candidates. Only the kept hops are ever sent a request.
+    const liveRows: Array<{ id: string; target: ProbeTarget; link: ProbeChainLink }> = [];
+    const rows: ProbeLinkState[] = [];
+    for (const probe of modelProbes) {
+      const model = probe.modelInput;
+      probe.targets.forEach(({ target, link }, i) => {
+        const id = `${model}:${i}:${target.provider}`;
+        if (liveProxy) {
+          liveRows.push({ id, target, link });
+          rows.push({
+            id,
+            model,
+            displayName: target.displayName,
+            modelSpec: target.probeSpec,
+            status: "waiting",
           });
         } else {
-          updateLink(link.id, {
-            status: "failed",
-            endTime: Date.now(),
-            error: describeProbeState(result),
+          rows.push({
+            id,
+            model,
+            displayName: target.displayName,
+            modelSpec: target.probeSpec,
+            status: "not-probed",
+            tone: "ready",
+            note: `○ ${link.label} · not probed (--no-probe)`,
           });
         }
-
-        if (link.isDirect) {
-          directProbeResults.set(link.modelInput, result);
-        } else if (link.chainDetail) {
-          link.chainDetail.probe = result;
-        }
       });
+      for (const link of probe.chain) {
+        if (!link.notProbed) continue;
+        rows.push({
+          id: `${model}:native`,
+          model,
+          displayName: link.displayName,
+          modelSpec: link.modelSpec,
+          status: "not-probed",
+          tone: "native",
+          note: `◐ native — ${NATIVE_NOT_PROBED}`,
+        });
+      }
+      probe.dropped.forEach((entry, i) => {
+        rows.push({
+          id: `${model}:dropped:${i}:${entry.provider}`,
+          model,
+          displayName: entry.displayName,
+          modelSpec: entry.wireId,
+          status: "not-probed",
+          tone: "dropped",
+          note: `– ${describeDropped(entry.outcome, entry.credentialHint)}`,
+        });
+      });
+    }
+    setLinks(rows);
 
-      await Promise.all(probePromises);
+    // Step 4: Live probing with progress bars — every kept hop concurrently,
+    // updating its row as its result arrives.
+    if (liveProxy) {
+      const url = liveProxy.url;
+      await Promise.all(
+        liveRows.map(async ({ id, target, link }) => {
+          updateLink(id, { status: "probing", startTime: Date.now() });
+          const result = await probeTarget(url, target);
+          if (result.state === "live") {
+            updateLink(id, { status: "live", endTime: Date.now(), timing: result.timing });
+          } else {
+            updateLink(id, {
+              status: "failed",
+              endTime: Date.now(),
+              error: describeProbeState(result),
+            });
+          }
+          link.probe = result;
+        })
+      );
     }
 
-    // Step 6: Compute wiring for each model while the progress UI is still up
+    // Step 5: Compute wiring for each model while the progress UI is still up
     // (computeWiring does async imports we want to finish before the flip).
     // We build BOTH payloads from the same per-model data:
     //   - `printable` (PrintableModelResult) feeds the non-TTY static printer
@@ -2177,35 +1819,21 @@ async function probeModelRouting(
     const isLiveProbe = !!liveProxy;
     const printable: PrintableModelResult[] = [];
     const results: ProbeModelResult[] = [];
-    for (const { modelInput, parsed, chain, chainDetails } of modelChains) {
-      const wiring = await computeWiring(chainDetails, parsed.model);
-      const directProbe = directProbeResults.get(modelInput);
+    for (const probe of modelProbes) {
+      const wiring = await computeWiring(probe.chain, probe.explanation.routedModel);
+      const fields = routingFieldsFrom(probe.explanation);
       printable.push({
-        model: modelInput,
-        nativeProvider: parsed.provider,
-        isExplicit: parsed.isExplicitProvider,
-        routingSource: chain.source,
-        matchedPattern: chain.matchedPattern,
-        chain: chainDetails.map((c) => ({
-          provider: c.provider,
-          displayName: c.displayName,
-          modelSpec: c.modelSpec,
-          hasCredentials: c.hasCredentials,
-          credentialHint: c.credentialHint,
-          provenance: c.provenance,
-          probe: c.probe,
-        })),
-        directProbe,
+        model: probe.modelInput,
+        ...fields,
+        chain: probe.chain,
+        dropped: probe.dropped,
         wiring,
       });
       results.push({
-        model: modelInput,
-        nativeProvider: parsed.provider,
-        isExplicit: parsed.isExplicitProvider,
-        routingSource: chain.source,
-        matchedPattern: chain.matchedPattern,
-        routingExplanation: buildRoutingExplanation(parsed, chain),
-        links: buildResultLinks(parsed, chainDetails, directProbe),
+        model: probe.modelInput,
+        isExplicit: probe.explanation.source === "explicit",
+        ...fields,
+        links: resultLinksFrom(probe.chain, probe.dropped),
         wiring,
       });
     }
