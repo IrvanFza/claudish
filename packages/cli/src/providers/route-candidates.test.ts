@@ -17,6 +17,7 @@ import {
   catalogDeniesProvider,
   compareRouteCandidates,
   gatherRouteCandidates,
+  nativeProviderForVendor,
   routeOwnership,
 } from "./route-candidates.js";
 import { buildCatalogChain, route } from "./routing-rules.js";
@@ -236,6 +237,28 @@ function gatheredCandidate(model: string, provider: string): RouteCandidate {
 }
 
 describe("catalog route candidate gathering and order", () => {
+  test("derives native providers from vendor route bindings", () => {
+    const expected = {
+      openai: "openai",
+      google: "google",
+      "x-ai": "x-ai",
+      "z-ai": "z-ai",
+      moonshotai: "kimi",
+      minimax: "minimax",
+      qwen: "qwen-payg",
+      deepseek: "deepseek",
+      mistralai: "mistralai",
+      sakana: "sakana",
+    } as const;
+
+    expect(
+      Object.fromEntries(
+        Object.keys(expected).map((vendor) => [vendor, nativeProviderForVendor(vendor)])
+      )
+    ).toEqual(expected);
+    expect(nativeProviderForVendor("anthropic")).toBeUndefined();
+  });
+
   test("puts a flat-rate subscription before a metered connection", () => {
     const candidates = gatherRouteCandidates("gpt-6-astra", cachePath).candidates;
 

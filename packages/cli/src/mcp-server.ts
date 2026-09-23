@@ -32,7 +32,6 @@ import {
   startHeartbeat,
 } from "./mcp/progress-heartbeat.js";
 import {
-  FIREBASE_SLUG_TO_PROVIDER_NAME,
   type RecommendedModelGroup,
   type RecommendedModelsDoc,
   collectRoutingPrefixes,
@@ -50,6 +49,7 @@ import { nativeRouteFor } from "./providers/native-route.js";
 import { renderOpFailureBlock } from "./providers/onepassword.js";
 import { isReadyState, probeLink } from "./providers/probe-live.js";
 import { BUILTIN_PROVIDERS } from "./providers/provider-definitions.js";
+import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import { route } from "./providers/routing-rules.js";
 import { createProxyServer } from "./proxy-server.js";
 import { sanitizeForReport } from "./redact.js";
@@ -736,10 +736,10 @@ function defineTools(
 
       const { flagship, fast } = groupRecommendedModels(doc.models);
 
-      // Native-prefix lookup: Firebase slug → shortcuts[0] from provider defs.
+      // Native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
       const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
       const getNativePrefix = (firebaseSlug: string): string | null => {
-        const canonical = FIREBASE_SLUG_TO_PROVIDER_NAME[firebaseSlug];
+        const canonical = nativeProviderForVendor(firebaseSlug);
         if (!canonical) return null;
         const def = providerByName.get(canonical);
         if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;

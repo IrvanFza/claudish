@@ -13,7 +13,6 @@ import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
 import { ENV } from "./config.js";
 import { setStderrQuiet } from "./logger.js";
 import {
-  FIREBASE_SLUG_TO_PROVIDER_NAME,
   type ModelDoc,
   type RecommendedModelGroup,
   collectRoutingPrefixes,
@@ -62,6 +61,7 @@ import { type ProbeResult, describeProbeState } from "./providers/probe-live.js"
 import { pinProbeModelSpec, probeProviderRoute } from "./providers/probe-runner.js";
 import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-definitions.js";
 import { resolveProviderSlug } from "./providers/provider-slug-resolve.js";
+import { nativeProviderForVendor } from "./providers/route-candidates.js";
 import {
   buildCatalogChain,
   buildRoutingChain,
@@ -1202,10 +1202,10 @@ async function printRecommendedModels(jsonOutput: boolean, forceUpdate: boolean)
   const lastUpdated = doc.lastUpdated || "unknown";
   const { flagship, fast } = groupRecommendedModels(doc.models);
 
-  // Build a native-prefix lookup: Firebase slug → shortcuts[0] from provider defs.
+  // Build a native-prefix lookup: vendor slug → its native API provider → shortcuts[0].
   const providerByName = new Map(BUILTIN_PROVIDERS.map((p) => [p.name, p] as const));
   const getNativePrefix = (firebaseSlug: string): string | null => {
-    const canonical = FIREBASE_SLUG_TO_PROVIDER_NAME[firebaseSlug];
+    const canonical = nativeProviderForVendor(firebaseSlug);
     if (!canonical) return null;
     const def = providerByName.get(canonical);
     if (!def || !def.shortcuts || def.shortcuts.length === 0) return null;

@@ -67,6 +67,7 @@
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { externalIdFor, getCatalogEntries } from "./catalog-client.js";
 import {
+  CATALOG_ROUTE_BINDINGS,
   type CatalogRouteBinding,
   catalogRouteForProvider,
   catalogRouteMatchesProvider,
@@ -241,6 +242,31 @@ function isVendorOwnRoute(
   entry: SlimModelEntry | undefined
 ): boolean {
   return route !== undefined && entry?.provider !== undefined && route.routeId === entry.provider;
+}
+
+/**
+ * The claudish provider that calls a vendor's own native API, or `undefined`.
+ *
+ * The same rule as {@link isVendorOwnRoute}, asked from the vendor's side: a
+ * vendor's own routes are the ones whose `routeId` is its slug. Of the routing
+ * table's providers bound to one of them, the first whose tier is `native` calls
+ * the vendor's metered API. A subscription on the same route (`openai-codex`,
+ * `kimi-coding`, `qwen-coding`) is never the answer, and neither is a
+ * lookup-only name, which calls nothing.
+ *
+ * Read by the recommended-models listings (`--models-top`, MCP `list_models`) to
+ * show a vendor's `provider@` shortcut beside its models. Deriving it replaced a
+ * hand-written vendor table that mapped `qwen` to the steering placeholder `qwen`,
+ * which has no shortcut, so Qwen rows showed none; the answer is `qwen-payg`
+ * (`qpay@`). `anthropic` has no answer: Claude's own route here is the
+ * `native-anthropic` subscription, and Anthropic's native API is lookup-only.
+ */
+export function nativeProviderForVendor(vendorSlug: string): string | undefined {
+  for (const [provider, binding] of Object.entries(CATALOG_ROUTE_BINDINGS)) {
+    if (binding.routeId !== vendorSlug) continue;
+    if (getProviderByName(provider)?.tier === "native") return provider;
+  }
+  return undefined;
 }
 
 /**
