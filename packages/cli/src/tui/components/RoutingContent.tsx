@@ -1,9 +1,13 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 /** @jsxImportSource @opentui/react */
 import { useEffect, useRef } from "react";
-import type { ResolvedDefaultProvider } from "../../default-provider.js";
+import {
+  type DefaultProviderSource,
+  type ResolvedDefaultProvider,
+  resolveDefaultProvider,
+} from "../../default-provider.js";
 import type { ClaudishProfileConfig, RoutingRules } from "../../profile-config.js";
-import { DEFAULT_FALLBACK_PROVIDER, TIER_LABEL } from "../../providers/routing-rules.js";
+import { TIER_LABEL } from "../../providers/routing-rules.js";
 import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
 import { providerIsReady } from "../providers.js";
@@ -144,48 +148,71 @@ export function routingHeaderLines({
   return fallbackHopLines(resolved);
 }
 
-/** The header without a `"*"` rule: which provider occupies the last position. */
+/**
+ * Where the header says the fallback hop was set, named as the user sets it.
+ * `--default-provider` reaches this process as the env variable (index.ts
+ * exports it), so a flag reads as `CLAUDISH_DEFAULT_PROVIDER` here.
+ */
+const FALLBACK_SOURCE_LABEL: Record<DefaultProviderSource, string> = {
+  "cli-flag": "--default-provider",
+  "env-var": "CLAUDISH_DEFAULT_PROVIDER",
+  "config-file": "config",
+  // Both route identically: "no preference" takes openrouter.
+  "openrouter-key": "default",
+  hardcoded: "default",
+};
+
+/** The header without a `"*"` rule: which provider occupies the last position, and why. */
 function fallbackHopLines(resolved: RoutingHeaderInput["resolved"]): HeaderSegment[][] {
-  const title: HeaderSegment[] = [
-    { text: " Fallback hop:", tone: "title" },
-    { text: "  (tried last, after every provider the catalog maps)", tone: "muted" },
+  const source = ` (${FALLBACK_SOURCE_LABEL[resolved.source]})`;
+  const note: HeaderSegment[] = [
+    {
+      text: "  --default-provider overrides this for one run and the sessions it starts.",
+      tone: "dim",
+    },
   ];
   // An explicitly EMPTY string disables the hop; unset means "no preference"
   // and takes openrouter. `explainCatalogChain` draws the same line.
   if (resolved.provider === "") {
     return [
-      title,
+      [
+        { text: " Fallback hop:", tone: "title" },
+        { text: "  (none — a model the catalog maps to no provider gets no route)", tone: "muted" },
+      ],
       [
         { text: "  → ", tone: "dim" },
         { text: "disabled", tone: "warn" },
-        {
-          text: "  (defaultProvider is empty — an unroutable model errors instead)",
-          tone: "muted",
-        },
+        { text: `, set to ""${source}`, tone: "muted" },
       ],
+      note,
     ];
   }
-  const isDefault = resolved.source === "hardcoded" || resolved.source === "openrouter-key";
   return [
-    title,
+    [
+      { text: " Fallback hop:", tone: "title" },
+      { text: "  (tried last, after every provider the catalog maps)", tone: "muted" },
+    ],
     [
       { text: "  → ", tone: "dim" },
       { text: resolved.provider, tone: "value" },
-      {
-        text: isDefault ? "  (default — set defaultProvider to change)" : "  (defaultProvider)",
-        tone: "muted",
-      },
+      { text: source, tone: "muted" },
     ],
+    note,
   ];
 }
 
-/** The fallback hop the header shows: `defaultProvider` in the config, else openrouter. */
+/**
+ * The fallback hop the header shows: `resolveDefaultProvider` over the env and
+ * the config, the resolver the proxy and `route()` read, so the header cannot
+ * name a hop a request does not take. `CLAUDISH_DEFAULT_PROVIDER=` (empty) beats
+ * a config value, as it does for a request. A project `.claudish.json`
+ * `defaultProvider` is not read, because no routing path reads it.
+ */
 export function resolveFallbackHop(
-  config: ClaudishProfileConfig
+  config: ClaudishProfileConfig,
+  env: NodeJS.ProcessEnv = process.env
 ): Pick<ResolvedDefaultProvider, "provider" | "source"> {
-  return typeof config.defaultProvider === "string"
-    ? { provider: config.defaultProvider, source: "config-file" }
-    : { provider: DEFAULT_FALLBACK_PROVIDER, source: "hardcoded" };
+  return resolveDefaultProvider({ config, env });
 }
 
 /** A header tone's colour, read from `C` at render time, never snapshotted. */
