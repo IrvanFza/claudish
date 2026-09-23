@@ -21,12 +21,12 @@
  *
  * ## Scope
  *
- * This is deliberately NOT the same seam as `ModelCatalogResolver`
- * (`providers/catalog-resolvers/`). That one answers "what vendor prefix does
- * this aggregator want?" — a naming question about a model the user already
- * chose. This one answers "which of the provider's wire ids IS this choice,
- * right now, at this effort?" — a selection question. They compose: a catalog
- * resolver can feed a model id that a model resolver then expands.
+ * This is deliberately NOT the catalog's wire-id lookup (`resolveExternalId`,
+ * `providers/catalog-client.ts`). That one answers "which id does the cloud models
+ * catalog publish for this provider?" — a naming question about a model the user
+ * already chose. This one answers "which of the provider's wire ids IS this
+ * choice, right now, at this effort?" — a selection question. They compose: the
+ * catalog lookup can feed a model id that a model resolver then expands.
  *
  * ## Default is identity
  *

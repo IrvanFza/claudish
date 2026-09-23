@@ -577,9 +577,9 @@ export async function createProxyServer(
   };
 
   // Direct-provider catalog warmup (LiteLLM, Zen, Zen Go) was removed in
-  // commit 5 of the model-catalog and routing redesign. claudish only fetches
-  // Firebase catalogs now. The OpenRouter catalog is still warmed below via
-  // warmAllCatalogs() since it backs vendor-prefix resolution.
+  // commit 5 of the model-catalog and routing redesign. The one catalog claudish
+  // fetches is the cloud models catalog, warmed below (`warmCatalog`); every
+  // provider's wire id comes from its connections (`resolveExternalId`).
 
   // Load effective routing rules once at startup: the USER's global config +
   // local config (local wins), and nothing else — there is no shipped table any
@@ -1233,11 +1233,12 @@ export async function createProxyServer(
   // Warm recommended models from Firebase in background (non-blocking)
   warmRecommendedModels().catch(() => {});
 
-  // Warm model catalog resolvers in background (non-blocking).
-  // OpenRouter is the only registered resolver post-commit-5 — the LiteLLM
-  // resolver was removed (claudish doesn't fetch LiteLLM's catalog anymore).
+  // Warm the cloud models catalog in the background (non-blocking). Routing and
+  // step 2b read wire ids from it. A request that finds neither a warm nor a
+  // cached catalog waits in `ensureCatalogReady`, up to five seconds.
   warmCatalog().catch(() => {
-    // Warming failures are non-fatal — resolver falls back to passthrough
+    // Non-fatal: a cached catalog still answers. With none at all, an explicit
+    // spec passes through unchanged and a bare name gets the no-catalog no-route.
   });
 
   return {
