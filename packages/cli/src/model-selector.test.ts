@@ -34,6 +34,7 @@ import {
   type DiscoveredModel,
   type DiscoveryFailureKind,
   discoverProviderModels,
+  discoverProviderModelsCatalog,
   getDiscoveryFailure,
   invalidateModelDiscovery,
   registerModelDiscoveryFetcher,
@@ -43,6 +44,7 @@ import { BUILTIN_PROVIDERS, getProviderByName } from "./providers/provider-defin
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./providers/runtime-providers.js";
 import {
   _clearChatCapabilityIndex,
+  isReportedChatCapable,
   ollamaReported,
 } from "./providers/transport/probe-discovery.js";
 import { discoverProviderProbeModel } from "./providers/transport/provider-model-discovery.js";
@@ -268,43 +270,97 @@ describe("provider-reported chat capability in discovered model callers", () => 
 });
 
 describe("Ollama discovery capability reports", () => {
-  const realFetch = globalThis.fetch;
+  let realFetch: typeof globalThis.fetch;
+  let realOllamaHost: string | undefined;
 
   beforeEach(() => {
+    realFetch = globalThis.fetch;
+    realOllamaHost = process.env.OLLAMA_HOST;
+    process.env.OLLAMA_HOST = "http://ollama-picker.test";
     invalidateModelDiscovery("ollama");
   });
 
   afterEach(() => {
     globalThis.fetch = realFetch;
+    if (realOllamaHost === undefined) delete process.env.OLLAMA_HOST;
+    else process.env.OLLAMA_HOST = realOllamaHost;
     invalidateModelDiscovery("ollama");
   });
 
-  test("the Ollama fetcher carries completion reports and preserves an absent capability", async () => {
-    globalThis.fetch = mock(
-      async () =>
-        new Response(
-          JSON.stringify({
-            models: [
-              { name: "llama3.2:3b-q4_K_M", capabilities: ["completion", "tools"] },
-              { name: "granite3.2-vision:2b-instruct-q4_K_M" },
-            ],
-          }),
-          { status: 200 }
-        )
-    ) as unknown as typeof fetch;
+  test("enriches missing tag capabilities before the picker filters discovered models", async () => {
+    const showRequests: string[] = [];
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/api/tags") {
+        return Response.json({
+          models: [{ name: "llama3.2:3b" }, { name: "nomic-embed-text:latest" }],
+        });
+      }
+      if (url.pathname === "/api/show") {
+        const body = JSON.parse(String(init?.body)) as { name: string };
+        showRequests.push(body.name);
+        return Response.json({
+          capabilities: body.name === "llama3.2:3b" ? ["completion", "tools"] : ["embedding"],
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
 
-    expect(await discoverProviderModels("ollama")).toEqual([
+    const outcome = await discoverProviderModelsCatalog("ollama");
+
+    expect(showRequests.sort()).toEqual(["llama3.2:3b", "nomic-embed-text:latest"].sort());
+    expect(outcome.kind).toBe("served");
+    if (outcome.kind !== "served") throw new Error("unreachable");
+    expect(outcome.models).toEqual([
       {
-        id: "llama3.2:3b-q4_K_M",
-        displayName: "llama3.2:3b-q4_K_M",
+        id: "llama3.2:3b",
+        displayName: "llama3.2:3b",
+        supportsTools: true,
+        reported: "chat",
+      },
+    ]);
+    expect(
+      outcome.models.filter((model) => isReportedChatCapable(model.id, model.reported))
+    ).toEqual(outcome.models);
+    expect(outcome.models.map((model) => model.id)).not.toContain("nomic-embed-text:latest");
+  });
+
+  test("uses inline tag capabilities without requesting per-model details", async () => {
+    let showRequests = 0;
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/api/tags") {
+        return Response.json({
+          models: [
+            { name: "llama3.2:3b", capabilities: ["completion", "tools"] },
+            { name: "qwen2.5-coder:7b", capabilities: ["completion"] },
+          ],
+        });
+      }
+      if (url.pathname === "/api/show") {
+        showRequests++;
+        return Response.json({ capabilities: ["completion"] });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+
+    const outcome = await discoverProviderModelsCatalog("ollama");
+
+    expect(showRequests).toBe(0);
+    expect(outcome.kind).toBe("served");
+    if (outcome.kind !== "served") throw new Error("unreachable");
+    expect(outcome.models).toEqual([
+      {
+        id: "llama3.2:3b",
+        displayName: "llama3.2:3b",
         supportsTools: true,
         reported: "chat",
       },
       {
-        id: "granite3.2-vision:2b-instruct-q4_K_M",
-        displayName: "granite3.2-vision:2b-instruct-q4_K_M",
+        id: "qwen2.5-coder:7b",
+        displayName: "qwen2.5-coder:7b",
         supportsTools: false,
-        reported: undefined,
+        reported: "chat",
       },
     ]);
   });

@@ -81,10 +81,11 @@ function isSmallName(name: string): boolean {
  *
  * Two sources of evidence, and no guesses: the provider's own published
  * capability for THIS deployment, and the cloud models catalog's published
- * output modality for the canonical model.
+ * input and output modalities for the canonical model — text must be among
+ * both.
  *
- * - `"not-chat"` — a provider or catalog statement that it produces something
- *   other than text, or a LiteLLM wildcard route. Never offered.
+ * - `"not-chat"` — a provider or catalog statement that it produces no text, or
+ *   takes no text in, or a LiteLLM wildcard route. Never offered.
  * - `"chat"` — a provider or catalog statement that it answers chat turns.
  * - `"unknown"` — NOBODY said. Not offered either, and that is the point: an
  *   unknown used to be treated as chat, so an embedding model nothing described
@@ -157,8 +158,8 @@ function indexOutputModality(
  * File a catalog row's keys when its published INPUT modalities leave out text.
  *
  * A chat model takes text in and gives text out; other modalities on either side
- * never exclude one, so `["file","image","text"]` (every Claude model) is a chat
- * model. What this catches is the other case: `gemini-3.5-transcribe` publishes
+ * never exclude one, so `["file","image","text"]` and `["image","text"]` (two of
+ * the lists Claude rows publish) are chat models. What this catches is the other case: `gemini-3.5-transcribe` publishes
  * `in: ["audio"]`, `out: ["text"]` — it writes text, but nothing typed reaches it.
  * Measured on the live catalog: 13 rows publish text output with no text input,
  * all ASR, captioning or live-translation models.

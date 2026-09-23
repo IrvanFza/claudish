@@ -118,7 +118,8 @@ export class AnthropicProviderTransport implements ProviderTransport {
    * alphabetical tiebreak) — the same order the picker defaults to, so the
    * probe exercises the model the user would actually get.
    *
-   * Non-chat rows are dropped with the shared `isChatCapable()` filter rather
+   * Non-chat rows are dropped by `discoverProviderProbeModel`, with the shared
+   * `isReportedChatCapable()` filter the picker uses too, rather
    * than a per-provider skip list: qwen-token-plan's dynamic models catalog mixes
    * image/TTS models (`wan2.7-image`, `qwen-audio-3.0-tts-plus`) in with the text models, and
    * hardcoding model ids here would rot the moment Alibaba ships the next one.

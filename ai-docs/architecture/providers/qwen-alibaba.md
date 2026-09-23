@@ -177,8 +177,10 @@ The vendor docs do carry capability hints in prose ("qwen3.7-plus (vision)",
 `happyhorse-1.1-t2v` = text-to-video), but transcribing those into source is the
 hardcoded model list the repo invariant forbids. `NON_CHAT_PATTERNS` caught every non-chat
 id on both live lists and missed exactly three, all video generators on editions the
-measured account does not hold; only a cross-edition check found them. The video name
-patterns in `providers/transport/probe-discovery.ts` cover them now.
+measured account does not hold; only a cross-edition check found them. The name patterns
+are gone since v10.1.1: chat capability now comes from the provider's own listing or the
+catalog's published modalities (text among inputs AND outputs), and an id nothing
+describes is not offered at all, so an undescribed video generator no longer slips through.
 
 ## Measurement traps, all of which cost real time
 

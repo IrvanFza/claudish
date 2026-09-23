@@ -203,10 +203,12 @@ async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
   const { ollamaReported } = await import("./transport/probe-discovery.js");
   const endpoint = `${ollamaBaseUrl()}/api/tags`;
   try {
-    const installed = await fetchOllamaModels({
-      enrichCapabilities: false,
-      throwOnError: true,
-    });
+    // `enrichCapabilities` is left at its default. It used to be `false`, which
+    // cost nothing while an undescribed model still counted as chat — and hid
+    // every model from a daemon that lists `capabilities` only in `/api/show`
+    // once it stopped. A current daemon lists them inline, so the per-model
+    // `/api/show` fallback never fires there.
+    const installed = await fetchOllamaModels({ throwOnError: true });
     return {
       kind: "models",
       endpoint,

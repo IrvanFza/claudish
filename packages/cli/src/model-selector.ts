@@ -472,9 +472,11 @@ function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
  * accepts text and writes text is a chat model.
  *
  * What is left to watch is the catalog being WRONG, so a row that survives but
- * whose name reads like a generator — `seedance-2.5`, `flux-2-pro` — is named
- * ONCE per process in the debug log. That decides nothing; it points at a
- * catalog row to correct in models-index.
+ * whose name reads like a generator family (seedance, flux, veo, imagen) is
+ * named ONCE per process in the debug log. It decides nothing. Measured on
+ * 2026-09-23, 3 of the 53 such rows publish `in: ["text"]`, `out: ["text"]`
+ * (`flux-dev-finetuner`, `flux-fill`, `seedance-2.5-el`) — models-index rows
+ * that need correcting, which is what this line is for.
  */
 export function toPickerRows(models: ModelInfo[]): ModelInfo[] {
   const kept = sortModelsNewestFirst(dedupeModels(models.filter((m) => isChatCapable(m.id))));
@@ -1470,7 +1472,8 @@ async function pickModelFromList(
  *  - **Not everything served is chat.** Alibaba's plan host answers with image
  *    and TTS models alongside chat ones. Filtered with the SAME predicate the
  *    probe path uses, so the picker and `--probe` agree on what is chat-capable
- *    — a name-based rule, never a model-id skip list. An all-non-chat dynamic models catalog
+ *    — evidence from the provider's own listing or the catalog's modalities,
+ *    never a name rule or a model-id skip list. An all-non-chat dynamic models catalog
  *    returns [] so the caller falls through to the catalog / free-text path
  *    instead of showing an empty list.
  *  - **Neither price nor (always) context is reported.** Context comes from the
