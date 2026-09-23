@@ -129,6 +129,47 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name auto-routes by pattern. Prefix meanings: `routing.md`.
 
+## Commit messages
+
+**The subject line is the release note.** `git cliff` copies it verbatim into `CHANGELOG.md`
+and the GitHub Release (`cliff.toml`), and `claudish update` shows that text to users under
+"What's New" (`update-command.ts`). Write it for a user scanning a list of changes. The same
+rule covers PR titles and tag messages.
+
+**Subject: `type(scope): verb object [condition]`**, at most 72 characters.
+
+- `type` picks the changelog section: `feat` new capability, `fix` defect repaired, `perf`,
+  `refactor` (no behaviour change), `docs`, `test`, `chore`. `chore: bump version` is skipped.
+  Add `!` and a `BREAKING CHANGE:` footer when users lose something they relied on.
+- `scope` is the component or provider: `picker`, `probe`, `routing`, `catalog`, `discovery`,
+  `effort`, `errors`, `adapters`, `mcp`, `team`, `release`, or a provider name (`devin`,
+  `ollama`). Required on `feat` and `fix`.
+- Imperative verb, lowercase: add, remove, fix, send, resolve, read, reject, map, show, hide.
+- Name the concrete thing: the function, flag, field, endpoint, provider, model id or HTTP status.
+  A `fix` states the defect's symptom or condition.
+- One change per commit. A subject that needs "and" is two commits.
+
+**Never write:** metaphor or personification ("lowest rung", "off switch", "tearing its own
+rows", "ask Devin", "in Devin's own spelling"); a principle instead of a change ("a model is
+offered when something says it works"); grab bags ("and three release-review findings",
+"misc fixes", "address review"); words that need the body to decode ("properly", "correctly",
+"handle", "improve", "clean up").
+
+**Body**, wrapped at 72, plain paragraphs in this order, each only when it applies: the problem
+as observed (exact error text, status code, measured numbers); the cause (file and function);
+what the code does now; the verification (the test that fails without the fix, or the live
+measurement). The thesaurus applies. No narrative or rhetorical framing.
+
+| Was (v10.1.1) | Write |
+|---|---|
+| ask Devin about swe-1.7 in Devin's own spelling | `fix(devin): route bare swe-1.7-style names to Devin, not OpenRouter` |
+| minimal effort is the lowest rung, not the off switch | `fix(effort): map minimal to the lowest advertised effort level` |
+| a model is offered when something says it works, never when nothing does | `fix(discovery): list only models with published chat capability` |
+| show the provider's own error, not claudish's guess about it | `fix(probe): show the provider's error message instead of a derived hint` |
+| stop the probe tearing its own rows, and drop a hop no key can satisfy | `fix(probe): suppress stderr log lines while the probe TUI is drawn` + `fix(routing): remove the qwen route binding that has no endpoint` |
+| ask an older Ollama daemon for capabilities it lists only in /api/show | `fix(ollama): use the /api/show capability fallback in picker discovery` |
+| keep what a provider says about its own models, and three release-review findings | `fix(picker): pass provider-reported capability to the chat filter`, plus one commit per finding |
+
 ## Releasing
 
 **CI/CD publishes — do NOT run `npm publish`.** `release.yml` fires on the `v*` tag push,
