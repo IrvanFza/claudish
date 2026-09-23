@@ -125,9 +125,12 @@ Two constraints hold regardless of who authorises:
   shared with the main checkout and every sibling worktree. Never `git stash`
   during a release; use a WIP commit.
 
-TODO — not settled by detection, and worth answering on the next release:
-- whether a failed magmux download from `MadAppGang/magmux` should block a release
-  or pin to a known-good magmux tag instead of `latest`.
+SETTLED 2026-09-23 — the magmux source. The build keeps downloading the LATEST
+release of `MadAppGang/magmux`; it is not pinned to a known-good tag. A failed
+download, or a latest release missing a platform asset, BLOCKS the release: the
+build job fails before anything publishes, which is the intended behaviour and
+needs no workflow change. Decided by the repository owner when asked during the
+v10.0.2 release. Preflight checks it by listing the latest release's assets.
 
 SETTLED 2026-09-15 — the two `displayWidth` tests in
 `packages/cli/src/tui/viz/color.test.ts`. They were NOT flaky and must NOT be
