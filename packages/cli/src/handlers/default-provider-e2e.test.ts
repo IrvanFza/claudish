@@ -1,11 +1,13 @@
 /**
- * Phase 5 end-to-end tests for the LiteLLM-demotion refactor.
+ * End-to-end tests around fallback routing and the LiteLLM-demotion refactor.
  *
  * Black-box tests. The proxy is invoked in-process via the public
  * `createProxyServer()` entry point. Each test redirects the active global
  * config to an ephemeral temp file so mutations never touch the real user config.
  *
- * Real API calls. All tests skipIf on missing credentials. No mocks.
+ * The hermetic group runs in a HOME-sandboxed child over a checked-in catalog.
+ * Groups B and C are live provider roundtrip smoke tests only; they do not prove
+ * that the proxy honours defaultProvider. Their tests skipIf on missing credentials.
  *
  * Group D's D1b asserts the slim-catalog aggregators[] SHAPE (the fields
  * claudish indexes) and that the live catalog still overlaps claudish's
@@ -18,7 +20,7 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setConfigFileOverride } from "../config-override.js";
@@ -27,6 +29,13 @@ import { pickerProviderToFirebaseSlug } from "../model-selector.js";
 import { createProxyServer } from "../proxy-server.js";
 import { hasCredential } from "../test-helpers/credential-gate.js";
 import type { ProxyServer } from "../types.js";
+
+const STAGE4_CATALOG_FIXTURE = join(
+  import.meta.dir,
+  "..",
+  "test-fixtures",
+  "stage4-default-provider-catalog.json"
+);
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -256,7 +265,144 @@ describe("Group A — legacy LiteLLM auto-promotion removed (commit 5)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group B — Real API routing behavior
+// Hermetic proxy coverage — defaultProvider reaches bare-name routing
+// ---------------------------------------------------------------------------
+
+type HermeticProxyScenario = "config-empty" | "env-empty" | "custom-no-key";
+
+interface HermeticProxyResult {
+  status: number;
+  raw: { error?: { message?: string } };
+  debugLog: string;
+}
+
+function runHermeticProxy(scenario: HermeticProxyScenario): HermeticProxyResult {
+  const home = mkdtempSync(join(tmpdir(), "claudish-default-provider-proxy-"));
+  const configDir = join(home, ".claudish");
+  mkdirSync(configDir, { recursive: true });
+  copyFileSync(STAGE4_CATALOG_FIXTURE, join(configDir, "cloud-models-catalog-v3.json"));
+
+  const config: Record<string, unknown> = {
+    version: "1.0.0",
+    defaultProfile: "default",
+    profiles: {},
+    defaultProvider: scenario === "config-empty" ? "" : "openrouter",
+  };
+  if (scenario === "custom-no-key") {
+    config.defaultProvider = "sandbox-no-key";
+    config.customEndpoints = {
+      "sandbox-no-key": {
+        kind: "simple",
+        url: "http://127.0.0.1:9/v1",
+        format: "openai",
+        apiKey: "${STAGE4_MISSING_KEY}",
+      },
+    };
+  }
+  writeFileSync(join(configDir, "config.json"), JSON.stringify(config), "utf8");
+
+  const proxyModuleUrl = new URL("../proxy-server.ts", import.meta.url).href;
+  const loggerModuleUrl = new URL("../logger.ts", import.meta.url).href;
+  const script = `
+    const { readFileSync, rmSync } = await import("node:fs");
+    const { createProxyServer } = await import(${JSON.stringify(proxyModuleUrl)});
+    const { getLogFilePath, initLogger } = await import(${JSON.stringify(loggerModuleUrl)});
+
+    let proxy;
+    let output;
+    try {
+      proxy = await createProxyServer(0, undefined, undefined, false, undefined, undefined, {
+        quiet: true,
+      });
+      initLogger(true, "debug", true);
+      const response = await fetch(proxy.url + "/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "no-such-model-xyz",
+          max_tokens: 16,
+          stream: false,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      const raw = await response.json();
+      await Bun.sleep(150);
+      const logPath = getLogFilePath();
+      if (!logPath) throw new Error("debug logger did not expose its path");
+      const debugLog = readFileSync(logPath, "utf8");
+      initLogger(false, "info", true);
+      rmSync(logPath, { force: true });
+      output = JSON.stringify({
+        status: response.status,
+        raw,
+        debugLog,
+      });
+    } finally {
+      if (proxy) await proxy.shutdown();
+    }
+    process.stdout.write(output, () => process.exit(0));
+  `;
+  const env: Record<string, string> = {
+    HOME: home,
+    PATH: process.env.PATH ?? "",
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    OPENROUTER_API_KEY: "",
+    STAGE4_MISSING_KEY: "",
+    CLAUDISH_DISABLE_CATALOG_WARM: "1",
+    CLAUDISH_DISABLE_KEYCHAIN: "1",
+    CLAUDISH_DISABLE_OP: "1",
+    CLAUDISH_SKIP_LIVE_E2E: "1",
+  };
+  if (scenario === "env-empty") env.CLAUDISH_DEFAULT_PROVIDER = "";
+
+  try {
+    const result = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: join(import.meta.dir, "../../../.."),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = result.stdout.toString();
+    const stderr = result.stderr.toString();
+    expect(result.exitCode, stderr || stdout).toBe(0);
+    return JSON.parse(stdout) as HermeticProxyResult;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+describe("Hermetic proxy defaultProvider routing", () => {
+  test('config defaultProvider "" returns the catalog-empty no-route without an upstream call', () => {
+    const result = runHermeticProxy("config-empty");
+    expect(result.status).toBe(400);
+    expect(result.raw.error?.message).toContain(
+      '[Route] No provider in the catalog serves "no-such-model-xyz".'
+    );
+    expect(result.debugLog).not.toContain("[OpenRouter] Response status:");
+  });
+
+  test('CLAUDISH_DEFAULT_PROVIDER="" returns the same no-route without an upstream call', () => {
+    const result = runHermeticProxy("env-empty");
+    expect(result.status).toBe(400);
+    expect(result.raw.error?.message).toContain(
+      '[Route] No provider in the catalog serves "no-such-model-xyz".'
+    );
+    expect(result.debugLog).not.toContain("[OpenRouter] Response status:");
+  });
+
+  test("an uncredentialed custom fallback is named in the tried reason", () => {
+    const result = runHermeticProxy("custom-no-key");
+    expect(result.status).toBe(400);
+    expect(result.raw.error?.message).toContain(
+      '[Route] No credentialed providers in chain for "no-such-model-xyz" ' +
+        "(tried: sandbox-no-key)."
+    );
+    expect(result.debugLog).not.toContain("[sandbox-no-key] Response status:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group B — Live provider roundtrips (not fallback-selection proof)
 // ---------------------------------------------------------------------------
 
 // Asked via claudish's OWN credential authority (env → aliases →
@@ -286,7 +432,7 @@ const HAS_LL = SKIP_LIVE_E2E
   : !!process.env.LITELLM_BASE_URL && (await hasCredential("litellm"));
 const HAS_XAI = SKIP_LIVE_E2E ? false : await hasCredential("x-ai");
 
-describe("Group B — real API routing", () => {
+describe("Group B — live provider roundtrips", () => {
   test.skipIf(!HAS_OR)(
     "B1a — catalog-gathered gpt-5.4 bare → served by credentialed OpenRouter",
     async () => {
@@ -503,10 +649,10 @@ describe("Group B — real API routing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group C — Custom endpoints
+// Group C — Live custom-endpoint roundtrips (not fallback-selection proof)
 // ---------------------------------------------------------------------------
 
-describe("Group C — custom endpoint registration", () => {
+describe("Group C — live custom-endpoint roundtrips", () => {
   // The model is INCIDENTAL to Group C — these tests prove custom-endpoint
   // registration + `${VAR}` expansion + roundtrip, and the endpoint routes
   // through the OpenAI adapter regardless of the model name. We deliberately

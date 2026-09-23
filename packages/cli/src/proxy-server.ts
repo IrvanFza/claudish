@@ -50,7 +50,7 @@ import {
 } from "./providers/provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
-import { loadRoutingRules, route } from "./providers/routing-rules.js";
+import { effectiveDefaultProvider, loadRoutingRules, route } from "./providers/routing-rules.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
@@ -579,6 +579,12 @@ export async function createProxyServer(
   // more. The routing engine consults these via route() for every bare-name
   // request, and falls through to the catalog-gathered chain when none matches.
   const effectiveRoutingRules = loadRoutingRules();
+  // The fallback hop, resolved once beside the rules and passed to route() with
+  // them. Passing rules alone makes route() read NO default provider (its guard
+  // keeps this machine's setting out of tests), so before this every bare name the
+  // proxy routed fell back to `openrouter`, whatever `defaultProvider` said —
+  // `""` included.
+  const effectiveFallbackProvider = effectiveDefaultProvider();
 
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
@@ -801,7 +807,7 @@ export async function createProxyServer(
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
 
-        const plan = await route(decision.model, effectiveRoutingRules);
+        const plan = await route(decision.model, effectiveRoutingRules, effectiveFallbackProvider);
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
@@ -823,10 +829,14 @@ export async function createProxyServer(
 
             fallbackHandlerCache.set(cacheKey, resultHandler);
 
+            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`;
             if (!options.quiet && candidates.length > 1) {
-              logStderr(
-                `[Route] ${candidates.length} providers for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`
-              );
+              logStderr(routeLine);
+            } else {
+              // The debug log gets the chain even when stderr does not: a single
+              // hop, or a quiet `-p` run. Without it a request that went to the
+              // fallback hop alone left no line naming the provider it used.
+              log(routeLine);
             }
             return resultHandler;
           }
