@@ -2,6 +2,30 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.1.1] - 2026-09-23
+
+### Bug Fixes
+
+- ask an older Ollama daemon for capabilities it lists only in /api/show([`50c7f0e`](https://github.com/MadAppGang/claudish/commit/50c7f0ed71ab6cf0f79ca8669e36949bb7ef1929))
+- keep what a provider says about its own models, and three release-review findings([`7981787`](https://github.com/MadAppGang/claudish/commit/79817872238b3a4103b56f63d56666134d91a2a6))
+- ask Devin about swe-1.7 in Devin's own spelling([`d408ac9`](https://github.com/MadAppGang/claudish/commit/d408ac96ee56868b71b5fa0e5421edf8b0c4eca7))
+- a model is offered when something says it works, never when nothing does([`4c48c63`](https://github.com/MadAppGang/claudish/commit/4c48c63fe3072d3163d1945bb32e835932efda1c))
+- minimal effort is the lowest rung, not the off switch([`90ac5cb`](https://github.com/MadAppGang/claudish/commit/90ac5cb66a3fee9bf9be7a2384e25903c421d966))
+- show the provider's own error, not claudish's guess about it([`196e6f8`](https://github.com/MadAppGang/claudish/commit/196e6f8f8caa38ea783f1b6bd1c9331c7b40d936))
+- stop the probe tearing its own rows, and drop a hop no key can satisfy([`406461c`](https://github.com/MadAppGang/claudish/commit/406461c8b5d3be213cd0e2b1251949de6476d009))
+
+### Documentation
+
+- park two release-review findings, and report three catalog rows([`1f2fed5`](https://github.com/MadAppGang/claudish/commit/1f2fed5ef53440fe83d33b9fc67498e3c530f54e))
+- record the availability spelling rule and the route-table gate's blind spots([`8dfcfb7`](https://github.com/MadAppGang/claudish/commit/8dfcfb79646eb53e8d81027a465b0091b76badb7))
+- withdraw the wrong list of models to restore([`8580fa9`](https://github.com/MadAppGang/claudish/commit/8580fa9f87631a47a511938c99e60ff9ce92c986))
+- verify claudish against models-index v1.4.14([`38139d4`](https://github.com/MadAppGang/claudish/commit/38139d4df0f0ef598bb08ed95d454f6f08f6a0d1))
+- correct four claims the review of #263 disproved([`87289bb`](https://github.com/MadAppGang/claudish/commit/87289bb6340707dad74da3a3ea006e6e3c674f57))
+- record why stop_sequences has no effect on gk@ *(grok)* ([`96776b4`](https://github.com/MadAppGang/claudish/commit/96776b408863326ca1fcbddf7e4dc2c8964e7dc3))
+- record the free-claude-code translation findings *(reports)* ([`5084905`](https://github.com/MadAppGang/claudish/commit/5084905bc6eb806b3ca8d3cbee6191946f9bb0a0))
+- stamp the playbook verified at v10.1.0 *(release)* ([`c568a6a`](https://github.com/MadAppGang/claudish/commit/c568a6a447aca7481d795d29088f0894a2c3725d))
+- update CHANGELOG.md for v10.1.0([`7b2d493`](https://github.com/MadAppGang/claudish/commit/7b2d4938d06d985fbe37cb76e820f6a52f53e358))
+
 ## [10.1.0] - 2026-09-23
 
 ### Bug Fixes
