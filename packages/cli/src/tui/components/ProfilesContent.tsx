@@ -386,7 +386,7 @@ export function ProfilesContent({
                   <span fg={C.yellow} attributes={A.bold}>
                     auto-route{" "}
                   </span>
-                  <span fg={C.fgMuted}>— uses routing table · </span>
+                  <span fg={C.fgMuted}>— calculated per model (Routing → p) · </span>
                   <span fg={C.green} attributes={A.bold}>
                     ⏎{" "}
                   </span>
