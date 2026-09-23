@@ -33,10 +33,7 @@ const realDevinDiscovery = getModelDiscoveryFetcher("devin-connect");
 if (!realDevinDiscovery) throw new Error("Devin discovery fetcher was not registered");
 
 const DEVIN_BUG_UIDS = new Set(["swe-1-7", "swe-1-7-medium"]);
-const devinFixturePath = join(
-  import.meta.dir,
-  "../test-fixtures/devin/GetCliModelConfigs.res.bin"
-);
+const devinFixturePath = join(import.meta.dir, "../test-fixtures/devin/GetCliModelConfigs.res.bin");
 const devinModelsCatalog: DiscoveredModel[] = decodeModelConfigs(readFileSync(devinFixturePath))
   .filter((model) => DEVIN_BUG_UIDS.has(model.uid))
   .map(devinModelsCatalogEntry)
@@ -238,10 +235,7 @@ describe("providerServesModel resolver-backed discovery", () => {
   test("serves a canonical Devin family represented only by knob-encoded uids", async () => {
     stubDevinModelsCatalog();
 
-    expect(devinModelsCatalog.map((model) => model.id)).toEqual([
-      "swe-1-7",
-      "swe-1-7-medium",
-    ]);
+    expect(devinModelsCatalog.map((model) => model.id)).toEqual(["swe-1-7", "swe-1-7-medium"]);
     expect(devinModelsCatalog.some((model) => model.id === "swe-1.7")).toBe(false);
     expect(await providerServesModel("devin", "swe-1.7")).toBe("serves");
   });

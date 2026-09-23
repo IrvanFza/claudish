@@ -425,15 +425,17 @@ export function rankProbeCandidates(names: string[]): string[] {
   // containing `*` is a LiteLLM ROUTE PATTERN (`gemini/*`), not a model id, so
   // there is nothing to send it. Dropping it is rejecting a non-identifier, not
   // guessing what it can do — which is why it stays after the name rules went.
-  return names.filter((name) => !name.includes("*")).sort((a, b) => {
-    const aStd = isStandardName(a);
-    const bStd = isStandardName(b);
-    if (aStd !== bStd) return aStd ? -1 : 1;
-    const aSmall = isSmallName(a);
-    const bSmall = isSmallName(b);
-    if (aSmall !== bSmall) return aSmall ? -1 : 1;
-    return a.localeCompare(b);
-  });
+  return names
+    .filter((name) => !name.includes("*"))
+    .sort((a, b) => {
+      const aStd = isStandardName(a);
+      const bStd = isStandardName(b);
+      if (aStd !== bStd) return aStd ? -1 : 1;
+      const aSmall = isSmallName(a);
+      const bSmall = isSmallName(b);
+      if (aSmall !== bSmall) return aSmall ? -1 : 1;
+      return a.localeCompare(b);
+    });
 }
 
 interface CacheKey {
