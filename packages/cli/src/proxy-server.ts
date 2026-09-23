@@ -50,7 +50,14 @@ import {
 } from "./providers/provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
-import { effectiveDefaultProvider, loadRoutingRules, route } from "./providers/routing-rules.js";
+import {
+  describeRoutingRuleProblem,
+  effectiveDefaultProvider,
+  loadRoutingRuleSources,
+  loadRoutingRules,
+  route,
+  routingRuleProblems,
+} from "./providers/routing-rules.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
@@ -578,7 +585,15 @@ export async function createProxyServer(
   // local config (local wins), and nothing else — there is no shipped table any
   // more. The routing engine consults these via route() for every bare-name
   // request, and falls through to the catalog-gathered chain when none matches.
-  const effectiveRoutingRules = loadRoutingRules();
+  const routingRuleSources = loadRoutingRuleSources();
+  const effectiveRoutingRules = loadRoutingRules(routingRuleSources);
+  // Problems in those rules, reported ONCE, here: before Claude Code owns the
+  // terminal, and through logStderr, which the quiet flag and a diagnostics pane
+  // both govern. `loadRoutingRules` prints nothing, because it also runs inside the
+  // config TUI and the `--probe` TUI (and on every `route()` call).
+  for (const problem of routingRuleProblems(routingRuleSources)) {
+    logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
+  }
   // The fallback hop, resolved once beside the rules and passed to route() with
   // them. Passing rules alone makes route() read NO default provider (its guard
   // keeps this machine's setting out of tests), so before this every bare name the

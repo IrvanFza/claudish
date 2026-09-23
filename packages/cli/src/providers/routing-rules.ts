@@ -52,13 +52,14 @@ export interface RoutingRuleSources {
  *
  * `sources` keeps rule composition testable without reading machine config.
  * The recommended-model projection is not a routing-rule override.
+ *
+ * Prints nothing. It runs inside the config TUI and the `--probe` TUI, where a
+ * stray stderr line lands in the middle of a frame, and on every `route()` call.
+ * Problems in the rules are {@link routingRuleProblems}'s to report: the proxy
+ * prints them once at startup, and `explainRoute` returns them as warnings.
  */
 export function loadRoutingRules(sources?: RoutingRuleSources): RoutingRules {
   const { localRules: local, globalRules: global_ } = sources ?? loadRoutingRuleSources();
-
-  validateRoutingRules(local);
-  validateRoutingRules(global_);
-
   return { ...global_, ...local };
 }
 
@@ -112,30 +113,72 @@ export function validateRoutingRulesAgainstProviders(rules: RoutingRules): void 
   }
 }
 
-/** Warn about config issues that would silently misbehave. */
-function validateRoutingRules(rules: RoutingRules): void {
+/** A problem in the user's routing rules that would make them silently misbehave. */
+export interface RoutingRuleProblem {
+  /** The config file the rule is in. */
+  scope: RuleScope;
+  /** The rule key as stored. */
+  pattern: string;
+  problem: "multiple-wildcards" | "case-collision";
+  /** `case-collision` only: the earlier key in the same file this one collides with. */
+  collidesWith?: string;
+}
+
+/**
+ * Every problem in the user's two rule files. Pure: it reads nothing and prints
+ * nothing, so a TUI can show the result and the proxy can print it once.
+ *
+ * Each file is checked on its own, as the rules have always been: a key that
+ * collides only with a key in the OTHER file is not reported.
+ *
+ * An empty chain is not a problem: `[]` is the user's explicit no-route.
+ */
+export function routingRuleProblems(sources: {
+  globalRules: RoutingRules;
+  localRules: RoutingRules;
+}): RoutingRuleProblem[] {
+  return [
+    ...ruleTableProblems(sources.globalRules, "global"),
+    ...ruleTableProblems(sources.localRules, "project"),
+  ];
+}
+
+function ruleTableProblems(rules: RoutingRules, scope: RuleScope): RoutingRuleProblem[] {
+  const problems: RoutingRuleProblem[] = [];
   // Track lower-cased keys to catch case-insensitive collisions. Matching is
   // case-insensitive, so two keys that differ only in case will silently
-  // collapse to whichever the iteration order favors. Warn the user.
+  // collapse to whichever the iteration order favors.
   const seenLower = new Map<string, string>();
   for (const key of Object.keys(rules)) {
     // Multi-wildcard patterns only use the first *, rest become literals
     if (key !== "*" && (key.match(/\*/g) || []).length > 1) {
-      console.error(
-        `[claudish] Warning: routing pattern "${key}" has multiple wildcards — only single * is supported. This pattern may not match as expected.`
-      );
+      problems.push({ scope, pattern: key, problem: "multiple-wildcards" });
     }
     const lower = key.toLowerCase();
     const prior = seenLower.get(lower);
     if (prior !== undefined && prior !== key) {
-      console.error(
-        `[claudish] Warning: routing patterns "${prior}" and "${key}" collide case-insensitively. Matching is case-insensitive, so one will silently shadow the other. Pick one casing and remove the duplicate.`
-      );
+      problems.push({ scope, pattern: key, problem: "case-collision", collidesWith: prior });
     } else {
       seenLower.set(lower, key);
     }
-    // Empty chain is valid — explicit no-fallback mode (route() returns
-    // no-route). No warning needed; user opted in.
+  }
+  return problems;
+}
+
+/** One line for a rule problem, without a "[claudish]" prefix (logStderr adds it). */
+export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string {
+  switch (problem.problem) {
+    case "multiple-wildcards":
+      return (
+        `routing pattern "${problem.pattern}" (${problem.scope}) has more than one * — ` +
+        "only a single * is supported, so it may not match as expected."
+      );
+    case "case-collision":
+      return (
+        `routing patterns "${problem.collidesWith}" and "${problem.pattern}" (${problem.scope}) ` +
+        "differ only in case. Matching ignores case, so one silently shadows the other: " +
+        "pick one casing and remove the duplicate."
+      );
   }
 }
 
@@ -476,11 +519,14 @@ export type FallbackWithheld =
   | "catalog-denies";
 
 /**
- * Something the user should know about a decision that still routed. `route()`
- * prints the two billing notices to stderr. `explainRoute` never writes; a
- * display shows these instead.
+ * Something the user should know about a decision. `route()` prints the two
+ * billing notices to stderr. `explainRoute` never writes; a display shows these
+ * instead. A `rule-problem` comes only from `explainRoute` when it read the rule
+ * files itself: it is about the config, not about this decision, and the proxy
+ * prints it once at startup rather than per request.
  */
 export type RouteWarning =
+  | { type: "rule-problem"; problem: RoutingRuleProblem; message: string }
   | {
       type: "subscription-not-served";
       providers: string[];
@@ -527,7 +573,10 @@ export interface RouteExplanation {
 }
 
 export interface ExplainRouteOptions {
-  /** Absent: the global and project rules are loaded here, so `ruleScope` is known. */
+  /**
+   * Absent: the global and project rules are loaded here, so `ruleScope` is known
+   * and their problems are returned as `rule-problem` warnings.
+   */
   rules?: RoutingRules;
   /**
    * Absent: `route()`'s rule. With `rules` passed none is read, so the fallback
@@ -848,6 +897,17 @@ interface BareRouting {
   defaultProvider: string | undefined;
   /** Where a matched rule key came from, when the caller read the two rule files itself. */
   scopeOf?: (ruleKey: string) => RuleScope;
+  /** Problems in those two files, when the caller read them itself. */
+  ruleProblems?: RoutingRuleProblem[];
+}
+
+/** Rule problems as explanation warnings, each with its one-line message. */
+function ruleProblemWarnings(problems: RoutingRuleProblem[] | undefined): RouteWarning[] {
+  return (problems ?? []).map((problem) => ({
+    type: "rule-problem",
+    problem,
+    message: describeRoutingRuleProblem(problem),
+  }));
 }
 
 /**
@@ -894,7 +954,7 @@ async function explainBareName(
         explainCandidate(resolved.route, "candidate", entryOutcome(resolved))
       ),
       outcome: { kind: "ok" },
-      warnings: [],
+      warnings: ruleProblemWarnings(routing.ruleProblems),
     };
   } else {
     const chain = explainCatalogChain(model, routing.defaultProvider, cachePath);
@@ -906,7 +966,7 @@ async function explainBareName(
       candidates: chain.candidates,
       ...(chain.fallbackWithheld ? { fallbackWithheld: chain.fallbackWithheld } : {}),
       outcome: { kind: "ok" },
-      warnings: [],
+      warnings: ruleProblemWarnings(routing.ruleProblems),
     };
   }
 
@@ -1350,6 +1410,7 @@ function bareRoutingFor(opts: ExplainRouteOptions): BareRouting {
     // The project file overwrites the global one key by key, so a key the project
     // file holds is the project's rule.
     scopeOf: (ruleKey) => (Object.hasOwn(sources.localRules, ruleKey) ? "project" : "global"),
+    ruleProblems: routingRuleProblems(sources),
   };
 }
 
@@ -1405,6 +1466,9 @@ function emitRouteNotices(explanation: RouteExplanation): void {
     );
   }
   for (const warning of explanation.warnings) {
+    // A rule problem is about the config, not this request: the proxy prints
+    // those once at startup, never per request.
+    if (warning.type === "rule-problem") continue;
     // No "[claudish]" in the message: logStderr adds the prefix itself.
     logStderr(warning.message);
   }
