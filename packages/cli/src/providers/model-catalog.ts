@@ -19,7 +19,7 @@ import {
   getModelsByProvider,
   searchModels as searchModelsFromFirebase,
 } from "../model-loader.js";
-import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
+import { type SlimModelEntry, readAllModelsCache, reasoningStatusOf } from "./all-models-cache.js";
 import { FIREBASE_CACHE_TTL_MS } from "./cache-ttl.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ function filterToServedByProvider(
   return kept;
 }
 
-function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
+export function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
   return {
     modelId: entry.modelId,
     displayName: entry.modelId,
@@ -277,7 +277,12 @@ function slimEntryToCatalogModel(entry: SlimModelEntry): CatalogModel {
     // tools" are different claims and only the second one disqualifies a model.
     capabilities: {
       ...(entry.supportsVision === undefined ? {} : { vision: entry.supportsVision }),
-      ...(entry.reasoning === undefined ? {} : { thinking: true }),
+      // v3 `reasoning` is an OBJECT, `{ supported: false }` included — reading its
+      // mere presence as "thinks" flagged 469 of 1137 non-reasoning entries as
+      // reasoning models. Same rule as the adapters: an UNKNOWN status says nothing.
+      ...(entry.reasoning === undefined || reasoningStatusOf(entry) === "unknown"
+        ? {}
+        : { thinking: entry.reasoning.supported }),
       ...(entry.supportsTools === undefined ? {} : { tools: entry.supportsTools }),
     },
   };
