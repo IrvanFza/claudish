@@ -17,11 +17,14 @@ export function RoutingDetail({ probeMode, mergedRules }: RoutingDetailProps) {
 
   // Two kinds of row, because a row can only be one of the user's own rules
   // now. The "built-in default" and "override of default" counts this panel
-  // used to carry were both about the shipped DEFAULT_ROUTING_RULES table,
-  // which was deleted when routing started gathering candidates from the cloud
-  // models catalog — they would now read 0 and 0 forever.
+  // used to carry were both about the shipped table of built-in rules, which
+  // was deleted when routing started gathering candidates from the cloud models
+  // catalog — they would now read 0 and 0 forever.
   const globalCustom = mergedRules.filter((r) => r.kind === "global").length;
   const projectRules = mergedRules.filter((r) => r.kind === "project");
+  // A "*" rule matches everything no other rule does, so with one nothing
+  // reaches the catalog (the header above says the same).
+  const hasCatchAll = mergedRules.some((r) => r.pattern === "*");
 
   // Format counts with a fixed-width number column so the labels line up
   // even when counts grow into double digits.
@@ -69,7 +72,9 @@ export function RoutingDetail({ probeMode, mergedRules }: RoutingDetailProps) {
         <box>
           <text>
             <span fg={C.fgMuted}>
-              {" Anything with no rule here is routed from the models catalog."}
+              {hasCatchAll
+                ? ' The "*" rule takes every model no other rule here matches.'
+                : " Anything with no rule here is routed from the cloud models catalog."}
             </span>
           </text>
         </box>

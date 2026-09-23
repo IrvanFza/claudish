@@ -48,12 +48,12 @@ export type RoutingScope = "global" | "project";
  * two rows render and each is independently editable.
  *
  * There is no third `"default"` kind and no `overridesDefault` flag any more.
- * Both described the shipped `DEFAULT_ROUTING_RULES` table, which was deleted
- * when routing started gathering its candidates from the cloud models catalog.
+ * Both described the shipped table of built-in rules, which was deleted when
+ * routing started gathering its candidates from the cloud models catalog.
  * Nothing is left for a user rule to "override": a rule that matches is the
  * whole chain, used verbatim, and a model with no matching rule is routed from
  * the catalog. Keeping the flag would have gone on drawing a ★ against a
- * comparison that no longer exists.
+ * comparison that no longer exists. A `"*"` rule is a row like the others.
  *
  * Marker priority: project (▴ cyan) > global (• green). The runtime routing
  * engine still applies precedence (project beats global), but the table

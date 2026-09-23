@@ -1,7 +1,8 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 /** @jsxImportSource @opentui/react */
 import { useEffect, useRef } from "react";
-import type { ClaudishProfileConfig } from "../../profile-config.js";
+import type { ResolvedDefaultProvider } from "../../default-provider.js";
+import type { ClaudishProfileConfig, RoutingRules } from "../../profile-config.js";
 import { DEFAULT_FALLBACK_PROVIDER, TIER_LABEL } from "../../providers/routing-rules.js";
 import { DETAIL_H, getChainProviders } from "../constants.js";
 import { deriveProbeOutcome } from "../probe-outcome.js";
@@ -74,6 +75,140 @@ function hintLines(hint: string | undefined): { id: string; text: string }[] {
 // Format a chain as inline text: "kimi → openrouter"
 function chainStr(chain: string[]): string {
   return chain.join(" → ");
+}
+
+/**
+ * A rule's CHAIN cell, its colour read from `C` at render time. `[]` is a rule
+ * too: the user's explicit no-route, which a join would render as nothing.
+ */
+function ruleChainCell(chain: string[], selected: boolean): { text: string; fg: string } {
+  if (chain.length === 0) return { text: "no route", fg: C.yellow };
+  return { text: chainStr(chain), fg: selected ? C.cyan : C.fgMuted };
+}
+
+/** How a header segment is coloured; {@link toneColor} maps it onto `C` at render time. */
+export type HeaderTone = "title" | "value" | "warn" | "muted" | "dim";
+
+/** One run of Routing-tab header text in one tone. */
+export interface HeaderSegment {
+  text: string;
+  tone: HeaderTone;
+}
+
+export interface RoutingHeaderInput {
+  /** The rules in the global config (or the `--config` file). */
+  globalRules: RoutingRules;
+  /** The rules in the project's `.claudish.json`. */
+  localRules: RoutingRules;
+  /** The fallback hop in force, and where it was set. */
+  resolved: Pick<ResolvedDefaultProvider, "provider" | "source">;
+}
+
+/**
+ * The Routing tab's header: the one routing fact that is global rather than per
+ * model. Pure, as lines of toned segments the renderer colours.
+ *
+ * - **A `"*"` rule** decides every model no other rule matches, and a matched
+ *   rule is used verbatim: the catalog is not consulted and no fallback hop is
+ *   appended (`explainBareName`). The header says so and draws no fallback line,
+ *   which would name a hop no request takes. The project file's `"*"` wins over
+ *   the global one, because the project file overwrites the global one key by
+ *   key (`loadRoutingRules`); a `"*"` whose value is not a list is no rule to the
+ *   router, so it is none here either.
+ * - **Otherwise** the fallback hop: the provider appended after everything the
+ *   catalog maps, or none when it is disabled.
+ */
+export function routingHeaderLines({
+  globalRules,
+  localRules,
+  resolved,
+}: RoutingHeaderInput): HeaderSegment[][] {
+  const catchAll = { ...globalRules, ...localRules }["*"];
+  if (Array.isArray(catchAll)) {
+    const scope = Object.hasOwn(localRules, "*") ? "project" : "global";
+    return [
+      [
+        { text: ' "*" rule:', tone: "title" },
+        { text: "  decides every model no other rule matches", tone: "muted" },
+      ],
+      [
+        { text: "  → ", tone: "dim" },
+        catchAll.length > 0
+          ? { text: chainStr(catchAll), tone: "value" }
+          : { text: "no route", tone: "warn" },
+        { text: ` (${scope})`, tone: "muted" },
+      ],
+      [{ text: "  The catalog and the fallback hop are not used.", tone: "dim" }],
+    ];
+  }
+  return fallbackHopLines(resolved);
+}
+
+/** The header without a `"*"` rule: which provider occupies the last position. */
+function fallbackHopLines(resolved: RoutingHeaderInput["resolved"]): HeaderSegment[][] {
+  const title: HeaderSegment[] = [
+    { text: " Fallback hop:", tone: "title" },
+    { text: "  (tried last, after every provider the catalog maps)", tone: "muted" },
+  ];
+  // An explicitly EMPTY string disables the hop; unset means "no preference"
+  // and takes openrouter. `explainCatalogChain` draws the same line.
+  if (resolved.provider === "") {
+    return [
+      title,
+      [
+        { text: "  → ", tone: "dim" },
+        { text: "disabled", tone: "warn" },
+        {
+          text: "  (defaultProvider is empty — an unroutable model errors instead)",
+          tone: "muted",
+        },
+      ],
+    ];
+  }
+  const isDefault = resolved.source === "hardcoded" || resolved.source === "openrouter-key";
+  return [
+    title,
+    [
+      { text: "  → ", tone: "dim" },
+      { text: resolved.provider, tone: "value" },
+      {
+        text: isDefault ? "  (default — set defaultProvider to change)" : "  (defaultProvider)",
+        tone: "muted",
+      },
+    ],
+  ];
+}
+
+/** The fallback hop the header shows: `defaultProvider` in the config, else openrouter. */
+export function resolveFallbackHop(
+  config: ClaudishProfileConfig
+): Pick<ResolvedDefaultProvider, "provider" | "source"> {
+  return typeof config.defaultProvider === "string"
+    ? { provider: config.defaultProvider, source: "config-file" }
+    : { provider: DEFAULT_FALLBACK_PROVIDER, source: "hardcoded" };
+}
+
+/** A header tone's colour, read from `C` at render time, never snapshotted. */
+function toneColor(tone: HeaderTone): string {
+  switch (tone) {
+    case "title":
+      return C.blue;
+    case "value":
+      return C.cyan;
+    case "warn":
+      return C.yellow;
+    case "muted":
+      return C.fgMuted;
+    case "dim":
+      return C.dim;
+  }
+}
+
+/** One scope's rules, from the rows the table shows (disk state, both scopes). */
+function rulesOfScope(mergedRules: MergedRule[], scope: MergedRule["kind"]): RoutingRules {
+  return Object.fromEntries(
+    mergedRules.filter((rule) => rule.kind === scope).map((rule) => [rule.pattern, rule.chain])
+  );
 }
 
 /** The native passthrough's hop label: it has no tier; Claude Code's own auth serves it. */
@@ -429,53 +564,29 @@ export function RoutingContent({
       flexDirection="column"
       paddingX={1}
     >
-      {/* The FALLBACK hop — the last-resort provider appended after the chain
-          gathered from the cloud models catalog, and the only routing fact left
-          that is global rather than per-model.
-
-          This used to compare `defaultProvider` against the shipped
-          DEFAULT_ROUTING_RULES catch-all and report which "overrode" which.
-          That table is gone, so there is no built-in to override; what is true
-          now is simply which provider occupies the last position, and whether
-          the user emptied it. Each header `<text>` is pinned to height={1} so
-          flex layout doesn't collapse them into the scrollbox below in tight
-          viewports. */}
-      <text height={1}>
-        <span fg={C.blue} attributes={A.bold}>
-          {" Fallback hop:"}
-        </span>
-        <span fg={C.fgMuted}>{"  (tried last, after every provider the catalog maps)"}</span>
-      </text>
-      <text height={1}>
-        {(() => {
-          const configured = config.defaultProvider;
-          // An explicitly EMPTY string disables the hop; unset means "no
-          // preference" and takes openrouter. `routeBare` draws the same line.
-          if (configured !== undefined && configured.length === 0) {
-            return (
-              <>
-                <span fg={C.dim}>{"  → "}</span>
-                <span fg={C.yellow}>{"disabled"}</span>
-                <span fg={C.fgMuted}>
-                  {"  (defaultProvider is empty — an unroutable model errors instead)"}
-                </span>
-              </>
-            );
-          }
-          const hasOverride = configured !== undefined && configured.length > 0;
-          return (
-            <>
-              <span fg={C.dim}>{"  → "}</span>
-              <span fg={C.cyan}>{hasOverride ? configured : DEFAULT_FALLBACK_PROVIDER}</span>
-              <span fg={C.fgMuted}>
-                {hasOverride
-                  ? "  (defaultProvider)"
-                  : "  (default — set defaultProvider to change)"}
-              </span>
-            </>
-          );
-        })()}
-      </text>
+      {/* The one routing fact that is global rather than per model: the user's
+          "*" rule when there is one, otherwise the fallback hop appended after
+          the chain gathered from the cloud models catalog. There is no built-in
+          rule table to compare either against. Each header `<text>` is pinned
+          to height={1} so flex layout doesn't collapse them into the scrollbox
+          below in tight viewports. */}
+      {routingHeaderLines({
+        globalRules: rulesOfScope(mergedRules, "global"),
+        localRules: rulesOfScope(mergedRules, "project"),
+        resolved: resolveFallbackHop(config),
+      }).map((line) => (
+        <text key={line.map((segment) => segment.text).join("")} height={1}>
+          {line.map((segment) => (
+            <span
+              key={`${segment.tone}:${segment.text}`}
+              fg={toneColor(segment.tone)}
+              attributes={A.boldIf(segment.tone === "title")}
+            >
+              {segment.text}
+            </span>
+          ))}
+        </text>
+      ))}
       {/* Dashed section divider (" ─" units). Intentionally NOT a border:
           OpenTUI borders are solid, so a border={["top"]} box would render a
           continuous line and lose the dashed look. The count is derived from
@@ -558,7 +669,7 @@ export function RoutingContent({
               const scopeText = isProject ? "project " : "global  ";
               const scopeFg = isProject ? C.cyan : C.green;
               const patFg = sel ? C.strong : C.cyan;
-              const chainFg = sel ? C.cyan : C.fgMuted;
+              const chainCell = ruleChainCell(rule.chain, sel);
               return (
                 <box
                   key={`${rule.kind}-${rule.pattern}`}
@@ -572,7 +683,7 @@ export function RoutingContent({
                       {rule.pattern.padEnd(16).substring(0, 16)}
                     </span>
                     <span fg={scopeFg}>{scopeText}</span>
-                    <span fg={chainFg}>{chainStr(rule.chain)}</span>
+                    <span fg={chainCell.fg}>{chainCell.text}</span>
                   </text>
                 </box>
               );

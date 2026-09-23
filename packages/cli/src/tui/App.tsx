@@ -636,18 +636,19 @@ export function App({ requestLogin }: AppProps = {}) {
   // a global rule AND a project rule for `gpt-*`), BOTH rows are visible and
   // the user can edit/delete each independently.
   //
-  // There is no third "built-in defaults" layer to show. `DEFAULT_ROUTING_RULES`
-  // was deleted when routing began gathering candidates from the cloud models
-  // catalog, so there is no shipped table these rules could override; a model
-  // with no user rule is routed from the catalog, which is per-model data this
-  // table cannot enumerate. The catch-all header above shows the one thing that
-  // remains global: the fallback hop in force.
+  // There is no third "built-in defaults" layer to show. The shipped table of
+  // built-in rules was deleted when routing began gathering candidates from the
+  // cloud models catalog, so there is nothing these rules could override; a
+  // model with no user rule is routed from the catalog, which is per-model data
+  // this table cannot enumerate.
   //
   // The runtime routing engine (loadRoutingRules + matchRoutingRule) still
   // applies precedence (project beats global), but the TUI shows the data as it
   // exists on disk, not the runtime resolution.
   //
-  // Catch-all `*` is rendered separately above the table and excluded here.
+  // A `*` rule is a row like any other, so it can be seen, edited and deleted.
+  // The header above says what it does: it decides every model no other rule
+  // matches, so the catalog and the fallback hop are unused.
   //
   // Sort order: global, then project. `loadLocalConfig()` is called inside the
   // memo so a `refreshConfig()` after a project save triggers re-derivation.
@@ -657,12 +658,10 @@ export function App({ requestLogin }: AppProps = {}) {
     const localCfg = loadLocalConfig();
 
     for (const [pat, chain] of Object.entries(config.routing ?? {})) {
-      if (pat === "*") continue;
       out.push({ kind: "global", pattern: pat, chain });
     }
     if (localCfg?.routing) {
       for (const [pat, chain] of Object.entries(localCfg.routing)) {
-        if (pat === "*") continue;
         out.push({ kind: "project", pattern: pat, chain });
       }
     }
