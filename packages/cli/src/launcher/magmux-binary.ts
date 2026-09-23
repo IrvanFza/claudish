@@ -1,11 +1,11 @@
 /**
  * Where magmux lives, in the three shapes claudish ships in.
  *
- * Extracted from `team-grid.ts` rather than copied, because a second roster is
- * a second thing to forget: `team --grid` and the recovery wrapper must agree
- * about which binary is running, or a machine where one of them finds magmux
- * and the other does not produces a feature that works in one surface and is
- * silently absent from the other.
+ * Extracted from `team-grid.ts` rather than copied, because a second list of
+ * places to look is a second thing to forget: `team --grid` and the recovery
+ * wrapper must agree about which binary is running, or a machine where one of
+ * them finds magmux and the other does not produces a feature that works in
+ * one surface and is silently absent from the other.
  */
 
 import { execSync } from "node:child_process";
