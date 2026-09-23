@@ -34,10 +34,14 @@ export function ollamaBaseUrl(): string {
 
 interface FetchOllamaOptions {
   /**
-   * When true (default), enrich each model with capabilities via `/api/show`
-   * (adds the tools indicator but one extra request per model). Pass false to
-   * skip enrichment for a snappier interactive picker — embedding models are
-   * still filtered out by name in that case.
+   * When true (default), fall back to `POST /api/show` for any model whose
+   * `/api/tags` row carried no `capabilities` array — one extra request per
+   * such model. Pass false to skip that and accept the silence.
+   *
+   * Ollama publishes `capabilities` inline in `/api/tags` (verified against a
+   * live daemon, 2026-09-23: every one of 20 installed models carried it), so
+   * on a current daemon this fallback never fires and the fan-out costs
+   * nothing. It stays for older daemons, which omit the field.
    */
   enrichCapabilities?: boolean;
 }
@@ -62,9 +66,11 @@ export async function fetchOllamaModels(options: FetchOllamaOptions = {}): Promi
 
     const enriched = await Promise.all(
       models.map(async (m) => {
-        let capabilities: string[] = [];
+        // `/api/tags` publishes `capabilities` inline on a current daemon, so
+        // ask the list before spending a request per model on `/api/show`.
+        let capabilities: string[] = Array.isArray(m.capabilities) ? m.capabilities : [];
 
-        if (enrichCapabilities) {
+        if (enrichCapabilities && capabilities.length === 0) {
           try {
             const showResponse = await fetch(`${host}/api/show`, {
               method: "POST",
@@ -77,13 +83,19 @@ export async function fetchOllamaModels(options: FetchOllamaOptions = {}): Promi
               capabilities = showData.capabilities || [];
             }
           } catch {
-            // Ignore capability-fetch errors — fall back to name heuristics.
+            // Ignore capability-fetch errors — the model stays undescribed, and
+            // that is reported rather than guessed at from its name.
           }
         }
 
-        const nameLower = String(m.name).toLowerCase();
         const supportsTools = capabilities.includes("tools");
-        const isEmbeddingModel = capabilities.includes("embedding") || nameLower.includes("embed");
+        // Ollama'"'"'s own word, and only Ollama'"'"'s word. This used to read
+        // `|| nameLower.includes("embed")`, which is the same class of guess as
+        // the deleted NON_CHAT_PATTERNS: it hides any model whose name happens to
+        // contain "embed" and misses every embedding model that does not say so.
+        // A daemon that reports nothing leaves `capabilities` empty, which reads
+        // as "not stated" everywhere downstream.
+        const isEmbeddingModel = capabilities.includes("embedding");
         const sizeInfo = m.details?.parameter_size || "unknown size";
         const toolsIndicator = supportsTools ? "✓ tools" : "✗ no tools";
 

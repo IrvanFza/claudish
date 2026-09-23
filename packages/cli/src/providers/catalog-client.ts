@@ -9,6 +9,7 @@ import {
 } from "./all-models-cache.js";
 import { catalogRouteMatchesProvider } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, type CatalogV3Envelope, parseCatalogV3Envelope } from "./catalog-v3.js";
+import { _clearChatCapabilityIndex } from "./transport/probe-discovery.js";
 
 const DEFAULT_CATALOG_URL =
   "https://us-central1-claudish-6da10.cloudfunctions.net/queryModels?status=all&catalog=slim&includeRouteVariants=true&limit=1000";
@@ -420,6 +421,13 @@ export async function refreshCatalog(
   };
 
   writeAllModelsCache(cache, options.cachePath);
+  // The chat-capability projection is memoized for 60s and keyed by cache path,
+  // so without this a refresh leaves it serving the PREVIOUS generation for up
+  // to a minute. That was survivable while an unrecognised model was offered
+  // anyway; now that admission requires positive evidence, a stale projection
+  // withholds models the refresh just described. Its doc comment already said
+  // "after a catalog refresh" — nothing had ever called it.
+  _clearChatCapabilityIndex();
   _memCache = entries;
   _warmPromise = Promise.resolve();
   return {

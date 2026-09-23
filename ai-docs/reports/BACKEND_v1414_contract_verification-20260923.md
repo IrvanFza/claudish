@@ -243,3 +243,63 @@ model access, not a missing model or a wrong route. Claudish reports it as an
 account-level denial and now shows the provider's own sentence rather than an
 inference about it (commit `196e6f8f`). Note also that Alibaba returns a *different
 status* for one fact depending on `stream`.
+
+---
+
+## 6. Addendum, 2026-09-23: modality filtering went strict, and what that asks of the backend
+
+Section 3.5 asked whether "do not infer from names" covers names the catalog never published.
+The answer chosen was **yes, everywhere**, and claudish now implements it:
+
+- `NON_CHAT_PATTERNS` (17 regexes) and `VIDEO_OUTPUT_NAME_PATTERNS` (4) are **deleted**. No model
+  is classified by how its id is spelled.
+- `isChatCapable` requires a positive `"chat"` verdict. `"unknown"` is no longer offered.
+- Provider-published capability is read and outranks the catalog, because it describes the
+  deployment rather than the canonical model: Ollama's per-model `capabilities`
+  (`["completion","tools","vision"]` against `["embedding"]`) and LM Studio's `type`.
+- An explicit `provider@model` spec bypasses all of it. The user named the model; claudish sends
+  it. Verified: `routeExplicit` has no capability gate.
+
+**`supportsVision` was removed from claudish's chat inference.** It is an INPUT capability, and
+reading it as evidence of text output was the same class of guess as the name regexes. Measured:
+19 rows had no published output modality and `supportsVision` as their only chat signal, and 17
+were image, video, audio or moderation models. `sora-2` is the clean case — its sibling
+`sora-2-pro` publishes `outputModalities: ["video"]` and was excluded correctly, while `sora-2`
+has the field absent, so the vision flag was the only thing speaking for it.
+
+### The ask: 87 published models carry no `outputModalities`
+
+Measured on generation `g-20260922053223487-99e80e4b`, 87 of 1,136 catalog entries are now
+unavailable by bare name purely because nothing describes their output. Every one has
+`outputModalities` absent — not empty, absent.
+
+Most are correctly unavailable (`imagen-4.0-*`, `flux*`, `gpt-4o-*-tts`, `*-transcribe`,
+`omni-moderation-*`, `hailuo-02`, `lyria-3.5`, `nova-3-*`, `llama-rank-v1`). **These are not:**
+
+  chatgpt-image-latest is correctly excluded, but these look like genuine chat models —
+  gemini-2.0-flash-001, gemini-2.0-flash-lite-001, gemma-3-27b-pt, gemma-3-1b-pt,
+  gpt-3.5-turbo-0125, gpt-3.5-turbo-1106, gpt-4-0613, mixtral-8x7b-v0.1,
+  meta-llama-3.1-8b, llama-3.2-3b, qwen-2-72b, qwen-2-7b, qwen-2-1.5b,
+  molmo-7b-d-0924, kimi-k2.8-preview, nemotron-3-super, cwm, omen-alpha, big-pickle,
+  and the qwen3-*-base family (0.6b/1.7b/4b/8b/14b/30b-a3b)
+
+  plus two legacy completion models whose correct classification is a judgement call:
+  babbage-002, davinci-002
+
+Publishing `outputModalities` for those restores them. claudish will not guess them back.
+
+### What claudish reports instead of guessing
+
+`unavailableForMissingCapability(names)` returns `{catalogSilent, providerSilent}` and the
+discovery failure messages now name the silent party rather than saying "no chat-capable model":
+
+    no capability data for 3 of 12 listed models —
+      this endpoint publishes no capability field
+      (text-embedding-3-small, tts-1, whisper-1)
+
+`catalogSilent` is the list above — models-index work. `providerSilent` is an endpoint that
+publishes no capability field at all, which no backend work reaches: a plain OpenAI-compatible
+`/v1/models` returns `{id, object, created, owned_by}`. LiteLLM, vLLM, MLX and custom endpoints
+are in that bucket, and their models are reachable only by explicit `provider@model` until either
+the catalog describes them or the endpoint starts publishing. LiteLLM's `/model/info` does
+publish a `mode` field; reading it is not yet implemented and would shrink that bucket.
