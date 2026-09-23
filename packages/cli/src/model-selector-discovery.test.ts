@@ -12,17 +12,63 @@
  * indistinguishable from the other four.
  *
  * Offline by construction: `globalThis.fetch`, `credentials.getRequestAuth` and
- * the `CatalogClient` are all substituted directly. No `mock.module()` — it
- * bleeds into sibling Bun test files.
+ * the `CatalogClient` are all substituted directly. The capability projection
+ * gets a file-local module fixture that is restored in `afterAll`, so no row
+ * depends on the developer's real cloud models catalog cache.
  *
- * Nothing here asserts a price, a context window or a capability flag: those
- * come from the on-disk model catalog, which is warm on a dev machine and cold
- * on a fresh clone. Ids, counts and outcome kinds are the assertions.
+ * Nothing here asserts a price or context window. Ids, counts, evidence-based
+ * capability decisions and outcome kinds are the assertions.
  *
  * Run: bun test packages/cli/src/model-selector-discovery.test.ts
  */
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import type { DiskCacheV3, SlimModelEntry } from "./providers/all-models-cache.js";
+import * as __realAllModelsCache from "./providers/all-models-cache.js";
+
+const __realAllModelsCacheExports = { ...__realAllModelsCache };
+
+function catalogCapability(
+  modelId: string,
+  inputModalities: string[] | null | undefined,
+  outputModalities: string[]
+): SlimModelEntry {
+  return { modelId, aliases: [], inputModalities, outputModalities };
+}
+
+const catalogCapabilityFixture: DiskCacheV3 = {
+  version: 3,
+  lastUpdated: "2026-09-23T00:00:00.000Z",
+  catalogGenerationId: "model-selector-discovery-test",
+  entries: [
+    ...[
+      "catalog-chat-1",
+      "catalog-chat-2",
+      "claude-opus-5",
+      "gpt-5.2-codex",
+      "gemini-3-pro",
+      "kimi-k3",
+      "deepseek-v3",
+      "llama3.2",
+      "MiniMax-M2",
+    ].map((id) => catalogCapability(id, ["text"], ["text"])),
+    catalogCapability("gpt-image-2.5-flare", ["text"], ["image"]),
+    catalogCapability("text-embedding-3-large", ["text"], ["embedding"]),
+    catalogCapability("whisper-1", ["audio"], ["text"]),
+    catalogCapability("dall-e-3", ["text"], ["image"]),
+    catalogCapability("tts-1-hd", ["text"], ["audio"]),
+    catalogCapability("nomic-embed-text", ["text"], ["embedding"]),
+    catalogCapability("bge-m3", ["text"], ["embedding"]),
+  ],
+  models: [],
+  plans: [],
+};
+
+mock.module("./providers/all-models-cache.js", () => ({
+  ...__realAllModelsCacheExports,
+  readAllModelsCache: (path?: string) =>
+    path ? __realAllModelsCacheExports.readAllModelsCache(path) : catalogCapabilityFixture,
+}));
 
 import { credentials } from "./auth/credentials/authority.js";
 import {
@@ -36,18 +82,24 @@ import {
 import type { ModelInfo } from "./model-selector.js";
 import type { CatalogClient, CatalogModel } from "./providers/model-catalog.js";
 import {
+  type DiscoveredModel,
   type DiscoveryFailure,
   type DiscoveryFailureKind,
+  type FetcherResult,
   describeDiscoveryFailure,
   invalidateModelDiscovery,
+  registerModelDiscoveryFetcher,
 } from "./providers/model-discovery.js";
 import type { ProviderDefinition } from "./providers/provider-definitions.js";
 import { clearRuntimeRegistry, registerRuntimeProvider } from "./providers/runtime-providers.js";
+import { _clearChatCapabilityIndex } from "./providers/transport/probe-discovery.js";
 
 const PROVIDER = "picker-outcome-test";
 const DISPLAY_NAME = "Picker Outcome Test";
 const ENV_VAR = "PICKER_OUTCOME_TEST_API_KEY";
 const KEY_URL = "https://picker-outcome.invalid/key";
+const FORMAT = "picker-outcome-test-format";
+const ENDPOINT = "https://picker-outcome.invalid/v1/models";
 
 const realFetch = globalThis.fetch;
 const realGetRequestAuth = credentials.getRequestAuth;
@@ -65,28 +117,37 @@ function defineProvider(overrides: Partial<ProviderDefinition> = {}): ProviderDe
     apiKeyUrl: KEY_URL,
     shortcuts: [],
     legacyPrefixes: [],
-    modelDiscovery: { path: "/v1/models", format: "openai-models-list" },
+    modelDiscovery: { path: "", format: FORMAT as "ollama-tags" },
     createHandler: { kind: "none", reason: "virtual", note: "Offline test fixture" },
     isDirectApi: true,
     ...overrides,
   };
 }
 
-/** The provider's live endpoint answers with exactly these ids. */
-function serves(ids: string[]): void {
-  globalThis.fetch = mock(
-    async () =>
-      new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })
-  ) as unknown as typeof fetch;
+let fetcherResult: FetcherResult;
+
+function reported(
+  capability: NonNullable<DiscoveredModel["reported"]>,
+  ...ids: string[]
+): DiscoveredModel[] {
+  return ids.map((id) => ({ id, reported: capability }));
+}
+
+/** The provider's dynamic models catalog answers with exactly these evidence-bearing rows. */
+function serves(models: DiscoveredModel[]): void {
+  fetcherResult = { kind: "models", models, endpoint: ENDPOINT };
 }
 
 function rejectsWith(status: number): void {
-  globalThis.fetch = mock(
-    async () => new Response(JSON.stringify({ error: "rejected" }), { status })
-  ) as unknown as typeof fetch;
+  fetcherResult = {
+    kind: "failed",
+    failure: {
+      kind: status === 401 ? "unauthorized" : "http-error",
+      endpoint: ENDPOINT,
+      status,
+      detail: '{"error":"rejected"}',
+    },
+  };
 }
 
 /** A CatalogClient that answers from memory. `null` rows means "catalog fails". */
@@ -116,7 +177,13 @@ const CATALOG_ROWS: CatalogModel[] = [
 beforeEach(() => {
   invalidateModelDiscovery();
   clearRuntimeRegistry();
+  _clearChatCapabilityIndex();
+  fetcherResult = {
+    kind: "failed",
+    failure: { kind: "unreachable", endpoint: ENDPOINT, detail: "fixture not configured" },
+  };
   registerRuntimeProvider(defineProvider());
+  registerModelDiscoveryFetcher(FORMAT, async () => fetcherResult);
   credentials.getRequestAuth = mock(async () => ({
     headers: { Authorization: "Bearer offline-test-token" },
   }));
@@ -128,14 +195,20 @@ beforeEach(() => {
 afterEach(() => {
   invalidateModelDiscovery();
   clearRuntimeRegistry();
+  _clearChatCapabilityIndex();
   globalThis.fetch = realFetch;
   credentials.getRequestAuth = realGetRequestAuth;
   _modelsCatalogCollapse.collapse = realCollapse;
 });
 
+afterAll(() => {
+  _clearChatCapabilityIndex();
+  mock.module("./providers/all-models-cache.js", () => __realAllModelsCacheExports);
+});
+
 describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
   test("STATE A · a healthy dynamic models catalog is `rows`, non-empty, with servedCount === chatCount", async () => {
-    serves(["alpha-chat", "beta-chat", "gamma-chat"]);
+    serves(reported("chat", "alpha-chat", "beta-chat", "gamma-chat"));
 
     const outcome = await buildDiscoveredModelOutcome(
       PROVIDER,
@@ -152,7 +225,10 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
   });
 
   test("a PARTIALLY filtered dynamic models catalog keeps the two counts apart — the fact discarded today", async () => {
-    serves(["alpha-chat", "text-embedding-3-large", "whisper-1"]);
+    serves([
+      ...reported("chat", "alpha-chat"),
+      ...reported("not-chat", "text-embedding-3-large", "whisper-1"),
+    ]);
 
     const outcome = await buildDiscoveredModelOutcome(
       PROVIDER,
@@ -172,7 +248,9 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     // Invisible today: the provider is healthy, the key is fine, and the picker
     // silently shows the cloud catalog instead. The sample ids are what make the
     // notice self-explaining — they are usually embeddings or route wildcards.
-    serves(["text-embedding-3-large", "whisper-1", "dall-e-3", "nomic-embed-text"]);
+    serves(
+      reported("not-chat", "text-embedding-3-large", "whisper-1", "dall-e-3", "nomic-embed-text")
+    );
 
     const outcome = await buildDiscoveredModelOutcome(
       PROVIDER,
@@ -239,7 +317,7 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     // rows: []}` would be an empty panel with no explanation — the exact defect
     // class this type exists to remove, reintroduced inside it.
     _modelsCatalogCollapse.collapse = () => [];
-    serves(["alpha-chat", "beta-chat"]);
+    serves(reported("chat", "alpha-chat", "beta-chat"));
 
     const outcome = await buildDiscoveredModelOutcome(
       PROVIDER,
@@ -268,7 +346,12 @@ describe("buildDiscoveredModelOutcome — all five states, told apart", () => {
     // this asserts it at runtime across every shape that reaches the branch.
     for (const ids of [["only-one"], ["a-chat", "b-chat"], ["a-chat", "whisper-1"]]) {
       invalidateModelDiscovery();
-      serves(ids);
+      serves(
+        ids.map((id) => ({
+          id,
+          reported: id === "whisper-1" ? "not-chat" : "chat",
+        }))
+      );
       const outcome = await buildDiscoveredModelOutcome(
         PROVIDER,
         DISPLAY_NAME,
@@ -328,7 +411,7 @@ describe("buildDiscoveredModelOutcome — the fallback leg", () => {
 
 describe("buildDiscoveredModelRows stays the wrapper the classic path uses", () => {
   test("rows on success, [] for every other outcome", async () => {
-    serves(["alpha-chat"]);
+    serves(reported("chat", "alpha-chat"));
     expect(
       (await buildDiscoveredModelRows(PROVIDER, DISPLAY_NAME, stubCatalog(CATALOG_ROWS))).map(
         (r) => r.id
@@ -494,7 +577,7 @@ describe("toPickerRows — one chat-capability chokepoint for both doors", () =>
     provider: "test",
   });
 
-  test("drops real non-chat ids", () => {
+  test("drops ids the fixture describes as non-chat", () => {
     // `gpt-image-2.5-flare` is the model F1 observed being selected by pressing
     // Enter twice at launch: the catalog paths applied no capability filter at
     // all, only the live-discovery path did.
@@ -512,7 +595,7 @@ describe("toPickerRows — one chat-capability chokepoint for both doors", () =>
     expect(toPickerRows(dropped.map(row))).toEqual([]);
   });
 
-  test("keeps real chat ids", () => {
+  test("keeps ids the fixture describes as chat", () => {
     const kept = [
       "claude-opus-5",
       "gpt-5.2-codex",
@@ -528,6 +611,10 @@ describe("toPickerRows — one chat-capability chokepoint for both doors", () =>
         .map((r) => r.id)
         .sort()
     ).toEqual([...kept].sort());
+  });
+
+  test("drops a catalog-unknown id because no source supplies chat evidence", () => {
+    expect(toPickerRows([row("fixture-has-no-evidence-for-this-id")])).toEqual([]);
   });
 
   test("dedupes by id while filtering", () => {

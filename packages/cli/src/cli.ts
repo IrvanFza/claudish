@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { EFFORT_LEVELS, isEffortLevel } from "./adapters/base-api-format.js";
 import { ENV } from "./config.js";
 import { buildLegacyHint, resolveDefaultProvider } from "./default-provider.js";
+import { setStderrQuiet } from "./logger.js";
 import {
   FIREBASE_SLUG_TO_PROVIDER_NAME,
   type ModelDoc,
@@ -1988,6 +1989,23 @@ async function probeModelRouting(
   };
   const tui = await startProbeTui(initialState);
 
+  // THE TUI NOW OWNS stderr — nothing else may write there until it shuts down.
+  //
+  // `startProbeTui` renders to `process.stderr` on purpose, so `--json` keeps
+  // stdout clean. `logStderr` writes there too, and a probe that fails calls it
+  // once per failed hop from `composed-handler.ts`. Two writers, one terminal:
+  // the handler's line lands inside the TUI's frame, the TUI repaints its own
+  // cells over part of it, and what survives is a torn row. Measured on
+  // `--probe qwen3.8-max`, where Alibaba PAYG answers 403 — the stray `[c` left
+  // in the Alibaba PAYG row is the first two characters of `logStderr`'s
+  // `[claudish] ` prefix, and the rest of that line overwrote the Qwen row above.
+  //
+  // Suppressed, not redirected: `logStderr` always calls `log()` too, so every
+  // message still reaches the debug log (`--debug`), which is where a probe
+  // failure should be read from anyway. The row itself carries the classified
+  // reason via `ProbeResult.errorMessage`, so nothing the user needs is lost.
+  setStderrQuiet(true);
+
   const addStep = (name: string, status: ProbeStepState["status"]): void => {
     tui.store.setState((prev) => ({
       ...prev,
@@ -2256,6 +2274,9 @@ async function probeModelRouting(
       }
     }
     await tui.shutdown();
+    // Hand stderr back AFTER the renderer is torn down, and in the `finally` so
+    // a throw mid-probe cannot leave the process permanently silent.
+    setStderrQuiet(false);
   }
 }
 

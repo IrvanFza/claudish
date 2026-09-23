@@ -85,6 +85,22 @@ surfaces work live. Chat Completions wins because claudish already has a Layer-2
 would route through the Codex adapter and strand it, for no measured benefit. `--probe grok-4.6`
 shows the composition: `openai-sse · GrokModelDialect · 500K`.
 
+**`stop_sequences` has no effect on `gk@`, and claudish is not the cause.** Observed on v9.5.0:
+`stop_sequences: ["STOPHERE"]` through `gk@grok-4.6` returned the whole sentence, `STOPHERE`
+included, while the same request through `kimi-coding` halted before it. The `gk@` body is NOT
+built by `GrokModelDialect`. The profile passes an explicit adapter, `OpenAIAPIFormat`
+(`provider-profiles.ts:290`); `getAdapter()` prefers it (`composed-handler.ts:294`), and its
+`buildChatCompletionsPayload` calls `applyOpenAISamplingParams` (`openai-api-format.ts:343`), so
+`stop` and `top_p` are sent. That is read from the code: a mock upstream measured it only behind a
+custom endpoint, never on this path. The dialect still takes part in the retry. On a 4xx,
+`GrokModelDialect` is asked first and the building adapter second (`composed-handler.ts:760`), and
+both hand `stop`/`top_p` to `BaseAPIFormat.recoverFromRejection`, which drops whichever of them
+the 4xx names (`base-api-format.ts:325-329`). So two explanations fit and the client cannot tell
+them apart: the proxy ignores `stop`, or it rejects it and the retry strips it. To measure which,
+point `GROK_PROXY_URL` (this provider's base URL override) at a recording mock. Editing
+`GrokModelDialect.buildPayload` changes nothing on `gk@`, and the payload needs no "fix".
+Evidence: `ai-docs/reports/translation-fixes-from-free-claude-code.md`.
+
 **`apiKeyEnvVar` MUST stay `""`.** Unlike Devin — where the reason is that a `Basic <k>-<k>` artifact
 cannot survive proxy-server's `Bearer `-stripping extraction — here the extraction would *succeed*
 and then CACHE a bearer token past the six hours it actually lives. Empty makes proxy-server skip

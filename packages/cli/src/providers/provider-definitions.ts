@@ -1475,12 +1475,24 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
 
   // ── Qwen (auto-routed, no direct API) ──────────────────────────────
   {
-    createHandler: openaiHandler,
-    // The vendor's own namespace, so `native` — but unreachable as a gathered
-    // candidate either way: it shares `qwen/dashscope-direct` with `qwen-payg`,
-    // which `providerForCatalogRoute` returns first (earlier key), and it holds
-    // no credential of its own for the credential filter to find. This entry
-    // exists so a bare `qwen*` name has a provider to be steered FROM.
+    // VIRTUAL, and it must say so: no baseUrl, no apiPath, no apiKeyEnvVar.
+    // The entry exists so a bare `qwen*` name has a provider to be steered
+    // FROM; `qwen-payg` is what actually calls dashscope.
+    //
+    // It used to carry `openaiHandler` and a comment arguing it was unreachable
+    // anyway, because `providerForCatalogRoute` returned only the FIRST provider
+    // bound to `qwen/dashscope-direct` and `qwen-payg` is the earlier key. v10.0.0
+    // replaced that with `providersForCatalogRoute`, which returns ALL of them —
+    // the z-ai/glm key-silo fix — and deleted the premise. This became a gathered
+    // candidate, so `--probe qwen3.8-max` printed a `Qwen ✗ key missing` hop and
+    // sent the reader looking for a key that no environment variable can hold.
+    // `route()` never yielded it (the credential filter drops it), so the damage
+    // was confined to the display; `reason: "virtual"` is what keeps it that way.
+    createHandler: noHandler(
+      "virtual",
+      "No baseUrl. Exists only so nativeModelPatterns can steer a bare qwen* name; qwen-payg serves dashscope."
+    ),
+    // The vendor's own namespace, so `native`.
     tier: "native",
     name: "qwen",
     displayName: "Qwen",

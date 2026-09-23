@@ -36,7 +36,10 @@ export class DeepSeekModelDialect extends BaseAPIFormat {
     const effort = this.resolveEffortLevel(originalRequest);
 
     if (effort && this.acceptsReasoningControls()) {
-      if (effort === "none" || effort === "minimal") {
+      // Same rule as every other wire: `minimal` is the lowest rung where one
+      // exists, and a model the catalog marks `mandatory` is never sent an
+      // off-switch. See BaseAPIFormat.meansReasoningOff.
+      if (this.meansReasoningOff(effort, this.lookupReasoningCapability())) {
         // Disable thinking on V4+.
         request.thinking = { type: "disabled" };
         // Never leave a depth knob contradicting the off-switch — the same rule

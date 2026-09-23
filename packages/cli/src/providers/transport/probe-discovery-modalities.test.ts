@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "../all-models-cache.js";
-import { _clearChatCapabilityIndex, classifyChatCapability } from "./probe-discovery.js";
+import {
+  _clearChatCapabilityIndex,
+  classifyChatCapability,
+  isReportedChatCapable,
+  unavailableForMissingCapability,
+} from "./probe-discovery.js";
 
 const CATALOG_GENERATION_ID = "g-20260920154425586-418ad3dd";
 
@@ -101,12 +106,29 @@ const contractRows: SlimModelEntry[] = [
     outputModalities: ["text"],
     videoOutput: true,
   },
+  {
+    modelId: "contract-vision-only",
+    aliases: [],
+    supportsVision: true,
+    supportsTools: false,
+  },
+  {
+    modelId: "contract-tools-with-vision",
+    aliases: [],
+    supportsVision: true,
+    supportsTools: true,
+  },
+  {
+    modelId: "contract-catalog-silent",
+    aliases: [],
+  },
 ];
 
 let tempDir = "";
 let cachePath = "";
 
 beforeEach(() => {
+  // The classifier memoizes its catalog projection across files; drop it so this fixture is read.
   _clearChatCapabilityIndex();
   tempDir = mkdtempSync(join(tmpdir(), "claudish-output-modalities-"));
   cachePath = join(tempDir, "cloud-models-catalog-v3.json");
@@ -168,20 +190,46 @@ describe("chat capability from output modalities", () => {
     expect(classifyChatCapability("google/flash-image-3.1", cachePath)).toBe("chat");
   });
 
-  // Contract-only route/name fallbacks: these strings are deliberately absent
-  // from the cited live generation, as required by steps 1, 5, 6 and 8.
   test("a wildcard route remains not-chat before catalog lookup", () => {
     expect(classifyChatCapability("gemini/*", cachePath)).toBe("not-chat");
   });
 
   test.each(["unpublished-image-generator", "unpublished-model-t2v"])(
-    "an absent model still uses the non-chat name rules: %s",
+    "an absent model remains unknown regardless of its name: %s",
     (modelId) => {
-      expect(classifyChatCapability(modelId, cachePath)).toBe("not-chat");
+      expect(classifyChatCapability(modelId, cachePath)).toBe("unknown");
     }
   );
 
   test("an absent model with no matching name rule remains unknown", () => {
     expect(classifyChatCapability("unpublished-chat-model", cachePath)).toBe("unknown");
+  });
+
+  test("provider evidence decides and outranks the catalog", () => {
+    expect(classifyChatCapability("gpt-5-image", cachePath)).toBe("chat");
+    expect(classifyChatCapability("gpt-5-image", cachePath, "not-chat")).toBe("not-chat");
+    expect(isReportedChatCapable("gpt-5-image", "not-chat")).toBeFalse();
+
+    expect(classifyChatCapability("nano-banana-pro", cachePath)).toBe("not-chat");
+    expect(classifyChatCapability("nano-banana-pro", cachePath, "chat")).toBe("chat");
+    expect(isReportedChatCapable("nano-banana-pro", "chat")).toBeTrue();
+  });
+
+  test("supportsVision is not chat evidence but supportsTools is", () => {
+    expect(classifyChatCapability("contract-vision-only", cachePath)).toBe("unknown");
+    expect(classifyChatCapability("contract-tools-with-vision", cachePath)).toBe("chat");
+  });
+
+  test("unavailable capability data separates catalog and provider silence", () => {
+    expect(
+      unavailableForMissingCapability(
+        ["contract-catalog-silent", "provider-only-undescribed"],
+        undefined,
+        cachePath
+      )
+    ).toEqual({
+      catalogSilent: ["contract-catalog-silent"],
+      providerSilent: ["provider-only-undescribed"],
+    });
   });
 });

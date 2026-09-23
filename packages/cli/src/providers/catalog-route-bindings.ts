@@ -37,7 +37,23 @@ export const CATALOG_ROUTE_BINDINGS: Readonly<Record<string, CatalogRouteBinding
   "qwen-coding": { routeId: "qwen", routeProfileId: "modelstudio-coding-plan" },
   "qwen-token-plan": { routeId: "qwen", routeProfileId: "qwencloud-token-plan" },
   "qwen-payg": { routeId: "qwen", routeProfileId: "dashscope-direct" },
-  qwen: { routeId: "qwen", routeProfileId: "dashscope-direct" },
+  // `qwen` is NOT bound, deliberately. A binding names one endpoint and one
+  // credential silo (see this file's header); `qwen` is a steering placeholder
+  // that owns neither — no baseUrl, no apiPath, no apiKeyEnvVar — and
+  // `qwen-payg` is what actually calls dashscope. It was listed here while
+  // `providerForCatalogRoute` returned only the FIRST provider per route, which
+  // hid it behind `qwen-payg`. v10.0.0's `providersForCatalogRoute` returns all
+  // of them (the z-ai/glm key-silo fix) and the placeholder surfaced: a
+  // `Qwen ✗ key missing` hop in `--probe qwen3.8-max`, sending the reader after
+  // a key no environment variable can hold. `route()` never yielded it, so the
+  // damage was confined to the display.
+  //
+  // Not fixed by filtering placeholders out of the gatherer: `native-anthropic`
+  // is a placeholder too, by the same `reason: "virtual"` marker, and it IS
+  // routable — the proxy's native passthrough serves it, so a filter on that
+  // marker took `claude-*` away from anyone holding an ANTHROPIC_API_KEY.
+  // Measured: two routing tests went red. The binding table is where the wrong
+  // claim lived, so it is where the correction belongs.
   "opencode-zen-go": { routeId: "opencode", routeProfileId: "go-subscription" },
   "opencode-zen": { routeId: "opencode", routeProfileId: "zen" },
   zen: { routeId: "opencode", routeProfileId: "zen" },

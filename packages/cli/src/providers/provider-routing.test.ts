@@ -215,6 +215,7 @@ describe("Provider handlers", () => {
       "lmstudio",
       "vllm",
       "mlx",
+      "qwen", // Steering placeholder; qwen-payg serves dashscope.
       "native-anthropic",
     ];
     const handlerlessProviders = BUILTIN_PROVIDERS.filter(

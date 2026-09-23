@@ -12,7 +12,7 @@
  * not a silent failover to something else.
  */
 
-import { extractUpstreamStatus } from "../handlers/shared/anthropic-error.js";
+import { extractUpstreamStatus, sseDataPayload } from "../handlers/shared/anthropic-error.js";
 import {
   hasActionableLink,
   hasModelUnsupportedWording,
@@ -600,19 +600,77 @@ function truncateKeepingLink(text: string, max = 400): string {
   return `${prose}... ${url}`;
 }
 
+/**
+ * ONE LINE, always. Every consumer of a probe error message renders it on a
+ * single row, and a newline is the one character none of them can survive: the
+ * TUI clips by character count, so a `\n` inside the clip ends the row early and
+ * everything after it paints over the row below. `truncateKeepingLink` bounds
+ * LENGTH, which is a different promise and was mistaken for this one.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The message a JSON error document carries, under any of the shapes seen.
+ *
+ * `error.provider_message` is read FIRST and it is the whole point of this
+ * order: it is the upstream's own sentence, while `error.message` beside it is
+ * claudish's composed one — the recovery hint, then the provider's text after an
+ * em dash. A probe row clips, so composing put the guess where the reader looks
+ * and the evidence where they never get to. "Model access denied." is three
+ * words and says what happened; "The provider accepted the credential but denied
+ * access to this model — check model access or activation for this account in
+ * the provider's console, not the key." is 150 characters of inference about it.
+ *
+ * The hint is not thrown away — `probe-results-printer` still word-wraps the
+ * full composed `message` in the Details box, which has the room for both.
+ */
+function messageFromJson(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text);
+    const msg =
+      parsed?.error?.provider_message ||
+      parsed?.error?.message ||
+      parsed?.error?.error?.message ||
+      parsed?.message ||
+      parsed?.detail;
+    return typeof msg === "string" && msg.length > 0 ? msg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Open an SSE frame if that is what this text is, otherwise hand it back.
+ *
+ * Applied to the EXTRACTED message and not only to the raw body, because the
+ * frame arrives both ways and the JSON ladder hides the second one. A provider
+ * answering a stream request with an error may send the frame as the body —
+ * caught by parsing the body — but claudish also re-wraps a raw upstream body
+ * into `{error:{message: <that body>}}` (`composed-handler.ts`, the auth-retry
+ * return). That parses as perfectly good JSON, so `messageFromJson` succeeded
+ * and returned a whole wire frame wearing a message field. Measured against
+ * dashscope-intl: the row read
+ *   `event:error data:{"code":"InvalidParameter","message":"Model access
+ *    denied.","request_id":"0d6a48d4-…"}`
+ * where "Model access denied." was the entire content.
+ */
+function unwrapFrame(text: string): string {
+  const payload = sseDataPayload(text);
+  if (!payload) return text;
+  return messageFromJson(payload) ?? payload;
+}
+
 function extractErrorMessage(body: string): string | undefined {
   if (!body) return undefined;
-  try {
-    const parsed = JSON.parse(body);
-    const msg =
-      parsed?.error?.message || parsed?.error?.error?.message || parsed?.message || parsed?.detail;
-    if (typeof msg === "string" && msg.length > 0) {
-      return truncateKeepingLink(msg);
-    }
-  } catch {
-    // not JSON, fall through
-  }
-  const trimmed = body.trim();
+
+  const direct = messageFromJson(body);
+  if (direct) return truncateKeepingLink(oneLine(unwrapFrame(direct)));
+
+  // Not a JSON document. It may still be an SSE frame carrying one.
+  const unwrapped = unwrapFrame(body);
+  const trimmed = oneLine(unwrapped);
   if (!trimmed) return undefined;
   return truncateKeepingLink(trimmed);
 }
@@ -891,7 +949,29 @@ function isContentEvent(parsed: any, eventType: string): boolean {
  * a bucket, not a diagnosis; the body is the diagnosis.
  */
 function withDetail(base: string, message?: string): string {
-  return message ? `${base} — ${message}` : base;
+  return message ? `${base} — ${stripRedundantHead(message)}` : base;
+}
+
+/**
+ * Drop the `"<Provider> error (HTTP <status>): "` head claudish put on its own
+ * message, because `base` has just said both of those things.
+ *
+ * The head is composed by `composeErrorMessage` for the proxy's stderr line and
+ * for the body it returns to Claude Code, where naming the provider and the code
+ * is the whole point — nothing else on that line does. A probe row is the
+ * opposite situation: the provider is the row's own left column and the status is
+ * the first thing `base` prints, so the head repeats 30 columns of what the
+ * reader can already see, and 30 columns is what the row has left for the part
+ * that says what to DO. Measured on `--probe qwen3.8-max` at 130 columns: the
+ * summary row ended at "…accepted the credential but c", cutting the sentence
+ * exactly where it turns actionable.
+ *
+ * Anchored to the full composed shape, not to " error" or the provider name: a
+ * provider's own prose has to match `(HTTP <3 digits>): ` to be touched, and no
+ * upstream message observed does.
+ */
+function stripRedundantHead(message: string): string {
+  return message.replace(/^.{1,40}? error \(HTTP \d{3}\): /, "");
 }
 
 export function describeProbeState(result: ProbeResult): string {

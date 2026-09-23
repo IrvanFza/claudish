@@ -75,7 +75,8 @@ project rules and nothing else.
    window, then provider name.
 3. **Append the fallback hop** (below).
 4. Credential filter (unchanged).
-5. Availability filter (unchanged) — only a POSITIVE "not-served" removes anything.
+5. Availability filter — only a POSITIVE "not-served" removes anything, and it asks each
+   provider in that provider's own spelling (see below).
 6. Primary + fallbacks.
 
 **No catalog means local only.** With no readable catalog a bare name returns a no-route naming
@@ -92,6 +93,41 @@ Each claim's namespace is ALSO owned by a metered sibling defined EARLIER in
 `BUILTIN_PROVIDERS` (`google`, `x-ai`, `sakana`), which keeps `parseModelSpec`'s first-wins
 auto-detection unchanged — two claimants on one namespace is now fine, because the function
 that picked a single winner (`getProviderForModel`) no longer exists.
+
+**The availability filter must ask in the provider's OWN spelling.** A provider that encodes
+knobs into its model ids never lists a bare canonical id: Devin's dynamic models catalog holds
+`swe-1-7`, `swe-1-7-medium` and `swe-1-7-lightning`, never `swe-1.7`. Its transport maps the
+requested name onto one of those through `expandSelection` (`providers/model-resolvers/`) when
+it sends. `providerServesModel` therefore resolves through the same resolver BEFORE comparing,
+so the filter and the transport answer the same question. Until 2026-09-23 it compared the raw
+string, answered "not-served" for every canonical id Devin carries, and "not-served" is the one
+verdict allowed to remove a candidate: a bare `swe-1.7` lost its Devin hop and went to the
+OpenRouter fallback ("swe-1.7 is not a valid model ID"), and the explicit `devin@swe-1.7` was
+refused outright, since `routeExplicit` runs the same check. A provider with no registered
+resolver gets its id back unchanged, so this costs every other provider nothing. A new
+knob-encoding provider needs a resolver entry, or the filter will deny it by spelling.
+
+## Changing anything that decides a chain: the route-table gate
+
+A passing suite does not show a routing change is safe. It asserts the routes someone thought to
+write down, and a silent removal hides in the ones nobody did.
+`scripts/route-table-snapshot.ts capture|diff` pins the resolved chain of EVERY catalog model
+through the real `route()`, before and after, and classifies each difference. Capture before the
+change; after is too late. Both snapshots must be on the same catalog generation.
+
+The gate has two measured blind spots, and a clean diff means "nothing changed for the models
+this machine can see", never "nothing changed":
+
+- **Credentials.** It runs on this machine's keys. Filtering virtual providers out of the gatherer
+  removed `native-anthropic` from every `claude-*` chain, and the diff reported nothing, because
+  this machine sets no `ANTHROPIC_API_KEY` and the hop was already being dropped. Two routing tests
+  that set the key caught it.
+- **Scope.** It walks catalog models only. The Devin spelling fix above changed routing for names
+  a dynamic subscription serves and the catalog does not publish, and the catalog held no `swe-*`
+  model at all, so the diff showed no change. The reproduction was the evidence.
+
+Run the suite as the complement: the gate covers breadth the suite cannot, and the suite covers
+credential states and non-catalog names the gate cannot.
 
 ## Default Provider Configuration (v7.0.0+)
 

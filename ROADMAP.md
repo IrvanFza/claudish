@@ -590,3 +590,19 @@ never `git checkout` or `git stash`, the index is shared with sibling worktrees.
 executed the truncated `Write` and returned `InputValidationError`, while the fixed build
 executed no tool at all and retried the turn. Method and raw evidence:
 `ai-docs/reports/truncated-toolcall-live-verification.md`.
+
+## Picker: the `all-filtered` notice must say "no capability data", not "not chat-capable"
+
+Status: not started. Found in the v10.1.1 release review (merge of the strict chat rule with v10.1.0's picker outcome states).
+
+`buildDiscoveredModelOutcome` (`model-selector.ts`) returns `all-filtered` whenever every served row fails `isReportedChatCapable`, and `DiscoveryNotice.tsx` renders it as "served N models, none of them chat-capable". That wording dates from when an undescribed model counted as chat. Under the strict rule it also fires when nobody DESCRIBED the rows: LM Studio's picker path reads `/v1/models` (no `type` field) while `--probe` reads `/api/v0/models` and its `type`, so the two screens disagree about the same daemon. Hiding the rows is correct; the sentence is false. Carry the undescribed count (`unavailableForMissingCapability` already computes it for the probe path) on the variant and word the notice from it; optionally read LM Studio's `type` in the picker fetcher too.
+
+**Trigger condition**: the next change to `buildDiscoveredModelOutcome` or `DiscoveryNotice.tsx`, or the first user report of a picker notice calling local models not chat-capable.
+
+## Picker tests: cover admission by catalog evidence alone
+
+Status: not started. Found in the same review.
+
+No picker-level test covers an `openai-models-list` provider (13 builtins plus LM Studio), whose discovered rows carry no `reported` and are admitted by the catalog alone; only the negative case is tested. `model-selector-discovery.test.ts` also now uses `mock.module("…/all-models-cache.js")` (contained, restored in `afterAll`), and its STATE C endpoint assertion is circular because the fixture sets the endpoint. Add a positive case (a served id the catalog fixture knows by alias is kept with no `reported`), assert the endpoint on a path the fixture does not control, and replace the module mock with a test-only catalog hook like `catalog-client`'s `_setCatalogEntriesForTest`.
+
+**Trigger condition**: before the next change to the discovered-row admission path, or with the item above.

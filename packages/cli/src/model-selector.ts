@@ -52,7 +52,7 @@ import {
   getProviderByName,
 } from "./providers/provider-definitions.js";
 import { getRuntimeProviders } from "./providers/runtime-providers.js";
-import { isChatCapable } from "./providers/transport/probe-discovery.js";
+import { isChatCapable, isReportedChatCapable } from "./providers/transport/probe-discovery.js";
 // STATIC, and safe: both are true leaves with ZERO imports of their own
 // (`picker/import-direction.test.ts` asserts exactly that, by name). A static
 // import of the picker ITSELF would pull a renderer into this module's graph and
@@ -462,19 +462,21 @@ function sortModelsNewestFirst(models: ModelInfo[]): ModelInfo[] {
  * `pplx-embed`, then `bge`), and recurred each time, because a list is made in
  * more than one place. Every list either UI can render now returns through here.
  *
- * HONEST LIMIT, AND IT IS LOGGED RATHER THAN LEFT AS A COMMENT. `isChatCapable`
- * reads a model ID, and an ID is not a modality contract. The transcribe / voice
- * / video families now have patterns (`probe-discovery.ts`, which records why),
- * but a generator whose name says nothing — `seedance-2.5` (video),
- * `flux-2-pro` (image) — cannot be excluded without a vendor-family blacklist,
- * which is the workaround that has already recurred three times.
+ * The rule is evidence, never a name: a row is kept only when the cloud models
+ * catalog publishes it as a chat model — text among its inputs AND among its
+ * outputs, with any other modalities alongside. A row the catalog does not
+ * describe is `unknown` and dropped. `gemini-3.5-transcribe` (`in: ["audio"]`)
+ * is out by its input list. `gpt-realtime-2` (`in: [audio,image,text]`,
+ * `out: [audio,text]`) is IN, by decision: the name patterns that used to hide
+ * the realtime family went with the name-based fallback, and a model that
+ * accepts text and writes text is a chat model.
  *
- * The complete fix is a modality field on the slim catalog payload; `ModelDoc`
- * carries `capabilities.imageGeneration` / `audioInput` / `audioOutput` /
- * `embedding` and the slim entry carries none of them, so every aggregator-served
- * list is name-classified only. That is a models-index gap, filed there. What is
- * owed HERE is visibility, so the residue is named ONCE per process in the debug
- * log — a picker screenshot is otherwise the only place it shows up.
+ * What is left to watch is the catalog being WRONG, so a row that survives but
+ * whose name reads like a generator family (seedance, flux, veo, imagen) is
+ * named ONCE per process in the debug log. It decides nothing. Measured on
+ * 2026-09-23, 3 of the 53 such rows publish `in: ["text"]`, `out: ["text"]`
+ * (`flux-dev-finetuner`, `flux-fill`, `seedance-2.5-el`) — models-index rows
+ * that need correcting, which is what this line is for.
  */
 export function toPickerRows(models: ModelInfo[]): ModelInfo[] {
   const kept = sortModelsNewestFirst(dedupeModels(models.filter((m) => isChatCapable(m.id))));
@@ -482,14 +484,14 @@ export function toPickerRows(models: ModelInfo[]): ModelInfo[] {
   return kept;
 }
 
-/** Names that are known non-chat but carry no modality signal in the ID itself. */
+/** Generator families whose rows, if the catalog calls them chat, are worth a second look. */
 const UNINFERABLE_NON_CHAT = [/\bseedance\b/i, /\bflux\b/i, /\bveo\b/i, /\bimagen\b/i];
 
 let _modalityGapLogged = false;
 
 /**
- * Say in the log which rows survived the name filter but are known-suspect, and
- * say why nothing more can be done in this repo.
+ * Say in the log which rows the catalog kept as chat although their family
+ * generates images or video — a catalog row to check, not a filter to add here.
  *
  * ONCE per process: `toPickerRows` is the chokepoint for every list either UI
  * renders, so a per-call line would be dozens of identical lines per picker open.
@@ -502,13 +504,11 @@ function logModalityGapOnce(kept: ModelInfo[]): void {
   if (suspect.length === 0) return;
   _modalityGapLogged = true;
   log(
-    `[Models] ${suspect.length} row(s) may not be chat models and cannot be classified from the id: ` +
+    `[Models] ${suspect.length} row(s) the catalog publishes as chat, from a generator family: ` +
       `${suspect
         .slice(0, 8)
         .map((m) => m.id)
-        .join(
-          ", "
-        )}. The slim catalog carries no modality field — models-index gap, not a CLI regex.`
+        .join(", ")}. If one is not a chat model, its models-index row is wrong.`
   );
 }
 
@@ -1472,7 +1472,8 @@ async function pickModelFromList(
  *  - **Not everything served is chat.** Alibaba's plan host answers with image
  *    and TTS models alongside chat ones. Filtered with the SAME predicate the
  *    probe path uses, so the picker and `--probe` agree on what is chat-capable
- *    — a name-based rule, never a model-id skip list. An all-non-chat dynamic models catalog
+ *    — evidence from the provider's own listing or the catalog's modalities,
+ *    never a name rule or a model-id skip list. An all-non-chat dynamic models catalog
  *    returns [] so the caller falls through to the catalog / free-text path
  *    instead of showing an empty list.
  *  - **Neither price nor (always) context is reported.** Context comes from the
@@ -1708,7 +1709,11 @@ export async function buildDiscoveredModelOutcome(
 
   const served = rankDiscoveredModels(modelsCatalog.models);
   const servedCount = served.length;
-  const discovered = served.filter((m) => isChatCapable(m.id));
+  // `m.reported` carries the provider's own chat/not-chat statement. Judging the
+  // bare `m.id` alone discarded it, and once `unknown` stopped counting as chat
+  // that emptied the picker for every provider whose ids the cloud catalog does
+  // not list verbatim: Ollama 19 → 1, Devin 247 → 3, Antigravity 21 → 7.
+  const discovered = served.filter((m) => isReportedChatCapable(m.id, m.reported));
   const chatCount = discovered.length;
   if (chatCount === 0) {
     // Served N, none of them chat-capable. Invisible today, and self-explaining
@@ -1718,7 +1723,7 @@ export async function buildDiscoveredModelOutcome(
       kind: "all-filtered",
       servedCount,
       sampleIds: served
-        .filter((m) => !isChatCapable(m.id))
+        .filter((m) => !isReportedChatCapable(m.id, m.reported))
         .slice(0, 3)
         .map((m) => m.id),
       fallbackRows,

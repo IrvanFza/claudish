@@ -81,7 +81,11 @@ export class QwenModelDialect extends BaseAPIFormat {
     const effort = this.resolveEffortLevel(originalRequest);
     if (!effort) return request;
 
-    if (effort === "none" || effort === "minimal") {
+    // Same rule as every other wire (BaseAPIFormat.meansReasoningOff): `minimal`
+    // is the lowest rung where the catalog advertises one, and a model marked
+    // `mandatory` is never sent `enable_thinking: false`. DashScope serves GLM
+    // alongside Qwen on this wire, so the mandatory case is reachable here too.
+    if (this.meansReasoningOff(effort, this.lookupReasoningCapability())) {
       request.enable_thinking = false;
       log(`[QwenModelDialect] effort ${effort} -> enable_thinking: false for ${this.modelId}`);
     } else {
