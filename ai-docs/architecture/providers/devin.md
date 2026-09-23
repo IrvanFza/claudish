@@ -56,8 +56,8 @@ versus `"devin-cli"` on `GetChatMessage`, `GetCliTeamSettings` lives on `SeatMan
   `not_found`, quota-worded `resource_exhausted`) goes straight to a **400 rendered inline**. An
   UNRECOGNIZED code is terminal on purpose: guessing "retryable" costs 48s of backoff and still hides
   the reason. An **unserved uid comes back as `permission_denied`, not `not_found`** — the transport's
-  served-set-aware rewrite names it and lists available families, but keeps the upstream text, because
-  `permission_denied` was also the symptom of the wrong role enum.
+  rewrite checks the dynamic models catalog, names the uid and lists available families, but keeps
+  the upstream text, because `permission_denied` was also the symptom of the wrong role enum.
 - **Field 28 usage is float32 LITTLE-endian** at `28→2→4→2`, selected by the STRING key at `28→2→5`.
   Field 28 is repeated with the groups in unspecified order, so select by key, never by index; an
   absent value means zero. LE reads 16185 tokens where BE reads 2.09e-38.

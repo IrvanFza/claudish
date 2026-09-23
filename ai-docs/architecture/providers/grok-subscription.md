@@ -132,7 +132,7 @@ longer exists.
 
 **The dynamic models catalog is discovered, never pinned.** `/v1/models` is genuinely
 authenticated (401 without a token — unlike Alibaba's `coding-intl` discovery endpoint, where a
-200 proves nothing) and the served set is account-scoped.
+200 proves nothing) and the dynamic models catalog it returns is account-scoped.
 Note the per-model effort ladders differ — `grok-4.6` offers `xhigh`, `grok-4.5`
 does not — which is exactly the drifting per-account data that must not be hardcoded.
 

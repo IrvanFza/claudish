@@ -251,7 +251,7 @@ Name them apart, because they are different KINDS of fact:
 
 **A dynamic models catalog is never persisted.** `providers/model-discovery.ts` keeps the
 list in an in-memory `Map` for `CACHE_TTL_MS` (five minutes) and writes nothing to disk;
-the Antigravity served set is likewise in memory (`auth/antigravity-user.ts`). Every disk
+Antigravity's dynamic models catalog is likewise in memory (`auth/antigravity-user.ts`). Every disk
 writer holds hosted or credential-free data. A stored per-account list would outlive the
 key or seat that earned it and answer with something no longer true.
 

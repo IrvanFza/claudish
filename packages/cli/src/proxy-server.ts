@@ -740,8 +740,9 @@ export async function createProxyServer(
     //
     // Safe to run unconditionally: a model the catalog doesn't know — a local
     // GGUF, a custom endpoint's private id — resolves to null and passes
-    // through unchanged. Providers that ALSO resolve live (Antigravity's served
-    // set) are unaffected: they re-resolve an exact id to itself.
+    // through unchanged. Providers that ALSO resolve live (against Antigravity's
+    // dynamic models catalog) are unaffected: they re-resolve an exact id to
+    // itself.
     //
     // ONLY for an EXPLICIT `provider@model` spec. The rewrite emits a
     // `provider@model` string, and for a BARE name `parsedTarget.provider` is the

@@ -346,10 +346,11 @@ export function isRetryableError(
 
     // Antigravity rejects some SERVED variants at generation time with a
     // generic "Request contains an invalid argument" — `gemini-3.1-pro-high`
-    // is in both the account's served set and the catalog (marked the family
-    // default), yet 400s on every call. Without this, a bare `gemini-3.1-pro-*`
-    // aborts the whole chain instead of advancing to a provider that works,
-    // which is strictly worse than the 404 it used to produce.
+    // is in both the account's dynamic models catalog and the cloud models
+    // catalog (marked the family default), yet 400s on every call. Without
+    // this, a bare `gemini-3.1-pro-*` aborts the whole chain instead of
+    // advancing to a provider that works, which is strictly worse than the 404
+    // it used to produce.
     //
     // Deliberately scoped to this provider: "invalid argument" is generic
     // enough that a blanket rule would mask real payload bugs elsewhere by

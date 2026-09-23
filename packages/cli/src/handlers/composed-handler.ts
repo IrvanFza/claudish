@@ -1352,12 +1352,12 @@ export class ComposedHandler implements ModelHandler {
       //
       // The re-issue must go through that SAME ternary. Six transports
       // implement `enqueueRequest`, and what they implement is not decoration:
-      // a bounded 429 loop with `Retry-After`, a served-set model-fallback
-      // chain, and the local concurrency gate that stops `ollama@llama3.2:3`
-      // running four inferences at once. Skipping it would make the attempt
-      // that finally CONNECTS behave differently from the one that failed —
-      // and at the moment a network returns, N woken waiters would stampede
-      // unqueued into a provider that has just come back.
+      // a bounded 429 loop with `Retry-After`, a model-fallback chain drawn
+      // from the dynamic models catalog, and the local concurrency gate that
+      // stops `ollama@llama3.2:3` running four inferences at once. Skipping it
+      // would make the attempt that finally CONNECTS behave differently from
+      // the one that failed — and at the moment a network returns, N woken
+      // waiters would stampede unqueued into a provider that has just come back.
       //
       // `getRequestInit()` IS CALLED AGAIN, PER ATTEMPT, and that is not a
       // tidiness preference. A transport may return a ONE-SHOT signal from it —
@@ -2178,9 +2178,10 @@ export class ComposedHandler implements ModelHandler {
    * instead of burning 48s of backoff first. Only the transient class is
    * retried; only an exhausted retry chain becomes a 503.
    *
-   * Terminal messages pass through the transport's served-set-aware rewrite when
-   * it offers one, which is what turns an opaque backend string into "that uid
-   * is not served by your subscription; here is what is".
+   * Terminal messages pass through the transport's rewrite when it offers one.
+   * That rewrite checks the dynamic models catalog, which is what turns an
+   * opaque backend string into "that uid is not served by your subscription;
+   * here is what is".
    */
   private async settleDevinStreamHead(
     initial: Response,

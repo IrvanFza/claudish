@@ -34,8 +34,9 @@ import type { DevinModelConfig } from "./devin-models.js";
  * Resolve `requested` to a served uid against the dynamic models catalog.
  *
  * Total by construction: an unrecognised request is returned unchanged so the
- * backend can answer for itself, which is what lets the served-set-aware error
- * rewrite name what IS served rather than silently substituting a model.
+ * backend can answer for itself, which is what lets the error rewrite name what
+ * IS served (from the dynamic models catalog) rather than silently substituting
+ * a model.
  */
 export function resolveDevinModelUid(
   requested: string,

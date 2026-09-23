@@ -51,7 +51,7 @@
  * `us-central1`. Nothing in the listing distinguishes the two: a per-model
  * `GET …/models/<id>?view=PUBLISHER_MODEL_VIEW_FULL` returns byte-identical
  * field sets for a servable and an unservable model, and no other endpoint
- * reports a per-region served set (`…/endpoints/openapi/models` is 404,
+ * reports the project's entitlement per region (`…/endpoints/openapi/models` is 404,
  * `…/locations/<l>/models` is the empty tuned-model registry).
  *
  * So the listing narrows the field and `:countTokens` decides it: measured on
@@ -184,7 +184,7 @@ function parsePublisherModels(body: unknown): PublisherModel[] {
 /**
  * List the publisher models this project can SEE from this location.
  *
- * A catalogue, NOT a served set — the header records the measurement: this
+ * A dynamic models catalog, NOT an entitlement — the header records the measurement: this
  * endpoint offers `gemini-3.x` rows in `us-central1` that 404 when called there.
  * `discoverVertexProbeModel` narrows it with `:countTokens`; anything else
  * consuming this must do the same rather than treat the list as availability.

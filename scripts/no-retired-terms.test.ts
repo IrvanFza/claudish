@@ -23,7 +23,7 @@ test("packages and scripts contain no retired terminology", () => {
   for (const root of [join(repositoryRoot, "packages"), join(repositoryRoot, "scripts")]) {
     for (const file of filesUnder(root)) {
       for (const [index, line] of readFileSync(file, "utf-8").split("\n").entries()) {
-        if (/\broster\b/i.test(line)) {
+        if (/\b(roster|served[- ]set)\b/i.test(line)) {
           findings.push(`${relative(repositoryRoot, file)}:${index + 1}: ${line.trim()}`);
         }
       }
