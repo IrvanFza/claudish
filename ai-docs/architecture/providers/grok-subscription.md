@@ -85,6 +85,17 @@ surfaces work live. Chat Completions wins because claudish already has a Layer-2
 would route through the Codex adapter and strand it, for no measured benefit. `--probe grok-4.6`
 shows the composition: `openai-sse · GrokModelDialect · 500K`.
 
+**`stop_sequences` has no effect on `gk@`, and claudish is not the cause.** Observed on v9.5.0:
+`stop_sequences: ["STOPHERE"]` through `gk@grok-4.6` returned the whole sentence, `STOPHERE`
+included, while the same request through `kimi-coding` halted before it. A mock upstream recorded
+the body the base builder sends: `stop` and `top_p` are both present. `GrokModelDialect` does not
+override `buildPayload`, so it inherits that builder and its `applyOpenAISamplingParams` call —
+this is inferred from the code, since `serve` takes no `-d` and no outbound capture exists from
+the real proxy. Two explanations fit and the client cannot tell them apart: the proxy ignores
+`stop`, or it rejects it and `recoverFromRejection` (which delegates `stop`/`top_p` to the base
+class) strips it and retries. A `-d` log from a CLI session on `gk@` settles which. Do not change
+the payload to "fix" this. Evidence: `ai-docs/reports/translation-fixes-from-free-claude-code.md`.
+
 **`apiKeyEnvVar` MUST stay `""`.** Unlike Devin — where the reason is that a `Basic <k>-<k>` artifact
 cannot survive proxy-server's `Bearer `-stripping extraction — here the extraction would *succeed*
 and then CACHE a bearer token past the six hours it actually lives. Empty makes proxy-server skip
