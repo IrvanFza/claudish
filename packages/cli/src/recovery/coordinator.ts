@@ -171,8 +171,11 @@ export function describeEpisode(episodeId: string): Readonly<Record<string, unkn
 export interface RecoveryUiHooks {
   /** A new episode exists. The manager starts drawing the banner. */
   onEpisodeOpened(episodeId: string): void;
-  /** An episode reached a terminal state. */
-  onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void;
+  /**
+   * An episode reached a terminal state. `attempts` is the FINAL count, the
+   * winning attempt included; the last frame the banner drew predates it.
+   */
+  onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome, attempts: number): void;
   /** Is a renderer painting this episode RIGHT NOW? */
   leaseValid(episodeId: string): boolean;
 }
@@ -594,7 +597,7 @@ function closeEpisode(episode: Episode, outcome: RecoveryOutcome): void {
   );
   if (uiHooks) {
     try {
-      uiHooks.onEpisodeClosed(episode.episodeId, outcome);
+      uiHooks.onEpisodeClosed(episode.episodeId, outcome, episode.attempts);
     } catch {
       /* see onEpisodeOpened — the UI never breaks recovery */
     }

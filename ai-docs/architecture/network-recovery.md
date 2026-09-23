@@ -1,5 +1,6 @@
-> Two-tier connection recovery: the in-request retry ladder, the magmux recovery pane, and the
-> 503 handoff that lets Claude Code's own retry loop carry an outage the socket cannot.
+> Two-tier connection recovery: the in-request retry ladder, the banner drawn with magmux's own
+> `overlay`, and the 503 handoff that lets Claude Code's own retry loop carry an outage the socket
+> cannot.
 >
 > Indexed in [`README.md`](./README.md). Status-code neighbours: [`adapters.md`](adapters.md).
 
@@ -85,7 +86,8 @@ The second tier hands the retry back to the client. What the client will then sp
 - **~11 attempts** on its default budget, spanning **~174 s** for a 503 chain (backoff caps at
   38.4 s per gap, and `retry-after` is honoured verbatim);
 - **~300 attempts** with `CLAUDE_CODE_RETRY_WATCHDOG=1`, which claudish sets only when recovery is
-  enabled, the UI is allowed, AND this launch can actually obtain a pane — reaching **~a day** of
+  enabled, the UI is allowed, AND this launch runs inside a magmux it can draw a banner on —
+  reaching **~a day** of
   unattended recovery on a hung connection. All three gates, because the watchdog amplifies EVERY
   503 the session sees and is worth its cost only where a surface can exist (§7).
 
@@ -107,7 +109,7 @@ POST /v1/messages ──► ComposedHandler.handle()   startTime = performance.n
                           │ non-null
                           ▼
                       shouldSkipTier1()?  probe header · recovery disabled ·
-                                          user pressed [q] · no budget left
+                                          no budget left
                           │ no
       ┌───────────────────▼──────────────────────────────────────────┐
       │ TIER 1 — in-request, PRE-FLUSH, deadline derived from §1      │
@@ -142,7 +144,7 @@ the superseded design:
 |---|---|---|---|
 | the **deadline** | one inbound request | the waiter | its own `deadlineAt` passes — *that waiter alone* answers and leaves |
 | the **ladder** | one episode (`key`) | the coordinator | the last waiter leaves, or an attempt succeeds |
-| the **lease** | one pane × one episode | the UI manager | `UI_LEASE_MS` after the last heartbeat naming that episode |
+| the **lease** | one episode | the banner (`magmux-ui.ts`) | `UI_LEASE_MS` after magmux last acknowledged an overlay write painting that episode |
 
 When one waiter's deadline moved the *shared* episode into `handoff` — a state with no timer — every
 other parked waiter silently stopped being retried and answered having attempted nothing. The
@@ -231,30 +233,25 @@ is the only honest discriminator, and it reads the address, not the error.
 | condition | status | headers | why |
 |---|---|---|---|
 | recovered inside tier 1 | the upstream's own | — | the caller carries on as if the first attempt had worked |
-| exhausted, **a lease is valid** | **503** `overloaded_error` | `x-should-retry: true`, `x-claudish-recovery: 1` | the reason is legible on the pane, so the retry may be handed back |
+| exhausted, **a lease is valid** | **503** `overloaded_error` | `x-should-retry: true`, `x-claudish-recovery: 1` | the reason is legible on the banner, so the retry may be handed back |
 | exhausted, **no lease** | **400** `connection_error` | — | nothing can display the reason, so it must ride the status |
-| `[q] give up` | **400** `connection_error` | — | guarded on `result.kind`, never on the lease — see below |
-| **a request arriving within 60 s of `[q]`** | **400** `connection_error` | — | the ladder is SKIPPED outright: the user said stop |
-| client disconnected | 499 (unread) | — | the socket is already gone |
+| client disconnected (Esc in Claude Code) | 499 (unread) | — | the socket is already gone |
 | unclassifiable throw on any attempt | rethrown unchanged | — | recovery must not widen what "transient" means |
 
-### `[q] give up` suppresses the HOLD, not only the banner
+### There are no keys, and that is a trade
 
-`bye` originally did two things, both inside the UI manager: it suppressed re-opening the pane for
-60 s, and it called `giveUpAll()` — which iterates the episodes alive *at that instant*. Nothing
-recorded that the user had asked recovery to stop, and `shouldSkipTier1` had no gate that could
-notice. So the next request against the same dead target opened a NEW episode, found the pane
-suppressed, got no pane and no lease, and then held its socket for the full ~4.5-minute deadline
-before answering 400 — **a long hold with no surface, which is the state this design calls "strictly
-worse than the bug this feature exists to remove", reached from the one affordance whose entire
-purpose is to end it.** Before recovery existed those requests failed in milliseconds.
+The first banner was a pane of claudish's own, with `[r] try now` and `[q] give up`. Closing that
+pane wedged Claude Code's renderer (§4), so the banner became magmux's `overlay`, which magmux draws
+itself and which therefore cannot read a keystroke. Both keys went with it, and so did the code only
+they reached: the coordinator's `tryNow` and `giveUpAll`, and a process-level "the user gave up"
+fact that `shouldSkipTier1` read as a skip reason.
 
-It is not an edge case. Claude Code issues concurrent requests during an outage (main loop, title
-model, subagents), so a request arriving inside the suppression window is the EXPECTED one.
-
-The fact is therefore process-level — `recovery/settings.ts`'s `recoveryGiveUpActive()` — and is read
-by **both** `shouldSkipTier1` (the hold) and `ensureRecoveryUi` (the surface). One number, one
-window, two readers. A control that appears to stop something and does not is worse than no control.
+What is left is enough. The ladder retries on its own, so `[r]` only ever collapsed a wait. Esc in
+Claude Code aborts the held request, which the handler already treats as a client disconnect — the
+waiter leaves and, if it was the last, the episode closes. What Esc does NOT do is what `[q]` did:
+suppress the hold for the NEXT request. That request holds again, with the banner explaining why.
+Status-line control and key forwarding are requested of magmux in its
+`ai-docs/feature-request-status-line.md`; if that lands, the keys can come back.
 
 ### 429 would have been a live billing bug
 
@@ -329,66 +326,78 @@ headers from nothing, and the only path that copies upstream headers verbatim
 **If a future edit ever returns an upstream `Response` object on a non-ok path, the marker must be
 stripped there.**
 
-### `[q] give up` is guarded on the OUTCOME, never on the lease
-
-A lease is by definition valid at the moment the give-up key is pressed — the pane that took the
-keystroke is alive. A lease-only test would answer a retryable 503, Claude Code would immediately
-re-ask, and the give-up key would be a no-op with a banner still on screen.
-
 ---
 
-## 4. The lease — why the heartbeat must not be driven by frames
+## 4. The banner and its lease
 
 The generalisable rule the two exhaustion arms encode:
 
 > **A retryable status is permissible exactly when claudish still has a surface on which the reason
 > is legible.** Absent such a surface, the reason must ride the status, which means 400.
 
-The gate is not a boolean and not a latch. A latch set on `hello` and never cleared is true after
-`[q] give up`, after a killed pane, after a dead magmux and after a socket EOF — and the exhaustion
-arm then answers 503 with the reason visible nowhere, *which is strictly worse than the bug this
-feature exists to remove*. It is a **lease**:
+### The banner is magmux's `overlay`, because a pane of our own wedged Claude Code
+
+The first banner was a pane: `open_pane` split Claude Code's pane at the start of an outage and
+`close_pane` removed it after. Opening a stacked pane shrinks Claude Code; closing it grows Claude
+Code back — and Claude Code 2.1.272 does not survive the grow. Six rows of its bottom chrome collapse
+onto one line and the input box is destroyed, and nothing done from outside repairs it: Escape, a
+keystroke, `Ctrl-L`, `SIGWINCH` at the same size, and a full shrink-then-grow cycle were each
+measured and each failed. magmux is not at fault — the survivor's pty is resized to exactly the full
+terminal — and the reflow is the trigger. It shipped through eight phases of validation because every
+capture was taken while the pane was still open
+(`reports/network-recovery-pane-close-wedges-host-tui-20260915.md`).
+
+`overlay` draws a styled box OVER a pane and changes no layout, so there is no reflow to survive.
+Measured on the replacement, in a 214×29 pane: Claude Code's `❯` composer sat on row 26 during the
+outage, under the recovered banner, and after the overlay cleared, and typed text landed in it
+(`reports/network-recovery-overlay-validation/`). It also retired a pane process, an NDJSON socket,
+a wire protocol and a cross-process lock, because magmux is the renderer now — and in a
+`team --grid`, every claudish draws on its own pane instead of one slot winning the only banner.
+
+magmux's status bar stays hidden (`--no-status`). A controller cannot show it on demand over the
+socket — only the `Ctrl-G s` key can — which is what claudish's request to magmux asks to change.
+
+### The lease, for a renderer claudish does not own
+
+The gate is not a boolean and not a latch. A latch set once and never cleared stays true after a dead
+magmux and after a socket EOF, and the exhaustion arm then answers 503 with the reason visible
+nowhere, *which is strictly worse than the bug this feature exists to remove*. It is a **lease**:
 
 ```
 uiLeaseValid(episodeId)
-  ⇔ the proxy itself opened a pane and holds the `open_pane` reply
-  ∧ some connected client has HEARTBEATED `ack` naming THIS episode within UI_LEASE_MS
+  ⇔ claudish holds a magmux control connection and knows its pane
+  ∧ magmux ACKNOWLEDGED an overlay write painting THIS episode within UI_LEASE_MS
 ```
 
-Every clause works. *Naming this episode* makes it episode-scoped, so two concurrent episodes cannot
-borrow one pane's legitimacy. *`ack`, not `hello`* makes it **post-render** — a process can send
-`hello` before painting anything. *Within `UI_LEASE_MS`* makes it self-clearing on EOF, crash and
-freeze, with no cleanup path to forget. *The proxy opened the pane* means a forged same-uid client
-cannot manufacture the forbidden 503-with-no-banner state.
+*Painting this episode* makes it episode-scoped, so two concurrent episodes cannot borrow one
+banner's legitimacy. *Acknowledged*, not *sent*: magmux replies only to a message that carries an
+`id`, and a reply means it accepted the text for a pane it is drawing. *Within `UI_LEASE_MS`* makes
+it self-clearing when magmux dies or stops answering, with no cleanup path to forget. A closed control
+socket drops every lease at once.
 
-**"Heartbeated", not "renewed by frame receipts" — this is the single most consequential word here,
-and the superseded design had it wrong.** Frames were emitted only while the episode was `waiting`.
-There is no tick during `attempting`. A real `unreachable` connect takes 20–75 s (`192.0.2.1`
-measured at **75 005 ms**), which is 2×–7.5× `UI_LEASE_MS` — so the lease expired *while the banner
-was alive and painted*, and the exhaustion arm answered 400 for exactly the failure class that
-motivated the feature.
+**The renewal must not depend on the ladder — this is the single most consequential property here,
+and a superseded design had it wrong.** Frames were once emitted only while the episode was
+`waiting`, with no tick during `attempting`. A real `unreachable` connect takes 20–75 s (`192.0.2.1`
+measured at **75 005 ms**), 2×–7.5× `UI_LEASE_MS`, so the lease expired *while the banner was alive
+and painted*, and the exhaustion arm answered 400 for exactly the failure class that motivated the
+feature. The banner therefore redraws on its own `FRAME_TICK_MS` (1 s) timer in every live state, and
+each acknowledged write renews the lease. **Every loopback-only test passed over the original bug**: a
+refused loopback connect resolves in ~1 ms, so the ladder is all `waiting` and frames never stopped.
 
-The lease is a statement about **the renderer being alive and painting this episode**, so it is
-renewed by the renderer on its own `UI_HEARTBEAT_MS` timer and by nothing else. The proxy's
-`FRAME_TICK_MS` tick — now emitted in *every* live state, not only `waiting` — is then free to serve
-the banner rather than the gate.
-
-**Every loopback-only test passed over this bug.** A refused loopback connect resolves in ~1 ms, so
-the ladder is all `waiting` and frames never stop. The regression is only visible with a slow
-connect, which is why the unit test fakes a 45-second attempt (4.5 lease windows, **not one frame
-emitted**) and the integration test runs a real pane against a 20-second lease clock.
+**The overlay is re-asserted every tick, never written once.** magmux writes the same overlay from
+its own Claude Code state tracker — `CtrlError` paints `✗ …` over whatever is there
+(`magmux/mux/mux.go`) — so a banner written once can be replaced mid-outage. The countdown needs a
+write per second anyway, and that write restores ours within a second.
 
 **The residual forbidden window is exactly `UI_LEASE_MS` wide, and that is a property of a lease
-rather than a gap in it.** A renderer killed 8.7 s before exhaustion still reads
-`lastAckAgoMs: 9124, valid: true`, so that exhaustion answers 503 with nothing on screen — measured
-in validation, and correct: self-clearing on crash with no cleanup path to forget is the whole reason
-the gate is a lease. The cost is bounded and self-repairing (the client re-asks, finds no pane, and
-that request answers 400), which is why 10 s is affordable. Anyone tightening the window should move
-`UI_LEASE_MS`, not add a second liveness test beside it — and must keep `UI_HEARTBEAT_MS` well under
-whatever they choose.
+rather than a gap in it.** If magmux dies just after acknowledging a write, the lease reads valid for
+up to 10 s with nothing on screen, and an exhaustion in that window answers 503. The cost is bounded
+and self-repairing — the client re-asks, finds no lease, and that request answers 400 — which is why
+10 s is affordable. Anyone tightening the window should move `UI_LEASE_MS`, not add a second liveness
+test beside it, and must keep `FRAME_TICK_MS` well under whatever they choose.
 
 No transition in the episode's table touches the lease, and the lease never causes a transition. The
-retry loop is not the pane's business, and the pane's liveness is not the deadline's business.
+retry loop is not the banner's business, and the banner's liveness is not the deadline's business.
 
 ---
 
@@ -468,7 +477,7 @@ returning a false success to attempt two.
   — in the banner, in the log and in the episode key — as `api.x.ai`. Grok's refresh wrapper now
   attaches it, as `local.ts` already did.
 - **`noteTargetReachable` closes by PROVIDER, not by host.** Because an auth episode can be keyed on
-  a different host than the one a later success reaches, a strict key lookup missed it and the pane
+  a different host than the one a later success reaches, a strict key lookup missed it and the banner
   painted "waiting for Claude Code to retry" over a working session for the full 120 s grace. A
   request that reached the model endpoint had to authenticate first, so it has proved every host it
   touched is answering — and a `handoff` episode holds no waiters, so nothing is closed from under
@@ -514,7 +523,7 @@ line instead.
 The lifecycle lines were on `log()`, which writes to two FILES: the `--debug` log and the always-on
 structural log under `~/.claudish/logs/`. That satisfies "it is written down" and fails the thing it
 was written down for. A hold runs for up to the derived deadline (~4.5 minutes at the default) and in
-a run with no pane — which is *every headless run* — the user saw nothing at all while it did. A
+a run with no banner — which is *every headless run* — the user saw nothing at all while it did. A
 silent multi-minute hold with the reason legible nowhere is the state §3 calls "strictly worse than
 the bug this feature exists to remove"; a file the user does not know to open is not a surface.
 
@@ -525,7 +534,8 @@ the only surface there is. Both log files still receive them.
 
 The line is drawn at the **episode's lifecycle** — opened, rejoined, each attempt, each wait, handed
 off, closed, recovered, exhausted: the six-to-ten lines from which a reader can reconstruct the
-ladder. Pane connect/disconnect, socket paths, a skipped ladder and `client_gone` stay on `log()`.
+ladder. The banner's magmux connection and pane lookup, a skipped ladder and `client_gone` stay on
+`log()`.
 
 ### The trap: `eventToLogRecord` is a hand-written allowlist
 
@@ -605,7 +615,7 @@ primary fetch, and spread into every re-issue. A transport that returns a one-sh
 `AbortSignal.timeout` therefore poisoned the whole ladder the moment it fired:
 `AbortSignal.any([fired, live])` is ALREADY ABORTED, so every later attempt rejected without opening
 a socket. For `vx@` that made tier 1 silently dead past t+30 s — the request held the full deadline
-making **zero** real connect attempts while the log and the pane counted attempts that never left the
+making **zero** real connect attempts while the log and the banner counted attempts that never left the
 process. `mergeSignalIntoInit` now also drops an `own` that is already aborted, as the belt behind
 that brace.
 
@@ -614,7 +624,7 @@ that brace.
 `recovery-disabled` on the first classified failure, and `recoverySurfaceAllowed()` — which is
 `resolveRecoveryEnabled() && resolveRecoveryUi()` — drops the magmux wrap, the recovery-UI install
 and `CLAUDE_CODE_RETRY_WATCHDOG` together. `--no-recovery-ui` / `CLAUDISH_RECOVERY_UI=0` keeps the
-retries and drops only the pane (and with it the 503 arm, since the lease can never be valid).
+retries and drops only the banner (and with it the 503 arm, since the lease can never be valid).
 
 **This paragraph used to claim "byte for byte", and that claim was wrong twice.** It is recorded
 here rather than quietly corrected, because both halves were read as true by reviewers:
@@ -623,8 +633,8 @@ here rather than quietly corrected, because both halves were read as true by rev
    `resolveRecoveryUi()` alone, so `--no-recovery` still started `magmux --id claudish-<pid>` —
    observed in the OS process table on a real launch. The switch that turns the feature off left
    behind its most user-visible cost (magmux's ring replaces the emulator's native scrollback,
-   RISK-4) plus ~89 ms of launch and a generated launcher script, for a pane that
-   `recovery-disabled` guarantees can never open. Fixed; the four-arm live matrix is
+   RISK-4) plus ~89 ms of launch and a generated launcher script, for a banner that
+   `recovery-disabled` guarantees can never draw. Fixed; the four-arm live matrix is
    `validation/c8/c8-no-recovery-wrap-live-fixed.txt`, and a source guard in
    `recovery/settings.test.ts` fails if either call site is reverted.
 2. **It is still not literally byte-for-byte about the RESPONSE**, and the two differences are
@@ -648,7 +658,7 @@ here rather than quietly corrected, because both halves were read as true by rev
 
    So the honest statement is: **the opt-out restores the pre-recovery OUTCOME (an immediate 400
    `connection_error`, the same status and the same bytes of message) and the pre-recovery LAUNCH
-   (no wrap, no pane, no watchdog); it does not restore the missing marker header, and it does not
+   (no wrap, no banner, no watchdog); it does not restore the missing marker header, and it does not
    restore an unbounded first attempt.** Both exceptions make the opt-out path strictly better
    than what it replaced.
 
@@ -677,7 +687,7 @@ MCP server process dying outright.
 ## 8. What a healthy request pays
 
 **Three statements, and the guarantee around them is still placement rather than a flag**: the entire
-retry apparatus — episode, ladder, waiters, pane — is constructed inside the `catch`, after
+retry apparatus — episode, ladder, waiters, banner — is constructed inside the `catch`, after
 classification has already returned non-null. The `enqueueRequest` ternary that issues attempt 1 is
 byte-identical to what it was before recovery existed. What a healthy request now pays, outside that
 catch, is exactly:
@@ -713,7 +723,9 @@ design set for itself. Default-on survives on that evidence.
 |---|---|
 | [`network-recovery-phase0-measurements.md`](../reports/network-recovery-phase0-measurements.md) | the 359.607 s client abort and its `API_TIMEOUT_MS` cause; `c.env.timeout(req,0)`; `Request.signal` firing in 0.49–0.86 ms; the 75.004 s macOS connect; magmux's +107 ms |
 | [`network-recovery-phase2-verification-20260911.md`](../reports/network-recovery-phase2-verification-20260911.md) | the measured 5/10/30/60/60/60 ladder with 18 ms drift over 225 s; the four modules that shipped with no tests |
-| [`network-recovery-phase3-pane-20260911.md`](../reports/network-recovery-phase3-pane-20260911.md) | the lease, the frame-driven-heartbeat CRITICAL, and the two tests that can fail on it |
+| [`network-recovery-phase3-pane-20260911.md`](../reports/network-recovery-phase3-pane-20260911.md) | SUPERSEDED design (the recovery pane). Still the record of the lease and the frame-driven-heartbeat CRITICAL |
+| [`network-recovery-pane-close-wedges-host-tui-20260915.md`](../reports/network-recovery-pane-close-wedges-host-tui-20260915.md) | why the pane went: closing it wedged Claude Code's renderer, measured row by row, and why eight phases of validation missed it |
+| [`network-recovery-overlay-validation/`](../reports/network-recovery-overlay-validation/) | the overlay banner, live: captures during the outage, at recovery and after teardown, with the recovery log and the forwarder traffic |
 | [`network-recovery-phase4-status-flip-20260911.md`](../reports/network-recovery-phase4-status-flip-20260911.md) | the 503 flip through a real interactive session; the chain-safety mutations, including the quota-wording one |
 | [`network-recovery-phase7-validation-20260912.md`](../reports/network-recovery-phase7-validation-20260912.md) | all nineteen acceptance criteria against HEAD: C-17 through a real stopped `ollama serve` with the probes COUNTED per attempt; the `--no-recovery` wrap regression and its four-arm live matrix; the §7 "byte for byte" comparison against a `3c1fa26` control; and three findings — **`API_TIMEOUT_MS ≤ 75 000` disables the auth-path ladder outright**, the 503-without-banner window is `UI_LEASE_MS` wide, and Bun's `os.homedir()` ignores `$HOME` |
 

@@ -392,20 +392,26 @@ export function bannerText(frame: RecoveryEpisodeFrame, nowMs: number): string {
   lines.push(...wrap(frame.reason, OVERLAY_WRAP_COLS));
   lines.push(`${frame.host} · ${frame.code ?? frame.kind}${frame.loopback ? " · local" : ""}`);
   const elapsed = formatElapsed(nowMs - frame.startedAtMs);
+  // An episode exists only because an attempt already failed, but the banner is
+  // first drawn the instant the episode opens — before the coordinator has
+  // counted that attempt or registered the request holding it. Measured: the
+  // first frame read `attempt 0` and `0 requests held` for up to a second.
+  const attempt = Math.max(1, frame.attempts);
   if (frame.state === "handoff") {
     lines.push(`handed back to Claude Code · waiting for its retry · ${elapsed} in recovery`);
   } else if (frame.nextAttemptAtMs === null) {
-    lines.push(`connecting to ${frame.host}… · attempt ${frame.attempts} · ${elapsed} in recovery`);
+    lines.push(`connecting to ${frame.host}… · attempt ${attempt} · ${elapsed} in recovery`);
   } else {
     const secs = Math.max(0, Math.ceil((frame.nextAttemptAtMs - nowMs) / 1000));
-    lines.push(`next attempt in ${secs}s · attempt ${frame.attempts} · ${elapsed} in recovery`);
+    lines.push(`next attempt in ${secs}s · attempt ${attempt} · ${elapsed} in recovery`);
   }
-  const held = `${frame.waiters} request${frame.waiters === 1 ? "" : "s"} held`;
-  const more =
-    frame.otherEpisodes > 0
-      ? ` · +${frame.otherEpisodes} more outage${frame.otherEpisodes === 1 ? "" : "s"}`
-      : "";
-  lines.push(`${held}${more}`);
+  const counts: string[] = [];
+  if (frame.waiters > 0)
+    counts.push(`${frame.waiters} request${frame.waiters === 1 ? "" : "s"} held`);
+  if (frame.otherEpisodes > 0) {
+    counts.push(`+${frame.otherEpisodes} more outage${frame.otherEpisodes === 1 ? "" : "s"}`);
+  }
+  if (counts.length > 0) lines.push(counts.join(" · "));
   lines.push("Esc in Claude Code stops the turn");
   return lines.join("\n");
 }
@@ -521,7 +527,7 @@ function onEpisodeOpened(episodeId: string): void {
  * One episode ended. The coordinator has already removed it from the live set,
  * so `renderableEpisodeFrame()` here answers "is another outage still live?".
  */
-function onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void {
+function onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome, attempts: number): void {
   state.leases.delete(episodeId);
   if (renderableEpisodeFrame() !== null) return; // the tick keeps drawing the other one
   stopTick();
@@ -533,7 +539,9 @@ function onEpisodeClosed(episodeId: string, outcome: RecoveryOutcome): void {
     void clearOverlay();
     return;
   }
-  void writeOverlay(recoveredText(last, Date.now()), "success", "green");
+  // The final count, not the last painted frame's: that frame predates the
+  // attempt that succeeded. Measured: the banner read 7 while the log said 8.
+  void writeOverlay(recoveredText({ ...last, attempts }, Date.now()), "success", "green");
   cancelLinger();
   const clock = recoveryClock();
   const timer = clock.setTimeout(() => {

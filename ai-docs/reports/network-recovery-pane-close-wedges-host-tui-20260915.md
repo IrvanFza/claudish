@@ -1,8 +1,11 @@
 # Closing the recovery pane wedges Claude Code's renderer
 
 **Found**: 2026-09-15, by the user, looking at a real session after the live demo.
-**Status**: OPEN. Blocks the UI half of the network-recovery feature.
-**Branch**: `worktree-recover` at `8aaa270`.
+**Status**: RESOLVED 2026-09-23. The pane is gone: the banner is magmux's own `overlay` on the
+pane Claude Code already occupies, so nothing reflows (§9). Verified live in a 214×29 pane — the
+`❯` composer sat on row 26 during the outage, at the recovered banner, and after the overlay
+cleared, and typed text landed in it — see `network-recovery-overlay-validation/`.
+**Branch**: `worktree-recover`, found at `8aaa270`, fixed in `b26d0a76`.
 
 ---
 
