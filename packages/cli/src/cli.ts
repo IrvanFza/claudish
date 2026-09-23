@@ -1975,11 +1975,11 @@ ${h("USAGE")}
 
 ${h("MODEL ROUTING")}
   ${bold("New syntax:")} ${yellow("provider@model[:concurrency]")}
-    ${magenta("google@gemini-3-pro")}              ${dim("Direct Google API (explicit)")}
-    ${magenta("openrouter@google/gemini-3-pro")}   ${dim("OpenRouter (explicit)")}
-    ${magenta("oai@gpt-5.3")}                      ${dim("Direct OpenAI API (shortcut)")}
-    ${magenta("ollama@llama3.2:3")}                ${dim("Local Ollama, 3 concurrent requests")}
-    ${magenta("ollama@llama3.2:0")}                ${dim("Local Ollama, no limits")}
+    ${magenta("google@<model>")}                   ${dim("Direct Google API (explicit)")}
+    ${magenta("openrouter@<vendor>/<model>")}      ${dim("OpenRouter (explicit)")}
+    ${magenta("oai@<model>")}                      ${dim("Direct OpenAI API (shortcut)")}
+    ${magenta("ollama@<model>:3")}                 ${dim("Local Ollama, 3 concurrent requests")}
+    ${magenta("ollama@<model>:0")}                 ${dim("Local Ollama, no limits")}
 
   ${bold("Provider shortcuts:")} ${dim("(<shortcut>@<model>)")}
 ${shortcutTable}
@@ -2058,7 +2058,7 @@ ${h("MODEL DISCOVERY")}
 
 ${h("TEAM MODE")}
   ${green("--team")} ${yellow("<models>")}           Run multiple models in parallel (comma-separated)
-                           ${dim('Example: --team minimax-m2.5,kimi-k2.5 "prompt"')}
+                           ${dim('Example: --team <model>,<model> "prompt"')}
   ${green("--mode")} ${yellow("<mode>")}             Team mode: default (grid), interactive, json
   ${green("-f, --file")} ${yellow("<path>")}         Read prompt from file (use with --team or single-shot)
 
@@ -2096,7 +2096,7 @@ ${h("1PASSWORD")} ${dim("(SDK-based — no op CLI needed for secrets)")}
   ${green("--op")} ${yellow("<glob> --list")}        Preview which fields a glob would import (names only)
   ${green("--op")} ${yellow("<glob>")} ${yellow("[...args]")}      Resolve a glob into env vars, then run a session
                            ${dim("Inline op import requires a GLOB (self-names via field labels)")}
-                           ${dim('Example: claudish --op "op://Jack/Keys/**" --model gpt-4o "task"')}
+                           ${dim('Example: claudish --op "op://Jack/Keys/**" --model <model> "task"')}
   ${green("--op-env")} ${yellow("<id>")}             Load a 1Password Environment (highest-priority source)
   ${dim("Persistent setup (single refs, sets, environments, account): claudish config -> 1Password tab")}
 
@@ -2113,17 +2113,17 @@ ${h("MACOS KEYCHAIN")} ${dim("(local, encrypted at rest, no desktop-app handshak
 
 ${h("CLAUDE CODE FLAG PASSTHROUGH")}
   ${dim("Any unrecognized flag is forwarded to Claude Code. Claudish flags can appear in any order.")}
-    ${green("claudish")} --model grok ${yellow("--agent test")} ${yellow('"task"')}        ${dim("# --agent passes through")}
-    ${green("claudish")} --model grok ${yellow("--effort high")} --stdin ${yellow('"task"')}  ${dim("# --effort passes, --stdin stays")}
-    ${green("claudish")} --model grok ${yellow("--permission-mode plan")} -i   ${dim("# works in interactive too")}
+    ${green("claudish")} --model ${yellow("<model>")} ${yellow("--agent test")} ${yellow('"task"')}     ${dim("# --agent passes through")}
+    ${green("claudish")} --model ${yellow("<model>")} ${yellow("--effort high")} --stdin ${yellow('"task"')}  ${dim("# --effort passes, --stdin stays")}
+    ${green("claudish")} --model ${yellow("<model>")} ${yellow("--permission-mode plan")} -i  ${dim("# works in interactive too")}
   ${dim("Use -- when a Claude Code flag value starts with '-':")}
-    ${green("claudish")} --model grok ${green("--")} ${yellow('--system-prompt "-verbose mode" "task"')}
+    ${green("claudish")} --model ${yellow("<model>")} ${green("--")} ${yellow('--system-prompt "-verbose mode" "task"')}
 
 ${h("CUSTOM MODELS & ENDPOINTS")}
-  ${dim("Claudish accepts ANY valid model ID from the Firebase catalog, even if not in --models:")}
-    ${green("claudish")} --model ${yellow("openrouter@your_provider/custom-model-123")} ${yellow('"task"')}
+  ${dim("An explicit provider@ takes any model id, including one --models does not list:")}
+    ${green("claudish")} --model ${yellow("openrouter@<vendor>/<model>")} ${yellow('"task"')}
   ${dim("Named custom endpoints live in ~/.claudish/config.json under 'customEndpoints' and route via @:")}
-    ${green("claudish")} --model ${yellow("my-vllm@llama3.1-70b")} ${yellow('"task"')}
+    ${green("claudish")} --model ${yellow("my-vllm@<model>")} ${yellow('"task"')}
 
 ${h("MODES")}
   ${green("•")} ${bold("Interactive")} ${dim("(default):")} shows model selector, starts a persistent session
@@ -2186,7 +2186,7 @@ ${h("ENVIRONMENT VARIABLES")}
   ${blue("MLX_BASE_URL")}                    MLX server ${dim("(default: http://127.0.0.1:8080)")}
 
   ${bold("Claudish settings:")}
-  ${blue("CLAUDISH_MODEL")}                  Default model ${dim("(default: openai/gpt-5.3)")}
+  ${blue("CLAUDISH_MODEL")}                  Default model ${dim("(--model overrides it; ANTHROPIC_MODEL is read when unset)")}
   ${blue("CLAUDISH_DEFAULT_PROVIDER")}       Fallback provider for bare names; empty disables it ${dim("(see --default-provider)")}
   ${blue("CLAUDISH_PORT")}                   Default proxy port
   ${blue("CLAUDISH_CONTEXT_WINDOW")}         Override context window size
@@ -2210,24 +2210,24 @@ ${h("EXAMPLES")}
   ${green("claudish")} --free                          ${dim("# only FREE models")}
 
   ${dim("# Explicit provider routing")}
-  ${green("claudish")} --model ${magenta("google@gemini-3-pro")} ${yellow('"implement auth"')}
-  ${green("claudish")} --model ${magenta("oai@gpt-5.3")} ${yellow('"add tests for login"')}
-  ${green("claudish")} --model ${magenta("openrouter@deepseek/deepseek-r1")} ${yellow('"unknown vendor"')}
+  ${green("claudish")} --model ${magenta("google@<model>")} ${yellow('"implement auth"')}
+  ${green("claudish")} --model ${magenta("oai@<model>")} ${yellow('"add tests for login"')}
+  ${green("claudish")} --model ${magenta("openrouter@<vendor>/<model>")} ${yellow('"any vendor via OpenRouter"')}
 
-  ${dim("# Native auto-detection (provider inferred from model name)")}
-  ${green("claudish")} --model ${yellow("gpt-4o")} ${yellow('"routes to OpenAI"')}
-  ${green("claudish")} --model ${yellow("gemini-2.5-pro")} ${yellow('"routes to Google"')}
+  ${dim("# Bare name: routed from the cloud models catalog")}
+  ${green("claudish")} --probe ${yellow("<model>")}                  ${dim("# show the chain it gets")}
+  ${green("claudish")} --model ${yellow("<model>")} ${yellow('"implement auth"')}
 
   ${dim("# Per-role model mapping")}
-  ${green("claudish")} --model-opus ${magenta("oai@gpt-5.3")} --model-sonnet ${magenta("google@gemini-3-pro")}
+  ${green("claudish")} --model-opus ${magenta("oai@<model>")} --model-sonnet ${magenta("google@<model>")}
 
   ${dim("# stdin for large prompts (diffs, code review)")}
-  ${dim("git diff |")} ${green("claudish")} --stdin --model ${magenta("oai@gpt-5.3")} ${yellow('"Review these changes"')}
+  ${dim("git diff |")} ${green("claudish")} --stdin --model ${magenta("oai@<model>")} ${yellow('"Review these changes"')}
 
   ${dim("# Local models with concurrency control")}
-  ${green("claudish")} --model ${magenta("ollama@llama3.2:3")} ${yellow('"3 concurrent requests"')}
-  ${green("claudish")} --model ${magenta("lms@qwen2.5-coder")} ${yellow('"LM Studio shortcut"')}
-  ${green("claudish")} --model ${yellow('"http://localhost:8000/mistral"')} ${yellow('"any OpenAI-compatible URL"')}
+  ${green("claudish")} --model ${magenta("ollama@<model>:3")} ${yellow('"3 concurrent requests"')}
+  ${green("claudish")} --model ${magenta("lms@<model>")} ${yellow('"LM Studio shortcut"')}
+  ${green("claudish")} --model ${yellow('"http://localhost:8000/<model>"')} ${yellow('"any OpenAI-compatible URL"')}
 
   ${dim("# Autonomous (no prompts, no sandbox) — use with caution")}
   ${green("claudish")} -y --dangerous ${yellow('"refactor entire codebase"')}
