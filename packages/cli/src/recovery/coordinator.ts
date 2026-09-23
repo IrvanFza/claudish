@@ -668,6 +668,20 @@ export function noteTargetReachable(providerName: string, endpoint: string): voi
 }
 
 /**
+ * Is this episode still live? The coordinator is the one source of truth.
+ *
+ * The banner asks this AFTER its overlay write is acknowledged, not before: a
+ * reply can arrive after the episode it painted has already closed, and
+ * renewing that lease would report a banner for 10 s that the close had
+ * already cleared. Measured by a black-box test; the lease is a money gate.
+ */
+export function episodeIsLive(episodeId: string): boolean {
+  const ep = byId.get(episodeId);
+  if (!ep) return false;
+  return ep.state === "attempting" || ep.state === "waiting" || ep.state === "handoff";
+}
+
+/**
  * End ONE episode now: every waiter answers today's inline error.
  *
  * `gaveUp` latches before the close so a waiter that has not parked yet — one

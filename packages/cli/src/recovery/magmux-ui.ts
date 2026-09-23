@@ -50,6 +50,7 @@ import { recoveryClock } from "./clock.js";
 import {
   type RecoveryOutcome,
   type RecoveryUiHooks,
+  episodeIsLive,
   markPaneRequested,
   registerRecoveryUi,
   renderableEpisodeFrame,
@@ -154,12 +155,16 @@ let installed = false;
  *
  * Read LIVE when a status is chosen, never cached: a boolean destructured off a
  * result object can describe a magmux that has since exited.
+ *
+ * The window is HALF-OPEN: at exactly `UI_LEASE_MS` after the last
+ * acknowledgement the lease has already lapsed. For a gate that decides a
+ * retryable status, the stricter reading is the right one.
  */
 export function uiLeaseValid(episodeId: string): boolean {
   if (!state.control || state.targetPane === null) return false;
   const last = state.leases.get(episodeId);
   if (last === undefined) return false;
-  return recoveryClock().now() - last <= UI_LEASE_MS;
+  return recoveryClock().now() - last < UI_LEASE_MS;
 }
 
 /** Diagnostics for the log and for tests. Never used to decide anything. */
@@ -442,6 +447,15 @@ async function paint(frame: RecoveryEpisodeFrame): Promise<void> {
       style: "error",
     });
     const ok = reply?.ok === true;
+    // The reply can arrive AFTER the episode it painted has closed — the close
+    // cleared the overlay while this write was still in flight. Renewing then
+    // would report a banner for up to UI_LEASE_MS that is no longer on screen,
+    // and the red tint sent below would land after the clear and stay. So an
+    // acknowledgement counts only for an episode the coordinator still holds.
+    if (ok && !episodeIsLive(frame.episodeId)) {
+      state.lastPaintOk = ok;
+      return;
+    }
     if (ok) {
       const first = !state.leases.has(frame.episodeId);
       state.leases.set(frame.episodeId, recoveryClock().now());
