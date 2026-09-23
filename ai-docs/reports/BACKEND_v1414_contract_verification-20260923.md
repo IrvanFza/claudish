@@ -267,26 +267,19 @@ were image, video, audio or moderation models. `sora-2` is the clean case — it
 `sora-2-pro` publishes `outputModalities: ["video"]` and was excluded correctly, while `sora-2`
 has the field absent, so the vision flag was the only thing speaking for it.
 
-### The ask: 87 published models carry no `outputModalities`
+### Models published without `outputModalities`
 
-Measured on generation `g-20260922053223487-99e80e4b`, 87 of 1,136 catalog entries are now
-unavailable by bare name purely because nothing describes their output. Every one has
-`outputModalities` absent — not empty, absent.
+On generation `g-20260923015912067-d8c0c200`, 64 of 1,137 catalog entries carry no
+`outputModalities` and are therefore unavailable by bare name. (The first count, 87 on
+`g-20260922053223487-99e80e4b`, fell to 64 when the backend's next generation described 23
+more.) `unavailableForMissingCapability` lists them on demand; triage belongs to the backend.
 
-Most are correctly unavailable (`imagen-4.0-*`, `flux*`, `gpt-4o-*-tts`, `*-transcribe`,
-`omni-moderation-*`, `hailuo-02`, `lyria-3.5`, `nova-3-*`, `llama-rank-v1`). **These are not:**
-
-  chatgpt-image-latest is correctly excluded, but these look like genuine chat models —
-  gemini-2.0-flash-001, gemini-2.0-flash-lite-001, gemma-3-27b-pt, gemma-3-1b-pt,
-  gpt-3.5-turbo-0125, gpt-3.5-turbo-1106, gpt-4-0613, mixtral-8x7b-v0.1,
-  meta-llama-3.1-8b, llama-3.2-3b, qwen-2-72b, qwen-2-7b, qwen-2-1.5b,
-  molmo-7b-d-0924, kimi-k2.8-preview, nemotron-3-super, cwm, omen-alpha, big-pickle,
-  and the qwen3-*-base family (0.6b/1.7b/4b/8b/14b/30b-a3b)
-
-  plus two legacy completion models whose correct classification is a judgement call:
-  babbage-002, davinci-002
-
-Publishing `outputModalities` for those restores them. claudish will not guess them back.
+An earlier revision of this section called about 25 of them genuine chat models to restore.
+That was wrong and is withdrawn. Most of those rows are `deprecated` in the catalog
+(`gpt-4-0613`, `gpt-3.5-turbo-0125`, `gemini-2.0-flash-001`), and several are pretrained base
+checkpoints whose instruction-tuned sibling is published and classifies as chat
+(`gemma-3-27b-pt` → `gemma-3-27b-it`, `qwen3-8b-base` → `qwen3-8b`,
+`mixtral-8x7b-v0.1` → `mixtral-8x7b-instruct-v0.1`). Nothing a user chats with was lost.
 
 ### What claudish reports instead of guessing
 
