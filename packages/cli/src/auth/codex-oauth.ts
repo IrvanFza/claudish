@@ -19,6 +19,8 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { markOwnTimeout } from "../handlers/shared/connection-error.js";
+import { TOKEN_REFRESH_TIMEOUT_MS } from "../handlers/shared/transient-retry.js";
 import { log } from "../logger.js";
 
 const execAsync = promisify(exec);
@@ -271,13 +273,20 @@ export class CodexOAuth {
           refresh_token: this.credentials.refresh_token,
           client_id: OAUTH_CONFIG.clientId,
         }),
+        // Bounds `refreshPromise`'s single-flight latch — see
+        // TOKEN_REFRESH_TIMEOUT_MS.
+        signal: AbortSignal.timeout(TOKEN_REFRESH_TIMEOUT_MS),
       });
     } catch (e) {
       log(`[CodexOAuth] Could not reach ${OAUTH_CONFIG.tokenUrl}: ${(e as Error).message}`);
+      // `markOwnTimeout`: the ceiling above is ours, so its `TimeoutError` is a
+      // reachability fact. Untagged it would go unclassified, and
+      // `openai-codex.ts` would read it as a rejected refresh and fall back to
+      // the METERED api-key path — the bug this function was just fixed for.
       throw Object.assign(
         new Error(
           `Could not reach ${OAUTH_CONFIG.tokenUrl} to refresh the Codex token: ${(e as Error).message}`,
-          { cause: e }
+          { cause: markOwnTimeout(e) }
         ),
         { claudishEndpoint: OAUTH_CONFIG.tokenUrl }
       );

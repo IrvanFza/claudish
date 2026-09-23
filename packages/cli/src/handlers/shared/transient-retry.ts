@@ -77,6 +77,28 @@ export const PER_ATTEMPT_CONNECT_CAP_MS = 45_000;
 export const MIN_ATTEMPT_SLOT_MS = 3_000;
 
 /**
+ * Ceiling on ONE OAuth token-refresh request (Grok, Codex).
+ *
+ * Both refreshes sit behind a single-flight latch, because the servers ROTATE
+ * the refresh token and two concurrent refreshes turn a working session into
+ * `invalid_grant`. With no ceiling, a refresh on a half-open socket — the
+ * network gone after the handshake — waited out the kernel's retransmit
+ * timeout, minutes long. The ladder's clamp abandons an attempt, not the
+ * fetch under it, so every later attempt re-entered the latch and joined the
+ * same dead promise: attempts counted in the banner and the log that never
+ * reached the network, and real recovery delayed until the kernel gave up.
+ *
+ * The ceiling bounds how long the latch can be held, which keeps the latch.
+ * It is BELOW `PER_ATTEMPT_CONNECT_CAP_MS` so that a hung refresh fails inside
+ * its own attempt instead of being abandoned by the clamp. Callers must tag
+ * the resulting `TimeoutError` with `markOwnTimeout`: a token host that does
+ * not answer in 20 s is a reachability fact, unlike an inference ceiling, and
+ * left untagged it would go unclassified — which for Codex means the METERED
+ * fallback.
+ */
+export const TOKEN_REFRESH_TIMEOUT_MS = 20_000;
+
+/**
  * The deadline the AUTH-path catches use, deliberately earlier than the fetch
  * catch's.
  *

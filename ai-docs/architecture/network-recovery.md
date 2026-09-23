@@ -462,20 +462,39 @@ returning a false success to attempt two.
   *abandoned*, not cancelled — threading a real signal through every transport's auth call is the
   deeper fix and is still worth doing.
 
-  **The reserve that buys this costs the auth path its whole budget below `API_TIMEOUT_MS = 75 s`,
-  silently.** The auth catches use `refreshDeadlineAt(tier1DeadlineAt(c))` = deadline − 45 s, and the
-  deadline is `max(15 s, min(API_TIMEOUT_MS, 300 s) − 30 s)` — so at 60 000 the auth deadline is
-  −15 s, `shouldSkipTier1` answers `no-budget` before attempt 1, and a stopped local server or a
-  failed token exchange gets today's immediate 400 while the FETCH path on the same machine still
-  recovers. Measured on a real run: `[Recovery] skipped (no-budget) … site=refreshAuth` at t+0 with
-  `API_TIMEOUT_MS=60000`. It is inside the design, not a bug, but it is a whole fault class losing
-  recovery on a user-settable knob with nothing printed — the shape RISK-7 and the truncated rung
-  both have. A floor, or a `[Recovery]` line when the reserve eats the budget, is the fix; and any
-  harness that shortens a local-provider run this way is testing a path that is switched off.
+  **Abandoning is only bounded if the operation is.** Grok and Codex refresh behind a single-flight
+  latch (both servers ROTATE the refresh token, so two concurrent refreshes produce `invalid_grant`).
+  With no ceiling on the refresh `fetch`, a half-open socket held the latch until the kernel's
+  retransmit timeout — minutes — and every attempt `untilAborted` abandoned was followed by one that
+  re-entered the latch and joined the same dead promise: attempts in the banner and the log that
+  never reached the network. Both refreshes now carry `TOKEN_REFRESH_TIMEOUT_MS` (20 s), BELOW the
+  45 s per-attempt cap, so a hung refresh fails inside its own attempt and the latch clears; the
+  latch itself stays. Its `TimeoutError` is tagged `markOwnTimeout`, because a token host that does
+  not answer in 20 s is a reachability fact — measured: untagged it classifies `null`, tagged it
+  classifies `unreachable`, and for Codex `null` would mean the metered fallback. Antigravity's
+  refresh already ran under a 12 s subprocess timeout.
+
+  **The reserve that buys this cost the auth path its whole budget below `API_TIMEOUT_MS = 75 s`,
+  silently — fixed.** The auth catches use `refreshDeadlineAt(tier1DeadlineAt(c))`, which reserved a
+  flat 45 s against a deadline of `max(15 s, min(API_TIMEOUT_MS, 300 s) − 30 s)` — so at 60 000 the
+  auth deadline was −15 s, `shouldSkipTier1` answered `no-budget` before attempt 1, and a failed token
+  exchange got the immediate 400 while the FETCH path on the same machine still recovered (measured:
+  `[Recovery] skipped (no-budget) … site=refreshAuth` at t+0). The reserve is now capped at half the
+  budget: unchanged at the default (45 s), 22.5 s of auth budget at 75 000 where there was none. What
+  the reserve still buys is the primary fetch's right to a real attempt after a slow refresh — the
+  request ceiling (`deadlineClamp`) already stops that fetch outliving the deadline on its own.
 - **The error must name the host that actually failed.** `connectionEndpointFor` falls back to the
   MODEL endpoint when the error carries no `claudishEndpoint`, so an `auth.x.ai` outage was reported
-  — in the banner, in the log and in the episode key — as `api.x.ai`. Grok's refresh wrapper now
-  attaches it, as `local.ts` already did.
+  — in the banner, in the log and in the episode key — as `api.x.ai`. Grok's and Codex's refresh
+  wrappers now attach it, as `local.ts` already did.
+- **A transport can swallow the failure before any of the five sites sees it.** `openai-codex.ts`'s
+  `refreshAuth` caught EVERY throw from the credential authority and fell through to the api-key
+  path — the METERED `api.openai.com`. That fallback is meant for a REJECTED refresh; a refresh that
+  merely could not reach `auth.openai.com` took it too, billing a subscriber per token for an outage.
+  It now rethrows a classified connection failure, so the `refreshAuth` site holds it like any other.
+  The credential's own error said "OAuth credentials invalid. Please run `claudish login codex`
+  again" for a network failure; it now says "Could not reach …", with `{ cause }`. When auditing a
+  new transport, look for a `catch` in `refreshAuth`/`getHeaders` that returns normally.
 - **`noteTargetReachable` closes by PROVIDER, not by host.** Because an auth episode can be keyed on
   a different host than the one a later success reaches, a strict key lookup missed it and the banner
   painted "waiting for Claude Code to retry" over a working session for the full 120 s grace. A
