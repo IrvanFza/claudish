@@ -14,6 +14,15 @@ import {
   suppressStartupTraceTerminalOutput,
   traceSpan,
 } from "./startup-trace.js";
+// Two leaves that import NOTHING — see their headers. Static here on purpose: they
+// must not drag anything into this file's cold-start graph.
+import { canDrawTui } from "./tui/runtime/can-draw-tui.js";
+import { PickerCancelled } from "./tui/runtime/picker-cancelled.js";
+import {
+  type ModelPickerGate,
+  requiresExplicitModel,
+  shouldOpenPicker,
+} from "./tui/runtime/should-open-picker.js";
 
 // ── Startup-timing analytics (startup-trace.ts) ─────────────────────────────
 // Every launch appends one JSON line to ~/.claudish/startup-metrics.jsonl; a
@@ -267,7 +276,22 @@ await traceSpan("startup:op-import-flag", () => applyOpImport());
 const isMcpMode = process.argv.includes("--mcp");
 
 // Handle Ctrl+C gracefully during interactive prompts
+//
+// ONE CONDITION WIDER THAN IT WAS, and that is the only edit the new model picker
+// needs at a call site. `PickerCancelled` is what `selectModel` now throws when the
+// user declines to choose — it replaces a `process.exit(0)` that used to live INSIDE
+// the library (`model-selector.ts:822`). This handler is already attached at all three
+// entry points that can reach the picker (`:428`, `:432`, `:804`), so the blank line
+// and the exit 0 are byte-identical at every one of them and no caller changes.
+//
+// `NoTtyError` is deliberately NOT caught here. The user did not decline; the
+// environment could not ask. An exit 0 with no model chosen is indistinguishable from
+// success to a headless caller, so that one has to surface and exit non-zero.
 function handlePromptExit(err: unknown): void {
+  if (err instanceof PickerCancelled) {
+    console.log("");
+    process.exit(0);
+  }
   if (err && typeof err === "object" && "name" in err && err.name === "ExitPromptError") {
     console.log("");
     process.exit(0);
@@ -780,22 +804,35 @@ async function runCli() {
 
     // Show interactive model selector ONLY when no model configuration exists
     // Skip if: explicit --model, OR profile provides tier mappings (Claude Code uses these internally)
-    const hasProfileTiers =
+    const hasProfileTiers = Boolean(
       cliConfig.modelOpus ||
-      cliConfig.modelSonnet ||
-      cliConfig.modelHaiku ||
-      cliConfig.modelSubagent;
+        cliConfig.modelSonnet ||
+        cliConfig.modelHaiku ||
+        cliConfig.modelSubagent
+    );
     // `--advisor` with no main model is a native session: Claude Code picks its own
-    // model, so there is nothing to select and nothing to demand. Both gates below
-    // were satisfied by --advisor implying --monitor; the predicate replaces that.
+    // model, so there is nothing to select and nothing to demand. It rides INSIDE the
+    // gate below, beside `monitor`, rather than as a separate `&&` at each call site:
+    // a term carried by only one of the two gates is how they drift apart.
     const advisorNativeSession = isAdvisorNativeSession(cliConfig);
-    if (
-      cliConfig.interactive &&
-      !cliConfig.monitor &&
-      !advisorNativeSession &&
-      !cliConfig.model &&
-      !hasProfileTiers
-    ) {
+    // ONE predicate behind BOTH gates below (tui/runtime/should-open-picker.ts), and the
+    // second is the exact complement of the first, so no input can skip the picker
+    // silently AND keep the error quiet. The `interactive` flag alone is not enough:
+    // cli.ts turns it on whenever no prompt was given, which includes `claudish <
+    // /dev/null`, a CI runner and a detached run — none of which can answer a prompt.
+    // Hence the TTY term, from the same oracle the resume picker uses below.
+    const pickerCanDraw = canDrawTui();
+    // Rebuilt per call rather than hoisted: the picker ASSIGNS cliConfig.model between
+    // the two gates, and the second one must see the model the first one obtained.
+    const pickerGate = (): ModelPickerGate => ({
+      interactive: cliConfig.interactive,
+      monitor: cliConfig.monitor,
+      advisorNativeSession,
+      model: cliConfig.model,
+      hasProfileTiers,
+    });
+
+    if (shouldOpenPicker(pickerGate(), pickerCanDraw)) {
       // Human wait (the interactive picker) + per-provider credential probes.
       cliConfig.model = (await traceSpan(
         "startup:model-select",
@@ -805,14 +842,14 @@ async function runCli() {
       console.log(""); // Empty line after selection
     }
 
-    // In non-interactive mode, model must be specified (via --model, env var, or profile)
-    if (
-      !cliConfig.interactive &&
-      !cliConfig.monitor &&
-      !advisorNativeSession &&
-      !cliConfig.model &&
-      !hasProfileTiers
-    ) {
+    // No picker could run — non-interactive, or no terminal to draw one on — so the
+    // model has to come from the command line (--model, env var, or profile). NOT a
+    // fallback to the line-oriented prompt: in a non-TTY that prompt is the bug, not
+    // the safety net, so "falling back" would be falling back to a hang. These three
+    // lines — naming four ways to supply a model — are what a piped bare `claudish`
+    // prints now, where it used to paint a provider list into stdout and then block
+    // forever (measured: 195 bytes of menu, cursor-hide escape, killed at 45s).
+    if (requiresExplicitModel(pickerGate(), pickerCanDraw)) {
       console.error("Error: Model must be specified in non-interactive mode");
       console.error("Use --model <model> flag, set CLAUDISH_MODEL env var, or use --profile");
       console.error("Try: claudish --models");
@@ -1039,8 +1076,7 @@ async function runCli() {
       //     report "no sessions" and `exit(0)` — turning a previously working flag into
       //     a silent no-op in every non-git directory. Sessions may well exist there;
       //     claudish just has no worktree structure to group them by.
-      const canDrawTui = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-      if (!canDrawTui || cliConfig._hasPrintFlag || !cliConfig.interactive) {
+      if (!canDrawTui() || cliConfig._hasPrintFlag || !cliConfig.interactive) {
         cliConfig.claudeArgs.push("--resume");
       } else {
         const { runResumePicker } = await import("./session/resume-picker-run.js");

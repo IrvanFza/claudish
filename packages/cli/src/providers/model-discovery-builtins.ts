@@ -18,8 +18,20 @@
  * property the original dynamic `import()` calls existed to protect.
  */
 
-import type { DiscoveredModel } from "./model-discovery.js";
+import type { FetcherResult } from "./model-discovery.js";
 import { registerModelDiscoveryFetcher } from "./model-discovery.js";
+
+/**
+ * Upstream error text as one readable line.
+ *
+ * A private copy rather than an import: `model-discovery.ts`'s `oneLine` is
+ * module-private there, and exporting it to share four lines would widen that
+ * module's surface for no gain.
+ */
+function oneLine(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
 
 /**
  * Devin's dynamic models catalog is capability ∩ entitlement over two protobuf rpcs.
@@ -27,17 +39,56 @@ import { registerModelDiscoveryFetcher } from "./model-discovery.js";
  * Carries the full variant metadata, not just id/name/window: the picker folds
  * ~170 uids into ~42 rows and needs the group label, the cost multiplier, the
  * promo and the vendor's own default flag to do it.
+ *
+ * **Honest limit on the classification.** `getServedDevinModels` catches its own
+ * rpc errors and returns `modelsCatalogCache ?? []` (devin-models.ts), and
+ * `postUnary` answers `null` rather than throwing, so a failed rpc still arrives
+ * here as an empty list and is reported as `empty-models-catalog`. What this DOES
+ * distinguish is the two states that are knowable without touching that module:
+ * no credential at all, and a throw from anywhere in the chain.
  */
-async function fetchDevinModelsCatalog(): Promise<DiscoveredModel[]> {
-  const { getServedDevinModels } = await import("./devin/devin-models.js");
-  const served = await getServedDevinModels();
-  if (served.length === 0) return [];
+async function fetchDevinModelsCatalog(): Promise<FetcherResult> {
+  let endpoint: string | undefined;
+  try {
+    const { readDevinApiKey, readDevinServerUrl } = await import("./devin/devin-credentials.js");
+    endpoint = readDevinServerUrl();
+    // A logged-out account is a CREDENTIAL problem, and it is the kind that
+    // earns a "how to fix it" line. Reporting it as an empty dynamic models catalog says the
+    // subscription serves no models, which is a claim about Devin rather than
+    // about this machine.
+    if (!readDevinApiKey()) {
+      return {
+        kind: "failed",
+        failure: {
+          kind: "no-credentials",
+          endpoint,
+          // The definition's own `apiKeyDescription`, verbatim: there is no
+          // `claudish login devin` to point at — the token is the Devin CLI's,
+          // and claudish only reads it.
+          detail: "no Devin CLI session token (~/.local/share/devin/credentials.toml)",
+        },
+      };
+    }
 
-  const { devinModelsCatalogEntry } = await import("./model-resolvers/devin.js");
-  return served.map((model) => {
-    const { wireId, ...rest } = devinModelsCatalogEntry(model);
-    return { id: wireId, ...rest };
-  });
+    const { getServedDevinModels } = await import("./devin/devin-models.js");
+    const served = await getServedDevinModels();
+    if (served.length === 0) return { kind: "models", models: [], endpoint };
+
+    const { devinModelsCatalogEntry } = await import("./model-resolvers/devin.js");
+    return {
+      kind: "models",
+      endpoint,
+      models: served.map((model) => {
+        const { wireId, ...rest } = devinModelsCatalogEntry(model);
+        return { id: wireId, ...rest };
+      }),
+    };
+  } catch (err: unknown) {
+    return {
+      kind: "failed",
+      failure: { kind: "unreachable", endpoint, detail: oneLine(String(err)) },
+    };
+  }
 }
 
 /**
@@ -67,45 +118,94 @@ function isUndeclaredEditorInternal(id: string): boolean {
  * in the catalog. `resolveDiscoveredContextLength` already prefers a discovered
  * window over the catalog; this is what gives it one to prefer.
  */
-async function fetchAntigravityModelsCatalog(): Promise<DiscoveredModel[]> {
-  const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
-  const { setupAntigravityUser, getServedAntigravityModels } = await import(
-    "../auth/antigravity-user.js"
-  );
-  const token = await getValidAntigravityAccessToken();
-  if (!token) return [];
+async function fetchAntigravityModelsCatalog(): Promise<FetcherResult> {
+  let endpoint: string | undefined;
+  try {
+    const { getValidAntigravityAccessToken } = await import("../auth/antigravity-token.js");
+    const { setupAntigravityUser, getServedAntigravityModels, antigravityHost } = await import(
+      "../auth/antigravity-user.js"
+    );
+    endpoint = `${antigravityHost()}/v1internal:fetchAvailableModels`;
+    const token = await getValidAntigravityAccessToken();
+    // No token is exactly "logged out", which is one of the two kinds that earns
+    // the env-var / key-URL guidance. It used to read as an empty dynamic models catalog, i.e.
+    // "your subscription serves nothing".
+    if (!token) {
+      return {
+        kind: "failed",
+        failure: {
+          kind: "no-credentials",
+          endpoint,
+          detail: "not signed in — run `claudish login antigravity`",
+        },
+      };
+    }
 
-  const { projectId } = await setupAntigravityUser(token);
-  const { servedIds, meta, excludedIds } = await getServedAntigravityModels(token, projectId);
-  // Declared first, guess second. `excludedIds` is the backend's own verdict —
-  // internal flags, per-feature role bindings, and retired ids (which look
-  // entirely normal but answer 400).
-  const declaredExcluded = excludedIds ?? new Set<string>();
-  const selectable = servedIds.filter(
-    (id) => !declaredExcluded.has(id) && !isUndeclaredEditorInternal(id)
-  );
-  return selectable.map((id) => {
-    const m = meta[id];
-    // contextWindow is left UNSET when the backend reported none
-    // (gemini-3.1-flash-image does), so the catalog still gets its turn rather
-    // than the row rendering a fabricated 0 as "N/A".
-    // Every id here is a tuned variant (`-high`, `-tiered`) the catalog does not
-    // carry; see `ignoreCatalogReleaseDate` for the ordering this protects.
-    return m?.contextWindow
-      ? { id, contextWindow: m.contextWindow, ignoreCatalogReleaseDate: true }
-      : { id, ignoreCatalogReleaseDate: true };
-  });
+    const { projectId } = await setupAntigravityUser(token);
+    const { servedIds, meta, excludedIds } = await getServedAntigravityModels(token, projectId);
+    // Declared first, guess second. `excludedIds` is the backend's own verdict —
+    // internal flags, per-feature role bindings, and retired ids (which look
+    // entirely normal but answer 400).
+    const declaredExcluded = excludedIds ?? new Set<string>();
+    const selectable = servedIds.filter(
+      (id) => !declaredExcluded.has(id) && !isUndeclaredEditorInternal(id)
+    );
+    return {
+      kind: "models",
+      endpoint,
+      models: selectable.map((id) => {
+        const m = meta[id];
+        // contextWindow is left UNSET when the backend reported none
+        // (gemini-3.1-flash-image does), so the catalog still gets its turn rather
+        // than the row rendering a fabricated 0 as "N/A".
+        // Every id here is a tuned variant (`-high`, `-tiered`) the catalog does not
+        // carry; see `ignoreCatalogReleaseDate` for the ordering this protects.
+        return m?.contextWindow
+          ? { id, contextWindow: m.contextWindow, ignoreCatalogReleaseDate: true }
+          : { id, ignoreCatalogReleaseDate: true };
+      }),
+    };
+  } catch (err: unknown) {
+    return {
+      kind: "failed",
+      failure: { kind: "unreachable", endpoint, detail: oneLine(String(err)) },
+    };
+  }
 }
 
-/** Ollama's daemon speaks its own listing shape and carries capability data no OpenAI list has. */
-async function fetchOllamaModelsCatalog(): Promise<DiscoveredModel[]> {
-  const { fetchOllamaModels } = await import("./ollama-discovery.js");
-  const installed = await fetchOllamaModels({ enrichCapabilities: false });
-  return installed.map((model) => ({
-    id: model.name,
-    displayName: model.name,
-    supportsTools: model.supportsTools,
-  }));
+/**
+ * Ollama's daemon speaks its own listing shape and carries capability data no OpenAI list has.
+ *
+ * `throwOnError` is what makes "the daemon is not running" distinguishable from
+ * "the daemon is running and nothing is pulled". `fetchOllamaModels` is
+ * documented as never throwing, and every other caller still gets that; only
+ * this one opts in, because only this one has somewhere to report the
+ * difference. Both states used to be `empty-models-catalog`, so a stopped daemon
+ * read as "this provider has no models" — the complaint, restated.
+ */
+async function fetchOllamaModelsCatalog(): Promise<FetcherResult> {
+  const { fetchOllamaModels, ollamaBaseUrl } = await import("./ollama-discovery.js");
+  const endpoint = `${ollamaBaseUrl()}/api/tags`;
+  try {
+    const installed = await fetchOllamaModels({
+      enrichCapabilities: false,
+      throwOnError: true,
+    });
+    return {
+      kind: "models",
+      endpoint,
+      models: installed.map((model) => ({
+        id: model.name,
+        displayName: model.name,
+        supportsTools: model.supportsTools,
+      })),
+    };
+  } catch (err: unknown) {
+    return {
+      kind: "failed",
+      failure: { kind: "unreachable", endpoint, detail: oneLine(String(err)) },
+    };
+  }
 }
 
 registerModelDiscoveryFetcher("devin-connect", fetchDevinModelsCatalog);

@@ -20,6 +20,7 @@ import {
   describeProbeState,
 } from "../providers/probe-live.js";
 import { getThemeMode } from "../theme/theme-mode.js";
+import { useAnimationFrame } from "../tui/hooks/useAnimationFrame.js";
 import {
   A,
   C,
@@ -163,16 +164,17 @@ export function useProbeStore(store: ProbeStore): ProbeAppState {
   return store.getState();
 }
 
-/** Bumps a counter every 100ms while active — used for progress bar animation and elapsed timers. */
-export function useAnimationFrame(active: boolean): number {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setFrame((f) => (f + 1) % 1_000_000), 100);
-    return () => clearInterval(id);
-  }, [active]);
-  return frame;
-}
+/**
+ * MOVED to `tui/hooks/useAnimationFrame.ts`, and re-exported here for one
+ * release so no `probe/` importer has to change. It is the only exported tick
+ * source in the repo and a second OpenTUI app needed it without dragging this
+ * whole component module along; `probe/ → tui/` is an edge that already exists
+ * (see the `../tui/theme.js` import above), the reverse is not.
+ *
+ * Removal trigger: delete this line when the picker has shipped and no importer
+ * outside `probe/` reads it from here.
+ */
+export { useAnimationFrame };
 
 // ── Helpers ────────────────────────────────────────────────────────
 

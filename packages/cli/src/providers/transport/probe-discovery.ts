@@ -49,6 +49,12 @@ const SMALL_MODEL_PATTERNS = [
  * still decides for what the catalog leaves without an output modality — local
  * servers (Ollama, LM Studio), custom endpoints, LiteLLM deployments, and catalog
  * rows that carry no modality field.
+ *
+ * VIDEO IS DELIBERATELY NOT HERE. It lives in {@link VIDEO_OUTPUT_NAME_PATTERNS},
+ * which `classifyChatCapability` consults only while the catalog is silent on
+ * `videoOutput`. A `video` rule in THIS list would run first and override a
+ * published `videoOutput: false` — excluding a model that merely READS video,
+ * which is still a chat model.
  */
 const NON_CHAT_PATTERNS = [
   /\bimage\b/i,
@@ -65,7 +71,31 @@ const NON_CHAT_PATTERNS = [
   /\bmoderation\b/i,
   /\brerank/i,
   /\bspeech\b/i,
-  /-(image|tts|audio|embedding|vision-only)(-|$)/i,
+  // Speech-to-text. `gemini-3.5-transcribe` is the case `toPickerRows` named as
+  // getting through, and `mai-transcribe-*` / `gpt-transcribe` are the observed
+  // leaks. No chat model in any served dynamic models catalog carries the word.
+  /\btranscribe\b/i,
+  /\btranscription\b/i,
+  // Text-to-speech under a name that does not say `tts`: `mai-voice-2`,
+  // `mai-voice-2-flash`.
+  /\bvoice\b/i,
+  // REALTIME / LIVE / TRANSLATE — observed leaking into the OpenAI Codex dynamic models catalog as
+  // `gpt-live-1`, `gpt-realtime-2`, `gpt-realtime-2.1`, `gpt-realtime-2.1-mini` and
+  // `gpt-realtime-translate`, all five offered as launchable coding models. The
+  // selected row's own catalog sentence disqualified it: "a distilled reasoning
+  // model for faster, lower-cost realtime VOICE interactions... audio and text
+  // inputs over WebRTC, WebSocket, or SIP". None of them speaks
+  // `/v1/chat/completions` the way an agent needs.
+  /\brealtime\b/i,
+  // `\b` IS THE WHOLE POINT ON THIS ONE. `-` is a non-word character, so `\blive\b`
+  // matches `gpt-live-1` and `x-live-2` and does NOT match `delivery`, `olive`,
+  // `livecodebench` or `liveness` — every one of which is a plausible model id and
+  // none of which is a realtime endpoint. A bare substring `/live/` would eat all
+  // four.
+  /\blive\b/i,
+  /\btranslate\b/i,
+  /\btranslation\b/i,
+  /-(image|tts|audio|embedding|vision-only|transcribe|voice|speech|realtime|live|translate)(-|$)/i,
 ];
 
 /**

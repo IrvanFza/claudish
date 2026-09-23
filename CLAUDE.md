@@ -25,6 +25,9 @@ lives in `ROADMAP.md`.
   children finish, idle time as information, why `outputSize` reads 0 on a RUNNING slot and
   what to read instead, and why `keepUnrecognizedJson` is an option
   rather than one rule for both the channel and `team`
+- `picker.md` — the OpenTUI model picker: a dialog, not a dashboard; the provider list first
+  with nothing prefetched; why an empty list must say WHY; the no-terminal gate; capture and
+  compiled-binary traps. Read before editing `picker/` or `selectModel`
 - `context-window.md`, `theming.md`, `debugging.md`, `testing.md`
 
 Evidence behind them: `ai-docs/reports/`. Evals: `ai-docs/benches/`. User-facing site: `docs/`.
