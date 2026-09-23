@@ -2,6 +2,39 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.2.0] - 2026-09-23
+
+### Bug Fixes
+
+- a hung token refresh no longer wedges the single-flight latch *(recovery)* ([`e20b408`](https://github.com/MadAppGang/claudish/commit/e20b4083c6d0a07133749d584b311bc987681c56))
+- a nested claudish drops the retry watchdog its parent exported *(recovery)* ([`e1d771b`](https://github.com/MadAppGang/claudish/commit/e1d771b363ac956a393fdd0c4b125b11ccf2ba25))
+- a short API_TIMEOUT_MS no longer silently disables auth-path recovery *(recovery)* ([`453040b`](https://github.com/MadAppGang/claudish/commit/453040bfc338ceee0b2cca87a29b9d9a5840efea))
+- an unreachable token host no longer bills the subscriber metered *(codex)* ([`3a50e60`](https://github.com/MadAppGang/claudish/commit/3a50e60c232651a093bbc31e8a6e509c2fbdae99))
+- a late acknowledgement no longer revives a closed episode's lease *(recovery)* ([`1f63010`](https://github.com/MadAppGang/claudish/commit/1f6301009d777efcb6c933a6def6be57660c1f79))
+- draw the banner with magmux's overlay, not a pane that wedges Claude Code *(recovery)* ([`a261140`](https://github.com/MadAppGang/claudish/commit/a261140ead16b4db5bdc415a81044ccf54cd020b))
+- stop --no-recovery paying for a pane it can never open *(recovery)* ([`4a88047`](https://github.com/MadAppGang/claudish/commit/4a88047ff8a90fd082fcb96d484cef9da6fafdf1))
+- make the budget, the chain guard and the log real in the arm nobody tested *(recovery)* ([`09eb4de`](https://github.com/MadAppGang/claudish/commit/09eb4deb75d20a321364d66213c9923d770ecf78))
+- stop the ladder faking attempts, billing latency, and ignoring [q] *(recovery)* ([`4e45c0c`](https://github.com/MadAppGang/claudish/commit/4e45c0cdb4c0b12e3760296b98802cc3062ca7a3))
+- stop a network outage from advancing the fallback chain *(handlers)* ([`da0cd5b`](https://github.com/MadAppGang/claudish/commit/da0cd5bc7a7a35cf81ab2b531300a19a15d7e786))
+
+### Documentation
+
+- update CHANGELOG.md for v10.1.1([`9833607`](https://github.com/MadAppGang/claudish/commit/98336077c1a1c8e652fbde10a67dd91f82bd7d22))
+- retire "roster" from the magmux binary resolver's header *(recovery)* ([`7029467`](https://github.com/MadAppGang/claudish/commit/70294679e34b6288bd3b61f3567ef9f745c8633c))
+- record the overlay banner, verified live through teardown *(recovery)* ([`f3e262e`](https://github.com/MadAppGang/claudish/commit/f3e262eca64f7c511710aa0a043115b56517ea7d))
+- closing the pane wedges the host TUI, and magmux already had the surface *(recovery)* ([`3586b8b`](https://github.com/MadAppGang/claudish/commit/3586b8b6dcf1689c45332834a524565cc9aca816))
+- the build report — what shipped, what the process caught *(recovery)* ([`1460d93`](https://github.com/MadAppGang/claudish/commit/1460d9369133267f5cb75aa07d4a4d3e200a9169))
+
+### New Features
+
+- count the outages, and write down why the shape is what it is *(recovery)* ([`ca5b4eb`](https://github.com/MadAppGang/claudish/commit/ca5b4eb92a1506a8c7555c371c83769a05a81f86))
+- hand the retry back to the client when the reason is legible *(recovery)* ([`7a9f4c5`](https://github.com/MadAppGang/claudish/commit/7a9f4c5b1a25df4b321fd6eb4bdeb7a7cd26d45f))
+- give the retry ladder a face — the magmux recovery pane *(recovery)* ([`fce758e`](https://github.com/MadAppGang/claudish/commit/fce758eab2ca73033a7751520460269d5b52dc00))
+
+### Other Changes
+
+- restore the exit hook that only the recovery pane changed *(recovery)* ([`2a7da9a`](https://github.com/MadAppGang/claudish/commit/2a7da9a4fa6bd40c984627a9ba25a71e0df25bfb))
+
 ## [10.1.1] - 2026-09-23
 
 ### Bug Fixes
