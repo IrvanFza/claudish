@@ -2,6 +2,41 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.1.0] - 2026-09-23
+
+### Bug Fixes
+
+- read v3 reasoning.supported, not the field's presence *(catalog)* ([`2247340`](https://github.com/MadAppGang/claudish/commit/224734090e4c1bbc8bb4dcdf7611ef912312755c))
+- keep a load that lands after the user steps back *(picker)* ([`101933e`](https://github.com/MadAppGang/claudish/commit/101933ea2464f8bb238d54e51173f9726b0f839f))
+- memoize the model list on the ready set's membership, not its identity *(picker)* ([`1979800`](https://github.com/MadAppGang/claudish/commit/19798009d24ada192fcfb36f570d60374c34b43c))
+- never open the model picker without a terminal *(picker)* ([`c0951e7`](https://github.com/MadAppGang/claudish/commit/c0951e75a95a8c15c49e1412eb314f3f920a8850))
+
+### Documentation
+
+- record the review findings that did not ship fixed *(picker)* ([`c61b4f1`](https://github.com/MadAppGang/claudish/commit/c61b4f1232ffb93344da82a190e5aaf6e5ad6d4f))
+- record why the picker is shaped as it is, and what is still open *(picker)* ([`ad6137b`](https://github.com/MadAppGang/claudish/commit/ad6137b4f60820e45d09843cad1029b354514d0b))
+- update CHANGELOG.md for v10.0.1([`7059910`](https://github.com/MadAppGang/claudish/commit/70599108f57bea66de7ea22298c0f85e89ffd307))
+
+### New Features
+
+- $$$ in a cost colour, and a filter on the provider list *(picker)* ([`41e5244`](https://github.com/MadAppGang/claudish/commit/41e52443907b07012d3b65e18a334d3347103f29))
+- build chips per palette — tint on light, saturated on dark *(picker)* ([`1dc7559`](https://github.com/MadAppGang/claudish/commit/1dc7559f701aae7b251fce18e2b41dc45887aa67))
+- soften the SUB fill and chip `$` at the same width *(picker)* ([`f4b428b`](https://github.com/MadAppGang/claudish/commit/f4b428b4c8ce8cb6db04e2d683dcf1fc7f11d4f3))
+- fill the notable state only, and measure every chip against both terminals *(picker)* ([`f1f09a3`](https://github.com/MadAppGang/claudish/commit/f1f09a3532817f95e061ae86269737420889ae58))
+- the provider list is the default screen, and nothing is prefetched *(picker)* ([`ff00f56`](https://github.com/MadAppGang/claudish/commit/ff00f56c7b7c529eb3c77f8f754b35156e649073))
+- a compact inline dialog, because the dashboard was the defect *(picker)* ([`43218b4`](https://github.com/MadAppGang/claudish/commit/43218b4d0aa245dcc64e63ff8d72fd1efde43c49))
+- an OpenTUI model picker that says what it is showing you *(picker)* ([`cec6017`](https://github.com/MadAppGang/claudish/commit/cec60172ca4a2a9ecdffc8700c79aed9853322dc))
+- a discovery OUTCOME, so an empty list can say why *(picker)* ([`c626866`](https://github.com/MadAppGang/claudish/commit/c6268660434bcd975beb7c99ad222c6f50283288))
+- shared components and leaves for the OpenTUI model picker *(tui)* ([`4100454`](https://github.com/MadAppGang/claudish/commit/4100454fbc620c64f6e8cefd04751b51d65c0aed))
+
+### Other Changes
+
+- v10.1.0 *(release)* ([`037b7a2`](https://github.com/MadAppGang/claudish/commit/037b7a2c19b660a7a20c930dda333d5187a96819))
+
+### Refactoring
+
+- retire "roster" in the picker, for the thesaurus terms *(picker)* ([`444ee60`](https://github.com/MadAppGang/claudish/commit/444ee60f5eb3c90ce08c1d8e052ff6463c61b33c))
+
 ## [10.0.1] - 2026-09-21
 
 ### Bug Fixes
