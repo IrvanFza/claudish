@@ -366,7 +366,9 @@ export function joinPinnedChain(routes: Route[]): string | null {
  *
  * i.e. handing that to `--model` produces a bare name again and the child
  * re-routes — the pin silently does nothing for every OpenRouter primary, which
- * is the most common primary in the default rules. Prefixing fixes it:
+ * a chain has whenever OpenRouter is its first credentialed hop (it is a
+ * gateway candidate for many catalog models and the default fallback hop).
+ * Prefixing fixes it:
  * `or@x-ai/grok-4.20` parses as provider "openrouter", explicit.
  *
  * The `?? r.provider` branch covers runtime-registered custom endpoints, which

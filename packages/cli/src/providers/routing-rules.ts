@@ -37,12 +37,11 @@ export interface RoutingRuleSources {
  *
  * Local overwrites global by exact key match — no glob-vs-glob interleaving.
  *
- * THERE ARE NO BUILT-IN RULES. The 24-entry `DEFAULT_ROUTING_RULES` table this
- * used to merge under the user's rules is gone: the providers that can serve a
- * bare name are now GATHERED from the cloud models catalog
- * (`route-candidates.ts`), which publishes every tier — subscriptions, native
- * APIs and gateways — for every model, and which the table could only
- * approximate by hand. So the result here is frequently `{}`, and `explainBareName`
+ * THERE ARE NO BUILT-IN RULES. The providers that can serve a bare name are
+ * GATHERED from the cloud models catalog (`route-candidates.ts`), which
+ * publishes every tier — subscriptions, native APIs and gateways — for every
+ * model; a hand-written table merged under the user's rules could only
+ * approximate that. So the result here is frequently `{}`, and `explainBareName`
  * treats "no rule matched" as "ask the catalog" rather than as an error.
  *
  * What a user rule now MEANS is therefore stronger than it was: a match is used
@@ -218,7 +217,7 @@ export function describeRoutingRuleProblem(problem: RoutingRuleProblem): string 
  * underlying APIs accept any case, so users get bitten when copy-paste
  * casing doesn't exactly match a lowercase rule key.
  *
- * Priority: exact → longest glob → "*" catch-all → null (use default chain).
+ * Priority: exact → longest glob → "*" catch-all → null (the catalog decides).
  *
  * NOTE: only the rule LOOKUP is lowered. The original `modelName` casing is
  * preserved when the route is built and sent to provider APIs (some are
@@ -778,13 +777,10 @@ export interface CatalogChain {
  * `explainBareName`, which owns them, and duplicating either here would create
  * the second oracle `route-candidates.ts` exists to avoid.
  *
- * Exported because `--probe` reconstructs the chain it is about to test rather
- * than calling `route()` (it needs per-hop credential provenance that a
- * `RoutePlan` does not carry). Before this existed, the probe read the same
- * hand-written table `route()` did; with that table gone, a probe that only
- * consulted user rules would have shown an EMPTY chain for every model the user
- * had not written a rule for — a display that says "nothing routes this" about
- * models that route fine.
+ * Exported for `route-candidates.test.ts`, which checks the gathered chain and
+ * the fallback append apart from the two filters. No display calls it: `--probe`
+ * and the config TUI render `explainRoute`, which runs these two steps
+ * (`explainCatalogChain`) and then the filters, exactly as `route()` does.
  */
 export function buildCatalogChain(
   model: string,

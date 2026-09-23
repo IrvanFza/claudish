@@ -492,14 +492,15 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // EXPLICIT (`dv@claude-opus-5`), same as Alibaba Token Plan.
     //
     // `swe-*` is different in kind: it is Cognition's own model line, no other
-    // provider in the catalog carries it, and it collides with nothing. Without
-    // a pattern here, `parseModelSpec` sends every unrecognised bare name to
-    // native-anthropic (model-parser.ts, "No '/' - treat as native Anthropic
-    // model"), so `swe-1.7` never even reached the routing rules — it was
-    // silently rewritten to `claude-opus-4-1` and answered by a different
-    // vendor's model, probing byte-identically to a nonsense string while
-    // `dv@swe-1.7` served fine. A DEFAULT_ROUTING_RULES entry alone cannot fix
-    // that, because the native-anthropic catch-all preempts rule matching.
+    // provider in the catalog carries it, and it collides with nothing. The
+    // pattern is Devin's namespace claim: `gatherFromNamespaceClaims`
+    // (route-candidates.ts) makes Devin a route candidate for a bare `swe-*`
+    // name, which the catalog cannot list because the account decides what the
+    // seat serves. It was added when `parseModelSpec` still sent every
+    // unrecognised bare name to native-anthropic: `swe-1.7` never reached
+    // routing, was silently rewritten to `claude-opus-4-1` and answered by a
+    // different vendor's model, probing byte-identically to a nonsense string
+    // while `dv@swe-1.7` served fine.
     //
     // Do NOT extend this list to Devin's re-served families.
     nativeModelPatterns: [{ pattern: /^swe-/i }],

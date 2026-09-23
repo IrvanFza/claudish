@@ -807,10 +807,12 @@ export async function createProxyServer(
       }
     }
 
-    // 2c. Provider fallback chain for auto-routed models
-    // When no explicit provider@ prefix is given, consult the routing engine
-    // (defaults + user overrides merged in loadRoutingRules), filter to
-    // credentialed providers, and wrap them in a FallbackHandler.
+    // 2c. The routing chain for a bare name
+    // When no explicit provider@ prefix is given, `route()` calculates the chain:
+    // the user's own rules (loaded once above), else the candidates the cloud
+    // models catalog publishes plus the fallback hop, each kept only when it has
+    // a credential and the account does not deny the model. The kept hops are
+    // wrapped in a FallbackHandler.
     // `proxyRouteDecision` IS this gate: only a `bare` target is routed. Every
     // other decision falls through to steps 3-7 below.
     {
