@@ -429,6 +429,12 @@ The exclusion rested on "a 503 cannot silently switch the user off a pinned mode
   outage on this machine still holds the chain.
 - Changed on purpose: the stream sniffers' exhaustion 503 (overloaded after 3s → 15s → 30s of
   retries) now advances a bare-name chain instead of returning to Claude Code.
+- Except when a retry could not REACH the provider. `settleResponsesStreamHead` and
+  `settleDevinStreamHead` return `exhausted` with `unreachable: true` when `reissue()` throws,
+  and the caller adds `x-claudish-connection-error` to that 503, so the chain holds. Without it a
+  DNS or connection failure on a Codex subscription hop advanced onto a metered OpenAI hop
+  (found by the 10.3.0 release review, source-traced; the status alone could not tell a
+  connection fault from an overload).
 
 ## The catalog's endpoint contract has two halves (v9.0.7)
 

@@ -1928,7 +1928,8 @@ export class ComposedHandler implements ModelHandler {
         // the provider's words.
         return c.json(
           wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
-          503 as any
+          503 as any,
+          settled.unreachable ? connectionFaultHeaders() : undefined
         );
       }
       response = settled.response;
@@ -2001,7 +2002,10 @@ export class ComposedHandler implements ModelHandler {
             )
           : c.json(
               wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
-              503 as any
+              503 as any,
+              settled.kind === "exhausted" && settled.unreachable
+                ? connectionFaultHeaders()
+                : undefined
             );
       }
       response = settled.response;
@@ -2110,7 +2114,7 @@ export class ComposedHandler implements ModelHandler {
     reissue: () => Promise<Response>
   ): Promise<
     | { kind: "ok"; response: Response }
-    | { kind: "exhausted"; code: string; message: string; attempts: number }
+    | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
   > {
     let response = initial;
 
@@ -2148,6 +2152,10 @@ export class ComposedHandler implements ModelHandler {
           code: verdict.code,
           message: `${verdict.message} (retry could not reach the provider: ${error})`,
           attempts: attempt + 1,
+          // A connection fault, not the provider's answer. The caller marks the
+          // 503 with the connection-fault header, so a routing chain HOLDS here
+          // instead of advancing onto the next (possibly metered) candidate.
+          unreachable: true,
         };
       }
 
@@ -2189,7 +2197,7 @@ export class ComposedHandler implements ModelHandler {
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "terminal"; code: string; message: string }
-    | { kind: "exhausted"; code: string; message: string; attempts: number }
+    | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
   > {
     // Optional-method probe rather than a `ProviderTransport` member: this whole
     // branch is Devin-specific by construction, and widening the shared
@@ -2240,6 +2248,10 @@ export class ComposedHandler implements ModelHandler {
           code: verdict.code,
           message: `${verdict.message} (retry could not reach the provider: ${error})`,
           attempts: attempt + 1,
+          // A connection fault, not the provider's answer. The caller marks the
+          // 503 with the connection-fault header, so a routing chain HOLDS here
+          // instead of advancing onto the next (possibly metered) candidate.
+          unreachable: true,
         };
       }
 
