@@ -64,7 +64,13 @@ function overloadedStream(): Response {
 
 function stubFetch(unreachable: boolean): () => number {
   let calls = 0;
-  globalThis.fetch = (async () => {
+  const unrelatedUrls: string[] = [];
+  globalThis.fetch = (async (input: string | Request | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url !== "https://api.sakana.example/v1/responses") {
+      unrelatedUrls.push(url);
+      return new Response("{}", { status: 404 });
+    }
     calls++;
     if (calls === 1) return overloadedStream();
     if (calls !== 2) throw new Error(`Unexpected fetch call ${calls}`);
