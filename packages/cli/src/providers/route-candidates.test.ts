@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { credentials } from "../auth/credentials/authority.js";
 import { type DiskCacheV3, type SlimModelEntry, writeAllModelsCache } from "./all-models-cache.js";
 import { _resetCatalogClient, _setCatalogEntriesForTest } from "./catalog-client.js";
-import { providersForCatalogRoute } from "./catalog-route-bindings.js";
+import { routingProvidersForRoute } from "./catalog-route-bindings.js";
 import {
   getModelDiscoveryFetcher,
   invalidateModelDiscovery,
@@ -17,6 +17,7 @@ import {
   catalogDeniesProvider,
   compareRouteCandidates,
   gatherRouteCandidates,
+  nativeProviderForVendor,
   routeOwnership,
 } from "./route-candidates.js";
 import { buildCatalogChain, route } from "./routing-rules.js";
@@ -236,6 +237,28 @@ function gatheredCandidate(model: string, provider: string): RouteCandidate {
 }
 
 describe("catalog route candidate gathering and order", () => {
+  test("derives native providers from vendor route bindings", () => {
+    const expected = {
+      openai: "openai",
+      google: "google",
+      "x-ai": "x-ai",
+      "z-ai": "z-ai",
+      moonshotai: "kimi",
+      minimax: "minimax",
+      qwen: "qwen-payg",
+      deepseek: "deepseek",
+      mistralai: "mistralai",
+      sakana: "sakana",
+    } as const;
+
+    expect(
+      Object.fromEntries(
+        Object.keys(expected).map((vendor) => [vendor, nativeProviderForVendor(vendor)])
+      )
+    ).toEqual(expected);
+    expect(nativeProviderForVendor("anthropic")).toBeUndefined();
+  });
+
   test("puts a flat-rate subscription before a metered connection", () => {
     const candidates = gatherRouteCandidates("gpt-6-astra", cachePath).candidates;
 
@@ -245,7 +268,7 @@ describe("catalog route candidate gathering and order", () => {
 
   test("gathers every provider bound to z-ai/direct-api", () => {
     const binding = { routeId: "z-ai", routeProfileId: "direct-api" };
-    expect(providersForCatalogRoute(binding)).toEqual(["z-ai", "glm"]);
+    expect(routingProvidersForRoute(binding)).toEqual(["z-ai", "glm"]);
 
     const direct = gatherRouteCandidates("glm-4.7", cachePath).candidates.filter(
       ({ wireId }) => wireId === "glm-4.7"
@@ -304,6 +327,119 @@ describe("catalog route candidate gathering and order", () => {
       .map((candidate) => ({ ...candidate, contextWindow: kimi.contextWindow }))
       .sort(compareRouteCandidates);
     expect(sameContext.map(({ provider }) => provider)).toEqual(["kimi", "z-ai"]);
+  });
+});
+
+describe("the subscription band", () => {
+  test("a vendor's own dynamic subscription leads another vendor's catalog subscription", () => {
+    const candidate = gatheredCandidate("kimi-k3", "kimi");
+    const catalog: RouteCandidate = {
+      ...candidate,
+      provider: "opencode-zen-go",
+      wireId: "kimi-k3",
+      tier: "subscription",
+      isVendorOwn: false,
+    };
+    const dynamic: RouteCandidate = {
+      ...candidate,
+      provider: "grok-subscription",
+      wireId: "kimi-k3",
+      tier: "dynamic-subscription",
+      isVendorOwn: true,
+    };
+
+    for (const pair of [
+      [catalog, dynamic],
+      [dynamic, catalog],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "grok-subscription",
+        "opencode-zen-go",
+      ]);
+    }
+  });
+
+  describe("inside the band a catalog subscription leads a dynamic one when the vendor rule ties", () => {
+    for (const isVendorOwn of [true, false]) {
+      test(`both isVendorOwn = ${isVendorOwn}`, () => {
+        const candidate = gatheredCandidate("kimi-k3", "kimi");
+        const dynamic: RouteCandidate = {
+          ...candidate,
+          provider: "antigravity",
+          wireId: "kimi-k3",
+          tier: "dynamic-subscription",
+          isVendorOwn,
+        };
+        const catalog: RouteCandidate = {
+          ...candidate,
+          provider: "opencode-zen-go",
+          wireId: "kimi-k3",
+          tier: "subscription",
+          isVendorOwn,
+        };
+
+        for (const pair of [
+          [dynamic, catalog],
+          [catalog, dynamic],
+        ]) {
+          expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+            "opencode-zen-go",
+            "antigravity",
+          ]);
+        }
+      });
+    }
+  });
+
+  test("the vendor rule never crosses a band", () => {
+    const candidate = gatheredCandidate("kimi-k3", "kimi");
+    const vendorNative: RouteCandidate = {
+      ...candidate,
+      provider: "xai-native",
+      wireId: "kimi-k3",
+      tier: "native",
+      isVendorOwn: true,
+    };
+    const dynamic: RouteCandidate = {
+      ...candidate,
+      provider: "zz-dynamic",
+      wireId: "kimi-k3",
+      tier: "dynamic-subscription",
+      isVendorOwn: false,
+    };
+    const vendorGateway: RouteCandidate = {
+      ...candidate,
+      provider: "aa-gateway",
+      wireId: "kimi-k3",
+      tier: "gateway",
+      isVendorOwn: true,
+    };
+    const native: RouteCandidate = {
+      ...candidate,
+      provider: "zz-native",
+      wireId: "kimi-k3",
+      tier: "native",
+      isVendorOwn: false,
+    };
+
+    for (const pair of [
+      [vendorNative, dynamic],
+      [dynamic, vendorNative],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "zz-dynamic",
+        "xai-native",
+      ]);
+    }
+    for (const pair of [
+      [vendorGateway, native],
+      [native, vendorGateway],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "zz-native",
+        "aa-gateway",
+      ]);
+    }
   });
 });
 

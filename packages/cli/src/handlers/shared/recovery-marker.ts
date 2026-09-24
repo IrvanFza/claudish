@@ -15,8 +15,11 @@
  *
  * ## Why a header and not a status, and not a wording rule
  *
- * `fallback-handler.ts`'s `isRetryableError` has no 503 branch, so on the
- * status alone a 503 already stops the chain. That is NOT enough, twice over:
+ * The status cannot carry it: `fallback-handler.ts`'s `isRetryableError`
+ * ADVANCES the chain on a 503 (an upstream "endpoint unavailable" is about one
+ * endpoint), so this marker is the only thing that holds the chain for a
+ * recovery 503. Before that branch existed a 503 stopped the chain on status
+ * alone, and even then that was NOT enough, twice over:
  *
  * 1. **The FIRST statement in its body is `hasQuotaExhaustionWording(errorBody)`,
  *    which is deliberately status-agnostic** — it exists because the transport

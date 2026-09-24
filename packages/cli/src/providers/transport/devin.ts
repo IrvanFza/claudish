@@ -28,9 +28,9 @@
  *
  * **3. Errors arrive inside HTTP 200.** The status code alone never signals
  * failure, which is why ComposedHandler routes `connect-proto` through
- * `sniffDevinStreamHead` before returning a Response. The served-set-aware
- * rewrite below turns a terminal fault on an unserved uid into an actionable
- * message instead of an opaque backend string.
+ * `sniffDevinStreamHead` before returning a Response. The rewrite below checks
+ * the dynamic models catalog and turns a terminal fault on an unserved uid into
+ * an actionable message instead of an opaque backend string.
  */
 
 import type { DevinRequestPayload } from "../../adapters/devin-api-format.js";
@@ -214,8 +214,8 @@ export class DevinProviderTransport implements ProviderTransport {
    * Rewrite a TERMINAL in-stream error when the dynamic models catalog proves the uid is
    * not served. Follows Antigravity's `rewriteModelNotFound` doctrine exactly.
    *
-   * Only rewrites when the served set is non-empty AND does not contain the
-   * resolved uid. An empty set means discovery failed, and inventing a diagnosis
+   * Only rewrites when the dynamic models catalog is non-empty AND does not contain the
+   * resolved uid. An empty catalog means discovery failed, and inventing a diagnosis
    * on missing data is worse than passing the backend's own message through.
    *
    * Worth knowing when reading a live failure: an unserved uid comes back as

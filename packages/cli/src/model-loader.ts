@@ -406,30 +406,6 @@ function recommendationProjection(
 // ─── Recommended models grouping + formatting helpers ───────────────────────
 
 /**
- * Map from Firebase provider slug (as it appears in `RecommendedModelEntry.provider`
- * after the recommender capitalizes it, e.g. "Openai", "X-ai", "Moonshotai") to
- * the canonical `name` used in `providers/provider-definitions.ts`. This lets
- * both the CLI and MCP renderers look up the native routing prefix from the
- * provider shortcuts.
- *
- * The lookup key is the lower-cased provider field from the Firebase entry,
- * which matches the slug the recommender started from (see
- * `firebase/functions/src/recommender.ts` PROVIDERS table).
- */
-export const FIREBASE_SLUG_TO_PROVIDER_NAME: Record<string, string> = {
-  openai: "openai",
-  google: "google",
-  "x-ai": "x-ai",
-  "z-ai": "z-ai",
-  moonshotai: "kimi",
-  minimax: "minimax",
-  qwen: "qwen",
-  deepseek: "deepseek",
-  mistralai: "mistralai",
-  sakana: "sakana",
-};
-
-/**
  * A group of recommended-model entries that all share the same `id`. The
  * `primary` is the non-subscription entry (programming/vision/reasoning/fast);
  * `subscriptions` is every `category:"subscription"` entry in the group, in the

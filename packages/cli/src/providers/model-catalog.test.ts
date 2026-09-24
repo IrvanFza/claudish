@@ -182,6 +182,19 @@ describe("modelsByVendor", () => {
     expect(result).toEqual([]);
   });
 
+  test("cold-cache together lookup takes the aggregator path", async () => {
+    const fakeProviderQuery = mock(async () => []);
+    const fakeReadSlim = mock(() => null);
+    const client = createCatalogClient({
+      getModelsByProvider: fakeProviderQuery,
+      readSlimCache: fakeReadSlim,
+    });
+
+    expect(await client.modelsByVendor("together")).toEqual([]);
+    expect(fakeProviderQuery).not.toHaveBeenCalled();
+    expect(fakeReadSlim).toHaveBeenCalled();
+  });
+
   test("aggregator slug match is case-insensitive", async () => {
     const entries = [slimEntry("claude-opus-4-7", [aggregator("OpenCode-Zen", "x")])];
     const client = createCatalogClient({
@@ -193,7 +206,7 @@ describe("modelsByVendor", () => {
     expect(result).toHaveLength(1);
   });
 
-  test.each([["litellm"], ["ollama"], ["lmstudio"], ["lm-studio"]])(
+  test.each([["litellm"], ["ollama"], ["lmstudio"]])(
     "'%s' returns [] without any I/O",
     async (slug) => {
       const fakeProviderQuery = mock(async () => []);

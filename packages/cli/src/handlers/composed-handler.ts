@@ -1352,12 +1352,12 @@ export class ComposedHandler implements ModelHandler {
       //
       // The re-issue must go through that SAME ternary. Six transports
       // implement `enqueueRequest`, and what they implement is not decoration:
-      // a bounded 429 loop with `Retry-After`, a served-set model-fallback
-      // chain, and the local concurrency gate that stops `ollama@llama3.2:3`
-      // running four inferences at once. Skipping it would make the attempt
-      // that finally CONNECTS behave differently from the one that failed —
-      // and at the moment a network returns, N woken waiters would stampede
-      // unqueued into a provider that has just come back.
+      // a bounded 429 loop with `Retry-After`, a model-fallback chain drawn
+      // from the dynamic models catalog, and the local concurrency gate that
+      // stops `ollama@llama3.2:3` running four inferences at once. Skipping it
+      // would make the attempt that finally CONNECTS behave differently from
+      // the one that failed — and at the moment a network returns, N woken
+      // waiters would stampede unqueued into a provider that has just come back.
       //
       // `getRequestInit()` IS CALLED AGAIN, PER ATTEMPT, and that is not a
       // tidiness preference. A transport may return a ONE-SHOT signal from it —
@@ -1928,7 +1928,8 @@ export class ComposedHandler implements ModelHandler {
         // the provider's words.
         return c.json(
           wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
-          503 as any
+          503 as any,
+          settled.unreachable ? connectionFaultHeaders() : undefined
         );
       }
       response = settled.response;
@@ -2001,7 +2002,10 @@ export class ComposedHandler implements ModelHandler {
             )
           : c.json(
               wrapAnthropicError(503, surfaced, "overloaded_error", undefined, settled.message),
-              503 as any
+              503 as any,
+              settled.kind === "exhausted" && settled.unreachable
+                ? connectionFaultHeaders()
+                : undefined
             );
       }
       response = settled.response;
@@ -2100,17 +2104,17 @@ export class ComposedHandler implements ModelHandler {
    * tail is where recovery actually happens.
    *
    * Returns `exhausted` when every attempt failed — the caller turns that into a
-   * 503 so Claude Code runs its own retry loop against the same pinned model.
-   * (A 503 is safe here specifically because fallback-handler's isRetryableError
-   * does NOT list 503, so this cannot silently switch the user off the model they
-   * pinned; it reaches Claude Code untouched.)
+   * 503. For a pinned `provider@model` there is no FallbackHandler, so the 503
+   * reaches Claude Code, which runs its own retry loop against the same model.
+   * Inside a bare-name chain, fallback-handler's isRetryableError advances on it
+   * to the next candidate: this provider stayed overloaded through every retry.
    */
   private async settleResponsesStreamHead(
     initial: Response,
     reissue: () => Promise<Response>
   ): Promise<
     | { kind: "ok"; response: Response }
-    | { kind: "exhausted"; code: string; message: string; attempts: number }
+    | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
   > {
     let response = initial;
 
@@ -2148,6 +2152,10 @@ export class ComposedHandler implements ModelHandler {
           code: verdict.code,
           message: `${verdict.message} (retry could not reach the provider: ${error})`,
           attempts: attempt + 1,
+          // A connection fault, not the provider's answer. The caller marks the
+          // 503 with the connection-fault header, so a routing chain HOLDS here
+          // instead of advancing onto the next (possibly metered) candidate.
+          unreachable: true,
         };
       }
 
@@ -2178,9 +2186,10 @@ export class ComposedHandler implements ModelHandler {
    * instead of burning 48s of backoff first. Only the transient class is
    * retried; only an exhausted retry chain becomes a 503.
    *
-   * Terminal messages pass through the transport's served-set-aware rewrite when
-   * it offers one, which is what turns an opaque backend string into "that uid
-   * is not served by your subscription; here is what is".
+   * Terminal messages pass through the transport's rewrite when it offers one.
+   * That rewrite checks the dynamic models catalog, which is what turns an
+   * opaque backend string into "that uid is not served by your subscription;
+   * here is what is".
    */
   private async settleDevinStreamHead(
     initial: Response,
@@ -2188,7 +2197,7 @@ export class ComposedHandler implements ModelHandler {
   ): Promise<
     | { kind: "ok"; response: Response }
     | { kind: "terminal"; code: string; message: string }
-    | { kind: "exhausted"; code: string; message: string; attempts: number }
+    | { kind: "exhausted"; code: string; message: string; attempts: number; unreachable?: true }
   > {
     // Optional-method probe rather than a `ProviderTransport` member: this whole
     // branch is Devin-specific by construction, and widening the shared
@@ -2239,6 +2248,10 @@ export class ComposedHandler implements ModelHandler {
           code: verdict.code,
           message: `${verdict.message} (retry could not reach the provider: ${error})`,
           attempts: attempt + 1,
+          // A connection fault, not the provider's answer. The caller marks the
+          // 503 with the connection-fault header, so a routing chain HOLDS here
+          // instead of advancing onto the next (possibly metered) candidate.
+          unreachable: true,
         };
       }
 

@@ -194,6 +194,15 @@ describe("shouldHideIncidentalAnthropicKey", () => {
     ).toBe(true);
   });
 
+  test.each([
+    ["o4-mini", false],
+    ["opusplan", true],
+    ["sonnet[1m]", true],
+    ["claude-haiku-4-5-20251001", true],
+  ])("classifies %s for native Anthropic auth as %p", (model, expected) => {
+    expect(shouldHideIncidentalAnthropicKey(baseConfig({ model }), apiKeyEnv)).toBe(expected);
+  });
+
   test("native mapping + API key + API billing opt-in → false", () => {
     expect(
       shouldHideIncidentalAnthropicKey(

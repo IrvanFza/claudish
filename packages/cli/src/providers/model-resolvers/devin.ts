@@ -291,8 +291,8 @@ export class DevinModelResolver implements ProviderModelResolver {
    * 3. **A uid prefix** resolves only while every match sits in ONE group. When
    *    it spans several it is under-specified, not unknown, and falls to rule 4.
    * 4. **No usable match** passes through unchanged so the backend can answer.
-   *    The served-set-aware error rewrite turns that into a message naming what
-   *    IS served; guessing here would hide it.
+   *    The error rewrite checks the dynamic models catalog and turns that into a
+   *    message naming what IS served; guessing here would hide it.
    */
   expand(selection: string, modelsCatalog: ModelsCatalogEntry[], ctx: ExpandContext): string {
     const requested = selection.trim();
@@ -333,7 +333,8 @@ export class DevinModelResolver implements ProviderModelResolver {
     //    picking one would be a ×35-vs-×6 guess dressed up as a resolution, so
     //    it falls through to rule 4 instead. This is rule 3 of the doc comment
     //    applied to a request that is under-specified rather than unknown: the
-    //    backend's served-set error names the candidates, and we do not.
+    //    backend's error, rewritten against the dynamic models catalog, names the
+    //    candidates, and we do not.
     const pool =
       named.length > 0
         ? named

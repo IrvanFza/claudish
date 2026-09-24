@@ -247,7 +247,7 @@ Every retry hook in claudish keys off the HTTP **status** (`anthropic-compat.ts`
 `sniffResponsesStreamHead()` peeks at the stream head in `composed-handler.ts` step **7b**, which is the only window where the status code is still ours to choose (once Hono flushes the 200, a 503 is no longer expressible):
 
 - **Retryable** (`server_is_overloaded`, `server_error`, `service_unavailable_error`, prose "overloaded"/"try again later") → re-issue upstream with **progressive** backoff `3s → 15s → 30s` (`STREAM_RETRY_DELAYS_MS`). Progressive, not tight: the outage that motivated this ran ~6.5 minutes, so only the late attempts recover anything.
-- **All retries exhausted** → HTTP **503** `overloaded_error`. Safe specifically because `fallback-handler.ts`'s `isRetryableError` does NOT list 503 — it cannot silently switch the user off a pinned model, it reaches Claude Code, which runs its own retry loop.
+- **All retries exhausted** → HTTP **503** `overloaded_error`. For a pinned `provider@model` (no `FallbackHandler`) it reaches Claude Code, which runs its own retry loop. Inside a bare-name chain, `isRetryableError` advances on it to the next candidate (since 2026-09-24, see "An unavailable endpoint advances the chain" below).
 - **Terminal** in-stream errors (`context_length_exceeded`, `invalid_request_error`) are NOT retried — they keep the existing inline-text treatment, which is the actionable path for them.
 - **Anything else** (any content event) → `clean`, and the consumed bytes are **replayed byte-identically** so the real parser sees an unchanged stream.
 
@@ -370,8 +370,10 @@ There is now one response `FallbackHandler` must treat specially **before it loo
 at a status or a body at all**: the 503 an exhausted tier-1 connection hold hands
 back so Claude Code will re-POST (`handlers/shared/recovery-marker.ts`).
 
-A 503 already stops the chain — `isRetryableError` has no 503 branch. That is not
-enough, twice:
+The status cannot hold the chain: since 2026-09-24 `isRetryableError` ADVANCES on an
+upstream 502/503/504 (next section), so the marker is the only thing that keeps a
+recovery 503 in place. Even before that, when a 503 stopped the chain on status
+alone, the status was not enough, twice:
 
 - **`isRetryableError`'s FIRST statement is `hasQuotaExhaustionWording(errorBody)`**,
   status-agnostic on purpose (it exists *because* of the remap above), and its list
@@ -402,6 +404,37 @@ on a non-ok path, the marker must be stripped there.**
 
 Evidence, including the live chain runs and the mutation set:
 `ai-docs/reports/network-recovery-phase4-status-flip-20260911.md`.
+
+### An unavailable endpoint advances the chain (2026-09-24)
+
+A bare `grok-4.7` failed on every request while OpenCode Zen Go, its first candidate,
+answered `503 {"type":"server_error","message":"Upstream request failed: Endpoint is
+unavailable."}`. `--probe grok-4.7` in the same minute showed the five candidates behind it
+answering (Grok Build, xAI, OpenRouter, OpenCode Zen, Poe). `isRetryableError` had no
+502/503/504 branch, so the first attempt's 503 was returned as-is with no `[Fallback]` line,
+and Claude Code's retry loop re-sent the same chain to the same dead hop, ten times.
+
+The exclusion rested on "a 503 cannot silently switch the user off a pinned model". A pinned
+`provider@model` builds no `FallbackHandler`, so inside a chain that protected nothing. Now:
+
+- `isRetryableError` returns `true` for 502, 503 and 504. A plain 500 still stops the chain
+  unless it carries billing wording: it can carry account state, and it is the one 5xx a
+  request's own payload can provoke on every provider alike.
+- `exhaustedChainStatus` counts 502 and 504 as transient beside 429 and 503, so a chain in
+  which every hop was unavailable still ends retryable (503), as the single 502 that used to be
+  returned as-is did.
+- Unchanged, and the reason this is safe: claudish's own connection verdicts
+  (`x-claudish-recovery` on the 503 arm, `x-claudish-connection-error` on the 400 arm) are
+  checked before any status, in `handle()` and on `isRetryableError`'s first line. A network
+  outage on this machine still holds the chain.
+- Changed on purpose: the stream sniffers' exhaustion 503 (overloaded after 3s → 15s → 30s of
+  retries) now advances a bare-name chain instead of returning to Claude Code.
+- Except when a retry could not REACH the provider. `settleResponsesStreamHead` and
+  `settleDevinStreamHead` return `exhausted` with `unreachable: true` when `reissue()` throws,
+  and the caller adds `x-claudish-connection-error` to that 503, so the chain holds. Without it a
+  DNS or connection failure on a Codex subscription hop advanced onto a metered OpenAI hop
+  (found by the 10.3.0 release review, source-traced; the status alone could not tell a
+  connection fault from an overload).
 
 ## The catalog's endpoint contract has two halves (v9.0.7)
 

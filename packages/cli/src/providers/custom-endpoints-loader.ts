@@ -245,8 +245,11 @@ export function loadCustomEndpoints(config: ClaudishProfileConfig): LoadResult {
  *
  * Not `fallback`: that tier is a POSITION held by whichever provider
  * `defaultProvider` names, and no definition may claim it.
+ *
+ * Exported for the route-binding guard: a bundled row gets a definition only when
+ * it registers, which needs its key, so a hermetic test reads the tier here.
  */
-const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
+export const CUSTOM_ENDPOINT_TIER: RouteTier = "gateway";
 
 /**
  * Build a ProviderDefinition for a custom endpoint so it appears in lookups

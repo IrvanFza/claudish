@@ -82,7 +82,8 @@ export class AntigravityCredentialProvider implements CredentialProvider {
   async getRequestAuth(ctx: RequestAuthContext): Promise<RequestAuth> {
     const token = await getValidAntigravityAccessToken();
     const { projectId, tierId } = await setupAntigravityUser(token);
-    // Resolve the requested id against the LIVE served set (fetchAvailableModels).
+    // Resolve the requested id against the account's dynamic models catalog
+    // (fetchAvailableModels).
     const { servedIds, defaultId } = await getServedAntigravityModels(token, projectId);
     const servedModel = resolveAntigravityModelId(
       ctx.model,

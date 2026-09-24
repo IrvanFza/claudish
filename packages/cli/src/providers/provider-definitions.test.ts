@@ -18,6 +18,8 @@ import {
 import { setConfigFileOverride } from "../profile-config.js";
 import { API_KEY_MAP } from "./api-key-map.js";
 import { CATALOG_ROUTE_BINDINGS } from "./catalog-route-bindings.js";
+import { CUSTOM_ENDPOINT_TIER } from "./custom-endpoints-loader.js";
+import { PREDEFINED_ENDPOINTS } from "./predefined-catalog.js";
 import {
   BUILTIN_PROVIDERS,
   getApiKeyEnvVars,
@@ -206,19 +208,19 @@ describe("BUILTIN_PROVIDERS structural integrity", () => {
   });
 
   test("catalog bindings exclude the qwen steering placeholder but retain native passthrough", () => {
-    let resolvedBuiltinBindings = 0;
+    const builtinsByName = new Map(
+      BUILTIN_PROVIDERS.map((provider) => [provider.name, provider] as const)
+    );
+    const bundledTiers = new Map(
+      PREDEFINED_ENDPOINTS.map((endpoint) => [endpoint.name, CUSTOM_ENDPOINT_TIER] as const)
+    );
+    const offenders = Object.keys(CATALOG_ROUTE_BINDINGS).filter((providerName) => {
+      const builtin = builtinsByName.get(providerName);
+      if (builtin) return builtin.tier === undefined;
+      return bundledTiers.get(providerName) === undefined;
+    });
 
-    for (const providerName of Object.keys(CATALOG_ROUTE_BINDINGS)) {
-      const provider = getProviderByName(providerName);
-      if (!provider) continue;
-
-      resolvedBuiltinBindings += 1;
-      expect(provider.tier).toBeDefined();
-    }
-
-    // The loop must exercise real bindings, not pass vacuously on an empty or
-    // wholly unresolved table.
-    expect(resolvedBuiltinBindings).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
 
     // qwen only steers bare names; qwen-payg owns dashscope and its credentials.
     expect(CATALOG_ROUTE_BINDINGS.qwen).toBeUndefined();
@@ -619,6 +621,19 @@ describe("billing classification", () => {
       "qwen-token-plan",
       "sakana-subscription",
     ]);
+  });
+
+  test("name-decided subscription billing matches the subscription tiers", () => {
+    const derived = BUILTIN_PROVIDERS.filter(
+      (provider) =>
+        (provider.tier === "subscription" || provider.tier === "dynamic-subscription") &&
+        provider.name !== "native-anthropic" &&
+        !CREDENTIAL_DECIDED_PROVIDERS.has(provider.name)
+    )
+      .map((provider) => provider.name)
+      .sort();
+
+    expect([...SUBSCRIPTION_PROVIDERS].sort()).toEqual(derived);
   });
 
   test("every billing-set member names a real provider", () => {

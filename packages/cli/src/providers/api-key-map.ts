@@ -45,11 +45,12 @@ export const API_KEY_MAP: Record<string, { envVar: string; aliases?: string[] }>
   // NO alias (2026-09-02). The fix above left OPENCODE_API_KEY behind as one,
   // and the definition dropped its matching `apiKeyAliases` on the day the 401
   // claim was measured false. Keeping it HERE would have been worse than never
-  // fixing it: this table is what `--probe` uses to decide `hasCredentials`
-  // (`cli.ts` buildDirectChainEntry / buildResultLinks), so the probe would have
-  // printed a credentialed `zgo@` row for a key the credential authority now
-  // refuses to sign with — a row asserting readiness nothing has verified, the
-  // same defect as the removed publicKeyFallback.
+  // fixing it: this table was then what `--probe` used to decide `hasCredentials`,
+  // so the probe would have printed a credentialed `zgo@` row for a key the
+  // credential authority now refuses to sign with — a row asserting readiness
+  // nothing has verified, the same defect as the removed publicKeyFallback.
+  // (`--probe` now takes that decision from `explainRoute`, i.e. the authority,
+  // and reads this table only for the key it names in a dropped row's hint.)
   "opencode-zen-go": { envVar: "OPENCODE_GO_API_KEY" },
   // Vertex takes no API key: the project ID plus Application Default
   // Credentials. VERTEX_API_KEY (Express) was deleted on 2026-09-21, and it was

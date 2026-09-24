@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { providerForCatalogRoute } from "./catalog-route-bindings.js";
+import { catalogReadProvidersForRoute } from "./catalog-route-bindings.js";
 import { CATALOG_V3_ACCEPT, parseCatalogV3Envelope } from "./catalog-v3.js";
 
 const PROBE_MODELS_URL = "https://us-central1-claudish-6da10.cloudfunctions.net/probeModels";
@@ -141,17 +141,25 @@ export async function fetchProbeModels(
     return { kind: "invalid", reason: "missing route maps" };
   }
 
+  // Keyed under EVERY name bound to the route, not just the first. The map is
+  // read by name (`getProbeModel`, `getProbeUnavailability`, `routeOwnership`),
+  // and a name missing from it reads as "the catalog never probed this route".
+  // With first-name keys, `glm` (the second key silo on `z-ai/direct-api`) had no
+  // entry, so `routeOwnership("glm")` answered `unknown` for a route the backend
+  // owns, and Test All had no probe pick for it.
   const providers: Record<string, string> = {};
   for (const route of Object.values(envelope.data.routes)) {
     if (!route || typeof route !== "object" || typeof route.externalModelId !== "string") continue;
-    const provider = providerForCatalogRoute(route.route);
-    if (provider) providers[provider] = route.externalModelId;
+    for (const provider of catalogReadProvidersForRoute(route.route)) {
+      providers[provider] = route.externalModelId;
+    }
   }
   const unavailable: Record<string, string> = {};
   for (const route of Object.values(envelope.data.unavailableRoutes)) {
     if (!route || typeof route !== "object" || typeof route.reason !== "string") continue;
-    const provider = providerForCatalogRoute(route.route);
-    if (provider) unavailable[provider] = route.reason;
+    for (const provider of catalogReadProvidersForRoute(route.route)) {
+      unavailable[provider] = route.reason;
+    }
   }
   if (Object.keys(providers).length + Object.keys(unavailable).length === 0) {
     return { kind: "invalid", reason: "no supported probe routes" };

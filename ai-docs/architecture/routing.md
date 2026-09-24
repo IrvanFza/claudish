@@ -1,24 +1,26 @@
 # Model routing
 
-> How a bare model name becomes a provider chain: defaultProvider, catalog resolvers, the derived picker provider list, subscription pricing.
+> How a model name becomes a routing chain: which names reach `route()`, catalog-gathered candidates, defaultProvider, wire ids and route bindings, the derived picker provider list, subscription pricing.
 >
 > Extracted from `CLAUDE.md` (v7.64.0). Indexed in [`README.md`](./README.md).
 
 ## New Syntax: `provider@model[:concurrency]`
 
 ```bash
-# Explicit provider routing
-claudish --model google@gemini-2.0-flash "task"
-claudish --model openrouter@deepseek/deepseek-r1 "task"
+# Explicit provider routing: that provider, no routing chain
+claudish --model google@<model> "task"
+claudish --model openrouter@<vendor>/<model> "task"
 
-# Native auto-detection (no prefix needed)
-claudish --model gpt-4o "task"          # → OpenAI
-claudish --model gemini-2.0-flash "task" # → Google
-claudish --model llama-3.1-70b "task"   # → OllamaCloud
+# Bare name: route() calculates the chain from your rules and the cloud models catalog
+claudish --model <model> "task"
+claudish --probe <model>                   # shows that chain, kept and dropped hops
 
 # Local models with concurrency
-claudish --model ollama@llama3.2:3 "task"  # 3 concurrent requests
+claudish --model ollama@<model>:3 "task"   # 3 concurrent requests
 ```
+
+`claudish --help` lists every provider shortcut, generated from `BUILTIN_PROVIDERS`
+(`providerShortcutRows`, `cli.ts`).
 
 ## Provider Shortcuts
 - `g@`, `google@` → Google Gemini (direct API, `GEMINI_API_KEY`)
@@ -56,6 +58,41 @@ Claudish supports local models via:
 Local APIs report `prompt_tokens` as the FULL conversation context on every request, not an
 increment — see `ai-docs/architecture/context-window.md`.
 
+## Which names reach `route()`
+
+**One gate: `proxyRouteDecision`** (`providers/native-route.ts`). The proxy's step 2c asks it
+before routing anything, and `nativeRouteFor` (MCP preflight, the advisor), prehydrate's pin
+(`pinSpecFor`), `--probe` and the config TUI ask the same function, so none of them can disagree
+with the proxy about which names are routed. Checked in the proxy's order:
+
+1. `parseModelSpec(target).isExplicitProvider` — `provider@model`, a URL, a legacy prefix
+   (`oc/<id>`) → `explicit`: that provider, no routing chain.
+2. `poe:<id>` → `poe`: the proxy's Poe step serves it.
+3. The parser says `native-anthropic`:
+   - with a `/` (only `anthropic/<id>` matches) → `explicit` via `vendor-qualified-id`: the
+     proxy skips `route()` and sends the id to OpenRouter verbatim;
+   - otherwise → `native`: Claude Code's own auth serves it, and `route()` never sees it.
+4. Everything else → `bare`, with a known `vendor/` stripped (`openai/<id>` routes as `<id>`).
+   Only `bare` calls `route()`.
+
+**The parse gate decides what is `native`.** A bare name that no `nativeModelPatterns` entry
+claims parses `native-anthropic` only when Claude Code owns it (`isClaudeCodeModelName`,
+`providers/claude-code-aliases.ts`: `opus`, `sonnet`, `haiku`, `internal`, `default`,
+`opusplan`, `best`, each optionally with `[1m]`, and any `claude-*`) or when it is not a model
+name at all (`""`, a leading `@`). Every other bare name parses `auto-route`
+(`AUTO_ROUTE_PROVIDER`, `model-parser.ts`) and is routed. Until 2026-09-24 such names parsed
+`native-anthropic`: 508 catalog ids on generation `g-20260923145315478-d7a326bd`, `o4-mini`
+among them, went to the native passthrough, which serves none of them. A name the catalog lacks
+now gets only the fallback hop, `--probe` says `catalog has no entry for "<name>"`, and
+`defaultProvider: ""` turns that into a no-route.
+
+**The display and the request share one step.** `explainRoute(target)`
+(`providers/routing-rules.ts`) calls `proxyRouteDecision` first and answers a `native` target
+itself; everything else goes to `explainRoutePlan`. `route()` runs the same `explainRoutePlan`,
+prints the two billing notices, and returns the kept candidates (`toRoutePlan`). `--probe`, the
+config TUI and the team grid render `explainRoute`, and `describeRouteExplanation` words its
+origin in one line for all three.
+
 ## Where a bare name's chain comes from
 
 **There is no built-in routing table.** `providers/default-routing-rules.ts` — 24 hand-written
@@ -64,20 +101,45 @@ DELETED, together with `mergeRoutingRules`, `retainKnownCatalogRoutingRules` and
 `validateDefaultRoutingRules`. `loadRoutingRules()` now returns the user's own global and
 project rules and nothing else.
 
-`routeBare` (`providers/routing-rules.ts`) has six steps, and only the first changed:
+`explainBareName` (`providers/routing-rules.ts`, reached through `explainRoutePlan`) has six
+steps, and only the first changed:
 
 1. **A user rule matches?** Use that chain **verbatim** — never merged, reordered or appended
    to, including by the fallback hop. `[]` is a match: the user said "no route".
 2. **Otherwise gather from the catalog** — `gatherRouteCandidates` (`route-candidates.ts`)
    reads every `aggregators[]` connection the cloud models catalog publishes for the model
-   and orders them: tier (`subscription` → `dynamic-subscription` → `native` → `gateway`),
-   then the model's own vendor, then cheapest (unknown price last), then larger context
-   window, then provider name.
+   and orders them: band (both subscription tiers → `native` → `gateway`), then the
+   model's own vendor, then tier (`subscription` before `dynamic-subscription`), then
+   cheapest (unknown price last), then larger context window, then provider name. The
+   shared band exists so a vendor's own dynamic subscription leads: before 2026-09-24
+   tier came first and `grok-4.6`/`grok-4.7` went Zen Go → Grok Build → xAI; now Grok
+   Build (xAI's own) leads. The strict route gate showed those two chains and nothing
+   else move (generation `g-20260923145315478-d7a326bd`).
 3. **Append the fallback hop** (below).
 4. Credential filter (unchanged).
 5. Availability filter — only a POSITIVE "not-served" removes anything, and it asks each
    provider in that provider's own spelling (see below).
 6. Primary + fallbacks.
+
+**What `--probe` shows is that explanation, not a chain of its own.** It used to rebuild one
+(`buildModelChain`): no credential filter, no availability filter, and a native test without
+`route()`'s `/` check, so it probed hops a request never used and called `anthropic/<id>`
+native. Now `chain` is the `kept` candidates in `route()`'s order (`[]` still means no route,
+and an explicit target is a one-item chain), `dropped[]` lists every other candidate with its
+outcome, and only kept candidates are probed (`probeTargets`, `providers/probe-runner.ts`).
+Three consequences to know before reading its output:
+
+- **A native name is one link, never probed** (`notProbed: "native-auth"`,
+  `NATIVE_NOT_PROBED`). The native handler forwards the inbound Claude Code header, which a
+  probe from this process does not have; substituting `ANTHROPIC_API_KEY` tested a different
+  credential from the one a session uses.
+- **`--no-probe` still asks providers.** The availability filter is part of `route()`, so an
+  account's dynamic models catalog is read for each credentialed candidate that declares
+  discovery (in memory, five minutes). `--no-probe` skips the model requests only.
+- **The parser's provider is not a routing decision.** For a bare non-Claude name it is
+  `auto-route`. It stays in `--probe --json` as `nativeProvider` and is never rendered: card
+  headings and leaderboards name the first kept hop, or the explanation line when there is
+  none.
 
 **No catalog means local only.** With no readable catalog a bare name returns a no-route naming
 `claudish --models-refresh`. It is never guessed at `openrouter@<name>`: that sends an id
@@ -103,7 +165,7 @@ so the filter and the transport answer the same question. Until 2026-09-23 it co
 string, answered "not-served" for every canonical id Devin carries, and "not-served" is the one
 verdict allowed to remove a candidate: a bare `swe-1.7` lost its Devin hop and went to the
 OpenRouter fallback ("swe-1.7 is not a valid model ID"), and the explicit `devin@swe-1.7` was
-refused outright, since `routeExplicit` runs the same check. A provider with no registered
+refused outright, since the explicit path (`explainExplicitSpec`) runs the same check. A provider with no registered
 resolver gets its id back unchanged, so this costs every other provider nothing. A new
 knob-encoding provider needs a resolver entry, or the filter will deny it by spelling.
 
@@ -138,16 +200,49 @@ catalog maps is tried first.
 
 Set it via:
 
-- **Config file**: `"defaultProvider": "openrouter"` in `~/.claudish/config.json`
+- **Config file**: `"defaultProvider": "openrouter"` in `~/.claudish/config.json`, or in the file
+  `--config` names
 - **Env var**: `CLAUDISH_DEFAULT_PROVIDER=openrouter`
 - **CLI flag**: `claudish --default-provider openrouter "task"`
 
-**Precedence** (highest to lowest):
+**Precedence** (highest to lowest), decided by one resolver, `resolveDefaultProvider`
+(`default-provider.ts`):
 1. CLI flag `--default-provider`
 2. `CLAUDISH_DEFAULT_PROVIDER` env var
-3. `defaultProvider` in config file
+3. `defaultProvider` in the config file
 4. `OPENROUTER_API_KEY` present → `"openrouter"`
 5. Hardcoded `"openrouter"`
+
+Steps 4 and 5 route identically. They differ only in the `source` the route-table gate records.
+
+**An empty value is an answer, not a gap.** `""` at step 1, 2 or 3 disables the fallback hop and
+stops the search there, so `CLAUDISH_DEFAULT_PROVIDER=` beats a config `x`, and a flag `x` beats
+an empty env var. Until 2026-09-24 the resolver skipped `""` and answered `openrouter`, so the
+documented off switch did not work from the env var at all.
+
+**Not read: a project `.claudish.json`.** `loadLocalConfig` keeps a `defaultProvider` key in the
+project file, but no routing path reads it: only the global config (or the `--config` file) is
+step 3. Supporting a project value would need a project source in the resolver, a scope in the
+config TUI's Routing header and its own interaction with `--config`, which nothing asks for yet.
+
+**How the flag travels.** `index.ts` strips `--default-provider` from argv and exports its value
+as `CLAUDISH_DEFAULT_PROVIDER` before `parseArgs` and before any subcommand runs
+(`planDefaultProviderFlag`). After that the env var is the flag's only carrier: `route()`, the
+proxy, `--probe` and every child claudish (team, channel sessions) read it there. It cannot be read
+any later, for two reasons: `--probe` runs and exits inside `parseArgs`'s argv loop, and a child
+process inherits env, not argv. `--default-provider ""` exports an empty value, which disables
+the hop. The export runs after `--op-env` and `--op`, which overwrite env unconditionally, so the
+flag still beats a value they hydrate. Children see it only because every claudish child is
+spawned through `node:child_process`, which inherits `process.env`: `Bun.spawn` without an `env`
+option drops in-process env writes.
+
+**Who reads it.** `route(model)` with no overrides asks the resolver on every call
+(`effectiveDefaultProvider`), and so does `--probe`'s chain, so the two cannot name different
+fallback hops. The proxy resolves it once at start and passes it as `route()`'s third argument. It
+has to: the proxy also passes its routing rules, and `route(model, rules)` with no third argument
+reads NO default provider, a guard that keeps the machine's setting out of unit tests. Until
+2026-09-24 the proxy passed only the rules, so its bare-name routing fell back to `openrouter`
+whatever `defaultProvider` said, `""` included.
 
 **Example config**:
 ```json
@@ -157,7 +252,8 @@ Set it via:
 }
 ```
 
-Valid values: any built-in provider name (`"openrouter"`, `"openai"`, `"google"`, `"litellm"`, etc.) or a custom endpoint name defined in `customEndpoints`.
+Valid values: any claudish provider name or shortcut (`"openrouter"`, `"or"`, `"openai"`,
+`"litellm"`, etc.), a custom endpoint name defined in `customEndpoints`, or `""` for none.
 
 **How it interacts with routing rules**: it applies ONLY to the catalog-gathered path. A bare
 name that matched a user rule gets that chain verbatim with no fallback appended — which is what
@@ -170,7 +266,7 @@ whole chain is credential-filtered. Explicit `provider@model` specs are unaffect
 | Setting | Fallback hop |
 |---|---|
 | unset (`undefined`) | `openrouter` — "no preference" is not "disabled" |
-| `""` (explicit empty string) | none |
+| `""` (explicit empty string), from the flag, the env var or the config file | none |
 | a matching user rule, e.g. `routing["*"] = []` | none — the rule is verbatim |
 
 **It is not appended when the catalog positively denies it.** The catalog draws the line itself:
@@ -189,26 +285,58 @@ partial by nature — `openai-codex` appears on 5 rows of 1,123). The route-owne
 what makes the narrower question answerable, and only the fallback APPEND asks it: the
 difference is inventing a hop nobody published versus dropping one something else put there.
 
-**No more LiteLLM auto-promotion** (removed in commit 5 of the model-catalog and routing redesign): Setting `LITELLM_BASE_URL` + `LITELLM_API_KEY` no longer makes LiteLLM the default. Users who want LiteLLM as the catch-all must set `defaultProvider: "litellm"` explicitly.
+**No more LiteLLM auto-promotion** (removed in commit 5 of the model-catalog and routing redesign): Setting `LITELLM_BASE_URL` + `LITELLM_API_KEY` no longer makes LiteLLM the default. Users who want LiteLLM as the catch-all must set `defaultProvider: "litellm"` explicitly. The one-shot stderr hint that announced the promotion, and the `DefaultProviderSchema` that listed LiteLLM as a built-in name, are gone as well.
 
-## Vendor Prefix Auto-Resolution (ModelCatalogResolver)
+## Wire ids come from the catalog's connections
 
-API aggregators (OpenRouter, LiteLLM) require vendor-prefixed model names that users shouldn't need to know. The `ModelCatalogResolver` interface searches each aggregator's dynamic model catalog to find the correct prefix automatically.
+A provider is sent its own wire id, never the name the user typed: the canonical model id
+`kimi-k3` is `k3` on Kimi Coding and `moonshotai/kimi-k3` on OpenRouter. There is no
+per-provider resolver, no `ModelCatalogResolver` and no static vendor map. One lookup reads the
+cloud models catalog record's `aggregators[]` connections, each
+`{ route: { routeId, routeProfileId }, routeStatus, externalModelId }`, of which only
+`routeStatus: "mapped"` counts:
 
-**How it works**: User types bare model name → resolver searches the provider's already-fetched model list → finds the exact match with vendor prefix → sends the prefixed name to the API.
+- `resolveExternalId(name, provider)` (`providers/catalog-client.ts`) finds the record by
+  canonical model id, then alias, then any wire id the record publishes, then a `/<name>` suffix
+  (exact case, then any case).
+- `externalIdFor(record, provider)` returns the `externalModelId` of the connection whose route
+  is bound to that provider (`catalogRouteMatchesProvider`, route bindings below). With both an
+  exact id and a moving pointer on offer, it sends the exact id; a pointer only when the model's
+  own id is one.
+- No match passes the name through unchanged, so a local model or a custom endpoint's private id
+  is sent as typed. A `vendor/<model>` name is its own answer.
 
-**Current resolvers**:
-- **OpenRouter**: `or@qwen3-coder-next` → searches catalog → sends `qwen/qwen3-coder-next`
-- **LiteLLM**: `ll@gpt-4o` → searches model groups → finds `openai/gpt-4o` (prefix-strip match)
-- **Static fallback**: `OPENROUTER_VENDOR_MAP` for cold starts when catalog isn't loaded yet
+It runs in two places:
 
-**Key design rules**:
-- Exact match only — no fuzzy/normalized matching. Find the right prefix, don't guess the model.
-- Dynamic catalogs (from provider APIs) are PRIMARY. Static map is cold-start fallback only.
-- Resolution happens BEFORE handler construction (in `proxy-server.ts`), not inside adapters.
-- Sync entry point (`resolveModelNameSync()`) — uses in-memory caches + `readFileSync`, no async propagation.
+- **Each routing-chain candidate.** `resolveRoutingEntries` (`routing-rules.ts`) takes a
+  subscription plan's wire id first (`resolveSubscriptionRouting`), else this lookup, per
+  provider. One chain can therefore send two spellings of one model to two providers.
+- **An explicit `provider@model`** (proxy step 2b, `resolveTargetForCatalog`): the spec is
+  rewritten to that provider's wire id and `[Model] Resolved …` is printed. Never a bare name:
+  rewriting one would manufacture an explicit spec, and step 2c would then skip routing.
 
-**Firebase slim catalog** (v7.0.0+): The `aggregators[]` field on model documents provides a typed multi-provider routing index. Each entry is `{ provider, externalId, confidence }`. Claudish only consumes this hosted catalog at runtime. Catalog extraction, recommendation generation, portal hosting, and API documentation live in the [models-index](https://github.com/MadAppGang/models-index) repo.
+The catalog itself is extracted, published and documented in the
+[models-index](https://github.com/MadAppGang/models-index) repo; claudish only reads it.
+
+## Route bindings: which claudish provider a catalog route means
+
+A connection names a route binding `(routeId, routeProfileId)`, never a claudish provider.
+`providers/catalog-route-bindings.ts` maps the two in two tables, split by job:
+
+- **`CATALOG_ROUTE_BINDINGS`, the routing table.** Every key is a claudish provider, built-in or
+  a bundled endpoint (`together`, `fireworks`), that owns one endpoint and one credential silo.
+  The candidate gatherer reads it through `routingProvidersForRoute`, which returns EVERY name
+  bound to a route: `z-ai` and `glm` share `z-ai/direct-api` because their keys sit in two
+  silos, and the credential filter decides which one serves.
+- **`LOOKUP_ONLY_ROUTE_BINDINGS`: `anthropic`, `moonshotai`, `zen`.** Names that catalog READS
+  ask about (the savings panel's first-party price, the Kimi picker list, a legacy picker value)
+  and that no claudish provider answers to. They are never route candidates. In the routing
+  table they were candidates by accident of spelling: a custom endpoint named `anthropic` would
+  have been gathered for every model Anthropic's native API serves.
+
+Reads see both tables (`catalogRouteForProvider`; `catalogReadProvidersForRoute` lists routing
+names first), so each read answers as it did before the split. A name that owns no endpoint and
+no credential silo gets no routing binding, whatever its spelling (CLAUDE.md's invariant).
 
 ## Runtime subscription routes come from the backend contract
 
@@ -234,10 +362,6 @@ matches; otherwise the catalog's own connections do, ordered by tier. Catalog
 availability removes only known-unserved candidates. A failed model or plan
 refresh does not replace a complete cached snapshot.
 
-**Adding a new aggregator resolver**: Implement `ModelCatalogResolver` interface in `providers/catalog-resolvers/`, register in `model-catalog-resolver.ts`. No changes to proxy-server or provider-resolver needed.
-
-**Architecture doc**: `ai-docs/sessions/dev-arch-20260305-104836-a48a463d/architecture.md` (write-up lost — predates the ai-docs tracking fix)
-
 ## Two model catalogs, and which one may deny
 
 Name them apart, because they are different KINDS of fact:
@@ -251,7 +375,7 @@ Name them apart, because they are different KINDS of fact:
 
 **A dynamic models catalog is never persisted.** `providers/model-discovery.ts` keeps the
 list in an in-memory `Map` for `CACHE_TTL_MS` (five minutes) and writes nothing to disk;
-the Antigravity served set is likewise in memory (`auth/antigravity-user.ts`). Every disk
+Antigravity's dynamic models catalog is likewise in memory (`auth/antigravity-user.ts`). Every disk
 writer holds hosted or credential-free data. A stored per-account list would outlive the
 key or seat that earned it and answer with something no longer true.
 

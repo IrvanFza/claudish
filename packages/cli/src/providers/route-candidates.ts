@@ -1,12 +1,11 @@
 /**
  * Every way claudish could call one model, gathered from the catalog and ordered.
  *
- * This is the replacement for the FIRST step of `routeBare` — the 24-entry
- * hand-written table in `default-routing-rules.ts`, which named providers per
- * model family and had to be edited whenever a vendor, a plan or a gateway
- * changed. That file is now DELETED and this module is wired in:
- * `routeBare` calls `buildCatalogChain`, which calls
- * {@link gatherRouteCandidates} for every bare name no USER rule matches.
+ * The step of the bare-name path (`explainBareName`) that runs when no USER rule
+ * matches: `explainCatalogChain` (also behind `buildCatalogChain`) calls
+ * {@link gatherRouteCandidates}. It replaced a hand-written table that named
+ * providers per model family and had to be edited whenever a vendor, a plan or
+ * a gateway changed.
  *
  * WHAT THIS MODULE IS NOT. It does not decide whether a candidate can be USED.
  * Two filters already own that question and neither is duplicated here:
@@ -52,11 +51,18 @@
  * this and nothing else:
  *
  *     user rules (elsewhere, verbatim, never merged with any of this)
- *       then tier:  subscription → dynamic-subscription → native → gateway → fallback
- *       within a tier:  the model's own vendor first
+ *       then band:  subscription (both subscription tiers) → native → gateway → fallback
+ *       within a band:  the model's own vendor first
+ *                  then tier: subscription before dynamic-subscription
  *                  then cheapest by catalog price (unknown last)
  *                  then larger context window
  *                  then provider name, ascending, for determinism
+ *
+ * The two subscription tiers share one band so that a vendor's OWN dynamic
+ * subscription goes first: `grok-4.x` goes Grok Build → OpenCode Zen Go → xAI.
+ * With tier first, Zen Go's catalog-published plan led Grok Build, xAI's own,
+ * on 3 of 1,143 catalog models (generation g-20260923145315478-d7a326bd); the
+ * project owner decided the vendor's own plan leads (2026-09-24).
  *
  * No local preference list, and NO LOCAL STATE. A spent subscription limit is
  * never remembered: the request moves to the next hop, which is the existing
@@ -67,10 +73,11 @@
 import { type SlimModelEntry, readAllModelsCache } from "./all-models-cache.js";
 import { externalIdFor, getCatalogEntries } from "./catalog-client.js";
 import {
+  CATALOG_ROUTE_BINDINGS,
   type CatalogRouteBinding,
   catalogRouteForProvider,
   catalogRouteMatchesProvider,
-  providersForCatalogRoute,
+  routingProvidersForRoute,
 } from "./catalog-route-bindings.js";
 import {
   type ConnectionPrice,
@@ -134,6 +141,11 @@ const TIER_RANK: Record<RouteTier, number> = {
   fallback: 4,
 };
 
+/** A tier's band: both subscription tiers share the first; every other tier is its own. */
+function bandRank(tier: RouteTier): number {
+  return tier === "dynamic-subscription" ? TIER_RANK.subscription : TIER_RANK[tier];
+}
+
 /** `routeId/routeProfileId`, the spelling the backend contract and the reports use. */
 function routeLabel(route: CatalogRouteBinding | undefined): string {
   return route ? `${route.routeId}/${route.routeProfileId}` : "(no route)";
@@ -194,8 +206,9 @@ function gatherFromConnections(
 
     // EVERY provider bound to this route, not just the first. One endpoint can
     // wear several claudish names, each owning a different key silo, and the
-    // user's credential may be in any of them — see `providersForCatalogRoute`.
-    const bound = providersForCatalogRoute(connection.route);
+    // user's credential may be in any of them — see `routingProvidersForRoute`.
+    // The routing table only: a lookup-only name is never a candidate.
+    const bound = routingProvidersForRoute(connection.route);
     const routable = bound.filter((name) => getProviderByName(name)?.tier !== undefined);
     if (routable.length === 0) {
       unmappedRoutes.add(routeLabel(connection.route));
@@ -240,6 +253,31 @@ function isVendorOwnRoute(
   entry: SlimModelEntry | undefined
 ): boolean {
   return route !== undefined && entry?.provider !== undefined && route.routeId === entry.provider;
+}
+
+/**
+ * The claudish provider that calls a vendor's own native API, or `undefined`.
+ *
+ * The same rule as {@link isVendorOwnRoute}, asked from the vendor's side: a
+ * vendor's own routes are the ones whose `routeId` is its slug. Of the routing
+ * table's providers bound to one of them, the first whose tier is `native` calls
+ * the vendor's metered API. A subscription on the same route (`openai-codex`,
+ * `kimi-coding`, `qwen-coding`) is never the answer, and neither is a
+ * lookup-only name, which calls nothing.
+ *
+ * Read by the recommended-models listings (`--models-top`, MCP `list_models`) to
+ * show a vendor's `provider@` shortcut beside its models. Deriving it replaced a
+ * hand-written vendor table that mapped `qwen` to the steering placeholder `qwen`,
+ * which has no shortcut, so Qwen rows showed none; the answer is `qwen-payg`
+ * (`qpay@`). `anthropic` has no answer: Claude's own route here is the
+ * `native-anthropic` subscription, and Anthropic's native API is lookup-only.
+ */
+export function nativeProviderForVendor(vendorSlug: string): string | undefined {
+  for (const [provider, binding] of Object.entries(CATALOG_ROUTE_BINDINGS)) {
+    if (binding.routeId !== vendorSlug) continue;
+    if (getProviderByName(provider)?.tier === "native") return provider;
+  }
+  return undefined;
 }
 
 /**
@@ -326,11 +364,18 @@ function gatherFromNamespaceClaims(
  * backend re-publish with nothing in claudish having changed.
  */
 export function compareRouteCandidates(a: RouteCandidate, b: RouteCandidate): number {
+  const byBand = bandRank(a.tier) - bandRank(b.tier);
+  if (byBand !== 0) return byBand;
+
+  // The vendor's own route, before anyone reselling it — across both
+  // subscription tiers, which is the only place a band holds two.
+  if (a.isVendorOwn !== b.isVendorOwn) return a.isVendorOwn ? -1 : 1;
+
+  // Inside the subscription band, a catalog-published plan before a dynamic
+  // one: its membership is evidence, where a namespace claim is only a question
+  // the availability filter asks the account.
   const byTier = TIER_RANK[a.tier] - TIER_RANK[b.tier];
   if (byTier !== 0) return byTier;
-
-  // The vendor's own route, before anyone reselling it.
-  if (a.isVendorOwn !== b.isVendorOwn) return a.isVendorOwn ? -1 : 1;
 
   const byPrice = compareByConnectionPrice(a.price, b.price);
   if (byPrice !== 0) return byPrice;
@@ -436,12 +481,13 @@ export function catalogDeniesProvider(
   if (!entry) return false;
 
   // `catalogRouteMatchesProvider`, NOT `providerForCatalogRoute(...) === provider`.
-  // The reverse lookup returns the FIRST provider bound to a route pair, and
-  // four pairs have two claudish names each (`kimi`/`moonshotai`,
-  // `opencode-zen`/`zen`, `qwen-payg`/`qwen`). Comparing its answer would have
-  // declared `moonshotai` denied on every model `kimi` serves — a real denial
-  // built out of an alias. Comparing BINDINGS is what `externalIdFor` and
-  // `model-availability.ts` already do, for this reason.
+  // The reverse lookup returns ONE name per route pair, and a pair can carry
+  // several. In the routing table only `z-ai`/`glm` share one (two key silos on
+  // one endpoint); the reads add `kimi`/`moonshotai` and `opencode-zen`/`zen`
+  // through the lookup-only names. Comparing its answer would declare `glm`
+  // denied on every model `z-ai` serves, a denial built out of a second key
+  // silo. Comparing BINDINGS is what `externalIdFor` and `model-availability.ts`
+  // already do, for this reason.
   return !(entry.aggregators ?? []).some(
     (connection) =>
       connection.routeStatus === "mapped" && catalogRouteMatchesProvider(connection.route, provider)

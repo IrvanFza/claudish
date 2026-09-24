@@ -61,7 +61,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 | chat model | text model, LLM | text among its input modalities AND among its output modalities; other modalities on either side never exclude one (`in: [file,image,text]` is a chat model, `in: [audio]` is not) |
 | type | shape, kind, variant (for a discriminator) | the field that says how to read the rest of an object: `pricing.type` is `flat`, `tiered`, `free` or `unavailable`. The catalog spelled it `shape` until the cutover on generation `g-20260921062451697-f490edba`; claudish reads `type` only, with no alias |
 | route candidate | option, hop (before filtering), chain entry | one `(provider, wire id)` pair gathered for a model, BEFORE the credential and availability filters. A candidate is a proposal; a hop is what survived |
-| tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price |
+| tier | class, category, rank, level | a provider's routing class: `subscription`, `dynamic-subscription`, `native`, `gateway`, `fallback`. Ordering is by tier first, and only then by vendor and price — except that the two subscription tiers count as one, so a vendor's own dynamic subscription leads another vendor's catalog subscription (`gk@` before `zengo@` for `grok-4.x`) |
 | namespace claim | pattern match, native claim | a dynamic subscription becoming a candidate because its `nativeModelPatterns` match the name. It exists so the availability filter can ASK the account; it is never evidence that the account is served |
 
 **Providers and routing**
@@ -119,7 +119,7 @@ negative case: if you are about to type one of those words, stop and use the lef
 - A new `StatsEvent` field MUST also be pushed in `eventToLogRecord` — `stats-otlp.ts` is a HAND-WRITTEN attribute allowlist, so a field wired only into the interface and `stats.ts` is typed, buffered to `~/.claudish/stats-buffer.json`, and never sent. Nothing errors; the number is just missing from every dashboard, a quarter later. `stats-otlp.test.ts`'s table is `satisfies Record<OptionalStatsKey, …>`, so adding the field breaks compilation until it is listed there too — keep that.
 - A connection failure can arrive wearing an AUTH status code, at FIVE sites in `composed-handler.ts` (`refreshAuth`, `forceRefreshAuth`, the parameter-recovery re-fetch, `getHeaders`, the primary fetch). 401 is retryable to `FallbackHandler`, so answering it for a network fault walks a subscription user onto metered billing mid-outage; an unclassified THROW is the same bug one layer out (`{status: 0}` + an unconditional advance, with no cost warning). Classify first or rethrow unchanged — never invent a status. `getHeaders()` is the non-obvious one: for `gk@` it is the request's first network touch, and refresh-conditional, so it is rare rather than safe. A TRANSPORT's own `refreshAuth` catch that returns normally is the same bug one layer earlier: `openai-codex.ts` swallowed an unreachable token host and fell through to the metered api-key path.
 - Anything that renders a TUI to **stderr** must `setStderrQuiet(true)` for as long as it owns the screen, and release it in a `finally`. `logStderr` writes there too, so the two interleave inside one frame: the TUI repaints its own cells over part of the line and the surviving fragments read as a layout bug. `--probe` hit this — the tell was a stray `[c`, the head of `[claudish] `, left in a failed row. The message is not lost; `logStderr` always writes the debug log as well.
-- A `route binding` names one endpoint AND one credential silo. A provider that owns neither does not belong in `CATALOG_ROUTE_BINDINGS`, even when its name matches the `routeId`: since `providersForCatalogRoute` returns every provider bound to a route, a placeholder listed there becomes a route candidate and `--probe` prints a hop no key can ever satisfy. Do NOT fix that by filtering `reason: "virtual"` out of the gatherer — `native-anthropic` is virtual and genuinely routable through the native passthrough, so that filter takes `claude-*` away from anyone holding an `ANTHROPIC_API_KEY`.
+- A `route binding` names one endpoint AND one credential silo. A provider that owns neither does not belong in `CATALOG_ROUTE_BINDINGS`, even when its name matches the `routeId`: since `routingProvidersForRoute` returns every provider bound to a route, a placeholder listed there becomes a route candidate and `--probe` prints a hop no key can ever satisfy. A name that only READS catalog data through a route (a vendor slug such as `anthropic` for the savings-panel price, `moonshotai` for the Kimi picker list) goes in `LOOKUP_ONLY_ROUTE_BINDINGS`, which the lookups consult and routing never does; a test pins that table's members. Do NOT fix that by filtering `reason: "virtual"` out of the gatherer — `native-anthropic` is virtual and genuinely routable through the native passthrough, so that filter takes `claude-*` away from anyone holding an `ANTHROPIC_API_KEY`.
 
 ## Commands
 
@@ -128,6 +128,47 @@ negative case: if you are about to type one of those words, stop and use the lef
 - `bun run typecheck`, `bun run lint`, `bun run format`
 - `claudish --probe <model>` shows the adapter composition; `--debug` writes a log to `logs/`.
 - Model syntax is `provider@model[:concurrency]` (`google@gemini-2.0-flash`, `ollama@llama3.2:3`); a bare name auto-routes by pattern. Prefix meanings: `routing.md`.
+
+## Commit messages
+
+**The subject line is the release note.** `git cliff` copies it verbatim into `CHANGELOG.md`
+and the GitHub Release (`cliff.toml`), and `claudish update` shows that text to users under
+"What's New" (`update-command.ts`). Write it for a user scanning a list of changes. The same
+rule covers PR titles and tag messages.
+
+**Subject: `type(scope): verb object [condition]`**, at most 72 characters.
+
+- `type` picks the changelog section: `feat` new capability, `fix` defect repaired, `perf`,
+  `refactor` (no behaviour change), `docs`, `test`, `chore`. `chore: bump version` is skipped.
+  Add `!` and a `BREAKING CHANGE:` footer when users lose something they relied on.
+- `scope` is the component or provider: `picker`, `probe`, `routing`, `catalog`, `discovery`,
+  `effort`, `errors`, `adapters`, `mcp`, `team`, `release`, or a provider name (`devin`,
+  `ollama`). Required on `feat` and `fix`.
+- Imperative verb, lowercase: add, remove, fix, send, resolve, read, reject, map, show, hide.
+- Name the concrete thing: the function, flag, field, endpoint, provider, model id or HTTP status.
+  A `fix` states the defect's symptom or condition.
+- One change per commit. A subject that needs "and" is two commits.
+
+**Never write:** metaphor or personification ("lowest rung", "off switch", "tearing its own
+rows", "ask Devin", "in Devin's own spelling"); a principle instead of a change ("a model is
+offered when something says it works"); grab bags ("and three release-review findings",
+"misc fixes", "address review"); words that need the body to decode ("properly", "correctly",
+"handle", "improve", "clean up").
+
+**Body**, wrapped at 72, plain paragraphs in this order, each only when it applies: the problem
+as observed (exact error text, status code, measured numbers); the cause (file and function);
+what the code does now; the verification (the test that fails without the fix, or the live
+measurement). The thesaurus applies. No narrative or rhetorical framing.
+
+| Was (v10.1.1) | Write |
+|---|---|
+| ask Devin about swe-1.7 in Devin's own spelling | `fix(devin): route bare swe-1.7-style names to Devin, not OpenRouter` |
+| minimal effort is the lowest rung, not the off switch | `fix(effort): map minimal to the lowest advertised effort level` |
+| a model is offered when something says it works, never when nothing does | `fix(discovery): list only models with published chat capability` |
+| show the provider's own error, not claudish's guess about it | `fix(probe): show the provider's error message instead of a derived hint` |
+| stop the probe tearing its own rows, and drop a hop no key can satisfy | `fix(probe): suppress stderr log lines while the probe TUI is drawn` + `fix(routing): remove the qwen route binding that has no endpoint` |
+| ask an older Ollama daemon for capabilities it lists only in /api/show | `fix(ollama): use the /api/show capability fallback in picker discovery` |
+| keep what a provider says about its own models, and three release-review findings | `fix(picker): pass provider-reported capability to the chat filter`, plus one commit per finding |
 
 ## Releasing
 

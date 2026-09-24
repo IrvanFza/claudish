@@ -17,10 +17,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildProviderChoices } from "../model-selector.js";
-import { PROVIDER_REASONS } from "../tui/components/RoutingContent.js";
+import { probeRowLabel } from "../tui/components/RoutingContent.js";
 import { API_KEY_MAP } from "./api-key-map.js";
 import { describeMissingCredential, getProviderByName } from "./provider-definitions.js";
 import { getProviderApiKeyEnv } from "./routing-hints.js";
+import { TIER_LABEL } from "./routing-rules.js";
 
 const CODING = "qwen-coding";
 const TOKEN = "qwen-token-plan";
@@ -55,11 +56,18 @@ describe("qwen-coding — every hand-written table that shadows the definition",
   });
 
   test("the config TUI's routing panel names all three products", () => {
-    // Absent, a row renders its bare uid as its own explanation — not visibly
-    // broken, which is why it needs a test rather than a look.
-    expect(PROVIDER_REASONS[CODING]).toBe("Alibaba Coding Plan");
-    expect(PROVIDER_REASONS[TOKEN]).toBe("Alibaba Token Plan");
-    expect(PROVIDER_REASONS[PAYG]).toBe("Alibaba PAYG");
+    for (const name of [CODING, TOKEN, PAYG]) {
+      const def = getProviderByName(name)!;
+      expect(def.tier).toBeDefined();
+      expect(
+        probeRowLabel({
+          displayName: def.displayName,
+          status: "pending",
+          tier: def.tier,
+          position: "candidate",
+        })
+      ).toBe(`${def.displayName} · ${TIER_LABEL[def.tier!]}`);
+    }
   });
 
   test("a 401 names the other two silos' keys as not-accepted-here", () => {

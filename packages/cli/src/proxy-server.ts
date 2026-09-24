@@ -40,6 +40,7 @@ import {
   getCustomEndpointResult,
 } from "./providers/endpoint-registration.js";
 import { parseModelSpec } from "./providers/model-parser.js";
+import { proxyRouteDecision } from "./providers/native-route.js";
 import { describeMissingCredential } from "./providers/provider-definitions.js";
 import { createHandlerForProvider } from "./providers/provider-profiles.js";
 import {
@@ -49,7 +50,14 @@ import {
 } from "./providers/provider-registry.js";
 import { resolveModelProvider } from "./providers/provider-resolver.js";
 import { resolveRemoteProvider } from "./providers/remote-provider-registry.js";
-import { loadRoutingRules, route } from "./providers/routing-rules.js";
+import {
+  describeRoutingRuleProblem,
+  effectiveDefaultProvider,
+  loadRoutingRuleSources,
+  loadRoutingRules,
+  route,
+  routingRuleProblems,
+} from "./providers/routing-rules.js";
 import { LocalTransport } from "./providers/transport/local.js";
 import { OpenRouterProviderTransport } from "./providers/transport/openrouter.js";
 import { PoeProvider } from "./providers/transport/poe.js";
@@ -569,15 +577,31 @@ export async function createProxyServer(
   };
 
   // Direct-provider catalog warmup (LiteLLM, Zen, Zen Go) was removed in
-  // commit 5 of the model-catalog and routing redesign. claudish only fetches
-  // Firebase catalogs now. The OpenRouter catalog is still warmed below via
-  // warmAllCatalogs() since it backs vendor-prefix resolution.
+  // commit 5 of the model-catalog and routing redesign. The one catalog claudish
+  // fetches is the cloud models catalog, warmed below (`warmCatalog`); every
+  // provider's wire id comes from its connections (`resolveExternalId`).
 
   // Load effective routing rules once at startup: the USER's global config +
   // local config (local wins), and nothing else — there is no shipped table any
   // more. The routing engine consults these via route() for every bare-name
   // request, and falls through to the catalog-gathered chain when none matches.
-  const effectiveRoutingRules = loadRoutingRules();
+  const routingRuleSources = loadRoutingRuleSources();
+  const effectiveRoutingRules = loadRoutingRules(routingRuleSources);
+  // Problems in those rules, reported ONCE, here: before Claude Code owns the
+  // terminal, and through logStderr, which the quiet flag and a diagnostics pane
+  // both govern. `loadRoutingRules` prints nothing, because it also runs inside the
+  // config TUI and the `--probe` TUI (and on every `route()` call). The custom and
+  // bundled endpoints were registered above, so a rule naming one is not reported
+  // as an unknown provider.
+  for (const problem of routingRuleProblems(routingRuleSources)) {
+    logStderr(`Warning: ${describeRoutingRuleProblem(problem)}`);
+  }
+  // The fallback hop, resolved once beside the rules and passed to route() with
+  // them. Passing rules alone makes route() read NO default provider (its guard
+  // keeps this machine's setting out of tests), so before this every bare name the
+  // proxy routed fell back to `openrouter`, whatever `defaultProvider` said —
+  // `""` included. `--default-provider` reaches this through the env variable.
+  const effectiveFallbackProvider = effectiveDefaultProvider();
 
   // Cache fallback handlers by target model string.
   // No TTL/invalidation: claudish is ephemeral per session, so env changes
@@ -740,8 +764,9 @@ export async function createProxyServer(
     //
     // Safe to run unconditionally: a model the catalog doesn't know — a local
     // GGUF, a custom endpoint's private id — resolves to null and passes
-    // through unchanged. Providers that ALSO resolve live (Antigravity's served
-    // set) are unaffected: they re-resolve an exact id to itself.
+    // through unchanged. Providers that ALSO resolve live (against Antigravity's
+    // dynamic models catalog) are unaffected: they re-resolve an exact id to
+    // itself.
     //
     // ONLY for an EXPLICIT `provider@model` spec. The rewrite emits a
     // `provider@model` string, and for a BARE name `parsedTarget.provider` is the
@@ -782,17 +807,17 @@ export async function createProxyServer(
       }
     }
 
-    // 2c. Provider fallback chain for auto-routed models
-    // When no explicit provider@ prefix is given, consult the routing engine
-    // (defaults + user overrides merged in loadRoutingRules), filter to
-    // credentialed providers, and wrap them in a FallbackHandler.
+    // 2c. The routing chain for a bare name
+    // When no explicit provider@ prefix is given, `route()` calculates the chain:
+    // the user's own rules (loaded once above), else the candidates the cloud
+    // models catalog publishes plus the fallback hop, each kept only when it has
+    // a credential and the account does not deny the model. The kept hops are
+    // wrapped in a FallbackHandler.
+    // `proxyRouteDecision` IS this gate: only a `bare` target is routed. Every
+    // other decision falls through to steps 3-7 below.
     {
-      const parsedForFallback = parseModelSpec(target);
-      if (
-        !parsedForFallback.isExplicitProvider &&
-        parsedForFallback.provider !== "native-anthropic" &&
-        !isPoeModel(target)
-      ) {
+      const decision = proxyRouteDecision(target);
+      if (decision.type === "bare") {
         const cacheKey = `fallback:${target}`;
         if (fallbackHandlerCache.has(cacheKey)) {
           return fallbackHandlerCache.get(cacheKey)!;
@@ -801,7 +826,7 @@ export async function createProxyServer(
         // Ensure catalog is warm before route() builds OpenRouter modelSpecs.
         await ensureCatalogReady(5000);
 
-        const plan = await route(parsedForFallback.model, effectiveRoutingRules);
+        const plan = await route(decision.model, effectiveRoutingRules, effectiveFallbackProvider);
         if (plan.kind === "ok") {
           const chain = [plan.primary, ...plan.fallbacks];
           const candidates: FallbackCandidate[] = [];
@@ -823,10 +848,14 @@ export async function createProxyServer(
 
             fallbackHandlerCache.set(cacheKey, resultHandler);
 
+            const routeLine = `[Route] ${candidates.length} ${candidates.length === 1 ? "provider" : "providers"} for ${decision.model}: ${candidates.map((c) => c.name).join(" → ")}`;
             if (!options.quiet && candidates.length > 1) {
-              logStderr(
-                `[Route] ${candidates.length} providers for ${parsedForFallback.model}: ${candidates.map((c) => c.name).join(" → ")}`
-              );
+              logStderr(routeLine);
+            } else {
+              // The debug log gets the chain even when stderr does not: a single
+              // hop, or a quiet `-p` run. Without it a request that went to the
+              // fallback hop alone left no line naming the provider it used.
+              log(routeLine);
             }
             return resultHandler;
           }
@@ -1204,11 +1233,12 @@ export async function createProxyServer(
   // Warm recommended models from Firebase in background (non-blocking)
   warmRecommendedModels().catch(() => {});
 
-  // Warm model catalog resolvers in background (non-blocking).
-  // OpenRouter is the only registered resolver post-commit-5 — the LiteLLM
-  // resolver was removed (claudish doesn't fetch LiteLLM's catalog anymore).
+  // Warm the cloud models catalog in the background (non-blocking). Routing and
+  // step 2b read wire ids from it. A request that finds neither a warm nor a
+  // cached catalog waits in `ensureCatalogReady`, up to five seconds.
   warmCatalog().catch(() => {
-    // Warming failures are non-fatal — resolver falls back to passthrough
+    // Non-fatal: a cached catalog still answers. With none at all, an explicit
+    // spec passes through unchanged and a bare name gets the no-catalog no-route.
   });
 
   return {

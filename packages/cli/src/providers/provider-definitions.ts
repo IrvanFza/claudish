@@ -492,14 +492,15 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // EXPLICIT (`dv@claude-opus-5`), same as Alibaba Token Plan.
     //
     // `swe-*` is different in kind: it is Cognition's own model line, no other
-    // provider in the catalog carries it, and it collides with nothing. Without
-    // a pattern here, `parseModelSpec` sends every unrecognised bare name to
-    // native-anthropic (model-parser.ts, "No '/' - treat as native Anthropic
-    // model"), so `swe-1.7` never even reached the routing rules — it was
-    // silently rewritten to `claude-opus-4-1` and answered by a different
-    // vendor's model, probing byte-identically to a nonsense string while
-    // `dv@swe-1.7` served fine. A DEFAULT_ROUTING_RULES entry alone cannot fix
-    // that, because the native-anthropic catch-all preempts rule matching.
+    // provider in the catalog carries it, and it collides with nothing. The
+    // pattern is Devin's namespace claim: `gatherFromNamespaceClaims`
+    // (route-candidates.ts) makes Devin a route candidate for a bare `swe-*`
+    // name, which the catalog cannot list because the account decides what the
+    // seat serves. It was added when `parseModelSpec` still sent every
+    // unrecognised bare name to native-anthropic: `swe-1.7` never reached
+    // routing, was silently rewritten to `claude-opus-4-1` and answered by a
+    // different vendor's model, probing byte-identically to a nonsense string
+    // while `dv@swe-1.7` served fine.
     //
     // Do NOT extend this list to Devin's re-served families.
     nativeModelPatterns: [{ pattern: /^swe-/i }],
@@ -1482,8 +1483,8 @@ export const BUILTIN_PROVIDERS: TieredProviderDefinition[] = [
     // It used to carry `openaiHandler` and a comment arguing it was unreachable
     // anyway, because `providerForCatalogRoute` returned only the FIRST provider
     // bound to `qwen/dashscope-direct` and `qwen-payg` is the earlier key. v10.0.0
-    // replaced that with `providersForCatalogRoute`, which returns ALL of them —
-    // the z-ai/glm key-silo fix — and deleted the premise. This became a gathered
+    // made the gatherer take ALL of them (now `routingProvidersForRoute`) — the
+    // z-ai/glm key-silo fix — and deleted the premise. This became a gathered
     // candidate, so `--probe qwen3.8-max` printed a `Qwen ✗ key missing` hop and
     // sent the reader looking for a key that no environment variable can hold.
     // `route()` never yielded it (the credential filter drops it), so the damage

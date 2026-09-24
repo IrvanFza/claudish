@@ -171,9 +171,9 @@ describe("parseModelSpec — native model auto-detection", () => {
     expect(parsed.provider).toBe("native-anthropic");
   });
 
-  test("unknown-model without / falls to native-anthropic", () => {
+  test("unknown-model without / falls to auto-route", () => {
     const parsed = parseModelSpec("unknown-model");
-    expect(parsed.provider).toBe("native-anthropic");
+    expect(parsed.provider).toBe("auto-route");
   });
 
   test("vendor/model format with unknown vendor", () => {

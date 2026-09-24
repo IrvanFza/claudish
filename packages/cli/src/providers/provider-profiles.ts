@@ -232,13 +232,14 @@ export const devinProfile: ProviderProfile = {
  * `openaiCodexProfile` builds `CodexAPIFormat` unconditionally and never calls
  * this function at all.
  *
- * Pick the verification model carefully. /v1/models is a CATALOGUE, not a served
- * set: of those six ids, only `gpt-5.3-codex` actually answers 200 on
+ * Pick the verification model carefully. /v1/models is a dynamic models catalog,
+ * NOT an entitlement: of those six ids, only `gpt-5.3-codex` actually answers 200 on
  * /v1/responses for the developer's account — the rest return 404 "Model not
  * found" there, and `gpt-5-codex` is additionally reported DEPRECATED on
  * /v1/chat/completions. Testing against any of them looks exactly like "the
- * routing fix did not work" when the model is simply not being served. Same
- * catalogue-vs-served-set trap the Antigravity and Devin providers document.
+ * routing fix did not work" when the model is simply not being served. It is the
+ * same dynamic-models-catalog-vs-entitlement trap the Antigravity and Devin
+ * providers document.
  *
  * THE CATALOG MAY ONLY WIDEN THIS GATE, NEVER NARROW IT. The name rule stays an
  * unconditional `||` below for the reason above: the transport routes every
