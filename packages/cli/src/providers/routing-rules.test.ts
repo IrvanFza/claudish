@@ -1618,16 +1618,92 @@ describe("route() no-route plan characterization", () => {
     }
   });
 
-  test("omits the OpenRouter suggestion when the catalog denies that connection", async () => {
+  test("omits the OpenRouter suggestion when the probe map says OpenRouter is backend-owned", () => {
     const model = "catalog-denies-openrouter";
     const fixture = makeTempCatalog({ modelId: model });
+    const home = mkdtempSync(join(tmpdir(), "claudish-openrouter-owned-route-"));
     try {
-      expect(await route(model, {}, "", fixture.path)).toEqual({
+      const configDir = join(home, ".claudish");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, "probe-models.json"),
+        JSON.stringify({
+          version: 3,
+          generationId: "stage5-test-generation",
+          generatedAt: "2026-09-24T00:00:00.000Z",
+          providers: { openrouter: "probe-model" },
+          unavailable: {},
+        }),
+        "utf8"
+      );
+      const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
+      const script = `
+        const { route } = await import(${JSON.stringify(routingModuleUrl)});
+        const plan = await route(${JSON.stringify(model)}, {}, "", ${JSON.stringify(fixture.path)});
+        process.stdout.write(JSON.stringify(plan));
+      `;
+      const env: Record<string, string> = {
+        HOME: home,
+        PATH: process.env.PATH ?? "",
+        TMPDIR: process.env.TMPDIR ?? tmpdir(),
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+      };
+      const result = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: join(import.meta.dir, "../../../.."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = result.stdout.toString();
+      const stderr = result.stderr.toString();
+      expect(result.exitCode, stderr || stdout).toBe(0);
+      expect(JSON.parse(stdout)).toEqual({
         kind: "no-route",
         reason: `No provider in the catalog serves "${model}".`,
-        hint: undefined,
       });
     } finally {
+      rmSync(home, { recursive: true, force: true });
+      fixture.cleanup();
+    }
+  });
+
+  test("keeps the OpenRouter suggestion when no probe map says who owns the route", () => {
+    const model = "catalog-denies-openrouter";
+    const fixture = makeTempCatalog({ modelId: model });
+    const home = mkdtempSync(join(tmpdir(), "claudish-openrouter-unknown-route-"));
+    try {
+      const routingModuleUrl = new URL("./routing-rules.ts", import.meta.url).href;
+      const script = `
+        const { route } = await import(${JSON.stringify(routingModuleUrl)});
+        const plan = await route(${JSON.stringify(model)}, {}, "", ${JSON.stringify(fixture.path)});
+        process.stdout.write(JSON.stringify(plan));
+      `;
+      const env: Record<string, string> = {
+        HOME: home,
+        PATH: process.env.PATH ?? "",
+        TMPDIR: process.env.TMPDIR ?? tmpdir(),
+        CLAUDISH_DISABLE_CATALOG_WARM: "1",
+        CLAUDISH_DISABLE_KEYCHAIN: "1",
+        CLAUDISH_DISABLE_OP: "1",
+      };
+      const result = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: join(import.meta.dir, "../../../.."),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = result.stdout.toString();
+      const stderr = result.stderr.toString();
+      expect(result.exitCode, stderr || stdout).toBe(0);
+      expect(JSON.parse(stdout)).toEqual({
+        kind: "no-route",
+        reason: `No provider in the catalog serves "${model}".`,
+        hint: expect.stringContaining("claudish --model or@catalog-denies-openrouter"),
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
       fixture.cleanup();
     }
   });
