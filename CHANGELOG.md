@@ -2,6 +2,72 @@
 
 All notable changes to [Claudish](https://github.com/MadAppGang/claudish).
 
+## [10.3.0] - 2026-09-24
+
+### Bug Fixes
+
+- hold the chain when a stream retry cannot reach the provider *(routing)* ([`0f2c5e1`](https://github.com/MadAppGang/claudish/commit/0f2c5e14e93cdd3a249890cf2d2982adc402b86e))
+- put a vendor's own dynamic subscription first in its band *(routing)* ([`c327eb0`](https://github.com/MadAppGang/claudish/commit/c327eb0c57f7bb5bba69b63be2c1a895accce41f))
+- advance the chain on an upstream 502, 503 or 504 *(routing)* ([`5e839b5`](https://github.com/MadAppGang/claudish/commit/5e839b511c784e7302ca20e8df81114cb39894cf))
+- list every provider shortcut in --help from the definitions *(cli)* ([`6324876`](https://github.com/MadAppGang/claudish/commit/6324876e91fecf4da586330f581c03d401c148c2))
+- stop describing a dropped fallback as "fallback only" *(routing)* ([`5459e7c`](https://github.com/MadAppGang/claudish/commit/5459e7c2d3e5d7a84c7f79ecf8340b10bf09f083))
+- use the shared NATIVE_NOT_PROBED note in the route probe *(tui)* ([`047bed2`](https://github.com/MadAppGang/claudish/commit/047bed2557a6d56aff3669e6a7e80c84fe7ee8f8))
+- show the calculated route in the grid pane header *(team)* ([`fdadea7`](https://github.com/MadAppGang/claudish/commit/fdadea7fe8cfbd250eaf85a5231d76489c554675))
+- describe unmapped profile roles as calculated routing *(tui)* ([`83ce97a`](https://github.com/MadAppGang/claudish/commit/83ce97afe4d5aa85f1494a6a87ad8c4d2fdadaeb))
+- remove hard-coded example model names from the route probe *(tui)* ([`4b25690`](https://github.com/MadAppGang/claudish/commit/4b25690b618046d023564776394bdf023d5cc9a6))
+- show the resolved fallback hop in the Routing tab header *(tui)* ([`ba60e9d`](https://github.com/MadAppGang/claudish/commit/ba60e9d127fad600efbf018463e577e38106b5e1))
+- show the user's "*" rule in the Routing tab header *(tui)* ([`9b4342a`](https://github.com/MadAppGang/claudish/commit/9b4342a915a229ffe05c3f5fff6c35598f65d653))
+- label route probe hops by tier, not a provider map *(tui)* ([`72ae5e6`](https://github.com/MadAppGang/claudish/commit/72ae5e654cc87c2c91eb913d7271b123fe1c5739))
+- render the route probe from explainRoute *(tui)* ([`e71aafb`](https://github.com/MadAppGang/claudish/commit/e71aafb371cfc286eca12ee0fc3ae2ce57818b6b))
+- show the chain route() calculates, with dropped candidates *(probe)* ([`d28cb1c`](https://github.com/MadAppGang/claudish/commit/d28cb1c116848d18bf153c72072ab344b83082ec))
+- return rule warnings instead of printing them to stderr *(routing)* ([`5af1bf3`](https://github.com/MadAppGang/claudish/commit/5af1bf3f719d16500fb8a8d33e7c9559d267b890))
+- show qpay@ for Qwen rows in the recommended-models list *(catalog)* ([`df70aea`](https://github.com/MadAppGang/claudish/commit/df70aea2b156d3c694ff69cb7e54ec4688cb44a4))
+- use claudish provider names in the cold-start slug seeds *(catalog)* ([`d479013`](https://github.com/MadAppGang/claudish/commit/d479013ad9339e03cb8f854ac4e5de9f9062162f))
+- key the probe map under every provider bound to a route *(routing)* ([`4d5478f`](https://github.com/MadAppGang/claudish/commit/4d5478f92dd58263f318e4c788023595ba3bb40c))
+- split lookup-only names out of CATALOG_ROUTE_BINDINGS *(routing)* ([`21496c1`](https://github.com/MadAppGang/claudish/commit/21496c14119322a08a74a75b67baa250ea01c950))
+- make --default-provider reach the proxy and child sessions *(cli)* ([`9be012f`](https://github.com/MadAppGang/claudish/commit/9be012fc6e2dc6cd3b869b2d8282d296c048108b))
+- apply defaultProvider in the proxy's bare-name routing *(routing)* ([`9f8364f`](https://github.com/MadAppGang/claudish/commit/9f8364f5c028418e9080b3935d916790a8ea34c3))
+- honour CLAUDISH_DEFAULT_PROVIDER in route() *(routing)* ([`8eb8897`](https://github.com/MadAppGang/claudish/commit/8eb8897940f0e9469d77fc3bfd2edad25e0beb7b))
+- treat defaultProvider "" in env or config as no fallback *(routing)* ([`dd22847`](https://github.com/MadAppGang/claudish/commit/dd22847f46fde4f2eb545b58d282fd8c245fbbe7))
+- send bare non-Claude names to route(), not to Anthropic *(routing)* ([`16b92cc`](https://github.com/MadAppGang/claudish/commit/16b92ccaa01ad69fb7a042cb955aeb0d79a94e05))
+- restore CLAUDISH_DISABLE_KEYCHAIN instead of deleting it *(test)* ([`5729c28`](https://github.com/MadAppGang/claudish/commit/5729c2879ca5e25a4328c6d5597ac03c8bbcedf8))
+
+### Documentation
+
+- add the --probe explicit-target defect to the open list *(reports)* ([`5e5e7f6`](https://github.com/MadAppGang/claudish/commit/5e5e7f685ad0b07beb53ad8e37d0c618c1b10104))
+- record what calculated routing shipped and what is open *(reports)* ([`60fbf7e`](https://github.com/MadAppGang/claudish/commit/60fbf7e9271090f7bde9c1e88a3cd0dbb82c3ba6))
+- correct two stale routing comments in proxy and resolver *(routing)* ([`e2c5b57`](https://github.com/MadAppGang/claudish/commit/e2c5b57bafb6bdd55f83b0849a46921abbf469e0))
+- replace the ModelCatalogResolver section of routing.md *(routing)* ([`ad6ebea`](https://github.com/MadAppGang/claudish/commit/ad6ebea46fedf112f23fb923a2002f6393afbb10))
+- describe calculated routing in parser and hint comments *(routing)* ([`7a6cc48`](https://github.com/MadAppGang/claudish/commit/7a6cc48a6a5802e459f2bd00570bde7a108d6722))
+- state that project rules override global per pattern *(routing)* ([`e17a776`](https://github.com/MadAppGang/claudish/commit/e17a77688399b17e72ba18d3d540de9269ac55cd))
+- remove DEFAULT_ROUTING_RULES from code comments *(routing)* ([`c78b57e`](https://github.com/MadAppGang/claudish/commit/c78b57e37589abd66f5b3742777b029d7cf114f6))
+- use <model> placeholders in --help model examples *(cli)* ([`ae8547e`](https://github.com/MadAppGang/claudish/commit/ae8547e91b5ad62ff16c2d2737fbb0cf40875fb6))
+- replace the static routing table in --help *(cli)* ([`4946520`](https://github.com/MadAppGang/claudish/commit/494652058828ec63479d7f19dd90bad6ea4ad52a))
+- document defaultProvider sources and the empty value *(routing)* ([`2f6f903`](https://github.com/MadAppGang/claudish/commit/2f6f903a0fa3bbdc89d58318cddff326fd5bc1dc))
+- add the commit message rule *(claude)* ([`a4e17c2`](https://github.com/MadAppGang/claudish/commit/a4e17c2826bc9e849646c4f75ef553ea6e3b041f))
+- update CHANGELOG.md for v10.2.0([`e1191e2`](https://github.com/MadAppGang/claudish/commit/e1191e2b95a4f21761c2e32e6d973c764a3b502b))
+
+### New Features
+
+- warn when a routing rule names an unknown provider *(routing)* ([`8a23cf3`](https://github.com/MadAppGang/claudish/commit/8a23cf3e890f272d3c703185db93f2b00295b413))
+
+### Other Changes
+
+- record the resolved defaultProvider in the route gate *(routing)* ([`4c00bb0`](https://github.com/MadAppGang/claudish/commit/4c00bb0bb80b326677dc9454ec5d3266c5d946eb))
+- record the proxy decision per row in the route gate *(routing)* ([`56fe2fb`](https://github.com/MadAppGang/claudish/commit/56fe2fbcff85a905ffd9d84598e2da5d79b8aa41))
+- add a --strict mode to the route-table gate diff *(routing)* ([`d876de2`](https://github.com/MadAppGang/claudish/commit/d876de26b3adb1539b83838f434610b09d5fec23))
+
+### Refactoring
+
+- export hopLabel and drop its two copies *(routing)* ([`e0d32d4`](https://github.com/MadAppGang/claudish/commit/e0d32d4b064d03445b53cbd52329c6efc28a0dc4))
+- add explainRoute and derive route() from it *(routing)* ([`1b76309`](https://github.com/MadAppGang/claudish/commit/1b7630931ba7a8879c0a7b4390e491bee71636d3))
+- add matchRoutingRuleKey beside matchRoutingRule *(routing)* ([`a244bf2`](https://github.com/MadAppGang/claudish/commit/a244bf2aaab0179a49d22a5ab09781787e567941))
+- remove the unused DefaultProviderSchema *(config)* ([`c881569`](https://github.com/MadAppGang/claudish/commit/c88156908c8dabbb43f33a44f95c41b0e3941032))
+- remove the dead LiteLLM auto-promotion hint *(cli)* ([`e326fa9`](https://github.com/MadAppGang/claudish/commit/e326fa90fce833acd42e7987dfad9d2def1aeeb7))
+- add isClaudeCodeModelName to claude-code-aliases *(routing)* ([`d91d355`](https://github.com/MadAppGang/claudish/commit/d91d355d5b5eb13da68d90122c9ceaeb37987714))
+- extract proxyRouteDecision from the proxy gate *(routing)* ([`123be2b`](https://github.com/MadAppGang/claudish/commit/123be2bf6f391dd44b66b6d5a64357b7c4dde2b8))
+- replace the retired term "served set" *(discovery)* ([`ad1fcf6`](https://github.com/MadAppGang/claudish/commit/ad1fcf6ab829098e8cdc96a67bbc56a8ac3b1407))
+
 ## [10.2.0] - 2026-09-23
 
 ### Bug Fixes
