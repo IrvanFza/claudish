@@ -72,7 +72,7 @@ function stubFetch(unreachable: boolean): () => number {
       throw Object.assign(new TypeError("fetch failed"), { code: "ConnectionRefused" });
     }
     return new Response('{"error":{"message":"upstream overloaded"}}', { status: 503 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   return () => calls;
 }
 
