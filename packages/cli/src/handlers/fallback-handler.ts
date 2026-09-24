@@ -203,9 +203,10 @@ export class FallbackHandler implements ModelHandler {
 
 /**
  * Determine if an HTTP error is retryable (should try next provider).
- * Auth errors, billing errors, rate limits, and model-not-found errors
- * warrant trying a different provider. True server errors (500 without
- * billing context) do NOT — they'd likely fail on any provider.
+ * Auth errors, billing errors, rate limits, model-not-found errors and an
+ * unavailable endpoint (502/503/504) warrant trying a different provider. A
+ * plain 500 does NOT: it may carry account state, and it is the one 5xx a
+ * request's own payload can provoke on every provider alike.
  */
 export function isRetryableError(
   status: number,
@@ -308,6 +309,20 @@ export function isRetryableError(
 
   // Rate limited — per-provider limit, a different provider may have capacity
   if (status === 429) return true;
+
+  // Unavailable — a gateway or overload answer is about THIS endpoint, not about
+  // the model anywhere else. A bare `grok-4.7` stopped at its first candidate on
+  // Zen Go's `503 Upstream request failed: Endpoint is unavailable.` while the
+  // five candidates behind it answered (`--probe grok-4.7`, 2026-09-24), and
+  // Claude Code's retry loop re-sent the same chain to the same dead hop.
+  //
+  // The old exclusion argued a 503 "cannot silently switch the user off the model
+  // they pinned". A pinned `provider@model` builds no FallbackHandler at all
+  // (proxy-server: one candidate → its handler directly), so inside a chain that
+  // protected nothing. claudish's OWN "cannot reach the host" 503 still holds the
+  // chain: the connection-verdict check at the top of this function answers first,
+  // and `handle()` returns a recovery-hold response before it gets here.
+  if (status === 502 || status === 503 || status === 504) return true;
 
   const lower = errorBody.toLowerCase();
 
@@ -455,9 +470,9 @@ export function isRetryableError(
  * candidate, so a full chain of them never reached this function at all. Making
  * the chain advance is what surfaced the second half of the same defect.
  *
- * Scoped to 429 and 503 deliberately: exactly the set already treated as transient
- * for un-remapped statuses, so the rule becomes independent of whether a remap
- * happened rather than gaining a new one. A remapped 401/403/402 stays terminal
+ * Scoped to 429, 502, 503 and 504 deliberately: exactly the set treated as
+ * transient for un-remapped statuses, so the rule stays independent of whether a
+ * remap happened rather than gaining a new one. A remapped 401/403/402 stays terminal
  * and still surfaces inline, which is the whole point of the 400 doctrine.
  *
  * ── A RECOVERY 503 CAN NEVER REACH THIS FUNCTION, BY CONSTRUCTION ────────────
@@ -483,11 +498,15 @@ export function exhaustedChainStatus(
   errors: Array<{ provider: string; status: number; message: string }>
 ): number {
   if (errors.length === 0) return 400;
+  // 502 and 504 joined 429/503 when `isRetryableError` began advancing on them:
+  // a chain in which every hop was unavailable must still end retryable, as the
+  // single 502 that used to be returned as-is did.
+  const TRANSIENT = new Set([429, 502, 503, 504]);
   const isTransient = (e: { status: number; message: string }): boolean => {
-    if (e.status === 429 || e.status === 503) return true;
+    if (TRANSIENT.has(e.status)) return true;
     if (hasQuotaExhaustionWording(e.message)) return true;
     const upstream = e.status === 400 ? extractUpstreamStatus(e.message) : undefined;
-    return upstream === 429 || upstream === 503;
+    return upstream !== undefined && TRANSIENT.has(upstream);
   };
   return errors.every(isTransient) ? 503 : 400;
 }

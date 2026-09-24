@@ -268,9 +268,10 @@ every candidate — each paying its own multi-minute budget — and per CLAUDE.m
 an advance off a `SUBSCRIPTION_PROVIDERS` candidate onto a metered one quotes real money for a fault
 no provider caused.
 
-503 does not have this problem: `isRetryableError` has **no 503 branch**. It is the status the house
-already owns for "transient after our own retries, do not switch the user's provider" — the stream
-sniffer's exhaustion arm uses it for exactly that reason (`adapters.md`).
+503 was chosen because, at the time, `isRetryableError` had **no 503 branch**. Since 2026-09-24 it
+has one: an upstream 502/503/504 advances a bare-name chain (`adapters.md`, "An unavailable endpoint
+advances the chain"). The recovery 503 is unaffected, because the status was never its guarantee:
+the `x-claudish-recovery` marker below is checked before any status is read.
 
 529 was considered and rejected: it is absent from `exhaustedChainStatus`'s transient set and would
 add a status this codebase has never carried, re-opening every `status ===` under `handlers/`.

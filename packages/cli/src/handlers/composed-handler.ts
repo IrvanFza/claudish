@@ -2100,10 +2100,10 @@ export class ComposedHandler implements ModelHandler {
    * tail is where recovery actually happens.
    *
    * Returns `exhausted` when every attempt failed — the caller turns that into a
-   * 503 so Claude Code runs its own retry loop against the same pinned model.
-   * (A 503 is safe here specifically because fallback-handler's isRetryableError
-   * does NOT list 503, so this cannot silently switch the user off the model they
-   * pinned; it reaches Claude Code untouched.)
+   * 503. For a pinned `provider@model` there is no FallbackHandler, so the 503
+   * reaches Claude Code, which runs its own retry loop against the same model.
+   * Inside a bare-name chain, fallback-handler's isRetryableError advances on it
+   * to the next candidate: this provider stayed overloaded through every retry.
    */
   private async settleResponsesStreamHead(
     initial: Response,

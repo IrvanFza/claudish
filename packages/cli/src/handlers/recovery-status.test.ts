@@ -448,6 +448,7 @@ describe("exhaustedChainStatus cannot fold a recovery 503 into a terminal 400", 
 });
 
 describe("the marker is checked before the phrase list, inside isRetryableError too", () => {
+  const { CONNECTION_FAULT_HEADER, RECOVERY_MARKER_VALUE } = require("./shared/recovery-marker.js");
   const quotaBody = JSON.stringify({ error: { message: "You have exceeded your quota" } });
   const marked = new Headers({ [RECOVERY_MARKER_HEADER]: "1" });
 
@@ -460,10 +461,15 @@ describe("the marker is checked before the phrase list, inside isRetryableError 
   });
 
   test("the marker also beats the statuses that are otherwise retryable", () => {
-    for (const status of [401, 402, 403, 404, 429]) {
+    for (const status of [401, 402, 403, 404, 429, 502, 503, 504]) {
       expect(isRetryableError(status, "{}", "Held Probe", marked)).toBe(false);
       expect(isRetryableError(status, "{}", "Held Probe")).toBe(true);
     }
+  });
+
+  test("the connection-fault marker also blocks an unavailable endpoint", () => {
+    const headers = new Headers({ [CONNECTION_FAULT_HEADER]: RECOVERY_MARKER_VALUE });
+    expect(isRetryableError(503, "{}", "x", headers)).toBe(false);
   });
 
   test("a wrong value is not the marker", () => {
