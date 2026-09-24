@@ -108,9 +108,13 @@ steps, and only the first changed:
    to, including by the fallback hop. `[]` is a match: the user said "no route".
 2. **Otherwise gather from the catalog** — `gatherRouteCandidates` (`route-candidates.ts`)
    reads every `aggregators[]` connection the cloud models catalog publishes for the model
-   and orders them: tier (`subscription` → `dynamic-subscription` → `native` → `gateway`),
-   then the model's own vendor, then cheapest (unknown price last), then larger context
-   window, then provider name.
+   and orders them: band (both subscription tiers → `native` → `gateway`), then the
+   model's own vendor, then tier (`subscription` before `dynamic-subscription`), then
+   cheapest (unknown price last), then larger context window, then provider name. The
+   shared band exists so a vendor's own dynamic subscription leads: before 2026-09-24
+   tier came first and `grok-4.6`/`grok-4.7` went Zen Go → Grok Build → xAI; now Grok
+   Build (xAI's own) leads. The strict route gate showed those two chains and nothing
+   else move (generation `g-20260923145315478-d7a326bd`).
 3. **Append the fallback hop** (below).
 4. Credential filter (unchanged).
 5. Availability filter — only a POSITIVE "not-served" removes anything, and it asks each

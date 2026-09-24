@@ -51,11 +51,18 @@
  * this and nothing else:
  *
  *     user rules (elsewhere, verbatim, never merged with any of this)
- *       then tier:  subscription → dynamic-subscription → native → gateway → fallback
- *       within a tier:  the model's own vendor first
+ *       then band:  subscription (both subscription tiers) → native → gateway → fallback
+ *       within a band:  the model's own vendor first
+ *                  then tier: subscription before dynamic-subscription
  *                  then cheapest by catalog price (unknown last)
  *                  then larger context window
  *                  then provider name, ascending, for determinism
+ *
+ * The two subscription tiers share one band so that a vendor's OWN dynamic
+ * subscription goes first: `grok-4.x` goes Grok Build → OpenCode Zen Go → xAI.
+ * With tier first, Zen Go's catalog-published plan led Grok Build, xAI's own,
+ * on 3 of 1,143 catalog models (generation g-20260923145315478-d7a326bd); the
+ * project owner decided the vendor's own plan leads (2026-09-24).
  *
  * No local preference list, and NO LOCAL STATE. A spent subscription limit is
  * never remembered: the request moves to the next hop, which is the existing
@@ -133,6 +140,11 @@ const TIER_RANK: Record<RouteTier, number> = {
   gateway: 3,
   fallback: 4,
 };
+
+/** A tier's band: both subscription tiers share the first; every other tier is its own. */
+function bandRank(tier: RouteTier): number {
+  return tier === "dynamic-subscription" ? TIER_RANK.subscription : TIER_RANK[tier];
+}
 
 /** `routeId/routeProfileId`, the spelling the backend contract and the reports use. */
 function routeLabel(route: CatalogRouteBinding | undefined): string {
@@ -352,11 +364,18 @@ function gatherFromNamespaceClaims(
  * backend re-publish with nothing in claudish having changed.
  */
 export function compareRouteCandidates(a: RouteCandidate, b: RouteCandidate): number {
+  const byBand = bandRank(a.tier) - bandRank(b.tier);
+  if (byBand !== 0) return byBand;
+
+  // The vendor's own route, before anyone reselling it — across both
+  // subscription tiers, which is the only place a band holds two.
+  if (a.isVendorOwn !== b.isVendorOwn) return a.isVendorOwn ? -1 : 1;
+
+  // Inside the subscription band, a catalog-published plan before a dynamic
+  // one: its membership is evidence, where a namespace claim is only a question
+  // the availability filter asks the account.
   const byTier = TIER_RANK[a.tier] - TIER_RANK[b.tier];
   if (byTier !== 0) return byTier;
-
-  // The vendor's own route, before anyone reselling it.
-  if (a.isVendorOwn !== b.isVendorOwn) return a.isVendorOwn ? -1 : 1;
 
   const byPrice = compareByConnectionPrice(a.price, b.price);
   if (byPrice !== 0) return byPrice;

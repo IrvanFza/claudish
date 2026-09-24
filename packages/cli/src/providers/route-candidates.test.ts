@@ -330,6 +330,119 @@ describe("catalog route candidate gathering and order", () => {
   });
 });
 
+describe("the subscription band", () => {
+  test("a vendor's own dynamic subscription leads another vendor's catalog subscription", () => {
+    const candidate = gatheredCandidate("kimi-k3", "kimi");
+    const catalog: RouteCandidate = {
+      ...candidate,
+      provider: "opencode-zen-go",
+      wireId: "kimi-k3",
+      tier: "subscription",
+      isVendorOwn: false,
+    };
+    const dynamic: RouteCandidate = {
+      ...candidate,
+      provider: "grok-subscription",
+      wireId: "kimi-k3",
+      tier: "dynamic-subscription",
+      isVendorOwn: true,
+    };
+
+    for (const pair of [
+      [catalog, dynamic],
+      [dynamic, catalog],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "grok-subscription",
+        "opencode-zen-go",
+      ]);
+    }
+  });
+
+  describe("inside the band a catalog subscription leads a dynamic one when the vendor rule ties", () => {
+    for (const isVendorOwn of [true, false]) {
+      test(`both isVendorOwn = ${isVendorOwn}`, () => {
+        const candidate = gatheredCandidate("kimi-k3", "kimi");
+        const dynamic: RouteCandidate = {
+          ...candidate,
+          provider: "antigravity",
+          wireId: "kimi-k3",
+          tier: "dynamic-subscription",
+          isVendorOwn,
+        };
+        const catalog: RouteCandidate = {
+          ...candidate,
+          provider: "opencode-zen-go",
+          wireId: "kimi-k3",
+          tier: "subscription",
+          isVendorOwn,
+        };
+
+        for (const pair of [
+          [dynamic, catalog],
+          [catalog, dynamic],
+        ]) {
+          expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+            "opencode-zen-go",
+            "antigravity",
+          ]);
+        }
+      });
+    }
+  });
+
+  test("the vendor rule never crosses a band", () => {
+    const candidate = gatheredCandidate("kimi-k3", "kimi");
+    const vendorNative: RouteCandidate = {
+      ...candidate,
+      provider: "xai-native",
+      wireId: "kimi-k3",
+      tier: "native",
+      isVendorOwn: true,
+    };
+    const dynamic: RouteCandidate = {
+      ...candidate,
+      provider: "zz-dynamic",
+      wireId: "kimi-k3",
+      tier: "dynamic-subscription",
+      isVendorOwn: false,
+    };
+    const vendorGateway: RouteCandidate = {
+      ...candidate,
+      provider: "aa-gateway",
+      wireId: "kimi-k3",
+      tier: "gateway",
+      isVendorOwn: true,
+    };
+    const native: RouteCandidate = {
+      ...candidate,
+      provider: "zz-native",
+      wireId: "kimi-k3",
+      tier: "native",
+      isVendorOwn: false,
+    };
+
+    for (const pair of [
+      [vendorNative, dynamic],
+      [dynamic, vendorNative],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "zz-dynamic",
+        "xai-native",
+      ]);
+    }
+    for (const pair of [
+      [vendorGateway, native],
+      [native, vendorGateway],
+    ]) {
+      expect(pair.sort(compareRouteCandidates).map(({ provider }) => provider)).toEqual([
+        "zz-native",
+        "aa-gateway",
+      ]);
+    }
+  });
+});
+
 describe("namespace claims and availability", () => {
   test("a namespace claim is gathered but the dynamic models catalog may remove it", async () => {
     const gathered = gatherRouteCandidates("gemini-3.8-flash", cachePath);
