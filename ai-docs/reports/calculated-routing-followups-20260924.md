@@ -49,6 +49,12 @@ for every measurement below: `g-20260923145315478-d7a326bd`.
 | `--probe -d` writes no debug log: the probe never initialises the logger | `cli.ts` probe path | no log to read |
 | The `route:` line on the probe's Details tab wraps without its indent | `probe-tui-app.tsx` | cosmetic |
 | `packages/macos-bridge/src/bridge.test.ts` writes the real `~/.claudish-proxy/bridge-token`, which `guard-real-config` does not cover | test suite | touches real state |
+| `--probe` misreads explicit targets that are not `provider@model`: a URL target (`http://localhost:11434/llama3`) is dropped as `no-credential` for the parser-only `custom-url` provider and never probed; a legacy spec (`oc/llama3.2`) is shown with provider `oc/llama3.2`. `explainRoute` passes `decision.spec` (the raw target) to `explainExplicitSpec`, which reads it as a routing-rule entry. Real requests are unaffected (the proxy serves these without `route()`), and `route()`'s answer for them is unchanged from 10.2.0; the display regressed because `--probe` renders `explainRoute` since 10.3.0. Fix: build the explicit candidate from the parsed provider and model, and give URL targets their own explanation with the proxy's URL credential policy. Found by the 10.3.0 release review, source-traced, not yet reproduced live | `routing-rules.ts` `explainRoute` / `explainExplicitSpec` | display only |
+
+The same review found a billing regression, fixed before release: a stream-head retry that could
+not reach the provider answered an unmarked 503, which the new 502/503/504 rule would have
+advanced onto the next, possibly metered, candidate. It now carries `x-claudish-connection-error`
+and holds the chain (`adapters.md`, "An unavailable endpoint advances the chain").
 
 ## Deferred on purpose
 
