@@ -58,6 +58,12 @@ the GitHub Release as a prerelease, which is the only variant.
 `test.yml` triggers only on `pull_request` and `push` to `main`. The tag is
 therefore the gate: everything must be green before the tag leaves the machine.
 
+**The PR run tests a merge preview, not the merge commit.** On `pull_request`,
+`test.yml` checks out GitHub's merge of the PR head into `main`. Before tagging,
+confirm the merge commit's tree equals
+`git merge-tree --write-tree <main before the merge> <tested PR head>`; if `main`
+moved in between, the tag would mark an untested tree.
+
 npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothing
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only
 release secret, and only the tap job uses it.
