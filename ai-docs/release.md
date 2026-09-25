@@ -64,6 +64,15 @@ confirm the merge commit's tree equals
 `git merge-tree --write-tree <main before the merge> <tested PR head>`; if `main`
 moved in between, the tag would mark an untested tree.
 
+**Local gates do not replace the clean runner.** Run `bun run typecheck` again
+after the LAST test file lands, not only after the source change. Treat CI as the
+only neutral environment for tests that touch credentials or `~/.claudish`
+caches: a developer machine (and a claudish-spawned session even more) carries
+state a clean runner lacks. The 10.3.0 PR needed four CI runs for three faults
+no local run showed — a test reading `~/.claudish/probe-models.json`, a type
+error in a test written after the last typecheck, and a global `fetch` stub
+counting a background request only a clean runner makes.
+
 npm publishing uses OIDC trusted publishing, so no `NPM_TOKEN` exists and nothing
 can be published from a developer machine. `HOMEBREW_TAP_TOKEN` is the only
 release secret, and only the tap job uses it.
