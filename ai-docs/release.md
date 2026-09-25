@@ -104,7 +104,10 @@ Verification.
   commit on `main`, not at a branch head.
 - `npm view claudish version` and `npm view claudish dist-tags` — npm only moves
   `latest` to the highest semver, so a publish that leaves `latest` behind is
-  invisible to `npm i`.
+  invisible to `npm i`. A 404 right after the job prints `+ claudish@X.Y.Z` is
+  propagation, not a failed publish: for 10.3.0 each package appeared 1 to 6
+  minutes later. Poll for up to 15 minutes before treating a package as missing,
+  and read the job log's `+ <package>@<version>` lines to tell the two apart.
 - `npm view @claudish/magmux-darwin-arm64 versions` and its three siblings — this
   is the check the swallowed publish failure above makes necessary.
 - `gh release view vX.Y.Z` — exists, not a draft, assets attached.
