@@ -14,7 +14,8 @@
     "madbench@magus": true,
     "claudish@magus": true,
     "mnemex@magus": true,
-    "bunjs@magus": true
+    "bunjs@magus": true,
+    "code-search@magus": true
   },
   "outputStyle": "composed",
   "installedPluginVersions": {
@@ -33,6 +34,7 @@
     "madbench@magus": "0.5.0",
     "bunjs@magus": "0.4.4",
     "setup@magus": "1.2.2",
-    "playground@claude-plugins-official": "3b600518a637"
+    "playground@claude-plugins-official": "3b600518a637",
+    "code-search@magus": "8.0.0"
   }
 }
