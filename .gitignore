@@ -126,3 +126,6 @@ gtd/sessions/
 .claude/profiles/
 # A managed rule says this path should stay out of git.
 .mcp.json
+
+# magus: generated profile config (source of truth: .claude/profiles.json)
+.claude/.magus-backups/
